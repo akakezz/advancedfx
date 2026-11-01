@@ -1,8 +1,12 @@
 # Half-Life Advanced Effects - advancedfx
 
+## Status
+
+This modification is a work in progress. It has worked reliably in limited testing, but has not been extensively tested and may contain bugs or regressions. Features and commands may change.
+
 ## About
 
-Half-Life Advanced Effects (HLAE) is a tool for creating gaming videos and working with demos.
+Half-Life Advanced Effects (HLAE) is a tool to enrich content creation through the Source engine demos.
 
 This repository contains an unofficial modification of [HLAE](https://github.com/advancedfx/advancedfx), with additional features for Team Fortress 2 (TF2). It is not maintained by the official HLAE team.
 
