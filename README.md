@@ -28,6 +28,12 @@ No releases of this modified build are available yet. For official HLAE releases
 
 **Epilepsy warning:** This software may display rapidly changing images and colors.
 
+## Documentation
+
+For information about the additional features and commands, see [DOCUMENTATION.md](DOCUMENTATION.md).
+
+For general HLAE documentation, see the [official wiki](https://github.com/advancedfx/advancedfx/wiki).
+
 ## System requirements
 
 * Microsoft Windows 10 or newer
