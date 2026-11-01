@@ -2878,7 +2878,7 @@ void Addresses_InitClientDll(AfxAddr clientDll, SourceSdkVer sourceSdkVer)
 #ifndef _WIN64
 						result = FindBytes(textRange, (char const *)&strAddr, sizeof(strAddr));
 #else
-						result = FindAddrInt32OffsetRefInContext(textRange, strAddr, (int32_t)sizeof(int32_t), "48 8d 3d", nullptr);
+						result = FindAddrInt32OffsetRefInContext(textRange, strAddr, (int32_t)sizeof(int32_t), sourceSdkVer == SourceSdkVer_TF2Classified ? "48 8d 15" : "48 8d 3d", nullptr);
 #endif //#ifndef _WIN64
 						if(!result.IsEmpty()) {
 							size_t refStrAddr = result.Start;
@@ -2936,7 +2936,7 @@ void Addresses_InitClientDll(AfxAddr clientDll, SourceSdkVer sourceSdkVer)
 								break;
 							case SourceSdkVer_TF2Classified:
 								{
-									MemRange result = FindPatternString(textRange.And(MemRange(refStrAddr - 0x84, refStrAddr -0x84 + 6)), "56 41 54 41 57 48");
+									MemRange result = FindPatternString(textRange.And(MemRange(refStrAddr - 0x85, refStrAddr - 0x85 + 6)), "40 56 41 54 41 57");
 									if(!result.IsEmpty())
 										AFXADDR_SET(tf2_client_C_BaseAnimating_RecordBones, result.Start);
 									else ErrorBox(MkErrStr(__FILE__, __LINE__));	

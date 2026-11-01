@@ -13,6 +13,11 @@ public:
 
 	CClientToolsTf2(SOURCESDK::TF2::IClientTools * clientTools);
 
+	SOURCESDK::TF2::IClientTools * GetClientTools(void)
+	{
+		return m_ClientTools;
+	}
+
 	virtual ~CClientToolsTf2();
 
 	virtual void OnPostToolMessage(void * hEntity, void * msg);

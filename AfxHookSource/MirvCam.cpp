@@ -6,15 +6,38 @@
 #include "WrpConsole.h"
 
 #include "RenderView.h"
+#include "addresses.h"
 
 #include <shared/AfxMath.h>
+
+#include <string>
+#include <algorithm>
+#include <ctype.h>
+#include <stdlib.h>
+
+// How mirv_cam attach gets the angles when a bone is used.
+static int g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ALIGNED;
+
+// The calc made by the last mirv_cam attach (used by mirv_cam attach capture).
+static IMirvVecAngCalc * g_MirvCamAttachCalc = 0;
+
+static void MirvCam_SetAttachCalc(IMirvVecAngCalc * calc)
+{
+	if (calc) calc->AddRef();
+	if (g_MirvCamAttachCalc) g_MirvCamAttachCalc->Release();
+	g_MirvCamAttachCalc = calc;
+}
+
+static char const * MirvCam_AttachModeName(int mode)
+{
+	return MIRV_TF2_BONEMODE_ENTITY == mode ? "entity" : (MIRV_TF2_BONEMODE_ALIGNED == mode ? "aligned" : "bone");
+}
 
 
 bool CMirvCam::ApplySource(float & x, float & y, float & z, float & xRotation, float & yRotation, float & zRotation)
 {
 	bool overriden = false;
 
-#ifndef _WIN64
 	if (m_Source)
 	{
 		SOURCESDK::Vector o;
@@ -55,7 +78,6 @@ bool CMirvCam::ApplySource(float & x, float & y, float & z, float & xRotation, f
 			}
 		}
 	}
-#endif //#ifndef _WIN64
 
 	return overriden;
 }
@@ -98,7 +120,6 @@ bool CMirvCam::ApplyFov(float & fov)
 {
 	bool overriden = false;
 
-#ifndef _WIN64
 	if (m_Fov)
 	{
 		float tFov;
@@ -109,14 +130,13 @@ bool CMirvCam::ApplyFov(float & fov)
 			fov = tFov;
 		}
 	}
-#endif //#ifndef _WIN64
 
 	return overriden;
 }
 
-#ifndef _WIN64
 void CMirvCam::RebuildCalc(void)
 {
+#ifndef _WIN64
 	IMirvHandleCalc * handleCalc = g_MirvHandleCalcs.NewValueCalc(0, m_SourceHandle.ToInt());
 	if (handleCalc)
 	{
@@ -137,8 +157,10 @@ void CMirvCam::RebuildCalc(void)
 
 		handleCalc->Release();
 	}
-}
+#else
+	Tier0_Warning("mirv_cam source handle is not supported for 64-bit.\n");
 #endif //#ifndef _WIN64
+}
 
 CMirvCam g_MirvCam;
 
@@ -150,7 +172,6 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 	{
 		char const * arg1 = args->ArgV(1);
 
-#ifndef _WIN64
 		if (0 == _stricmp("source", arg1))
 		{
 			if (3 <= argc)
@@ -194,6 +215,15 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				{
 					if (4 <= argc)
 					{
+						if (SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer)
+						{
+							Tier0_Warning(
+								"mirv_cam source handle is not supported for TF2.\n"
+								"Use mirv_calcs vecAng add tf2Entity <sName> <iEntityIndex> [<iBoneIndex>] and mirv_cam source calcVecAng <sName> instead.\n"
+							);
+							return;
+						}
+
 						char const * arg3 = args->ArgV(3);
 
 						if (0 == _stricmp("none", arg3))
@@ -430,7 +460,6 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 			return;
 		}
 		else
-#endif //#ifndef _WIN64		
 		if (0 == _stricmp("offset", arg1))
 		{
 			if (5 <= argc)
@@ -470,6 +499,182 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 			);
 			return;
 		}
+		else if (0 == _stricmp("attach", arg1))
+		{
+			if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+			{
+				Tier0_Warning("mirv_cam attach is only supported for TF2.\n");
+				return;
+			}
+
+			if (3 <= argc && 0 == _stricmp("clear", args->ArgV(2)))
+			{
+				g_MirvCam.Source_set(0);
+				MirvCam_SetAttachCalc(0);
+				return;
+			}
+
+			if (3 <= argc && 0 == _stricmp("capture", args->ArgV(2)))
+			{
+				if (!g_MirvCamAttachCalc || g_MirvCam.Source_get() != g_MirvCamAttachCalc)
+				{
+					Tier0_Warning("The camera is not attached, use mirv_cam attach <target> [<bone>] first.\n");
+					return;
+				}
+
+				float localOffset[3];
+
+				if (!Mirv_Tf2_CaptureCamera(g_MirvCamAttachCalc, g_Hook_VClient_RenderView.LastCameraOrigin, g_Hook_VClient_RenderView.LastCameraAngles, localOffset))
+				{
+					Tier0_Warning("Could not capture the camera, the target is not available right now.\n");
+					return;
+				}
+
+				// The captured pose already includes everything, so the offsets must not be applied on top of it.
+				g_MirvCam.m_OffsetForwad = 0;
+				g_MirvCam.m_OffsetLeft = 0;
+				g_MirvCam.m_OffsetUp = 0;
+				g_MirvCam.m_OffsetForwardRot = 0;
+				g_MirvCam.m_OffseLeftRot = 0;
+				g_MirvCam.m_OffsetUpRot = 0;
+
+				Tier0_Msg(
+					"Captured the current camera relative to the target (forward %.2f, left %.2f, up %.2f), it now follows the target.\n"
+					"mirv_cam offset was cleared. If you used the free camera, end it with mirv_input end.\n"
+					, localOffset[0], localOffset[1], localOffset[2]
+				);
+				return;
+			}
+
+			if (3 <= argc)
+			{
+				const char * target = args->ArgV(2);
+				int entityIndex = -1;
+
+				bool numeric = '\0' != target[0];
+				for (const char * c = target; *c; ++c)
+				{
+					if (*c < '0' || '9' < *c) { numeric = false; break; }
+				}
+
+				if (numeric)
+				{
+					entityIndex = atoi(target);
+				}
+				else
+				{
+					// Find a player by (part of) the name, ignoring case.
+					std::string needle(target);
+					std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char c) { return (char)tolower(c); });
+
+					int matches = 0;
+					std::string matchList;
+					const int maxPlayers = Mirv_Tf2_GetMaxPlayers();
+
+					for (int i = 1; i <= maxPlayers; ++i)
+					{
+						char name[64];
+						if (!Mirv_Tf2_GetPlayerInfo(i, name, sizeof(name), 0))
+							continue;
+
+						std::string hay(name);
+						std::transform(hay.begin(), hay.end(), hay.begin(), [](unsigned char c) { return (char)tolower(c); });
+
+						if (std::string::npos == hay.find(needle))
+							continue;
+
+						if (0 == matches)
+							entityIndex = i;
+
+						++matches;
+						matchList += "  " + std::to_string(i) + ": " + name + "\n";
+					}
+
+					if (0 == matches)
+					{
+						Tier0_Warning("No player with \"%s\" in the name found (see mirv_listplayers).\n", target);
+						return;
+					}
+
+					if (1 < matches)
+					{
+						Tier0_Warning("More than one player matches \"%s\", use the entity index instead:\n%s", target, matchList.c_str());
+						return;
+					}
+				}
+
+				if (entityIndex < 0 || 2048 <= entityIndex)
+				{
+					Tier0_Warning("Entity index %i is out of range.\n", entityIndex);
+					return;
+				}
+
+				int boneIndex = -1;
+
+				if (4 <= argc && !Mirv_Tf2_ParseBoneArg(entityIndex, args->ArgV(3), boneIndex))
+					return;
+
+				{
+					IMirvVecAngCalc * calc = g_MirvVecAngCalcs.NewTf2EntityIndexCalc(0, entityIndex, boneIndex, g_MirvCamAttachMode);
+
+					g_MirvCam.Source_set(calc);
+					MirvCam_SetAttachCalc(calc);
+				}
+
+				if (7 <= argc)
+				{
+					g_MirvCam.m_OffsetForwad = (float)atof(args->ArgV(4));
+					g_MirvCam.m_OffsetLeft = (float)atof(args->ArgV(5));
+					g_MirvCam.m_OffsetUp = (float)atof(args->ArgV(6));
+
+					if (10 <= argc)
+					{
+						g_MirvCam.m_OffsetForwardRot = (float)atof(args->ArgV(7));
+						g_MirvCam.m_OffseLeftRot = (float)atof(args->ArgV(8));
+						g_MirvCam.m_OffsetUpRot = (float)atof(args->ArgV(9));
+					}
+				}
+
+				if (0 <= boneIndex)
+					Tier0_Msg("Camera source set to entity %i, bone %i (angles: %s).\n", entityIndex, boneIndex, MirvCam_AttachModeName(g_MirvCamAttachMode));
+				else
+					Tier0_Msg("Camera source set to entity %i.\n", entityIndex);
+				return;
+			}
+
+			Tier0_Msg(
+				"mirv_cam attach <entityIndex or part of player name> [<iBoneIndex or part of bone name> [<fXForward> <fYLeft> <fZUp> [<fRotXForward> <fRotYLeft> <fRotZUp>]]] - (TF2) Use the entity (or its bone) as camera source, optionally with offset (same as mirv_cam offset). Use -1 as bone for no bone.\n"
+				"mirv_cam attach capture - Use the current camera (i.e. the free camera from mirv_input camera) as the camera's position and angles relative to the attached target. Do mirv_cam attach first, fly the free camera to the framing you want, then capture and end the free camera with mirv_input end.\n"
+				"mirv_cam attach clear - Clear the camera source.\n"
+				"Use mirv_listplayers to find players and mirv_listbones to find bones. The angles used for bones are controlled by mirv_cam attachMode.\n"
+			);
+			return;
+		}
+		else if (0 == _stricmp("attachMode", arg1))
+		{
+			if (3 <= argc)
+			{
+				char const * modeName = args->ArgV(2);
+
+				if (0 == _stricmp("bone", modeName)) g_MirvCamAttachMode = MIRV_TF2_BONEMODE_BONE;
+				else if (0 == _stricmp("entity", modeName)) g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ENTITY;
+				else if (0 == _stricmp("aligned", modeName)) g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ALIGNED;
+				else
+					Tier0_Warning("Unknown mode \"%s\", use bone, entity or aligned.\n", modeName);
+
+				return;
+			}
+
+			Tier0_Msg(
+				"mirv_cam attachMode bone|entity|aligned - Angles for mirv_cam attach with a bone:\n"
+				"bone - The bone's own angles (depends on the skeleton, usually needs rotation offsets).\n"
+				"entity - The entity's facing (for players the body direction), the position is still the bone's.\n"
+				"aligned - Starts looking like the entity (facing forward) and then follows the bone's rotation.\n"
+				"Current value: %s\n"
+				, MirvCam_AttachModeName(g_MirvCamAttachMode)
+			);
+			return;
+		}
 		else if (0 == _stricmp("order", arg1))
 		{
 			CSubWrpCommandArgs subArgs(args, 2);
@@ -479,10 +684,10 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 	}
 
 	Tier0_Msg(
-#ifndef _WIN64
 		"mirv_cam source [...] - Control camera location.\n"
 		"mirv_cam fov [...] - Control camera fov.\n"
-#endif //#ifndef _WIN64
+		"mirv_cam attach [...] - (TF2) Attach the camera to a player or entity (and bone).\n"
+		"mirv_cam attachMode [...] - (TF2) Controls which angles attach uses for bones.\n"
 		"mirv_cam offset [...] - Control camera offset (in local space).\n"
 		"mirv_cam order [...] - Control order of camera overrides.\n"
 	);

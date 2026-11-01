@@ -116,6 +116,8 @@ target_sources(AfxHookSource PRIVATE
     AfxStreams.h
     CampathDrawer.cpp
     CampathDrawer.h
+    EntityIndexDrawer.cpp
+    EntityIndexDrawer.h
     ClientTools.cpp
     ClientTools.h
     d3d9Hooks.cpp
@@ -123,11 +125,15 @@ target_sources(AfxHookSource PRIVATE
     D3D9ImageBuffer.h
     Gui.cpp
     Gui.h
+    aiming.cpp
+    aiming.h
     hlaeFolder.cpp
     hlaeFolder.h
     main.cpp
     MaterialSystemHooks.cpp
     MaterialSystemHooks.h
+    MirvCalcs.cpp
+    MirvCalcs.h
     MirvCam.cpp
     MirvCam.h
     MirvCommands.cpp
@@ -455,8 +461,6 @@ if(CMAKE_GENERATOR_PLATFORM STREQUAL "Win32")
 
         AfxInterop.cpp
         AfxInterop.h
-        aiming.cpp
-        aiming.h
         asmClassTools.h
         csgo_Audio.cpp
         csgo_Audio.h
@@ -494,8 +498,6 @@ if(CMAKE_GENERATOR_PLATFORM STREQUAL "Win32")
         MatRenderContextHook.h
         mirv_voice.cpp
         mirv_voice.h
-        MirvCalcs.cpp
-        MirvCalcs.h
         MirvPgl.cpp
         MirvPgl.h
         MirvWav.cpp

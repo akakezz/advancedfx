@@ -109,6 +109,7 @@ public:
 	IMirvVecAngCalc * NewHandleCalc(char const * name, IMirvHandleCalc * handle);
 	IMirvVecAngCalc * NewHandleEyeCalc(char const * name, IMirvHandleCalc * handle);
 	IMirvVecAngCalc * NewHandleCalcEx(char const * name, IMirvHandleCalc * handle, bool eyeVec, bool eyeAng);
+	IMirvVecAngCalc * NewTf2EntityIndexCalc(char const * name, int entityIndex, int boneIndex = -1, int mode = 0);
 	IMirvVecAngCalc * NewHandleAttachmentCalc(char const * name, IMirvHandleCalc * handle, char const * attachmentName);
 	IMirvVecAngCalc * NewIfCalc(char const * name, IMirvBoolCalc * condition, IMirvVecAngCalc * condTrue, IMirvVecAngCalc * condFalse);
 	IMirvVecAngCalc * NewOrCalc(char const * name, IMirvVecAngCalc * a, IMirvVecAngCalc * b);
@@ -258,4 +259,87 @@ private:
 extern CMirvFloatCalcs g_MirvFloatCalcs;
 
 void MirvCalcs_LevelInitPreEntity();
+
+
+// TF2 helpers (used by mirv_listplayers, mirv_listbones and mirv_cam attach).
+
+#define MIRV_TF2_MAX_BONES 128
+
+// How a bone based TF2 entity calc gets its angles:
+// bone: The bone's own angles (arbitrary, depends on the skeleton).
+// entity: The entity's angles (position is still the bone's).
+// aligned: Starts out facing like the entity and then follows the bone's rotation.
+#define MIRV_TF2_BONEMODE_BONE 0
+#define MIRV_TF2_BONEMODE_ENTITY 1
+#define MIRV_TF2_BONEMODE_ALIGNED 2
+
+struct MirvTf2Bone_t
+{
+	bool valid;
+	float origin[3]; // world position
+	float angles[3]; // pitch, yaw, roll (degrees)
+};
+
+/// <returns>Highest possible player entity index (0 if unknown).</returns>
+int Mirv_Tf2_GetMaxPlayers(void);
+
+/// <returns>true if entityIndex is a connected player, name and user id are then filled.</returns>
+bool Mirv_Tf2_GetPlayerInfo(int entityIndex, char * outName, int outNameSize, int * outUserId);
+
+/// <returns>true on success. Origin and angles (pitch, yaw, roll) of the entity.</returns>
+bool Mirv_Tf2_GetEntityOriginAngles(int entityIndex, float outOrigin[3], float outAngles[3]);
+
+/// <param name="outBones">Array of MIRV_TF2_MAX_BONES elements.</param>
+/// <param name="outCount">Highest valid bone index + 1.</param>
+/// <returns>true on success.</returns>
+bool Mirv_Tf2_GetBones(int entityIndex, MirvTf2Bone_t * outBones, int & outCount);
+
+struct MirvTf2BoneName_t
+{
+	char name[64];
+	int parent; // parent bone index, -1 for root bones
+};
+
+/// <param name="outNames">Array of MIRV_TF2_MAX_BONES elements.</param>
+/// <returns>Number of bones with names (0 if names are not available).</returns>
+int Mirv_Tf2_GetBoneNames(int entityIndex, MirvTf2BoneName_t * outNames);
+
+/// <summary>Parses a bone argument: A bone index or (part of) a bone name. Prints a warning if it fails.</summary>
+/// <returns>true on success.</returns>
+bool Mirv_Tf2_ParseBoneArg(int entityIndex, const char * arg, int & outBone);
+
+/// <summary>Makes the camera pose (e.g. from a free camera) the fixed pose of the camera relative to the target of a TF2 entity calc (created with NewTf2EntityIndexCalc).
+/// From now on position and angles follow the target (entity or bone) and keep this relative pose.</summary>
+/// <param name="camOrigin">World position.</param>
+/// <param name="camAngles">World angles (pitch, yaw, roll).</param>
+/// <param name="outLocalOffset">Position relative to the target in the camera's own axes (forward, left, up).</param>
+/// <returns>true on success.</returns>
+bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc * calc, const double camOrigin[3], const double camAngles[3], float outLocalOffset[3]);
+
+/// <returns>true on success. The entity's abs angles and render angles (pitch, yaw, roll).</returns>
+bool Mirv_Tf2_GetEntityAnglesInfo(int entityIndex, float outAbsAngles[3], float outRenderAngles[3]);
+
+// Renderer classification (unknown classes fall back to Other).
+enum MirvTf2EntityCategory_t
+{
+ MIRV_TF2_ENTITY_PLAYER = 0,
+ MIRV_TF2_ENTITY_PROJECTILE = 1,
+ MIRV_TF2_ENTITY_WEAPON = 2,
+ MIRV_TF2_ENTITY_COSMETIC = 3,
+ MIRV_TF2_ENTITY_OTHER = 4,
+ MIRV_TF2_ENTITY_CATEGORY_COUNT = 5
+};
+
+struct MirvTf2EntityLabel_t
+{
+	int category;
+	int index;
+	float origin[3]; // world position: Top center of the entity's world space bounds (its render origin if the bounds are not usable).
+};
+
+/// <summary>Collects the entities that should get an index label (see mirv_drawentities).</summary>
+/// <param name="playersOnly">If true only players are collected, otherwise all entities that would be drawn.</param>
+/// <param name="outLabels">Array with space for maxCount elements.</param>
+/// <returns>Number of entities collected.</returns>
+int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLabels, int maxCount);
 

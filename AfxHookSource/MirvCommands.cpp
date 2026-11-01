@@ -28,6 +28,8 @@
 
 #include "d3d9Hooks.h"
 #include "aiming.h"
+#include "EntityIndexDrawer.h"
+#include "tf2/ClientToolsTf2.h"
 #include "../shared/CommandSystem.h"
 #include <shared/binutils.h>
 
@@ -59,6 +61,10 @@
 #include <cctype>
 #include <sstream>
 #include <iomanip>
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <cmath>
 
 extern WrpVEngineClient * g_VEngineClient;
 
@@ -147,6 +153,9 @@ CON_COMMAND(__mirv_test6, "")
 	if (2 > argc)
 		return;
 
+
+	if (!SOURCESDK::g_Entitylist_csgo)
+		return;
 
 	int idx = atoi(args->ArgV(1));
 	
@@ -1438,6 +1447,281 @@ public:
 
 } g_MirvCampath_Drawer;
  
+// Preview uses the existing campath evaluator and mirv_input free camera.
+// The +/- commands are safe to bind permanently; they are inert outside preview mode.
+static bool g_CampathPreviewActive = false;
+static bool g_CampathPreviewForward = false;
+static bool g_CampathPreviewBackward = false;
+static double g_CampathPreviewTime = 0.0;
+static int g_CampathPreviewFrame = -1;
+static DWORD g_CampathPreviewLastMs = 0;
+// 0 disables the dedicated toggle key. No game bind is required.
+static UINT g_CampathPreviewToggleKey = 0;
+static bool g_CampathPreviewToggleHeld = false;
+
+// Win32 virtual-key names. Supports letters, digits, F1..F12 and several special keys.
+static UINT CampathPreview_ParseToggleKey(const char * name)
+{
+    if (!name || !*name) return 0;
+    if (0 == _stricmp(name, "none") || 0 == _stricmp(name, "off")) return 0;
+    if (!name[1]) {
+        const char c = name[0];
+        if (c >= 'a' && c <= 'z') return (UINT)(c - 'a' + 'A');
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return (UINT)c;
+    }
+    if (name[0] == 'f' || name[0] == 'F') {
+        char * end = nullptr;
+        const long f = strtol(name + 1, &end, 10);
+        if (end != name + 1 && !*end && f >= 1 && f <= 12) return VK_F1 + (UINT)(f - 1);
+    }
+    if (0 == _stricmp(name, "insert")) return VK_INSERT;
+    if (0 == _stricmp(name, "home")) return VK_HOME;
+    if (0 == _stricmp(name, "end")) return VK_END;
+    if (0 == _stricmp(name, "pageup")) return VK_PRIOR;
+    if (0 == _stricmp(name, "pagedown")) return VK_NEXT;
+    return 0;
+}
+
+
+// An individual keyframe is usable as a bookmark even when the current
+// interpolation mode does not have enough points to evaluate a path.
+static bool CampathPreview_CanShow(const CamPath & path)
+{
+    return path.GetSize() != 0;
+}
+
+static bool CampathPreview_SetCamera()
+{
+	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	MirvInput * input = g_Hook_VClient_RenderView.m_MirvInput;
+	if (!input || !CampathPreview_CanShow(path)) return false;
+	if (g_CampathPreviewTime < path.GetLowerBound()) g_CampathPreviewTime = path.GetLowerBound();
+	if (g_CampathPreviewTime > path.GetUpperBound()) g_CampathPreviewTime = path.GetUpperBound();
+
+    CamPathValue value;
+    if (path.CanEval()) {
+        // Preserve HLAE's interpolation unchanged for evaluatable paths.
+        value = path.Eval(g_CampathPreviewTime);
+    } else {
+        // Without interpolation, preview the nearest actual keyframe rather
+        // than calling Eval(). Snap the time too, so preview seek always
+        // targets that bookmark's tick (not an arbitrary in-between time).
+        CamPathIterator nearest = path.GetBegin();
+        double nearestDistance = std::fabs(nearest.GetTime() - g_CampathPreviewTime);
+        for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it) {
+            const double distance = std::fabs(it.GetTime() - g_CampathPreviewTime);
+            if (distance < nearestDistance) {
+                nearest = it;
+                nearestDistance = distance;
+            }
+        }
+        g_CampathPreviewTime = nearest.GetTime();
+        value = nearest.GetValue();
+    }
+	const Afx::Math::QEulerAngles angles = value.R.ToQREulerAngles().ToQEulerAngles();
+	input->SetCameraControlMode(true);
+	input->SetTx((float)value.X);
+	input->SetTy((float)value.Y);
+	input->SetTz((float)value.Z);
+	input->SetRx((float)angles.Pitch);
+	input->SetRy((float)angles.Yaw);
+	input->SetRz((float)angles.Roll);
+	input->SetFov((float)value.Fov);
+	return true;
+}
+
+static bool CampathPreview_Enter()
+{
+    CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+    if (!g_Hook_VClient_RenderView.IsInstalled() || !CampathPreview_CanShow(path) || !g_Hook_VClient_RenderView.m_MirvInput) {
+        Tier0_Warning("Campath preview: no usable keyframes or free camera is unavailable.\n");
+        return false;
+    }
+    if (!g_CampathPreviewActive) {
+        const double t = (double)g_MirvTime.GetTime() - path.GetOffset();
+        g_CampathPreviewTime = t < path.GetLowerBound() ? path.GetLowerBound() : (t > path.GetUpperBound() ? path.GetUpperBound() : t);
+    }
+    g_CampathPreviewActive = true;
+    g_CampathPreviewFrame = -1;
+    g_CampathPreviewLastMs = GetTickCount();
+    g_CampathPreviewForward = g_CampathPreviewBackward = false;
+    CampathPreview_SetCamera();
+    Tier0_Msg("Campath preview active.\n");
+    return true;
+}
+
+static void CampathPreview_Exit()
+{
+    if (g_CampathPreviewActive) CampathPreview_SetCamera();
+    g_CampathPreviewActive = g_CampathPreviewForward = g_CampathPreviewBackward = false;
+    g_CampathPreviewLastMs = 0;
+    Tier0_Msg("Campath preview exited; free camera retained.\n");
+}
+
+// Called at view override time, before the existing mirv_input override is evaluated.
+void MirvCampathPreview_Update()
+{
+	if (!g_CampathPreviewActive) return;
+	// Honor free-camera exits (including Shift+Esc) instead of re-entering
+	// camera mode every frame through CampathPreview_SetCamera().
+	if (!g_Hook_VClient_RenderView.m_MirvInput ||
+		!g_Hook_VClient_RenderView.m_MirvInput->GetCameraControlMode()) {
+		g_CampathPreviewActive = g_CampathPreviewForward = g_CampathPreviewBackward = false;
+		g_CampathPreviewLastMs = 0;
+		return;
+	}
+	// The console owns arrow keys while visible. Also clear held state so a
+	// swallowed key-up message cannot leave continuous travel running.
+	if (g_Hook_VClient_RenderView.IsMenuActive()) {
+		g_CampathPreviewForward = g_CampathPreviewBackward = false;
+		g_CampathPreviewLastMs = GetTickCount();
+		return;
+	}
+	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	if (!CampathPreview_CanShow(path)) {
+		g_CampathPreviewActive = false;
+		g_CampathPreviewForward = g_CampathPreviewBackward = false;
+		return;
+	}
+
+	// RenderView may be invoked more than once per game frame.
+	const int frame = g_MirvTime.GetFrameCount();
+	if (frame != g_CampathPreviewFrame) {
+		g_CampathPreviewFrame = frame;
+		const DWORD nowMs = GetTickCount();
+        const DWORD elapsedMs = g_CampathPreviewLastMs ? nowMs - g_CampathPreviewLastMs : 0;
+        g_CampathPreviewLastMs = nowMs;
+		const int direction = (g_CampathPreviewForward ? 1 : 0) - (g_CampathPreviewBackward ? 1 : 0);
+		if (direction && path.CanEval()) {
+			float scale = 1.0f;
+			if (g_VEngineClient) {
+				WrpVEngineClientDemoInfoEx * demo = g_VEngineClient->GetDemoInfoEx();
+				if (demo) scale = demo->GetDemoPlaybackTimeScale();
+			}
+			// Pausing the demo should not make the camera-path preview unusable.
+			if (!(scale > 0.0f)) scale = 1.0f;
+			const float dt = (float)(elapsedMs > 100 ? 100 : elapsedMs) / 1000.0f;
+			g_CampathPreviewTime += direction * (double)dt * (double)scale;
+		}
+	}
+	CampathPreview_SetCamera();
+}
+
+static bool CampathPreview_GotoIndex(int index)
+{
+	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	if (index < 0 || (size_t)index >= path.GetSize()) return false;
+	CamPathIterator it = path.GetBegin();
+	for (int i = 0; i < index; ++i) ++it;
+	g_CampathPreviewTime = it.GetTime();
+	if (!CampathPreview_SetCamera()) return false;
+	// Keep HLAE's normal keyframe selection in sync with preview navigation.
+	// This makes the chosen keyframe immediately editable after preview exit.
+	path.SelectNone();
+	path.SelectAdd((size_t)index, (size_t)index);
+	return true;
+}
+
+static void CampathPreview_StepKeyframe(int direction)
+{
+	if (!g_CampathPreviewActive) return;
+	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	int index = 0;
+	if (direction > 0) {
+		for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it, ++index) {
+			if (it.GetTime() > g_CampathPreviewTime + 0.00001) {
+				CampathPreview_GotoIndex(index);
+				return;
+			}
+		}
+	} else {
+		int previous = -1;
+		for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it, ++index) {
+			if (it.GetTime() >= g_CampathPreviewTime - 0.00001) break;
+			previous = index;
+		}
+		if (previous >= 0) CampathPreview_GotoIndex(previous);
+	}
+}
+
+// Preview navigation is handled by the existing HLAE window procedure, not Source binds.
+// The regular mirv_input arrow-key handlers remain untouched outside preview mode.
+bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
+{
+    const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+    const bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
+    if (!down && !up) return false;
+
+    // Console typing must remain untouched, even when preview is active.
+    if (g_Hook_VClient_RenderView.IsMenuActive()) {
+        g_CampathPreviewForward = g_CampathPreviewBackward = false;
+        g_CampathPreviewToggleHeld = false;
+        return false;
+    }
+
+    // This key is caught even when preview is *not* active, because normal
+    // mirv_input camera controls can swallow Source engine key binds.
+    if (g_CampathPreviewToggleKey && key == g_CampathPreviewToggleKey) {
+        if (up) g_CampathPreviewToggleHeld = false;
+        else if (!g_CampathPreviewToggleHeld && !(lParam & (1LL << 30))) {
+            g_CampathPreviewToggleHeld = true;
+            if (g_CampathPreviewActive) CampathPreview_Exit();
+            else CampathPreview_Enter();
+        }
+        return true;
+    }
+
+    if (!g_CampathPreviewActive) return false;
+    if (key != VK_LEFT && key != VK_RIGHT && key != VK_UP && key != VK_DOWN
+        && key != VK_HOME && key != VK_END) return false;
+    if (key == VK_LEFT || key == VK_RIGHT) {
+        CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+        if (path.CanEval()) {
+            // Interpolatable paths retain their continuous arrow-key scrubbing.
+            if (key == VK_LEFT) g_CampathPreviewBackward = down;
+            else g_CampathPreviewForward = down;
+        } else if (down && !(lParam & (1LL << 30))) {
+            // Without interpolation, LEFT/RIGHT step through bookmarks.
+            // Move to the adjacent bookmark on each fresh key press.
+            CampathPreview_StepKeyframe(key == VK_RIGHT ? 1 : -1);
+        }
+    }
+    else if (down && !(lParam & (1LL << 30))) {
+        if (key == VK_HOME || key == VK_END) {
+            // Stop continuous scrubbing when jumping to either endpoint.
+            g_CampathPreviewForward = g_CampathPreviewBackward = false;
+            g_CampathPreviewLastMs = GetTickCount();
+            CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+            if (path.GetSize() != 0)
+                CampathPreview_GotoIndex(key == VK_HOME ? 0 : (int)path.GetSize() - 1);
+        } else {
+            CampathPreview_StepKeyframe(key == VK_UP ? 1 : -1);
+        }
+    }
+    return true;
+}
+void MirvCampathPreview_ReleaseKeys()
+{
+    g_CampathPreviewForward = g_CampathPreviewBackward = false;
+    g_CampathPreviewToggleHeld = false;
+}
+
+static void CampathPreview_PrintHelp()
+{
+	Tier0_Msg(
+		"mirv_campath preview enter - Begin preview mode (one or more keyframes).\n"
+        "mirv_campath preview toggle - Toggle Preview Mode on/off.\n"
+        "mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, home, end, pageup, pagedown).\n"
+		"mirv_campath preview <index> - Select a keyframe (0-based).\n"
+		"mirv_campath preview interp <0..1> - Position between nearest keyframe and the following one.\n"
+		"mirv_campath preview seek - Seek the demo to the current preview time.\n"
+		"mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
+		"Preview keys (console closed): UP/DOWN select next/previous; HOME/END select first/last.\n"
+        "LEFT/RIGHT scrub interpolated paths, or step through bookmarks if interpolation is unavailable.\n"
+        "HOME/END jump without seeking the demo (unless assigned as toggleKey); use preview seek to seek.\n"
+	);
+}
+
 CON_COMMAND(mirv_campath, "camera paths")
 {
 	if (!g_Hook_VClient_RenderView.IsInstalled())
@@ -1446,7 +1730,111 @@ CON_COMMAND(mirv_campath, "camera paths")
 		return;
 	}
 
+	if (2 <= args->ArgC() && 0 == _stricmp("preview", args->ArgV(1)))
+	{
+		CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+		if (args->ArgC() == 2) { CampathPreview_PrintHelp(); return; }
+		const char * cmd = args->ArgV(2);
+		if (0 == _stricmp(cmd, "toggleKey")) {
+            if (args->ArgC() == 3) {
+                Tier0_Msg("Campath preview toggle key: VK %u (0 = disabled).\n", g_CampathPreviewToggleKey);
+                return;
+            }
+            if (args->ArgC() == 4) {
+                const char * keyName = args->ArgV(3);
+                const UINT key = CampathPreview_ParseToggleKey(keyName);
+                if (key == 0 && 0 != _stricmp(keyName, "none") && 0 != _stricmp(keyName, "off")) {
+                    Tier0_Warning("Campath preview: unsupported key name. See mirv_campath preview.\n");
+                    return;
+                }
+                g_CampathPreviewToggleKey = key;
+                g_CampathPreviewToggleHeld = false;
+                Tier0_Msg("Campath preview toggle key set to %s (VK %u).\n", keyName, key);
+                return;
+            }
+            CampathPreview_PrintHelp();
+            return;
+        }
+        if (0 == _stricmp(cmd, "exit") && args->ArgC() == 3) {
+            CampathPreview_Exit();
+            return;
+        }
+        if (0 == _stricmp(cmd, "toggle") && args->ArgC() == 3) {
+            if (g_CampathPreviewActive) CampathPreview_Exit();
+            else CampathPreview_Enter();
+            return;
+        }
+        if (0 == _stricmp(cmd, "enter") && args->ArgC() == 3) {
+            CampathPreview_Enter();
+            return;
+        }
+        if (!CampathPreview_CanShow(path) || !g_Hook_VClient_RenderView.m_MirvInput) {
+            Tier0_Warning("Campath preview: no usable keyframes or free camera is unavailable.\n");
+            return;
+        }
+		if (!g_CampathPreviewActive) {
+			Tier0_Warning("Campath preview: use mirv_campath preview enter first.\n");
+			return;
+		}
+		if (0 == _stricmp(cmd, "interp") && args->ArgC() == 4) {
+            if (!path.CanEval()) {
+                Tier0_Warning("Campath preview: this path cannot interpolate yet; select a keyframe instead.\n");
+                return;
+            }
+			char * end = nullptr;
+			const double fraction = strtod(args->ArgV(3), &end);
+			if (end == args->ArgV(3) || *end || !(fraction >= 0.0 && fraction <= 1.0)) {
+				Tier0_Warning("Campath preview: interpolation fraction must be 0..1.\n");
+				return;
+			}
+			CamPathIterator it = path.GetBegin();
+			CamPathIterator following = it;
+			++following;
+			while (following != path.GetEnd() && following.GetTime() <= g_CampathPreviewTime) {
+				++it;
+				++following;
+			}
+			if (following == path.GetEnd()) {
+				Tier0_Warning("Campath preview: no following keyframe.\n");
+				return;
+			}
+			const double t0 = it.GetTime();
+			it = following;
+			g_CampathPreviewTime = t0 + fraction * (it.GetTime() - t0);
+			CampathPreview_SetCamera();
+			return;
+		}
+		if (0 == _stricmp(cmd, "seek") && args->ArgC() == 3) {
+			const double curtime = g_MirvCampath_Time.GetTime();
+			int tick = -1;
+			if (!g_MirvCampath_Time.GetDemoTickFromClientTime(curtime, g_CampathPreviewTime + path.GetOffset(), tick) || tick < 0) {
+				Tier0_Warning("Campath preview: unable to calculate demo tick.\n");
+				return;
+			}
+			std::ostringstream seekCommand;
+			seekCommand << "demo_gototick " << tick;
+            int currentTick = -1;
+            g_MirvCampath_Time.GetCurrentDemoTick(currentTick);
+            Tier0_Msg("Campath preview: time %.6f (client %.6f), current demo tick %i, requested tick %i.\n",
+                g_CampathPreviewTime, g_CampathPreviewTime + path.GetOffset(), currentTick, tick);
+			g_VEngineClient->ExecuteClientCmd(seekCommand.str().c_str());
+			return;
+		}
+		if (args->ArgC() == 3) {
+			char * end = nullptr;
+			const long value = strtol(cmd, &end, 10);
+			if (end != cmd && !*end && value >= 0 && value < (long)path.GetSize()) {
+				CampathPreview_GotoIndex((int)value);
+				Tier0_Msg("Campath preview: keyframe %i.\n", (int)value);
+				return;
+			}
+		}
+		CampathPreview_PrintHelp();
+		return;
+	}
+
 	MirvCampath_ConCommand(args, Tier0_Msg, Tier0_Warning, &g_Hook_VClient_RenderView.m_CamPath, &g_MirvCampath_Time, &g_MirvCampath_Camera, &g_MirvCampath_Drawer);
+	if (args->ArgC() == 1) Tier0_Msg("mirv_campath preview [...] - Navigate campath with free camera; use mirv_campath preview for help.\n");
 }
 
 CON_COMMAND(mirv_camexport, "controls camera motion data export") {
@@ -1756,6 +2144,31 @@ CON_COMMAND(mirv_replace_team_name, "allows replacing player team names")
 
 CON_COMMAND(mirv_input, "Input mode configuration.")
 {
+    if (args->ArgC() >= 3 && 0 == _stricmp(args->ArgV(1), "camera"))
+    {
+        if (0 == _stricmp(args->ArgV(2), "uiCursor"))
+        {
+            if (args->ArgC() >= 4)
+            {
+                g_Hook_VClient_RenderView.UiCursorSuspend_set(0 != atoi(args->ArgV(3)));
+                return;
+            }
+            Tier0_Msg("mirv_input camera uiCursor 0|1 - Yield to Source's visible UI cursor. Experimental, default 0. Current: %i\n",
+                g_Hook_VClient_RenderView.UiCursorSuspend_get() ? 1 : 0);
+            return;
+        }
+        if (0 == _stricmp(args->ArgV(2), "uiCursorStatus"))
+        {
+            bool available = false, visible = false;
+            g_Hook_VClient_RenderView.UiCursorStatus(available, visible);
+            Tier0_Msg("VGUI_Surface030: %s, IsCursorVisible: %s, uiCursor: %i\n",
+                available ? "available" : "unavailable",
+                available ? (visible ? "1" : "0") : "n/a",
+                g_Hook_VClient_RenderView.UiCursorSuspend_get() ? 1 : 0);
+            Tier0_Msg("Note: opening the console itself may make the UI cursor visible.\n");
+            return;
+        }
+    }
 	g_Hook_VClient_RenderView.Console_MirvInput(args);
 }
 
@@ -1963,8 +2376,154 @@ void mirv_print_entity(int index, double dist, SOURCESDK::C_BaseEntity_csgo * be
 }
 
 
-CON_COMMAND(mirv_listentities, "Print info about currently active entites. (CS:GO only)")
+#endif //#ifndef _WIN64
+
+// TF2: List entities through IClientTools. Only what IClientTools exposes is available
+// (entity index, class name, model name, player flag and position; no entity names,
+// entity handles or player info).
+struct MirvListEntitiesTf2Entry_t
 {
+	int idx;
+	double dist;
+	bool isPlayer;
+	std::string className;
+	std::string modelName;
+};
+
+static bool mirv_listentities_tf2_dist_compare(const MirvListEntitiesTf2Entry_t & first, const MirvListEntitiesTf2Entry_t & second)
+{
+	return first.dist < second.dist;
+}
+
+static void mirv_listentities_tf2(IWrpCommandArgs * args)
+{
+	CClientToolsTf2 * tools = CClientToolsTf2::Instance();
+	SOURCESDK::TF2::IClientTools * iface = tools ? tools->GetClientTools() : 0;
+
+	if (!iface)
+	{
+		Tier0_Warning("Client tools are not available!\n");
+		return;
+	}
+
+	bool onlyPlayer = false;
+	bool sortByDistance = false;
+	const char * classWildCard = "\\*";
+
+	for (int i = 1; i < args->ArgC(); ++i)
+	{
+		const char * argI = args->ArgV(i);
+
+		if (0 == _stricmp(argI, "isPlayer=1"))
+		{
+			onlyPlayer = true;
+		}
+		else if (0 == _stricmp(argI, "sort=distance"))
+		{
+			sortByDistance = true;
+		}
+		else if (StringIBeginsWith(argI, "class="))
+		{
+			classWildCard = argI + strlen("class=");
+		}
+	}
+
+	Vector3 cameraOrigin(
+		g_Hook_VClient_RenderView.LastCameraOrigin[0],
+		g_Hook_VClient_RenderView.LastCameraOrigin[1],
+		g_Hook_VClient_RenderView.LastCameraOrigin[2]
+	);
+
+	std::vector<MirvListEntitiesTf2Entry_t> result;
+
+	for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+	{
+		const int idx = iface->GetEntIndex(ent);
+
+		// Only networked entities can be addressed by index (e.g. with mirv_aim entityIndex).
+		if (idx < 0 || idx >= 2048)
+			continue;
+
+		const bool isPlayer = iface->IsPlayer(ent);
+
+		if (onlyPlayer && !isPlayer)
+			continue;
+
+		// Entities only have a tool handle while the client is in recording mode.
+		// Otherwise attach temporarily and detach again afterwards, so listing has no lasting effect.
+		bool attachedHere = false;
+		SOURCESDK::TF2::HTOOLHANDLE hHandle = iface->GetToolHandleForEntityByIndex(idx);
+
+		if (SOURCESDK::TF2::HTOOLHANDLE_INVALID == hHandle)
+		{
+			hHandle = iface->AttachToEntity(ent);
+			attachedHere = SOURCESDK::TF2::HTOOLHANDLE_INVALID != hHandle;
+		}
+
+		if (SOURCESDK::TF2::HTOOLHANDLE_INVALID != hHandle)
+		{
+			const char * className = iface->GetClassname(hHandle);
+			if (!className) className = "[NULL]";
+
+			if (StringWildCard1Matched(classWildCard, className))
+			{
+				const char * modelName = iface->GetModelName(hHandle);
+				if (!modelName) modelName = "";
+
+				SOURCESDK::Vector vEntOrigin = iface->GetAbsOrigin(hHandle);
+				Vector3 entOrigin(vEntOrigin.x, vEntOrigin.y, vEntOrigin.z);
+
+				MirvListEntitiesTf2Entry_t entry;
+				entry.idx = idx;
+				entry.dist = (entOrigin - cameraOrigin).Length();
+				entry.isPlayer = isPlayer;
+				entry.className = className;
+				entry.modelName = modelName;
+
+				result.push_back(entry);
+			}
+		}
+
+		if (attachedHere)
+			iface->DetachFromEntity(ent);
+	}
+
+	if (sortByDistance)
+		std::stable_sort(result.begin(), result.end(), mirv_listentities_tf2_dist_compare);
+
+	Tier0_Msg(
+		"Results:\n"
+		"index (distance): className, model: modelName [player]\n"
+	);
+
+	for (std::vector<MirvListEntitiesTf2Entry_t>::const_iterator it = result.begin(); it != result.end(); ++it)
+	{
+		Tier0_Msg(
+			"%i (%f): %s, model: %s%s\n"
+			, it->idx
+			, it->dist
+			, it->className.c_str()
+			, it->modelName.c_str()
+			, it->isPlayer ? " [player]" : ""
+		);
+	}
+
+	Tier0_Msg(
+		"\n"
+		"Usage:\n"
+		"mirv_listentities [isPlayer=1] [sort=distance] [class=<wildCardString(\\* = wildcard, \\\\ = \\)>]\n"
+	);
+}
+
+CON_COMMAND(mirv_listentities, "Print info about currently active entites. (CS:GO and TF2)")
+{
+	if (SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer)
+	{
+		mirv_listentities_tf2(args);
+		return;
+	}
+
+#ifndef _WIN64
 	if(!SOURCESDK::g_Entitylist_csgo)
 	{
 		Tier0_Warning("Not supported for your engine!\n");
@@ -2055,10 +2614,448 @@ CON_COMMAND(mirv_listentities, "Print info about currently active entites. (CS:G
 		"Usage:\n"
 		"mirv_listentities [isPlayer=1] [sort=distance] [class=<wildCardString(\\* = wildcard, \\\\ = \\)>]\n"
 	);
-
-
+#else
+	Tier0_Warning("Not supported for your engine!\n");
+#endif //#ifndef _WIN64
 }
 
+struct MirvListPlayersEntry_t
+{
+	int idx;
+	int userId;
+	double dist;
+	std::string name;
+};
+
+static bool mirv_listplayers_dist_compare(const MirvListPlayersEntry_t & first, const MirvListPlayersEntry_t & second)
+{
+	// Players with unknown distance (< 0) go last.
+	const double a = first.dist < 0 ? 1e30 : first.dist;
+	const double b = second.dist < 0 ? 1e30 : second.dist;
+	return a < b;
+}
+
+CON_COMMAND(mirv_listplayers, "Print players with their entity index and name. (TF2)")
+{
+	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+	{
+		Tier0_Warning("Not supported for your engine!\n");
+		return;
+	}
+
+	bool sortByDistance = false;
+
+	for (int i = 1; i < args->ArgC(); ++i)
+	{
+		if (0 == _stricmp(args->ArgV(i), "sort=distance"))
+			sortByDistance = true;
+	}
+
+	Vector3 cameraOrigin(
+		g_Hook_VClient_RenderView.LastCameraOrigin[0],
+		g_Hook_VClient_RenderView.LastCameraOrigin[1],
+		g_Hook_VClient_RenderView.LastCameraOrigin[2]
+	);
+
+	std::vector<MirvListPlayersEntry_t> result;
+	const int maxPlayers = Mirv_Tf2_GetMaxPlayers();
+
+	for (int i = 1; i <= maxPlayers; ++i)
+	{
+		char name[64];
+		int userId = 0;
+
+		if (!Mirv_Tf2_GetPlayerInfo(i, name, sizeof(name), &userId))
+			continue;
+
+		MirvListPlayersEntry_t entry;
+		entry.idx = i;
+		entry.userId = userId;
+		entry.name = name;
+		entry.dist = -1.0;
+
+		float o[3], a[3];
+		if (Mirv_Tf2_GetEntityOriginAngles(i, o, a))
+			entry.dist = (Vector3(o[0], o[1], o[2]) - cameraOrigin).Length();
+
+		result.push_back(entry);
+	}
+
+	if (sortByDistance)
+		std::stable_sort(result.begin(), result.end(), mirv_listplayers_dist_compare);
+
+	Tier0_Msg("Results:\nentity index (distance): name [userid]\n");
+
+	for (std::vector<MirvListPlayersEntry_t>::const_iterator it = result.begin(); it != result.end(); ++it)
+	{
+		if (0 <= it->dist)
+			Tier0_Msg("%i (%f): %s [userid %i]\n", it->idx, it->dist, it->name.c_str(), it->userId);
+		else
+			Tier0_Msg("%i (?): %s [userid %i]\n", it->idx, it->name.c_str(), it->userId);
+	}
+
+	if (result.empty())
+		Tier0_Msg("(no players found, are you in a game or demo?)\n");
+
+	Tier0_Msg(
+		"\n"
+		"Usage:\n"
+		"mirv_listplayers [sort=distance]\n"
+		"Use the entity index with mirv_cam attach, mirv_listbones and mirv_aim entityIndex.\n"
+	);
+}
+
+static bool MirvCommands_ContainsNoCase(const char * hay, const char * needle)
+{
+	std::string h(hay);
+	std::string n(needle);
+	std::transform(h.begin(), h.end(), h.begin(), [](unsigned char c) { return (char)tolower(c); });
+	std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return (char)tolower(c); });
+	return std::string::npos != h.find(n);
+}
+
+CON_COMMAND(mirv_listbones, "Print the bones of an entity with their names and positions. (TF2)")
+{
+	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+	{
+		Tier0_Warning("Not supported for your engine!\n");
+		return;
+	}
+
+	if (args->ArgC() < 2)
+	{
+		Tier0_Msg(
+			"Usage:\n"
+			"mirv_listbones <iEntityIndex> [<sNamePart>] - Print the bones of the entity (index, name, world position, position relative to the entity and parent bone), optionally only those with <sNamePart> in the name.\n"
+			"Use mirv_listplayers or mirv_listentities to find the entity index.\n"
+		);
+		return;
+	}
+
+	const int entityIndex = atoi(args->ArgV(1));
+	const char * filter = 3 <= args->ArgC() ? args->ArgV(2) : 0;
+
+	MirvTf2Bone_t bones[MIRV_TF2_MAX_BONES];
+	int count = 0;
+
+	if (!Mirv_Tf2_GetBones(entityIndex, bones, count))
+	{
+		Tier0_Warning("Could not get bones of entity %i (no such entity or it has no model).\n", entityIndex);
+		return;
+	}
+
+	MirvTf2BoneName_t names[MIRV_TF2_MAX_BONES];
+	const int numNames = Mirv_Tf2_GetBoneNames(entityIndex, names);
+	const bool haveNames = 0 < numNames;
+
+	if (filter && !haveNames)
+	{
+		Tier0_Warning("Bone names are not available, ignoring the name filter.\n");
+		filter = 0;
+	}
+
+	float entOrigin[3] = { 0, 0, 0 };
+	float entAngles[3] = { 0, 0, 0 };
+	const bool haveEntity = Mirv_Tf2_GetEntityOriginAngles(entityIndex, entOrigin, entAngles);
+
+	const double deg2rad = 0.017453292519943295;
+	const double yawSin = sin(entAngles[1] * deg2rad);
+	const double yawCos = cos(entAngles[1] * deg2rad);
+
+	int numValid = 0;
+	int highest = -1;
+	int lowest = -1;
+
+	for (int i = 0; i < count; ++i)
+	{
+		if (!bones[i].valid)
+			continue;
+
+		++numValid;
+
+		if (-1 == highest || bones[highest].origin[2] < bones[i].origin[2]) highest = i;
+		if (-1 == lowest || bones[i].origin[2] < bones[lowest].origin[2]) lowest = i;
+	}
+
+	{
+		float absAngles[3], renderAngles[3];
+
+		if (Mirv_Tf2_GetEntityAnglesInfo(entityIndex, absAngles, renderAngles))
+		{
+			Tier0_Msg(
+				"Entity angles (pitch yaw roll): abs %.1f %.1f %.1f, render %.1f %.1f %.1f (the entity's facing is the render angles if they are not all zero)\n"
+				, absAngles[0], absAngles[1], absAngles[2]
+				, renderAngles[0], renderAngles[1], renderAngles[2]
+			);
+		}
+	}
+
+	Tier0_Msg("Entity %i has %i bones (highest bone index: %i)%s.\n", entityIndex, numValid, count - 1, haveNames ? "" : ", bone names are not available");
+
+	int numShown = 0;
+
+	for (int i = 0; i < count; ++i)
+	{
+		if (!bones[i].valid)
+			continue;
+
+		const bool hasName = i < numNames && names[i].name[0];
+
+		if (filter && !(hasName && MirvCommands_ContainsNoCase(names[i].name, filter)))
+			continue;
+
+		++numShown;
+
+		const MirvTf2Bone_t & bone = bones[i];
+		const char * mark = i == highest ? "  <- highest" : (i == lowest ? "  <- lowest" : "");
+
+		char nameCol[80];
+		if (haveNames)
+			snprintf(nameCol, sizeof(nameCol), " %-22s", hasName ? names[i].name : "?");
+		else
+			nameCol[0] = 0;
+
+		char parentCol[96];
+		if (haveNames && i < numNames && 0 <= names[i].parent && names[i].parent < numNames)
+			snprintf(parentCol, sizeof(parentCol), " | parent %i (%s)", names[i].parent, names[names[i].parent].name);
+		else if (haveNames && i < numNames)
+			snprintf(parentCol, sizeof(parentCol), " | root");
+		else
+			parentCol[0] = 0;
+
+		if (haveEntity)
+		{
+			const double dx = bone.origin[0] - entOrigin[0];
+			const double dy = bone.origin[1] - entOrigin[1];
+			const double dz = bone.origin[2] - entOrigin[2];
+
+			Tier0_Msg(
+				"%3i:%s pos %9.2f %9.2f %9.2f | forward %8.2f left %8.2f up %8.2f%s%s\n"
+				, i
+				, nameCol
+				, bone.origin[0], bone.origin[1], bone.origin[2]
+				, dx * yawCos + dy * yawSin
+				, -dx * yawSin + dy * yawCos
+				, dz
+				, parentCol
+				, mark
+			);
+		}
+		else
+		{
+			Tier0_Msg(
+				"%3i:%s pos %9.2f %9.2f %9.2f%s%s\n"
+				, i
+				, nameCol
+				, bone.origin[0], bone.origin[1], bone.origin[2]
+				, parentCol
+				, mark
+			);
+		}
+	}
+
+	if (filter)
+		Tier0_Msg("%i bones match \"%s\".\n", numShown, filter);
+
+	Tier0_Msg("Attach the camera to a bone with: mirv_cam attach %i <iBoneIndex or part of bone name>\n", entityIndex);
+}
+
+CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view. (TF2)")
+{
+	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+	{
+		Tier0_Warning("Not supported for your engine!\n");
+		return;
+	}
+
+	const int argc = args->ArgC();
+
+	if (2 <= argc)
+	{
+		char const * arg1 = args->ArgV(1);
+
+		if (0 == _stricmp("enabled", arg1))
+		{
+			if (3 <= argc)
+			{
+				g_EntityIndexDrawer.Enabled_set(0 != atoi(args->ArgV(2)));
+				return;
+			}
+
+			Tier0_Msg("mirv_drawentities enabled 0|1 - Current value: %i\n", g_EntityIndexDrawer.Enabled_get() ? 1 : 0);
+			return;
+		}
+        else if (0 == _stricmp("filter", arg1))
+        {
+            // Categories correspond to MirvTf2EntityLabel_t::category.
+            static const char * names[5] = { "players", "projectiles", "weapons", "cosmetics", "other" };
+            if (3 <= argc)
+            {
+                const char * name = args->ArgV(2);
+                if (0 == _stricmp("all", name))
+                {
+                    if (4 <= argc) { g_EntityIndexDrawer.FilterAll_set(0 != atoi(args->ArgV(3))); return; }
+                }
+                else
+                {
+                    for (int i = 0; i < 5; ++i)
+                        if (0 == _stricmp(names[i], name))
+                        {
+                            if (4 <= argc) { g_EntityIndexDrawer.Filter_set(i, 0 != atoi(args->ArgV(3))); return; }
+                            Tier0_Msg("mirv_drawentities filter %s 0|1 - Current: %i\n", names[i], g_EntityIndexDrawer.Filter_get(i) ? 1 : 0);
+                            return;
+                        }
+                }
+            }
+            Tier0_Msg("mirv_drawentities filter <all|players|projectiles|weapons|cosmetics|other> 0|1\n");
+            for (int i = 0; i < 5; ++i) Tier0_Msg("  %s: %i\n", names[i], g_EntityIndexDrawer.Filter_get(i) ? 1 : 0);
+            return;
+        }
+		else if (0 == _stricmp("height", arg1))
+		{
+			if (3 <= argc)
+			{
+				g_EntityIndexDrawer.Height_set((float)atof(args->ArgV(2)));
+				return;
+			}
+
+			Tier0_Msg("mirv_drawentities height <fUnits> - Current value: %f\n", g_EntityIndexDrawer.Height_get());
+			return;
+		}
+		else if (0 == _stricmp("size", arg1))
+		{
+			if (3 <= argc)
+			{
+				g_EntityIndexDrawer.Size_set((float)atof(args->ArgV(2)));
+				return;
+			}
+
+			Tier0_Msg("mirv_drawentities size <fPixels> - Current value: %f\n", g_EntityIndexDrawer.Size_get());
+			return;
+		}
+		else if (0 == _stricmp("maxDistance", arg1))
+		{
+			if (3 <= argc)
+			{
+				g_EntityIndexDrawer.MaxDistance_set((float)atof(args->ArgV(2)));
+				return;
+			}
+
+			Tier0_Msg("mirv_drawentities maxDistance <fUnits> - Current value: %f\n", g_EntityIndexDrawer.MaxDistance_get());
+			return;
+		}
+		else if (0 == _stricmp("maxLabels", arg1))
+		{
+			if (3 <= argc)
+			{
+				g_EntityIndexDrawer.MaxLabels_set(atoi(args->ArgV(2)));
+				return;
+			}
+
+			Tier0_Msg("mirv_drawentities maxLabels <iCount> - Current value: %i\n", g_EntityIndexDrawer.MaxLabels_get());
+			return;
+		}
+        else if (0 == _stricmp("color", arg1))
+        {
+            static const char * names[5] = { "players", "projectiles", "weapons", "cosmetics", "other" };
+            if (3 <= argc)
+            {
+                const char * name = args->ArgV(2);
+                for (int i = 0; i < 5; ++i)
+                    if (0 == _stricmp(names[i], name))
+                    {
+                        if (6 <= argc)
+                        {
+                            g_EntityIndexDrawer.CategoryColor_set(i, atoi(args->ArgV(3)), atoi(args->ArgV(4)), atoi(args->ArgV(5)));
+                            return;
+                        }
+                        int r, g, b;
+                        g_EntityIndexDrawer.CategoryColor_get(i, r, g, b);
+                        Tier0_Msg("mirv_drawentities color %s <red> <green> <blue> - Current: %i %i %i\n", names[i], r, g, b);
+                        return;
+                    }
+            }
+            Tier0_Msg("mirv_drawentities color <players|projectiles|weapons|cosmetics|other> <red> <green> <blue> (0-255)\n");
+            for (int i = 0; i < 5; ++i)
+            {
+                int r, g, b;
+                g_EntityIndexDrawer.CategoryColor_get(i, r, g, b);
+                Tier0_Msg("  %s: %i %i %i\n", names[i], r, g, b);
+            }
+            return;
+        }
+        else if (0 == _stricmp("stackLabels", arg1))
+        {
+            if (args->ArgC() >= 3)
+            {
+                g_EntityIndexDrawer.StackLabels_set(0 != atoi(args->ArgV(2)));
+                return;
+            }
+            Tier0_Msg("mirv_drawentities stackLabels 0|1 - 0: exact projected entity anchor; 1: world-aware stacking (default). Current: %i\n", g_EntityIndexDrawer.StackLabels_get() ? 1 : 0);
+            return;
+        }
+        else if (0 == _stricmp("stackWorldDistance", arg1))
+        {
+            if (args->ArgC() >= 3)
+            {
+                g_EntityIndexDrawer.StackWorldDistance_set((float)atof(args->ArgV(2)));
+                return;
+            }
+            Tier0_Msg("mirv_drawentities stackWorldDistance <fUnits> - Max 3D anchor distance eligible for stacking (default 32). Current: %g\n", g_EntityIndexDrawer.StackWorldDistance_get());
+            return;
+        }
+		else if (0 == _stricmp("viewCheck", arg1))
+		{
+			if (3 <= argc)
+			{
+				g_EntityIndexDrawer.ViewCheck_set(0 != atoi(args->ArgV(2)));
+				return;
+			}
+
+			Tier0_Msg("mirv_drawentities viewCheck 0|1 - Current value: %i\n", g_EntityIndexDrawer.ViewCheck_get() ? 1 : 0);
+			return;
+		}
+		else if (0 == _stricmp("status", arg1))
+		{
+			unsigned int calls, mainViewCalls;
+			int lastFound, lastPosted;
+			double lastEyeDelta;
+
+			g_EntityIndexDrawer.Stats_get(calls, mainViewCalls, lastFound, lastPosted, lastEyeDelta);
+
+			Tier0_Msg(
+				"Enabled: %i\n"
+				"View updates seen: %u, of which on the main view: %u\n"
+				"Last main view: %i entities found, %i labels sent to the renderer\n"
+				"Last distance of the matrix's eye to the camera: %f (the main view is below 2)\n"
+				"If the main view count stays at 0 while enabled, try mirv_drawentities viewCheck 0.\n"
+				, g_EntityIndexDrawer.Enabled_get() ? 1 : 0
+				, calls, mainViewCalls
+				, lastFound, lastPosted
+				, lastEyeDelta
+			);
+			return;
+		}
+	}
+
+	Tier0_Msg(
+		"Usage:\n"
+		"mirv_drawentities enabled 0|1 - Draw the entity index above entities (nearest ones are drawn on top).\n"
+		"mirv_drawentities filter <all|players|projectiles|weapons|cosmetics|other> 0|1 - Toggle categories (all on by default).\n"
+		"mirv_drawentities height <fUnits> - Vertical offset from the entity anchor (default 0).\n"
+		"mirv_drawentities size <fPixels> - Digit height in pixels (default 32).\n"
+		"mirv_drawentities maxDistance <fUnits> - Only entities up to this distance from the camera, 0: no limit (default).\n"
+		"mirv_drawentities maxLabels <iCount> - At most this many labels, the nearest ones (default 64).\n"
+		"mirv_drawentities color <category> <red> <green> <blue> - RGB color for players/projectiles/weapons/cosmetics/other (0-255).\n"
+		"mirv_drawentities stackLabels 0|1 - 0: exact entity anchor, 1: world-aware stacking (default).\n"
+        "mirv_drawentities stackWorldDistance <fUnits> - Maximum 3D distance for stacking (default 32).\n"
+		"mirv_drawentities viewCheck 0|1 - 1 (default): Only draw on the main view (not i.e. the 3D skybox).\n"
+		"mirv_drawentities status - Print what the drawer is doing, for troubleshooting.\n"
+		"The index can be used with mirv_cam attach, mirv_listbones and so on. The labels are part of the game's picture, so they show up in recordings too: turn them off before recording.\n"
+	);
+}
+
+#ifndef _WIN64
 extern SOURCESDK::CSGO::IEngineTrace * g_pClientEngineTrace;
 
 class CMirvTraceFilter : public SOURCESDK::CSGO::CTraceFilter
@@ -2132,6 +3129,8 @@ CON_COMMAND(mirv_traceentity, "Trace entity from current view position")
 		mirv_print_entity(tr.GetEntityIndex(), vecSE.LengthSqr(), tr.m_pEnt);
 	}
 }
+
+#endif //#ifndef _WIN64
 
 CON_COMMAND(mirv_aim, "Aiming system control.")
 {
@@ -2541,8 +3540,6 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 		// does not work atm // "mirv_aim jerkLimit [...] - Max jerk possible (for snapTo 0).\n"
 	);
 }
-
-#endif //#ifndef _WIN64
 
 
 extern class CommandSystem g_CommandSystem;

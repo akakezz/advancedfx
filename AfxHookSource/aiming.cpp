@@ -3,6 +3,8 @@
 #include "aiming.h"
 
 #include "SourceInterfaces.h"
+#include "addresses.h"
+#include "WrpConsole.h"
 
 #include <algorithm>
 
@@ -75,6 +77,21 @@ void Aiming::RebuildCalc(void)
 {
 	if (-1 != EntityIndex)
 	{
+		if (SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer)
+		{
+			// TF2: use IClientTools (abs origin / abs angles only).
+			Source_set(g_MirvVecAngCalcs.NewTf2EntityIndexCalc(0, EntityIndex));
+			return;
+		}
+
+#ifndef _WIN64
+		if (!SOURCESDK::g_Entitylist_csgo)
+		{
+			Tier0_Warning("mirv_aim entityIndex: Not supported for your engine!\n");
+			Source_set(0);
+			return;
+		}
+
 		IMirvHandleCalc * handleCalc = g_MirvHandleCalcs.NewIndexCalc(0, EntityIndex);
 		if (handleCalc)
 		{
@@ -86,6 +103,10 @@ void Aiming::RebuildCalc(void)
 
 			handleCalc->Release();
 		}
+#else
+		Tier0_Warning("mirv_aim entityIndex: Not supported for your engine!\n");
+		Source_set(0);
+#endif //#ifndef _WIN64
 	}
 	else
 		Source_set(0);

@@ -2,9 +2,7 @@
 
 #include "SourceInterfaces.h"
 
-#ifndef _WIN64
 #include "MirvCalcs.h"
-#endif //#ifndef _WIN64
 
 #include <string>
 
@@ -36,9 +34,7 @@ public:
 	Angles_e m_SourceAngles = A_View;
 	std::string m_SourceAttachment;
 
-#ifndef _WIN64
 	void RebuildCalc(void);
-#endif //#ifndef _WIN64
 
 	bool m_SourceUseX = true;
 	bool m_SourceUseY = true;
@@ -55,12 +51,9 @@ public:
 
 	~CMirvCam()
 	{
-#ifndef _WIN64	
 		Source_set(0);
-#endif //#ifndef _WIN64	
 	}
 
-#ifndef _WIN64
 	IMirvVecAngCalc * Source_get(void)
 	{
 		return m_Source;
@@ -84,13 +77,10 @@ public:
 		m_Fov = value;
 		if (m_Fov) m_Fov->AddRef();
 	}
-#endif //#ifndef _WIN64
 
 private:
-#ifndef _WIN64
 	IMirvVecAngCalc * m_Source = 0;
 	IMirvFovCalc * m_Fov = 0;
-#endif //#ifndef _WIN64
 };
 
 extern CMirvCam g_MirvCam;

@@ -428,9 +428,31 @@ bool MirvInput::GetCameraControlMode(void)
 	return m_CameraControlMode;
 }
 
+void MirvInput::ClearMovementInput()
+{
+    m_CamForward = m_CamForwardI = 0.0;
+    m_CamLeft = m_CamLeftI = 0.0;
+    m_CamUp = m_CamUpI = 0.0;
+    m_CamPitch = m_CamPitchI = 0.0;
+    m_CamYaw = m_CamYawI = 0.0;
+    m_CamRoll = m_CamRollI = 0.0;
+    m_CamFov = m_CamFovI = 0.0;
+    m_MouseInput.Clear();
+    m_MouseInput.Normal.LeftButtonDown = m_MouseInput.Normal.RightButtonDown = false;
+    m_MouseInput.Raw.LeftButtonDown = m_MouseInput.Raw.RightButtonDown = false;
+    m_MNormalLeftButtonWasDown = m_MNormalRightButtonWasDown = false;
+    m_FirstGetCursorPos = true;
+    m_ResetCursorDelta = true;
+}
+
 void MirvInput::SetCameraControlMode(bool enable)
 {
-	m_CameraControlMode = enable;
+    if (!enable)
+    {
+        ClearMovementInput();
+        m_ShiftEscapeHeld = false;
+    }
+    m_CameraControlMode = enable;
 }
 
 double MirvInput::GetKeyboardSensitivty(void)
@@ -671,11 +693,12 @@ bool MirvInput::Supply_KeyEvent(KeyState keyState, WPARAM wParam, LPARAM lParam)
 	if(!m_Focus)
 		return false;
 
-	if(m_Dependencies->GetSuspendMirvInput())
-	{
-		m_IgnoreKeyUp = KS_DOWN == keyState;
-		return false;
-	}
+    if(m_Dependencies->GetSuspendMirvInput())
+    {
+        ClearMovementInput();
+        m_IgnoreKeyUp = KS_DOWN == keyState;
+        return false;
+    }
 
 	if(m_IgnoreKeyUp && KS_UP == keyState)
 	{
@@ -699,9 +722,26 @@ bool MirvInput::Supply_KeyEvent(KeyState keyState, WPARAM wParam, LPARAM lParam)
 			return true;
 		case VK_SUBTRACT:
 			return true;
-		case VK_ESCAPE:
-			if(KS_UP == keyState) m_CameraControlMode = false;
-			return true;
+        case VK_ESCAPE:
+            if (!m_MenuAwareEscape)
+            {
+                if (KS_UP == keyState) SetCameraControlMode(false);
+                return true;
+            }
+            // Normal Escape belongs to Source's main menu. Shift+Escape is
+            // the built-in free-camera exit shortcut (independent of aliases).
+            if (KS_DOWN == keyState && (GetKeyState(VK_SHIFT) & 0x8000))
+            {
+                m_ShiftEscapeHeld = true;
+                return true;
+            }
+            if (KS_UP == keyState && m_ShiftEscapeHeld)
+            {
+                m_ShiftEscapeHeld = false;
+                SetCameraControlMode(false);
+                return true;
+            }
+            return false;
 		case VK_CONTROL:
 			if(KS_UP == keyState) m_IgnoreNextKey = true;
 			return true;
@@ -921,12 +961,14 @@ void MirvInput::ProcessRawInputData(PRAWINPUT pData) {
 		if (m_CameraControlMode) {
 			RAWKEYBOARD* rawkeyboard = &(pData->data.keyboard);
 			if(!(m_IgnoreNextKey || m_IgnoreKeyUp && (rawkeyboard->Flags & RI_KEY_BREAK))) {
-				bool bIgnoreKey = false;
-				switch(rawkeyboard->VKey) {
+                // Let normal Escape reach Source so it can open its menu.
+                // Hide only Shift+Escape, which is the free-camera exit key.
+                bool bIgnoreKey = rawkeyboard->VKey == VK_ESCAPE
+                    && (!m_MenuAwareEscape || m_ShiftEscapeHeld || (GetKeyState(VK_SHIFT) & 0x8000));
+                switch(rawkeyboard->VKey) {
 				case VK_ADD:
 				case VK_SUBTRACT:					
-				case VK_ESCAPE:
-				case VK_CONTROL:
+                case VK_CONTROL:
 				case VK_HOME:
 				case VK_NUMPAD5:
 				case 0x57: // W key
@@ -1011,12 +1053,19 @@ void MirvInput::Supply_GetCursorPos(LPPOINT lpPoint)
 	if(!m_Focus)
 		return;
 
-	if(m_Dependencies->GetSuspendMirvInput())
-		return;
+    if(m_Dependencies->GetSuspendMirvInput())
+        return;
 
-	if(m_CameraControlMode)
-	{
-		if(m_FirstGetCursorPos)
+    if(m_CameraControlMode)
+    {
+        if (m_ResetCursorDelta)
+        {
+            // Ignore cursor motion accumulated while a menu had focus.
+            m_LastCursorX = lpPoint->x;
+            m_LastCursorY = lpPoint->y;
+            m_ResetCursorDelta = false;
+        }
+        if(m_FirstGetCursorPos)
 		{
 			m_FirstGetCursorPos = false;
 		}
@@ -1065,11 +1114,11 @@ void MirvInput::Supply_SetCursorPos(int x, int y)
 
 void MirvInput::Supply_MouseFrameEnd(void)
 {
-	if(!m_Focus)
-		return;
-
-	if(m_Dependencies->GetSuspendMirvInput())
-		return;
+    if (!m_Focus || m_Dependencies->GetSuspendMirvInput())
+    {
+        ClearMovementInput();
+        return;
+    }
 
 	if(m_CameraControlMode)
 	{
@@ -1103,7 +1152,14 @@ double MirvInput::LimitFov(double fov) {
 
 bool MirvInput::Override(float deltaT, float & Tx, float &Ty, float & Tz, float & Rx, float & Ry, float & Rz, float & Fov)
 {
-	bool overriden = false;
+    // Menus suspend controls, not the camera pose or selected camera mode.
+    // Also clear held buttons whose key-up may have gone to the menu.
+    if (m_Dependencies->GetSuspendMirvInput())
+    {
+        ClearMovementInput();
+        deltaT = 0.0f;
+    }
+    bool overriden = false;
 
 	if (GetCameraControlMode())
 	{
@@ -1372,11 +1428,21 @@ void MirvInput::ConCommand(advancedfx::ICommandArgs * args)
 	{
 		char const * arg1 = args->ArgV(1);
 
-		if(0 == _stricmp("camera", arg1))
-		{
-			SetCameraControlMode(true);
-			return;
-		}
+        if(0 == _stricmp("camera", arg1))
+        {
+            if (3 <= argc && 0 == _stricmp("ignoreTimescale", args->ArgV(2)))
+            {
+                if (4 <= argc)
+                {
+                    IgnoreTimescale_set(0 != atoi(args->ArgV(3)));
+                    return;
+                }
+                advancedfx::Message("%s camera ignoreTimescale 0|1 - Default: 1. Current: %i\n", arg0, IgnoreTimescale_get() ? 1 : 0);
+                return;
+            }
+            SetCameraControlMode(true);
+            return;
+        }
 		else
 		if(0 == _stricmp("cfg", arg1))
 		{
@@ -2144,6 +2210,9 @@ void MirvInput::ConCommand(advancedfx::ICommandArgs * args)
 	advancedfx::Message(
 		"Usage:\n"
 		"%s camera - Enable camera input mode, see HLAE manual for keybinds etc.\n"
+		"%s camera ignoreTimescale 0|1 - Toggle unscaled camera movement (default 1).\n"
+        "%s camera uiCursor 0|1 - Experimental VGUI cursor-aware input suspension (default 0).\n"
+        "%s camera uiCursorStatus - Show VGUI_Surface030 interface and cursor state.\n"
 		"%s cfg [...] - Control input mode configuration.\n"
 		"%s end - End input mode(s).\n"
 		"%s position [...]\n"
@@ -2151,6 +2220,9 @@ void MirvInput::ConCommand(advancedfx::ICommandArgs * args)
 		"%s fov [...]\n"
 		"%s mem [...] - Store, use, save and load %s view states.\n"
 		, arg0
+		, arg0
+        , arg0
+        , arg0
 		, arg0
 		, arg0
 		, arg0

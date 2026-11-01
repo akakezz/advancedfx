@@ -96,6 +96,12 @@ public:
 
 	void Console_Overrides(IWrpCommandArgs * args);
 
+    // Console, Source main menu, or (when enabled) VGUI cursor owns input.
+    bool IsMenuActive() { return GetSuspendMirvInput(); }
+    bool UiCursorSuspend_get() const { return m_UiCursorSuspend; }
+    void UiCursorSuspend_set(bool value) { m_UiCursorSuspend = value; }
+    bool UiCursorStatus(bool & available, bool & visible) const;
+
 	void Console_MirvInput(IWrpCommandArgs * args) {
 		m_MirvInput->ConCommand(args);
 	}
@@ -112,6 +118,7 @@ public:
 	}
 
 private:
+    bool m_UiCursorSuspend = false; // Experimental: opt-in until verified in TF2/TF2C.
 	float m_LastFrameTime = 0;
 
 	bool m_Export;

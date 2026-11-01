@@ -63,7 +63,13 @@ public:
 	bool GetCameraControlMode(void);
 	void SetCameraControlMode(bool enable);
 
-	bool IsActive() {
+    void MenuAwareEscape_set(bool value) { m_MenuAwareEscape = value; }
+
+    // Default to real-time free-camera movement regardless of demo timescale.
+    bool IgnoreTimescale_get() const { return m_IgnoreTimescale; }
+    void IgnoreTimescale_set(bool value) { m_IgnoreTimescale = value; }
+
+    bool IsActive() {
 		return m_Focus && !m_Dependencies->GetSuspendMirvInput() && m_CameraControlMode;
 	}
 
@@ -373,7 +379,12 @@ private:
 	bool m_MNormalRightButtonWasDown = false;
 
 	bool m_MMove = false;
-	bool m_CameraControlMode;
+    void ClearMovementInput();
+    bool m_ResetCursorDelta = false;
+    bool m_ShiftEscapeHeld = false;
+    bool m_MenuAwareEscape = false; // Source only; GoldSrc keeps its existing Escape behavior.
+    bool m_IgnoreTimescale = true;
+    bool m_CameraControlMode;
 	bool m_Focus;
 	bool m_IgnoreKeyUp;
 	bool m_IgnoreNextKey;

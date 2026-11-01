@@ -8,15 +8,34 @@
 #include "MirvTime.h"
 #include "addresses.h"
 #include "../shared/CamIO.h"
+#ifndef _WIN64
 #include "csgo/ClientToolsCsgo.h"
+#endif //#ifndef _WIN64
+#include "tf2/ClientToolsTf2.h"
 
 #include <shared/StringTools.h>
 #include <ctype.h>
+#include <string.h>
 
 #include <algorithm>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
+
+#ifndef _WIN64
+// g_Entitylist_csgo is only set for CS:GO / CSCO and is null for other games (e.g. TF2).
+// Always use these instead of accessing it directly, so unsupported games get "no entity"
+// instead of a crash.
+static SOURCESDK::IClientEntity_csgo * Mirv_GetClientEntity(int entnum)
+{
+	return SOURCESDK::g_Entitylist_csgo ? SOURCESDK::g_Entitylist_csgo->GetClientEntity(entnum) : 0;
+}
+
+static SOURCESDK::IClientEntity_csgo * Mirv_GetClientEntityFromHandle(SOURCESDK::CSGO::CBaseHandle hEnt)
+{
+	return SOURCESDK::g_Entitylist_csgo ? SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(hEnt) : 0;
+}
+#endif //#ifndef _WIN64
 
 #undef min
 #undef max
@@ -483,6 +502,7 @@ private:
 	SOURCESDK::CSGO::CBaseHandle m_Handle;
 };
 
+#ifndef _WIN64
 class CMirvHandleIndexCalc : public CMirvHandleCalc
 {
 public:
@@ -495,7 +515,11 @@ public:
 
 	virtual bool CalcHandle(SOURCESDK::CSGO::CBaseHandle & outHandle)
 	{
-		SOURCESDK::IClientEntity_csgo * ce = SOURCESDK::g_Entitylist_csgo->GetClientEntity(m_Index);
+		// g_Entitylist_csgo is only set for CS:GO / CSCO, it is null for other games (e.g. TF2).
+		if (!SOURCESDK::g_Entitylist_csgo)
+			return false;
+
+		SOURCESDK::IClientEntity_csgo * ce = Mirv_GetClientEntity(m_Index);
 
 		if (ce)
 		{
@@ -549,9 +573,11 @@ public:
 private:
 	int m_Index;
 };
+#endif //#ifndef _WIN64
 
 typedef bool(*csgon_fnPlayerSidesWappedOnScreen_t)(void);
 
+#ifndef _WIN64
 SOURCESDK::C_BaseEntity_csgo * GetSpectatorPlayerForKey(int key) {
 
 	if(AFXADDR_GET(csgo_Unknown_GetTeamsSwappedOnScreen)
@@ -578,7 +604,7 @@ SOURCESDK::C_BaseEntity_csgo * GetSpectatorPlayerForKey(int key) {
 
 		for (int i = 1; i <= imax; ++i)
 		{
-			SOURCESDK::IClientEntity_csgo * ce = SOURCESDK::g_Entitylist_csgo->GetClientEntity(i);
+			SOURCESDK::IClientEntity_csgo * ce = Mirv_GetClientEntity(i);
 			SOURCESDK::C_BaseEntity_csgo * be = ce ? ce->GetBaseEntity() : 0;
 			if (be && be->IsPlayer())
 			{
@@ -608,7 +634,9 @@ SOURCESDK::C_BaseEntity_csgo * GetSpectatorPlayerForKey(int key) {
 
 	return nullptr;	
 }
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 class CMirvHandleKeyCalc : public CMirvHandleCalc
 {
 public:
@@ -675,7 +703,9 @@ private:
 	int m_Key;
 	WrpConVarRef m_ClSpecSwapPlayerSides;
 };
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 class CMirvHandleActiveWeaponCalc : public CMirvHandleCalc
 {
 public:
@@ -694,7 +724,7 @@ public:
 
 		if (m_ParentCalc->CalcHandle(parentHandle) && parentHandle.IsValid())
 		{
-			SOURCESDK::IClientEntity_csgo * clientEntity = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(parentHandle);
+			SOURCESDK::IClientEntity_csgo * clientEntity = Mirv_GetClientEntityFromHandle(parentHandle);
 			SOURCESDK::C_BaseEntity_csgo * baseEntity = clientEntity ? clientEntity->GetBaseEntity() : 0;
 			SOURCESDK::C_BaseCombatCharacter_csgo * combatCharacter = baseEntity ? baseEntity->MyCombatCharacterPointer() : 0;
 			SOURCESDK::C_BaseCombatWeapon_csgo * activeWeapon = combatCharacter ? combatCharacter->GetActiveWeapon() : 0;
@@ -708,7 +738,7 @@ public:
 				else if(-1 != AFXADDR_GET(csgo_C_BaseCombatWeapon_m_hWeaponWorldModel))
 				{
 					SOURCESDK::CSGO::CBaseHandle hWeaponWorldModel = *(SOURCESDK::CSGO::CBaseHandle *)((char const *)activeWeapon + AFXADDR_GET(csgo_C_BaseCombatWeapon_m_hWeaponWorldModel));
-					ce = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(hWeaponWorldModel);
+					ce = Mirv_GetClientEntityFromHandle(hWeaponWorldModel);
 				}
 
 				if (ce)
@@ -774,7 +804,9 @@ private:
 	IMirvHandleCalc * m_ParentCalc;
 	bool m_World;
 };
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 class CMirvHandleLocalPlayerCalc : public CMirvHandleCalc
 {
 public:
@@ -785,7 +817,7 @@ public:
 
 	virtual bool CalcHandle(SOURCESDK::CSGO::CBaseHandle & outHandle)
 	{
-		SOURCESDK::IClientEntity_csgo * ce = SOURCESDK::g_Entitylist_csgo->GetClientEntity(g_VEngineClient->GetLocalPlayer());
+		SOURCESDK::IClientEntity_csgo * ce = Mirv_GetClientEntity(g_VEngineClient->GetLocalPlayer());
 
 		if (ce)
 		{
@@ -816,7 +848,9 @@ protected:
 private:
 
 };
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 class CMirvHandleObserverTargetCalc : public CMirvHandleCalc
 {
 public:
@@ -834,7 +868,7 @@ public:
 
 		if (m_ParentCalc->CalcHandle(parentHandle) && parentHandle.IsValid())
 		{
-			SOURCESDK::IClientEntity_csgo * clientEntity = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(parentHandle);
+			SOURCESDK::IClientEntity_csgo * clientEntity = Mirv_GetClientEntityFromHandle(parentHandle);
 			SOURCESDK::C_BaseEntity_csgo * baseEntity = clientEntity ? clientEntity->GetBaseEntity() : 0;
 
 			if (baseEntity && baseEntity->IsPlayer())
@@ -877,6 +911,7 @@ protected:
 private:
 	IMirvHandleCalc * m_ParentCalc;
 };
+#endif //#ifndef _WIN64
 
 class CMirvHandleOrCalc : public CMirvHandleCalc
 {
@@ -916,6 +951,7 @@ private:
 	IMirvHandleCalc * m_B;
 };
 
+#ifndef _WIN64
 class CMirvHandleOwnerEntityCalc : public CMirvHandleCalc
 {
 public:
@@ -938,7 +974,7 @@ public:
 			{
 				if (SOURCESDK::CSGO::IClientTools * clientTools = CClientToolsCsgo::Instance()->GetClientToolsInterface())
 				{
-					if (SOURCESDK::IClientEntity_csgo * clientEntity = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(parentHandle))
+					if (SOURCESDK::IClientEntity_csgo * clientEntity = Mirv_GetClientEntityFromHandle(parentHandle))
 					{
 						SOURCESDK::C_BaseEntity_csgo * ent = clientEntity->GetBaseEntity();
 
@@ -990,6 +1026,7 @@ private:
 	IMirvHandleCalc * m_ParentCalc;
 	unsigned int m_MaxDepth;
 };
+#endif //#ifndef _WIN64
 
 class CMirvVecAngCalc : public CMirvCalc, public IMirvVecAngCalc
 {
@@ -1819,6 +1856,7 @@ private:
 	bool m_Order;
 };
 
+#ifndef _WIN64
 class CMirvVecAngHandleCalcEx : public CMirvVecAngCalc
 {
 public:
@@ -1894,7 +1932,7 @@ public:
 	{
 		SOURCESDK::CSGO::CBaseHandle handle;
 		bool calcedHandle = m_Handle->CalcHandle(handle);
-		SOURCESDK::IClientEntity_csgo * ce = calcedHandle ? SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(handle) : 0;
+		SOURCESDK::IClientEntity_csgo * ce = calcedHandle ? Mirv_GetClientEntityFromHandle(handle) : 0;
 		SOURCESDK::C_BaseEntity_csgo * be = ce ? ce->GetBaseEntity() : 0;
 
 		if (be || ce && !m_EyeVec && !m_EyeAng)
@@ -1918,7 +1956,468 @@ private:
 	bool m_EyeVec;
 	bool m_EyeAng;
 };
+#endif //#ifndef _WIN64
 
+// TF2: The TF2 SDK subset in use has no IClientEntity / IClientEntityList definitions,
+// so entities are accessed by entity index through IClientTools instead.
+// Without a bone index only abs origin / abs angles are available (no eye position / eye angles).
+// With a bone index the bone's world transform is used (IClientRenderable::SetupBones).
+
+// Minimal IClientRenderable (public Source SDK interface, same vtable layout as in the game).
+// The definition in the TF2 SDK subset is commented out, so it is declared here.
+// Only SetupBones is used, the other entries are placeholders to keep the layout.
+class CMirvTf2ClientRenderable
+{
+public:
+	virtual void * GetIClientUnknown() = 0; // 0
+	virtual const void * GetRenderOrigin(void) = 0; // 1
+	virtual const void * GetRenderAngles(void) = 0; // 2
+	virtual bool ShouldDraw(void) = 0; // 3
+	virtual bool IsTransparent(void) = 0; // 4
+	virtual bool UsesPowerOfTwoFrameBufferTexture() = 0; // 5
+	virtual bool UsesFullFrameBufferTexture() = 0; // 6
+	virtual unsigned short GetShadowHandle() const = 0; // 7
+	virtual void * RenderHandle() = 0; // 8
+	virtual const void * GetModel() const = 0; // 9
+	virtual int DrawModel(int flags) = 0; // 10
+	virtual int GetBody() = 0; // 11
+	virtual void ComputeFxBlend() = 0; // 12
+	virtual int GetFxBlend(void) = 0; // 13
+	virtual void GetColorModulation(float * color) = 0; // 14
+	virtual bool LODTest() = 0; // 15
+	virtual bool SetupBones(SOURCESDK::matrix3x4_t * pBoneToWorldOut, int nMaxBones, int boneMask, float currentTime) = 0; // 16
+	virtual void SetupWeights(const SOURCESDK::matrix3x4_t * pBoneToWorld, int nFlexWeightCount, float * pFlexWeights, float * pFlexDelayedWeights) = 0; // 17
+	virtual void DoAnimationEvents(void) = 0; // 18
+	virtual void * GetPVSNotifyInterface() = 0; // 19
+	virtual void GetRenderBounds(float * mins, float * maxs) = 0; // 20 (Vector references)
+	virtual void GetRenderBoundsWorldspace(float * mins, float * maxs) = 0; // 21 (Vector references)
+};
+
+// Minimal IClientUnknown (public Source SDK interface, same vtable layout as in the game).
+// Only GetClientRenderable is used, the other entries are placeholders to keep the layout.
+class CMirvTf2ClientUnknown
+{
+public:
+	virtual ~CMirvTf2ClientUnknown() {}
+	virtual void SetRefEHandle(const void * handle) = 0;
+	virtual const void * GetRefEHandle() const = 0;
+	virtual void * GetCollideable() = 0;
+	virtual void * GetClientNetworkable() = 0;
+	virtual CMirvTf2ClientRenderable * GetClientRenderable() = 0;
+};
+
+// Orientation helpers for TF2 bone cameras. Same conventions as the Source SDK's mathlib
+// (matrix columns are forward, left, up; angles are pitch, yaw, roll in degrees).
+
+static void Mirv_AngleMatrix3(float pitch, float yaw, float roll, float m[3][3])
+{
+	const float deg2rad = 0.017453292519943295f;
+	const float sp = sinf(pitch * deg2rad), cp = cosf(pitch * deg2rad);
+	const float sy = sinf(yaw * deg2rad), cy = cosf(yaw * deg2rad);
+	const float sr = sinf(roll * deg2rad), cr = cosf(roll * deg2rad);
+
+	m[0][0] = cp * cy;
+	m[1][0] = cp * sy;
+	m[2][0] = -sp;
+
+	const float crcy = cr * cy;
+	const float crsy = cr * sy;
+	const float srcy = sr * cy;
+	const float srsy = sr * sy;
+
+	m[0][1] = sp * srcy - crsy;
+	m[1][1] = sp * srsy + crcy;
+	m[2][1] = sr * cp;
+
+	m[0][2] = sp * crcy + srsy;
+	m[1][2] = sp * crsy - srcy;
+	m[2][2] = cr * cp;
+}
+
+static void Mirv_MatrixAngles3(const float m[3][3], float & pitch, float & yaw, float & roll)
+{
+	const float rad2deg = 57.29577951308232f;
+	const float xyDist = sqrtf(m[0][0] * m[0][0] + m[1][0] * m[1][0]);
+
+	if (0.001f < xyDist)
+	{
+		yaw = rad2deg * atan2f(m[1][0], m[0][0]);
+		pitch = rad2deg * atan2f(-m[2][0], xyDist);
+		roll = rad2deg * atan2f(m[2][1], m[2][2]);
+	}
+	else
+	{
+		yaw = rad2deg * atan2f(-m[0][1], m[1][1]);
+		pitch = rad2deg * atan2f(-m[2][0], xyDist);
+		roll = 0.0f;
+	}
+}
+
+// Makes a right handed, orthonormal basis out of the rotation part of a bone matrix (removes scale).
+// Returns false if the matrix is degenerate.
+static bool Mirv_Basis3(const float (*m)[4], float b[3][3])
+{
+	float f[3] = { m[0][0], m[1][0], m[2][0] };
+	float l[3] = { m[0][1], m[1][1], m[2][1] };
+
+	float fl = sqrtf(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+	if (fl < 1e-6f)
+		return false;
+	for (int i = 0; i < 3; ++i) f[i] /= fl;
+
+	const float d = l[0] * f[0] + l[1] * f[1] + l[2] * f[2];
+	for (int i = 0; i < 3; ++i) l[i] -= d * f[i];
+
+	float ll = sqrtf(l[0] * l[0] + l[1] * l[1] + l[2] * l[2]);
+	if (ll < 1e-6f)
+		return false;
+	for (int i = 0; i < 3; ++i) l[i] /= ll;
+
+	const float u[3] = { f[1] * l[2] - f[2] * l[1], f[2] * l[0] - f[0] * l[2], f[0] * l[1] - f[1] * l[0] };
+
+	for (int i = 0; i < 3; ++i)
+	{
+		b[i][0] = f[i];
+		b[i][1] = l[i];
+		b[i][2] = u[i];
+	}
+
+	return true;
+}
+
+// out = a * b
+static void Mirv_Mul3(const float a[3][3], const float b[3][3], float out[3][3])
+{
+	for (int r = 0; r < 3; ++r)
+		for (int c = 0; c < 3; ++c)
+			out[r][c] = a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c];
+}
+
+// out = transpose(a) * b
+static void Mirv_MulTransposeA3(const float a[3][3], const float b[3][3], float out[3][3])
+{
+	for (int r = 0; r < 3; ++r)
+		for (int c = 0; c < 3; ++c)
+			out[r][c] = a[0][r] * b[0][c] + a[1][r] * b[1][c] + a[2][r] * b[2][c];
+}
+
+class CMirvVecAngTf2EntityIndexCalc : public CMirvVecAngCalc
+{
+public:
+	CMirvVecAngTf2EntityIndexCalc(char const * name, int entityIndex, int boneIndex, int mode)
+		: CMirvVecAngCalc(name)
+		, m_EntityIndex(entityIndex)
+		, m_BoneIndex(boneIndex)
+		, m_Mode(mode)
+		, m_Calibrated(false)
+		, m_Captured(false)
+	{
+		memset(m_Fix, 0, sizeof(m_Fix));
+		memset(m_Offset, 0, sizeof(m_Offset));
+	}
+
+	virtual void Console_PrintBegin(void)
+	{
+		CMirvVecAngCalc::Console_PrintBegin();
+
+		Tier0_Msg(
+			", fn: \"tf2EntityIndex\", index: %i, boneIndex: %i, mode: %s, captured: %s"
+			, m_EntityIndex, m_BoneIndex
+			, MIRV_TF2_BONEMODE_ENTITY == m_Mode ? "entity" : (MIRV_TF2_BONEMODE_ALIGNED == m_Mode ? "aligned" : "bone")
+			, m_Captured ? "yes" : "no"
+		);
+	}
+
+	virtual bool CalcVecAng(SOURCESDK::Vector & outVector, SOURCESDK::QAngle & outAngles)
+	{
+		SOURCESDK::TF2::IClientTools * iface = GetTools();
+
+		if (!iface)
+			return false;
+
+		SOURCESDK::Vector pos;
+		float base[3][3];
+		SOURCESDK::QAngle rawAngles;
+		SOURCESDK::QAngle facing;
+		bool baseOk = false;
+
+		if (!GetBase(iface, pos, base, rawAngles, facing, baseOk))
+			return false;
+
+		const bool bone = 0 <= m_BoneIndex;
+
+		if (!m_Captured)
+		{
+			if (!bone || MIRV_TF2_BONEMODE_ENTITY == m_Mode)
+			{
+				outVector = pos;
+				outAngles = facing;
+				return true;
+			}
+
+			if (MIRV_TF2_BONEMODE_BONE == m_Mode)
+			{
+				outVector = pos;
+				outAngles = rawAngles;
+				return true;
+			}
+		}
+
+		// Aligned or captured: The base's rotation times a fixed rotation (in the base's space).
+
+		if (!baseOk)
+			return false;
+
+		if (!m_Calibrated)
+		{
+			// Start out facing like the entity: fix = inverse(base) * entity, so that base * fix == entity right now.
+			float entity[3][3];
+			Mirv_AngleMatrix3(facing.x, facing.y, facing.z, entity);
+			Mirv_MulTransposeA3(base, entity, m_Fix);
+			m_Calibrated = true;
+		}
+
+		float result[3][3];
+		Mirv_Mul3(base, m_Fix, result);
+		Mirv_MatrixAngles3(result, outAngles.x, outAngles.y, outAngles.z);
+
+		outVector = pos;
+
+		if (m_Captured)
+		{
+			// m_Offset is in the camera's own axes (forward, left, up are the columns of the result).
+			outVector.x += result[0][0] * m_Offset[0] + result[0][1] * m_Offset[1] + result[0][2] * m_Offset[2];
+			outVector.y += result[1][0] * m_Offset[0] + result[1][1] * m_Offset[1] + result[1][2] * m_Offset[2];
+			outVector.z += result[2][0] * m_Offset[0] + result[2][1] * m_Offset[1] + result[2][2] * m_Offset[2];
+		}
+
+		return true;
+	}
+
+	// See Mirv_Tf2_CaptureCamera.
+	bool CaptureCamera(const double camOrigin[3], const double camAngles[3], float outLocalOffset[3])
+	{
+		SOURCESDK::TF2::IClientTools * iface = GetTools();
+
+		if (!iface)
+			return false;
+
+		SOURCESDK::Vector pos;
+		float base[3][3];
+		SOURCESDK::QAngle rawAngles;
+		SOURCESDK::QAngle facing;
+		bool baseOk = false;
+
+		if (!GetBase(iface, pos, base, rawAngles, facing, baseOk) || !baseOk)
+			return false;
+
+		float cam[3][3];
+		Mirv_AngleMatrix3((float)camAngles[0], (float)camAngles[1], (float)camAngles[2], cam);
+
+		// base * fix == cam
+		Mirv_MulTransposeA3(base, cam, m_Fix);
+
+		// Position relative to the target, in the camera's axes: transpose(cam) * delta.
+		const float delta[3] = { (float)camOrigin[0] - pos.x, (float)camOrigin[1] - pos.y, (float)camOrigin[2] - pos.z };
+
+		for (int i = 0; i < 3; ++i)
+		{
+			m_Offset[i] = cam[0][i] * delta[0] + cam[1][i] * delta[1] + cam[2][i] * delta[2];
+			outLocalOffset[i] = m_Offset[i];
+		}
+
+		m_Calibrated = true;
+		m_Captured = true;
+
+		return true;
+	}
+
+	// See Mirv_Tf2_GetEntityAnglesInfo.
+	bool GetAnglesInfo(float outAbsAngles[3], float outRenderAngles[3])
+	{
+		SOURCESDK::TF2::IClientTools * iface = GetTools();
+
+		if (!iface)
+			return false;
+
+		for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+		{
+			if (iface->GetEntIndex(ent) != m_EntityIndex)
+				continue;
+
+			SOURCESDK::Vector absOrigin;
+			SOURCESDK::QAngle absAngles;
+			if (!CalcEntity(iface, absOrigin, absAngles))
+				return false;
+
+			outAbsAngles[0] = absAngles.x; outAbsAngles[1] = absAngles.y; outAbsAngles[2] = absAngles.z;
+			outRenderAngles[0] = outRenderAngles[1] = outRenderAngles[2] = 0.0f;
+
+			CMirvTf2ClientUnknown * unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
+			CMirvTf2ClientRenderable * renderable = unknown ? unknown->GetClientRenderable() : 0;
+			const float * ra = renderable ? reinterpret_cast<const float *>(renderable->GetRenderAngles()) : 0;
+
+			if (ra)
+			{
+				outRenderAngles[0] = ra[0]; outRenderAngles[1] = ra[1]; outRenderAngles[2] = ra[2];
+			}
+
+			return true;
+		}
+
+		return false;
+	}
+
+private:
+	int m_EntityIndex;
+	int m_BoneIndex;
+	int m_Mode;
+
+	// Rotation (in base space) from the base (bone or entity) to the camera. For MIRV_TF2_BONEMODE_ALIGNED
+	// it is set on the first valid frame so that the camera starts out facing like the entity.
+	bool m_Calibrated;
+	float m_Fix[3][3];
+
+	// Camera captured relative to the target (see CaptureCamera).
+	bool m_Captured;
+	float m_Offset[3];
+
+	SOURCESDK::TF2::IClientTools * GetTools(void)
+	{
+		CClientToolsTf2 * tools = CClientToolsTf2::Instance();
+		SOURCESDK::TF2::IClientTools * iface = tools ? tools->GetClientTools() : 0;
+
+		// Only networked entities (index 0 .. 2047) can be looked up by index.
+		if (!iface || m_EntityIndex < 0 || m_EntityIndex >= 2048)
+			return 0;
+
+		return iface;
+	}
+
+	bool CalcEntity(SOURCESDK::TF2::IClientTools * iface, SOURCESDK::Vector & outVector, SOURCESDK::QAngle & outAngles)
+	{
+		SOURCESDK::TF2::HTOOLHANDLE hHandle = iface->GetToolHandleForEntityByIndex(m_EntityIndex);
+
+		if (SOURCESDK::TF2::HTOOLHANDLE_INVALID == hHandle)
+		{
+			// The game only gives entities a tool handle automatically while the client
+			// is in recording mode, so look the entity up and attach to it ourselves.
+			// (Once attached, GetToolHandleForEntityByIndex finds the handle directly.)
+			for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+			{
+				if (iface->GetEntIndex(ent) == m_EntityIndex)
+				{
+					hHandle = iface->AttachToEntity(ent);
+					break;
+				}
+			}
+		}
+
+		if (SOURCESDK::TF2::HTOOLHANDLE_INVALID == hHandle || !iface->IsValidHandle(hHandle))
+			return false;
+
+		outVector = iface->GetAbsOrigin(hHandle);
+		outAngles = iface->GetAbsAngles(hHandle);
+
+		return true;
+	}
+
+	// Gets the position and rotation the camera is based on.
+	// pos: Position of the entity or bone.
+	// base: Rotation of the base as orthonormal matrix (the bone's, or the entity's facing if there is no bone), valid if baseOk.
+	// rawAngles: The angles to use without any calibration (the bone's own angles, or the entity's facing).
+	// facing: The entity's facing, i.e. its render angles (for players this is the body direction, their abs angles are zero),
+	//         or its abs angles if the render angles are all zero.
+	bool GetBase(SOURCESDK::TF2::IClientTools * iface, SOURCESDK::Vector & pos, float base[3][3], SOURCESDK::QAngle & rawAngles, SOURCESDK::QAngle & facing, bool & baseOk)
+	{
+		baseOk = false;
+
+		const int maxBones = 128; // MAXSTUDIOBONES
+
+		if (maxBones <= m_BoneIndex)
+			return false;
+
+		for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+		{
+			if (iface->GetEntIndex(ent) != m_EntityIndex)
+				continue;
+
+			SOURCESDK::Vector absOrigin;
+			SOURCESDK::QAngle absAngles;
+			if (!CalcEntity(iface, absOrigin, absAngles))
+				return false;
+
+			// EntitySearchResult is a C_BaseEntity pointer, IClientUnknown is its first base.
+			CMirvTf2ClientUnknown * unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
+			CMirvTf2ClientRenderable * renderable = unknown ? unknown->GetClientRenderable() : 0;
+
+			facing = absAngles;
+
+			if (renderable)
+			{
+				const float * ra = reinterpret_cast<const float *>(renderable->GetRenderAngles());
+
+				if (ra && (0.0f != ra[0] || 0.0f != ra[1] || 0.0f != ra[2]))
+				{
+					facing.x = ra[0];
+					facing.y = ra[1];
+					facing.z = ra[2];
+				}
+			}
+
+			if (m_BoneIndex < 0)
+			{
+				pos = absOrigin;
+				rawAngles = facing;
+				Mirv_AngleMatrix3(facing.x, facing.y, facing.z, base);
+				baseOk = true;
+				return true;
+			}
+
+			if (!renderable)
+				return false;
+
+			SOURCESDK::matrix3x4_t bones[maxBones];
+			for (int b = 0; b < maxBones; ++b)
+				for (int r = 0; r < 3; ++r)
+					for (int c = 0; c < 4; ++c)
+						bones[b].m_flMatVal[r][c] = 0.0f;
+
+			WrpGlobals * gl = g_Hook_VClient_RenderView.GetGlobals();
+			if (!gl)
+				return false;
+
+			// 0x0007FF00 = BONE_USED_BY_ANYTHING
+			if (!renderable->SetupBones(bones, maxBones, 0x0007FF00, gl->curtime_get()))
+				return false;
+
+			const float (*m)[4] = bones[m_BoneIndex].m_flMatVal;
+
+			// Not a valid transform (e.g. bone does not exist): basis is all zero.
+			if (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0] < 0.25f)
+				return false;
+
+			pos.x = m[0][3];
+			pos.y = m[1][3];
+			pos.z = m[2][3];
+
+			float raw[3][3] = {
+				{ m[0][0], m[0][1], m[0][2] },
+				{ m[1][0], m[1][1], m[1][2] },
+				{ m[2][0], m[2][1], m[2][2] }
+			};
+			Mirv_MatrixAngles3(raw, rawAngles.x, rawAngles.y, rawAngles.z);
+
+			baseOk = Mirv_Basis3(m, base);
+
+			return true;
+		}
+
+		return false;
+	}
+};
+
+#ifndef _WIN64
 class CMirvVecAngHandleAttachmentCalc : public CMirvVecAngCalc
 {
 public:
@@ -1976,7 +2475,7 @@ public:
 	{
 		SOURCESDK::CSGO::CBaseHandle handle;
 		bool calcedHandle = m_Handle->CalcHandle(handle);
-		SOURCESDK::IClientEntity_csgo * ce = calcedHandle ? SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(handle) : 0;
+		SOURCESDK::IClientEntity_csgo * ce = calcedHandle ? Mirv_GetClientEntityFromHandle(handle) : 0;
 
 		if (ce)
 		{
@@ -2000,6 +2499,7 @@ private:
 	IMirvHandleCalc * m_Handle;
 	std::string m_AttachmentName;
 };
+#endif //#ifndef _WIN64
 
 class CMirvVecAngIfCalc : public CMirvVecAngCalc
 {
@@ -2795,6 +3295,7 @@ private:
 };
 
 
+#ifndef _WIN64
 class CMirvVecAngLocalToGlobalCalc : public CMirvVecAngCalc
 {
 public:
@@ -2829,7 +3330,7 @@ public:
 
 		if (m_Handle->CalcHandle(handle) && m_Source->CalcVecAng(sourceVector, sourceAngles))
 		{
-			SOURCESDK::IClientEntity_csgo * ce = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(handle);
+			SOURCESDK::IClientEntity_csgo * ce = Mirv_GetClientEntityFromHandle(handle);
 			SOURCESDK::IClientRenderable_csgo * re = ce ? ce->GetClientRenderable() : 0;
 
 			if (re)
@@ -2872,7 +3373,9 @@ private:
 	IMirvVecAngCalc * m_Source;
 	IMirvHandleCalc * m_Handle;
 };
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 class CMirvVecAngGlobalToLocalCalc : public CMirvVecAngCalc
 {
 public:
@@ -2907,7 +3410,7 @@ public:
 
 		if (m_Handle->CalcHandle(handle) && m_Source->CalcVecAng(sourceVector, sourceAngles))
 		{
-			SOURCESDK::IClientEntity_csgo * ce = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(handle);
+			SOURCESDK::IClientEntity_csgo * ce = Mirv_GetClientEntityFromHandle(handle);
 			SOURCESDK::IClientRenderable_csgo * re = ce ? ce->GetClientRenderable() : 0;
 
 			if (re)
@@ -2973,10 +3476,14 @@ private:
 	IMirvVecAngCalc * m_Source;
 	IMirvHandleCalc * m_Handle;
 };
+#endif //#ifndef _WIN64
 
 
+#ifndef _WIN64
 extern SOURCESDK::CSGO::IEngineTrace * g_pClientEngineTrace;
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 class CMirvVecAngCollisionClipCalc : public CMirvVecAngCalc
 {
 public:
@@ -3103,7 +3610,7 @@ public:
 
 		if (m_Ignore->CalcHandle(ignore) && m_Source->CalcVecAng(sourceVector, sourceAngles) && m_ClipTo->CalcVecAng(clipToVector, clipToAngles) )
 		{
-			SOURCESDK::IClientEntity_csgo* ignoreEnt = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(ignore);
+			SOURCESDK::IClientEntity_csgo* ignoreEnt = Mirv_GetClientEntityFromHandle(ignore);
 			CTraceFilter * pTraceFilter = m_IgnoreSomeEntites ? new CTraceFilterSome() : new CTraceFilter();
 			if(ignoreEnt) pTraceFilter->Add(ignoreEnt);
 
@@ -3301,7 +3808,7 @@ private:
 			if(!CTraceFilter::ShouldHitEntity(pHandleEntity,contentsMask))
 				return false;
 
-			if(SOURCESDK::IClientEntity_csgo* clientEntity = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(pHandleEntity->GetRefEHandle())) {
+			if(SOURCESDK::IClientEntity_csgo* clientEntity = Mirv_GetClientEntityFromHandle(pHandleEntity->GetRefEHandle())) {
 				if (SOURCESDK::C_BaseEntity_csgo* baseEntity = clientEntity->GetBaseEntity())
 					return baseEntity->ShouldCollide(SOURCESDK::CSGO::COLLISION_GROUP_PLAYER_MOVEMENT, SOURCESDK_CSGO_CONTENTS_SOLID|SOURCESDK_CSGO_CONTENTS_WINDOW|SOURCESDK_CSGO_CONTENTS_MOVEABLE|SOURCESDK_CSGO_CONTENTS_GRATE)
 						&& !StringBeginsWith(baseEntity->GetClassname(), "weapon_");
@@ -3312,6 +3819,7 @@ private:
 	};
 
 };
+#endif //#ifndef _WIN64
 
 class CMirvCamCamCalc : public CMirvCamCalc
 {
@@ -3513,6 +4021,7 @@ private:
 };
 
 
+#ifndef _WIN64
 class CMirvCamPlayerCalc : public CMirvCamCalc
 {
 public:
@@ -3541,7 +4050,7 @@ public:
 
 		if (m_HandleCalc->CalcHandle(handle) && handle.IsValid())
 		{
-			SOURCESDK::IClientEntity_csgo* clientEntity = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(handle);
+			SOURCESDK::IClientEntity_csgo* clientEntity = Mirv_GetClientEntityFromHandle(handle);
 			SOURCESDK::C_BaseEntity_csgo* baseEntity = clientEntity ? clientEntity->GetBaseEntity() : nullptr;
 			if (baseEntity && baseEntity->IsPlayer())
 			{
@@ -3565,6 +4074,7 @@ protected:
 private:
 	IMirvHandleCalc * m_HandleCalc;
 };
+#endif //#ifndef _WIN64
 
 class CMirvVecAngCamCalc : public CMirvVecAngCalc
 {
@@ -3914,6 +4424,7 @@ private:
 	IMirvVecAngCalc * m_VecAng;
 };
 
+#ifndef _WIN64
 class CMirvBoolAliveCalc : public CMirvBoolCalc
 {
 public:
@@ -3938,7 +4449,7 @@ public:
 
 		if (m_Handle->CalcHandle(parentHandle) && parentHandle.IsValid())
 		{
-			SOURCESDK::IClientEntity_csgo * clientEntity = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(parentHandle);
+			SOURCESDK::IClientEntity_csgo * clientEntity = Mirv_GetClientEntityFromHandle(parentHandle);
 			SOURCESDK::C_BaseEntity_csgo * baseEntity = clientEntity ? clientEntity->GetBaseEntity() : 0;
 
 			if (baseEntity)
@@ -3960,6 +4471,7 @@ protected:
 private:
 	IMirvHandleCalc * m_Handle;
 };
+#endif //#ifndef _WIN64
 
 class CMirvBoolHandlesEqualCalc : public CMirvBoolCalc
 {
@@ -4054,6 +4566,7 @@ private:
 };
 
 
+#ifndef _WIN64
 class CMirvBoolClassNameMatchesCalc : public CMirvBoolCalc
 {
 public:
@@ -4080,7 +4593,7 @@ public:
 
 		if (m_Calc->CalcHandle(handle) && handle.IsValid())
 		{
-			SOURCESDK::IClientEntity_csgo * clientEntity = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(handle);
+			SOURCESDK::IClientEntity_csgo * clientEntity = Mirv_GetClientEntityFromHandle(handle);
 			SOURCESDK::C_BaseEntity_csgo * baseEntity = clientEntity ? clientEntity->GetBaseEntity() : 0;
 
 			if (baseEntity)
@@ -4103,6 +4616,7 @@ private:
 	IMirvHandleCalc * m_Calc;
 	std::string m_WildCardString;
 };
+#endif //#ifndef _WIN64
 
 
 class CMirvIntCalc : public CMirvCalc, public IMirvIntCalc
@@ -4190,6 +4704,7 @@ private:
 	int m_Value;
 };
 
+#ifndef _WIN64
 class CMirvIntTeamNumberCalc : public CMirvIntCalc
 {
 public:
@@ -4214,7 +4729,7 @@ public:
 
 		if (m_Handle->CalcHandle(parentHandle) && parentHandle.IsValid())
 		{
-			SOURCESDK::IClientEntity_csgo * clientEntity = SOURCESDK::g_Entitylist_csgo->GetClientEntityFromHandle(parentHandle);
+			SOURCESDK::IClientEntity_csgo * clientEntity = Mirv_GetClientEntityFromHandle(parentHandle);
 			SOURCESDK::C_BaseEntity_csgo * baseEntity = clientEntity ? clientEntity->GetBaseEntity() : 0;
 
 			if (baseEntity)
@@ -4236,6 +4751,7 @@ protected:
 private:
 	IMirvHandleCalc * m_Handle;
 };
+#endif //#ifndef _WIN64
 
 
 class CMirvFloatCalc : public CMirvCalc, public IMirvFloatCalc
@@ -4410,6 +4926,7 @@ IMirvHandleCalc * CMirvHandleCalcs::NewValueCalc(char const * name, int handle)
 	return result;
 }
 
+#ifndef _WIN64
 IMirvHandleCalc * CMirvHandleCalcs::NewIndexCalc(char const * name, int entityIndex)
 {
 	if (name && !Console_CheckName(name))
@@ -4426,7 +4943,9 @@ IMirvHandleCalc * CMirvHandleCalcs::NewIndexCalc(char const * name, int entityIn
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 IMirvHandleCalc * CMirvHandleCalcs::NewActiveWeaponCalc(char const * name, IMirvHandleCalc * parent, bool world)
 {
 	if (name && !Console_CheckName(name))
@@ -4443,7 +4962,9 @@ IMirvHandleCalc * CMirvHandleCalcs::NewActiveWeaponCalc(char const * name, IMirv
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 IMirvHandleCalc *  CMirvHandleCalcs::NewLocalPlayerCalc(char const * name)
 {
 	if (name && !Console_CheckName(name))
@@ -4460,7 +4981,9 @@ IMirvHandleCalc *  CMirvHandleCalcs::NewLocalPlayerCalc(char const * name)
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 IMirvHandleCalc *  CMirvHandleCalcs::NewObserverTargetCalc(char const * name, IMirvHandleCalc * parent)
 {
 	if (name && !Console_CheckName(name))
@@ -4477,6 +5000,7 @@ IMirvHandleCalc *  CMirvHandleCalcs::NewObserverTargetCalc(char const * name, IM
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
 IMirvHandleCalc * CMirvHandleCalcs::NewOrCalc(char const * name, IMirvHandleCalc * a, IMirvHandleCalc * b)
 {
@@ -4495,6 +5019,7 @@ IMirvHandleCalc * CMirvHandleCalcs::NewOrCalc(char const * name, IMirvHandleCalc
 	return result;
 }
 
+#ifndef _WIN64
 IMirvHandleCalc *  CMirvHandleCalcs::NewOwnerEntityCalc(char const * name, IMirvHandleCalc * calc, unsigned int maxDepth)
 {
 	if (name && !Console_CheckName(name))
@@ -4511,9 +5036,11 @@ IMirvHandleCalc *  CMirvHandleCalcs::NewOwnerEntityCalc(char const * name, IMirv
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
 
 
+#ifndef _WIN64
 IMirvHandleCalc * CMirvHandleCalcs::NewKeyCalc(char const * name, int key)
 {
 	if (name && !Console_CheckName(name))
@@ -4530,6 +5057,7 @@ IMirvHandleCalc * CMirvHandleCalcs::NewKeyCalc(char const * name, int key)
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
 void CMirvHandleCalcs::Console_Remove(char const * name)
 {
@@ -4687,6 +5215,7 @@ IMirvVecAngCalc * CMirvVecAngCalcs::NewOffsetCalc(char const * name, IMirvVecAng
 	return result;
 }
 
+#ifndef _WIN64
 IMirvVecAngCalc * CMirvVecAngCalcs::NewHandleCalc(char const * name, IMirvHandleCalc * handle)
 {
 	if (name && !Console_CheckName(name))
@@ -4703,7 +5232,9 @@ IMirvVecAngCalc * CMirvVecAngCalcs::NewHandleCalc(char const * name, IMirvHandle
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 IMirvVecAngCalc * CMirvVecAngCalcs::NewHandleEyeCalc(char const * name, IMirvHandleCalc * handle)
 {
 	if (name && !Console_CheckName(name))
@@ -4720,7 +5251,9 @@ IMirvVecAngCalc * CMirvVecAngCalcs::NewHandleEyeCalc(char const * name, IMirvHan
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 IMirvVecAngCalc * CMirvVecAngCalcs::NewHandleCalcEx(char const * name, IMirvHandleCalc * handle, bool eyeVec, bool eyeAng)
 {
 	if (name && !Console_CheckName(name))
@@ -4737,7 +5270,591 @@ IMirvVecAngCalc * CMirvVecAngCalcs::NewHandleCalcEx(char const * name, IMirvHand
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
+// ---- TF2 helpers for mirv_listplayers / mirv_listbones / mirv_cam attach ----
+
+// Minimal IVEngineClient (public Source SDK interface, same vtable layout as IVEngineClient_013).
+// Only GetPlayerInfo is used, the other entries are placeholders to keep the layout.
+class CMirvTf2EngineClient
+{
+public:
+	virtual void _Unused0(void) = 0;
+	virtual void _Unused1(void) = 0;
+	virtual void _Unused2(void) = 0;
+	virtual void _Unused3(void) = 0;
+	virtual void _Unused4(void) = 0;
+	virtual void _Unused5(void) = 0;
+	virtual void _Unused6(void) = 0;
+	virtual void _Unused7(void) = 0;
+	virtual bool GetPlayerInfo(int ent_num, void * pinfo) = 0; // slot 8
+};
+
+int Mirv_Tf2_GetMaxPlayers(void)
+{
+	if (!g_VEngineClient)
+		return 0;
+
+	int max = g_VEngineClient->GetMaxClients();
+
+	return max < 0 ? 0 : (128 < max ? 128 : max);
+}
+
+bool Mirv_Tf2_GetPlayerInfo(int entityIndex, char * outName, int outNameSize, int * outUserId)
+{
+	if (entityIndex < 1 || Mirv_Tf2_GetMaxPlayers() < entityIndex)
+		return false;
+
+	SOURCESDK::IVEngineClient_013 * raw = g_VEngineClient->GetVEngineClient_css();
+	if (!raw)
+		return false;
+
+	// player_info_t is roughly 140 bytes in size, use a generous zeroed buffer.
+	// Layout of the start: char name[32]; int userID;
+	unsigned char info[512];
+	memset(info, 0, sizeof(info));
+
+	if (!reinterpret_cast<CMirvTf2EngineClient *>(raw)->GetPlayerInfo(entityIndex, info))
+		return false;
+
+	if (outName && 0 < outNameSize)
+	{
+		int n = 0;
+		while (n < 31 && n < outNameSize - 1 && info[n])
+		{
+			outName[n] = (char)info[n];
+			++n;
+		}
+		outName[n] = 0;
+	}
+
+	if (outUserId)
+		memcpy(outUserId, info + 32, sizeof(int));
+
+	return true;
+}
+
+bool Mirv_Tf2_GetEntityOriginAngles(int entityIndex, float outOrigin[3], float outAngles[3])
+{
+	IMirvVecAngCalc * calc = g_MirvVecAngCalcs.NewTf2EntityIndexCalc(0, entityIndex, -1);
+	if (!calc)
+		return false;
+
+	calc->AddRef();
+
+	SOURCESDK::Vector o;
+	SOURCESDK::QAngle a;
+	bool ok = calc->CalcVecAng(o, a);
+
+	calc->Release();
+
+	if (ok)
+	{
+		outOrigin[0] = o.x; outOrigin[1] = o.y; outOrigin[2] = o.z;
+		outAngles[0] = a.x; outAngles[1] = a.y; outAngles[2] = a.z;
+	}
+
+	return ok;
+}
+
+bool Mirv_Tf2_GetBones(int entityIndex, MirvTf2Bone_t * outBones, int & outCount)
+{
+	outCount = 0;
+
+	CClientToolsTf2 * tools = CClientToolsTf2::Instance();
+	SOURCESDK::TF2::IClientTools * iface = tools ? tools->GetClientTools() : 0;
+
+	if (!iface || entityIndex < 0 || 2048 <= entityIndex)
+		return false;
+
+	WrpGlobals * gl = g_Hook_VClient_RenderView.GetGlobals();
+	if (!gl)
+		return false;
+
+	for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+	{
+		if (iface->GetEntIndex(ent) != entityIndex)
+			continue;
+
+		CMirvTf2ClientUnknown * unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
+		CMirvTf2ClientRenderable * renderable = unknown ? unknown->GetClientRenderable() : 0;
+
+		if (!renderable)
+			return false;
+
+		SOURCESDK::matrix3x4_t bones[MIRV_TF2_MAX_BONES];
+		for (int b = 0; b < MIRV_TF2_MAX_BONES; ++b)
+			for (int r = 0; r < 3; ++r)
+				for (int c = 0; c < 4; ++c)
+					bones[b].m_flMatVal[r][c] = 0.0f;
+
+		// 0x0007FF00 = BONE_USED_BY_ANYTHING
+		if (!renderable->SetupBones(bones, MIRV_TF2_MAX_BONES, 0x0007FF00, gl->curtime_get()))
+			return false;
+
+		const float rad2deg = 57.29577951308232f;
+
+		for (int b = 0; b < MIRV_TF2_MAX_BONES; ++b)
+		{
+			const float (*m)[4] = bones[b].m_flMatVal;
+			MirvTf2Bone_t & out = outBones[b];
+
+			out.valid = false;
+
+			// Basis all zero: bone does not exist (or was not set up).
+			if (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0] < 0.25f)
+				continue;
+
+			out.valid = true;
+			out.origin[0] = m[0][3];
+			out.origin[1] = m[1][3];
+			out.origin[2] = m[2][3];
+
+			// Same as MatrixAngles in the Source SDK's mathlib.
+			float xyDist = sqrtf(m[0][0] * m[0][0] + m[1][0] * m[1][0]);
+
+			if (0.001f < xyDist)
+			{
+				out.angles[1] = rad2deg * atan2f(m[1][0], m[0][0]);
+				out.angles[0] = rad2deg * atan2f(-m[2][0], xyDist);
+				out.angles[2] = rad2deg * atan2f(m[2][1], m[2][2]);
+			}
+			else
+			{
+				out.angles[1] = rad2deg * atan2f(-m[0][1], m[1][1]);
+				out.angles[0] = rad2deg * atan2f(-m[2][0], xyDist);
+				out.angles[2] = 0.0f;
+			}
+
+			outCount = b + 1;
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+// ---- TF2 bone names (read from the model's studio header) ----
+
+extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
+
+// Minimal IVModelInfo (public Source SDK interface "VModelInfoClient006") up to GetStudiomodel.
+// The declarations mirror the SDK's IVModelInfo in order (including the overloads), so the compiler
+// lays out the vtable like the game's. Only GetModelName and GetStudiomodel are used.
+class CMirvTf2ModelInfo
+{
+public:
+	virtual ~CMirvTf2ModelInfo() {}
+	virtual const void * GetModel(int modelindex) = 0;
+	virtual int GetModelIndex(const char * name) const = 0;
+	virtual const char * GetModelName(const void * model) const = 0;
+	virtual void * GetVCollide(const void * model) = 0;
+	virtual void * GetVCollide(int modelindex) = 0;
+	virtual void GetModelBounds(const void * model, void * mins, void * maxs) const = 0;
+	virtual void GetModelRenderBounds(const void * model, void * mins, void * maxs) const = 0;
+	virtual int GetModelFrameCount(const void * model) const = 0;
+	virtual int GetModelType(const void * model) const = 0;
+	virtual void * GetModelExtraData(const void * model) = 0;
+	virtual bool ModelHasMaterialProxy(const void * model) const = 0;
+	virtual bool IsTranslucent(const void * model) const = 0;
+	virtual bool IsTranslucentTwoPass(const void * model) const = 0;
+	virtual void RecomputeTranslucency(const void * model, int nSkin, int nBody, void * pClientRenderable, float fInstanceAlphaModulation) = 0;
+	virtual int GetModelMaterialCount(const void * model) const = 0;
+	virtual void GetModelMaterials(const void * model, int count, void ** ppMaterial) = 0;
+	virtual bool IsModelVertexLit(const void * model) const = 0;
+	virtual const char * GetModelKeyValueText(const void * model) = 0;
+	virtual bool GetModelKeyValue(const void * model, void * buf) = 0;
+	virtual float GetModelRadius(const void * model) = 0;
+	virtual const void * FindModel(const void * pStudioHdr, void ** cache, const char * modelname) const = 0;
+	virtual const void * FindModel(void * cache) const = 0;
+	virtual void * GetVirtualModel(const void * pStudioHdr) const = 0;
+	virtual unsigned char * GetAnimBlock(const void * pStudioHdr, int iBlock) const = 0;
+	virtual void GetModelMaterialColorAndLighting(const void * model, void const * origin, void const * angles, void * pTrace, void * lighting, void * matColor) = 0;
+	virtual void GetIlluminationPoint(const void * model, void * pRenderable, void const * origin, void const * angles, void * pLightingCenter) = 0;
+	virtual int GetModelContents(int modelIndex) = 0;
+	virtual void * GetStudiomodel(const void * mod) = 0;
+};
+
+static CMirvTf2ModelInfo * Mirv_Tf2_GetModelInfo(void)
+{
+	static CMirvTf2ModelInfo * cached = 0;
+
+	if (!cached && g_AppSystemFactory)
+		cached = reinterpret_cast<CMirvTf2ModelInfo *>(g_AppSystemFactory("VModelInfoClient006", 0));
+
+	return cached;
+}
+
+// Reads the bone names out of a studio header (studiohdr_t, MDL versions 44 to 49).
+// Layout: int id (0), int version (4), int length (76), int numbones (156), int boneindex (160).
+// mstudiobone_t is 216 bytes: int sznameindex (0), int parent (4), ...
+// Every offset is checked against the header's length. Returns the number of bones read, 0 if the header looks invalid.
+static int Mirv_Tf2_ReadBoneNames(const unsigned char * hdr, MirvTf2BoneName_t * outNames)
+{
+	const int hdrSize = 164;
+	const int boneSize = 216;
+
+	int id, version, length, numBones, boneIndex;
+	memcpy(&id, hdr + 0, sizeof(int));
+	memcpy(&version, hdr + 4, sizeof(int));
+	memcpy(&length, hdr + 76, sizeof(int));
+	memcpy(&numBones, hdr + 156, sizeof(int));
+	memcpy(&boneIndex, hdr + 160, sizeof(int));
+
+	if (0x54534449 /* IDST */ != id || version < 44 || 49 < version)
+		return 0;
+
+	if (length < hdrSize || numBones < 1 || 1024 < numBones || boneIndex < hdrSize)
+		return 0;
+
+	if ((long long)boneIndex + (long long)numBones * boneSize > (long long)length)
+		return 0;
+
+	const int count = numBones < MIRV_TF2_MAX_BONES ? numBones : MIRV_TF2_MAX_BONES;
+
+	for (int i = 0; i < count; ++i)
+	{
+		const long long boneOffset = (long long)boneIndex + (long long)i * boneSize;
+
+		int nameIndex, parent;
+		memcpy(&nameIndex, hdr + boneOffset + 0, sizeof(int));
+		memcpy(&parent, hdr + boneOffset + 4, sizeof(int));
+
+		MirvTf2BoneName_t & out = outNames[i];
+		out.name[0] = 0;
+		out.parent = parent;
+
+		const long long nameOffset = boneOffset + nameIndex;
+
+		if (nameIndex <= 0 || nameOffset < 0 || nameOffset >= length)
+			continue;
+
+		int n = 0;
+		while (n < (int)sizeof(out.name) - 1 && nameOffset + n < length && hdr[nameOffset + n])
+		{
+			out.name[n] = (char)hdr[nameOffset + n];
+			++n;
+		}
+		out.name[n] = 0;
+	}
+
+	return count;
+}
+
+int Mirv_Tf2_GetBoneNames(int entityIndex, MirvTf2BoneName_t * outNames)
+{
+	CMirvTf2ModelInfo * modelInfo = Mirv_Tf2_GetModelInfo();
+
+	CClientToolsTf2 * tools = CClientToolsTf2::Instance();
+	SOURCESDK::TF2::IClientTools * iface = tools ? tools->GetClientTools() : 0;
+
+	if (!modelInfo || !iface || entityIndex < 0 || 2048 <= entityIndex)
+		return 0;
+
+	for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+	{
+		if (iface->GetEntIndex(ent) != entityIndex)
+			continue;
+
+		CMirvTf2ClientUnknown * unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
+		CMirvTf2ClientRenderable * renderable = unknown ? unknown->GetClientRenderable() : 0;
+
+		if (!renderable)
+			return 0;
+
+		const void * model = renderable->GetModel();
+		if (!model)
+			return 0;
+
+		// Sanity check of the interface: model names end in ".mdl".
+		const char * modelName = modelInfo->GetModelName(model);
+		if (!modelName)
+			return 0;
+
+		const size_t nameLen = strlen(modelName);
+		if (nameLen < 4 || 0 != _stricmp(modelName + nameLen - 4, ".mdl"))
+			return 0;
+
+		const unsigned char * hdr = reinterpret_cast<const unsigned char *>(modelInfo->GetStudiomodel(model));
+		if (!hdr)
+			return 0;
+
+		return Mirv_Tf2_ReadBoneNames(hdr, outNames);
+	}
+
+	return 0;
+}
+
+static bool Mirv_ContainsNoCase(const char * hay, const char * needle)
+{
+	const size_t n = strlen(needle);
+
+	if (0 == n)
+		return true;
+
+	for (const char * p = hay; *p; ++p)
+	{
+		if (0 == _strnicmp(p, needle, n))
+			return true;
+	}
+
+	return false;
+}
+
+// Result: Bone index, -1 not found, -2 more than one partial match.
+static int Mirv_FindBoneInNames(const MirvTf2BoneName_t * names, int count, const char * name)
+{
+	for (int i = 0; i < count; ++i)
+	{
+		if (0 == _stricmp(names[i].name, name))
+			return i;
+	}
+
+	int found = -1;
+
+	for (int i = 0; i < count; ++i)
+	{
+		if (names[i].name[0] && Mirv_ContainsNoCase(names[i].name, name))
+		{
+			if (-1 != found)
+				return -2;
+
+			found = i;
+		}
+	}
+
+	return found;
+}
+
+bool Mirv_Tf2_ParseBoneArg(int entityIndex, const char * arg, int & outBone)
+{
+	bool numeric = '\0' != arg[0];
+	for (const char * c = ('-' == arg[0] ? arg + 1 : arg); *c; ++c)
+	{
+		if (*c < '0' || '9' < *c) { numeric = false; break; }
+	}
+	if ('-' == arg[0] && '\0' == arg[1]) numeric = false;
+
+	if (numeric)
+	{
+		outBone = atoi(arg);
+		return true;
+	}
+
+	MirvTf2BoneName_t names[MIRV_TF2_MAX_BONES];
+	const int count = Mirv_Tf2_GetBoneNames(entityIndex, names);
+
+	if (count < 1)
+	{
+		Tier0_Warning("Bone names are not available for entity %i, use the bone index instead (see mirv_listbones).\n", entityIndex);
+		return false;
+	}
+
+	const int bone = Mirv_FindBoneInNames(names, count, arg);
+
+	if (-1 == bone)
+	{
+		Tier0_Warning("Entity %i has no bone with \"%s\" in its name (see mirv_listbones).\n", entityIndex, arg);
+		return false;
+	}
+
+	if (-2 == bone)
+	{
+		Tier0_Warning("More than one bone of entity %i matches \"%s\", use a longer part of the name or the index:\n", entityIndex, arg);
+
+		for (int i = 0; i < count; ++i)
+		{
+			if (names[i].name[0] && Mirv_ContainsNoCase(names[i].name, arg))
+				Tier0_Warning("  %i: %s\n", i, names[i].name);
+		}
+
+		return false;
+	}
+
+	outBone = bone;
+	return true;
+}
+
+bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc * calc, const double camOrigin[3], const double camAngles[3], float outLocalOffset[3])
+{
+	if (!calc)
+		return false;
+
+	// Only valid for calcs created by NewTf2EntityIndexCalc.
+	return static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->CaptureCamera(camOrigin, camAngles, outLocalOffset);
+}
+
+bool Mirv_Tf2_GetEntityAnglesInfo(int entityIndex, float outAbsAngles[3], float outRenderAngles[3])
+{
+	IMirvVecAngCalc * calc = g_MirvVecAngCalcs.NewTf2EntityIndexCalc(0, entityIndex, -1, MIRV_TF2_BONEMODE_BONE);
+	if (!calc)
+		return false;
+
+	calc->AddRef();
+
+	bool ok = static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->GetAnglesInfo(outAbsAngles, outRenderAngles);
+
+	calc->Release();
+
+	return ok;
+}
+
+static bool Mirv_IsUsableBound(float v)
+{
+	// Also false for NaN.
+	return -1.0e6f < v && v < 1.0e6f;
+}
+
+// TF2 client class names can be C++-style (CTFProjectile_Rocket) or
+// entity-style (tf_projectile_rocket). Match case-insensitively and give
+// weapon / wearable names priority over shared words such as "rocket".
+static int Mirv_Tf2_LabelCategory(const char * name, bool isPlayer)
+{
+    if (isPlayer) return MIRV_TF2_ENTITY_PLAYER;
+    if (!name || !name[0]) return MIRV_TF2_ENTITY_OTHER;
+
+    // Class names are short; cap the copy to avoid a pathological input.
+    char lower[256];
+    size_t n = 0;
+    for (; name[n] && n + 1 < sizeof(lower); ++n)
+        lower[n] = (char)tolower((unsigned char)name[n]);
+    lower[n] = '\0';
+
+    if (strstr(lower, "wearable") || strstr(lower, "cosmetic") || strstr(lower, "econ_wear") || strstr(lower, "econwear"))
+        return MIRV_TF2_ENTITY_COSMETIC;
+
+    // A rocket launcher and grenade launcher are weapons, not projectiles.
+    if (strstr(lower, "weapon") || strstr(lower, "tf_weapon") || strstr(lower, "combatweapon"))
+        return MIRV_TF2_ENTITY_WEAPON;
+
+    // Explicit projectile families and common TF2 network / entity names.
+    if (strstr(lower, "projectile") || strstr(lower, "pipebomb") || strstr(lower, "grenade")
+        || strstr(lower, "rocket") || strstr(lower, "arrow") || strstr(lower, "flare")
+        || strstr(lower, "cleaver") || strstr(lower, "stunball") || strstr(lower, "stun_ball")
+        || strstr(lower, "baseball") || strstr(lower, "tf_flame") || strstr(lower, "flame_entity")
+        || strstr(lower, "tf_spell") || strstr(lower, "spellbook") || strstr(lower, "pumpkin_bomb"))
+        return MIRV_TF2_ENTITY_PROJECTILE;
+
+    return MIRV_TF2_ENTITY_OTHER;
+}
+
+int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLabels, int maxCount)
+{
+	CClientToolsTf2 * tools = CClientToolsTf2::Instance();
+	SOURCESDK::TF2::IClientTools * iface = tools ? tools->GetClientTools() : 0;
+
+	if (!iface)
+		return 0;
+
+	int count = 0;
+
+	for (auto ent = iface->FirstEntity(); ent && count < maxCount; ent = iface->NextEntity(ent))
+	{
+		const int index = iface->GetEntIndex(ent);
+
+		// Index 0 is the world, only networked entities have an index that can be used elsewhere.
+		if (index < 1 || 2048 <= index)
+			continue;
+
+		if (playersOnly && !iface->IsPlayer(ent))
+			continue;
+
+		// EntitySearchResult is a C_BaseEntity pointer, IClientUnknown is its first base.
+		CMirvTf2ClientUnknown * unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
+		CMirvTf2ClientRenderable * renderable = unknown ? unknown->GetClientRenderable() : 0;
+
+		if (!renderable)
+			continue;
+
+		// When showing all entities, leave out those that are not drawn (hidden, not in view and so on) to reduce the clutter.
+		if (!playersOnly && !renderable->ShouldDraw())
+			continue;
+
+		const float * origin = reinterpret_cast<const float *>(renderable->GetRenderOrigin());
+
+		if (!origin)
+			continue;
+
+		MirvTf2EntityLabel_t & label = outLabels[count++];
+		// Tools API classnames require a tool handle. Attach only temporarily when needed.
+        const bool isPlayer = iface->IsPlayer(ent);
+        const char * className = 0;
+        SOURCESDK::TF2::HTOOLHANDLE handle = iface->GetToolHandleForEntityByIndex(index);
+        bool attachedHere = false;
+        if (SOURCESDK::TF2::HTOOLHANDLE_INVALID == handle)
+        {
+            handle = iface->AttachToEntity(ent);
+            attachedHere = SOURCESDK::TF2::HTOOLHANDLE_INVALID != handle;
+        }
+        if (SOURCESDK::TF2::HTOOLHANDLE_INVALID != handle) className = iface->GetClassname(handle);
+        const int category = Mirv_Tf2_LabelCategory(className, isPlayer);
+        if (attachedHere) iface->DetachFromEntity(ent);
+        label.category = category;
+		label.index = index;
+		label.origin[0] = origin[0];
+		label.origin[1] = origin[1];
+		label.origin[2] = origin[2];
+
+		// Many entities (i.e. brush entities) have their origin at the world's origin or somewhere that is not
+		// where they are, so use the top center of the world space bounds if they are usable.
+		float mins[3] = { 0, 0, 0 };
+		float maxs[3] = { 0, 0, 0 };
+		renderable->GetRenderBoundsWorldspace(mins, maxs);
+
+		bool usable = true;
+		bool hasSize = false;
+
+		for (int i = 0; i < 3; ++i)
+		{
+			if (!Mirv_IsUsableBound(mins[i]) || !Mirv_IsUsableBound(maxs[i]) || maxs[i] < mins[i] || 65536.0f < maxs[i] - mins[i])
+				usable = false;
+			else if (0.01f < maxs[i] - mins[i])
+				hasSize = true;
+		}
+
+		if (usable && hasSize)
+		{
+			// Prefer the entity's own render origin for compact models (weapons,
+			// wearables and other attached entities). Their world bounds can move
+			// with the parent or be much larger than the model, causing labels to
+			// jump to the player's bounds. Use bounds only when the render origin
+			// is clearly outside them, which is common for brush/map entities.
+			const bool originInsideBounds =
+				mins[0] - 32.0f <= origin[0] && origin[0] <= maxs[0] + 32.0f &&
+				mins[1] - 32.0f <= origin[1] && origin[1] <= maxs[1] + 32.0f &&
+				mins[2] - 32.0f <= origin[2] && origin[2] <= maxs[2] + 32.0f;
+
+			if (!originInsideBounds)
+			{
+				label.origin[0] = 0.5f * (mins[0] + maxs[0]);
+				label.origin[1] = 0.5f * (mins[1] + maxs[1]);
+				label.origin[2] = maxs[2];
+			}
+		}
+	}
+
+	return count;
+}
+
+IMirvVecAngCalc * CMirvVecAngCalcs::NewTf2EntityIndexCalc(char const * name, int entityIndex, int boneIndex, int mode)
+{
+	if (name && !Console_CheckName(name))
+		return 0;
+
+	IMirvVecAngCalc * result = new CMirvVecAngTf2EntityIndexCalc(name, entityIndex, boneIndex, mode);
+
+	if (name)
+	{
+		result->AddRef();
+
+		m_Calcs.push_back(result);
+	}
+
+	return result;
+}
+
+#ifndef _WIN64
 IMirvVecAngCalc * CMirvVecAngCalcs::NewHandleAttachmentCalc(char const * name, IMirvHandleCalc * handle, char const * attachmentName)
 {
 	if (name && !Console_CheckName(name))
@@ -4754,6 +5871,7 @@ IMirvVecAngCalc * CMirvVecAngCalcs::NewHandleAttachmentCalc(char const * name, I
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
 IMirvVecAngCalc * CMirvVecAngCalcs::NewIfCalc(char const * name, IMirvBoolCalc * condition, IMirvVecAngCalc * condTrue, IMirvVecAngCalc * condFalse)
 {
@@ -4840,6 +5958,7 @@ IMirvVecAngCalc * CMirvVecAngCalcs::NewSwitchInterpCalc(char const * name, IMirv
 	return result;
 }
 
+#ifndef _WIN64
 IMirvVecAngCalc * CMirvVecAngCalcs::NewLocalToGlobalCalc(char const * name, IMirvVecAngCalc * source, IMirvHandleCalc * handle)
 {
 	if (name && !Console_CheckName(name))
@@ -4856,7 +5975,9 @@ IMirvVecAngCalc * CMirvVecAngCalcs::NewLocalToGlobalCalc(char const * name, IMir
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 IMirvVecAngCalc * CMirvVecAngCalcs::NewGlobalToLocalCalc(char const * name, IMirvVecAngCalc * source, IMirvHandleCalc * handle)
 {
 	if (name && !Console_CheckName(name))
@@ -4873,7 +5994,9 @@ IMirvVecAngCalc * CMirvVecAngCalcs::NewGlobalToLocalCalc(char const * name, IMir
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
+#ifndef _WIN64
 IMirvVecAngCalc * CMirvVecAngCalcs::NewCollisionClipCalc(char const * name, IMirvVecAngCalc * source, IMirvVecAngCalc * clipTo, IMirvHandleCalc * ignoreHandle, float safeZoneDist)
 {
 	if (name && !Console_CheckName(name))
@@ -4890,6 +6013,7 @@ IMirvVecAngCalc * CMirvVecAngCalcs::NewCollisionClipCalc(char const * name, IMir
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
 
 void CMirvVecAngCalcs::Console_Remove(char const * name)
@@ -5034,6 +6158,7 @@ IMirvCamCalc * CMirvCamCalcs::NewCurrentCalc(char const * name)
 	return result;
 }
 
+#ifndef _WIN64
 IMirvCamCalc* CMirvCamCalcs::NewPlayerCalc(char const* name, IMirvHandleCalc* handleCalc)
 {
 	if (name && !Console_CheckName(name))
@@ -5050,6 +6175,7 @@ IMirvCamCalc* CMirvCamCalcs::NewPlayerCalc(char const* name, IMirvHandleCalc* ha
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
 IMirvCamCalc * CMirvCamCalcs::NewSmoothCalc(char const * name, IMirvCamCalc * parent, IMirvHandleCalc * trackHandle)
 {
@@ -5311,6 +6437,7 @@ IMirvBoolCalc * CMirvBoolCalcs::NewVecAngCalc(char const * name, IMirvVecAngCalc
 	return result;
 }
 
+#ifndef _WIN64
 IMirvBoolCalc * CMirvBoolCalcs::NewAliveCalc(char const * name, IMirvHandleCalc * handle)
 {
 	if (name && !Console_CheckName(name))
@@ -5327,6 +6454,7 @@ IMirvBoolCalc * CMirvBoolCalcs::NewAliveCalc(char const * name, IMirvHandleCalc 
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
 IMirvBoolCalc * CMirvBoolCalcs::NewAndCalc(char const * name, IMirvBoolCalc * a, IMirvBoolCalc * b)
 {
@@ -5413,6 +6541,7 @@ IMirvBoolCalc * CMirvBoolCalcs::NewIntsEqualCalc(char const * name, IMirvIntCalc
 	return result;
 }
 
+#ifndef _WIN64
 IMirvBoolCalc * CMirvBoolCalcs::NewClassnameMatchesCalc(char const * name, IMirvHandleCalc * handle, const char * wildCardString)
 {
 	if (name && !Console_CheckName(name))
@@ -5429,6 +6558,7 @@ IMirvBoolCalc * CMirvBoolCalcs::NewClassnameMatchesCalc(char const * name, IMirv
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
 void CMirvBoolCalcs::Console_Remove(char const * name)
 {
@@ -5535,6 +6665,7 @@ IMirvIntCalc * CMirvIntCalcs::NewValueCalc(char const * name, int value)
 	return result;
 }
 
+#ifndef _WIN64
 IMirvIntCalc * CMirvIntCalcs::NewTeamNumberCalc(char const * name, IMirvHandleCalc * handle)
 {
 	if (name && !Console_CheckName(name))
@@ -5551,6 +6682,7 @@ IMirvIntCalc * CMirvIntCalcs::NewTeamNumberCalc(char const * name, IMirvHandleCa
 
 	return result;
 }
+#endif //#ifndef _WIN64
 
 void CMirvIntCalcs::Console_Remove(char const * name)
 {
@@ -5765,16 +6897,21 @@ void mirv_calcs_handle(IWrpCommandArgs * args)
 					g_MirvHandleCalcs.NewValueCalc(args->ArgV(3), atoi(args->ArgV(4)));
 					return;
 				}
+#ifndef _WIN64
 				else if (0 == _stricmp("index", arg2) && 5 <= argc)
 				{
 					g_MirvHandleCalcs.NewIndexCalc(args->ArgV(3), atoi(args->ArgV(4)));
 					return;
 				}
+#endif //#ifndef _WIN64
+#ifndef _WIN64
 				else if (0 == _stricmp("key", arg2) && 5 <= argc)
 				{
 					g_MirvHandleCalcs.NewKeyCalc(args->ArgV(3), atoi(args->ArgV(4)));
 					return;
 				}
+#endif //#ifndef _WIN64
+#ifndef _WIN64
 				else if (0 == _stricmp("activeWeapon", arg2) && 6 <= argc)
 				{
 					char const * parentCalcName = args->ArgV(4);
@@ -5788,12 +6925,16 @@ void mirv_calcs_handle(IWrpCommandArgs * args)
 
 					return;
 				}
+#endif //#ifndef _WIN64
+#ifndef _WIN64
 				else if (0 == _stricmp("localPlayer", arg2) && 4 <= argc)
 				{
 					g_MirvHandleCalcs.NewLocalPlayerCalc(args->ArgV(3));
 
 					return;
 				}
+#endif //#ifndef _WIN64
+#ifndef _WIN64
 				else if (0 == _stricmp("observerTarget", arg2) && 5 <= argc)
 				{
 					char const * parentCalcName = args->ArgV(4);
@@ -5807,6 +6948,7 @@ void mirv_calcs_handle(IWrpCommandArgs * args)
 
 					return;
 				}
+#endif //#ifndef _WIN64
 				else if (0 == _stricmp("or", arg2) && 6 <= argc)
 				{
 					char const * calcAName = args->ArgV(4);
@@ -5829,6 +6971,7 @@ void mirv_calcs_handle(IWrpCommandArgs * args)
 
 					return;
 				}
+#ifndef _WIN64
 				else if (0 == _stricmp("ownerEntity", arg2) && 6 <= argc)
 				{
 					char const * parentCalcName = args->ArgV(4);
@@ -5843,6 +6986,7 @@ void mirv_calcs_handle(IWrpCommandArgs * args)
 
 					return;
 				}
+#endif //#ifndef _WIN64
 			}
 
 			Tier0_Msg(
@@ -6016,6 +7160,7 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 
 					return;
 				}
+#ifndef _WIN64
 				else if (0 == _stricmp("handle", arg2) && 5 <= argc)
 				{
 					char const * parentCalcName = args->ArgV(4);
@@ -6029,6 +7174,8 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 
 					return;
 				}
+#endif //#ifndef _WIN64
+#ifndef _WIN64
 				else if (0 == _stricmp("handleEye", arg2) && 5 <= argc)
 				{
 					char const * parentCalcName = args->ArgV(4);
@@ -6042,6 +7189,8 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 
 					return;
 				}
+#endif //#ifndef _WIN64
+#ifndef _WIN64
 				else if (0 == _stricmp("handleAttachment", arg2) && 6 <= argc)
 				{
 					char const * parentCalcName = args->ArgV(4);
@@ -6052,6 +7201,33 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 						g_MirvVecAngCalcs.NewHandleAttachmentCalc(args->ArgV(3), parentCalc, args->ArgV(5));
 					else
 						Tier0_Warning("Error: No handle calc with name \"%s\" found.\n", parentCalcName);
+
+					return;
+				}
+#endif //#ifndef _WIN64
+				else if (0 == _stricmp("tf2Entity", arg2) && 5 <= argc)
+				{
+					int boneIndex = -1;
+					int mode = MIRV_TF2_BONEMODE_BONE;
+
+					if (6 <= argc && !Mirv_Tf2_ParseBoneArg(atoi(args->ArgV(4)), args->ArgV(5), boneIndex))
+						return;
+
+					if (7 <= argc)
+					{
+						char const * modeName = args->ArgV(6);
+
+						if (0 == _stricmp("bone", modeName)) mode = MIRV_TF2_BONEMODE_BONE;
+						else if (0 == _stricmp("entity", modeName)) mode = MIRV_TF2_BONEMODE_ENTITY;
+						else if (0 == _stricmp("aligned", modeName)) mode = MIRV_TF2_BONEMODE_ALIGNED;
+						else
+						{
+							Tier0_Warning("Error: Unknown mode \"%s\", use bone, entity or aligned.\n", modeName);
+							return;
+						}
+					}
+
+					g_MirvVecAngCalcs.NewTf2EntityIndexCalc(args->ArgV(3), atoi(args->ArgV(4)), boneIndex, mode);
 
 					return;
 				}
@@ -6140,6 +7316,7 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 
 					return;
 				}
+#ifndef _WIN64
 				else if (0 == _stricmp("localToGlobal", arg2) &&6 <= argc)
 				{
 					char const * calcAName = args->ArgV(4);
@@ -6162,6 +7339,8 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 
 					return;
 				}
+#endif //#ifndef _WIN64
+#ifndef _WIN64
 				else if (0 == _stricmp("globalToLocal", arg2) && 6 <= argc)
 				{
 					char const * calcAName = args->ArgV(4);
@@ -6184,6 +7363,8 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 					
 					return;
 				}
+#endif //#ifndef _WIN64
+#ifndef _WIN64
 				else if (0 == _stricmp("collisionClip", arg2) && 8 <= argc)
 				{
 					char const * calcSourceName = args->ArgV(4);
@@ -6212,6 +7393,7 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 
 					return;
 				}
+#endif //#ifndef _WIN64
 			}
 
 			Tier0_Msg(
@@ -6244,6 +7426,10 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 			);
 			Tier0_Msg(
 				"%s add collisionClip <sName> <sSourceVecAngName> <sClipToVecAngName> <sIgnoreHandleName> <fSafeZoneDist> - Checks for collisions between source and clipTo and if there are any moves source nearer to clip accordingly.\n"
+				, arg0
+			);
+			Tier0_Msg(
+				"%s add tf2Entity <sName> <iEntityIndex> [<iBoneIndex or sBoneName> [<sMode>]] - (TF2 only) Add a calc that gets its values from the entity with index <iEntityIndex> (see mirv_listentities), or from its bone (index or part of the name, see mirv_listbones) if given. <sMode> (for bones): bone (default) - angles of the bone, entity - angles of the entity, aligned - starts like the entity and then follows the bone's rotation.\n"
 				, arg0
 			);
 			return;
@@ -6351,6 +7537,7 @@ void mirv_calcs_cam(IWrpCommandArgs * args)
 
 					return;
 				}
+#ifndef _WIN64
 				else if (0 == _stricmp("player", arg2) && 5 <= argc)
 				{
 					char const * handleCalcName = args->ArgV(4);
@@ -6363,6 +7550,7 @@ void mirv_calcs_cam(IWrpCommandArgs * args)
 					
 					return;
 				}
+#endif //#ifndef _WIN64
 				else if (0 == _stricmp("smooth", arg2) && 6 <= argc)
 				{
 					char const* parentCalcName = args->ArgV(4);
@@ -6676,6 +7864,7 @@ void mirv_calcs_bool(IWrpCommandArgs * args)
 
 					return;
 				}
+#ifndef _WIN64
 				else if (0 == _stricmp("alive", arg2) && 5 <= argc)
 				{
 					char const * parentCalcName = args->ArgV(4);
@@ -6689,6 +7878,7 @@ void mirv_calcs_bool(IWrpCommandArgs * args)
 
 					return;
 				}
+#endif //#ifndef _WIN64
 				else if (0 == _stricmp("handlesEqual", arg2) && 6 <= argc)
 				{
 					char const * parentCalcNameA = args->ArgV(4);
@@ -6725,6 +7915,7 @@ void mirv_calcs_bool(IWrpCommandArgs * args)
 
 					return;
 				}
+#ifndef _WIN64
 				else if (0 == _stricmp("classnameMatches", arg2) && 6 <= argc)
 				{
 				char const * parentCalcNameA = args->ArgV(4);
@@ -6739,6 +7930,7 @@ void mirv_calcs_bool(IWrpCommandArgs * args)
 
 				return;
 				}
+#endif //#ifndef _WIN64
 			}
 
 			Tier0_Msg(
@@ -6852,6 +8044,7 @@ void mirv_calcs_int(IWrpCommandArgs * args)
 					g_MirvIntCalcs.NewValueCalc(args->ArgV(3), value);
 					return;
 				}
+#ifndef _WIN64
 				else if (0 == _stricmp("teamNumber", arg2) && 5 <= argc)
 				{
 					char const * parentCalcName = args->ArgV(4);
@@ -6865,6 +8058,7 @@ void mirv_calcs_int(IWrpCommandArgs * args)
 
 					return;
 				}
+#endif //#ifndef _WIN64
 			}
 
 			Tier0_Msg(

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <chrono>
 
 //
 // These hooks mainly hook into
@@ -8,6 +9,9 @@
 
 
 #include "RenderView.h"
+
+// Preview controller is implemented by the mirv_campath console command.
+extern void MirvCampathPreview_Update();
 
 #include "MirvTime.h"
 
@@ -19,10 +23,9 @@
 
 #include "addresses.h"
 #include "WrpVEngineClient.h"
+#include "SourceInterfaces.h"
 
-#ifndef _WIN64
 #include "aiming.h"
-#endif //#ifndef _WIN64
 
 #include "MirvCam.h"
 #include "AfxInterop.h"
@@ -35,6 +38,103 @@
 #undef CreateEvent
 
 extern WrpVEngineClient * g_VEngineClient;
+extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
+
+// Source SDK's VEngineVGui001 exposes the game's main-menu state.
+// Keep the vtable layout (destructor, GetPanel, IsGameUIVisible), but do
+// NOT enumerate VGUI panels here: the bundled CS:GO SDK declares VPANEL
+// as 32-bit, which truncates panel pointers in x64 TF2 Classified.
+class FreecamEngineVGui
+{
+public:
+    virtual ~FreecamEngineVGui() {}
+    virtual void * GetPanel(int type) = 0;
+    virtual bool IsGameUIVisible() = 0;
+};
+
+static bool FreecamMenuVisible()
+{
+    if (!g_AppSystemFactory) return false;
+    static FreecamEngineVGui * engineVGui = static_cast<FreecamEngineVGui *>(
+        g_AppSystemFactory("VEngineVGui001", nullptr));
+    return engineVGui && engineVGui->IsGameUIVisible();
+}
+
+// Source SDK 2013 / TF2 VGUI_Surface030 (not CS:GO's 031).
+// Source SDK 2013: 5 IAppSystem entries (Shutdown is overridden),
+// SetCursorAlwaysVisible is slot 52, and IsCursorVisible is slot 53.
+// No VPANEL handles or panel enumeration are involved here.
+// Only call the method when explicitly queried or enabled by the user.
+class FreecamSurface030
+{
+public:
+    virtual void Unused00() = 0;
+    virtual void Unused01() = 0;
+    virtual void Unused02() = 0;
+    virtual void Unused03() = 0;
+    virtual void Unused04() = 0;
+    virtual void Unused05() = 0;
+    virtual void Unused06() = 0;
+    virtual void Unused07() = 0;
+    virtual void Unused08() = 0;
+    virtual void Unused09() = 0;
+    virtual void Unused10() = 0;
+    virtual void Unused11() = 0;
+    virtual void Unused12() = 0;
+    virtual void Unused13() = 0;
+    virtual void Unused14() = 0;
+    virtual void Unused15() = 0;
+    virtual void Unused16() = 0;
+    virtual void Unused17() = 0;
+    virtual void Unused18() = 0;
+    virtual void Unused19() = 0;
+    virtual void Unused20() = 0;
+    virtual void Unused21() = 0;
+    virtual void Unused22() = 0;
+    virtual void Unused23() = 0;
+    virtual void Unused24() = 0;
+    virtual void Unused25() = 0;
+    virtual void Unused26() = 0;
+    virtual void Unused27() = 0;
+    virtual void Unused28() = 0;
+    virtual void Unused29() = 0;
+    virtual void Unused30() = 0;
+    virtual void Unused31() = 0;
+    virtual void Unused32() = 0;
+    virtual void Unused33() = 0;
+    virtual void Unused34() = 0;
+    virtual void Unused35() = 0;
+    virtual void Unused36() = 0;
+    virtual void Unused37() = 0;
+    virtual void Unused38() = 0;
+    virtual void Unused39() = 0;
+    virtual void Unused40() = 0;
+    virtual void Unused41() = 0;
+    virtual void Unused42() = 0;
+    virtual void Unused43() = 0;
+    virtual void Unused44() = 0;
+    virtual void Unused45() = 0;
+    virtual void Unused46() = 0;
+    virtual void Unused47() = 0;
+    virtual void Unused48() = 0;
+    virtual void Unused49() = 0;
+    virtual void Unused50() = 0;
+    virtual void Unused51() = 0;
+    virtual void Unused52() = 0; // SetCursorAlwaysVisible(bool), never call.
+    virtual bool IsCursorVisible() = 0; // 53, read-only.
+};
+
+static FreecamSurface030 * FreecamGetSurface030()
+{
+    static bool attempted = false;
+    static FreecamSurface030 * surface = nullptr;
+    if (!attempted && g_AppSystemFactory)
+    {
+        attempted = true;
+        surface = static_cast<FreecamSurface030 *>(g_AppSystemFactory("VGUI_Surface030", nullptr));
+    }
+    return surface;
+}
 
 BvhExport * g_BvhExport = NULL;
 
@@ -94,6 +194,7 @@ Hook_VClient_RenderView::Hook_VClient_RenderView()
 	CurrentCameraFov = 90.0;
 
 	m_MirvInput = new MirvInput(this);
+    m_MirvInput->MenuAwareEscape_set(true);
 
 	SetDefaultOverrides();
 }
@@ -109,8 +210,37 @@ Hook_VClient_RenderView::~Hook_VClient_RenderView() {
 	delete m_MirvInput;
 }
 
+bool Hook_VClient_RenderView::UiCursorStatus(bool & available, bool & visible) const
+{
+    // This query is intended only for TF2 and TF2 Classified. Other games
+    // may expose a different surface ABI and must keep their old behavior.
+    if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
+    {
+        available = false;
+        visible = false;
+        return false;
+    }
+    FreecamSurface030 * surface = FreecamGetSurface030();
+    available = nullptr != surface;
+    visible = available ? surface->IsCursorVisible() : false;
+    return available;
+}
+
 bool Hook_VClient_RenderView::GetSuspendMirvInput() {
-	return g_VEngineClient && g_VEngineClient->Con_IsVisible();
+    if (g_VEngineClient && g_VEngineClient->Con_IsVisible()) return true;
+    if (!m_MirvInput || !m_MirvInput->GetCameraControlMode()) return false;
+    if (FreecamMenuVisible()) return true;
+
+    // Demo UI and other VGUI controls release the mouse when their cursor
+    // is visible. Off until tested against the target game's surface ABI.
+    if (m_UiCursorSuspend)
+    {
+        bool available = false, visible = false;
+        UiCursorStatus(available, visible);
+        // Yield only when Source reports its UI cursor visible.
+        if (available && visible) return true;
+    }
+    return false;
 }
 
 void Hook_VClient_RenderView::GetLastCameraData(double & x, double & y, double & z, double & rX, double & rY, double & rZ, double & fov) {
@@ -299,6 +429,7 @@ void TrySetView(float Tx, float Ty, float Tz, float Rx, float Ry, float Rz, floa
 
 void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, float &Rx, float &Ry, float &Rz, float &Fov)
 {
+	MirvCampathPreview_Update();
 	bool originOrAnglesOverriden = false;
 
 	float curTime = g_MirvTime.GetTime();
@@ -410,7 +541,6 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			break;
 
 		case Override_Aim:
-#ifndef _WIN64
 			if (m_Globals)
 			{
 				double dRx = Rx;
@@ -426,7 +556,6 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 					Rz = (float)dRz;
 				}
 			}
-#endif //#ifndef _WIN64
 			break;
 
 		case Override_CamOffset:
@@ -509,7 +638,17 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 
 	m_MirvInput->Supply_MouseFrameEnd();
 
-	m_LastFrameTime = m_Globals->absoluteframetime_get();
+	// Free-camera movement uses wall-clock frame time, not the demo-scaled
+	// engine absolute frame time. Campath preview keeps its own timing.
+	using FreeCameraClock = std::chrono::steady_clock;
+	static FreeCameraClock::time_point lastFreeCameraFrame = FreeCameraClock::now();
+	const FreeCameraClock::time_point nowFreeCameraFrame = FreeCameraClock::now();
+	const double elapsed = std::chrono::duration<double>(nowFreeCameraFrame - lastFreeCameraFrame).count();
+	lastFreeCameraFrame = nowFreeCameraFrame;
+	// Avoid large jumps after loading, debugging, or switching applications.
+    const float realFrameTime = (float)(elapsed < 0.0 ? 0.0 : (elapsed > 0.1 ? 0.1 : elapsed));
+    m_LastFrameTime = m_MirvInput->IgnoreTimescale_get()
+        ? realFrameTime : m_Globals->absoluteframetime_get();
 
 	//Tier0_Msg("Hook_VClient_RenderView::OnViewOverride: curTime = %f, LastCameraOrigin=%f,%f,%f\n",curTime,LastCameraOrigin[0],LastCameraOrigin[1],LastCameraOrigin[2]);
 }

@@ -9,6 +9,7 @@
 #include "Gui.h"
 #include "SourceInterfaces.h"
 #include "CampathDrawer.h"
+#include "EntityIndexDrawer.h"
 #include "AfxShaders.h"
 
 #ifndef _WIN64
@@ -180,10 +181,14 @@ void Shared_Direct3DDevice9_Init(
 	g_AfxShaders.BeginDevice(device);
 
 	g_CampathDrawer.BeginDevice(device);
+
+	g_EntityIndexDrawer.BeginDevice(device);
 }
 
 void Shared_Direct3DDevice9_Shutdown()
 {
+	g_EntityIndexDrawer.EndDevice();
+
 	g_CampathDrawer.EndDevice();
 
 	g_AfxShaders.EndDevice();

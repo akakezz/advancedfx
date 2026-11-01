@@ -27,6 +27,7 @@
 #include "AfxStreams.h"
 #include "hlaeFolder.h"
 #include "CampathDrawer.h"
+#include "EntityIndexDrawer.h"
 
 #ifndef _WIN64
 #include "asmClassTools.h"
@@ -289,6 +290,7 @@ public:
 		// Warning: This can be called multiple times during a frame (i.e. for skybox view and normal world view)!
 
 		g_CampathDrawer.OnPostRenderAllTools_EngineThread();
+		g_EntityIndexDrawer.OnPostRenderAllTools_EngineThread();
 		g_Engine_ClientEngineTools->PostRenderAllTools();
 	}
 
@@ -2322,6 +2324,10 @@ FARPROC WINAPI new_Engine_GetProcAddress(HMODULE hModule, LPCSTR lpProcName)
 	return nResult;
 }
 
+// Campath preview captures arrow keys only while preview mode is active.
+extern bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam);
+extern void MirvCampathPreview_ReleaseKeys();
+
 WNDPROC g_NextWindProc;
 static bool g_afxWindowProcSet = false;
 
@@ -2334,6 +2340,9 @@ LRESULT CALLBACK new_Afx_WindowProc(
 {
 	if (AfxHookSource::Gui::WndProcHandler(hwnd, uMsg, wParam, lParam))
 		return 0;
+    if (MirvCampathPreview_KeyEvent(uMsg, wParam, lParam)) return 0;
+    if (uMsg == WM_KILLFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE))
+        MirvCampathPreview_ReleaseKeys();
 
 	switch(uMsg)
 	{
