@@ -6,7 +6,7 @@ This modification is a work in progress. It has worked reliably in limited testi
 
 ## About
 
-Half-Life Advanced Effects (HLAE) is a tool to enrich content creation through the Source engine demos.
+Half-Life Advanced Effects (HLAE) is a tool to enrich content creation mainly for the Counter-Strike series.
 
 This repository contains an unofficial modification of [HLAE](https://github.com/advancedfx/advancedfx), with additional features for Team Fortress 2 (TF2). It is not maintained by the official HLAE team.
 
