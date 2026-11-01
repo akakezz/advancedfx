@@ -72,7 +72,7 @@ A path with even one keyframe can be previewed.
 mirv_campath preview seek
 mirv_campath preview 0
 mirv_campath preview exit
-mirv_campath preview toggleKey [KEY]
+mirv_campath preview toggleKey f8
 ```
 
 `seek` moves the demo to the previewed camera's time; navigating the cameras alone does not seek. `preview 0` selects the first keyframe (indices start at zero). `exit` leaves the free camera at its current preview pose. `toggleKey f8` assigns F8 to toggle preview without a Source key bind.
