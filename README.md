@@ -2,91 +2,48 @@
 
 ## About
 
-Half-Life Advanced Effects (HLAE) is a tool to enrich content creation mainly for the Counter-Strike series.
+Half-Life Advanced Effects (HLAE) is a tool for creating gaming videos and working with demos.
+
+This repository contains an unofficial modification of [HLAE](https://github.com/advancedfx/advancedfx), with additional features for Team Fortress 2 (TF2). It is not maintained by the official HLAE team.
+
+## Changes
+
+* **Entity tools:** `mirv_listentities`, `mirv_listplayers` and `mirv_listbones` for inspecting entities and bones.
+* **Entity indices:** `mirv_drawentities` displays entity indices in-game, with category filters, custom colors and label stacking.
+* **Camera tools:** TF2 entity and bone support for `mirv_aim`, `mirv_calcs` and `mirv_cam attach`, including offsets and capturing camera framing relative to a target.
+* **Campath preview:** `mirv_campath preview` allows navigation along camera paths, jumping between keyframes and seeking the demo. Paths with 1–3 keyframes can also be previewed. Home / End jump to the first / last keyframe.
+* **Free camera:** Optional movement independent of demo timescale, changed Escape handling and `mirv_input camera uiCursor 1` for interacting with the Demo UI without leaving freecam.
+
+Use the corresponding console commands without arguments for help (for example, `mirv_campath preview` or `mirv_drawentities`).
 
 ## Download
 
-**VAC warning**: The HLAE tool is technically a hack, therefore you should only use it for making gaming videos or watching demos. Joining VAC protected servers with HLAE will probably get you VAC banned.
+No releases of this modified build are available yet. For official HLAE releases, see [advancedfx releases](https://github.com/advancedfx/advancedfx/releases).
 
-**Epilepsy warning**: This software will cause fast-changing images and colors on your screen.
+**VAC warning:** HLAE modifies game behavior. Use it for demo viewing and video creation only; do not join VAC-protected servers while using it.
 
-### Latest release
-
-https://github.com/advancedfx/advancedfx/releases/latest  
-Compatible with latest Steam version.
-
-### Past releases
-
-https://github.com/advancedfx/advancedfx/releases
-
-* **Old HLAE versions for specific CS2 versions**  
-  https://github.com/advancedfx/advancedfx/wiki/Old-HLAE-versions-for-specific-CS2-versions
-
-* **HLAE 2.153.1** (2024-01-05T19:45Z)  
-  https://github.com/advancedfx/advancedfx/releases/tag/v2.153.1  
-  Release with AfxHookGoldSrc and related tools compatible with Steam version "steam_legacy - Pre-25th Anniversary Build.
-  The latest HLAE release should also work with steam_legacy.
-
-* **HLAE 2.34.5** (2017-07-08T14:48Z)  
-  https://github.com/ripieces/advancedfx/releases/tag/v2.34.5  
-  Last release with AfxHookGoldSrc and related tools compatible with Steam version before 10th of July 2017.
-
-* **HLAE 2.2.21.14** (2013-02-09T14:16Z)  
-  https://github.com/ripieces/advancedfx-prop/releases/tag/v2.2.21.14  
-  Release compatible with Steam version from July 2009.
+**Epilepsy warning:** This software may display rapidly changing images and colors.
 
 ## System requirements
 
 * Microsoft Windows 10 or newer
 * Microsoft .NET Framework 4.6.2 or newer
 * Genuine Steam version
-* a lot of patience
-
-## Tip
-
-Using Steam's offline mode you can avoid retrieving updates that break HLAE during video production.
+* A lot of patience
 
 ## Support
 
-Please keep in mind, that even though we accept donations, HLAE is free software and a hobby for most in the HLAE team.
-Thus the support we can provide is limited. We encourage you to read the Manual or help each other in the Discord instead.
+This is an unofficial build. Issues related to its modifications should be reported to this repository, not to the official HLAE project.
 
-### English
-
-* **Manual**  
-  https://github.com/advancedfx/advancedfx/wiki  
-  HLAE wiki with FAQ, tutorials, command lists, and more. 
-
-* **Discord**  
-  https://discord.gg/NGp8qhN  
-  Live text chat support from HLAE team members and community members.
-
-* GitHub - **Issues**  
-  https://github.com/advancedfx/advancedfx/issues  
-  For bug reports and feature requests (enhancements).
-
-### 中文 (zh-CN)
-
- * **HLAE中文站**  
-   https://hlae.site  
-   This site is run by a third party and one of the HLAE team members is involved.
-
-## Releated tools
-
-For a list of related tools see [related-tools.md](related-tools.md)
-
-## Changelog
-
-Newer changelog entries are replicated on the [releases page](https://github.com/advancedfx/advancedfx/releases).  
-Further changelog entries can be found in the changelog XML files included in the download.
+For general HLAE documentation, see the [official wiki](https://github.com/advancedfx/advancedfx/wiki).
 
 ## Credits
 
-[CREDITS.md](CREDITS.md)
+HLAE is developed by the [AdvancedFX team](https://github.com/advancedfx/advancedfx). See [CREDITS.md](CREDITS.md) for the original credits.
 
 ## License
 
-This repository contains the parts of advancedfx project that are under MIT license. Please note: **the license does not apply to submodules**.
+The MIT license applies to the corresponding parts of this repository. Submodules may have different licenses. See [LICENSE](LICENSE).
 
 ## How to build
 
