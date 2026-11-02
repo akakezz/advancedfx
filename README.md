@@ -22,7 +22,9 @@ Use the corresponding console commands without arguments for help (for example, 
 
 ## Download
 
-No releases of this modified build are available yet. For official HLAE releases, see [advancedfx releases](https://github.com/advancedfx/advancedfx/releases).
+The latest releases of this modified HLAE build can be found on the [Releases page](https://github.com/akakezz/advancedfx/releases).
+
+For official HLAE releases, see [advancedfx releases](https://github.com/advancedfx/advancedfx/releases).
 
 **VAC warning:** HLAE modifies game behavior. Use it for demo viewing and video creation only; do not join VAC-protected servers while using it.
 
