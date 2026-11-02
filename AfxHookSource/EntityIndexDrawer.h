@@ -5,12 +5,8 @@
 #include <stdint.h>
 #include <vector>
 
-/// <summary>Draws the entity index over TF2 entities in the live view (like mirv_campath draw does for the campath).</summary>
-/// <remarks>
-/// After the main 3D view was rendered the entities are collected on the engine thread and the labels are
-/// drawn on the render thread right away (the same way the campath is drawn), so they are part of the 3D scene
-/// and are drawn before the game's UI.
-/// </remarks>
+/// <summary>Draws TF2 entity indices in the game view.</summary>
+/// <remarks>Collects entities on the engine thread and draws labels on the render thread.</remarks>
 class CEntityIndexDrawer
 {
 public:
@@ -22,12 +18,12 @@ public:
 	bool Enabled_get(void) { return m_Enabled; }
 	void Enabled_set(bool value) { m_Enabled = value; }
 
-    // Category indices: 0 player, 1 projectile, 2 weapon, 3 cosmetic, 4 other.
-    bool Filter_get(int category) const { return 0 <= category && category < 5 && m_CategoryFilter[category]; }
-    void Filter_set(int category, bool value) { if (0 <= category && category < 5) m_CategoryFilter[category] = value; }
-    void FilterAll_set(bool value) { for (int i = 0; i < 5; ++i) m_CategoryFilter[i] = value; }
+	// Category indices: player, projectile, weapon, cosmetic, other.
+	bool Filter_get(int category) const { return 0 <= category && category < 5 && m_CategoryFilter[category]; }
+	void Filter_set(int category, bool value) { if (0 <= category && category < 5) m_CategoryFilter[category] = value; }
+	void FilterAll_set(bool value) { for (int i = 0; i < 5; ++i) m_CategoryFilter[i] = value; }
 
-	/// <summary>Height above the top of the entity's bounds in world units.</summary>
+	/// <summary>Vertical offset from the label anchor in world units.</summary>
 	float Height_get(void) { return m_Height; }
 	void Height_set(float value) { m_Height = value; }
 
@@ -42,15 +38,14 @@ public:
 	int MaxLabels_get(void) { return m_MaxLabels; }
 	void MaxLabels_set(int value) { m_MaxLabels = value < 1 ? 1 : (2048 < value ? 2048 : value); }
 
-    void CategoryColor_set(int category, int r, int g, int b);
-    void CategoryColor_get(int category, int & r, int & g, int & b) const;
+	void CategoryColor_set(int category, int r, int g, int b);
+	void CategoryColor_get(int category, int & r, int & g, int & b) const;
 
-    // 0: exact projected anchor; 1 (default): world-aware stacking.
-    bool StackLabels_get(void) const { return m_StackLabels; }
-    void StackLabels_set(bool value) { m_StackLabels = value; }
-    // Stack only if projected labels overlap AND their world-space anchors are nearby.
-    float StackWorldDistance_get(void) const { return m_StackWorldDistance; }
-    void StackWorldDistance_set(float value) { m_StackWorldDistance = value < 0.0f ? 0.0f : value; }
+	// Shift overlapping labels only if their world-space anchors are nearby.
+	bool StackLabels_get(void) const { return m_StackLabels; }
+	void StackLabels_set(bool value) { m_StackLabels = value; }
+	float StackWorldDistance_get(void) const { return m_StackWorldDistance; }
+	void StackWorldDistance_set(float value) { m_StackWorldDistance = value < 0.0f ? 0.0f : value; }
 
 	/// <summary>If true (default) only the main view is drawn on, not i.e. the 3D skybox view.</summary>
 	bool ViewCheck_get(void) { return m_ViewCheck; }
@@ -69,7 +64,7 @@ public:
 	struct Label
 	{
 		int index;
-        int category;
+		int category;
 		float x, y, z;
 	};
 
@@ -77,8 +72,8 @@ public:
 	{
 		float worldToScreen[4][4] = {};
 		float size = 32.0f;
-        bool stackLabels = true;
-        float stackWorldDistance = 32.0f;
+		bool stackLabels = true;
+		float stackWorldDistance = 32.0f;
 		uint32_t colors[5] = { 0xFF42C8FFu, 0xFFFF6A55u, 0xFF46EB8Cu, 0xFFCE80FFu, 0xFFFFE600u };
 		std::vector<Label> labels;
 	};
@@ -87,25 +82,19 @@ public:
 	void OnPostRenderAllTools_DrawingThread(const DrawData & data);
 
 private:
-	struct Vertex
-	{
-		float x, y, z, rhw;
-		uint32_t color;
-	};
-
 	IDirect3DDevice9 * m_Device = nullptr;
-    IDirect3DTexture9 * m_DigitsTexture = nullptr;
+	IDirect3DTexture9 * m_DigitsTexture = nullptr;
 
 	bool m_Enabled = false;
-    bool m_CategoryFilter[5] = { true, true, true, true, true };
+	bool m_CategoryFilter[5] = { true, true, true, true, true };
 	float m_Height = 0.0f;
 	float m_Size = 32.0f;
 	float m_MaxDistance = 0.0f;
 	int m_MaxLabels = 64;
-    int m_CategoryColors[5][3] = { {66,200,255}, {255,106,85}, {70,235,140}, {206,128,255}, {255,230,0} };
+	int m_CategoryColors[5][3] = { {66,200,255}, {255,106,85}, {70,235,140}, {206,128,255}, {255,230,0} };
 	bool m_ViewCheck = true;
-    bool m_StackLabels = true;
-    float m_StackWorldDistance = 32.0f;
+	bool m_StackLabels = true;
+	float m_StackWorldDistance = 32.0f;
 
 	unsigned int m_StatCalls = 0;
 	unsigned int m_StatMainViewCalls = 0;
