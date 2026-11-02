@@ -53,6 +53,10 @@ For general HLAE documentation, see the [official wiki](https://github.com/advan
 
 HLAE is developed by the [AdvancedFX team](https://github.com/advancedfx/advancedfx). See [CREDITS.md](CREDITS.md) for the original credits.
 
+Additional TF2 modifications were developed with assistance from
+[ChatGPT](https://chatgpt.com/) (OpenAI), including code generation,
+debugging and documentation.
+
 ## License
 
 The MIT license applies to the corresponding parts of this repository. Submodules may have different licenses. See [LICENSE](LICENSE).
