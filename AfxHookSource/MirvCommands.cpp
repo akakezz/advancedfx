@@ -1447,77 +1447,98 @@ public:
 
 } g_MirvCampath_Drawer;
  
-// Preview uses the existing campath evaluator and mirv_input free camera.
-// The +/- commands are safe to bind permanently; they are inert outside preview mode.
+// Campath preview uses the existing CamPath evaluator and mirv_input free camera.
 static bool g_CampathPreviewActive = false;
 static bool g_CampathPreviewForward = false;
 static bool g_CampathPreviewBackward = false;
 static double g_CampathPreviewTime = 0.0;
 static int g_CampathPreviewFrame = -1;
 static DWORD g_CampathPreviewLastMs = 0;
-// 0 disables the dedicated toggle key. No game bind is required.
+// 0 disables the dedicated toggle key.
 static UINT g_CampathPreviewToggleKey = 0;
 static bool g_CampathPreviewToggleHeld = false;
 
-// Win32 virtual-key names. Supports letters, digits, F1..F12 and several special keys.
 static UINT CampathPreview_ParseToggleKey(const char * name)
 {
-    if (!name || !*name) return 0;
-    if (0 == _stricmp(name, "none") || 0 == _stricmp(name, "off")) return 0;
-    if (!name[1]) {
-        const char c = name[0];
-        if (c >= 'a' && c <= 'z') return (UINT)(c - 'a' + 'A');
-        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return (UINT)c;
-    }
-    if (name[0] == 'f' || name[0] == 'F') {
-        char * end = nullptr;
-        const long f = strtol(name + 1, &end, 10);
-        if (end != name + 1 && !*end && f >= 1 && f <= 12) return VK_F1 + (UINT)(f - 1);
-    }
-    if (0 == _stricmp(name, "insert")) return VK_INSERT;
-    if (0 == _stricmp(name, "home")) return VK_HOME;
-    if (0 == _stricmp(name, "end")) return VK_END;
-    if (0 == _stricmp(name, "pageup")) return VK_PRIOR;
-    if (0 == _stricmp(name, "pagedown")) return VK_NEXT;
-    return 0;
+	if (!name || !*name)
+		return 0;
+	if (0 == _stricmp(name, "none") || 0 == _stricmp(name, "off"))
+		return 0;
+
+	if (!name[1])
+	{
+		const char c = name[0];
+		if (c >= 'a' && c <= 'z')
+			return (UINT)(c - 'a' + 'A');
+		if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+			return (UINT)c;
+	}
+
+	if (name[0] == 'f' || name[0] == 'F')
+	{
+		char * end = nullptr;
+		const long f = strtol(name + 1, &end, 10);
+		if (end != name + 1 && !*end && f >= 1 && f <= 12)
+			return VK_F1 + (UINT)(f - 1);
+	}
+
+	if (0 == _stricmp(name, "insert")) return VK_INSERT;
+	if (0 == _stricmp(name, "home")) return VK_HOME;
+	if (0 == _stricmp(name, "end")) return VK_END;
+	if (0 == _stricmp(name, "pageup")) return VK_PRIOR;
+	if (0 == _stricmp(name, "pagedown")) return VK_NEXT;
+	return 0;
 }
 
-
-// An individual keyframe is usable as a bookmark even when the current
-// interpolation mode does not have enough points to evaluate a path.
+// Keyframes can be previewed even when the path cannot be interpolated.
 static bool CampathPreview_CanShow(const CamPath & path)
 {
-    return path.GetSize() != 0;
+	return path.GetSize() != 0;
+}
+
+static CamPathIterator CampathPreview_FindNearestKeyframe(CamPath & path, double time)
+{
+	CamPathIterator nearest = path.GetBegin();
+	double nearestDistance = std::fabs(nearest.GetTime() - time);
+
+	for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it)
+	{
+		const double distance = std::fabs(it.GetTime() - time);
+		if (distance < nearestDistance)
+		{
+			nearest = it;
+			nearestDistance = distance;
+		}
+	}
+
+	return nearest;
 }
 
 static bool CampathPreview_SetCamera()
 {
 	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 	MirvInput * input = g_Hook_VClient_RenderView.m_MirvInput;
-	if (!input || !CampathPreview_CanShow(path)) return false;
-	if (g_CampathPreviewTime < path.GetLowerBound()) g_CampathPreviewTime = path.GetLowerBound();
-	if (g_CampathPreviewTime > path.GetUpperBound()) g_CampathPreviewTime = path.GetUpperBound();
+	if (!input || !CampathPreview_CanShow(path))
+		return false;
 
-    CamPathValue value;
-    if (path.CanEval()) {
-        // Preserve HLAE's interpolation unchanged for evaluatable paths.
-        value = path.Eval(g_CampathPreviewTime);
-    } else {
-        // Without interpolation, preview the nearest actual keyframe rather
-        // than calling Eval(). Snap the time too, so preview seek always
-        // targets that bookmark's tick (not an arbitrary in-between time).
-        CamPathIterator nearest = path.GetBegin();
-        double nearestDistance = std::fabs(nearest.GetTime() - g_CampathPreviewTime);
-        for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it) {
-            const double distance = std::fabs(it.GetTime() - g_CampathPreviewTime);
-            if (distance < nearestDistance) {
-                nearest = it;
-                nearestDistance = distance;
-            }
-        }
-        g_CampathPreviewTime = nearest.GetTime();
-        value = nearest.GetValue();
-    }
+	if (g_CampathPreviewTime < path.GetLowerBound())
+		g_CampathPreviewTime = path.GetLowerBound();
+	if (g_CampathPreviewTime > path.GetUpperBound())
+		g_CampathPreviewTime = path.GetUpperBound();
+
+	CamPathValue value;
+	if (path.CanEval())
+	{
+		value = path.Eval(g_CampathPreviewTime);
+	}
+	else
+	{
+		// Without interpolation, use the nearest actual keyframe and its time.
+		CamPathIterator nearest = CampathPreview_FindNearestKeyframe(path, g_CampathPreviewTime);
+		g_CampathPreviewTime = nearest.GetTime();
+		value = nearest.GetValue();
+	}
+
 	const Afx::Math::QEulerAngles angles = value.R.ToQREulerAngles().ToQEulerAngles();
 	input->SetCameraControlMode(true);
 	input->SetTx((float)value.X);
@@ -1532,30 +1553,35 @@ static bool CampathPreview_SetCamera()
 
 static bool CampathPreview_Enter()
 {
-    CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
-    if (!g_Hook_VClient_RenderView.IsInstalled() || !CampathPreview_CanShow(path) || !g_Hook_VClient_RenderView.m_MirvInput) {
-        Tier0_Warning("Campath preview: no usable keyframes or free camera is unavailable.\n");
-        return false;
-    }
-    if (!g_CampathPreviewActive) {
-        const double t = (double)g_MirvTime.GetTime() - path.GetOffset();
-        g_CampathPreviewTime = t < path.GetLowerBound() ? path.GetLowerBound() : (t > path.GetUpperBound() ? path.GetUpperBound() : t);
-    }
-    g_CampathPreviewActive = true;
-    g_CampathPreviewFrame = -1;
-    g_CampathPreviewLastMs = GetTickCount();
-    g_CampathPreviewForward = g_CampathPreviewBackward = false;
-    CampathPreview_SetCamera();
-    Tier0_Msg("Campath preview active.\n");
-    return true;
+	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	if (!g_Hook_VClient_RenderView.IsInstalled() || !CampathPreview_CanShow(path) || !g_Hook_VClient_RenderView.m_MirvInput)
+	{
+		Tier0_Warning("Campath preview: no usable keyframes or free camera is unavailable.\n");
+		return false;
+	}
+
+	if (!g_CampathPreviewActive)
+	{
+		const double t = (double)g_MirvTime.GetTime() - path.GetOffset();
+		g_CampathPreviewTime = t < path.GetLowerBound() ? path.GetLowerBound() : (t > path.GetUpperBound() ? path.GetUpperBound() : t);
+	}
+
+	g_CampathPreviewActive = true;
+	g_CampathPreviewFrame = -1;
+	g_CampathPreviewLastMs = GetTickCount();
+	g_CampathPreviewForward = g_CampathPreviewBackward = false;
+	CampathPreview_SetCamera();
+	Tier0_Msg("Campath preview active.\n");
+	return true;
 }
 
 static void CampathPreview_Exit()
 {
-    if (g_CampathPreviewActive) CampathPreview_SetCamera();
-    g_CampathPreviewActive = g_CampathPreviewForward = g_CampathPreviewBackward = false;
-    g_CampathPreviewLastMs = 0;
-    Tier0_Msg("Campath preview exited; free camera retained.\n");
+	if (g_CampathPreviewActive)
+		CampathPreview_SetCamera();
+	g_CampathPreviewActive = g_CampathPreviewForward = g_CampathPreviewBackward = false;
+	g_CampathPreviewLastMs = 0;
+	Tier0_Msg("Campath preview exited; free camera retained.\n");
 }
 
 // Called at view override time, before the existing mirv_input override is evaluated.
