@@ -2053,6 +2053,12 @@ static void Mirv_MatrixAngles3(const float m[3][3], float & pitch, float & yaw, 
 	}
 }
 
+// An unset bone matrix has no usable forward axis.
+static bool Mirv_Tf2_IsValidBoneMatrix(const float m[3][4])
+{
+	return !(m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0] < 0.25f);
+}
+
 // Makes a right handed, orthonormal basis out of the rotation part of a bone matrix (removes scale).
 // Returns false if the matrix is degenerate.
 static bool Mirv_Basis3(const float (*m)[4], float b[3][3])
@@ -2332,7 +2338,7 @@ private:
 	{
 		baseOk = false;
 
-		const int maxBones = 128; // MAXSTUDIOBONES
+		const int maxBones = MIRV_TF2_MAX_BONES;
 
 		if (maxBones <= m_BoneIndex)
 			return false;
@@ -2393,8 +2399,7 @@ private:
 
 			const float (*m)[4] = bones[m_BoneIndex].m_flMatVal;
 
-			// Not a valid transform (e.g. bone does not exist): basis is all zero.
-			if (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0] < 0.25f)
+			if (!Mirv_Tf2_IsValidBoneMatrix(m))
 				return false;
 
 			pos.x = m[0][3];
@@ -5392,8 +5397,6 @@ bool Mirv_Tf2_GetBones(int entityIndex, MirvTf2Bone_t * outBones, int & outCount
 		if (!renderable->SetupBones(bones, MIRV_TF2_MAX_BONES, 0x0007FF00, gl->curtime_get()))
 			return false;
 
-		const float rad2deg = 57.29577951308232f;
-
 		for (int b = 0; b < MIRV_TF2_MAX_BONES; ++b)
 		{
 			const float (*m)[4] = bones[b].m_flMatVal;
@@ -5401,8 +5404,7 @@ bool Mirv_Tf2_GetBones(int entityIndex, MirvTf2Bone_t * outBones, int & outCount
 
 			out.valid = false;
 
-			// Basis all zero: bone does not exist (or was not set up).
-			if (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0] < 0.25f)
+			if (!Mirv_Tf2_IsValidBoneMatrix(m))
 				continue;
 
 			out.valid = true;
@@ -5410,21 +5412,12 @@ bool Mirv_Tf2_GetBones(int entityIndex, MirvTf2Bone_t * outBones, int & outCount
 			out.origin[1] = m[1][3];
 			out.origin[2] = m[2][3];
 
-			// Same as MatrixAngles in the Source SDK's mathlib.
-			float xyDist = sqrtf(m[0][0] * m[0][0] + m[1][0] * m[1][0]);
-
-			if (0.001f < xyDist)
-			{
-				out.angles[1] = rad2deg * atan2f(m[1][0], m[0][0]);
-				out.angles[0] = rad2deg * atan2f(-m[2][0], xyDist);
-				out.angles[2] = rad2deg * atan2f(m[2][1], m[2][2]);
-			}
-			else
-			{
-				out.angles[1] = rad2deg * atan2f(-m[0][1], m[1][1]);
-				out.angles[0] = rad2deg * atan2f(-m[2][0], xyDist);
-				out.angles[2] = 0.0f;
-			}
+			const float rotation[3][3] = {
+				{ m[0][0], m[0][1], m[0][2] },
+				{ m[1][0], m[1][1], m[1][2] },
+				{ m[2][0], m[2][1], m[2][2] }
+			};
+			Mirv_MatrixAngles3(rotation, out.angles[0], out.angles[1], out.angles[2]);
 
 			outCount = b + 1;
 		}
