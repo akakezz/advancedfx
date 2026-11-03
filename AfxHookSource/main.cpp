@@ -2324,7 +2324,7 @@ FARPROC WINAPI new_Engine_GetProcAddress(HMODULE hModule, LPCSTR lpProcName)
 	return nResult;
 }
 
-// Campath preview captures arrow keys only while preview mode is active.
+// Campath preview captures navigation keys while active and its optional toggle key at any time.
 extern bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam);
 extern void MirvCampathPreview_ReleaseKeys();
 
@@ -2338,11 +2338,20 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	__in LPARAM lParam
 )
 {
+	// Clear held preview keys before GUI input handling can consume focus changes.
+	if (uMsg == WM_KILLFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE))
+		MirvCampathPreview_ReleaseKeys();
+
 	if (AfxHookSource::Gui::WndProcHandler(hwnd, uMsg, wParam, lParam))
+	{
+		// The GUI can consume the corresponding key-up after preview handled key-down.
+		if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN || uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP)
+			MirvCampathPreview_ReleaseKeys();
 		return 0;
-    if (MirvCampathPreview_KeyEvent(uMsg, wParam, lParam)) return 0;
-    if (uMsg == WM_KILLFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE))
-        MirvCampathPreview_ReleaseKeys();
+	}
+
+	if (MirvCampathPreview_KeyEvent(uMsg, wParam, lParam))
+		return 0;
 
 	switch(uMsg)
 	{
