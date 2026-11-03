@@ -2303,27 +2303,35 @@ private:
 	bool CalcEntity(SOURCESDK::TF2::IClientTools * iface, SOURCESDK::Vector & outVector, SOURCESDK::QAngle & outAngles)
 	{
 		SOURCESDK::TF2::HTOOLHANDLE hHandle = iface->GetToolHandleForEntityByIndex(m_EntityIndex);
+		SOURCESDK::TF2::EntitySearchResult attachedEntity = 0;
 
 		if (SOURCESDK::TF2::HTOOLHANDLE_INVALID == hHandle)
 		{
-			// The game only gives entities a tool handle automatically while the client
-			// is in recording mode, so look the entity up and attach to it ourselves.
-			// (Once attached, GetToolHandleForEntityByIndex finds the handle directly.)
+			// Attach temporarily if the game has not assigned a tool handle.
 			for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
 			{
 				if (iface->GetEntIndex(ent) == m_EntityIndex)
 				{
 					hHandle = iface->AttachToEntity(ent);
+					if (SOURCESDK::TF2::HTOOLHANDLE_INVALID != hHandle)
+						attachedEntity = ent;
 					break;
 				}
 			}
 		}
 
 		if (SOURCESDK::TF2::HTOOLHANDLE_INVALID == hHandle || !iface->IsValidHandle(hHandle))
+		{
+			if (attachedEntity)
+				iface->DetachFromEntity(attachedEntity);
 			return false;
+		}
 
 		outVector = iface->GetAbsOrigin(hHandle);
 		outAngles = iface->GetAbsAngles(hHandle);
+
+		if (attachedEntity)
+			iface->DetachFromEntity(attachedEntity);
 
 		return true;
 	}
