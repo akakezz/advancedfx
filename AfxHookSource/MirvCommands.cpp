@@ -1458,6 +1458,17 @@ static DWORD g_CampathPreviewLastMs = 0;
 static UINT g_CampathPreviewToggleKey = 0;
 static bool g_CampathPreviewToggleHeld = false;
 
+static void CampathPreview_StopTravel()
+{
+	g_CampathPreviewForward = false;
+	g_CampathPreviewBackward = false;
+}
+
+static bool CampathPreview_IsRepeatKey(LPARAM lParam)
+{
+	return 0 != (lParam & (1LL << 30));
+}
+
 static UINT CampathPreview_ParseToggleKey(const char * name)
 {
 	if (!name || !*name)
@@ -1569,7 +1580,7 @@ static bool CampathPreview_Enter()
 	g_CampathPreviewActive = true;
 	g_CampathPreviewFrame = -1;
 	g_CampathPreviewLastMs = GetTickCount();
-	g_CampathPreviewForward = g_CampathPreviewBackward = false;
+	CampathPreview_StopTravel();
 	CampathPreview_SetCamera();
 	Tier0_Msg("Campath preview active.\n");
 	return true;
@@ -1579,70 +1590,88 @@ static void CampathPreview_Exit()
 {
 	if (g_CampathPreviewActive)
 		CampathPreview_SetCamera();
-	g_CampathPreviewActive = g_CampathPreviewForward = g_CampathPreviewBackward = false;
+	g_CampathPreviewActive = false;
+	CampathPreview_StopTravel();
 	g_CampathPreviewLastMs = 0;
 	Tier0_Msg("Campath preview exited; free camera retained.\n");
 }
 
-// Called at view override time, before the existing mirv_input override is evaluated.
+// Called before the mirv_input view override is evaluated.
 void MirvCampathPreview_Update()
 {
-	if (!g_CampathPreviewActive) return;
-	// Honor free-camera exits (including Shift+Esc) instead of re-entering
-	// camera mode every frame through CampathPreview_SetCamera().
+	if (!g_CampathPreviewActive)
+		return;
+
+	// Do not re-enable free camera after it was explicitly exited.
 	if (!g_Hook_VClient_RenderView.m_MirvInput ||
-		!g_Hook_VClient_RenderView.m_MirvInput->GetCameraControlMode()) {
-		g_CampathPreviewActive = g_CampathPreviewForward = g_CampathPreviewBackward = false;
+		!g_Hook_VClient_RenderView.m_MirvInput->GetCameraControlMode())
+	{
+		g_CampathPreviewActive = false;
+		CampathPreview_StopTravel();
 		g_CampathPreviewLastMs = 0;
 		return;
 	}
-	// The console owns arrow keys while visible. Also clear held state so a
-	// swallowed key-up message cannot leave continuous travel running.
-	if (g_Hook_VClient_RenderView.IsMenuActive()) {
-		g_CampathPreviewForward = g_CampathPreviewBackward = false;
+
+	// Ignore held navigation keys while the console or menu owns input.
+	if (g_Hook_VClient_RenderView.IsMenuActive())
+	{
+		CampathPreview_StopTravel();
 		g_CampathPreviewLastMs = GetTickCount();
 		return;
 	}
+
 	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
-	if (!CampathPreview_CanShow(path)) {
+	if (!CampathPreview_CanShow(path))
+	{
 		g_CampathPreviewActive = false;
-		g_CampathPreviewForward = g_CampathPreviewBackward = false;
+		CampathPreview_StopTravel();
 		return;
 	}
 
-	// RenderView may be invoked more than once per game frame.
+	// RenderView can run more than once per game frame.
 	const int frame = g_MirvTime.GetFrameCount();
-	if (frame != g_CampathPreviewFrame) {
+	if (frame != g_CampathPreviewFrame)
+	{
 		g_CampathPreviewFrame = frame;
 		const DWORD nowMs = GetTickCount();
-        const DWORD elapsedMs = g_CampathPreviewLastMs ? nowMs - g_CampathPreviewLastMs : 0;
-        g_CampathPreviewLastMs = nowMs;
+		const DWORD elapsedMs = g_CampathPreviewLastMs ? nowMs - g_CampathPreviewLastMs : 0;
+		g_CampathPreviewLastMs = nowMs;
 		const int direction = (g_CampathPreviewForward ? 1 : 0) - (g_CampathPreviewBackward ? 1 : 0);
-		if (direction && path.CanEval()) {
+		if (direction && path.CanEval())
+		{
 			float scale = 1.0f;
-			if (g_VEngineClient) {
+			if (g_VEngineClient)
+			{
 				WrpVEngineClientDemoInfoEx * demo = g_VEngineClient->GetDemoInfoEx();
-				if (demo) scale = demo->GetDemoPlaybackTimeScale();
+				if (demo)
+					scale = demo->GetDemoPlaybackTimeScale();
 			}
-			// Pausing the demo should not make the camera-path preview unusable.
-			if (!(scale > 0.0f)) scale = 1.0f;
+			// A paused demo must not prevent preview navigation.
+			if (!(scale > 0.0f))
+				scale = 1.0f;
 			const float dt = (float)(elapsedMs > 100 ? 100 : elapsedMs) / 1000.0f;
 			g_CampathPreviewTime += direction * (double)dt * (double)scale;
 		}
 	}
+
 	CampathPreview_SetCamera();
 }
 
 static bool CampathPreview_GotoIndex(int index)
 {
 	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
-	if (index < 0 || (size_t)index >= path.GetSize()) return false;
+	if (index < 0 || (size_t)index >= path.GetSize())
+		return false;
+
 	CamPathIterator it = path.GetBegin();
-	for (int i = 0; i < index; ++i) ++it;
+	for (int i = 0; i < index; ++i)
+		++it;
+
 	g_CampathPreviewTime = it.GetTime();
-	if (!CampathPreview_SetCamera()) return false;
-	// Keep HLAE's normal keyframe selection in sync with preview navigation.
-	// This makes the chosen keyframe immediately editable after preview exit.
+	if (!CampathPreview_SetCamera())
+		return false;
+
+	// Keep the selected keyframe editable through HLAE's regular campath commands.
 	path.SelectNone();
 	path.SelectAdd((size_t)index, (size_t)index);
 	return true;
@@ -1650,101 +1679,126 @@ static bool CampathPreview_GotoIndex(int index)
 
 static void CampathPreview_StepKeyframe(int direction)
 {
-	if (!g_CampathPreviewActive) return;
+	if (!g_CampathPreviewActive)
+		return;
+
 	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 	int index = 0;
-	if (direction > 0) {
-		for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it, ++index) {
-			if (it.GetTime() > g_CampathPreviewTime + 0.00001) {
+	if (direction > 0)
+	{
+		for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it, ++index)
+		{
+			if (it.GetTime() > g_CampathPreviewTime + 0.00001)
+			{
 				CampathPreview_GotoIndex(index);
 				return;
 			}
 		}
-	} else {
+	}
+	else
+	{
 		int previous = -1;
-		for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it, ++index) {
-			if (it.GetTime() >= g_CampathPreviewTime - 0.00001) break;
+		for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it, ++index)
+		{
+			if (it.GetTime() >= g_CampathPreviewTime - 0.00001)
+				break;
 			previous = index;
 		}
-		if (previous >= 0) CampathPreview_GotoIndex(previous);
+		if (previous >= 0)
+			CampathPreview_GotoIndex(previous);
 	}
 }
 
-// Preview navigation is handled by the existing HLAE window procedure, not Source binds.
-// The regular mirv_input arrow-key handlers remain untouched outside preview mode.
+// The HLAE window procedure handles preview keys before regular mirv_input controls.
 bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 {
-    const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
-    const bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
-    if (!down && !up) return false;
+	const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+	const bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
+	if (!down && !up)
+		return false;
 
-    // Console typing must remain untouched, even when preview is active.
-    if (g_Hook_VClient_RenderView.IsMenuActive()) {
-        g_CampathPreviewForward = g_CampathPreviewBackward = false;
-        g_CampathPreviewToggleHeld = false;
-        return false;
-    }
+	if (g_Hook_VClient_RenderView.IsMenuActive())
+	{
+		CampathPreview_StopTravel();
+		g_CampathPreviewToggleHeld = false;
+		return false;
+	}
 
-    // This key is caught even when preview is *not* active, because normal
-    // mirv_input camera controls can swallow Source engine key binds.
-    if (g_CampathPreviewToggleKey && key == g_CampathPreviewToggleKey) {
-        if (up) g_CampathPreviewToggleHeld = false;
-        else if (!g_CampathPreviewToggleHeld && !(lParam & (1LL << 30))) {
-            g_CampathPreviewToggleHeld = true;
-            if (g_CampathPreviewActive) CampathPreview_Exit();
-            else CampathPreview_Enter();
-        }
-        return true;
-    }
+	// Handle the toggle even when preview is inactive, before mirv_input sees it.
+	if (g_CampathPreviewToggleKey && key == g_CampathPreviewToggleKey)
+	{
+		if (up)
+			g_CampathPreviewToggleHeld = false;
+		else if (!g_CampathPreviewToggleHeld && !CampathPreview_IsRepeatKey(lParam))
+		{
+			g_CampathPreviewToggleHeld = true;
+			if (g_CampathPreviewActive)
+				CampathPreview_Exit();
+			else
+				CampathPreview_Enter();
+		}
+		return true;
+	}
 
-    if (!g_CampathPreviewActive) return false;
-    if (key != VK_LEFT && key != VK_RIGHT && key != VK_UP && key != VK_DOWN
-        && key != VK_HOME && key != VK_END) return false;
-    if (key == VK_LEFT || key == VK_RIGHT) {
-        CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
-        if (path.CanEval()) {
-            // Interpolatable paths retain their continuous arrow-key scrubbing.
-            if (key == VK_LEFT) g_CampathPreviewBackward = down;
-            else g_CampathPreviewForward = down;
-        } else if (down && !(lParam & (1LL << 30))) {
-            // Without interpolation, LEFT/RIGHT step through bookmarks.
-            // Move to the adjacent bookmark on each fresh key press.
-            CampathPreview_StepKeyframe(key == VK_RIGHT ? 1 : -1);
-        }
-    }
-    else if (down && !(lParam & (1LL << 30))) {
-        if (key == VK_HOME || key == VK_END) {
-            // Stop continuous scrubbing when jumping to either endpoint.
-            g_CampathPreviewForward = g_CampathPreviewBackward = false;
-            g_CampathPreviewLastMs = GetTickCount();
-            CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
-            if (path.GetSize() != 0)
-                CampathPreview_GotoIndex(key == VK_HOME ? 0 : (int)path.GetSize() - 1);
-        } else {
-            CampathPreview_StepKeyframe(key == VK_UP ? 1 : -1);
-        }
-    }
-    return true;
+	if (!g_CampathPreviewActive)
+		return false;
+	if (key != VK_LEFT && key != VK_RIGHT && key != VK_UP && key != VK_DOWN
+		&& key != VK_HOME && key != VK_END)
+		return false;
+
+	if (key == VK_LEFT || key == VK_RIGHT)
+	{
+		CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+		if (path.CanEval())
+		{
+			if (key == VK_LEFT)
+				g_CampathPreviewBackward = down;
+			else
+				g_CampathPreviewForward = down;
+		}
+		else if (down && !CampathPreview_IsRepeatKey(lParam))
+		{
+			// Without interpolation, move between actual keyframes.
+			CampathPreview_StepKeyframe(key == VK_RIGHT ? 1 : -1);
+		}
+	}
+	else if (down && !CampathPreview_IsRepeatKey(lParam))
+	{
+		if (key == VK_HOME || key == VK_END)
+		{
+			CampathPreview_StopTravel();
+			g_CampathPreviewLastMs = GetTickCount();
+			CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+			if (path.GetSize() != 0)
+				CampathPreview_GotoIndex(key == VK_HOME ? 0 : (int)path.GetSize() - 1);
+		}
+		else
+		{
+			CampathPreview_StepKeyframe(key == VK_UP ? 1 : -1);
+		}
+	}
+	return true;
 }
+
 void MirvCampathPreview_ReleaseKeys()
 {
-    g_CampathPreviewForward = g_CampathPreviewBackward = false;
-    g_CampathPreviewToggleHeld = false;
+	CampathPreview_StopTravel();
+	g_CampathPreviewToggleHeld = false;
 }
 
 static void CampathPreview_PrintHelp()
 {
 	Tier0_Msg(
 		"mirv_campath preview enter - Begin preview mode (one or more keyframes).\n"
-        "mirv_campath preview toggle - Toggle Preview Mode on/off.\n"
-        "mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, home, end, pageup, pagedown).\n"
+		"mirv_campath preview toggle - Toggle Preview Mode on/off.\n"
+		"mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, home, end, pageup, pagedown).\n"
 		"mirv_campath preview <index> - Select a keyframe (0-based).\n"
 		"mirv_campath preview interp <0..1> - Position between nearest keyframe and the following one.\n"
 		"mirv_campath preview seek - Seek the demo to the current preview time.\n"
 		"mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
 		"Preview keys (console closed): UP/DOWN select next/previous; HOME/END select first/last.\n"
-        "LEFT/RIGHT scrub interpolated paths, or step through bookmarks if interpolation is unavailable.\n"
-        "HOME/END jump without seeking the demo (unless assigned as toggleKey); use preview seek to seek.\n"
+		"LEFT/RIGHT scrub interpolated paths, or step through keyframes if interpolation is unavailable.\n"
+		"HOME/END jump without seeking the demo (unless assigned as toggleKey); use preview seek to seek.\n"
 	);
 }
 
