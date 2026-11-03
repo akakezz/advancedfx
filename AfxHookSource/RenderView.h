@@ -118,7 +118,7 @@ public:
 	}
 
 private:
-    bool m_UiCursorSuspend = false; // Experimental: opt-in until verified in TF2/TF2C.
+	bool m_UiCursorSuspend = false; // Optional TF2 UI cursor handoff.
 	float m_LastFrameTime = 0;
 
 	bool m_Export;

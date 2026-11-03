@@ -430,29 +430,29 @@ bool MirvInput::GetCameraControlMode(void)
 
 void MirvInput::ClearMovementInput()
 {
-    m_CamForward = m_CamForwardI = 0.0;
-    m_CamLeft = m_CamLeftI = 0.0;
-    m_CamUp = m_CamUpI = 0.0;
-    m_CamPitch = m_CamPitchI = 0.0;
-    m_CamYaw = m_CamYawI = 0.0;
-    m_CamRoll = m_CamRollI = 0.0;
-    m_CamFov = m_CamFovI = 0.0;
-    m_MouseInput.Clear();
-    m_MouseInput.Normal.LeftButtonDown = m_MouseInput.Normal.RightButtonDown = false;
-    m_MouseInput.Raw.LeftButtonDown = m_MouseInput.Raw.RightButtonDown = false;
-    m_MNormalLeftButtonWasDown = m_MNormalRightButtonWasDown = false;
-    m_FirstGetCursorPos = true;
-    m_ResetCursorDelta = true;
+	m_CamForward = m_CamForwardI = 0.0;
+	m_CamLeft = m_CamLeftI = 0.0;
+	m_CamUp = m_CamUpI = 0.0;
+	m_CamPitch = m_CamPitchI = 0.0;
+	m_CamYaw = m_CamYawI = 0.0;
+	m_CamRoll = m_CamRollI = 0.0;
+	m_CamFov = m_CamFovI = 0.0;
+	m_MouseInput.Clear();
+	m_MouseInput.Normal.LeftButtonDown = m_MouseInput.Normal.RightButtonDown = false;
+	m_MouseInput.Raw.LeftButtonDown = m_MouseInput.Raw.RightButtonDown = false;
+	m_MNormalLeftButtonWasDown = m_MNormalRightButtonWasDown = false;
+	m_FirstGetCursorPos = true;
+	m_ResetCursorDelta = true;
 }
 
 void MirvInput::SetCameraControlMode(bool enable)
 {
-    if (!enable)
-    {
-        ClearMovementInput();
-        m_ShiftEscapeHeld = false;
-    }
-    m_CameraControlMode = enable;
+	if (!enable)
+	{
+		ClearMovementInput();
+		m_ShiftEscapeHeld = false;
+	}
+	m_CameraControlMode = enable;
 }
 
 double MirvInput::GetKeyboardSensitivty(void)
@@ -693,12 +693,12 @@ bool MirvInput::Supply_KeyEvent(KeyState keyState, WPARAM wParam, LPARAM lParam)
 	if(!m_Focus)
 		return false;
 
-    if(m_Dependencies->GetSuspendMirvInput())
-    {
-        ClearMovementInput();
-        m_IgnoreKeyUp = KS_DOWN == keyState;
-        return false;
-    }
+	if(m_Dependencies->GetSuspendMirvInput())
+	{
+		ClearMovementInput();
+		m_IgnoreKeyUp = KS_DOWN == keyState;
+		return false;
+	}
 
 	if(m_IgnoreKeyUp && KS_UP == keyState)
 	{
@@ -722,26 +722,27 @@ bool MirvInput::Supply_KeyEvent(KeyState keyState, WPARAM wParam, LPARAM lParam)
 			return true;
 		case VK_SUBTRACT:
 			return true;
-        case VK_ESCAPE:
-            if (!m_MenuAwareEscape)
-            {
-                if (KS_UP == keyState) SetCameraControlMode(false);
-                return true;
-            }
-            // Normal Escape belongs to Source's main menu. Shift+Escape is
-            // the built-in free-camera exit shortcut (independent of aliases).
-            if (KS_DOWN == keyState && (GetKeyState(VK_SHIFT) & 0x8000))
-            {
-                m_ShiftEscapeHeld = true;
-                return true;
-            }
-            if (KS_UP == keyState && m_ShiftEscapeHeld)
-            {
-                m_ShiftEscapeHeld = false;
-                SetCameraControlMode(false);
-                return true;
-            }
-            return false;
+		case VK_ESCAPE:
+			if (!m_MenuAwareEscape)
+			{
+				if (KS_UP == keyState)
+					SetCameraControlMode(false);
+				return true;
+			}
+			// Normal Escape belongs to Source's main menu. Shift+Escape is
+			// the built-in free-camera exit shortcut (independent of aliases).
+			if (KS_DOWN == keyState && (GetKeyState(VK_SHIFT) & 0x8000))
+			{
+				m_ShiftEscapeHeld = true;
+				return true;
+			}
+			if (KS_UP == keyState && m_ShiftEscapeHeld)
+			{
+				m_ShiftEscapeHeld = false;
+				SetCameraControlMode(false);
+				return true;
+			}
+			return false;
 		case VK_CONTROL:
 			if(KS_UP == keyState) m_IgnoreNextKey = true;
 			return true;
@@ -961,10 +962,10 @@ void MirvInput::ProcessRawInputData(PRAWINPUT pData) {
 		if (m_CameraControlMode) {
 			RAWKEYBOARD* rawkeyboard = &(pData->data.keyboard);
 			if(!(m_IgnoreNextKey || m_IgnoreKeyUp && (rawkeyboard->Flags & RI_KEY_BREAK))) {
-                // Let normal Escape reach Source so it can open its menu.
-                // Hide only Shift+Escape, which is the free-camera exit key.
-                bool bIgnoreKey = rawkeyboard->VKey == VK_ESCAPE
-                    && (!m_MenuAwareEscape || m_ShiftEscapeHeld || (GetKeyState(VK_SHIFT) & 0x8000));
+				// Let normal Escape reach Source so it can open its menu.
+				// Hide only Shift+Escape, which is the free-camera exit key.
+				bool bIgnoreKey = rawkeyboard->VKey == VK_ESCAPE
+					&& (!m_MenuAwareEscape || m_ShiftEscapeHeld || (GetKeyState(VK_SHIFT) & 0x8000));
                 switch(rawkeyboard->VKey) {
 				case VK_ADD:
 				case VK_SUBTRACT:					
@@ -1053,19 +1054,19 @@ void MirvInput::Supply_GetCursorPos(LPPOINT lpPoint)
 	if(!m_Focus)
 		return;
 
-    if(m_Dependencies->GetSuspendMirvInput())
-        return;
+	if(m_Dependencies->GetSuspendMirvInput())
+		return;
 
-    if(m_CameraControlMode)
-    {
-        if (m_ResetCursorDelta)
-        {
-            // Ignore cursor motion accumulated while a menu had focus.
-            m_LastCursorX = lpPoint->x;
-            m_LastCursorY = lpPoint->y;
-            m_ResetCursorDelta = false;
-        }
-        if(m_FirstGetCursorPos)
+	if(m_CameraControlMode)
+	{
+		if (m_ResetCursorDelta)
+		{
+			// Ignore cursor motion accumulated while a menu had focus.
+			m_LastCursorX = lpPoint->x;
+			m_LastCursorY = lpPoint->y;
+			m_ResetCursorDelta = false;
+		}
+		if(m_FirstGetCursorPos)
 		{
 			m_FirstGetCursorPos = false;
 		}
@@ -1114,11 +1115,11 @@ void MirvInput::Supply_SetCursorPos(int x, int y)
 
 void MirvInput::Supply_MouseFrameEnd(void)
 {
-    if (!m_Focus || m_Dependencies->GetSuspendMirvInput())
-    {
-        ClearMovementInput();
-        return;
-    }
+	if (!m_Focus || m_Dependencies->GetSuspendMirvInput())
+	{
+		ClearMovementInput();
+		return;
+	}
 
 	if(m_CameraControlMode)
 	{
@@ -1152,14 +1153,14 @@ double MirvInput::LimitFov(double fov) {
 
 bool MirvInput::Override(float deltaT, float & Tx, float &Ty, float & Tz, float & Rx, float & Ry, float & Rz, float & Fov)
 {
-    // Menus suspend controls, not the camera pose or selected camera mode.
-    // Also clear held buttons whose key-up may have gone to the menu.
-    if (m_Dependencies->GetSuspendMirvInput())
-    {
-        ClearMovementInput();
-        deltaT = 0.0f;
-    }
-    bool overriden = false;
+	// Menus suspend controls, not the camera pose or selected camera mode.
+	// Also clear held buttons whose key-up may have gone to the menu.
+	if (m_Dependencies->GetSuspendMirvInput())
+	{
+		ClearMovementInput();
+		deltaT = 0.0f;
+	}
+	bool overriden = false;
 
 	if (GetCameraControlMode())
 	{
