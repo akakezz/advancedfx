@@ -2341,23 +2341,24 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	// Clear held preview keys before GUI input handling can consume focus changes.
 	if (uMsg == WM_KILLFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE))
 	{
-        MirvCampathPreview_ReleaseKeys();
-        MirvCinematic_ReleaseKeys();
-    }
+		MirvCampathPreview_ReleaseKeys();
+		MirvCinematic_ReleaseKeys(true);
+	}
 
 	if (AfxHookSource::Gui::WndProcHandler(hwnd, uMsg, wParam, lParam))
 	{
 		// The GUI can consume the corresponding key-up after preview handled key-down.
 		if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN || uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP)
-        {
-            MirvCampathPreview_ReleaseKeys();
-            MirvCinematic_ReleaseKeys();
-        }
+		{
+			MirvCampathPreview_ReleaseKeys();
+			MirvCinematic_ReleaseKeys(true);
+		}
 		return 0;
 	}
 
-	if (MirvCinematic_KeyEvent(uMsg, wParam, lParam)) return 0;
-	if (!MirvCinematic_IsEditing() && MirvCampathPreview_KeyEvent(uMsg, wParam, lParam))
+	if (MirvCinematic_KeyEvent(uMsg, wParam, lParam))
+		return 0;
+	if (!MirvCinematic_IsNewSystem() && MirvCampathPreview_KeyEvent(uMsg, wParam, lParam))
 		return 0;
 
 	switch(uMsg)
@@ -2365,14 +2366,23 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	case WM_ACTIVATE:
 		g_Hook_VClient_RenderView.m_MirvInput->Supply_Focus(LOWORD(wParam) != 0);
 		break;
+	case WM_SYSCHAR:
+		if (!MirvCinematic_IsEditing())
+			break;
 	case WM_CHAR:
 		if(g_Hook_VClient_RenderView.m_MirvInput->Supply_CharEvent(wParam, lParam))
 			return 0;
 		break;
+	case WM_SYSKEYDOWN:
+		if (!MirvCinematic_IsEditing())
+			break;
 	case WM_KEYDOWN:
 		if(g_Hook_VClient_RenderView.m_MirvInput->Supply_KeyEvent(MirvInput::KS_DOWN, wParam, lParam))
 			return 0;
 		break;
+	case WM_SYSKEYUP:
+		if (!MirvCinematic_IsEditing())
+			break;
 	case WM_KEYUP:
 		if(g_Hook_VClient_RenderView.m_MirvInput->Supply_KeyEvent(MirvInput::KS_UP,wParam, lParam))
 			return 0;

@@ -34,6 +34,19 @@ const FLOAT c_CampathCrossPixelWidth = 4.0f;
 const FLOAT c_CameraRadius = c_CampathCrossRadius / 2.0f;
 const FLOAT c_CameraPixelWidth = 4.0f;
 
+// Transparent gutters isolate each glyph under bilinear filtering. RGB stays
+// white even in transparent texels, avoiding dark fringes on antialiased edges.
+const int c_CampathLabelColumns = 16;
+const int c_CampathLabelRows = 8;
+const int c_CampathLabelCellWidth = 32;
+const int c_CampathLabelCellHeight = 64;
+const int c_CampathLabelFontHeight = 40;
+const int c_CampathLabelAdvance = 20;
+const int c_CampathLabelPaddingX = 6;
+const int c_CampathLabelPaddingY = 8;
+const int c_CampathLabelAtlasWidth = c_CampathLabelColumns * c_CampathLabelCellWidth;
+const int c_CampathLabelAtlasHeight = c_CampathLabelRows * c_CampathLabelCellHeight;
+
 const FLOAT c_CameraTrajectoryPixelWidth = 8.0f;
 
 /// <summary>Epsilon for point reduction in world units (inch).</summary>
@@ -53,8 +66,7 @@ struct AFXDRAWTEXTUREVERTEX
 	float    pos[3];
 	float    uv[2];
 };
-#define D3DFVF_AFXDRAWTEXTUREVERTEX (D3DFVF_XYZ|D3DFVF_TEX1|D3DFVF_TEXCOORDSIZE1(1))
-
+#define D3DFVF_AFXDRAWTEXTUREVERTEX (D3DFVF_XYZ | D3DFVF_TEX1)
 
 // CCampathDrawer //////////////////////////////////////////////////////////////
 
@@ -1131,15 +1143,16 @@ bool CCampathDrawer::BeginLabels(CDynamicProperties const * properties, bool nam
 			return false;
 		BITMAPINFO info = {};
 		info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-		info.bmiHeader.biWidth = 128;
-		info.bmiHeader.biHeight = -128;
+		info.bmiHeader.biWidth = c_CampathLabelAtlasWidth;
+		info.bmiHeader.biHeight = -c_CampathLabelAtlasHeight;
 		info.bmiHeader.biPlanes = 1;
 		info.bmiHeader.biBitCount = 32;
 		info.bmiHeader.biCompression = BI_RGB;
 		void * pixels = nullptr;
 		HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
-		HFONT face = CreateFontW(-14, 8, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS,
-								 CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, FIXED_PITCH, L"Consolas");
+		HFONT face = CreateFontW(-c_CampathLabelFontHeight, c_CampathLabelAdvance, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+								 ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+								 FIXED_PITCH | FF_MODERN, L"Consolas");
 		if (!bitmap || !face)
 		{
 			if (bitmap)
@@ -1152,34 +1165,40 @@ bool CCampathDrawer::BeginLabels(CDynamicProperties const * properties, bool nam
 		auto oldBitmap = SelectObject(dc, bitmap), oldFont = SelectObject(dc, face);
 		SetTextColor(dc, RGB(255, 255, 255));
 		SetBkColor(dc, RGB(0, 0, 0));
-		PatBlt(dc, 0, 0, 128, 128, BLACKNESS);
+		SetBkMode(dc, TRANSPARENT);
+		PatBlt(dc, 0, 0, c_CampathLabelAtlasWidth, c_CampathLabelAtlasHeight, BLACKNESS);
 		for (int c = 32; c < 127; ++c)
 		{
-			char text = char(c);
-			TextOutA(dc, (c % 16) * 8, (c / 16) * 16, &text, 1);
+			int left = (c % c_CampathLabelColumns) * c_CampathLabelCellWidth;
+			int top = (c / c_CampathLabelColumns) * c_CampathLabelCellHeight;
+			RECT clip = {left + 1, top + 1, left + c_CampathLabelCellWidth - 1, top + c_CampathLabelCellHeight - 1};
+			char text = (char)c;
+			ExtTextOutA(dc, left + c_CampathLabelPaddingX, top + c_CampathLabelPaddingY, ETO_CLIPPED, &clip, &text, 1,
+						nullptr);
 		}
 		GdiFlush();
-		IDirect3DTexture9 * t = nullptr;
-		if (SUCCEEDED(
-				m_Device->CreateTexture(128, 128, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &t, nullptr)))
+		IDirect3DTexture9 * texture = nullptr;
+		if (SUCCEEDED(m_Device->CreateTexture(c_CampathLabelAtlasWidth, c_CampathLabelAtlasHeight, 1, D3DUSAGE_DYNAMIC,
+											  D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &texture, nullptr)))
 		{
 			D3DLOCKED_RECT lock;
-			if (SUCCEEDED(t->LockRect(0, &lock, nullptr, D3DLOCK_DISCARD)))
+			if (SUCCEEDED(texture->LockRect(0, &lock, nullptr, D3DLOCK_DISCARD)))
 			{
-				for (int y = 0; y < 128; ++y)
+				for (int y = 0; y < c_CampathLabelAtlasHeight; ++y)
 				{
 					auto * row = reinterpret_cast<DWORD *>(static_cast<unsigned char *>(lock.pBits) + y * lock.Pitch);
-					for (int x = 0; x < 128; ++x)
+					for (int x = 0; x < c_CampathLabelAtlasWidth; ++x)
 					{
-						DWORD v = static_cast<DWORD *>(pixels)[y * 128 + x] & 255;
-						row[x] = (v << 24) | 0xFFFFFF;
+						DWORD pixel = static_cast<DWORD *>(pixels)[y * c_CampathLabelAtlasWidth + x];
+						DWORD coverage = (std::max)(pixel & 255, (std::max)((pixel >> 8) & 255, (pixel >> 16) & 255));
+						row[x] = (coverage << 24) | 0xFFFFFF;
 					}
 				}
-				t->UnlockRect(0);
-				m_LabelTexture = t;
+				texture->UnlockRect(0);
+				m_LabelTexture = texture;
 			}
 			else
-				t->Release();
+				texture->Release();
 		}
 		SelectObject(dc, oldFont);
 		SelectObject(dc, oldBitmap);
@@ -1236,10 +1255,23 @@ bool CCampathDrawer::BeginLabels(CDynamicProperties const * properties, bool nam
 	m_Device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
 	m_Device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
 	m_Device->SetRenderState(D3DRS_ALPHAREF, 1);
-	m_Device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+	m_Device->SetRenderState(D3DRS_ALPHATESTENABLE, names ? FALSE : TRUE);
 	m_Device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
 	m_Device->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
 	m_Device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+	// The saved game state can contain generated/transformed UVs, clipping and
+	// mip settings. The label pass must establish these explicitly.
+	m_Device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+	m_Device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+	m_Device->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+	m_Device->SetRenderState(D3DRS_LIGHTING, FALSE);
+	m_Device->SetRenderState(D3DRS_WRAP0, 0);
+	m_Device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+	m_Device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+	m_Device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+	m_Device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+	m_Device->SetSamplerState(0, D3DSAMP_MAXMIPLEVEL, 0);
+	m_Device->SetSamplerState(0, D3DSAMP_MIPMAPLODBIAS, 0);
 	m_Device->SetTexture(0, texture);
 	m_Device->SetTextureStageState(0, D3DTSS_COLOROP, names ? D3DTOP_MODULATE : D3DTOP_SELECTARG1);
 	m_Device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
@@ -1286,12 +1318,33 @@ void CCampathDrawer::DrawLabel(CDynamicProperties const * properties, Vector3 po
 		unsigned char c = (unsigned char)text[i];
 		if (names && (c < 32 || c >= 127))
 			c = '?';
-		float tx = names ? (c % 16) / 16.0f : ((c - '0') % 8) / 8.0f,
-			  ty = names ? (c / 16) / 8.0f : ((c - '0') / 8) / 2.0f;
-		float width = 0.5f * height, left = -width * (float)(text.size() - i), top = 0.5f * height, bottom = -top;
+		float tx, ty, du, dv, left, top, bottom, width;
+		if (names)
+		{
+			float unit = height / c_CampathLabelFontHeight;
+			float advance = c_CampathLabelAdvance * unit;
+			left = -advance * (float)(text.size() - i) - c_CampathLabelPaddingX * unit;
+			width = c_CampathLabelCellWidth * unit;
+			top = 0.5f * height + c_CampathLabelPaddingY * unit;
+			bottom = top - c_CampathLabelCellHeight * unit;
+			tx = ((c % c_CampathLabelColumns) * c_CampathLabelCellWidth + 0.5f) / c_CampathLabelAtlasWidth;
+			ty = ((c / c_CampathLabelColumns) * c_CampathLabelCellHeight + 0.5f) / c_CampathLabelAtlasHeight;
+			du = (c_CampathLabelCellWidth - 1.0f) / c_CampathLabelAtlasWidth;
+			dv = (c_CampathLabelCellHeight - 1.0f) / c_CampathLabelAtlasHeight;
+		}
+		else
+		{
+			tx = ((c - '0') % 8) / 8.0f;
+			ty = ((c - '0') / 8) / 2.0f;
+			du = 1.0f / 8;
+			dv = 1.0f / 2;
+			width = 0.5f * height;
+			left = -width * (float)(text.size() - i);
+			top = 0.5f * height;
+			bottom = -top;
+		}
 		Vector3 a = position + right * left + up * top, b = position + right * left + up * bottom;
 		Vector3 d = position + right * (left + width) + up * top, e = position + right * (left + width) + up * bottom;
-		float du = names ? 1.0f / 16 : 1.0f / 8, dv = names ? 1.0f / 8 : 1.0f / 2;
 		AFXDRAWTEXTUREVERTEX vertices[4] = {{{(float)a.X, (float)a.Y, (float)a.Z}, {tx, ty}},
 											{{(float)b.X, (float)b.Y, (float)b.Z}, {tx, ty + dv}},
 											{{(float)d.X, (float)d.Y, (float)d.Z}, {tx + du, ty}},

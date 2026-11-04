@@ -498,6 +498,12 @@ enum EndPassThrougButtonUp
 EndPassThrougButtonUp m_EndPassThroughButtonUp = EPTBU_Left;
 bool m_IgnoreNextWM_MOUSEMOVE = false;
 
+bool WantsKeyboardInput()
+{
+	return IsSupported() && m_Active && !m_PassThrough && ImGui::GetCurrentContext() &&
+		   ImGui::GetIO().WantCaptureKeyboard;
+}
+
 bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 {
 	if (!IsSupported())
@@ -1104,6 +1110,11 @@ void DllProcessAttach(void)
 
 void DllProcessDetach(void)
 {
+}
+
+bool WantsKeyboardInput()
+{
+	return false;
 }
 
 bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)

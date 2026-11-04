@@ -36,6 +36,14 @@ public:
 	float GetDrawKeyframeIndex() { return m_DrawKeyframIndex; }
 	void SetDrawKeyframeIndex(float value) { m_DrawKeyframIndex = value; }
 
+	bool GetNewDrawEnabled() const
+	{
+		return m_NewDrawEnabled;
+	}
+	void SetNewDrawEnabled(bool enabled)
+	{
+		m_NewDrawEnabled = enabled;
+	}
 	bool GetNewDrawLayer(int layer) const
 	{
 		return layer >= 0 && layer < 6 && m_NewDrawLayers[layer];
@@ -293,6 +301,7 @@ private:
 	IDirect3DTexture9* m_DigitsTexture = nullptr;
 	IDirect3DTexture9 * m_LabelTexture = nullptr;
 	float m_NewLabelHeight = 32.0f;
+	bool m_NewDrawEnabled = true;
 	bool m_NewDrawLayers[6] = {true, true, true, true, true, true};
 	IAfxPixelShader* m_DrawTextureShader = nullptr;
 

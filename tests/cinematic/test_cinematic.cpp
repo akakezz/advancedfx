@@ -1,3 +1,173 @@
+#if defined(AFX_CAMPATH_INPUT_TESTS)
+#include "shared/MirvInput.h"
+#include <iostream>
+#include <stdexcept>
+namespace
+{
+int inputChecks = 0;
+void inputCheck(bool value, const char * message)
+{
+	++inputChecks;
+	if (!value)
+		throw std::runtime_error(message);
+}
+class InputDependencies : public IMirvInputDependencies
+{
+public:
+	bool Suspended = false;
+	bool GetSuspendMirvInput() override
+	{
+		return Suspended;
+	}
+	void GetLastCameraData(double & x, double & y, double & z, double & rx, double & ry, double & rz,
+						   double & fov) override
+	{
+		x = y = z = rx = ry = rz = 0;
+		fov = 90;
+	}
+	void GetGameCameraData(double & x, double & y, double & z, double & rx, double & ry, double & rz,
+						   double & fov) override
+	{
+		GetLastCameraData(x, y, z, rx, ry, rz, fov);
+	}
+	double GetInverseScaledFov(double fov) override
+	{
+		return fov;
+	}
+};
+bool allowUi(unsigned int key, void *)
+{
+	return key == VK_ESCAPE || key == VK_OEM_3 || key == VK_F2;
+}
+RAWINPUT keyboard(USHORT key, bool release = false)
+{
+	RAWINPUT packet = {};
+	packet.header.dwType = RIM_TYPEKEYBOARD;
+	packet.header.dwSize = sizeof(packet);
+	packet.data.keyboard.VKey = key;
+	packet.data.keyboard.MakeCode = 1;
+	packet.data.keyboard.Message = release ? WM_KEYUP : WM_KEYDOWN;
+	packet.data.keyboard.Flags = release ? RI_KEY_BREAK : 0;
+	return packet;
+}
+void raw(MirvInput & input, RAWINPUT & packet)
+{
+	UINT bytes = sizeof(packet);
+	input.Supply_RawInputData(bytes, (HRAWINPUT)1, RID_INPUT, &packet, &bytes, sizeof(RAWINPUTHEADER));
+}
+void inputTests()
+{
+	InputDependencies dependencies;
+	MirvInput input(&dependencies);
+	input.MenuAwareEscape_set(true);
+	input.SetCameraControlMode(true);
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_DOWN, 'K', 1), "Ordinary freecam preserves unassigned keys");
+	auto packet = keyboard('K');
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 'K', "Ordinary raw keyboard behavior unchanged");
+	packet = keyboard('K', true);
+	raw(input, packet);
+	auto preEditor = keyboard('P');
+	raw(input, preEditor);
+	input.SetKeyboardCapture(true, allowUi);
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'K', 1), "Editor owns an unassigned key");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_UP, 'K', 1), "Editor owns its matching release");
+	inputCheck(input.Supply_CharEvent(1, 1), "Editor owns control-character input");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'W', 1), "Freecam still receives W");
+	inputCheck(input.GetCamDForward() > 0, "W produces camera movement");
+	double speed = input.GetCamDForward();
+	inputCheck(input.Supply_CharEvent('+', 1), "Editor retains character-based speed controls");
+	inputCheck(input.GetCamDForward() > speed, "Plus increases free-camera speed while captured");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1), "W release is consumed");
+	inputCheck(input.GetCamDForward() == 0, "W release clears movement");
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_DOWN, VK_OEM_3, 1), "Console key reaches Source");
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_UP, VK_OEM_3, 1), "Console release reaches Source");
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_DOWN, VK_F2, 1), "Configured UI key reaches Source");
+	packet = keyboard('K');
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 0, "Raw gameplay bind blocked");
+	packet = keyboard('K', true);
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 0, "Raw release blocked");
+	packet = keyboard(VK_F2);
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == VK_F2, "Raw UI key allowed");
+	RAWINPUT packets[2] = {keyboard('J'), keyboard('L')};
+	UINT bytes = sizeof(packets);
+	input.Supply_RawInputBuffer(2, packets, &bytes, sizeof(RAWINPUTHEADER));
+	inputCheck(packets[0].data.keyboard.VKey == 0 && packets[1].data.keyboard.VKey == 0,
+			   "Buffered raw keyboard is captured");
+	input.Supply_KeyEvent(MirvInput::KS_DOWN, 'B', 1);
+	packet = keyboard('B');
+	raw(input, packet);
+	dependencies.Suspended = true;
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_DOWN, 'B', 1), "Menu can take ownership of an editor key");
+	packet = keyboard('B');
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 'B', "Menu can take ownership of a raw editor key");
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_DOWN, 'K', 1), "Visible menu owns normal input");
+	inputCheck(!input.Supply_CharEvent(1, 1), "Visible menu owns characters");
+	packet = keyboard('K');
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 'K', "Visible menu owns raw input");
+	dependencies.Suspended = false;
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_UP, 'B', 1), "Menu-owned release passes after UI closes");
+	packet = keyboard('B', true);
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 'B', "Menu-owned raw release passes after UI closes");
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_UP, 'K', 1), "Release of menu-owned press is forwarded");
+	input.Supply_KeyEvent(MirvInput::KS_DOWN, 'W', 1);
+	input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1);
+	inputCheck(input.GetCamDForward() == 0, "Camera movement releases after closing a menu");
+	packet = keyboard('M', true);
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 'M', "Release of pre-editor raw press is forwarded");
+	packet = keyboard('P');
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 0, "Pre-editor raw repeat is blocked");
+	packet = keyboard('P', true);
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 'P', "Pre-editor repeat keeps its Source-owned release");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'Q', (1LL << 30) | 1), "Pre-editor normal repeat is blocked");
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_UP, 'Q', 1), "Pre-editor normal release remains Source-owned");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'W', (1LL << 30) | 1), "Pre-editor movement repeat is captured");
+	inputCheck(input.GetCamDForward() == 0, "Pre-editor repeat cannot start camera movement");
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1), "Pre-editor movement release reaches Source");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'N', 1), "Capture press before editor exits");
+	packet = keyboard('N');
+	raw(input, packet);
+	input.SetKeyboardCapture(false);
+	input.SetCameraControlMode(false);
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_UP, 'N', 1), "Consume editor-owned release after exit");
+	packet = keyboard('N', true);
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 0, "Consume raw release after exit");
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_DOWN, 'K', 1), "Keyboard returns to Source after exit");
+	input.SetKeyboardCapture(true, allowUi);
+	input.SetCameraControlMode(true);
+	input.Supply_Focus(false);
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_DOWN, 'K', 1), "Focus loss yields keyboard");
+	packet = keyboard('K');
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 'K', "Focus loss yields raw input");
+	input.Supply_Focus(true);
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'K', 1), "Capture resumes on focus");
+}
+} // namespace
+int main()
+{
+	try
+	{
+		inputTests();
+		std::cout << inputChecks << " input checks passed\n";
+	}
+	catch (const std::exception & error)
+	{
+		std::cerr << error.what() << '\n';
+		return 1;
+	}
+}
+#else
 #include "shared/CinematicPath.h"
 #include <algorithm>
 #include <cmath>
@@ -417,3 +587,5 @@ int main()
 		return 1;
 	}
 }
+
+#endif

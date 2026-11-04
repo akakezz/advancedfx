@@ -9,6 +9,7 @@
 
 
 #include "RenderView.h"
+#include "Gui.h"
 
 // Preview controller is implemented by the mirv_campath console command.
 extern void MirvCampathPreview_Update();
@@ -225,7 +226,8 @@ bool Hook_VClient_RenderView::UiCursorStatus(bool & available, bool & visible) c
 bool Hook_VClient_RenderView::GetSuspendMirvInput() {
 	if (g_VEngineClient && g_VEngineClient->Con_IsVisible()) return true;
 	if (!m_MirvInput || !m_MirvInput->GetCameraControlMode()) return false;
-	if (FreecamMenuVisible()) return true;
+	if (FreecamMenuVisible() || (MirvCinematic_IsEditing() && AfxHookSource::Gui::WantsKeyboardInput()))
+		return true;
 
 	// Optionally yield freecam input while TF2's UI cursor is visible.
 	if (m_UiCursorSuspend)
@@ -454,7 +456,8 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			break;
 
 		case Override_Campath:
-			if (MirvCinematic_OwnsCamera()) break;
+			if (MirvCinematic_IsNewSystem())
+				break;
 			if (m_CamPath.Enabled_get() && m_CamPath.CanEval())
 			{
 				double campathCurTime = curTime - m_CamPath.GetOffset();
