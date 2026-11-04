@@ -8,7 +8,6 @@
 
 
 
-#include "CinematicEditor.h"
 #include "RenderView.h"
 
 // Preview controller is implemented by the mirv_campath console command.

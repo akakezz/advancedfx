@@ -362,18 +362,24 @@ time in the new demo. No saved file contains an entity pointer or map dependency
 
 ## Drawing
 
+New labels default to 32 pixels. Use `mirv_campath draw keyIndex 48` to enlarge
+them, or run `mirv_campath draw keyIndex` to print the current value. Classic
+`draw keyIndex` retains its original world-height setting.
+
 `draw <layer> 0|1` accepts `all`, `paths`, `cameras`, `labels`, `handles`,
 `constraints`, and `direction`. Drawing is active only while editing or previewing.
 All paths are shown. Selected paths are cyan; selected points yellow; start/end
 markers green/red; inactive paths gray. Camera wireframes show recorded orientation
-and FOV with a representative 16:9 aspect ratio. Bézier handles and locked planes
+and FOV using the existing campath frustum drawing and current viewport aspect ratio. Bézier handles and locked planes
 have separate colors. Names/indices use a small ASCII font; non-ASCII labels display
 replacement glyphs, although XML preserves their UTF-8 names.
 
 Geometry and text are copied to immutable render snapshots; the rendering thread
 never reads mutable editor state. Projection checks reject unrelated view passes.
-Drawing uses the existing Direct3D 9 hooks, preserves rendering state and releases
-its texture on device reset. It is a diagnostic overlay and **appears in recordings**.
+Drawing uses `CCampathDrawer`'s existing render queue, shaders, line buffer,
+frustum helper, label projection and device lifetime. Classic index labels retain
+the existing hex font; path names use an alphabet atlas owned by the same drawer.
+Render state is restored and font textures are released on device reset. It is a diagnostic overlay and **appears in recordings**.
 Turn drawing off before capturing clean footage. It is depth-independent so paths
 remain visible behind walls. Visualization has a 100,000-line budget per snapshot.
 
@@ -399,7 +405,9 @@ ctest --test-dir build/cinematic-tests -C Debug --output-on-failure
 ```
 
 Use another build directory and `-A Win32` for 32-bit. Linux can use
-`tests/cinematic/run.sh` (GCC, AddressSanitizer and UndefinedBehaviorSanitizer).
+the same standalone CMake target (omit `-A x64`). To enable sanitizers on GCC/Clang,
+configure with `-DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"`
+and `-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"`.
 If LeakSanitizer cannot run under the host's tracing/sandbox, set
 `ASAN_OPTIONS=detect_leaks=0`; address/undefined checks remain enabled.
 
@@ -411,4 +419,218 @@ are rejected. These bounds protect interactive evaluation and undo memory use.
 The standalone tests validate the model, not a running game. Windows/MSVC full
 builds, in-game keyboard routing, actual game-update compatibility, release back to
 the demo camera, graphics-device resets and visual overlay behavior require the
-Windows/in-game checks listed in `tests/cinematic/REVIEW.md`.
+Windows/in-game checks listed below.
+
+## Windows review checklist
+
+Use a clean checkout of `feature/cinematic-campath`. Initialize submodules and
+build using `BUILDING.md`, testing both `Win32` and `x64` where the games support
+them. No game binaries or MSVC build were executed in the Linux implementation
+workspace. The core tests can run independently of HLAE and should run in both
+Windows build architectures.
+
+1. Load a TF2 demo, enable `mirv_campath edit on`, and capture three points with
+   Insert. Check automatic path creation, visible curve, frustums and labels.
+2. Toggle preview with Tab. Verify all navigation keys, paused-demo scrubbing,
+   retained freecam pose on exit, and Shift+Escape exit. Verify arrows do not
+   scrub in freecam editing. Check normal Source binds do not also fire.
+3. Open the console, menu, and optional `uiCursor` UI while a scrub key is held.
+   Alt-tab out and back. Scrubbing must not stick. Ctrl+Z/Y must reach console
+   text editing while the console is open, and editor undo while it is closed.
+4. Replace/insert/delete/select points, duplicate/remove paths, undo/redo each
+   operation, and verify all inactive paths remain visible.
+5. Exercise linear, smooth, Bézier handles captured with freecam, and analytic
+   XY/XZ/YZ orbits. Re-anchor, rotate and scale without altering local geometry.
+   Enable Z locking/grid, then capture/replace points and constrain existing ones.
+6. For a straight equally spaced 3-point path: duration 10, middle hold 2. Check
+   arrivals at 0, 4 and 10; departure at 6. Verify stops differ from holds.
+   Add explicit segment timing, custom speed and reversing motion tracks.
+7. Animate rotation and FOV on a single point. Rotate the anchor and confirm
+   orientation keys and fixed targets move with it. Check native `mirv_aim`
+   behavior with and without this feature enabled.
+8. Capture start/end/hold duration with demo time and wall time. Reject a reversed
+   or mismatched capture without losing existing data.
+9. Schedule two paths with cuts and blends. Seek directly into each path and
+   transition, backward and forward. Overlap selection must be stable. Gaps and
+   `finish release` must show the current demo camera, not an old pose.
+10. Save one path and a collection. Check extension defaults, spaces/UTF-8 file
+    paths, refusal to overwrite without `overwrite`, and protected replacement of
+    unsaved work. Invalid/truncated/unsupported XML must preserve the editor.
+    Verify append, replace, undo import, classic import and baked legacy export.
+11. Toggle every draw layer. Check main view/skybox filtering, aspect ratios,
+    console/menu rendering, engine rendering with multicore on/off, and graphics
+    device resets/resolution changes. Overlays must not alter subsequent game
+    rendering. Disable overlays when recording clean footage.
+12. Disable editing and end freecam. Load an existing classic campath and verify
+    its commands, exact interpolation and classic preview still work.
+
+The sections above describe command semantics, numerical approximations, legacy
+import/export differences, limits and validation boundaries.
+
+## Campath improvements from testing
+
+Open backlog from the user's first Windows/in-game review, November 4, 2026.
+These are future changes, not completed features. Add or revise items as testing
+continues. Existing implementation/validation documents describe current behavior.
+
+### Required direction for all future changes
+
+- [ ] Follow HLAE's existing architecture, command structure, naming, formatting,
+  help style, and visual conventions. Treat possible upstream integration as a
+  design constraint, rather than a formatting pass at the end.
+- [ ] Before introducing or replacing a subsystem, identify the existing HLAE
+  implementation, explain any missing capability, and reuse or extend it where
+  practical. New functionality must have a concrete reason to be separate.
+- [ ] Audit the current implementation's duplicate vector/quaternion operations,
+  XML reader/writer, drawing/text code, input handling, and command/help parsing.
+  Compare against `shared/AfxMath.*`, the existing RapidXML persistence,
+  `CampathDrawer.*`, `EntityIndexDrawer.*`, `shared/MirvInput.*`, and the existing
+  command argument/help infrastructure. Preserve coordinate conventions, files,
+  deterministic timing and meaningful tests during refactoring.
+- [ ] Keep the genuinely new geometry/timing distinction, independent animation
+  tracks and placement capabilities without assuming that every supporting
+  primitive needs a new implementation. Reuse must not re-couple geometry to
+  demo keyframe times or break classic behavior.
+- [ ] Restrict future commits/pushes to `feature/cinematic-campath`. Do not modify
+  any other branch or its contents.
+
+### Keyboard ownership and menu access
+
+- [ ] Fix Source binds firing while the editor owns keyboard input. This is a
+  user-observed in-game defect/behavior gap, not a passing validation result.
+- [ ] Route camera movement and editor actions through the appropriate existing
+  HLAE input path before suppressing game input; blocking game binds must not
+  disable free-camera movement.
+- [ ] Account for key-down, key-up, repeat, character/system events, focus changes,
+  and any additional Source input paths established by investigation. Prevent
+  duplicate actions, missed releases and stuck keys.
+- [ ] Preserve deliberate access to the console, game menu, demo UI and other
+  menus. Visible UI must retain its intended input ownership; do not indiscriminately
+  swallow the keys required to open/close or operate it.
+- [ ] Test the user's reported leakage with bound editor keys and other bound
+  keys, in both freecam editing and preview. Include held keys across menu opening,
+  UI cursor handoff, alt-tab, editor exit and system switching.
+
+Evidence: `MirvCinematic_KeyEvent` currently consumes only a whitelist of reserved
+editor keys, passing other keys onward. That confirms incomplete keyboard
+ownership. The exact paths responsible for any reserved-key leakage still need
+in-game diagnosis; do not claim a specific root cause without that evidence.
+
+### One `mirv_campath` command tree and explicit system selection
+
+- [ ] Provide `mirv_campath system classic` and `mirv_campath system new`.
+  Use `new` as the system name; do not require an additional branded name.
+- [ ] Dispatch the `mirv_campath` command tree, subcommands and help according to
+  the chosen system. Users should not have to insert `cinematic` into routine
+  commands when outside edit mode.
+- [ ] Separate chosen system, editor activation, preview, and playback state.
+  Disabling the editor must not implicitly select classic or make loaded new paths
+  inaccessible. Define camera handoffs explicitly and avoid unexpected stops.
+- [ ] Retain each system's data when switching and preserve classic command/file
+  behavior. Shared subcommand names must resolve predictably for the selected
+  system, including classic `edit start/...`.
+- [ ] Resolve the earlier playback workflow confusion with a consistent enable
+  control and clear status/help, following classic conventions where appropriate.
+  Whether timing capture should automatically enable playback remains a design
+  decision; do not silently assume it was requested.
+- [ ] Update docs/examples and handle any compatibility alias for the current
+  `cinematic` prefix deliberately; its retention/removal has not been decided.
+
+### Readable, contextual help
+
+- [ ] Replace the single dense command dump shown in the user's screenshot with
+  HLAE-style hierarchical help.
+- [ ] Print one complete command/subcommand usage per line, with concise wording
+  and indentation/spacing consistent with existing HLAE output.
+- [ ] Root help should expose immediate subcommands; subcommand help should expand
+  only the relevant branch. Include current values where HLAE normally does.
+- [ ] Avoid pipe-separated lists of unrelated commands, unexplained shorthand and
+  unnecessarily long lines. Ensure the output is understandable at ordinary game
+  console widths/resolutions.
+- [ ] Keep keyboard help discoverable without repeating the entire command tree.
+
+### More keyboard editor operations
+
+- [ ] Add convenient keyboard access to movement timing begin/end capture and
+  selected-point hold begin/end capture.
+- [ ] Add keyboard access to selecting/capturing incoming and outgoing curve
+  handles with freecam, with clear feedback about what is being edited.
+- [ ] Review point/path selection, insertion/replacement, and other frequently
+  repeated operations for keyboard coverage.
+- [ ] Choose and document the keymap with the user; specific additional bindings
+  are not agreed yet. Reuse existing HLAE binding/input facilities where possible
+  rather than creating an unnecessary parallel binding system.
+- [ ] Keep console equivalents available. Minimize command entry for ordinary
+  editing without making advanced controls or state changes undiscoverable.
+
+### Larger and adjustable in-world labels
+
+- [x] Increase default text size for the new system's in-world point indices/path
+  names, checking readability at common resolutions.
+- [x] Expose size adjustment through the new system's `mirv_campath draw`
+  subtree, following existing HLAE naming and value/help conventions.
+- [ ] Reuse/extend existing rendering and text support where it meets the need;
+  preserve device-reset handling, render-state restoration and thread safety.
+- [ ] Check scaling, spacing, label placement and clipping. Decide whether point
+  indices and path names need independent settings as part of that review.
+
+Clarification: classic campath already provides
+`mirv_campath draw keyIndex <fHeight>` for its index-label height. New labels now default to 32 pixels and support `draw keyIndex <fHeight>`.
+Both systems share `CCampathDrawer`; the new name-label alphabet atlas is an
+extension of that drawer, not a separate rendering lifecycle.
+This is separate from the Source console's own font size: restructuring HLAE help
+and scaling in-world labels do not automatically change the console font.
+
+### Completion criteria for the next revision
+
+- [ ] Root/subcommand help is readable and follows the selected system.
+- [ ] Both command trees remain usable without data loss or ambiguous routing.
+- [ ] Ordinary editing can use the expanded keyboard controls without firing
+  gameplay binds; menus and demo UI remain accessible.
+- [ ] Confirm the enlarged, adjustable labels are readable in game.
+- [ ] Reuse decisions and remaining new infrastructure are justified against
+  existing HLAE code; style and integration have been reviewed.
+- [ ] Re-run affected core checks, then validate the changed integration in actual
+  Windows/Source sessions. Portable or cross-compiler checks alone cannot establish
+  keyboard/menu/graphics behavior.
+
+## Architecture and consolidation
+
+The new runtime code consists of `shared/CinematicPath.h/.cpp`, which implement
+untimed geometry, timing, placement and collection history. Supporting systems
+are reused rather than maintained as separate replacements:
+
+- `shared/AfxMath.*` supplies vector/quaternion arithmetic and conversions.
+- The repository-pinned RapidXML dependency supplies XML parsing, escaping and
+  serialization. Schema/bounds validation remains local to the new model.
+- `MirvCommands.cpp` handles commands and editor key callbacks beside the classic
+  campath commands. Declarations live with the existing view/input integration.
+- `Hook_VClient_RenderView` owns both classic and new path state.
+- `CCampathDrawer` owns both drawing modes, sharing the render queue, device
+  lifecycle, shaders, line buffer, frustum helper and label setup. Only alphabet
+  glyph support is added for path names, since the existing hex atlas cannot draw
+  arbitrary names.
+
+The former `CinematicDrawer.cpp`, `CinematicEditor.cpp/.h` and
+`CinematicPathXml.cpp` are removed. The separate backlog, review and validation
+notes and shell runner are consolidated here and in the standalone CMake target.
+Relative to the original base, five added files remain: two runtime model files,
+two standalone test files, and this guide. The previously agreed command-tree,
+help and keyboard improvements remain in the open backlog above; this refactor
+does not claim those behavior changes are finished.
+
+## Validation after consolidation
+
+The original 795 checks plus 17 additional compatibility/validation checks pass:
+812 checks in one core test executable. The new checks exercise XML saved by the
+first implementation, numeric XML references, malformed references/text, excessive
+nesting and default initialization when using HLAE's existing math types.
+
+Linux CMake/CTest and AddressSanitizer/UndefinedBehaviorSanitizer pass. Leak detection
+is disabled only because the host's tracing/sandbox prevents LeakSanitizer from
+running. Windows x86/x64 compile checks cover the command integration and the
+existing `CampathDrawer.cpp`; the check uses temporary compatibility adaptations
+for upstream MSVC-only header syntax and generated shader-combo declarations.
+It does not execute shaders or establish rendering correctness. A full MSVC build,
+actual input/menu behavior, classic/new drawing and device resets still require
+the Windows review checklist above.

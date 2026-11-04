@@ -8,6 +8,8 @@
 #include <d3d9.h>
 #include <list>
 #include <atomic>
+#include <vector>
+#include <string>
 
 #define CCampathDrawer_VertexFVF D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX0 | D3DFVF_TEXCOORDSIZE3(0) | D3DFVF_TEX1 | D3DFVF_TEXCOORDSIZE3(1) | D3DFVF_TEX2 | D3DFVF_TEXCOORDSIZE3(2)
 
@@ -33,6 +35,24 @@ public:
 
 	float GetDrawKeyframeIndex() { return m_DrawKeyframIndex; }
 	void SetDrawKeyframeIndex(float value) { m_DrawKeyframIndex = value; }
+
+	bool GetNewDrawLayer(int layer) const
+	{
+		return layer >= 0 && layer < 6 && m_NewDrawLayers[layer];
+	}
+	void SetNewDrawLayer(int layer, bool value)
+	{
+		if (layer >= 0 && layer < 6)
+			m_NewDrawLayers[layer] = value;
+	}
+	float GetNewLabelHeight() const
+	{
+		return m_NewLabelHeight;
+	}
+	void SetNewLabelHeight(float value)
+	{
+		m_NewLabelHeight = value;
+	}
 
 	void BeginDevice(IDirect3DDevice9 * device);
 	void EndDevice();
@@ -203,22 +223,55 @@ private:
 		std::list<CKeyframe> m_TrajectoryPoints;
 	};
 
+	// Geometry snapshots for untimed/new paths use the same shaders, line buffer,
+	// frustum drawing and device lifetime as classic campath.
+	struct CNewProperties
+	{
+		struct Line
+		{
+			Vector3 From, To;
+			DWORD Color;
+		};
+		struct Camera
+		{
+			CamPathValue Value;
+			DWORD Color;
+		};
+		struct Label
+		{
+			Vector3 Position;
+			std::string Text;
+			DWORD Color;
+		};
+		std::vector<Line> Lines;
+		std::vector<Camera> Cameras;
+		std::vector<Label> Labels;
+		float LabelHeight = 32.0f;
+	};
+	void BuildNewProperties(CNewProperties & data);
+
 	class CCampathDrawerFunctor : public CMaterialSystemFunctor {
 	public:
-		CCampathDrawerFunctor(CCampathDrawer * drawer) {
+		CCampathDrawerFunctor(CCampathDrawer * drawer, CNewProperties * newProperties = nullptr)
+		{
+			m_NewProperties = newProperties;
 			m_DynamicProperties = new CDynamicProperties(drawer);
 			m_LessDynamicProperties = drawer->m_LessDynamicProperties;
-			m_LessDynamicProperties->AddRef();
+			if (m_LessDynamicProperties)
+				m_LessDynamicProperties->AddRef();
 		}
 
 		virtual ~CCampathDrawerFunctor() {
-			m_LessDynamicProperties->Release();
+			if (m_LessDynamicProperties)
+				m_LessDynamicProperties->Release();
+			delete m_NewProperties;
 			delete m_DynamicProperties;
 		}
 
 		virtual void operator()();
 
 	private:
+		CNewProperties * m_NewProperties;
 		CDynamicProperties * m_DynamicProperties;
 		CLessDynamicProperties * m_LessDynamicProperties;
 	};
@@ -238,6 +291,9 @@ private:
 	Vertex * m_LockedVertexBuffer;
 	float m_DrawKeyframIndex = 18.0f;
 	IDirect3DTexture9* m_DigitsTexture = nullptr;
+	IDirect3DTexture9 * m_LabelTexture = nullptr;
+	float m_NewLabelHeight = 32.0f;
+	bool m_NewDrawLayers[6] = {true, true, true, true, true, true};
 	IAfxPixelShader* m_DrawTextureShader = nullptr;
 
 	CLessDynamicProperties * m_LessDynamicProperties = nullptr;
@@ -266,9 +322,15 @@ private:
 	static void RamerDouglasPeucker(TempPoint * start, TempPoint * end, double epsilon);
 	static double ShortestDistanceToSegment(TempPoint * pt, TempPoint * start, TempPoint * end);
 
+	bool BeginLabels(CDynamicProperties const * properties, bool names);
+	void DrawLabel(CDynamicProperties const * properties, Vector3 position, const std::string & text, float height,
+				   DWORD color, bool names);
+
 	void DrawCamera(const CamPathValue & cpv, DWORD colour, FLOAT screenInfo[4], int screenWidth, int screenHeight);
 
-	void OnPostRenderAllTools_DrawingThread(CDynamicProperties * dynamicPorperties, CLessDynamicProperties * lessDynamicProperties);
+	void OnPostRenderAllTools_DrawingThread(CDynamicProperties * dynamicPorperties,
+											CLessDynamicProperties * lessDynamicProperties,
+											CNewProperties * newProperties = nullptr);
 };
 
 extern CCampathDrawer g_CampathDrawer;

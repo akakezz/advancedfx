@@ -11,7 +11,6 @@
 
 #include "../shared/AfxCommandLine.h"
 #include "addresses.h"
-#include "CinematicEditor.h"
 #include "RenderView.h"
 #include <SourceInterfaces.h>
 #include "WrpVEngineClient.h"
@@ -292,7 +291,6 @@ public:
 
 		g_CampathDrawer.OnPostRenderAllTools_EngineThread();
 		g_EntityIndexDrawer.OnPostRenderAllTools_EngineThread();
-        MirvCinematic_Draw();
 		g_Engine_ClientEngineTools->PostRenderAllTools();
 	}
 
