@@ -89,3 +89,13 @@ mirv_input camera uiCursor 1
 `ignoreTimescale 1` makes free-camera movement independent of demo playback speed (enabled by default). `uiCursor 1` allows interaction with visible game UI, such as the Demo UI, without leaving freecam. Use `0` to disable either option.
 
 While in freecam, **Escape** opens the game menu and **Shift+Escape** exits freecam.
+
+## Cinematic camera editor
+
+The optional cinematic editor separates path geometry from motion timing and adds
+multiple paths, placement, animation tracks, sequencing and interactive drawing.
+Start with `mirv_campath edit on`, capture points with Insert, then preview with Tab.
+
+See [the complete cinematic camera guide](doc/CINEMATIC_CAMERA.md) for commands,
+examples, compatibility details and the Windows review checklist. Use
+`mirv_campath edit off` to return to classic campath commands.

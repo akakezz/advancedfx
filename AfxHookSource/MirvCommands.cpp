@@ -6,6 +6,7 @@
 
 #include <SourceInterfaces.h>
 
+#include "CinematicEditor.h"
 #include "RenderView.h"
 #include "MirvTime.h"
 
@@ -1586,6 +1587,13 @@ static bool CampathPreview_Enter()
 	return true;
 }
 
+void MirvCampathPreview_Stop()
+{
+    g_CampathPreviewActive = false;
+    CampathPreview_StopTravel();
+    g_CampathPreviewLastMs = 0;
+}
+
 static void CampathPreview_Exit()
 {
 	if (g_CampathPreviewActive)
@@ -1599,6 +1607,7 @@ static void CampathPreview_Exit()
 // Called before the mirv_input view override is evaluated.
 void MirvCampathPreview_Update()
 {
+	if (MirvCinematic_OwnsCamera() || MirvCinematic_IsEditing()) { MirvCampathPreview_Stop(); return; }
 	if (!g_CampathPreviewActive)
 		return;
 
@@ -1804,6 +1813,7 @@ static void CampathPreview_PrintHelp()
 
 CON_COMMAND(mirv_campath, "camera paths")
 {
+    if (MirvCinematic_Command(args)) return;
 	if (!g_Hook_VClient_RenderView.IsInstalled())
 	{
 		Tier0_Warning("Error: Hook not installed.\n");

@@ -8,6 +8,7 @@
 
 #include "Gui.h"
 #include "SourceInterfaces.h"
+#include "CinematicEditor.h"
 #include "CampathDrawer.h"
 #include "EntityIndexDrawer.h"
 #include "AfxShaders.h"
@@ -183,11 +184,13 @@ void Shared_Direct3DDevice9_Init(
 	g_CampathDrawer.BeginDevice(device);
 
 	g_EntityIndexDrawer.BeginDevice(device);
+    MirvCinematic_BeginDevice(device);
 }
 
 void Shared_Direct3DDevice9_Shutdown()
 {
 	g_EntityIndexDrawer.EndDevice();
+    MirvCinematic_EndDevice();
 
 	g_CampathDrawer.EndDevice();
 

@@ -8,6 +8,7 @@
 
 
 
+#include "CinematicEditor.h"
 #include "RenderView.h"
 
 // Preview controller is implemented by the mirv_campath console command.
@@ -423,6 +424,7 @@ void TrySetView(float Tx, float Ty, float Tz, float Rx, float Ry, float Rz, floa
 
 void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, float &Rx, float &Ry, float &Rz, float &Fov)
 {
+	MirvCinematic_Update();
 	MirvCampathPreview_Update();
 	bool originOrAnglesOverriden = false;
 
@@ -453,6 +455,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			break;
 
 		case Override_Campath:
+			if (MirvCinematic_OwnsCamera()) break;
 			if (m_CamPath.Enabled_get() && m_CamPath.CanEval())
 			{
 				double campathCurTime = curTime - m_CamPath.GetOffset();
@@ -531,6 +534,15 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			break;
 
 		case Override_Input:
+            if (MirvCinematic_OwnsCamera()) {
+                if (MirvCinematic_Override(Tx, Ty, Tz, Rx, Ry, Rz, Fov)) originOrAnglesOverriden = true;
+                else {
+                    Tx = GameCameraOrigin[0]; Ty = GameCameraOrigin[1]; Tz = GameCameraOrigin[2];
+                    Rx = GameCameraAngles[0]; Ry = GameCameraAngles[1]; Rz = GameCameraAngles[2];
+                    Fov = GameCameraFov;
+                }
+                break;
+            }
 			if (m_MirvInput->Override(m_LastFrameTime, Tx, Ty, Tz, Rx, Ry, Rz, Fov)) originOrAnglesOverriden = true;
 			break;
 

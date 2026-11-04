@@ -11,6 +11,7 @@
 
 #include "../shared/AfxCommandLine.h"
 #include "addresses.h"
+#include "CinematicEditor.h"
 #include "RenderView.h"
 #include <SourceInterfaces.h>
 #include "WrpVEngineClient.h"
@@ -291,6 +292,7 @@ public:
 
 		g_CampathDrawer.OnPostRenderAllTools_EngineThread();
 		g_EntityIndexDrawer.OnPostRenderAllTools_EngineThread();
+        MirvCinematic_Draw();
 		g_Engine_ClientEngineTools->PostRenderAllTools();
 	}
 
@@ -2340,17 +2342,24 @@ LRESULT CALLBACK new_Afx_WindowProc(
 {
 	// Clear held preview keys before GUI input handling can consume focus changes.
 	if (uMsg == WM_KILLFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE))
-		MirvCampathPreview_ReleaseKeys();
+	{
+        MirvCampathPreview_ReleaseKeys();
+        MirvCinematic_ReleaseKeys();
+    }
 
 	if (AfxHookSource::Gui::WndProcHandler(hwnd, uMsg, wParam, lParam))
 	{
 		// The GUI can consume the corresponding key-up after preview handled key-down.
 		if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN || uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP)
-			MirvCampathPreview_ReleaseKeys();
+        {
+            MirvCampathPreview_ReleaseKeys();
+            MirvCinematic_ReleaseKeys();
+        }
 		return 0;
 	}
 
-	if (MirvCampathPreview_KeyEvent(uMsg, wParam, lParam))
+	if (MirvCinematic_KeyEvent(uMsg, wParam, lParam)) return 0;
+	if (!MirvCinematic_IsEditing() && MirvCampathPreview_KeyEvent(uMsg, wParam, lParam))
 		return 0;
 
 	switch(uMsg)

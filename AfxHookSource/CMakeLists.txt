@@ -96,6 +96,7 @@ target_link_directories(AfxHookSource PRIVATE
 )
 
 target_link_libraries(AfxHookSource PRIVATE
+    gdi32
     "${AFX_OPENEXR_LINK_LIBRARIES}"
 )
 
@@ -114,6 +115,12 @@ target_sources(AfxHookSource PRIVATE
     AfxShaders.h
     AfxStreams.cpp
     AfxStreams.h
+    CinematicEditor.cpp
+    CinematicEditor.h
+    CinematicDrawer.cpp
+    ../shared/CinematicPath.cpp
+    ../shared/CinematicPath.h
+    ../shared/CinematicPathXml.cpp
     CampathDrawer.cpp
     CampathDrawer.h
     EntityIndexDrawer.cpp
