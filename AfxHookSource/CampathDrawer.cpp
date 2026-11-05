@@ -1362,8 +1362,13 @@ void CCampathDrawer::DrawLabel(CDynamicProperties const * properties, Vector3 po
 		double upY = m.m[1][0] * up.X + m.m[1][1] * up.Y + m.m[1][2] * up.Z;
 		if (w <= 0.01 || fabs(upY) < 1e-9 || !properties->GetScreenHeight())
 			return;
-		height = (float)(height * 2 * w / (fabs(upY) * properties->GetScreenHeight()));
-		position += up * (double)(height * (1 + row * 1.2f));
+		// Keep a clear screen-space margin between text and its path/camera
+		// marker. Scale the margin with the existing label-height setting.
+		float pixels = height;
+		double worldPerPixel = 2 * w / (fabs(upY) * properties->GetScreenHeight());
+		height = float(pixels * worldPerPixel);
+		position += up * ((12 + pixels * (2 + row * 1.3f)) * worldPerPixel);
+		position -= right * ((std::max)(24.0f, pixels) * worldPerPixel);
 		m_Device->SetRenderState(D3DRS_TEXTUREFACTOR, color);
 	}
 	for (size_t i = 0; i < text.size(); ++i)

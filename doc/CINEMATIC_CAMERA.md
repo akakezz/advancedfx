@@ -98,6 +98,10 @@ Timing-key easing applies between adjacent keys. For example, smooth easing slow
 at each key; use linear for continuous travel through intermediate timing keys.
 Custom easing uses the existing monotonic cumulative-progress speed track.
 
+Direction arrows and the easing annotation are off by default to keep the ordinary
+overlay quiet; enable them only when needed. Labels have a screen-space margin
+above and to the left of their markers, scaled with text size.
+
 Labels default to 32 pixels. `draw keyIndex <pixels>` adjusts them (0..200; zero
 hides text). Name, index, timing and speed labels share the existing campath font
 texture and drawing pass, with separate text rows to reduce overprinting.
@@ -281,6 +285,12 @@ independent visible keys; navigation and seeking belong to one editor; aiming
 reuses mirv_aim; easing is visualized; shape creation captures camera placement;
 playback uses one enable control; more operations have default/custom editor binds.
 Future work should reduce steps without adding duplicate HLAE infrastructure.
+
+Latest testing direction: prefer classic campath behavior with additional curve
+manipulation, rather than more editor concepts. Timestamped capture and ordinary
+enabled playback are the proposed baseline. The choice between replacing the
+separate timing-key workflow and retaining it behind simpler controls is awaiting
+clarification; this spacing revision does not alter saved paths or timing.
 
 Runtime model code remains in `shared/CinematicPath.h/.cpp`; commands and editor
 callbacks stay in MirvCommands; view state stays in Hook_VClient_RenderView;

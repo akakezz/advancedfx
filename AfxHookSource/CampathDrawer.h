@@ -303,7 +303,7 @@ private:
 	IDirect3DTexture9 * m_LabelTexture = nullptr;
 	float m_NewLabelHeight = 32.0f;
 	bool m_NewDrawEnabled = true;
-	bool m_NewDrawLayers[8] = {true, true, true, true, true, true, true, true};
+	bool m_NewDrawLayers[8] = {true, true, true, true, true, false, true, false};
 	IAfxPixelShader* m_DrawTextureShader = nullptr;
 
 	CLessDynamicProperties * m_LessDynamicProperties = nullptr;
