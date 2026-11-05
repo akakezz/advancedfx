@@ -231,9 +231,10 @@ bool Hook_VClient_RenderView::IsSourceUiActive() const
 bool Hook_VClient_RenderView::GetSuspendMirvInput() {
 	if (IsSourceUiActive())
 		return true;
-	if (!m_MirvInput || !m_MirvInput->GetCameraControlMode()) return false;
 	if (AfxHookSource::Gui::WantsKeyboardInput())
 		return true;
+	if (!m_MirvInput || !m_MirvInput->GetCameraControlMode())
+		return false;
 
 	// Optionally yield freecam input while TF2's UI cursor is visible.
 	if (m_UiCursorSuspend)

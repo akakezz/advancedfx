@@ -143,7 +143,13 @@ mirv_campath graph
 This toggles the graph; `graph 0|1` sets it explicitly. F7 does the same in preview.
 Close the console to use it. The graph uses HLAE's existing ImGui/Direct3D9 backend
 and works without entering preview. Native console, menus and demo UI retain
-input priority. Escape or the window close button closes the graph.
+input priority. While the graph is open, preview/freecam retain their modes and
+camera pose, but their keyboard and mouse controls pause. The pointer becomes
+visible and free to move throughout the graph, including before its first hover
+or click. F7 in preview, Escape, or the window close button closes the graph and
+restores the camera controls. Held movement and mouse deltas are cleared at each
+handoff. Opening native menus or changing window focus temporarily yields input
+without closing the graph.
 
 The horizontal axis is path time in seconds. The vertical axis is progress from
 one camera key to the next (indices 0, 1, 2, ...). Orange bars show stationary

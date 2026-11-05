@@ -428,8 +428,16 @@ bool MirvInput::GetCameraControlMode(void)
 	return m_CameraControlMode;
 }
 
-void MirvInput::ClearMovementInput()
+void MirvInput::ClearMovementInput(bool yieldKeyboard)
 {
+	if (yieldKeyboard)
+	{
+		for (bool & key : m_CapturedKeys)
+			key = false;
+		for (bool & key : m_CapturedRawKeys)
+			key = false;
+	}
+
 	m_CamForward = m_CamForwardI = 0.0;
 	m_CamLeft = m_CamLeftI = 0.0;
 	m_CamUp = m_CamUpI = 0.0;

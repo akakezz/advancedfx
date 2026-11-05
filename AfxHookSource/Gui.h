@@ -22,6 +22,8 @@ bool OnGetCursorPos(__out LPPOINT lpPoint);
 bool OnSetCursor(__in_opt HCURSOR hCursor, HCURSOR & result);
 bool OnSetCapture(HWND hWnd, HWND & result);
 bool OnReleaseCapture();
+bool OnClipCursor(const RECT * rect);
+bool OnShowCursor(BOOL show, int & result);
 bool OnGameFrameRenderEnd();
 
 bool On_Direct3DDevice9_Init(void* hwnd, IDirect3DDevice9* device);

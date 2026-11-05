@@ -36,18 +36,12 @@ namespace Gui {
 
 bool m_Active = true;
 bool m_KeyDownEaten[512] = {};
-bool m_PassThrough = false;
 POINT m_GameCursorPos = { 0, 0 };
-POINT m_OldCursorPos = { 0, 0 };
 HCURSOR m_OwnCursor = 0;
 HCURSOR m_GameCursor = 0;
-bool m_CursorSet = false;
 std::string m_IniFilename;
 std::string m_LogFileName;
 bool m_FirstEndScene = true;
-bool m_GameCaptured = false;
-bool m_InMouseLook = false;
-bool m_HadSetCursorMouseLook = false;
 
 // Data
 static HWND                     g_hWnd = 0;
@@ -96,13 +90,6 @@ public:
 		return m_Arrow;
 	}
 
-	HCURSOR GetFromGame(HCURSOR gameCursor, bool inMouseLook)
-	{
-		if (!inMouseLook || gameCursor)
-			return gameCursor;
-		return m_Hand;
-	}
-
 } m_Cursors;
 
 struct CUSTOMVERTEX
@@ -116,11 +103,6 @@ struct CUSTOMVERTEX
 bool IsSupported()
 {
 	return ImGui::GetCurrentContext() != nullptr;
-}
-
-bool IsInMouseLook()
-{
-	return m_InMouseLook;
 }
 
 class CImGuiRenderCacheManager
@@ -529,21 +511,13 @@ static bool IsAnyMouseButtonDown()
 	return false;
 }
 
-enum EndPassThrougButtonUp
-{
-	EPTBU_Left,
-	EPTBU_Right,
-	EPTBU_Middle
-};
-EndPassThrougButtonUp m_EndPassThroughButtonUp = EPTBU_Left;
-bool m_IgnoreNextWM_MOUSEMOVE = false;
-
 // The graph edits timing on ordinary CamPath keyframes on the engine thread.
 namespace
 {
 struct CampathGraphState
 {
 	bool Open = false, Focus = false, Fit = true, Boxing = false, Editing = false;
+	bool WindowFocused = true;
 	ImVec2 BoxStart;
 	int Handle = -1;
 	double KeyTime = 0;
@@ -562,7 +536,76 @@ bool SourceOwnsUi()
 
 bool GraphInteractive()
 {
-	return g_CampathGraph.Open && !SourceOwnsUi();
+	return g_CampathGraph.Open && g_CampathGraph.WindowFocused && g_hWnd && g_FontTexture && !SourceOwnsUi();
+}
+
+bool m_GraphInputOwned = false;
+RECT m_GameClip = {};
+bool m_GameClipEnabled = false;
+HWND m_GameCapture = nullptr;
+int m_GameCursorDisplayCount = 0;
+
+void UpdateGraphInputOwnership()
+{
+	bool wanted = GraphInteractive();
+	if (wanted == m_GraphInputOwned)
+		return;
+	MirvCampathEditor_ReleaseKeys(true);
+	if (auto * input = g_Hook_VClient_RenderView.m_MirvInput)
+		input->ClearMovementInput(true);
+	if (wanted)
+	{
+		GetCursorPos(&m_GameCursorPos);
+		m_GameCursor = GetCursor();
+		m_GameCapture = GetCapture();
+		m_GameClipEnabled = GetClipCursor(&m_GameClip) != FALSE;
+		m_GameCursorDisplayCount = ShowCursor(TRUE) - 1;
+		for (int count = m_GameCursorDisplayCount + 1; count < 0; ++count)
+			ShowCursor(TRUE);
+		m_GraphInputOwned = true;
+		ClipCursor(nullptr);
+		if (GetCapture() == g_hWnd)
+			ReleaseCapture();
+		m_OwnCursor = m_Cursors.GetCursor(ImGuiMouseCursor_Arrow);
+		SetCursor(m_OwnCursor);
+		POINT client = m_GameCursorPos;
+		ScreenToClient(g_hWnd, &client);
+		ImGui::GetIO().MousePos = ImVec2(float(client.x), float(client.y));
+	}
+	else
+	{
+		m_GraphInputOwned = false;
+		FinishCampathGraphEdit();
+		if (GetCapture() == g_hWnd)
+			ReleaseCapture();
+		// Restore the game's latest requests, including requests made while the
+		// graph owned the cursor. Never warp/capture another foreground window.
+		if (g_CampathGraph.WindowFocused)
+		{
+			ClipCursor(m_GameClipEnabled ? &m_GameClip : nullptr);
+			SetCursorPos(m_GameCursorPos.x, m_GameCursorPos.y);
+			if (m_GameCapture)
+				SetCapture(m_GameCapture);
+			SetCursor(m_GameCursor);
+		}
+		else
+			ClipCursor(nullptr);
+		int count = ShowCursor(TRUE) - 1;
+		ShowCursor(FALSE);
+		while (count > m_GameCursorDisplayCount)
+		{
+			ShowCursor(FALSE);
+			--count;
+		}
+		while (count < m_GameCursorDisplayCount)
+		{
+			ShowCursor(TRUE);
+			++count;
+		}
+		auto & io = ImGui::GetIO();
+		std::fill(std::begin(io.MouseDown), std::end(io.MouseDown), false);
+		std::fill(std::begin(io.KeysDown), std::end(io.KeysDown), false);
+	}
 }
 } // namespace
 
@@ -588,7 +631,6 @@ bool SetCampathGraphOpen(bool value)
 	if (!value)
 	{
 		FinishCampathGraphEdit();
-		m_PassThrough = false;
 	}
 	if (value && !g_CampathGraph.Open)
 	{
@@ -596,6 +638,7 @@ bool SetCampathGraphOpen(bool value)
 		g_CampathGraph.Fit = true;
 	}
 	g_CampathGraph.Open = value;
+	UpdateGraphInputOwnership();
 	return true;
 }
 
@@ -994,8 +1037,8 @@ static void DrawCampathGraph()
 
 bool WantsKeyboardInput()
 {
-	return IsSupported() && GraphInteractive() && !m_PassThrough &&
-		   (ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantCaptureMouse);
+	// Ownership starts when the graph opens, before ImGui has seen a mouse event.
+	return IsSupported() && GraphInteractive();
 }
 
 bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
@@ -1005,13 +1048,17 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 
 	if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE))
 	{
+		g_CampathGraph.WindowFocused = false;
 		FinishCampathGraphEdit();
-		m_PassThrough = false;
 		std::fill(std::begin(m_KeyDownEaten), std::end(m_KeyDownEaten), false);
 		ImGui::GetIO().AddFocusEvent(false);
 	}
 	if (msg == WM_SETFOCUS || (msg == WM_ACTIVATE && LOWORD(wParam) != WA_INACTIVE))
+	{
+		g_CampathGraph.WindowFocused = true;
 		ImGui::GetIO().AddFocusEvent(true);
+	}
+	UpdateGraphInputOwnership();
 	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam < 256 && m_KeyDownEaten[wParam])
 		return true;
 	if (GraphInteractive() && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) &&
@@ -1044,104 +1091,18 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 	if (!m_Active || !GraphInteractive())
 		return false;
 
-	if (m_PassThrough)
-	{
-		bool end = false;
-
-		switch (msg)
-		{
-		case WM_LBUTTONUP:
-			if (m_EndPassThroughButtonUp == EPTBU_Left) end = true;
-			break;
-		case WM_RBUTTONUP:
-			if (m_EndPassThroughButtonUp == EPTBU_Right) end = true;
-			break;
-		case WM_MBUTTONUP:
-			if (m_EndPassThroughButtonUp == EPTBU_Middle) end = true;
-			break;
-		case WM_MOUSEMOVE:
-			switch (m_EndPassThroughButtonUp)
-			{
-			case EPTBU_Left:
-				wParam &= ~(WPARAM)MK_LBUTTON;
-				break;
-			case EPTBU_Right:
-				wParam &= ~(WPARAM)MK_RBUTTON;
-				break;
-			case EPTBU_Middle:
-				wParam &= ~(WPARAM)MK_MBUTTON;
-				break;
-			}
-			break;
-		}
-
-		if (end)
-		{
-			GetCursorPos(&m_GameCursorPos);
-
-			m_PassThrough = false;
-
-			SetCursor(m_OwnCursor);
-			SetCursorPos(m_OldCursorPos.x, m_OldCursorPos.y);
-
-			if (m_GameCaptured && GetCapture() == hwnd)
-				ReleaseCapture();
-
-			return true;
-		}
-
-		return false;
-	}
-
 	ImGuiIO& io = ImGui::GetIO();
 	switch (msg)
 	{
 	case WM_LBUTTONDBLCLK:
 	case WM_RBUTTONDBLCLK:
 	case WM_MBUTTONDBLCLK:
-		return io.WantCaptureMouse;
+		return true;
 
 	case WM_LBUTTONDOWN:
 	case WM_RBUTTONDOWN:
 	case WM_MBUTTONDOWN:
 		{
-			if (!io.WantCaptureMouse && IsInMouseLook())
-			{
-				bool start = false;
-
-				switch (msg)
-				{
-				case WM_LBUTTONDOWN:
-					start = true;
-					m_EndPassThroughButtonUp = EPTBU_Left;
-					break;
-				case WM_RBUTTONDOWN:
-					start = true;
-					m_EndPassThroughButtonUp = EPTBU_Right;
-					break;
-				case WM_MBUTTONDOWN:
-					start = true;
-					m_EndPassThroughButtonUp = EPTBU_Middle;
-					break;
-				}
-				
-				if (start)
-				{
-					GetCursorPos(&m_OldCursorPos);
-
-					m_IgnoreNextWM_MOUSEMOVE = m_OldCursorPos.x != m_GameCursorPos.x || m_OldCursorPos.y != m_GameCursorPos.y;
-
-					SetCursor(m_GameCursor);
-					SetCursorPos(m_GameCursorPos.x, m_GameCursorPos.y);
-
-					if (m_GameCaptured && GetCapture() == NULL)
-						SetCapture(hwnd);
-
-					m_PassThrough = true;
-					return true;
-				}
-			}
-		
 			int button = 0;
 			if (msg == WM_LBUTTONDOWN) button = 0;
 			if (msg == WM_RBUTTONDOWN) button = 1;
@@ -1149,7 +1110,7 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 			if (!IsAnyMouseButtonDown() && GetCapture() == NULL)
 				SetCapture(hwnd);
 			io.MouseDown[button] = true;
-			return io.WantCaptureMouse || IsInMouseLook();
+			return true;
 		}
 	case WM_LBUTTONUP:
 	case WM_RBUTTONUP:
@@ -1162,24 +1123,24 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 			io.MouseDown[button] = false;
 			if (!IsAnyMouseButtonDown() && GetCapture() == hwnd)
 				ReleaseCapture();
-			return io.WantCaptureMouse || IsInMouseLook();
+			return true;
 		}
 	case WM_MOUSEWHEEL:
 		io.MouseWheel += GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? +1.0f : -1.0f;
-		return io.WantCaptureMouse || IsInMouseLook();
+		return true;
 	case WM_MOUSEMOVE:
 		io.MousePos.x = (signed short)(lParam);
 		io.MousePos.y = (signed short)(lParam >> 16);
-		return io.WantCaptureMouse || IsInMouseLook();
+		return true;
 	case WM_KEYDOWN:
 	case WM_SYSKEYDOWN:
 		if (wParam < 256)
 		{
 			io.KeysDown[wParam] = 1;
 			if (!(lParam & (1LL << 30)))
-				m_KeyDownEaten[wParam] = (io.WantCaptureKeyboard || io.WantCaptureMouse);
+				m_KeyDownEaten[wParam] = true;
 		}
-		return (io.WantCaptureKeyboard || io.WantCaptureMouse);
+		return true;
 	case WM_KEYUP:
 	case WM_SYSKEYUP:
 		{
@@ -1196,11 +1157,11 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 		// You can also use ToAscii()+GetKeyboardState() to retrieve characters.
 		if (wParam > 0 && wParam < 0x10000)
 			io.AddInputCharacter((unsigned short)wParam);
-		return (io.WantCaptureKeyboard || io.WantCaptureMouse);
+		return true;
 	case WM_INPUT:
 		{
 			HRAWINPUT hRawInput = (HRAWINPUT)lParam;
-			RAWINPUT inp;
+			RAWINPUT inp = {};
 			UINT size = sizeof(inp);
 
 			GetRawInputData(hRawInput, RID_INPUT, &inp, &size, sizeof(RAWINPUTHEADER));
@@ -1208,10 +1169,10 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 			switch (inp.header.dwType)
 			{
 			case RIM_TYPEMOUSE:
-				return IsInMouseLook();
+				return true;
 			case RIM_TYPEKEYBOARD:
 				// Source must be able to release a press that preceded GUI focus.
-				return !(inp.data.keyboard.Flags & RI_KEY_BREAK) && (io.WantCaptureKeyboard || io.WantCaptureMouse);
+				return !(inp.data.keyboard.Flags & RI_KEY_BREAK);
 			}
 			return false;
 		}
@@ -1223,112 +1184,46 @@ bool OnSetCursorPos(__in int X, __in int Y)
 {
 	if (!IsSupported())
 		return false;
-
-	if (g_hWnd && m_GameCaptured && g_VEngineClient)
-	{
-		int width, height;
-		POINT clientPoint = { X , Y };
-
-		g_VEngineClient->GetScreenSize(width, height);
-
-		ScreenToClient(g_hWnd, &clientPoint);
-
-		m_HadSetCursorMouseLook = ((width >> 1) == clientPoint.x) && ((height >> 1) == clientPoint.y);
-
-		//Tier0_Msg("%i == %i, %i == %i + (%i, %i) --> %i\n", width >> 1, clientPoint.x, height >> 1, clientPoint.y, X, Y, m_InMouseLook ? 1 : 0);
-	}
-	else
-		m_HadSetCursorMouseLook = false;
-
-	m_GameCursorPos.x = X;
-	m_GameCursorPos.y = Y;
-
-	if (!m_Active || !GraphInteractive())
+	UpdateGraphInputOwnership();
+	if (!m_GraphInputOwned)
 		return false;
-
-	if (m_PassThrough)
-		return false;
-
-	if (!IsInMouseLook())
-		return false;
-
+	m_GameCursorPos = {X, Y};
 	return true;
 }
 
-bool OnGetCursorPos(__out LPPOINT lpPoint)
+bool OnGetCursorPos(__out LPPOINT point)
 {
 	if (!IsSupported())
 		return false;
-
-	if (!m_Active || !GraphInteractive() || m_PassThrough || !IsInMouseLook())
-	{
-		if (lpPoint)
-		{
-			m_GameCursorPos.x = lpPoint->x;
-			m_GameCursorPos.y = lpPoint->y;
-		}
-
+	UpdateGraphInputOwnership();
+	if (!m_GraphInputOwned || !point)
 		return false;
-	}
-
-	if (lpPoint)
-	{
-		lpPoint->x = m_GameCursorPos.x;
-		lpPoint->y = m_GameCursorPos.y;
-	}
-
+	*point = m_GameCursorPos;
 	return true;
 }
 
-bool OnSetCursor(__in_opt HCURSOR hCursor, HCURSOR & result)
+bool OnSetCursor(__in_opt HCURSOR cursor, HCURSOR & result)
 {
 	if (!IsSupported())
 		return false;
-
-	if (!m_CursorSet)
-	{
-		m_GameCursor = GetCursor();
-		m_CursorSet = true;
-	}
-
-	HCURSOR oldCursor = m_GameCursor;
-
-	m_GameCursor = hCursor;
-
-	if (!m_Active || !GraphInteractive())
+	UpdateGraphInputOwnership();
+	if (!m_GraphInputOwned)
 		return false;
-
-	if (m_PassThrough)
-		return false;
-
-	if (!ImGui::GetIO().WantCaptureMouse)
-	{
-		m_OwnCursor = m_Cursors.GetFromGame(hCursor, IsInMouseLook());
-	}
-
-	result = oldCursor;
+	result = m_GameCursor;
+	m_GameCursor = cursor;
 	SetCursor(m_OwnCursor);
-
 	return true;
 }
 
-bool OnSetCapture(HWND hWnd, HWND & result)
+bool OnSetCapture(HWND window, HWND & result)
 {
 	if (!IsSupported())
 		return false;
-
-	m_GameCaptured = hWnd && hWnd == g_hWnd;
-
-	if (!m_Active || !GraphInteractive())
+	UpdateGraphInputOwnership();
+	if (!m_GraphInputOwned)
 		return false;
-
-	if (m_PassThrough)
-		return false;
-
-	if (!IsInMouseLook())
-		return false;
-
-	result = 0; // TODO: maybe some smartass logic here to determine something (not really worth it probably atm)?
+	result = m_GameCapture;
+	m_GameCapture = window;
 	return true;
 }
 
@@ -1336,24 +1231,37 @@ bool OnReleaseCapture()
 {
 	if (!IsSupported())
 		return false;
-
-	bool wasInMouseLook = IsInMouseLook();
-
-	m_GameCaptured = false;
-	m_InMouseLook = false;
-
-	if (!m_Active || !GraphInteractive())
+	UpdateGraphInputOwnership();
+	if (!m_GraphInputOwned)
 		return false;
-
-	if (m_PassThrough)
-		return false;
-
-	if (!wasInMouseLook)
-		return false;
-
+	m_GameCapture = nullptr;
 	return true;
 }
 
+bool OnClipCursor(const RECT * rect)
+{
+	if (!IsSupported())
+		return false;
+	UpdateGraphInputOwnership();
+	if (!m_GraphInputOwned)
+		return false;
+	m_GameClipEnabled = rect != nullptr;
+	if (rect)
+		m_GameClip = *rect;
+	return true;
+}
+
+bool OnShowCursor(BOOL show, int & result)
+{
+	if (!IsSupported())
+		return false;
+	UpdateGraphInputOwnership();
+	if (!m_GraphInputOwned)
+		return false;
+	m_GameCursorDisplayCount += show ? 1 : -1;
+	result = m_GameCursorDisplayCount;
+	return true;
+}
 
 bool DX9_CreateFontsTexture()
 {
@@ -1398,6 +1306,7 @@ void DllProcessAttach(void)
 
 void DllProcessDetach(void)
 {
+	SetCampathGraphOpen(false);
 	ImGui::DestroyContext(ImGui::GetCurrentContext());
 }
 
@@ -1474,6 +1383,7 @@ void DX9_InvalidateDeviceObjects()
 void DoFrame()
 {
 	DrawCampathGraph();
+	UpdateGraphInputOwnership();
 }
 
 void On_Direct3DDevice9_Shutdown()
@@ -1481,6 +1391,7 @@ void On_Direct3DDevice9_Shutdown()
 	if (!IsSupported())
 		return;
 
+	SetCampathGraphOpen(false);
 	DX9_InvalidateDeviceObjects();
 	g_pd3dDevice = NULL;
 	g_hWnd = 0;
@@ -1530,6 +1441,7 @@ bool OnGameFrameRenderEnd()
 	if (!IsSupported())
 		return false;
 
+	UpdateGraphInputOwnership();
 	if (!m_Active || !g_hWnd || !g_pd3dDevice || !g_FontTexture)
 		return false;
 
@@ -1558,41 +1470,22 @@ bool OnGameFrameRenderEnd()
 
 	// Set OS mouse position if requested last frame by io.WantSetMousePos flag (used when io.NavMovesTrue is enabled by
 	// user and using directional navigation)
-	if (io.WantSetMousePos)
+	if (m_GraphInputOwned && io.WantSetMousePos)
 	{
 		POINT pos = { (int)io.MousePos.x, (int)io.MousePos.y };
 		ClientToScreen(g_hWnd, &pos);
 		SetCursorPos(pos.x, pos.y);
 	}
 
-	//// Hide OS mouse cursor if ImGui is drawing it
-	//if (io.MouseDrawCursor)
-	//	SetCursor(NULL);
-
-	HCURSOR cursor = 0;
-
-	if (io.WantCaptureMouse)
-	{
-		cursor = m_Cursors.GetCursor(ImGui::GetMouseCursor());
-	}
-	else
-	{
-		cursor = m_Cursors.GetFromGame(m_GameCursor, IsInMouseLook());
-	}
-
-	if (m_OwnCursor != cursor)
-	{
-		m_OwnCursor = cursor;
-		SetCursor(m_OwnCursor);
-	}
-
-	m_InMouseLook = m_HadSetCursorMouseLook;
-	m_HadSetCursorMouseLook = false;
-
 	// Start the frame. This call will update the io.WantCaptureMouse, io.WantCaptureKeyboard flag that you can use to dispatch inputs (or not) to your application.
 	ImGui::NewFrame();
 
 	DoFrame();
+	if (m_GraphInputOwned)
+	{
+		m_OwnCursor = m_Cursors.GetCursor(ImGui::GetMouseCursor());
+		SetCursor(m_OwnCursor);
+	}
 
 	ImGui::EndFrame();
 
@@ -1664,6 +1557,15 @@ bool OnSetCapture(HWND hWnd, HWND & result)
 }
 
 bool OnReleaseCapture()
+{
+	return false;
+}
+
+bool OnClipCursor(const RECT *)
+{
+	return false;
+}
+bool OnShowCursor(BOOL, int &)
 {
 	return false;
 }

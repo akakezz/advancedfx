@@ -192,6 +192,32 @@ void inputTests()
 			   "Native camera movement remains captured and usable");
 	inputCheck(input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1) && input.GetCamDForward() == 0,
 			   "Native camera release clears movement");
+	input.Supply_KeyEvent(MirvInput::KS_DOWN, 'W', 1);
+	inputCheck(input.GetCamDForward() > 0, "Movement is held before the graph takes input");
+	input.ClearMovementInput(true);
+	inputCheck(input.GetCamDForward() == 0, "Graph handoff clears held movement immediately");
+	inputCheck(input.GetCameraControlMode() && input.GetKeyboardCapture(),
+			   "Graph handoff retains freecam and preview modes");
+	dependencies.Suspended = true;
+	POINT cursor = {200, 300};
+	input.Supply_GetCursorPos(&cursor);
+	inputCheck(cursor.x == 200 && cursor.y == 300, "GUI cursor position is not replaced by freecam while suspended");
+	input.Supply_MouseFrameEnd();
+	inputCheck(input.GetCameraControlMode() && input.GetKeyboardCapture(),
+			   "Suspended freecam retains its modes across frames");
+	dependencies.Suspended = false;
+	input.ClearMovementInput(true);
+	input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1);
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'W', 1) && input.GetCamDForward() > 0,
+			   "Movement resumes after graph input is released");
+	input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1);
+	policy.AllowUnused = false;
+	input.Supply_KeyEvent(MirvInput::KS_DOWN, 'Q', 1);
+	input.ClearMovementInput(true);
+	// The GUI consumes this key's release while it owns input.
+	policy.AllowUnused = true;
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_DOWN, 'Q', 1),
+			   "GUI-owned releases cannot leave permissive preview keys captured");
 }
 } // namespace
 int main()

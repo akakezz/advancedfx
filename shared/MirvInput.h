@@ -62,6 +62,8 @@ public:
 
 	bool GetCameraControlMode(void);
 	void SetCameraControlMode(bool enable);
+	// Release held controls without changing camera/keyboard modes.
+	void ClearMovementInput(bool yieldKeyboard = false);
 
 	// Optional exclusive keyboard ownership for an editor. Ordinary freecam and
 	// other engines keep their existing behavior unless this is enabled.
@@ -390,7 +392,6 @@ private:
 	bool m_MNormalRightButtonWasDown = false;
 
 	bool m_MMove = false;
-	void ClearMovementInput();
 	bool m_ResetCursorDelta = false;
 	bool m_ShiftEscapeHeld = false;
 	bool m_KeyboardCapture = false;
