@@ -688,11 +688,25 @@ bool SetCampathHandlesOpen(bool value)
 	UpdateGraphInputOwnership();
 	return true;
 }
+static CamPathEase GraphKeyPreset(CamPath & path, double time, CamPathEase::Channel channel)
+{
+	if (path.GetSize() > 1)
+	{
+		auto last = path.GetEnd();
+		--last.wrapped;
+		if (last.GetTime() == time)
+		{
+			--last.wrapped;
+			time = last.GetTime();
+		}
+	}
+	return path.GetKeyEase(time, false, channel == CamPathEase::All ? CamPathEase::Position : channel);
+}
 static std::vector<double> GraphSelectedSegments(CamPath & path)
 {
 	std::vector<double> result;
 	for (auto it = path.GetBegin(); it != path.GetEnd(); ++it)
-		if (it.GetValue().Selected && std::next(it.wrapped) != path.GetEnd().wrapped)
+		if (it.GetValue().Selected)
 			result.push_back(it.GetTime());
 	return result;
 }
@@ -713,10 +727,16 @@ static void ApplyGraphPreset(bool finish)
 		graph.Handle = -1;
 	}
 	if (graph.EditAll)
+	{
+		paths.Active().JoinedEase_set(true);
 		paths.Active().SetEase(graph.Preset, true, graph.Channel);
+		if (graph.Preset.Type == CamPathEase::Bezier)
+			for (auto it = paths.Active().GetBegin(); it != paths.Active().GetEnd(); ++it)
+				paths.Active().SetEaseHandle(it.GetTime(), true, graph.Preset.X1, graph.Preset.Y1, graph.Channel);
+	}
 	else
 		for (double time : selected)
-			paths.Active().SetKeyEase(time, graph.Preset, graph.Channel);
+			paths.Active().SetKeyEaseJoined(time, graph.Preset, graph.Channel);
 	if (finish)
 		FinishCampathGraphEdit();
 }
@@ -780,27 +800,36 @@ static void DrawCampathGraphCanvas(CamPath & path)
 		graph.LastPath = &path;
 		graph.Fit = true;
 	}
+	std::vector<double> values(keys.size(), 0), spans(keys.size(), 0);
+	if (graph.Channel == CamPathEase::Fov)
+		values[0] = keys[0].second.Fov;
+	for (std::size_t i = 0; i + 1 < keys.size(); ++i)
+	{
+		spans[i] = path.GetEaseSpan(keys[i].first, graph.Channel);
+		values[i + 1] = values[i] + spans[i];
+	}
+	auto valueAt = [&](std::size_t i, double progress) { return values[i] + spans[i] * progress; };
 	if (graph.Fit)
 	{
 		graph.XMin = keys.front().first;
 		graph.XMax = path.GetUpperBound();
-		graph.YMin = 0;
-		graph.YMax = double(keys.size() - 1);
+		graph.YMin = *std::min_element(values.begin(), values.end()) - 0.01;
+		graph.YMax = *std::max_element(values.begin(), values.end()) + 0.01;
 		for (std::size_t i = 0; i + 1 < keys.size(); ++i)
 		{
 			CamPathEase ease = path.GetKeyEase(
 				keys[i].first, true, graph.Channel == CamPathEase::All ? CamPathEase::Position : graph.Channel);
-			if (keys[i].second.Selected && ease.Type == CamPathEase::Bezier)
+			if ((keys[i].second.Selected || keys[i + 1].second.Selected) && ease.Type == CamPathEase::Bezier)
 			{
-				graph.YMin = (std::min)(graph.YMin, i + (std::min)(ease.Y1, ease.Y2));
-				graph.YMax = (std::max)(graph.YMax, i + (std::max)(ease.Y1, ease.Y2));
+				graph.YMin = (std::min)(graph.YMin, (std::min)(valueAt(i, ease.Y1), valueAt(i, ease.Y2)));
+				graph.YMax = (std::max)(graph.YMax, (std::max)(valueAt(i, ease.Y1), valueAt(i, ease.Y2)));
 			}
 			int samples =
 				ease.Type == CamPathEase::Elastic ? (std::max)(64, (std::min)(512, int(8 / ease.Period))) : 64;
 			for (int sample = 0; sample <= samples; ++sample)
 			{
 				double t = keys[i].first + (keys[i + 1].first - keys[i].first) * sample / samples;
-				double y = i + path.GetSegmentProgress(keys[i].first, t, true, graph.Channel);
+				double y = valueAt(i, path.GetSegmentProgress(keys[i].first, t, true, graph.Channel));
 				graph.YMin = (std::min)(graph.YMin, y);
 				graph.YMax = (std::max)(graph.YMax, y);
 			}
@@ -884,13 +913,13 @@ static void DrawCampathGraphCanvas(CamPath & path)
 	{
 		const auto & key = keys[i];
 		ImU32 color = key.second.Selected ? IM_COL32(255, 193, 77, 255) : IM_COL32(86, 192, 232, 255);
-		ImVec2 camera = point(key.first, double(i));
+		ImVec2 camera = point(key.first, values[i]);
 		if (hovered && distance(camera, io.MousePos) < 81)
 			hitKey = int(i);
 		draw->AddCircleFilled(camera, 4, color);
 		if (key.second.HoldDuration > 0)
 		{
-			ImVec2 release = point(key.first + key.second.HoldDuration, double(i));
+			ImVec2 release = point(key.first + key.second.HoldDuration, values[i]);
 			draw->AddLine(camera, release, IM_COL32(224, 135, 72, 255), 3);
 			draw->AddRectFilled(ImVec2(release.x - 3, release.y - 6), ImVec2(release.x + 3, release.y + 6),
 								IM_COL32(224, 135, 72, 255));
@@ -901,11 +930,11 @@ static void DrawCampathGraphCanvas(CamPath & path)
 		CamPathEase ease =
 			path.GetKeyEase(key.first, true, graph.Channel == CamPathEase::All ? CamPathEase::Position : graph.Channel);
 		int samples = ease.Type == CamPathEase::Elastic ? (std::max)(64, (std::min)(512, int(8 / ease.Period))) : 96;
-		ImVec2 last = point(release, double(i));
+		ImVec2 last = point(release, values[i]);
 		for (int sample = 1; sample <= samples; ++sample)
 		{
 			double t = release + (end - release) * sample / samples;
-			ImVec2 next = point(t, i + path.GetSegmentProgress(key.first, t, true, graph.Channel));
+			ImVec2 next = point(t, valueAt(i, path.GetSegmentProgress(key.first, t, true, graph.Channel)));
 			draw->AddLine(last, next, color, 2);
 			if (hovered)
 			{
@@ -924,18 +953,21 @@ static void DrawCampathGraphCanvas(CamPath & path)
 
 			last = next;
 		}
-		ImVec2 segment = point((release + end) * 0.5,
-							   i + path.GetSegmentProgress(key.first, (release + end) * 0.5, true, graph.Channel));
+		ImVec2 segment =
+			point((release + end) * 0.5,
+				  valueAt(i, path.GetSegmentProgress(key.first, (release + end) * 0.5, true, graph.Channel)));
 		draw->AddRectFilled(ImVec2(segment.x - 4, segment.y - 4), ImVec2(segment.x + 4, segment.y + 4), color);
 		if (hovered && distance(segment, io.MousePos) < 81)
 			hitKey = int(i);
-		if (key.second.Selected && ease.Type == CamPathEase::Bezier)
+		if ((key.second.Selected || keys[i + 1].second.Selected) && ease.Type == CamPathEase::Bezier)
 		{
-			ImVec2 a = point(release, double(i)), b = point(end, double(i + 1));
-			ImVec2 handles[] = {point(release + (end - release) * ease.X1, i + ease.Y1),
-								point(release + (end - release) * ease.X2, i + ease.Y2)};
+			ImVec2 a = point(release, values[i]), b = point(end, values[i + 1]);
+			ImVec2 handles[] = {point(release + (end - release) * ease.X1, valueAt(i, ease.Y1)),
+								point(release + (end - release) * ease.X2, valueAt(i, ease.Y2))};
 			for (int h = 0; h < 2; ++h)
 			{
+				if (!(h ? keys[i + 1].second.Selected : key.second.Selected))
+					continue;
 				draw->AddLine(h ? b : a, handles[h], IM_COL32(165, 142, 198, 255));
 				draw->AddCircleFilled(handles[h], 5, IM_COL32(209, 155, 255, 255));
 				if (hovered && distance(handles[h], io.MousePos) < 100)
@@ -960,7 +992,7 @@ static void DrawCampathGraphCanvas(CamPath & path)
 			if (!io.KeyShift)
 				path.SelectNone();
 			path.SelectAdd(std::size_t(hitKey), std::size_t(hitKey));
-			graph.Preset = path.GetKeyEase(keys[hitKey].first, false, graph.Channel);
+			graph.Preset = GraphKeyPreset(path, keys[hitKey].first, graph.Channel);
 			graph.EditAll = false;
 		}
 		else
@@ -979,7 +1011,8 @@ static void DrawCampathGraphCanvas(CamPath & path)
 				CamPathEase ease = path.GetKeyEase(
 					graph.KeyTime, true, graph.Channel == CamPathEase::All ? CamPathEase::Position : graph.Channel);
 				double x = std::clamp((cursor.first - release) / (end - release), 0.0, 1.0),
-					   y = std::clamp(cursor.second - i, -5.0, 5.0);
+					   y = std::abs(spans[i]) > 1e-12 ? std::clamp((cursor.second - values[i]) / spans[i], -5.0, 5.0)
+													  : (graph.Handle == 0 ? 0 : 1);
 				if (graph.Handle == 0)
 				{
 					ease.X1 = (std::min)(x, ease.X2);
@@ -990,7 +1023,8 @@ static void DrawCampathGraphCanvas(CamPath & path)
 					ease.X2 = (std::max)(x, ease.X1);
 					ease.Y2 = path.SmoothHolds() && keys[i + 1].second.HoldDuration > 0 ? 1 : y;
 				}
-				path.SetKeyEase(graph.KeyTime, ease, graph.Channel);
+				path.SetEaseHandle(graph.KeyTime, graph.Handle == 0, graph.Handle == 0 ? ease.X1 : ease.X2,
+								   graph.Handle == 0 ? ease.Y1 : ease.Y2, graph.Channel);
 				graph.Preset = ease;
 				break;
 			}
@@ -1007,14 +1041,14 @@ static void DrawCampathGraphCanvas(CamPath & path)
 				path.SelectNone();
 			for (std::size_t i = 0; i < keys.size(); ++i)
 			{
-				ImVec2 p = point(keys[i].first, double(i));
+				ImVec2 p = point(keys[i].first, values[i]);
 				bool inside = p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y;
 				if (i + 1 < keys.size())
 				{
 					double release = keys[i].first + keys[i].second.HoldDuration;
 					p = point((release + keys[i + 1].first) * 0.5,
-							  i + path.GetSegmentProgress(keys[i].first, (release + keys[i + 1].first) * 0.5, true,
-														  graph.Channel));
+							  valueAt(i, path.GetSegmentProgress(keys[i].first, (release + keys[i + 1].first) * 0.5,
+																 true, graph.Channel)));
 					inside = inside || (p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y);
 				}
 				if (inside)
@@ -1029,7 +1063,7 @@ static void DrawCampathGraphCanvas(CamPath & path)
 	if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.MouseDown[0])
 	{
 		int target = hitSegment >= 0 ? hitSegment : hitKey;
-		if (target >= 0 && std::size_t(target + 1) < keys.size())
+		if (target >= 0 && std::size_t(target) < keys.size())
 		{
 			FinishCampathGraphEdit();
 			if (!keys[target].second.Selected)
@@ -1039,7 +1073,7 @@ static void DrawCampathGraphCanvas(CamPath & path)
 			}
 			graph.EditAll = false;
 			graph.ContextTime = keys[target].first;
-			graph.Preset = path.GetKeyEase(graph.ContextTime, false, graph.Channel);
+			graph.Preset = GraphKeyPreset(path, graph.ContextTime, graph.Channel);
 			ImGui::OpenPopup("CampathSegmentMenu");
 		}
 	}
@@ -1051,8 +1085,8 @@ static void DrawCampathGraphCanvas(CamPath & path)
 		ImGui::Text("Key %i: %.3fs", hitKey, keys[hitKey].first);
 		if (std::size_t(hitKey + 1) < keys.size())
 		{
-			auto ease = path.GetKeyEase(keys[hitKey].first, false, graph.Channel);
-			ImGui::Text("Outgoing: %s %s", CamPathEase::ToString(ease.Type), CamPathEase::ToString(ease.Mode));
+			auto ease = GraphKeyPreset(path, keys[hitKey].first, graph.Channel);
+			ImGui::Text("Easing: %s %s", CamPathEase::ToString(ease.Type), CamPathEase::ToString(ease.Mode));
 		}
 		ImGui::EndTooltip();
 	}
@@ -1137,49 +1171,20 @@ static void DrawCampathGraph()
 				graph.Channel = channel;
 				graph.Fit = true;
 				auto keys = GraphSelectedSegments(path);
-				graph.Preset = keys.empty() ? path.GetEase(channel) : path.GetKeyEase(keys.front(), false, channel);
+				graph.Preset = keys.empty() ? path.GetEase(channel) : GraphKeyPreset(path, keys.front(), channel);
 			}
 		ImGui::EndCombo();
 	}
 	ImGui::SameLine();
-	bool continuous = path.SpeedContinuous_get();
-	if (ImGui::Checkbox("Continuous travel speed", &continuous))
-	{
-		FinishCampathGraphEdit();
-		auto before = paths.Capture();
-		path.SpeedContinuous_set(continuous);
-		paths.Record(before);
-	}
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Blends position travel toward matching speeds at joins. Holds still stop; Angles and FOV "
-						  "retain their own easing. A sharp spatial corner still changes direction.");
-	float blend = float(path.BlendStrength_get() * 100);
-	bool blendActive = false;
-	ImGui::BeginDisabled(!continuous);
-	if (ImGui::SliderFloat("Blend strength (%)", &blend, 0, 100))
-	{
-		if (!graph.Editing)
-		{
-			graph.Before = paths.Capture();
-			graph.Editing = true;
-			graph.Handle = -1;
-		}
-		path.BlendStrength_set(blend / 100.0);
-	}
-	blendActive = ImGui::IsItemActive();
-	ImGui::EndDisabled();
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("0: original position easing. 100: match boundary speeds. Intermediate values reduce speed "
-						  "changes while preserving more of the original easing.");
 	auto selected = GraphSelectedSegments(path);
-	if (ImGui::BeginCombo("Scope", graph.EditAll ? "Entire path" : "Selected segments"))
+	if (ImGui::BeginCombo("Scope", graph.EditAll ? "Entire path" : "Selected keys"))
 	{
-		if (ImGui::Selectable("Selected segments", !graph.EditAll))
+		if (ImGui::Selectable("Selected keys", !graph.EditAll))
 		{
 			FinishCampathGraphEdit();
 			graph.EditAll = false;
 			if (!selected.empty())
-				graph.Preset = path.GetKeyEase(selected.front(), false, graph.Channel);
+				graph.Preset = GraphKeyPreset(path, selected.front(), graph.Channel);
 		}
 		if (ImGui::Selectable("Entire path", graph.EditAll))
 		{
@@ -1189,7 +1194,7 @@ static void DrawCampathGraph()
 		}
 		ImGui::EndCombo();
 	}
-	bool changed = false, parameterActive = blendActive;
+	bool changed = false, parameterActive = false;
 	ImGui::BeginDisabled(!graph.EditAll && selected.empty());
 	if (ImGui::BeginCombo("Easing preset", CamPathEase::ToString(graph.Preset.Type)))
 	{
@@ -1236,6 +1241,22 @@ static void DrawCampathGraph()
 		}
 		parameterActive |= ImGui::IsItemActive();
 	}
+	if (graph.Preset.Type == CamPathEase::Bounce)
+	{
+		float strength = float(graph.Preset.BounceStrength), count = float(graph.Preset.BounceCount);
+		if (ImGui::SliderFloat("Bounce strength", &strength, 0, 1))
+		{
+			graph.Preset.BounceStrength = std::clamp(double(strength), 0.0, 1.0);
+			changed = true;
+		}
+		parameterActive |= ImGui::IsItemActive();
+		if (ImGui::SliderFloat("Bounce count", &count, 1, 8, "%.0f"))
+		{
+			graph.Preset.BounceCount = std::round(std::clamp(double(count), 1.0, 8.0));
+			changed = true;
+		}
+		parameterActive |= ImGui::IsItemActive();
+	}
 	if (graph.Preset.Type == CamPathEase::Elastic)
 	{
 		float amplitude = float(graph.Preset.Amplitude), period = float(graph.Preset.Period);
@@ -1262,12 +1283,13 @@ static void DrawCampathGraph()
 	if (ImGui::Button("Select all"))
 		path.SelectAll();
 
-	ImGui::TextUnformatted("Click/box select; Shift adds. Right-click a segment for presets. Changes apply live; "
+	ImGui::TextUnformatted("Click/box select; Shift adds. Right-click for presets affecting both sides of selected "
+						   "keys. Changes apply live; "
 						   "purple handles edit Bezier.");
 	ImGui::TextUnformatted(
-		"Middle drag pans; wheel zooms. Time: path seconds; vertical: channel progress. Orange bars: "
+		"Middle drag pans; wheel zooms. Time: path seconds; vertical: distance / FOV / angular progress. Orange bars: "
 		"holds. Esc closes.");
-	ImGui::Text("%u segments selected. Channel default: %s %s. All previews position; holds keep full pose.",
+	ImGui::Text("%u keys selected. Channel default: %s %s. All previews position; holds keep full pose.",
 				unsigned(selected.size()), CamPathEase::ToString(path.GetEase(graph.Channel).Type),
 				CamPathEase::ToString(path.GetEase(graph.Channel).Mode));
 	DrawCampathGraphCanvas(path);
@@ -1447,7 +1469,7 @@ static void DrawSpatialHandles()
 	FinishCampathGraphEdit();
 	path.SelectNone();
 	path.SelectAdd(chosen, chosen);
-	g_CampathGraph.Preset = path.GetKeyEase(time, false, g_CampathGraph.Channel);
+	g_CampathGraph.Preset = GraphKeyPreset(path, time, g_CampathGraph.Channel);
 	g_CampathGraph.EditAll = false;
 	drag.Before = paths.Capture();
 	drag.Path = &path;

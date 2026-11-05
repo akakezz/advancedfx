@@ -2592,35 +2592,6 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 				 "Graph editor is unavailable in this build");
 			return true;
 		}
-		if (a.is(0, "edit") && a.is(1, "speed"))
-		{
-			if (a.count() == 2)
-			{
-				Tier0_Msg("mirv_campath edit speed continuous|native; edit speed blend <0..100> - Travel speed through "
-						  "ordinary keys; keeps curve "
-						  "and arrival times.\nCurrent value: %s\n",
-						  activePath().SpeedContinuous_get() ? "continuous" : "native");
-				return true;
-			}
-			if (a.is(2, "blend"))
-			{
-				if (a.count() == 3)
-				{
-					Tier0_Msg(
-						"mirv_campath edit speed blend <0..100> - Continuity blend strength.\nCurrent value: %g\n",
-						activePath().BlendStrength_get() * 100);
-					return true;
-				}
-				a.size(4);
-				activePath().BlendStrength_set(a.num(3) / 100);
-				activePath().SpeedContinuous_set(true);
-				return changed();
-			}
-			a.size(3);
-			need(a.is(2, "continuous") || a.is(2, "native"), "Choose continuous or native");
-			activePath().SpeedContinuous_set(a.is(2, "continuous"));
-			return changed();
-		}
 		if (a.is(0, "edit") && a.is(1, "ease"))
 		{
 			CamPathEase::Channel channel = CamPathEase::All;
@@ -2637,12 +2608,13 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 						  "[in|out|inout]\nFunctions: inherit, linear, "
 						  "sine, quad, cubic, quart, quint, expo, circ, back, bounce, elastic, bezier.\nBezier: ... "
 						  "bezier <x1> <y1> <x2> <y2>\nBack: ... back <direction> [overshoot]\nElastic: ... elastic "
-						  "<direction> [amplitude period]\nCurrent path easing: %s %s\n",
+						  "<direction> [amplitude period]\nBounce: ... bounce <direction> [strength count]\nCurrent "
+						  "path easing: %s %s\n",
 						  CamPathEase::ToString(activePath().GetEase(channel).Type),
 						  CamPathEase::ToString(activePath().GetEase(channel).Mode));
 				return true;
 			}
-			need(e.is(2, "all") || e.is(2, "selected"), "Choose all or selected outgoing segments");
+			need(e.is(2, "all") || e.is(2, "selected"), "Choose all or selected keyframes");
 			CamPathEase ease;
 			need(CamPathEase::FromString(e.at(3).c_str(), ease.Type), "Unknown easing function");
 			if (ease.Type == CamPathEase::Bezier)
@@ -2659,6 +2631,11 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 					need(CamPathEase::FromString(e.at(4).c_str(), ease.Mode), "Choose in, out or inout");
 				if (ease.Type == CamPathEase::Back && e.count() == 6)
 					ease.Overshoot = e.num(5);
+				else if (ease.Type == CamPathEase::Bounce && e.count() == 7)
+				{
+					ease.BounceStrength = e.num(5);
+					ease.BounceCount = e.num(6);
+				}
 				else if (ease.Type == CamPathEase::Elastic && e.count() == 7)
 				{
 					ease.Amplitude = e.num(5);
@@ -2670,16 +2647,22 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 			need(ease.Valid(),
 				 "Invalid easing parameters; Bezier time handles must stay ordered in 0..1 and values in -5..5");
 			if (e.is(2, "all"))
+			{
+				activePath().JoinedEase_set(true);
 				activePath().SetEase(ease, true, channel);
+				if (ease.Type == CamPathEase::Bezier)
+					for (auto it = activePath().GetBegin(); it != activePath().GetEnd(); ++it)
+						activePath().SetEaseHandle(it.GetTime(), true, ease.X1, ease.Y1, channel);
+			}
 			else
 			{
 				std::vector<double> times;
 				for (auto it = activePath().GetBegin(); it != activePath().GetEnd(); ++it)
-					if (it.GetValue().Selected && std::next(it.wrapped) != activePath().GetEnd().wrapped)
+					if (it.GetValue().Selected)
 						times.push_back(it.GetTime());
-				need(!times.empty(), "Select a keyframe with an outgoing segment first");
+				need(!times.empty(), "Select a keyframe first");
 				for (double time : times)
-					activePath().SetKeyEase(time, ease, channel);
+					activePath().SetKeyEaseJoined(time, ease, channel);
 			}
 			return changed();
 		}
@@ -2980,7 +2963,7 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 					  "mirv_campath draw stackLabels 0|1 - Stack nearby overlapping indices.\n"
 					  "mirv_campath draw stackWorldDistance <units> - Nearby threshold (default 32).\n");
 		if (a.is(0, "edit") && a.count() == 1)
-			Tier0_Msg("mirv_campath edit speed continuous|native - Travel speed.\nmirv_campath edit hold - Keyframe "
+			Tier0_Msg("mirv_campath edit hold - Keyframe "
 					  "holds.\nmirv_campath edit ease - Segment "
 					  "timing/easing.\nmirv_campath edit interp all - Set interpolation in "
 					  "one command.\n");

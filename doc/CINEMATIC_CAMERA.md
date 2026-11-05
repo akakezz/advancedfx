@@ -71,7 +71,7 @@ Console equivalents include `preview <index>`, `preview interp <0..1>`,
 `preview seek`, `preview undo` and `preview redo`. `preview exit` retains the free
 camera pose; `mirv_input end` releases it. Undo/redo keep the current viewport and
 restore keyframes, handles, holds, interpolation, easing, names and path membership.
-History keeps the last 64 data edits, including loads, travel speed and native timing/placement
+History keeps the last 64 data edits, including loads, easing and native timing/placement
 commands. Navigation, selection, saving and drawing settings do not create edits.
 A new data edit clears redo. The master playback switch is outside undo history.
 
@@ -197,53 +197,35 @@ handles on an edited segment follow native tangents. `curve reset` restores
 selected handles to automatic. Choosing another position interpolation ignores
 stored handles until Bezier is re-enabled. Use `mirv_aim` for aiming.
 
-## Continuous travel through keyframes
+## Joined easing at camera keyframes
 
-Keyframes remain full camera poses with classic indices. New paths enable
-continuous travel speed; existing files retain native speed unless enabled:
+Select a key in the graph and choose **bezier**. Its incoming and outgoing timing
+handles appear around that key. Dragging either rotates the opposite tangent to
+keep the curves joined, with independent handle lengths. First and last keys have
+one handle. Selecting multiple keys edits both sides of each selected key, including
+the final key. One drag or live slider interaction is one undoable edit.
 
-```text
-mirv_campath edit speed continuous
-mirv_campath edit speed native
-mirv_campath edit speed blend 75
-```
+Position's vertical axis is cumulative distance along the actual spatial curve;
+FOV uses its value in degrees; Angles uses cumulative rotation progress. Time is
+horizontal. Handle alignment accounts for unequal segment durations and distances.
+Joined Position Bezier easing maps distance back onto the original spatial curve,
+so native parameterization cannot introduce another slowdown at the join. A sharp
+spatial corner can still change travel direction. Horizontal handles deliberately
+stop; holds flatten arrival and release tangents. Stationary intervals and FOV
+turning points also require zero shared velocity. Linked tangents are recalculated
+for playback/drawing after spatial or timing edits.
 
-Continuous travel changes how position moves along the existing curve. It keeps
-keyframe positions, arrival times, handles and curve shape, and matches travel
-speed on either side of ordinary joins. Speed can vary between keys; it is not a
-constant-speed retime. This also handles aligned Bezier tangents with different
-lengths. Use aligned handles or a smooth curve for a continuous travel direction.
-Rotation and FOV retain their own time interpolation.
+Choosing a preset for a key applies it to both adjacent intervals. Bounce exposes
+**Bounce strength** (0..1) and **Bounce count** (1..8); elastic retains amplitude
+and period. These are live controls. Presets keep their characteristic stops,
+rebounds and oscillations. Choose Bezier for direct control of the shared tangent.
+The graph preserves separate Position, Angles and FOV editing. No additional
+keyframe types are introduced.
 
-**Blend strength** accepts 0..100 percent. At 0, position follows its original
-interpolation and easing exactly. At 100, neighboring segments share their travel
-speed at ordinary joins. Intermediate strengths blend between those results; they
-reduce speed changes without guaranteeing matching boundary speeds. The command
-also enables continuous travel. New paths default to 100 percent; existing files
-without continuous travel enabled keep their original behavior.
-
-Sine, back, bounce, elastic and custom Bezier presets also support blending. Their
-speed profiles blend toward a shared boundary speed near each join, retaining
-their character in the segment interior. Forward travel is adjusted so arrival
-times remain unchanged. Intentional reversals remain possible. A stronger blend
-changes more of the authored easing near joins; use 0 for the exact preset.
-Holds still stop the full camera pose. Step interpolation and stationary intervals
-retain their meaning. Duplicate positions still constrain the camera to revisit
-that position. Speed continuity cannot remove a sharp change in travel direction;
-use aligned handles or smooth geometry for that.
-
-The existing `sSmooth` rotation mode now uses a local spherical spline with
-shared angular velocity through joins, rather than restarting an ease-in/out at
-each key. It works with two keys and handles unequal time intervals. Choose it
-with `edit interp rotation sSmooth`, or use `edit interp all smooth` for smooth
-position and rotation. Holds and explicit easing can still stop rotation.
-Classic `sLinear` and `sCubic` retain their previous behavior.
-
-The graph's **Continuous travel speed** checkbox and **Blend strength (%)** slider
-control the same settings and support undo/redo. Position's plot shows the
-resulting travel progress. Blending does not change the Angles or FOV timing
-channels. Save/load, collections and undo/redo preserve these settings. No
-additional keyframe types or tracks are introduced.
+Travel-blending controls and the `edit speed` commands have been removed. New paths use
+joined editing with legacy automatic blending disabled. Old XML remains readable,
+including its saved legacy speed settings. Editing easing disables legacy
+blending and uses joined timing. Existing files acquire joined behavior when easing is edited.
 
 ## Easing graph and segment presets
 
@@ -263,20 +245,21 @@ movement and mouse deltas are cleared at each
 handoff. Opening native menus or changing window focus temporarily yields input
 without closing the graph.
 
-The horizontal axis is path time in seconds. The vertical axis is progress from
-one camera key to the next (indices 0, 1, 2, ...). Orange bars show stationary
-holds; the plotted curves include automatic hold easing. These are timing curves;
+The horizontal axis is path time in seconds. The vertical axis shows cumulative
+distance along the Position curve, FOV in degrees, or Angles progress. Orange bars
+show stationary holds; the plotted curves include automatic hold easing. These are timing curves;
 3D position handles remain editable in the viewport.
 
 - Choose **All**, **Position**, **Angles** or **FOV** in Channel. Each group can
   have its own presets, directions, parameters and custom Bezier timing handles.
   All edits the groups together and previews Position's resulting progress.
-- Click a camera key or a segment's square to select its outgoing segment.
+- Click a camera key or a segment's square to select that key. Its easing edits
+  affect the intervals on both sides.
 - Drag empty canvas space to box select several keys/segments; Shift adds.
 - Right-click any segment curve to choose its preset or in/out/inout direction.
   Clicking inside an existing multi-selection preserves it; clicking an unselected
   segment selects that segment. The menu also resets preset parameters.
-- Choose **Selected segments** or **Entire path** in Scope. Preset, direction and
+- Choose **Selected keys** or **Entire path** in Scope. Preset, direction and
   parameter changes apply live; there is no separate Apply step.
 - With Bezier easing selected, drag its purple time/value handles directly.
 - Middle-drag pans; the mouse wheel zooms around the cursor; Fit restores bounds.
@@ -302,7 +285,7 @@ Console equivalents:
 ```text
 mirv_campath edit ease all sine inout
 mirv_campath select #1 #2
-mirv_campath edit ease selected bounce out
+mirv_campath edit ease selected bounce out 0.7 4
 mirv_campath edit ease selected back out 1.7
 mirv_campath edit ease selected elastic out 1 0.3
 mirv_campath edit ease selected bezier 0.3 0 0.7 1
@@ -312,8 +295,8 @@ mirv_campath edit ease angles all cubic inout
 mirv_campath edit ease position selected elastic out 1 0.3
 ```
 
-An outgoing override belongs to its starting keyframe. Selecting keys 1 and 2
-changes segments 1→2 and 2→3. The final key has no outgoing segment. `inherit`
+Selecting key 1 changes intervals 0→1 and 1→2. Selecting keys 1 and 2 changes
+0→1, 1→2 and 2→3. The final key edits its incoming interval. `inherit`
 uses the path's default; setting the entire path clears segment overrides.
 Applying `inherit` to the whole path restores native timing plus automatic smooth
 holds. This timing easing is independent of spatial `edit interp`/curve modes.
@@ -389,7 +372,7 @@ undone. Supply `.xml` explicitly; saving overwrites the specified file.
 Classic XML remains supported. Handles, handle mode, hold durations, easing and names are optional
 attributes; numbers retain enough precision to round-trip. Older HLAE builds can
 read the basic keys but ignore these extensions. Independent channel easing and
-blend strength use optional attributes in the same native XML and round-trip
+joined handles and bounce controls use optional attributes in the same native XML and round-trip
 through both single-path and collection saves. Files containing only shared
 easing retain that shared behavior. The earlier experimental
 `cinematicCamera` schema remains unsupported; retain those files and use the old

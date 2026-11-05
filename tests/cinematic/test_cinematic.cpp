@@ -651,7 +651,9 @@ void continuousTravel()
 	check(loaded.LoadXml(native.ToXml()) && !loaded.SpeedContinuous_get(),
 		  "Older native files retain native speed by default");
 	CamPathCollection history;
-	check(history.Active().SpeedContinuous_get(), "New paths enable continuous travel");
+	check(history.Active().JoinedEase_get() && !history.Active().SpeedContinuous_get(),
+		  "New paths use joined easing without legacy travel blending");
+	history.Active().SpeedContinuous_set(true);
 	populate(history.Active());
 	auto before = history.Capture();
 	history.Active().SpeedContinuous_set(false);
@@ -872,6 +874,82 @@ void channelEasingAndBlend()
 	check(restored.Load(collectionFile.wstring().c_str()) && restored.Capture() == history.Capture(),
 		  "Collection preserves channel settings and blend strengths");
 	std::filesystem::remove(collectionFile);
+}
+void joinedEasing()
+{
+	CamPath p;
+	p.SetName("Joined");
+	p.CurveEditing_set(true);
+	p.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	p.RotationInterpMethod_set(CamPath::QI_SLINEAR);
+	p.FovInterpMethod_set(CamPath::DI_LINEAR);
+	p.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	p.Add(2, CamPathValue(100, 0, 0, 0, 30, 0, 80));
+	p.Add(7, CamPathValue(400, 0, 0, 0, 60, 0, 40));
+	p.Add(10, CamPathValue(500, 0, 0, 0, 90, 0, 30));
+	CamPathEase e;
+	e.Type = CamPathEase::Bezier;
+	check(p.SetKeyEaseJoined(2, e, CamPathEase::Position), "Key easing edits both adjacent segments");
+	check(p.GetKeyEase(0, false, CamPathEase::Position).Type == CamPathEase::Bezier,
+		  "Incoming segment becomes editable too");
+	check(p.SetEaseHandle(2, true, 0.25, 0.4, CamPathEase::Position), "Outgoing tangent can be shaped");
+	auto outgoing = p.GetKeyEase(2, false, CamPathEase::Position),
+		 incoming = p.GetKeyEase(0, false, CamPathEase::Position);
+	double v = 300.0 / 5 * outgoing.Y1 / outgoing.X1;
+	near(100.0 / 2 * (1 - incoming.Y2) / (1 - incoming.X2), v, 1e-8);
+	double dt = 1e-5;
+	near((p.Eval(2).X - p.Eval(2 - dt).X) / dt, v, 0.02);
+	near((p.Eval(2 + dt).X - p.Eval(2).X) / dt, v, 0.02);
+	check(p.SetEaseHandle(0, false, 0.7, 0.8, CamPathEase::Position), "Incoming tangent rotates outgoing tangent");
+	incoming = p.GetKeyEase(0, false, CamPathEase::Position);
+	outgoing = p.GetKeyEase(2, false, CamPathEase::Position);
+	near(100.0 / 2 * (1 - incoming.Y2) / (1 - incoming.X2), 300.0 / 5 * outgoing.Y1 / outgoing.X1, 1e-8);
+	p.SetHandle(2, true, Vector3(0, 90, 0));
+	auto center = p.Eval(2), left = p.Eval(2 - dt), right = p.Eval(2 + dt);
+	near(std::hypot(center.X - left.X, center.Y - left.Y) / dt, std::hypot(right.X - center.X, right.Y - center.Y) / dt,
+		 0.05);
+	p.ResetHandles(2);
+
+	p.SetKeyEaseJoined(2, e, CamPathEase::Fov);
+	p.SetEaseHandle(2, true, 0.3, 0.25, CamPathEase::Fov);
+	v = -40.0 / 5 * 0.25 / 0.3;
+	near((p.Eval(2).Fov - p.Eval(2 - dt).Fov) / dt, v, 0.01);
+	near((p.Eval(2 + dt).Fov - p.Eval(2).Fov) / dt, v, 0.01);
+	p.SetKeyHold(2, 3);
+	near(p.Eval(2.5).X, 100);
+	near(p.Eval(2.5).Fov, 80);
+	near((p.Eval(2).X - p.Eval(2 - dt).X) / dt, 0, 0.01);
+	near((p.Eval(3 + dt).X - p.Eval(3).X) / dt, 0, 0.01);
+	auto before = p.CaptureState();
+	check(!p.SetEaseHandle(2, true, std::numeric_limits<double>::infinity(), 0, CamPathEase::Position),
+		  "Nonfinite drag rejected");
+	check(p.CaptureState() == before, "Rejected drag is atomic");
+	CamPath restored;
+	restored.CurveEditing_set(true);
+	check(restored.LoadXml(p.ToXml()) && restored.CaptureState() == p.CaptureState(),
+		  "Joined tangents persist in native XML");
+	check(!restored.LoadXml("<campath joinedEase=\"bad\"><points/></campath>"), "Invalid joined flag rejected");
+	CamPathEase bounce;
+	bounce.Type = CamPathEase::Bounce;
+	bounce.Mode = CamPathEase::Out;
+	double classic = bounce.Eval(0.5);
+	near(classic, 0.765625);
+	bounce.BounceStrength = 0.4;
+	check(std::abs(bounce.Eval(0.5) - classic) > 0.05, "Bounce strength changes rebound height");
+	bounce.BounceCount = 5;
+	check(bounce.Valid(), "Bounce count is adjustable");
+	p.SetKeyEaseJoined(2, bounce, CamPathEase::Fov);
+	check(restored.LoadXml(p.ToXml()) && restored.CaptureState() == p.CaptureState(),
+		  "Bounce parameters and joined data round-trip");
+	bounce.BounceStrength = 2;
+	check(!bounce.Valid(), "Out-of-range bounce strength rejected");
+	CamPathCollection history;
+	history.Active().RestoreState(p.CaptureState());
+	auto snap = history.Capture();
+	history.Active().SetKeyEaseJoined(7, e, CamPathEase::Position);
+	history.Record(snap);
+	check(history.Undo() && history.Capture() == snap, "Both sides of easing edits undo together");
+	check(history.Redo(), "Joined easing redoes");
 }
 void placement()
 {
@@ -1360,6 +1438,7 @@ int main()
 		continuousTravel();
 		continuousRotation();
 		channelEasingAndBlend();
+		joinedEasing();
 		placement();
 		persistence();
 		localInterpolation();

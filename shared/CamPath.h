@@ -52,6 +52,7 @@ struct CamPathEase
 	Direction Mode = InOut;
 	double X1 = 1.0 / 3, Y1 = 1.0 / 3, X2 = 2.0 / 3, Y2 = 2.0 / 3;
 	double Overshoot = 1.70158, Amplitude = 1, Period = 0.3;
+	double BounceStrength = 1, BounceCount = 3;
 	bool Valid() const;
 	bool operator==(const CamPathEase & other) const;
 	double Eval(double progress) const;
@@ -152,6 +153,7 @@ public:
 		CamPathEase Ease;
 		std::array<std::optional<CamPathEase>, 3> ChannelEase;
 		double BlendStrength = 1;
+		bool JoinedEase = false;
 		bool operator==(const State & other) const;
 	};
 	State CaptureState() const;
@@ -168,6 +170,21 @@ public:
 	bool SetKeyEase(double time, const CamPathEase & value, CamPathEase::Channel channel = CamPathEase::All);
 	CamPathEase GetKeyEase(double time, bool forPlayback = false,
 						   CamPathEase::Channel channel = CamPathEase::All) const;
+	// Editing a key affects its incoming and outgoing timing curves together.
+	bool SetKeyEaseJoined(double time, const CamPathEase & value, CamPathEase::Channel channel);
+	bool SetEaseHandle(double segmentTime, bool outgoing, double x, double y, CamPathEase::Channel channel);
+	double GetEaseSpan(double time, CamPathEase::Channel channel) const;
+	void JoinedEase_set(bool value)
+	{
+		m_JoinedEase = value;
+		if (value)
+			m_ContinuousSpeed = false;
+		Changed();
+	}
+	bool JoinedEase_get() const
+	{
+		return m_JoinedEase;
+	}
 	bool SmoothHolds() const;
 	double GetSegmentProgress(double keyTime, double time, bool applySpeed = true,
 							  CamPathEase::Channel channel = CamPathEase::All) const;
@@ -377,6 +394,7 @@ private:
 	CamPathValue EvalChannelBase(double time, CamPathEase::Channel channel);
 	std::array<std::optional<CamPathEase>, 3> m_ChannelEase;
 	double m_BlendStrength = 1;
+	bool m_JoinedEase = false;
 	bool m_ContinuousSpeed = false;
 	mutable bool m_MotionCacheValid = false;
 	mutable std::vector<MotionSegment> m_MotionSegments;
