@@ -4,7 +4,6 @@
 #include "WrpConsole.h"
 #include "../shared/CamIO.h"
 #include <shared/CamPath.h>
-#include <shared/CinematicPath.h>
 #include "../shared/MirvInput.h"
 
 #include <list>
@@ -37,7 +36,12 @@ public:
 	};
 
 	CamPath m_CamPath;
-	cinematic::Editor m_NewCampath;
+	CamPath m_NewCamPath;
+	bool m_UseNewCampath = false;
+	CamPath & GetActiveCamPath()
+	{
+		return m_UseNewCampath ? m_NewCamPath : m_CamPath;
+	}
 
 	bool ViewOverrideReset = true;
 	bool ForceViewOverride = true;
@@ -147,13 +151,9 @@ private:
 };
 
 // Source 1 campath command/editor integration (implemented in MirvCommands.cpp).
-bool MirvCinematic_Command(IWrpCommandArgs * args);
-bool MirvCinematic_Override(float & x, float & y, float & z, float & pitch, float & yaw, float & roll, float & fov);
-bool MirvCinematic_OwnsCamera();
-bool MirvCinematic_IsEditing();
-bool MirvCinematic_IsNewSystem();
-int MirvCinematic_SelectedTimeKey();
-void MirvCinematic_Update();
-bool MirvCinematic_KeyEvent(UINT message, WPARAM key, LPARAM flags);
-void MirvCinematic_ReleaseKeys(bool yieldKeyboard = false);
-bool MirvCinematic_DrawEnabled(int layer);
+bool MirvCampathEditor_Command(IWrpCommandArgs * args);
+bool MirvCampathEditor_IsEditing();
+bool MirvCampathEditor_IsNewSystem();
+void MirvCampathEditor_Update();
+bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags);
+void MirvCampathEditor_ReleaseKeys(bool yieldKeyboard = false);

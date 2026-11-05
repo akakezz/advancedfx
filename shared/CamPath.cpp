@@ -1,15 +1,34 @@
+#ifndef _USE_MATH_DEFINES
+#define _USE_MATH_DEFINES
+#endif
 #include "stdafx.h"
 
 #include "CamPath.h"
 
 #include "../deps/release/rapidxml/rapidxml.hpp"
+// Forward declarations for the pinned RapidXML printer's two-phase lookup on GCC.
+namespace rapidxml
+{
+namespace internal
+{
+template <class OutIt, class Ch> inline OutIt print_children(OutIt, const xml_node<Ch> *, int, int);
+template <class OutIt, class Ch> inline OutIt print_element_node(OutIt, const xml_node<Ch> *, int, int);
+template <class OutIt, class Ch> inline OutIt print_data_node(OutIt, const xml_node<Ch> *, int, int);
+template <class OutIt, class Ch> inline OutIt print_cdata_node(OutIt, const xml_node<Ch> *, int, int);
+template <class OutIt, class Ch> inline OutIt print_declaration_node(OutIt, const xml_node<Ch> *, int, int);
+template <class OutIt, class Ch> inline OutIt print_comment_node(OutIt, const xml_node<Ch> *, int, int);
+template <class OutIt, class Ch> inline OutIt print_doctype_node(OutIt, const xml_node<Ch> *, int, int);
+template <class OutIt, class Ch> inline OutIt print_pi_node(OutIt, const xml_node<Ch> *, int, int);
+} // namespace internal
+} // namespace rapidxml
 #include "../deps/release/rapidxml/rapidxml_print.hpp"
 #include <iterator>
 #include <stdio.h>
 #include <fstream>
 #include <algorithm>
+#include <cmath>
+#include <filesystem>
 
-#define _USE_MATH_DEFINES
 #include <math.h>
 
 #ifdef min
@@ -27,14 +46,12 @@ bool CamPath::DoubleInterp_FromString(char const * value, DoubleInterp & outValu
 		outValue = DI_DEFAULT;
 		return true;
 	}
-	else
-	if(!_stricmp(value,"linear"))
+	else if (!_stricmp(value, "linear"))
 	{
 		outValue = DI_LINEAR;
 		return true;
 	}
-	else
-	if(!_stricmp(value,"cubic"))
+	else if (!_stricmp(value, "cubic"))
 	{
 		outValue = DI_CUBIC;
 		return true;
@@ -65,14 +82,12 @@ bool CamPath::QuaternionInterp_FromString(char const * value, QuaternionInterp &
 		outValue = QI_DEFAULT;
 		return true;
 	}
-	else
-	if(!_stricmp(value,"sLinear"))
+	else if (!_stricmp(value, "sLinear"))
 	{
 		outValue = QI_SLINEAR;
 		return true;
 	}
-	else
-	if(!_stricmp(value,"sCubic"))
+	else if (!_stricmp(value, "sCubic"))
 	{
 		outValue = QI_SCUBIC;
 		return true;
@@ -96,26 +111,24 @@ char const * CamPath::QuaternionInterp_ToString(QuaternionInterp value)
 	return "[unkown]";
 }
 
-CamPathValue::CamPathValue()
-: X(0.0), Y(0.0), Z(0.0), R(), Fov(90.0), Selected(false)
+CamPathValue::CamPathValue() : X(0.0), Y(0.0), Z(0.0), R(), Fov(90.0), Selected(false)
 {
 }
 
 CamPathValue::CamPathValue(double x, double y, double z, double pitch, double yaw, double roll, double fov)
-: X(x)
-, Y(y)
-, Z(z)
-, R(Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(pitch,yaw,roll))))
-, Fov(fov)
-, Selected(false)
+	: X(x), Y(y), Z(z),
+	  R(Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(pitch, yaw, roll)))), Fov(fov),
+	  Selected(false)
 {
 }
 
-CamPathValue::CamPathValue(double x, double y, double z, double q_w, double q_x, double q_y, double q_z, double fov, bool selected)
-: X(x), Y(y), Z(z), R(Quaternion(q_w,q_x,q_y,q_z)), Fov(fov), Selected(selected) {
+CamPathValue::CamPathValue(double x, double y, double z, double q_w, double q_x, double q_y, double q_z, double fov,
+						   bool selected)
+	: X(x), Y(y), Z(z), R(Quaternion(q_w, q_x, q_y, q_z)), Fov(fov), Selected(selected)
+{
 }
 
-CamPathIterator::CamPathIterator(CInterpolationMap<CamPathValue>::const_iterator & it) : wrapped(it)
+CamPathIterator::CamPathIterator(CInterpolationMap<CamPathValue>::const_iterator const & it) : wrapped(it)
 {
 }
 
@@ -148,17 +161,9 @@ bool CamPathIterator::operator != (CamPathIterator const &it) const
 // CamPath /////////////////////////////////////////////////////////////////////
 
 CamPath::CamPath()
-: m_Offset(0)
-, m_Enabled(false)
-, m_PositionInterpMethod(DI_DEFAULT)
-, m_RotationInterpMethod(QI_DEFAULT)
-, m_FovInterpMethod(DI_DEFAULT)
-, m_XView(&m_Map, XSelector)
-, m_YView(&m_Map, YSelector)
-, m_ZView(&m_Map, ZSelector)
-, m_RView(&m_Map, RSelector)
-, m_FovView(&m_Map, FovSelector)
-, m_SelectedView(&m_Map, SelectedSelector)
+	: m_Offset(0), m_Enabled(false), m_PositionInterpMethod(DI_DEFAULT), m_RotationInterpMethod(QI_DEFAULT),
+	  m_FovInterpMethod(DI_DEFAULT), m_XView(&m_Map, XSelector), m_YView(&m_Map, YSelector), m_ZView(&m_Map, ZSelector),
+	  m_RView(&m_Map, RSelector), m_FovView(&m_Map, FovSelector), m_SelectedView(&m_Map, SelectedSelector)
 {
 	m_OnChangedIt = m_OnChanged.end();
 
@@ -299,10 +304,101 @@ void CamPath::Add(double time, const CamPathValue & value)
 
 void CamPath::Changed()
 {
-	for(m_OnChangedIt = m_OnChanged.begin(); m_OnChangedIt != m_OnChanged.end(); m_OnChangedIt++) {
+	for (m_OnChangedIt = m_OnChanged.begin(); m_OnChangedIt != m_OnChanged.end(); m_OnChangedIt++)
+	{
 		m_OnChangedIt->Notify();
-		if(m_OnChangedIt == m_OnChanged.end()) break;
+		if (m_OnChangedIt == m_OnChanged.end())
+			break;
 	}
+}
+
+void CamPath::CurveEditing_set(bool enabled)
+{
+	m_CurveEditing = enabled;
+	Changed();
+}
+void CamPath::Bezier_set(bool enabled)
+{
+	m_Bezier = enabled;
+	Changed();
+}
+bool CamPath::GetHandle(double time, bool outgoing, Vector3 & offset) const
+{
+	auto point = m_Map.find(time);
+	if (point == m_Map.end())
+		return false;
+	const auto & value = point->second;
+	if (outgoing ? value.HasOutHandle : value.HasInHandle)
+	{
+		offset = outgoing ? value.OutHandle : value.InHandle;
+		return true;
+	}
+	auto next = point;
+	if (outgoing)
+	{
+		if (++next == m_Map.end())
+		{
+			offset = {0, 0, 0};
+			return true;
+		}
+	}
+	else
+	{
+		if (point == m_Map.begin())
+		{
+			offset = {0, 0, 0};
+			return true;
+		}
+		--next;
+	}
+	double span = next->first - time;
+	if (!m_XInterp->CanEval() || !m_YInterp->CanEval() || !m_ZInterp->CanEval())
+	{
+		offset = Vector3(next->second.X - value.X, next->second.Y - value.Y, next->second.Z - value.Z) * (1.0 / 3);
+		return true;
+	}
+	// Derive automatic handles from the existing interpolator. Only segments
+	// with an explicitly edited handle use Bezier evaluation below.
+	double epsilon = (std::min)(std::abs(span) * 1e-4, 1e-3);
+	double a = (std::max)(GetLowerBound(), time - epsilon), b = (std::min)(GetUpperBound(), time + epsilon);
+	if (b <= a)
+	{
+		offset = {0, 0, 0};
+		return true;
+	}
+	offset = Vector3(m_XInterp->Eval(b) - m_XInterp->Eval(a), m_YInterp->Eval(b) - m_YInterp->Eval(a),
+					 m_ZInterp->Eval(b) - m_ZInterp->Eval(a)) *
+			 (span / (3 * (b - a)));
+	return true;
+}
+bool CamPath::SetHandle(double time, bool outgoing, const Vector3 & offset)
+{
+	auto point = m_Map.find(time);
+	if (!m_CurveEditing || point == m_Map.end() || !std::isfinite(offset.X) || !std::isfinite(offset.Y) ||
+		!std::isfinite(offset.Z) || std::abs(offset.X) > 1e9 || std::abs(offset.Y) > 1e9 || std::abs(offset.Z) > 1e9)
+		return false;
+	if (outgoing)
+	{
+		point->second.OutHandle = offset;
+		point->second.HasOutHandle = true;
+	}
+	else
+	{
+		point->second.InHandle = offset;
+		point->second.HasInHandle = true;
+	}
+	m_Bezier = true;
+	Changed();
+	return true;
+}
+bool CamPath::ResetHandles(double time)
+{
+	auto point = m_Map.find(time);
+	if (!m_CurveEditing || point == m_Map.end())
+		return false;
+	point->second.HasInHandle = point->second.HasOutHandle = false;
+	Changed();
+	return true;
 }
 
 void CamPath::Remove(double time)
@@ -331,7 +427,8 @@ void CamPath::Clear()
 		it = itNext;
 	}
 
-	if(selectAll) m_Map.clear();
+	if (selectAll)
+		m_Map.clear();
 
 	m_Offset = 0;
 
@@ -366,13 +463,8 @@ double CamPath::GetUpperBound() const
 
 bool CamPath::CanEval(void) const
 {
-	return
-		m_XInterp->CanEval()
-		&& m_YInterp->CanEval()
-		&& m_ZInterp->CanEval()
-		&& m_RInterp->CanEval()
-		&& m_FovInterp->CanEval()
-		&& m_SelectedInterp->CanEval();
+	return m_XInterp->CanEval() && m_YInterp->CanEval() && m_ZInterp->CanEval() && m_RInterp->CanEval() &&
+		   m_FovInterp->CanEval() && m_SelectedInterp->CanEval();
 }
 
 CamPathValue CamPath::Eval(double t)
@@ -385,7 +477,27 @@ CamPathValue CamPath::Eval(double t)
 	val.R = m_RInterp->Eval(t);
 	val.Fov = m_FovInterp->Eval(t);
 	val.Selected = m_SelectedInterp->Eval(t);
-
+	if (m_CurveEditing && m_Bezier && m_Map.size() > 1)
+	{
+		auto b = m_Map.upper_bound(t);
+		if (b != m_Map.begin() && b != m_Map.end())
+		{
+			auto a = std::prev(b);
+			if (a->second.HasOutHandle || b->second.HasInHandle)
+			{
+				Vector3 out, in;
+				GetHandle(a->first, true, out);
+				GetHandle(b->first, false, in);
+				Vector3 p0(a->second.X, a->second.Y, a->second.Z), p3(b->second.X, b->second.Y, b->second.Z);
+				double u = (t - a->first) / (b->first - a->first), v = 1 - u;
+				Vector3 pos =
+					p0 * (v * v * v) + (p0 + out) * (3 * v * v * u) + (p3 + in) * (3 * v * u * u) + p3 * (u * u * u);
+				val.X = pos.X;
+				val.Y = pos.Y;
+				val.Z = pos.Z;
+			}
+		}
+	}
 	return val;
 }
 
@@ -406,10 +518,13 @@ bool CamPath::Save(wchar_t const * fileName)
 	doc.append_node(decl);
 
 	rapidxml::xml_node<> * cam = doc.allocate_node(rapidxml::node_element, "campath");
+	if (m_Bezier)
+		cam->append_attribute(doc.allocate_attribute("curve", "bezier"));
 	if(DI_DEFAULT != m_PositionInterpMethod)
 		cam->append_attribute(doc.allocate_attribute("positionInterp", DoubleInterp_ToString(m_PositionInterpMethod)));
 	if(QI_DEFAULT != m_RotationInterpMethod)
-		cam->append_attribute(doc.allocate_attribute("rotationInterp", QuaternionInterp_ToString(m_RotationInterpMethod)));
+		cam->append_attribute(
+			doc.allocate_attribute("rotationInterp", QuaternionInterp_ToString(m_RotationInterpMethod)));
 	if(DI_DEFAULT != m_FovInterpMethod)
 		cam->append_attribute(doc.allocate_attribute("fovInterp", DoubleInterp_ToString(m_FovInterpMethod)));
 	if (m_Offset)
@@ -421,14 +536,15 @@ bool CamPath::Save(wchar_t const * fileName)
 	rapidxml::xml_node<> * pts = doc.allocate_node(rapidxml::node_element, "points");
 	cam->append_node(pts);
 
-	rapidxml::xml_node<> * cmt = doc.allocate_node(rapidxml::node_comment,0,
-		"Points are in Quake coordinates, meaning x=forward, y=left, z=up and rotation order is first rx, then ry and lastly rz.\n"
+	rapidxml::xml_node<> * cmt =
+		doc.allocate_node(rapidxml::node_comment, 0,
+						  "Points are in Quake coordinates, meaning x=forward, y=left, z=up and rotation order is "
+						  "first rx, then ry and lastly rz.\n"
 		"Rotation direction follows the right-hand grip rule.\n"
 		"rx (roll), ry (pitch), rz(yaw) are the Euler angles in degrees.\n"
 		"qw, qx, qy, qz are the quaternion values.\n"
 		"When read it is sufficient that either rx, ry, rz OR qw, qx, qy, qz are present.\n"
-		"If both are present then qw, qx, qy, qz take precedence."
-	);
+						  "If both are present then qw, qx, qy, qz take precedence.");
 	pts->append_node(cmt);
 
 	for(CamPathIterator it = GetBegin(); it != GetEnd(); ++it)
@@ -451,6 +567,19 @@ bool CamPath::Save(wchar_t const * fileName)
 		pt->append_attribute(doc.allocate_attribute("qy", double2xml(doc,it.wrapped->second.R.Y)));
 		pt->append_attribute(doc.allocate_attribute("qz", double2xml(doc,it.wrapped->second.R.Z)));
 
+		if (val.HasInHandle)
+		{
+			pt->append_attribute(doc.allocate_attribute("inX", double2xml(doc, val.InHandle.X)));
+			pt->append_attribute(doc.allocate_attribute("inY", double2xml(doc, val.InHandle.Y)));
+			pt->append_attribute(doc.allocate_attribute("inZ", double2xml(doc, val.InHandle.Z)));
+		}
+		if (val.HasOutHandle)
+		{
+			pt->append_attribute(doc.allocate_attribute("outX", double2xml(doc, val.OutHandle.X)));
+			pt->append_attribute(doc.allocate_attribute("outY", double2xml(doc, val.OutHandle.Y)));
+			pt->append_attribute(doc.allocate_attribute("outZ", double2xml(doc, val.OutHandle.Z)));
+		}
+
 		if(val.Selected)
 			pt->append_attribute(doc.allocate_attribute("selected"));
 
@@ -460,7 +589,7 @@ bool CamPath::Save(wchar_t const * fileName)
 	std::string xmlString;
 	rapidxml::print(std::back_inserter(xmlString), doc);
 
-	std::ofstream ofs(fileName, std::ios_base::binary);
+	std::ofstream ofs(std::filesystem::path(fileName), std::ios_base::binary);
 
 	bool bOk = !ofs.fail();
 
@@ -488,6 +617,14 @@ bool CamPath::Load(wchar_t const * fileName)
 	if(!pFile)
 		return false;
 	
+	CInterpolationMap<CamPathValue> previous;
+	CopyMap(previous, m_Map);
+	auto position = m_PositionInterpMethod;
+	auto rotation = m_RotationInterpMethod;
+	auto fov = m_FovInterpMethod;
+	double oldOffset = m_Offset;
+	bool oldHold = m_Hold, oldBezier = m_Bezier;
+
 	fseek(pFile, 0, SEEK_END);
 	size_t fileSize = ftell(pFile);
 	rewind(pFile);
@@ -507,7 +644,15 @@ bool CamPath::Load(wchar_t const * fileName)
 				doc.parse<0>(pData);
 
 				rapidxml::xml_node<> * cur_node = doc.first_node("campath");
-				if(!cur_node) break;
+				if (!cur_node)
+				{
+					bOk = false;
+					break;
+				}
+
+				// Optional handle data does not enable curve evaluation in the classic system.
+				auto curve = cur_node->first_attribute("curve");
+				m_Bezier = curve && !_stricmp(curve->value(), "bezier");
 
 				// Clear current Campath:
 				SelectNone();
@@ -515,17 +660,20 @@ bool CamPath::Load(wchar_t const * fileName)
 
 				rapidxml::xml_attribute<> * positionInterpA = cur_node->first_attribute("positionInterp");
 				DoubleInterp positionInterp = DI_DEFAULT;
-				if(positionInterpA) DoubleInterp_FromString(positionInterpA->value(), positionInterp);
+				if (positionInterpA)
+					DoubleInterp_FromString(positionInterpA->value(), positionInterp);
 				PositionInterpMethod_set(positionInterp);
 
 				rapidxml::xml_attribute<> * rotationInterpA = cur_node->first_attribute("rotationInterp");
 				QuaternionInterp rotationInterp = QI_DEFAULT;
-				if(rotationInterpA) QuaternionInterp_FromString(rotationInterpA->value(), rotationInterp);
+				if (rotationInterpA)
+					QuaternionInterp_FromString(rotationInterpA->value(), rotationInterp);
 				RotationInterpMethod_set(rotationInterp);
 
 				rapidxml::xml_attribute<> * fovInterpA = cur_node->first_attribute("fovInterp");
 				DoubleInterp fovInterp = DI_DEFAULT;
-				if(fovInterpA) DoubleInterp_FromString(fovInterpA->value(), fovInterp);
+				if (fovInterpA)
+					DoubleInterp_FromString(fovInterpA->value(), fovInterp);
 				FovInterpMethod_set(fovInterp);
 
 				rapidxml::xml_attribute<>* offsetA = cur_node->first_attribute("offset");
@@ -537,12 +685,17 @@ bool CamPath::Load(wchar_t const * fileName)
 				SetHold(bHold);
 
 				cur_node = cur_node->first_node("points");
-				if(!cur_node) break;
+				if (!cur_node)
+				{
+					bOk = false;
+					break;
+				}
 
 				for(cur_node = cur_node->first_node("p"); cur_node; cur_node = cur_node->next_sibling("p"))
 				{
 					rapidxml::xml_attribute<> * timeAttr = cur_node->first_attribute("t");
-					if(!timeAttr) continue;
+					if (!timeAttr)
+						continue;
 
 					rapidxml::xml_attribute<> * xA = cur_node->first_attribute("x");
 					rapidxml::xml_attribute<> * yA = cur_node->first_attribute("y");
@@ -563,42 +716,62 @@ bool CamPath::Load(wchar_t const * fileName)
 					double dZ = zA ? atof(zA->value()) : 0.0;
 					double dFov = fovA ? atof(fovA->value()) : 90.0;
 
-					if(qwA && qxA && qyA && qzA)
+					CamPathValue r;
+					r.X = dX;
+					r.Y = dY;
+					r.Z = dZ;
+					r.Fov = dFov;
+					r.Selected = selectedA != nullptr;
+					if (qwA && qxA && qyA && qzA)
+						r.R =
+							Quaternion(atof(qwA->value()), atof(qxA->value()), atof(qyA->value()), atof(qzA->value()));
+					else
+						r.R = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(
+							ryA ? atof(ryA->value()) : 0, rzA ? atof(rzA->value()) : 0, rxA ? atof(rxA->value()) : 0)));
+					for (bool outgoing : {false, true})
 					{
-						CamPathValue r;
-						r.X = dX;
-						r.Y = dY;
-						r.Z = dZ;
-						r.R.W = atof(qwA->value());
-						r.R.X = atof(qxA->value());
-						r.R.Y = atof(qyA->value());
-						r.R.Z = atof(qzA->value());
-						r.Fov = dFov;
-						r.Selected = 0 != selectedA;
-
-						// Add point:
-						m_Map[dT] = r;
+						auto x = cur_node->first_attribute(outgoing ? "outX" : "inX"),
+							 y = cur_node->first_attribute(outgoing ? "outY" : "inY"),
+							 z = cur_node->first_attribute(outgoing ? "outZ" : "inZ");
+						if (!x && !y && !z)
+							continue;
+						if (!x || !y || !z)
+						{
+							bOk = false;
+							break;
+						}
+						Vector3 offset;
+						double * components[] = {&offset.X, &offset.Y, &offset.Z};
+						int axis = 0;
+						for (auto attr : {x, y, z})
+						{
+							char * end = nullptr;
+							double number = strtod(attr->value(), &end);
+							if (end == attr->value() || *end || !std::isfinite(number) || std::abs(number) > 1e9)
+							{
+								bOk = false;
+								break;
+							}
+							*components[axis++] = number;
+						}
+						if (!bOk)
+							break;
+						if (outgoing)
+						{
+							r.OutHandle = offset;
+							r.HasOutHandle = true;
 					}
 					else
 					{
-						double dRXroll = rxA ? atof(rxA->value()) : 0.0;
-						double dRYpitch = ryA ? atof(ryA->value()) : 0.0;
-						double dRZyaw = rzA ? atof(rzA->value()) : 0.0;
-
-						CamPathValue r;
-						r.X = dX;
-						r.Y = dY;
-						r.Z = dZ;
-						r.R = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(dRYpitch, dRZyaw, dRXroll)));
-						r.Fov = dFov;
-						r.Selected = 0 != selectedA;
-
-						// Add point:
+							r.InHandle = offset;
+							r.HasInHandle = true;
+						}
+					}
+					if (!bOk)
+						break;
 						m_Map[dT] = r;
 					}
-				}
-			}
-			while (false);
+			} while (false);
 		}
 		catch(rapidxml::parse_error &)
 		{
@@ -606,9 +779,20 @@ bool CamPath::Load(wchar_t const * fileName)
 		}
 	}
 
-	delete pData;
+	delete[] pData;
 
 	fclose(pFile);
+
+	if (!bOk)
+	{
+		CopyMap(m_Map, previous);
+		m_Bezier = oldBezier;
+		m_Hold = oldHold;
+		m_Offset = oldOffset;
+		PositionInterpMethod_set(position);
+		RotationInterpMethod_set(rotation);
+		FovInterpMethod_set(fov);
+	}
 
 	DoInterpolationMapChangedAll();
 	Changed();
@@ -648,7 +832,8 @@ size_t CamPath::SelectInvert()
 	{
 		it->second.Selected = !it->second.Selected;
 
-		if(it->second.Selected) ++selected;
+		if (it->second.Selected)
+			++selected;
 	}
 
 	m_SelectedInterp->InterpolationMapChanged();
@@ -666,7 +851,8 @@ size_t CamPath::SelectAdd(size_t min, size_t max)
 	{
 		it->second.Selected = it->second.Selected || min <= i && i <= max;
 
-		if(it->second.Selected) ++selected;
+		if (it->second.Selected)
+			++selected;
 
 		++i;
 	}
@@ -685,7 +871,8 @@ size_t CamPath::SelectAdd(double min, size_t count)
 	{
 		it->second.Selected = it->second.Selected || min <= it->first && selected < count;
 
-		if(it->second.Selected) ++selected;
+		if (it->second.Selected)
+			++selected;
 	}
 
 	m_SelectedInterp->InterpolationMapChanged();
@@ -702,7 +889,8 @@ size_t CamPath::SelectAdd(double min, double max)
 	{
 		it->second.Selected = it->second.Selected || min <= it->first && it->first <= max;
 
-		if(it->second.Selected) ++selected;
+		if (it->second.Selected)
+			++selected;
 	}
 
 	m_SelectedInterp->InterpolationMapChanged();
@@ -713,7 +901,8 @@ size_t CamPath::SelectAdd(double min, double max)
 
 void CamPath::SetStart(double t, bool relative)
 {
-	if(m_Map.size()<1) return;
+	if (m_Map.size() < 1)
+		return;
 
 	CInterpolationMap<CamPathValue> tempMap;
 
@@ -759,7 +948,8 @@ void CamPath::SetStart(double t, bool relative)
 	
 void CamPath::SetDuration(double t)
 {
-	if(m_Map.size()<2) return;
+	if (m_Map.size() < 2)
+		return;
 
 	CInterpolationMap<CamPathValue> tempMap;
 
@@ -820,7 +1010,8 @@ void CamPath::SetDuration(double t)
 
 void CamPath::SetPosition(double x, double y, double z, bool setX, bool setY, bool setZ)
 {
-	if(m_Map.size()<1) return;
+	if (m_Map.size() < 1)
+		return;
 
 	bool selectAll = true;
 
@@ -880,9 +1071,12 @@ void CamPath::SetPosition(double x, double y, double z, bool setX, bool setY, bo
 
 		if(selectAll || curValue.Selected)
 		{
-			if(setX) curValue.X = x +(curValue.X -x0);
-			if(setY) curValue.Y = y +(curValue.Y -y0);
-			if(setZ) curValue.Z = z +(curValue.Z -z0);
+			if (setX)
+				curValue.X = x + (curValue.X - x0);
+			if (setY)
+				curValue.Y = y + (curValue.Y - y0);
+			if (setZ)
+				curValue.Z = z + (curValue.Z - z0);
 
 			it->second = curValue;
 		}
@@ -897,7 +1091,8 @@ void CamPath::SetPosition(double x, double y, double z, bool setX, bool setY, bo
 
 void CamPath::SetAngles(double yPitch, double zYaw, double xRoll, bool setY, bool setZ, bool setX)
 {
-	if(m_Map.size()<1) return;
+	if (m_Map.size() < 1)
+		return;
 
 	bool selectAll = true;
 
@@ -920,20 +1115,20 @@ void CamPath::SetAngles(double yPitch, double zYaw, double xRoll, bool setY, boo
 
 		if(selectAll || curValue.Selected)
 		{
-			if(setY && setZ && setX) {
-				curValue.R = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(yPitch, zYaw, xRoll)));
-			} else {
+			if (setY && setZ && setX)
+			{
+				curValue.R =
+					Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(yPitch, zYaw, xRoll)));
+			}
+			else
+			{
 				QEulerAngles angles = curValue.R.ToQREulerAngles().ToQEulerAngles();
 				curValue.R = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(
-					(setY ? yPitch : angles.Pitch),
-					(setZ ? zYaw : angles.Yaw),
-					(setX ? xRoll : angles.Roll)
-				)));
+					(setY ? yPitch : angles.Pitch), (setZ ? zYaw : angles.Yaw), (setX ? xRoll : angles.Roll))));
 			}
 
 			it->second = curValue;
 		}
-
 	}
 
 	m_RInterp->InterpolationMapChanged();
@@ -943,7 +1138,8 @@ void CamPath::SetAngles(double yPitch, double zYaw, double xRoll, bool setY, boo
 
 void CamPath::SetFov(double fov)
 {
-	if(m_Map.size()<1) return;
+	if (m_Map.size() < 1)
+		return;
 
 	bool selectAll = true;
 
@@ -970,7 +1166,6 @@ void CamPath::SetFov(double fov)
 
 			it->second = curValue;
 		}
-
 	}
 
 	m_FovInterp->InterpolationMapChanged();
@@ -980,7 +1175,8 @@ void CamPath::SetFov(double fov)
 
 void CamPath::Rotate(double yPitch, double zYaw, double xRoll)
 {
-	if(m_Map.size()<1) return;
+	if (m_Map.size() < 1)
+		return;
 
 	bool selectAll = true;
 
@@ -1060,7 +1256,8 @@ void CamPath::Rotate(double yPitch, double zYaw, double xRoll)
 		R[2][1] = cp*sr;
 		R[2][2] = cp*cr;
 	}
-	Quaternion quatR = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(yPitch, zYaw, xRoll)));
+	Quaternion quatR =
+		Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(yPitch, zYaw, xRoll)));
 
 	// rotate:
 
@@ -1089,6 +1286,13 @@ void CamPath::Rotate(double yPitch, double zYaw, double xRoll)
 				curValue.Z = Rz +z0;
 			}
 
+			for (Vector3 * handle : {&curValue.InHandle, &curValue.OutHandle})
+			{
+				Vector3 v = *handle;
+				*handle = Vector3(R[0][0] * v.X + R[0][1] * v.Y + R[0][2] * v.Z,
+								  R[1][0] * v.X + R[1][1] * v.Y + R[1][2] * v.Z,
+								  R[2][0] * v.X + R[2][1] * v.Y + R[2][2] * v.Z);
+			}
 			// update rotation:
 			{
 				Quaternion quatQ = curValue.R;
@@ -1099,7 +1303,6 @@ void CamPath::Rotate(double yPitch, double zYaw, double xRoll)
 			// update:
 			it->second = curValue;
 		}
-
 	}
 
 	m_XInterp->InterpolationMapChanged();
@@ -1110,9 +1313,12 @@ void CamPath::Rotate(double yPitch, double zYaw, double xRoll)
 	Changed();
 }
 
-void CamPath::AnchorTransform(double anchorX, double anchorY, double anchorZ, double anchorYPitch, double anchorZYaw, double anchorXRoll, double destX, double destY, double destZ, double destYPitch, double destZYaw, double destXRoll)
+void CamPath::AnchorTransform(double anchorX, double anchorY, double anchorZ, double anchorYPitch, double anchorZYaw,
+							  double anchorXRoll, double destX, double destY, double destZ, double destYPitch,
+							  double destZYaw, double destXRoll)
 {
-	if(m_Map.size()<1) return;
+	if (m_Map.size() < 1)
+		return;
 
 	bool selectAll = true;
 
@@ -1128,8 +1334,10 @@ void CamPath::AnchorTransform(double anchorX, double anchorY, double anchorZ, do
 		}
 	}
 
-	Quaternion quatAnchor = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(anchorYPitch, anchorZYaw, anchorXRoll)));
-	Quaternion quatDest = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(destYPitch, destZYaw, destXRoll)));
+	Quaternion quatAnchor = Quaternion::FromQREulerAngles(
+		QREulerAngles::FromQEulerAngles(QEulerAngles(anchorYPitch, anchorZYaw, anchorXRoll)));
+	Quaternion quatDest =
+		Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(destYPitch, destZYaw, destXRoll)));
 
 	// Make sure we take the shortest path:
 	double dotProduct = DotProduct(quatDest, quatAnchor);
@@ -1201,6 +1409,13 @@ void CamPath::AnchorTransform(double anchorX, double anchorY, double anchorZ, do
 				curValue.Z = Rz +destZ;
 			}
 
+			for (Vector3 * handle : {&curValue.InHandle, &curValue.OutHandle})
+			{
+				Vector3 v = *handle;
+				*handle = Vector3(R[0][0] * v.X + R[0][1] * v.Y + R[0][2] * v.Z,
+								  R[1][0] * v.X + R[1][1] * v.Y + R[1][2] * v.Z,
+								  R[2][0] * v.X + R[2][1] * v.Y + R[2][2] * v.Z);
+			}
 			// update rotation:
 			{
 				Quaternion quatQ = curValue.R;
@@ -1211,7 +1426,6 @@ void CamPath::AnchorTransform(double anchorX, double anchorY, double anchorZ, do
 			// update:
 			it->second = curValue;
 		}
-
 	}
 
 	m_XInterp->InterpolationMapChanged();
@@ -1234,7 +1448,8 @@ void CamPath::CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<C
 
 double CamPath::GetDuration() const
 {
-	if(m_Map.size()<2) return 0.0;
+	if (m_Map.size() < 2)
+		return 0.0;
 
 	return (--m_Map.cend())->first - m_Map.cbegin()->first;
 }
@@ -1251,12 +1466,15 @@ double CamPath::GetOffset() const
 	return m_Offset;
 }
 
-void CamPath::OnChangedAdd(CamPathChanged pCamPathChanged, void * pUserData) {
+void CamPath::OnChangedAdd(CamPathChanged pCamPathChanged, void * pUserData)
+{
 	m_OnChanged.emplace_back(pCamPathChanged,pUserData);
 }
 
-void CamPath::OnChangedRemove(CamPathChanged pCamPathChanged, void * pUserData) {
-	if(m_OnChangedIt != m_OnChanged.end()) {
+void CamPath::OnChangedRemove(CamPathChanged pCamPathChanged, void * pUserData)
+{
+	if (m_OnChangedIt != m_OnChanged.end())
+	{
 		auto it = std::find(m_OnChanged.begin(), m_OnChanged.end(), CamPathChangedData(pCamPathChanged,pUserData));
 		if(m_OnChangedIt == it)
 			m_OnChangedIt = m_OnChanged.erase(it);

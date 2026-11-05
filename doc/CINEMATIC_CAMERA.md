@@ -1,302 +1,169 @@
-# Cinematic camera paths (Source 1)
+# Classic campath capture with curve editing
 
-This opt-in `mirv_campath` system separates geometry, timing and placement. It is
-integrated with AfxHookSource, including the existing TF2 Win32/x64 hooks. Classic
-GoldSrc and Source 2 campaths keep their existing implementation.
+`mirv_campath system new` uses HLAE's existing timestamped `CamPath`, console
+commands, playback stage and renderer. Its addition is editable position-curve
+handles. It has no separate timing keys, path collection or playback engine.
 
-## First movement
+## Capture and play
 
 ```text
 mirv_campath system new
-mirv_campath edit on
 ```
 
-Fly with the existing `mirv_input` camera controls and press **Insert** to capture
-spatial points. The first capture creates a path automatically. Capture position,
-orientation and FOV together; geometry defaults to a smooth curve.
-
-There is one editor. **Up/Down** selects and visits spatial points, **Home/End**
-visits the first/last point, and **Left/Right** scrubs the movement. You can move
-freely after visiting or scrubbing; there is no preview mode to enter or leave.
-**Shift+Left/Right** moves directly along path distance, including portions not
-visited by the current timing track. **Tab** revisits the selected path position. **Ctrl+Enter** seeks the demo to it.
-
-To insert between points, select the point that should come *after* the new one,
-fly to the new pose, and press **Ctrl+Insert**. The console equivalent is
-`mirv_campath point insert <index>`. Indices are zero based. Shift+Insert replaces
-the selected point while keeping its handle/automatic timing settings.
-
-## Timing keys
-
-Timing keys pair a position along the path with an absolute demo time. They are
-separate from spatial points: changing timing does not add, move or delete geometry.
-
-1. Select a spatial point, or scrub to the desired position along the path.
-2. Position the demo at the desired time, using the demo UI or native demo controls.
-3. Press **F6**. The current path position and demo time become a timing key.
-4. Repeat elsewhere. Keys are sorted by demo time, so another F6 can insert a key
-   between existing timing keys. A capture at exactly the same time replaces it.
-
-Two keys define travel. Two keys at the same path position but different times
-create a hold. Decreasing path positions create reverse travel. The first and last
-keys determine the schedule and duration automatically. One key holds that position
-for a provisional five seconds until another key defines the range.
-
-**Ctrl+Up/Down** selects timing keys, **Shift+F6** recaptures a selected key at the
-current demo time/path position, and **Ctrl+Delete** removes it. Ctrl+Enter seeks
-to the selected key's demo time. Shift+F6 rejects a collision with another key.
-
-Console equivalents:
-
-```text
-mirv_campath time add
-mirv_campath time add 0.5 15
-mirv_campath time select 1
-mirv_campath time replace
-mirv_campath time delete
-mirv_campath time list
-mirv_campath time clear
-mirv_campath edit position 0.5
-mirv_campath edit scrub 2.5
-mirv_campath edit seek
-```
-
-An explicit position is normalized arc distance, 0..1, and explicit time is demo
-seconds. `time list` prints seconds, corresponding demo ticks when available, and
-path position. Seeking rounds to the nearest demo tick; stored timing retains
-subtick precision. A selected spatial point that is not visited by the timing
-track cannot be sought until it has a timing key, but it can always be visited and
-captured. Selecting a spatial point visits its stored pose; scrubbing evaluates
-independent orientation/FOV tracks too.
-
-Capturing the first explicit time key replaces the older automatic point holds,
-stops and explicit segment durations. Repeated positions on the new time track
-express holds instead. The change is undoable. Geometry and camera animation keys
-are retained. Delete/clear all timing keys to unschedule the movement and return
-to automatic timing. Geometry edits preserve normalized timing positions; they
-are not permanent attachments to particular spatial-point indices.
-
-## Easing and drawing
-
-**F8** cycles linear, in, out, smooth and smoother easing. Console:
-
-```text
-mirv_campath timing ease smooth
-mirv_campath draw timing 1
-mirv_campath draw easing 1
-mirv_campath draw keyIndex 40
-```
-
-Orange crosses mark timing keys; the selected key is yellow. Labels show key
-index, demo seconds and ticks. Repeated positions stack their labels. White marks
-on the selected path sample equal amounts of time: close spacing means slow
-travel, wide spacing means fast travel. Their label states the easing and time
-interval. Holds produce coincident marks; reversals revisit earlier positions.
-This samples the actual evaluator, including custom speed and older motion tracks.
-
-Timing-key easing applies between adjacent keys. For example, smooth easing slows
-at each key; use linear for continuous travel through intermediate timing keys.
-Custom easing uses the existing monotonic cumulative-progress speed track.
-
-Direction arrows and the easing annotation are off by default to keep the ordinary
-overlay quiet; enable them only when needed. Labels have a screen-space margin
-above and to the left of their markers, scaled with text size.
-
-Labels default to 32 pixels. `draw keyIndex <pixels>` adjusts them (0..200; zero
-hides text). Name, index, timing and speed labels share the existing campath font
-texture and drawing pass, with separate text rows to reduce overprinting.
-The padded antialiased atlas and explicit sampler/render states are retained.
-ASCII is drawn; XML preserves UTF-8 names, with replacement glyphs for non-ASCII.
-
-`draw enabled 0|1` is the master switch. Layers are `paths`, `cameras`, `labels`,
-`handles`, `constraints`, `direction`, `timing`, and `easing`; `draw all 0|1`
-toggles them together. Drawing runs during editing, is visible through walls, and
-appears in recordings. Disable drawing or leave editing for clean footage.
-Immutable snapshots use `CCampathDrawer`'s existing render queue, device lifetime,
-shaders, line buffer, frustums and label projection. No new renderer is introduced.
-
-## Editor shortcuts
-
-| Key | Action |
-| --- | --- |
-| Insert / Shift+Insert / Ctrl+Insert | Append / replace / insert before selected point |
-| Delete | Remove selected spatial point |
-| Up / Down; Home / End | Previous / next; first / last spatial point |
-| Left / Right; Shift+Left / Right; Tab | Scrub time; move along path distance; visit cursor |
-| F6 / Shift+F6 | Add / recapture a timing key |
-| Ctrl+Up / Ctrl+Down; Ctrl+Delete | Previous / next timing key; delete it |
-| Ctrl+Enter | Seek demo to selected path position/time key |
-| [ / ] | Capture incoming / outgoing Bezier handle at the free camera |
-| Ctrl+B; F8 | Cycle curve type; cycle easing |
-| F9 / Shift+F9 / Ctrl+F9 | Create orbit / line / rectangle at free camera |
-| F10 | Place selected path anchor at free camera pose |
-| Ctrl+N / Ctrl+D | New path / duplicate path |
-| PageUp / PageDown | Previous / next path |
-| Ctrl+R / Ctrl+F | Capture independent rotation / FOV key at cursor time |
-| F4 / Ctrl+P | Toggle drawing / scheduled playback enable |
-| Ctrl+Z / Ctrl+Y | Undo / redo |
-| Shift+F2 | Open Source's native demo UI |
-| Shift+Escape | Exit editing through the existing free-camera handler |
-
-Handle capture automatically selects Bezier interpolation. PageUp/PageDown now
-select paths; numpad 7/1 still adjust FOV. Up/Down, Home/End and arrows are editor
-navigation keys throughout editing; numpad movement/view controls remain available.
-
-```text
-mirv_campath edit bind
-mirv_campath edit bind timeAdd F7
-mirv_campath edit bind anchor none
-mirv_campath edit bind reset
-mirv_campath edit command ctrl+L "mirv_campath curve scale 2"
-mirv_campath edit command ctrl+L none
-```
-
-Built-in bindings accept ctrl/shift/alt chords, letters, digits, F1..F12, named
-navigation keys, Enter, brackets, or `vk<number>`. Duplicate chords and menu-key
-conflicts are rejected. Unbind an occupied action before reusing its chord.
-`edit command` binds any quoted engine console command, including existing HLAE
-commands such as `mirv_aim`; it uses the existing console executor once per press. This also gives
-keyboard access to parameterized operations, saving/loading and cfg macros without
-adding separate implementations. Bindings last for the session; store preferred
-commands in a cfg. Up to 64 custom commands of 4096 characters are supported.
-
-The editor extends shared `MirvInput` keyboard ownership, including normal, raw,
-character, repeat and release events, while retaining its camera controls. Escape,
-the console/grave key, Alt+Tab and Alt+F4 remain available. Console, Source menus,
-demo UI and active HLAE GUI take priority. UI-cursor suspension is temporarily
-enabled and restored on exit. Focus/menu handoffs release held navigation.
-
-For a differently bound console/menu key, use `edit passthrough <key> 1`.
-Passthrough deliberately permits Source binds for that key. While a menu is
-visible, all its normal input is allowed. Windows/in-game verification of the
-keyboard handoffs remains necessary.
-
-## Shapes and placement
-
-```text
-mirv_campath curve create
-mirv_campath curve create orbit
-mirv_campath curve create arc 256 xz 180
-mirv_campath curve create line 512
-mirv_campath curve create rectangle 256 128
-```
-
-Each shape uses the current camera pose as placement; coordinates are unnecessary.
-The orbit center is the camera position, with default radius 128, local XY plane,
-360-degree sweep, start angle 0 and nine visible points. Arc defaults to a
-180-degree sweep. Optional orbit/arc arguments are radius, plane (`xy`, `xz`, `yz`),
-sweep, start angle and point count. The anchor's camera orientation rotates the
-local shape plane. Line extends forward; rectangle closes in the local XY plane.
-A shape fills an empty selected path or creates another path if it already has
-geometry. Creation is one undoable operation and retains the current free camera.
-
-Circles remain analytic. Use Ctrl+B or `curve type linear|smooth|bezier` to convert
-to editable points. Smooth interpolation uses the existing cardinal curve, with
-`curve tension 0..1`. Bezier handles are offsets from their spatial point;
-`curve handle in|out capture` uses the camera as endpoint. Grid/axis constraints
-apply to captures and handles. `curve constrain` applies them to existing points.
-
-Placement commands remain `curve anchor capture`, `curve translate <x y z>`,
-`curve rotate <pitch yaw roll>`, and `curve scale <absolute factor>`. Placement
-moves local geometry, handles and orientation together without rewriting timing.
-
-## Playback, paths and independent animation
+At each desired demo time and camera pose, run `mirv_campath add`. This captures
+position, orientation, FOV **and current time**, exactly as classic HLAE does.
+Adding at an earlier time inserts a keyframe in time order. Adding at an existing
+time replaces that keyframe. Default cubic interpolation needs four keyframes,
+just like classic. All native interpolation requirements still apply.
 
 ```text
 mirv_campath enabled 1
-mirv_campath edit off
 ```
 
-Enabled scheduled paths follow demo time automatically, including seeks in either
-direction. Editing temporarily suspends playback. Its enable flag persists through
-editing and system switches. `enabled 0` disables it; `edit status` reports state.
-Timing capture schedules the path but does not change the global enable flag.
+Playback follows demo time automatically, including seeking backward and forward.
+There is no play command and no requirement to enter editing. Native `hold`,
+`offset`, `select`, `remove`, `clear`, `print`, `edit start`, `edit duration`,
+`edit position`, `edit angles`, `edit fov`, `edit rotate`, `edit anchor` and
+`edit interp` retain their classic meanings.
 
-`path list`, `path use <index|name>`, `path new [name]`, `path rename <name>`,
-`path duplicate`, and `path remove confirm` manage movements. New/duplicate paths
-are unscheduled. Latest start wins overlaps; stable ID breaks ties. `timing overlaps`
-lists them. `timing finish release|hold` controls the end; `timing transition <s>`
-blends from the preceding movement during the incoming duration. Gaps release to
-the current native demo camera; older overlapping movements do not resume.
+`system classic` switches back to classic. Each system retains its own path and
+enable state. Drawing settings are shared. Curve editing is opt-in to the new
+path; classic, GoldSrc and Source 2 evaluation keep their native interpolators.
 
-Rotation and FOV keys use normalized movement time 0..1:
+## Shape the curve
 
 ```text
-mirv_campath rotation set 0
-mirv_campath rotation set 1 0 90 0
-mirv_campath fov set 1 50
+mirv_campath select #1
+mirv_campath curve handle out capture
 ```
 
-Ctrl+R/F capture at the editor's cursor time. Rotation/FOV tracks support
-`set`, `delete`, `clear` and `interp linear|smooth|step`. Rotation captures world
-angles and stores local quaternions so placement follows. A single spatial point
-with independent animation produces a stationary movement. Use the existing
-`mirv_aim` for aiming; no new aim command is provided.
-
-Advanced automatic timing remains for paths without explicit time keys:
-`timing duration`, `segment`, `hold`, `stop`, `finish`, `schedule`, `ease`,
-`speed`, `motion`, `holdMark`, and `transition`. Holds are included in total duration;
-automatic segment time is allocated by arc length. `motion` maps normalized time
-to normalized path distance and permits reversals. Older motion tracks remain
-linear regardless of segment easing; new time keys opt into easing explicitly.
-These advanced controls are not required to capture timing keys. Custom progress
-tracks conflict with nonzero automatic holds/segments. Arc-length evaluation uses
-128 samples per segment (exact angular distance for circles).
-
-## Files and compatibility
+Select one keyframe, fly to the desired control-handle endpoint, and capture it.
+The handle changes the position curve, retaining recorded times, orientation and
+FOV. Incoming/outgoing offsets are stored in world coordinates relative to the
+keyframe. Handles follow native rotation/anchor placement and stay attached when
+native timing edits move the keyframe.
 
 ```text
-mirv_campath save Movement
-mirv_campath saveAll Collection
-mirv_campath load Collection
-mirv_campath load Collection replace discard
-mirv_campath exportLegacy BakedMovement
+mirv_campath curve type bezier
+mirv_campath curve handle in -32 0 0
+mirv_campath curve handle out 32 64 0
+mirv_campath curve reset
+mirv_campath curve type default
 ```
 
-Files default to `.xml` in the game's current working directory; quoted absolute
-paths are supported. Saving refuses overwrite unless `overwrite` is supplied.
-Loading defaults to append, remaps IDs, and validates before committing. Replace
-requires `discard` for unsaved work. Undo/redo covers data changes, imports and
-placement, with 64 entries. Selection and file writes do not create data edits.
-Writes use a sibling temporary file and atomic rename. Only saveAll marks the
-whole collection saved. Timing keys reuse the progress track and an optional XML
-easing flag; earlier new-system files remain readable.
+`curve type` accepts `default`, `linear`, `smooth` (native cubic), and `bezier`.
+Capturing a handle automatically enables Bezier editing. Unedited segments use
+the original position interpolator exactly. Unset handles on an edited segment
+are derived from its native tangent; explicit handles define cubic Bezier control
+points. `curve reset` restores the selected keyframe's automatic handles. Choosing
+a native curve type temporarily ignores stored handles, which remain available
+when Bezier mode is re-enabled. Rotation and FOV always use their native time
+interpolators.
 
-Classic is initially selected. `system classic/new` switches command trees and
-retains each system's data and enable state. Classic commands, files and preview
-are unchanged. New-system `preview`, `play`, `stop`, `start`, `end`, `mark`, and
-`aim` no longer perform operations; they print migration guidance. Use edit
-navigation, enabled, time keys and native mirv_aim instead. `curve orbit` moves to
-`curve create orbit`; the old flat, coordinate-explicit `orbit` spelling remains
-available for old cfgs. Other flat aliases and the `cinematic` prefix remain for
-compatibility. Old fixed-target XML is readable for compatibility; no duplicate
-fixed-target editor control is exposed.
+## Optional keyboard editing
 
-Classic XML import uses linear geometry with independent linear time tracks;
-classic cubic interpolation is not reproduced exactly. `exportLegacy` samples up
-to 60 Hz, capped at 20,000 intervals, and is lossy. Keep the editable new XML for
-reuse. Load a movement, place its anchor, and capture timing keys in the next demo.
+```text
+mirv_campath edit on
+```
 
-## Review notes and validation
+Editing enables the existing free camera and drawing. It is one keyboard-editing
+session, with no preview mode to switch into. Playback enable state is retained;
+freecam controls the camera until `edit off` releases it, as with ordinary classic
+freecam. Moving freely after visiting a keyframe keeps it selected for handles.
 
-The November 5 testing feedback is recorded in this revision: insertion between
-spatial points already existed but needed discoverability; timing capture becomes
-independent visible keys; navigation and seeking belong to one editor; aiming
-reuses mirv_aim; easing is visualized; shape creation captures camera placement;
-playback uses one enable control; more operations have default/custom editor binds.
-Future work should reduce steps without adding duplicate HLAE infrastructure.
+| Key | Action |
+| --- | --- |
+| Insert | Capture current pose **and demo time** with native `add` |
+| Shift+Insert | Replace selected pose at its existing time, preserving handles |
+| Delete | Remove the selected camera keyframe |
+| Up / Down | Visit previous / next keyframe |
+| Home / End | Visit first / last keyframe |
+| Left / Right | Scrub the existing path in time |
+| Tab | Revisit the editor cursor |
+| Ctrl+Enter | Seek the demo to the editor cursor |
+| [ / ] | Capture incoming / outgoing handle at the camera |
+| Ctrl+Shift+B | Reset selected keyframe handles |
+| Ctrl+B | Cycle position curve mode |
+| F4 | Toggle drawing |
+| Ctrl+P | Toggle native campath enable |
+| Shift+F2 | Open Source's native demo UI |
+| Shift+Escape | Exit freecam/editing |
 
-Latest testing direction: prefer classic campath behavior with additional curve
-manipulation, rather than more editor concepts. Timestamped capture and ordinary
-enabled playback are the proposed baseline. The choice between replacing the
-separate timing-key workflow and retaining it behind simpler controls is awaiting
-clarification; this spacing revision does not alter saved paths or timing.
+Console navigation equivalents are `edit goto <index>` and `edit seek`. Indices
+are zero based; ordinary native selection remains `select #<index>`. Select one
+keyframe before capturing/resetting its handles. Inserting between points needs
+no extra operation: seek the demo between their timestamps and press Insert.
 
-Runtime model code remains in `shared/CinematicPath.h/.cpp`; commands and editor
-callbacks stay in MirvCommands; view state stays in Hook_VClient_RenderView;
-drawing stays in CCampathDrawer; input stays in shared MirvInput. Math and XML use
-HLAE's AfxMath and repository-pinned RapidXML. No new files are required. Changes
-and pushes are restricted to `feature/cinematic-campath`.
+Bindings remain configurable through `edit bind <action> <chord|none>`. Run
+`edit bind` to list them, or `edit bind reset` to restore defaults. `edit command`
+can assign a one-shot existing console command or cfg macro to another chord:
+
+```text
+mirv_campath edit command ctrl+L "mirv_campath edit duration 10"
+mirv_campath edit command ctrl+L none
+```
+
+Duplicate bindings and reserved UI/OS chords are rejected. Chords accept
+ctrl/shift/alt, letters, digits, F1..F12, Enter/navigation keys, brackets or
+`vk<number>`. Settings last for the session; use a cfg to restore preferences.
+There are no separate undo, animation-track, shape-generator or scheduling
+shortcuts in this classic workflow. Use the existing `mirv_aim` for aiming.
+
+Shared `MirvInput` owns normal/raw keyboard events during editing. Console,
+menus, demo UI and the active HLAE GUI retain priority; Escape, grave, Alt+Tab and
+Alt+F4 remain available. For a custom console/menu key, use
+`edit passthrough <key> 1`, deliberately allowing its Source binding. Focus/menu
+handoffs release held scrubbing. The existing UI-cursor suspension setting is
+enabled temporarily and restored on exit.
+
+## Drawing and files
+
+`draw enabled 0|1`, `draw keyAxis`, and `draw keyCam` use the existing renderer.
+`draw handles 0|1` controls handles; `draw keyIndex <pixels>` adjusts new-system
+labels (default 32, zero hides them). Text has a screen-space margin above and to
+the left of camera markers. Only keyframe indices are shown; experimental path
+names, timing banners, speed annotations and direction arrows are gone. Classic
+index-label height retains its original world-unit meaning.
+
+Drawing works outside editing when enabled and appears in recordings. Turn it
+off before clean capture. Classic and new drawing use the same immutable path
+snapshots, trajectory/frustum code, render queue and graphics-device lifecycle.
+The existing padded antialiased label atlas is retained for new-system indices.
+
+```text
+mirv_campath save "Movement.xml"
+mirv_campath load "Movement.xml"
+```
+
+These are native classic XML commands, including their ordinary overwrite and
+filename behavior; supply `.xml` explicitly. Bezier mode and handle offsets are
+optional XML attributes. Unextended classic files load normally. This branch's
+classic system preserves optional handles when saving but ignores them during
+playback. Older HLAE versions can read the basic keyframes but do not understand
+curve handles. Failed or unsupported loads preserve the existing path.
+
+The previous experimental **collection XML is retired**, rather than silently
+converted. Before replacing the previous test DLL, export any movements that you
+need with that build's `mirv_campath exportLegacy "Movement.xml"`, then load the
+classic file here. That export is sampled and lossy; keep the original collection
+XML. No on-disk user files are modified by updating the branch.
+
+## Architecture and verification
+
+The separate `shared/CinematicPath.h/.cpp` model, progress/timing tracks and
+collection controller are removed. The selected system owns an ordinary CamPath.
+Normal commands call `MirvCampath_ConCommand`; the same view-override stage handles
+both systems. Curve editing adds optional position handles to CamPath, using
+AfxMath vectors and native RapidXML persistence. Recording autosave and BVH import
+operate on the selected path. Changes/pushes remain restricted to
+`feature/cinematic-campath`.
+
+402 checks now exercise the actual shared CamPath rather than the retired model. They
+cover native capture/replacement/order, enable/offset/hold, retiming, interpolation
+parity, handles, native rotations/placement, XML round trips and rejected imports.
+Sanitizer runs exposed existing scalar deletes of spline arrays; those are
+corrected to `delete[]`. Const iterator references and test-only generated CRT
+compatibility shims allow the same shared source to be checked on Linux.
 
 Build HLAE on Windows using BUILDING.md. Standalone tests:
 
@@ -306,31 +173,14 @@ cmake --build build/cinematic-tests --config Debug
 ctest --test-dir build/cinematic-tests -C Debug --output-on-failure
 ```
 
-Use a separate build directory with `-A Win32` for x86. Linux omits `-A x64`.
-The portable target has 889 checks covering timing, geometry, persistence, validation
-and schedules, including independent timing-key edits, easing, holds, inverse
-seeking, XML round trips, undo/redo and preservation of earlier motion tracks.
-Windows/MSVC also builds the shared MirvInput keyboard tests. Linux sanitizer
-checks use address/undefined sanitizers; LeakSanitizer alone is disabled where the
-host's tracing/sandbox prevents it. Cross-compiler command/renderer checks use
-external compatibility shims for upstream MSVC headers and generated shader
-combo declarations; they do not run a game or shaders.
+Use a separate directory with `-A Win32` for x86; omit `-A` on Linux. Windows/MSVC
+also builds the real shared MirvInput normal/raw keyboard tests. Cross-compiler
+checks cover command integration, CamPath and the full renderer on x86/x64 using
+external shims for MSVC-only headers and generated shader declarations. They do
+not establish a complete MSVC build or in-game rendering/input correctness.
 
-Remaining Windows/in-game checks:
-
-- Compile both supported architectures with MSVC and run CTest.
-- Capture/insert/delete spatial points, navigate and scrub without a mode switch,
-  seek with Ctrl+Enter, then move freely and capture handles.
-- Capture timing keys out of order and between existing keys; exercise holds,
-  reversals, recapture, deletion, undo, XML reuse and automatic playback.
-- Check timing ticks against the demo UI, easing marks against actual camera
-  speed, label rows/readability/clipping and device resets at several resolutions.
-- Exercise keyboard ownership with bound gameplay keys, custom commands, menus,
-  console, demo UI, focus loss, held keys and system switches.
-- Test shape generation at translated/rotated camera poses, all draw layers,
-  independent tracks and native mirv_aim. Verify classic behavior afterward.
-
-Limits remain 128 paths, 4096 spatial points per path, 16,384 points per collection,
-16,384 keys per track, 65,536 keys per collection, 16 MiB XML and 24 hours per
-movement. Invalid numbers, malformed XML, unsupported versions and external
-entities are rejected before replacing saved state.
+Windows/in-game review still needs capture at four demo times, capture between
+existing times, automatic enabled playback without editing, both native and
+Bezier curves, handle capture/reset, native retiming/selection/placement, saving
+and reloading, recording autosave, system switches, keyboard/menu/focus handoffs,
+label spacing at multiple resolutions, graphics resets and classic regression.

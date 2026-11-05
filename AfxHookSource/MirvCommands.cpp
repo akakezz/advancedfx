@@ -6,7 +6,6 @@
 
 #include <SourceInterfaces.h>
 
-#include <shared/CinematicPath.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1452,8 +1451,18 @@ public:
 		g_CampathDrawer.SetDrawKeyframeCam(value);
 	}
 
-	virtual float GetDrawKeyframeIndex() { return g_CampathDrawer.GetDrawKeyframeIndex(); }
-	virtual void SetDrawKeyframeIndex(float value) { g_CampathDrawer.SetDrawKeyframeIndex(value); }
+	virtual float GetDrawKeyframeIndex()
+	{
+		return MirvCampathEditor_IsNewSystem() ? g_CampathDrawer.GetNewLabelHeight()
+											   : g_CampathDrawer.GetDrawKeyframeIndex();
+	}
+	virtual void SetDrawKeyframeIndex(float value)
+	{
+		if (MirvCampathEditor_IsNewSystem())
+			g_CampathDrawer.SetNewLabelHeight(value);
+		else
+			g_CampathDrawer.SetDrawKeyframeIndex(value);
+	}
 
 } g_MirvCampath_Drawer;
  
@@ -1567,7 +1576,7 @@ static CamPathIterator CampathPreview_FindNearestKeyframe(CamPath & path, double
 
 static bool CampathPreview_SetCamera()
 {
-	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
 	MirvInput * input = g_Hook_VClient_RenderView.m_MirvInput;
 	if (!input || !CampathPreview_CanShow(path))
 		return false;
@@ -1604,7 +1613,7 @@ static bool CampathPreview_SetCamera()
 
 static bool CampathPreview_Enter()
 {
-	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
 	if (!g_Hook_VClient_RenderView.IsInstalled() || !CampathPreview_CanShow(path) || !g_Hook_VClient_RenderView.m_MirvInput)
 	{
 		Tier0_Warning("Campath preview: no usable keyframes or free camera is unavailable.\n");
@@ -1646,7 +1655,7 @@ static void CampathPreview_Exit()
 // Called before the mirv_input view override is evaluated.
 void MirvCampathPreview_Update()
 {
-	if (MirvCinematic_IsNewSystem())
+	if (MirvCampathEditor_IsNewSystem())
 	{
 		MirvCampathPreview_Stop();
 		return;
@@ -1672,7 +1681,7 @@ void MirvCampathPreview_Update()
 		return;
 	}
 
-	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
 	if (!CampathPreview_CanShow(path))
 	{
 		g_CampathPreviewActive = false;
@@ -1711,7 +1720,7 @@ void MirvCampathPreview_Update()
 
 static bool CampathPreview_GotoIndex(int index)
 {
-	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
 	if (index < 0 || (size_t)index >= path.GetSize())
 		return false;
 
@@ -1734,7 +1743,7 @@ static void CampathPreview_StepKeyframe(int direction)
 	if (!g_CampathPreviewActive)
 		return;
 
-	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
 	int index = 0;
 	if (direction > 0)
 	{
@@ -1800,7 +1809,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 
 	if (key == VK_LEFT || key == VK_RIGHT)
 	{
-		CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+		CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
 		if (path.CanEval())
 		{
 			if (key == VK_LEFT)
@@ -1820,7 +1829,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		{
 			CampathPreview_StopTravel();
 			g_CampathPreviewLastMs = GetTickCount();
-			CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+			CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
 			if (path.GetSize() != 0)
 				CampathPreview_GotoIndex(key == VK_HOME ? 0 : (int)path.GetSize() - 1);
 		}
@@ -1854,20 +1863,25 @@ static void CampathPreview_PrintHelp()
 	);
 }
 
-// New campath editing uses the existing Source command and input entry points.
+// Curve editing extends the classic timestamped campath command and input flow.
 namespace
 {
-using namespace cinematic;
-// Keep path state beside classic m_CamPath in the existing view owner.
-Editor & GetEditorState()
+using Afx::Math::Vector3;
+using Vec = Vector3;
+bool editing = false, previousUiCursor = false;
+bool uiPassThrough[256] = {}, uiPassThroughInitialized = false;
+bool swallowed[256] = {};
+int scrub = 0, lastFrame = -1;
+ULONGLONG lastMs = 0;
+void need(bool value, const char * message)
 {
-	return g_Hook_VClient_RenderView.m_NewCampath;
+	if (!value)
+		throw std::runtime_error(message);
 }
-bool useNewSystem = false;
-bool editing = false, playing = false;
-bool previousUiCursor = false;
-bool uiPassThrough[256] = {};
-bool uiPassThroughInitialized = false;
+CamPath & activePath()
+{
+	return g_Hook_VClient_RenderView.GetActiveCamPath();
+}
 void initPassThrough()
 {
 	if (uiPassThroughInitialized)
@@ -1875,170 +1889,14 @@ void initPassThrough()
 	uiPassThroughInitialized = true;
 	uiPassThrough[VK_ESCAPE] = uiPassThrough[VK_OEM_3] = true;
 }
-bool passThroughKey(unsigned int key, void *)
+bool passThroughKey(unsigned key, void *)
 {
 	initPassThrough();
-	if (key == VK_MENU || ((GetKeyState(VK_MENU) & 0x8000) && (key == VK_TAB || key == VK_F4)))
-		return true;
-	return key < 256 && uiPassThrough[key];
-}
-void editOff();
-void selectSystem(bool value)
-{
-	if (useNewSystem == value)
-		return;
-	editOff();
-	MirvCampathPreview_Stop();
-	if (auto * input = g_Hook_VClient_RenderView.m_MirvInput)
-		input->SetCameraControlMode(false);
-	useNewSystem = value;
-}
-
-bool swallowed[256] = {};
-int scrub = 0;
-double cursorTime = 0, cursorFraction = 0;
-int selectedTimeKey = -1;
-ULONGLONG lastMs = 0;
-int lastFrame = -1;
-struct CaptureMark
-{
-	bool set = false, wall = false;
-	double value = 0;
-	std::uint64_t path = 0;
-	int point = -1;
-} holdMark;
-
-void need(bool ok, const char * why)
-{
-	if (!ok)
-		throw std::runtime_error(why);
-}
-double demoTime()
-{
-	auto * engine = g_VEngineClient;
-	auto * globals = g_Hook_VClient_RenderView.GetGlobals();
-	auto * demo = engine ? engine->GetDemoInfoEx() : nullptr;
-	need(engine && engine->IsPlayingDemo() && demo && globals, "A running demo is required for demo timing");
-	double tick = globals->interval_per_tick_get();
-	need(tick > 0 && std::isfinite(tick), "Demo tick interval unavailable");
-	return (double(demo->GetDemoPlaybackTick()) + globals->interpolation_amount_get()) * tick;
-}
-double wallTime()
-{
-	return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-Pose camera()
-{
-	auto & r = g_Hook_VClient_RenderView;
-	need(r.IsInstalled(), "Camera hook unavailable");
-	return {{r.LastCameraOrigin[0], r.LastCameraOrigin[1], r.LastCameraOrigin[2]},
-			Euler(r.LastCameraAngles[0], r.LastCameraAngles[1], r.LastCameraAngles[2]),
-			r.LastCameraFov};
-}
-void moveCamera(const Pose & p)
-{
-	if (!editing)
-		return;
-	auto * input = g_Hook_VClient_RenderView.m_MirvInput;
-	if (!input)
-		return;
-	Vec a = Angles(p.rotation);
-	input->SetTx(float(p.position.X));
-	input->SetTy(float(p.position.Y));
-	input->SetTz(float(p.position.Z));
-	input->SetRx(float(a.X));
-	input->SetRy(float(a.Y));
-	input->SetRz(float(a.Z));
-	input->SetFov(float(p.fov));
-}
-void resetCursor()
-{
-	cursorTime = cursorFraction = 0;
-	selectedTimeKey = -1;
-	scrub = 0;
-}
-void syncCursor()
-{
-	if (GetEditorState().state.selected < 0)
-	{
-		resetCursor();
-		return;
-	}
-	auto & p = GetEditorState().active();
-	cursorTime = std::clamp(cursorTime, 0.0, p.duration);
-	if (GetEditorState().state.point >= 0)
-	{
-		cursorFraction = p.pointDistance(GetEditorState().state.point);
-		try
-		{
-			cursorTime = p.pointTime(GetEditorState().state.point);
-		}
-		catch (const std::exception &)
-		{
-			cursorTime = 0;
-		}
-	}
-	if (selectedTimeKey >= int(p.progress.size()))
-		selectedTimeKey = -1;
-}
-void setCursorTime(double seconds)
-{
-	auto & p = GetEditorState().active();
-	cursorTime = std::clamp(seconds, 0.0, p.duration);
-	cursorFraction = p.distanceAtTime(cursorTime);
-	GetEditorState().state.point = -1;
-	selectedTimeKey = -1;
-	moveCamera(p.evaluate(cursorTime));
-}
-void setCursorPosition(double fraction)
-{
-	auto & p = GetEditorState().active();
-	cursorFraction = std::clamp(fraction, 0.0, 1.0);
-	selectedTimeKey = -1;
-	GetEditorState().state.point = -1;
-	try
-	{
-		cursorTime = p.timeAtDistance(cursorFraction);
-	}
-	catch (const std::exception &)
-	{
-		cursorTime = 0;
-	}
-	moveCamera(p.atDistance(cursorFraction));
-}
-void seekCursor()
-{
-	auto & p = GetEditorState().active();
-	demoTime();
-	double time = cursorTime;
-	if (selectedTimeKey >= 0 && selectedTimeKey < int(p.progress.size()))
-		time = p.progress[selectedTimeKey].time * p.duration;
-	else if (GetEditorState().state.point >= 0)
-		time = p.pointTime(GetEditorState().state.point);
-	else if (std::abs(p.distanceAtTime(cursorTime) - cursorFraction) > 1e-8)
-		time = p.timeAtDistance(cursorFraction);
-
-	double tick = (p.start + time) / g_Hook_VClient_RenderView.GetGlobals()->interval_per_tick_get();
-	need(tick >= 0 && tick < (std::numeric_limits<int>::max)(), "Seek outside demo tick range");
-	std::string command = "demo_gototick " + std::to_string(int(std::round(tick)));
-	g_VEngineClient->ExecuteClientCmd(command.c_str());
-}
-void editOn()
-{
-	MirvCampathPreview_Stop();
-	if (!editing)
-		previousUiCursor = g_Hook_VClient_RenderView.UiCursorSuspend_get();
-	editing = true;
-	g_Hook_VClient_RenderView.UiCursorSuspend_set(true);
-	if (auto * input = g_Hook_VClient_RenderView.m_MirvInput)
-	{
-		input->SetCameraControlMode(true);
-		input->SetKeyboardCapture(true, passThroughKey, nullptr);
-	}
+	return key == VK_MENU || ((GetKeyState(VK_MENU) & 0x8000) && (key == VK_TAB || key == VK_F4)) ||
+		   (key < 256 && uiPassThrough[key]);
 }
 void editOff()
 {
-	scrub = 0;
 	if (editing)
 		g_Hook_VClient_RenderView.UiCursorSuspend_set(previousUiCursor);
 	editing = false;
@@ -2047,107 +1905,34 @@ void editOff()
 		input->SetKeyboardCapture(false);
 		input->SetCameraControlMode(false);
 	}
-	MirvCinematic_ReleaseKeys();
+	MirvCampathEditor_ReleaseKeys();
 }
-Path & path(State & s, bool create = false)
+void editOn()
 {
-	if (s.selected < 0 && create)
-	{
-		Path p;
-		p.id = s.nextId++;
-		p.name = "Path " + std::to_string(p.id);
-		s.paths.push_back(p);
-		s.selected = int(s.paths.size() - 1);
-		s.point = -1;
-	}
-	need(s.selected >= 0 && s.selected < int(s.paths.size()), "No path selected");
-	return s.paths[s.selected];
+	need(g_Hook_VClient_RenderView.IsInstalled() && g_Hook_VClient_RenderView.m_MirvInput, "Camera hook unavailable");
+	MirvCampathPreview_Stop();
+	if (!editing)
+		previousUiCursor = g_Hook_VClient_RenderView.UiCursorSuspend_get();
+	editing = true;
+	g_Hook_VClient_RenderView.UiCursorSuspend_set(true);
+	auto * input = g_Hook_VClient_RenderView.m_MirvInput;
+	input->SetCameraControlMode(true);
+	input->SetKeyboardCapture(true, passThroughKey);
+	g_CampathDrawer.Draw_set(true);
+	if (activePath().GetSize())
+		g_CampathPreviewTime = std::clamp(g_MirvTime.GetTime() - activePath().GetOffset(), activePath().GetLowerBound(),
+										  activePath().GetUpperBound());
+	MirvCampathEditor_ReleaseKeys();
 }
-Point & point(State & s)
+void selectSystem(bool value)
 {
-	auto & p = path(s);
-	need(s.point >= 0 && s.point < int(p.points.size()), "Select a point first");
-	return p.points[s.point];
-}
-void capture(bool replace = false, int at = -1)
-{
-	State n = GetEditorState().state;
-	auto & p = path(n, true);
-	Pose current = camera();
-	if (p.points.empty())
-		p.anchor.origin = current.position;
-	p.capture(current, replace ? n.point : at, replace);
-	n.point = replace ? n.point : at < 0 ? int(p.points.size() - 1) : at;
-	GetEditorState().commit(std::move(n));
-	cursorFraction = GetEditorState().active().pointDistance(GetEditorState().state.point);
-	selectedTimeKey = -1;
-	try
-	{
-		cursorTime = GetEditorState().active().pointTime(GetEditorState().state.point);
-	}
-	catch (const std::exception &)
-	{
-		cursorTime = 0;
-	}
-}
-void selectPoint(int i)
-{
-	need(i >= 0 && i < int(GetEditorState().active().points.size()), "Invalid point index");
-	GetEditorState().state.point = i;
-	cursorFraction = GetEditorState().active().pointDistance(i);
-	selectedTimeKey = -1;
-	try
-	{
-		cursorTime = GetEditorState().active().pointTime(i);
-	}
-	catch (const std::exception &)
-	{
-		cursorTime = 0;
-	}
-	moveCamera(GetEditorState().active().pointWorld(i));
-}
-std::filesystem::path filename(const char * utf8)
-{
-	std::filesystem::path p = std::filesystem::u8path(utf8);
-	need(!p.empty(), "Filename required");
-	if (!p.has_extension())
-		p += ".xml";
-	return p;
-}
-void saveFile(const std::filesystem::path & file, const std::string & text, bool overwrite)
-{
-	// Never truncate an existing file. Write a unique sibling, then atomically
-	// rename it; without overwrite, MoveFileEx fails if a destination exists.
-	auto tmp = file;
-	tmp += L".tmp." + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(GetTickCount64());
-	HANDLE handle = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-	need(handle != INVALID_HANDLE_VALUE, "Cannot create temporary save file");
-	DWORD wrote = 0;
-	bool ok = WriteFile(handle, text.data(), DWORD(text.size()), &wrote, nullptr) && wrote == text.size();
-	if (ok)
-		ok = FlushFileBuffers(handle) != FALSE;
-	CloseHandle(handle);
-	if (ok)
-		ok = MoveFileExW(tmp.c_str(), file.c_str(),
-						 MOVEFILE_WRITE_THROUGH | (overwrite ? MOVEFILE_REPLACE_EXISTING : 0)) != FALSE;
-	if (!ok)
-	{
-		DeleteFileW(tmp.c_str());
-		throw std::runtime_error("Save failed: file exists or is not writable (use overwrite explicitly)");
-	}
-}
-std::string readFile(const std::filesystem::path & file)
-{
-	std::ifstream in(file, std::ios::binary | std::ios::ate);
-	need(bool(in), "Cannot open XML file");
-	auto size = in.tellg();
-	need(size >= 0 && size <= 16 * 1024 * 1024, "XML file exceeds 16 MiB");
-	std::string s(std::size_t(size), '\0');
-	in.seekg(0);
-	if (size > 0)
-		in.read(&s[0], size);
-	need(bool(in), "Cannot read complete XML file");
-	return s;
+	auto & view = g_Hook_VClient_RenderView;
+	if (view.m_UseNewCampath == value)
+		return;
+	editOff();
+	MirvCampathPreview_Stop();
+	view.m_UseNewCampath = value;
+	g_CampathDrawer.OnActivePathChanged();
 }
 struct Args
 {
@@ -2197,45 +1982,26 @@ struct Args
 		need(count() == n, "Invalid argument count.");
 	}
 };
+
 enum EditorAction
 {
-	EA_Capture,
+	EA_Add,
 	EA_Replace,
-	EA_Insert,
 	EA_Delete,
 	EA_Visit,
-	EA_Undo,
-	EA_Redo,
-	EA_PreviousPoint,
-	EA_NextPoint,
-	EA_FirstPoint,
-	EA_LastPoint,
-	EA_ScrubLeft,
-	EA_ScrubRight,
-	EA_PositionLeft,
-	EA_PositionRight,
-	EA_TimeAdd,
-	EA_TimeReplace,
-	EA_TimeDelete,
-	EA_PreviousTime,
-	EA_NextTime,
+	EA_Previous,
+	EA_Next,
+	EA_First,
+	EA_Last,
+	EA_Left,
+	EA_Right,
 	EA_Seek,
+	EA_In,
+	EA_Out,
+	EA_Reset,
 	EA_Curve,
-	EA_Ease,
-	EA_Orbit,
-	EA_Line,
-	EA_Rectangle,
-	EA_Anchor,
-	EA_NewPath,
-	EA_Duplicate,
-	EA_Rotation,
-	EA_Fov,
 	EA_Draw,
-	EA_Playback,
-	EA_HandleIn,
-	EA_HandleOut,
-	EA_PreviousPath,
-	EA_NextPath,
+	EA_Enabled,
 	EA_DemoUi,
 	EA_Count
 };
@@ -2246,44 +2012,11 @@ struct EditorBinding
 	unsigned Modifiers;
 };
 const EditorBinding defaultBindings[EA_Count] = {
-	{"capture", VK_INSERT, 0},
-	{"replace", VK_INSERT, 1},
-	{"insert", VK_INSERT, 2},
-	{"delete", VK_DELETE, 0},
-	{"visit", VK_TAB, 0},
-	{"undo", 'Z', 2},
-	{"redo", 'Y', 2},
-	{"previousPoint", VK_UP, 0},
-	{"nextPoint", VK_DOWN, 0},
-	{"firstPoint", VK_HOME, 0},
-	{"lastPoint", VK_END, 0},
-	{"scrubLeft", VK_LEFT, 0},
-	{"scrubRight", VK_RIGHT, 0},
-	{"positionLeft", VK_LEFT, 1},
-	{"positionRight", VK_RIGHT, 1},
-	{"timeAdd", VK_F6, 0},
-	{"timeReplace", VK_F6, 1},
-	{"timeDelete", VK_DELETE, 2},
-	{"previousTime", VK_UP, 2},
-	{"nextTime", VK_DOWN, 2},
-	{"seek", VK_RETURN, 2},
-	{"curveType", 'B', 2},
-	{"ease", VK_F8, 0},
-	{"orbit", VK_F9, 0},
-	{"line", VK_F9, 1},
-	{"rectangle", VK_F9, 2},
-	{"anchor", VK_F10, 0},
-	{"newPath", 'N', 2},
-	{"duplicatePath", 'D', 2},
-	{"rotationCapture", 'R', 2},
-	{"fovCapture", 'F', 2},
-	{"draw", VK_F4, 0},
-	{"enabled", 'P', 2},
-	{"handleIn", VK_OEM_4, 0},
-	{"handleOut", VK_OEM_6, 0},
-	{"previousPath", VK_PRIOR, 0},
-	{"nextPath", VK_NEXT, 0},
-	{"demoUi", VK_F2, 1},
+	{"add", VK_INSERT, 0},		 {"replace", VK_INSERT, 1},	  {"delete", VK_DELETE, 0},	  {"visit", VK_TAB, 0},
+	{"previousPoint", VK_UP, 0}, {"nextPoint", VK_DOWN, 0},	  {"firstPoint", VK_HOME, 0}, {"lastPoint", VK_END, 0},
+	{"scrubLeft", VK_LEFT, 0},	 {"scrubRight", VK_RIGHT, 0}, {"seek", VK_RETURN, 2},	  {"handleIn", VK_OEM_4, 0},
+	{"handleOut", VK_OEM_6, 0},	 {"resetHandles", 'B', 3},	  {"curveType", 'B', 2},	  {"draw", VK_F4, 0},
+	{"enabled", 'P', 2},		 {"demoUi", VK_F2, 1},
 };
 struct EditorCommandBinding
 {
@@ -2292,8 +2025,7 @@ struct EditorCommandBinding
 };
 std::vector<EditorCommandBinding> editorCommands;
 EditorBinding editorBindings[EA_Count];
-bool bindingsInitialized = false;
-bool actionHeld[EA_Count] = {};
+bool bindingsInitialized = false, actionHeld[EA_Count] = {};
 int pressedAction[256] = {};
 std::string keyName(UINT key)
 {
@@ -2420,7 +2152,7 @@ bool editSettings(const Args & a)
 		}
 		else
 			it->Command = command;
-		MirvCinematic_ReleaseKeys();
+		MirvCampathEditor_ReleaseKeys();
 		return true;
 	}
 
@@ -2438,7 +2170,7 @@ bool editSettings(const Args & a)
 				need(!uiPassThrough[binding.Key],
 					 "Disable passthrough for default editor keys before resetting bindings");
 			std::copy(std::begin(defaultBindings), std::end(defaultBindings), editorBindings);
-			MirvCinematic_ReleaseKeys();
+			MirvCampathEditor_ReleaseKeys();
 			return true;
 		}
 		if (a.count() == 2)
@@ -2469,7 +2201,7 @@ bool editSettings(const Args & a)
 			need(!binding.Key || custom.Binding.Key != binding.Key || custom.Binding.Modifiers != binding.Modifiers,
 				 "Remove the custom command on this chord first");
 		editorBindings[selected] = binding;
-		MirvCinematic_ReleaseKeys();
+		MirvCampathEditor_ReleaseKeys();
 		return true;
 	}
 	if (a.is(1, "passthrough"))
@@ -2501,1352 +2233,425 @@ bool editSettings(const Args & a)
 			for (const auto & custom : editorCommands)
 				need(custom.Binding.Key != key, "Remove custom commands using this key first");
 		uiPassThrough[key] = enabled;
-		MirvCinematic_ReleaseKeys();
+		MirvCampathEditor_ReleaseKeys();
 		return true;
 	}
 	return false;
 }
-struct CampathHelpEntry
-{
-	const char * Name;
-	const char * Syntax;
-	const char * Description;
-};
-const CampathHelpEntry campathHelp[] = {
-	{"system", "classic|new", "Select the campath command tree."},
-	{"enabled", "0|1", "Enable scheduled playback; editing temporarily suspends it."},
-	{"edit", "[...]", "Editor controls and keyboard settings."},
-	{"add", "", "Capture the current camera as a point."},
-	{"path", "[...]", "Create and select movements."},
-	{"point", "[...]", "Edit captured points."},
-	{"curve", "[...]", "Shape and place the movement."},
-	{"time", "[...]", "Capture, insert, select and remove timing keys."},
-	{"timing", "[...]", "Easing and advanced automatic timing."},
-	{"rotation", "[...]", "Animate orientation independently."},
-	{"fov", "[...]", "Animate field of view independently."},
-	{"draw", "[...]", "Configure path visualization."},
-	{"save", "<file> [overwrite]", "Save the selected path to XML."},
-	{"saveAll", "<file> [overwrite]", "Save every path to XML."},
-	{"load", "<file> [append|replace [discard]]", "Load paths; append is the default."},
-	{"exportLegacy", "<file> [overwrite]", "Bake the selected path to classic XML."},
-	{"undo", "", "Undo an edit."},
-	{"redo", "", "Redo an edit."},
-	{"edit on", "", "Enter free-camera editing."},
-	{"edit off", "", "Leave editing; keep playback enabled state."},
-	{"edit status", "", "Show editor, cursor and playback state."},
-	{"edit visit", "", "Visit the selected path position; Tab."},
-	{"edit scrub", "<seconds>", "Move the camera along the path inside editing."},
-	{"edit position", "<fraction 0..1>", "Choose a position independently of timing."},
-	{"edit seek", "", "Seek the demo to the current path cursor; Ctrl+Enter."},
-	{"edit command", "<chord> <quoted command|none>", "Bind any console operation inside editing."},
-	{"edit bind", "[action] [key|none]", "List or change editor shortcuts."},
-	{"edit passthrough", "[key] [0|1]", "Allow a key to reach Source menus/binds."},
-	{"time add", "[fraction [demoSeconds]]", "Capture position + current demo time; F6."},
-	{"time replace", "[index]", "Recapture a selected timing key; Shift+F6."},
-	{"time select", "<index>", "Visit a timing key; Ctrl+Up/Down."},
-	{"time delete", "[index]", "Delete selected timing key; Ctrl+Delete."},
-	{"time list", "", "List demo seconds, ticks and path positions."},
-	{"time clear", "", "Remove timing keys and unschedule the movement."},
-	{"curve create", "[...]", "Generate a shape at the free camera."},
-	{"curve create orbit", "[radius [plane [sweep [start [points]]]]]", "Create a circle; defaults 128 xy 360 0 9."},
-	{"curve create arc", "[radius [plane [sweep [start [points]]]]]", "Create an arc; default sweep 180."},
-	{"curve create line", "[length]", "Create a line facing the camera; default 256."},
-	{"curve create rectangle", "[width [height]]", "Create a closed local XY rectangle; default 256."},
-	{"path new", "[name]", "Create an empty movement."},
-	{"path list", "", "List movements and schedules."},
-	{"path use", "<index|name>", "Select a movement."},
-	{"path rename", "<name>", "Rename the selected movement."},
-	{"path duplicate", "", "Copy the selected movement."},
-	{"path remove", "confirm", "Remove the selected movement; undo is available."},
-	{"point add", "", "Append the current camera pose."},
-	{"point insert", "<index>", "Insert before an index; Ctrl+Insert uses selected point."},
-	{"point replace", "", "Replace the selected point."},
-	{"point delete", "", "Remove the selected point."},
-	{"point select", "<index>", "Select and visit a point in edit mode; Up/Down."},
-	{"point set", "<x> <y> <z> <pitch> <yaw> <roll> <fov>", "Replace the selected point with a world pose."},
-	{"curve type", "linear|smooth|bezier", "Choose spatial interpolation."},
-	{"curve tension", "<0..1>", "Set smooth-curve tension."},
-	{"curve handle", "in|out <x> <y> <z>|capture", "Set a local handle offset or capture its endpoint."},
-	{"curve anchor", "<x> <y> <z> <pitch> <yaw> <roll>|capture", "Set world placement."},
-	{"curve translate", "<x> <y> <z>", "Translate the anchor."},
-	{"curve rotate", "<pitch> <yaw> <roll>", "Rotate around the anchor."},
-	{"curve scale", "<factor>", "Set absolute uniform scale."},
-	{"curve grid", "<units>", "Set local edit snapping; zero disables it."},
-	{"curve lock", "x|y|z <value|off>", "Set a persistent local plane constraint."},
-	{"curve constrain", "", "Apply constraints to existing points/handles."},
-	{"curve corner", "stop|round", "Set selected-point stopping and path interpolation."},
-	{"timing duration", "<seconds>", "Set total duration, including holds."},
-	{"timing schedule", "0|1", "Include this path in scheduled playback."},
-	{"timing finish", "release|hold", "Choose camera behavior after this movement."},
-	{"timing segment", "<index> <seconds|auto>", "Set outgoing travel time."},
-	{"timing hold", "<seconds>", "Set the selected point hold."},
-	{"timing stop", "0|1", "Set zero velocity at the selected point."},
-	{"timing ease", "linear|in|out|smooth|smoother|custom", "Choose easing between time keys or automatic segments."},
-	{"timing holdMark", "begin|end [demo|wall]", "Capture the selected point hold."},
-	{"timing speed", "[...]", "Edit cumulative segment-speed progress."},
-	{"timing motion", "[...]", "Edit whole-movement time-to-distance progress."},
-	{"timing transition", "<seconds>", "Blend into this movement."},
-	{"timing overlaps", "", "List overlapping scheduled paths."},
-	{"draw enabled", "0|1", "Show visualization while editing."},
-	{"draw keyIndex", "<pixels>", "Set label height; default 32, zero hides labels."},
-	{"draw all", "0|1", "Toggle every visualization layer."},
-	{"draw paths", "0|1", "Show spatial paths."},
-	{"draw cameras", "0|1", "Show camera markers."},
-	{"draw labels", "0|1", "Show names and point indices."},
-	{"draw handles", "0|1", "Show Bezier handles."},
-	{"draw constraints", "0|1", "Show locked planes."},
-	{"draw timing", "0|1", "Show timing-key markers and demo seconds/ticks."},
-	{"draw easing", "0|1", "Show equal-time spacing to reveal speed and easing."},
-	{"draw direction", "0|1", "Show travel direction."},
-	{"rotation set", "<time 0..1> [<pitch> <yaw> <roll>]", "Add or replace a key."},
-	{"rotation delete", "<time 0..1>", "Delete a key."},
-	{"rotation clear", "", "Remove this track; speed resets to linear."},
-	{"fov set", "<time 0..1> <degrees>", "Add or replace a key."},
-	{"fov delete", "<time 0..1>", "Delete a key."},
-	{"fov clear", "", "Remove this track; speed resets to linear."},
-	{"timing speed set", "<time 0..1> <progress>", "Add or replace a key."},
-	{"timing speed delete", "<time 0..1>", "Delete a key."},
-	{"timing speed clear", "", "Remove this track; speed resets to linear."},
-	{"timing motion set", "<time 0..1> <pathProgress>", "Add or replace a key."},
-	{"timing motion delete", "<time 0..1>", "Delete a key."},
-	{"timing motion clear", "", "Remove this track; speed resets to linear."},
-	{"rotation interp", "linear|smooth|step", "Choose interpolation for this track."},
-	{"fov interp", "linear|smooth|step", "Choose interpolation for this track."},
-};
-struct CampathCommandRoute
-{
-	const char * Group;
-	const char * Name;
-	const char * Command;
-};
-const CampathCommandRoute campathRoutes[] = {
-	{"path", "new", "new"},
-	{"path", "list", "paths"},
-	{"path", "use", "use"},
-	{"path", "rename", "rename"},
-	{"path", "duplicate", "duplicate"},
-	{"path", "remove", "remove"},
-	{"point", "add", "add"},
-	{"point", "insert", "insert"},
-	{"point", "replace", "replace"},
-	{"point", "delete", "delete"},
-	{"point", "select", "select"},
-	{"point", "set", "point"},
-	{"curve", "type", "curve"},
-	{"curve", "tension", "tension"},
-	{"curve", "handle", "handle"},
-	{"curve", "anchor", "anchor"},
-	{"curve", "translate", "translate"},
-	{"curve", "rotate", "rotate"},
-	{"curve", "scale", "scale"},
-	{"curve", "grid", "grid"},
-	{"curve", "lock", "lock"},
-	{"curve", "constrain", "constrain"},
-	{"curve", "corner", "corner"},
-	{"timing", "duration", "duration"},
-	{"timing", "schedule", "schedule"},
-	{"timing", "finish", "finish"},
-	{"timing", "segment", "segment"},
-	{"timing", "hold", "hold"},
-	{"timing", "stop", "stopPoint"},
-	{"timing", "ease", "ease"},
-	{"timing", "holdMark", "holdMark"},
-	{"timing", "speed", "speed"},
-	{"timing", "motion", "motion"},
-	{"timing", "transition", "transition"},
-	{"timing", "overlaps", "overlaps"},
-};
-std::string helpTopic(const std::string & topic)
-{
-	if (!_stricmp(topic.c_str(), "start") || !_stricmp(topic.c_str(), "end") || !_stricmp(topic.c_str(), "mark"))
-		return "time";
-	if (!_stricmp(topic.c_str(), "preview"))
-		return "edit";
-	if (!_stricmp(topic.c_str(), "play") || !_stricmp(topic.c_str(), "stop"))
-		return "enabled";
-	if (!_stricmp(topic.c_str(), "curve orbit"))
-		return "curve create";
-	for (const auto & entry : campathHelp)
-		if (!_stricmp(entry.Name, topic.c_str()))
-			return entry.Name;
-	for (const auto & route : campathRoutes)
-		if (!_stricmp(route.Command, topic.c_str()))
-			return std::string(route.Group) + " " + route.Name;
-	return topic;
-}
-void help(std::string topic = "")
-{
-	topic = helpTopic(topic);
-	bool printed = false;
-	for (const auto & entry : campathHelp)
-	{
-		std::string name = entry.Name;
-		auto split = name.rfind(' ');
-		std::string parent = split == std::string::npos ? "" : name.substr(0, split);
-		if (parent != topic)
-			continue;
-		Tier0_Msg("mirv_campath %s%s%s - %s\n", entry.Name, *entry.Syntax ? " " : "", entry.Syntax, entry.Description);
-		printed = true;
-	}
-	if (!printed)
-		for (const auto & entry : campathHelp)
-			if (!_stricmp(entry.Name, topic.c_str()))
-			{
-				Tier0_Msg("mirv_campath %s%s%s - %s\n", entry.Name, *entry.Syntax ? " " : "", entry.Syntax,
-						  entry.Description);
-				printed = true;
-				break;
-			}
-	if (!printed)
-	{
-		Tier0_Warning("Unknown campath help topic: %s\n", topic.c_str());
-		return;
-	}
-	if (topic.empty())
-		Tier0_Msg("Current system: new. Use mirv_campath <subcommand> for its help.\n");
-	if (topic == "enabled")
-		Tier0_Msg("Current value: %i\n", playing);
-	if (topic == "edit")
-		Tier0_Msg("Current value: %s. Playback enabled: %i\n", editing ? "on" : "off", playing);
-	if (topic == "draw" || topic == "draw keyIndex")
-		Tier0_Msg("Current label height: %g pixels\n", g_CampathDrawer.GetNewLabelHeight());
-	if (GetEditorState().state.selected >= 0)
-	{
-		const auto & path = GetEditorState().active();
-		if (topic == "timing duration")
-			Tier0_Msg("Current value: %g seconds\n", path.duration);
-		if (topic == "timing schedule")
-			Tier0_Msg("Current value: %i\n", path.scheduled);
-		if (topic == "timing transition")
-			Tier0_Msg("Current value: %g seconds\n", path.transition);
-		if (topic == "timing finish")
-			Tier0_Msg("Current value: %s\n", path.holdEnd ? "hold" : "release");
-		if (topic == "curve type" || topic == "curve")
-		{
-			const char * names[] = {"linear", "smooth", "bezier", "circle"};
-			Tier0_Msg("Current curve: %s\n", names[(int)path.curve]);
-		}
-		if (topic == "curve tension")
-			Tier0_Msg("Current value: %g\n", path.tension);
-		if (topic == "curve scale")
-			Tier0_Msg("Current value: %g\n", path.anchor.scale);
-		if (topic == "curve grid")
-			Tier0_Msg("Current value: %g\n", path.constraints.grid);
-	}
-}
-void run(const Args & a);
-bool routeCommand(const Args & a)
-{
-	for (const auto & route : campathRoutes)
-		if (a.is(0, route.Group) && a.is(1, route.Name))
-		{
-			if (a.count() == 2)
-				for (const auto & entry : campathHelp)
-					if (std::string(entry.Name) == std::string(route.Group) + " " + route.Name && *entry.Syntax &&
-						*entry.Syntax != '[')
-					{
-						help(entry.Name);
-						return true;
-					}
-			CFakeWrpCommandArgs command("mirv_campath");
-			command.AddArg(route.Command);
-			for (int i = 2; i < a.count(); ++i)
-				command.AddArg(a.at(i).c_str());
-			run({&command, 1});
-			return true;
-		}
-	return false;
-}
-Interp interpolation(const Args & a, int i)
-{
-	if (a.is(i, "linear"))
-		return Interp::Linear;
-	if (a.is(i, "smooth"))
-		return Interp::Smooth;
-	if (a.is(i, "step"))
-		return Interp::Step;
-	throw std::runtime_error("Interpolation must be linear, smooth or step");
-}
-template <class Key> void put(std::vector<Key> & keys, Key k)
-{
-	auto it = std::lower_bound(keys.begin(), keys.end(), k.time, [](const Key & v, double t) { return v.time < t; });
-	if (it != keys.end() && it->time == k.time)
-		*it = k;
-	else
-		keys.insert(it, k);
-}
-void timeCommand(const Args & a)
-{
-	auto & editor = GetEditorState();
-	if (a.is(1, "list"))
-	{
-		a.size(2);
-		auto keys = editor.active().timeKeys();
-		auto * globals = g_Hook_VClient_RenderView.GetGlobals();
-		double tick = globals ? globals->interval_per_tick_get() : 0;
-		for (std::size_t i = 0; i < keys.size(); ++i)
-		{
-			Tier0_Msg("%s%u: %.3f demo seconds, %.1f%% of path", int(i) == selectedTimeKey ? "* " : "  ", unsigned(i),
-					  keys[i].time, 100 * keys[i].value);
-			if (tick > 0)
-				Tier0_Msg(", tick %.0f", std::round(keys[i].time / tick));
-			Tier0_Msg("\n");
-		}
-		return;
-	}
-	if (a.is(1, "select"))
-	{
-		a.size(3);
-		int i = a.index(2);
-		auto & p = editor.active();
-		need(i < int(p.progress.size()), "Invalid timing key index");
-		cursorTime = p.progress[i].time * p.duration;
-		cursorFraction = p.progress[i].value;
-		selectedTimeKey = i;
-		editor.state.point = -1;
-		moveCamera(p.evaluate(cursorTime));
-		return;
-	}
-	State next = editor.state;
-	auto & p = path(next);
-	if (a.is(1, "add") || a.is(1, "replace"))
-	{
-		bool replace = a.is(1, "replace");
-		need(a.count() >= 2 && a.count() <= (replace ? 3 : 4),
-			 "Use time add [fraction [demoSeconds]] or time replace [index]");
-		double fraction = !replace && a.count() > 2 ? a.num(2)
-						  : next.point >= 0			? p.pointDistance(next.point)
-													: cursorFraction;
-		double seconds = !replace && a.count() > 3 ? a.num(3) : demoTime();
-		if (replace)
-		{
-			int i = a.count() == 3 ? a.index(2) : selectedTimeKey;
-			need(i >= 0 && i < int(p.progress.size()), "Select a timing key first");
-			p.replaceTimeKey(i, seconds, fraction);
-		}
-		else
-			p.setTimeKey(seconds, fraction);
-		cursorTime = seconds - p.start;
-		cursorFraction = fraction;
-		selectedTimeKey = 0;
-		for (int i = 0; i < int(p.progress.size()); ++i)
-			if (std::abs(p.start + p.progress[i].time * p.duration - seconds) < 1e-7)
-				selectedTimeKey = i;
-		Tier0_Msg("Timing key %i: %.3f demo seconds, %.1f%% of path.\n", selectedTimeKey, seconds, 100 * fraction);
-	}
-	else if (a.is(1, "delete"))
-	{
-		need(a.count() == 2 || a.count() == 3, "Use time delete [index]");
-		int i = a.count() == 3 ? a.index(2) : selectedTimeKey;
-		need(i >= 0, "Select a timing key first");
-		p.eraseTimeKey(i);
-		selectedTimeKey = -1;
-	}
-	else if (a.is(1, "clear"))
-	{
-		a.size(2);
-		p.progress.clear();
-		p.easeProgress = false;
-		p.scheduled = false;
-		selectedTimeKey = -1;
-	}
-	else
-		throw std::runtime_error("Unknown timing-key command; use mirv_campath time");
-	editor.commit(std::move(next));
-	cursorTime = std::clamp(cursorTime, 0.0, editor.active().duration);
-}
-void createShape(const Args & a)
-{
-	need(a.count() >= 3, "Use curve create orbit, arc, line, or rectangle");
-	State next = GetEditorState().state;
-	if (next.selected < 0 || !path(next).points.empty())
-	{
-		Path created;
-		created.id = next.nextId++;
-		created.name = "Path " + std::to_string(created.id);
-		next.paths.push_back(created);
-		next.selected = int(next.paths.size() - 1);
-	}
-	auto & p = path(next);
-	Pose c = camera();
-	p.anchor.origin = c.position;
-	p.anchor.rotation = c.rotation;
-	p.anchor.scale = 1;
-	if (a.is(2, "orbit") || a.is(2, "arc"))
-	{
-		need(a.count() <= 8, "Use curve create orbit|arc [radius [plane [sweep [start [points]]]]]");
-		p.circleRadius = a.count() > 3 ? a.num(3) : 128;
-		p.circleCenter = {0, 0, 0};
-		p.circlePlane = a.count() > 4 ? (a.is(4, "xy") ? 0 : a.is(4, "xz") ? 1 : a.is(4, "yz") ? 2 : -1) : 0;
-		p.circleSweep = a.count() > 5 ? a.num(5) : a.is(2, "arc") ? 180 : 360;
-		p.circleStart = a.count() > 6 ? a.num(6) : 0;
-		int count = a.count() > 7 ? a.index(7) : 9;
-		need(count >= 2 && count <= 4096, "Shape needs 2..4096 points");
-		p.curve = Curve::Circle;
-		p.points.resize(count);
-		for (int i = 0; i < count; ++i)
-		{
-			p.points[i].pose = p.toLocal(c);
-			p.points[i].pose.position = p.position(i);
-		}
-	}
-	else if (a.is(2, "line") || a.is(2, "rectangle"))
-	{
-		bool rectangle = a.is(2, "rectangle");
-		need(a.count() <= (rectangle ? 5 : 4), "Use curve create line [length] or rectangle [width [height]]");
-		double w = a.count() > 3 ? a.num(3) : 256, h = a.count() > 4 ? a.num(4) : w;
-		need(w > 0 && h > 0, "Shape dimensions must be positive");
-		p.curve = Curve::Linear;
-		Vec corners[] = {{0, 0, 0}, {w, 0, 0}, {w, h, 0}, {0, h, 0}, {0, 0, 0}};
-		for (int i = 0; i < (rectangle ? 5 : 2); ++i)
-		{
-			Point point;
-			point.pose = p.toLocal(c);
-			point.pose.position = corners[i];
-			p.points.push_back(point);
-		}
-	}
-	else
-		throw std::runtime_error("Unknown shape; use orbit, arc, line, or rectangle");
-	next.point = 0;
-	GetEditorState().commit(std::move(next));
-	resetCursor();
-}
-void run(const Args & a)
-{
-	if (editSettings(a))
-		return;
-	if (a.count() > 1 && a.is(0, "help"))
-	{
-		std::string topic;
-		for (int i = 1; i < a.count(); ++i)
-		{
-			if (i > 1)
-				topic += " ";
-			topic += a.at(i);
-		}
-		help(topic);
-		return;
-	}
-	if (a.is(0, "time") && a.count() > 1)
-	{
-		timeCommand(a);
-		return;
-	}
-	if (a.is(0, "curve") && a.is(1, "create"))
-	{
-		if (a.count() == 2)
-			help("curve create");
-		else
-			createShape(a);
-		return;
-	}
 
-	if (routeCommand(a))
-		return;
-	if (a.count() == 1)
-	{
-		const char * queries[] = {"time",	  "edit",	"path",		 "point",  "curve",	   "timing", "duration",
-								  "segment",  "hold",	"stopPoint", "ease",   "holdMark", "speed",	 "motion",
-								  "rotation", "fov",	"draw",		 "save",   "saveAll",  "load",	 "exportLegacy",
-								  "handle",	  "anchor", "translate", "rotate", "scale",	   "grid",	 "lock",
-								  "corner",	  "rename", "use",		 "insert", "select",   "remove", "transition",
-								  "schedule", "finish"};
-		for (const char * query : queries)
-			if (a.is(0, query))
-			{
-				help(a.at(0));
-				return;
-			}
-	}
-
-	if (a.is(0, "edit"))
-	{
-		if (a.count() == 2 && a.is(1, "on"))
-		{
-			editOn();
-			return;
-		}
-		if (a.count() == 2 && a.is(1, "off"))
-		{
-			editOff();
-			return;
-		}
-		if (a.is(1, "seek"))
-		{
-			a.size(2);
-			seekCursor();
-			return;
-		}
-		if (a.is(1, "visit"))
-		{
-			a.size(2);
-			need(editing, "Enter editing first");
-			moveCamera(GetEditorState().active().atDistance(cursorFraction));
-			return;
-		}
-		if (a.is(1, "scrub"))
-		{
-			a.size(3);
-			need(editing, "Enter editing first");
-			setCursorTime(a.num(2));
-			return;
-		}
-		if (a.is(1, "position"))
-		{
-			a.size(3);
-			need(editing, "Enter editing first");
-			double v = a.num(2);
-			need(v >= 0 && v <= 1, "Position must be 0..1");
-			setCursorPosition(v);
-			return;
-		}
-		if (a.count() == 2 && a.is(1, "status"))
-		{
-			Tier0_Msg("Campath system: new\nEditor: %i\nPlayback enabled: %i\nCursor: %.3f seconds, %.1f%% of path\n",
-					  editing, playing, cursorTime, 100 * cursorFraction);
-			return;
-		}
-		throw std::runtime_error("Unknown editor command; use mirv_campath edit for help");
-	}
-	if (a.is(0, "enabled") || a.is(0, "enable"))
-	{
-		if (a.count() == 1)
-		{
-			Tier0_Msg("mirv_campath enabled 0|1 - Enable scheduled playback.\nCurrent value: %i\n", playing);
-			return;
-		}
-		a.size(2);
-		playing = a.flag(1);
-		return;
-	}
-
-	if (!a.count() || a.is(0, "help"))
-	{
-		help();
-		return;
-	}
-	if (a.is(0, "paths"))
-	{
-		a.size(1);
-		for (std::size_t i = 0; i < GetEditorState().state.paths.size(); ++i)
-		{
-			auto & p = GetEditorState().state.paths[i];
-			Tier0_Msg("%s%u: %s - %u points, %.3fs, length %.2f, start %.3f, scheduled %i\n",
-					  int(i) == GetEditorState().state.selected ? "* " : "  ", unsigned(i), p.name.c_str(),
-					  unsigned(p.points.size()), p.duration, p.Length(), p.start, p.scheduled);
-		}
-		Tier0_Msg("Unsaved changes: %s\n", GetEditorState().dirty() ? "yes" : "no");
-		return;
-	}
-	if (a.is(0, "new"))
-	{
-		need(a.count() <= 2, "new [name]");
-		resetCursor();
-		GetEditorState().create(a.count() == 2 ? a.at(1) : "");
-		return;
-	}
-	if (a.is(0, "use"))
-	{
-		a.size(2);
-		resetCursor();
-		std::string which = a.at(1);
-		int chosen = -1;
-		for (std::size_t i = 0; i < GetEditorState().state.paths.size(); ++i)
-			if (GetEditorState().state.paths[i].name == which)
-			{
-				need(chosen < 0, "Ambiguous name; use a path index");
-				chosen = int(i);
-			}
-		if (chosen < 0)
-		{
-			chosen = a.index(1);
-			need(chosen < int(GetEditorState().state.paths.size()), "Invalid path index");
-		}
-		GetEditorState().state.selected = chosen;
-		GetEditorState().state.point = -1;
-		cursorTime = 0;
-		return;
-	}
-	if (a.is(0, "add"))
-	{
-		a.size(1);
-		capture();
-		return;
-	}
-	if (a.is(0, "insert"))
-	{
-		a.size(2);
-		capture(false, a.index(1));
-		return;
-	}
-	if (a.is(0, "replace"))
-	{
-		a.size(1);
-		capture(true);
-		return;
-	}
-	if (a.is(0, "select"))
-	{
-		a.size(2);
-		selectPoint(a.index(1));
-		return;
-	}
-	if (a.is(0, "duplicate"))
-	{
-		a.size(1);
-		resetCursor();
-		GetEditorState().duplicate();
-		syncCursor();
-		return;
-	}
-	if (a.is(0, "remove"))
-	{
-		a.size(2);
-		need(a.is(1, "confirm"), "Use remove confirm; undo can restore it");
-		resetCursor();
-		GetEditorState().remove();
-		return;
-	}
-	if (a.is(0, "undo") || a.is(0, "redo"))
-	{
-		a.size(1);
-		bool ok = a.is(0, "undo") ? GetEditorState().undo() : GetEditorState().redo();
-		if (!ok)
-			Tier0_Msg("Nothing to %s.\n", a.at(0).c_str());
-		MirvCinematic_ReleaseKeys();
-		selectedTimeKey = -1;
-		syncCursor();
-		return;
-	}
-	if (a.is(0, "curve") && a.is(1, "orbit"))
-		throw std::runtime_error("Use mirv_campath curve create orbit [radius ...]");
-	if (a.is(0, "preview"))
-		throw std::runtime_error("Preview is part of editing: use edit on, edit visit, edit scrub, or edit seek");
-	if (a.is(0, "play") || a.is(0, "stop"))
-		throw std::runtime_error("Use mirv_campath enabled 1 or enabled 0; editing is controlled separately");
-	if (a.is(0, "aim"))
-		throw std::runtime_error("Use the existing mirv_aim command");
-	if (a.is(0, "start") || a.is(0, "end") || a.is(0, "mark"))
-		throw std::runtime_error("Use mirv_campath time add to capture a timing key");
-	if (a.is(0, "overlaps"))
-	{
-		a.size(1);
-		auto pairs = GetEditorState().overlaps();
-		for (auto & s : pairs)
-			Tier0_Msg("Overlap: %s\n", s.c_str());
-		Tier0_Msg("%u overlap(s); latest start wins, larger stable ID breaks ties.\n", unsigned(pairs.size()));
-		return;
-	}
-	if (a.is(0, "draw"))
-	{
-		if (a.is(1, "enabled"))
-		{
-			if (a.count() == 2)
-			{
-				Tier0_Msg("mirv_campath draw enabled 0|1\nCurrent value: %i\n", g_CampathDrawer.GetNewDrawEnabled());
-				return;
-			}
-			a.size(3);
-			g_CampathDrawer.SetNewDrawEnabled(a.flag(2));
-			return;
-		}
-		if (a.is(1, "keyIndex"))
-		{
-			if (a.count() == 2)
-			{
-				Tier0_Msg(
-					"mirv_campath draw keyIndex <fHeight> - New path label height in pixels.\nCurrent value: %g\n",
-					g_CampathDrawer.GetNewLabelHeight());
-				return;
-			}
-			a.size(3);
-			double height = a.num(2);
-			need(height >= 0 && height <= 200, "Label height must be 0..200 pixels");
-			g_CampathDrawer.SetNewLabelHeight((float)height);
-			return;
-		}
-		a.size(3);
-		bool value = a.flag(2);
-		const char * names[] = {"paths",	   "cameras",	"labels", "handles",
-								"constraints", "direction", "timing", "easing"};
-		if (a.is(1, "all"))
-		{
-			for (int layer = 0; layer < 8; ++layer)
-				g_CampathDrawer.SetNewDrawLayer(layer, value);
-			return;
-		}
-		for (int i = 0; i < 8; ++i)
-			if (a.is(1, names[i]))
-			{
-				g_CampathDrawer.SetNewDrawLayer(i, value);
-				return;
-			}
-		throw std::runtime_error("Unknown draw layer");
-	}
-	if (a.is(0, "save") || a.is(0, "saveAll") || a.is(0, "exportLegacy"))
-	{
-		need(a.count() == 2 || (a.count() == 3 && a.is(2, "overwrite")),
-			 "save/saveAll/exportLegacy <file> [overwrite]");
-		bool all = a.is(0, "saveAll");
-		std::string text = a.is(0, "exportLegacy") ? GetEditorState().legacyXml() : GetEditorState().xml(all);
-		saveFile(filename(a.at(1).c_str()), text, a.count() == 3);
-		if (all)
-			GetEditorState().markSaved();
-		Tier0_Msg("Saved XML.\n");
-		return;
-	}
-	if (a.is(0, "load"))
-	{
-		need(a.count() >= 2 && a.count() <= 4, "load <file> [append|replace [discard]]");
-		bool replace = a.is(2, "replace");
-		need(a.count() < 3 || replace || a.is(2, "append"), "Choose append or replace");
-		need(a.count() < 4 || (replace && a.is(3, "discard")), "Only replace accepts discard");
-		need(!replace || !GetEditorState().dirty() || a.is(3, "discard"),
-			 "Unsaved changes: saveAll first, append, or use load <file> replace discard");
-		std::string xml = readFile(filename(a.at(1).c_str()));
-		State verified = Deserialize(xml);
-		(void)verified;
-		resetCursor();
-		GetEditorState().loadXml(xml, replace);
-		if (replace)
-			GetEditorState().markSaved();
-		Tier0_Msg("Loaded XML (%s); undo is available.\n", replace ? "replace" : "append");
-		return;
-	}
-	State n = GetEditorState().state;
-	auto & p = path(n);
-	if (a.is(0, "rename"))
-	{
-		a.size(2);
-		p.name = a.at(1);
-	}
-	else if (a.is(0, "delete"))
-	{
-		a.size(1);
-		point(n);
-		p.points.erase(p.points.begin() + n.point);
-		n.point = p.points.empty() ? -1 : (std::min)(n.point, int(p.points.size() - 1));
-	}
-	else if (a.is(0, "point"))
-	{
-		a.size(8);
-		Pose v{a.vec(1), Euler(a.num(4), a.num(5), a.num(6)), a.num(7)};
-		p.capture(v, n.point, true);
-	}
-	else if (a.is(0, "curve"))
-	{
-		a.size(2);
-		Curve c;
-		if (a.is(1, "linear"))
-			c = Curve::Linear;
-		else if (a.is(1, "smooth"))
-			c = Curve::Smooth;
-		else if (a.is(1, "bezier"))
-			c = Curve::Bezier;
-		else
-			throw std::runtime_error("Curve must be linear, smooth or bezier");
-		if (p.curve == Curve::Circle)
-			for (std::size_t i = 0; i < p.points.size(); ++i)
-				p.points[i].pose.position = p.position(double(i));
-		p.curve = c;
-	}
-	else if (a.is(0, "tension"))
-	{
-		a.size(2);
-		p.tension = a.num(1);
-	}
-	else if (a.is(0, "handle"))
-	{
-		need(a.count() == 5 || (a.count() == 3 && a.is(2, "capture")), "handle in|out <localX localY localZ|capture>");
-		need(a.is(1, "in") || a.is(1, "out"), "Choose in or out handle");
-		auto & v = point(n);
-		Vec h = a.count() == 3 ? p.toLocal(camera()).position - v.pose.position : a.vec(2);
-		h = p.constraints.apply(v.pose.position + h) - v.pose.position;
-		if (a.is(1, "in"))
-			v.inHandle = h;
-		else
-			v.outHandle = h;
-		p.curve = Curve::Bezier;
-	}
-	else if (a.is(0, "orbit"))
-	{
-		need(a.count() >= 7 && a.count() <= 9, "orbit <worldCenterX Y Z radius xy|xz|yz sweep [start [points]]>");
-		p.circleCenter = p.toLocal({a.vec(1), {}, 90}).position;
-		p.circleRadius = a.num(4) / p.anchor.scale;
-		p.circlePlane = a.is(5, "xy") ? 0 : a.is(5, "xz") ? 1 : a.is(5, "yz") ? 2 : -1;
-		p.circleSweep = a.num(6);
-		p.circleStart = a.count() > 7 ? a.num(7) : 0;
-		int count = a.count() > 8 ? a.index(8) : 9;
-		need(count >= 2 && count <= 4096, "Orbit needs 2..4096 points");
-		p.points.assign(std::size_t(count), Point{});
-		p.curve = Curve::Circle;
-		for (int i = 0; i < count; ++i)
-		{
-			p.points[i].pose = p.toLocal(camera());
-			p.points[i].pose.position = p.position(i);
-		}
-		n.point = 0;
-	}
-	else if (a.is(0, "anchor"))
-	{
-		if (a.count() == 2 && a.is(1, "capture"))
-		{
-			Pose c = camera();
-			p.anchor.origin = c.position;
-			p.anchor.rotation = c.rotation;
-		}
-		else
-		{
-			a.size(7);
-			p.anchor.origin = a.vec(1);
-			p.anchor.rotation = Euler(a.num(4), a.num(5), a.num(6));
-		}
-	}
-	else if (a.is(0, "translate"))
-	{
-		a.size(4);
-		p.anchor.origin = p.anchor.origin + a.vec(1);
-	}
-	else if (a.is(0, "rotate"))
-	{
-		a.size(4);
-		p.anchor.rotation = Euler(a.num(1), a.num(2), a.num(3)) * p.anchor.rotation;
-	}
-	else if (a.is(0, "scale"))
-	{
-		a.size(2);
-		p.anchor.scale = a.num(1);
-	}
-	else if (a.is(0, "grid"))
-	{
-		a.size(2);
-		p.constraints.grid = a.num(1);
-	}
-	else if (a.is(0, "lock"))
-	{
-		a.size(3);
-		int axis = a.is(1, "x") ? 0 : a.is(1, "y") ? 1 : a.is(1, "z") ? 2 : -1;
-		need(axis >= 0, "Axis must be x, y or z");
-		p.constraints.locked[axis] = !a.is(2, "off");
-		if (!a.is(2, "off"))
-		{
-			double value = a.num(2);
-			if (axis == 0)
-				p.constraints.plane.X = value;
-			else if (axis == 1)
-				p.constraints.plane.Y = value;
-			else
-				p.constraints.plane.Z = value;
-		}
-	}
-	else if (a.is(0, "constrain"))
-	{
-		a.size(1);
-		need(p.curve != Curve::Circle, "Convert circle to another curve before constraining");
-		for (auto & pt : p.points)
-		{
-			pt.pose.position = p.constraints.apply(pt.pose.position);
-			pt.inHandle = p.constraints.apply(pt.pose.position + pt.inHandle) - pt.pose.position;
-			pt.outHandle = p.constraints.apply(pt.pose.position + pt.outHandle) - pt.pose.position;
-		}
-	}
-	else if (a.is(0, "corner"))
-	{
-		a.size(2);
-		need(a.is(1, "stop") || a.is(1, "round"), "corner stop|round");
-		point(n).stop = a.is(1, "stop");
-		p.curve = a.is(1, "round") ? Curve::Smooth : Curve::Linear;
-	}
-	else if (a.is(0, "duration"))
-	{
-		a.size(2);
-		p.duration = a.num(1);
-	}
-	else if (a.is(0, "schedule"))
-	{
-		a.size(2);
-		p.scheduled = a.flag(1);
-	}
-	else if (a.is(0, "finish"))
-	{
-		a.size(2);
-		need(a.is(1, "release") || a.is(1, "hold"), "finish release|hold");
-		p.holdEnd = a.is(1, "hold");
-	}
-	else if (a.is(0, "transition"))
-	{
-		a.size(2);
-		p.transition = a.num(1);
-	}
-	else if (a.is(0, "segment"))
-	{
-		a.size(3);
-		int i = a.index(1);
-		need(i + 1 < int(p.points.size()), "Select an outgoing segment index");
-		p.points[i].seconds = a.is(2, "auto") ? 0 : a.num(2);
-		need(a.is(2, "auto") || p.points[i].seconds > 0, "Segment duration must be positive or auto");
-	}
-	else if (a.is(0, "hold"))
-	{
-		a.size(2);
-		point(n).hold = a.num(1);
-	}
-	else if (a.is(0, "stopPoint"))
-	{
-		a.size(2);
-		point(n).stop = a.flag(1);
-	}
-	else if (a.is(0, "ease"))
-	{
-		a.size(2);
-		const char * names[] = {"linear", "in", "out", "smooth", "smoother", "custom"};
-		int chosen = -1;
-		for (int i = 0; i < 6; ++i)
-			if (a.is(1, names[i]))
-				chosen = i;
-		need(chosen >= 0, "Unknown easing");
-		p.ease = Ease(chosen);
-	}
-	else if (a.is(0, "holdMark"))
-	{
-		need(a.count() == 2 || a.count() == 3, "Use holdMark begin|end [demo|wall]");
-		need(a.is(1, "begin") || a.is(1, "end"), "Choose begin or end");
-		need(p.progress.empty(), "Use time add twice at the same position to create a hold with timing keys");
-		bool wall = a.count() == 3 ? a.is(2, "wall") : a.is(1, "end") && holdMark.set ? holdMark.wall : false;
-		need(a.count() < 3 || wall || a.is(2, "demo"), "Clock must be demo or wall");
-		double now = wall ? wallTime() : demoTime();
-		if (a.is(1, "begin"))
-		{
-			point(n);
-			holdMark = {true, wall, now, p.id, n.point};
-			Tier0_Msg("Hold begin captured.\n");
-			return;
-		}
-		need(holdMark.set && holdMark.wall == wall && holdMark.path == p.id && holdMark.point == n.point,
-			 "Capture a matching hold begin mark first");
-		need(now >= holdMark.value, "End precedes begin");
-		point(n).hold = now - holdMark.value;
-	}
-	else if (a.is(0, "speed") || a.is(0, "motion") || a.is(0, "rotation") || a.is(0, "fov"))
-	{
-		if (a.is(1, "interp"))
-		{
-			a.size(3);
-			need(a.is(0, "rotation") || a.is(0, "fov"), "Only rotation/fov accept interp");
-			if (a.is(0, "rotation"))
-				p.rotationInterp = interpolation(a, 2);
-			else
-				p.fovInterp = interpolation(a, 2);
-		}
-		else if (a.is(1, "clear"))
-		{
-			a.size(2);
-			if (a.is(0, "speed"))
-				p.speed = {{0, 0}, {1, 1}};
-			else if (a.is(0, "motion"))
-				p.progress.clear();
-			else if (a.is(0, "rotation"))
-				p.rotations.clear();
-			else
-				p.fovs.clear();
-		}
-		else if (a.is(1, "delete"))
-		{
-			a.size(3);
-			double t = a.num(2);
-			auto erase = [&](auto & keys) {
-				auto it = std::find_if(keys.begin(), keys.end(), [&](const auto & k) { return k.time == t; });
-				need(it != keys.end(), "No key at this normalized time");
-				keys.erase(it);
-			};
-			if (a.is(0, "rotation"))
-				erase(p.rotations);
-			else if (a.is(0, "fov"))
-				erase(p.fovs);
-			else if (a.is(0, "speed"))
-				erase(p.speed);
-			else
-				erase(p.progress);
-		}
-		else
-		{
-			need(a.is(1, "set"), "Use set, delete, clear or interp");
-			double t = a.num(2);
-			if (a.is(0, "rotation"))
-			{
-				need(a.count() == 3 || a.count() == 6, "rotation set <time> [pitch yaw roll]");
-				Quat q = a.count() == 3 ? p.toLocal(camera()).rotation
-										: p.anchor.rotation.Conjugate() * Euler(a.num(3), a.num(4), a.num(5));
-				put(p.rotations, RotationKey{t, q});
-			}
-			else
-			{
-				a.size(4);
-				double value = a.num(3);
-				auto & track = a.is(0, "speed") ? p.speed : a.is(0, "motion") ? p.progress : p.fovs;
-				if (a.is(0, "motion") && track.empty())
-					track = {{0, 0}, {1, 1}};
-				put(track, ScalarKey{t, value});
-			}
-		}
-	}
-
-	else
-		throw std::runtime_error("Unknown cinematic command; see mirv_campath help");
-	GetEditorState().commit(std::move(n));
-	if (GetEditorState().state.selected >= 0)
-		cursorTime = std::clamp(cursorTime, 0.0, GetEditorState().active().duration);
-}
-void editorCommand(std::initializer_list<const char *> values)
+CamPathIterator selectedKey()
 {
-	CFakeWrpCommandArgs command("mirv_campath");
-	for (const char * value : values)
-		command.AddArg(value);
-	run({&command, 1});
+	auto & path = activePath();
+	auto selected = path.GetEnd();
+	for (auto it = path.GetBegin(); it != path.GetEnd(); ++it)
+		if (it.GetValue().Selected)
+		{
+			need(selected == path.GetEnd(), "Select one keyframe for its curve handles");
+			selected = it;
+		}
+	need(selected != path.GetEnd(), "Select a keyframe first (Up/Down in editing or select #<index>)");
+	return selected;
+}
+void seekCursor()
+{
+	need(activePath().GetSize() > 0, "No camera points");
+	need(g_VEngineClient && g_VEngineClient->IsPlayingDemo() && g_VEngineClient->GetDemoInfoEx() &&
+			 g_Hook_VClient_RenderView.GetGlobals(),
+		 "A running demo is required for seeking");
+	g_CampathPreviewTime = std::clamp(g_CampathPreviewTime, activePath().GetLowerBound(), activePath().GetUpperBound());
+	int tick = 0;
+	need(GetDemoTickFromClientTime(g_MirvTime.GetTime(), g_CampathPreviewTime + activePath().GetOffset(), tick),
+		 "Unable to calculate the demo tick");
+	need(tick >= 0, "Seek precedes demo start");
+	std::string command = "demo_gototick " + std::to_string(tick);
+	g_VEngineClient->ExecuteClientCmd(command.c_str());
+}
+void captureHandle(bool outgoing)
+{
+	auto key = selectedKey();
+	auto pose = g_MirvCampath_Camera.GetCamera();
+	auto value = key.GetValue();
+	need(activePath().SetHandle(key.GetTime(), outgoing, Vector3(pose.X - value.X, pose.Y - value.Y, pose.Z - value.Z)),
+		 "Invalid curve handle");
+}
+void curveHelp()
+{
+	Tier0_Msg("mirv_campath curve type default|linear|smooth|bezier - Choose position interpolation.\n"
+			  "mirv_campath curve handle in|out capture - Capture the selected keyframe handle at the camera.\n"
+			  "mirv_campath curve handle in|out <x> <y> <z> - Set a world-space offset.\n"
+			  "mirv_campath curve reset - Reset selected keyframe handles to native interpolation.\n");
+	Tier0_Msg("Current curve: %s\n", activePath().Bezier_get()
+										 ? "bezier"
+										 : CamPath::DoubleInterp_ToString(activePath().PositionInterpMethod_get()));
+}
+void editorHelp()
+{
+	Tier0_Msg("mirv_campath edit on - Enter keyboard/free-camera editing.\n"
+			  "mirv_campath edit off - Leave editing; keep campath enable state.\n"
+			  "mirv_campath edit seek - Seek the demo to the editor cursor.\n"
+			  "mirv_campath edit goto <index> - Select and visit a camera keyframe.\n"
+			  "mirv_campath edit bind - List or change keyboard actions.\n"
+			  "mirv_campath edit command <chord> <quoted console command|none> - Bind an existing command.\n"
+			  "mirv_campath edit passthrough <key> 0|1 - Allow a console/menu key.\n");
+}
+void nativeCommand(std::initializer_list<const char *> values)
+{
+	CFakeWrpCommandArgs args("mirv_campath");
+	for (auto value : values)
+		args.AddArg(value);
+	MirvCampath_ConCommand(&args, Tier0_Msg, Tier0_Warning, &activePath(), &g_MirvCampath_Time, &g_MirvCampath_Camera,
+						   &g_MirvCampath_Drawer);
 }
 void executeEditorAction(EditorAction action)
 {
+	auto & path = activePath();
 	switch (action)
 	{
+	case EA_Add: {
+		nativeCommand({"add"});
+		int i = 0;
+		double time = g_MirvTime.GetTime() - path.GetOffset();
+		for (auto it = path.GetBegin(); it != path.GetEnd(); ++it, ++i)
+			if (it.GetTime() == time)
+			{
+				CampathPreview_GotoIndex(i);
+				break;
+			}
+		break;
+	}
+	case EA_Replace: {
+		auto key = selectedKey();
+		auto previous = key.GetValue();
+		auto pose = g_MirvCampath_Camera.GetCamera();
+		CamPathValue value(pose.X, pose.Y, pose.Z, pose.Pitch, pose.Yaw, pose.Roll, pose.Fov);
+		value.Selected = previous.Selected;
+		value.InHandle = previous.InHandle;
+		value.OutHandle = previous.OutHandle;
+		value.HasInHandle = previous.HasInHandle;
+		value.HasOutHandle = previous.HasOutHandle;
+		path.Add(key.GetTime(), value);
+		break;
+	}
+	case EA_Delete: {
+		auto key = selectedKey();
+		path.Remove(key.GetTime());
+		break;
+	}
+	case EA_Visit:
+		need(CampathPreview_SetCamera(), "No usable camera points");
+		break;
+	case EA_Previous:
+	case EA_Next: {
+		need(path.GetSize() > 0, "No camera points");
+		int i = 0, chosen = -1;
+		for (auto it = path.GetBegin(); it != path.GetEnd(); ++it, ++i)
+		{
+			if (action == EA_Next && it.GetTime() > g_CampathPreviewTime + 1e-5)
+			{
+				chosen = i;
+				break;
+			}
+			if (action == EA_Previous && it.GetTime() < g_CampathPreviewTime - 1e-5)
+				chosen = i;
+		}
+		if (chosen >= 0)
+			CampathPreview_GotoIndex(chosen);
+		break;
+	}
+	case EA_First:
+	case EA_Last:
+		need(path.GetSize() > 0, "No camera points");
+		CampathPreview_GotoIndex(action == EA_First ? 0 : int(path.GetSize() - 1));
+		break;
+	case EA_Seek:
+		seekCursor();
+		break;
+	case EA_In:
+	case EA_Out:
+		captureHandle(action == EA_Out);
+		break;
+	case EA_Reset: {
+		auto key = selectedKey();
+		path.ResetHandles(key.GetTime());
+		break;
+	}
+	case EA_Curve:
+		if (path.Bezier_get())
+		{
+			path.Bezier_set(false);
+			path.PositionInterpMethod_set(CamPath::DI_LINEAR);
+		}
+		else if (path.PositionInterpMethod_get() == CamPath::DI_LINEAR)
+			path.PositionInterpMethod_set(CamPath::DI_CUBIC);
+		else
+			path.Bezier_set(true);
+		break;
+	case EA_Draw:
+		g_CampathDrawer.Draw_set(!g_CampathDrawer.Draw_get());
+		break;
+	case EA_Enabled:
+		nativeCommand({"enabled", path.Enabled_get() ? "0" : "1"});
+		break;
 	case EA_DemoUi:
-		need(g_VEngineClient != nullptr, "Engine interface unavailable");
+		need(g_VEngineClient, "Engine interface unavailable");
 		g_VEngineClient->ExecuteClientCmd("demoui");
 		break;
-	case EA_Capture:
-		editorCommand({"add"});
-		break;
-	case EA_Replace:
-		editorCommand({"replace"});
-		break;
-	case EA_Insert: {
-		int point = GetEditorState().state.point;
-		need(point >= 0, "Select a point before inserting");
-		std::string index = std::to_string(point);
-		editorCommand({"insert", index.c_str()});
-		break;
-	}
-	case EA_Delete:
-		editorCommand({"delete"});
-		break;
-	case EA_Visit:
-		editorCommand({"edit", "visit"});
-		break;
-	case EA_Undo:
-		editorCommand({"undo"});
-		break;
-	case EA_Redo:
-		editorCommand({"redo"});
-		break;
-	case EA_TimeAdd:
-		editorCommand({"time", "add"});
-		break;
-	case EA_TimeReplace:
-		editorCommand({"time", "replace"});
-		break;
-	case EA_TimeDelete:
-		editorCommand({"time", "delete"});
-		break;
-	case EA_PreviousTime:
-	case EA_NextTime: {
-		int count = int(GetEditorState().active().progress.size());
-		need(count > 0, "No timing keys");
-		int i = selectedTimeKey < 0 ? (action == EA_NextTime ? 0 : count - 1)
-									: std::clamp(selectedTimeKey + (action == EA_NextTime ? 1 : -1), 0, count - 1);
-		std::string index = std::to_string(i);
-		editorCommand({"time", "select", index.c_str()});
-		break;
-	}
-	case EA_Seek:
-		editorCommand({"edit", "seek"});
-		break;
-	case EA_Curve: {
-		auto curve = GetEditorState().active().curve;
-		const char * name = curve == Curve::Linear ? "smooth" : curve == Curve::Smooth ? "bezier" : "linear";
-		editorCommand({"curve", "type", name});
-		Tier0_Msg("Curve: %s\n", name);
-		break;
-	}
-	case EA_Ease: {
-		const char * names[] = {"linear", "in", "out", "smooth", "smoother"};
-		int next = (int(GetEditorState().active().ease) + 1) % 5;
-		editorCommand({"timing", "ease", names[next]});
-		Tier0_Msg("Easing: %s\n", names[next]);
-		break;
-	}
-	case EA_Orbit:
-		editorCommand({"curve", "create", "orbit"});
-		break;
-	case EA_Line:
-		editorCommand({"curve", "create", "line"});
-		break;
-	case EA_Rectangle:
-		editorCommand({"curve", "create", "rectangle"});
-		break;
-	case EA_Anchor:
-		editorCommand({"anchor", "capture"});
-		break;
-	case EA_NewPath:
-		editorCommand({"new"});
-		break;
-	case EA_Duplicate:
-		editorCommand({"duplicate"});
-		break;
-	case EA_Rotation:
-	case EA_Fov: {
-		double time = std::clamp(cursorTime / GetEditorState().active().duration, 0.0, 1.0);
-		std::string t = std::to_string(time), fov = std::to_string(camera().fov);
-		if (action == EA_Rotation)
-			editorCommand({"rotation", "set", t.c_str()});
-		else
-			editorCommand({"fov", "set", t.c_str(), fov.c_str()});
-		break;
-	}
-	case EA_Draw:
-		editorCommand({"draw", "enabled", g_CampathDrawer.GetNewDrawEnabled() ? "0" : "1"});
-		break;
-	case EA_Playback:
-		editorCommand({"enabled", playing ? "0" : "1"});
-		Tier0_Msg("Playback enabled: %i (suspended while editing)\n", playing);
-		break;
-	case EA_HandleIn:
-		editorCommand({"handle", "in", "capture"});
-		break;
-	case EA_HandleOut:
-		editorCommand({"handle", "out", "capture"});
-		break;
-	case EA_PreviousPath:
-	case EA_NextPath: {
-		int count = (int)GetEditorState().state.paths.size();
-		need(count > 0, "No paths to select");
-		int current = GetEditorState().state.selected;
-		int next = (current + (action == EA_NextPath ? 1 : count - 1)) % count;
-		std::string index = std::to_string(next);
-		editorCommand({"use", index.c_str()});
-		if (!GetEditorState().active().points.empty())
-			selectPoint(0);
-		break;
-	}
-	case EA_FirstPoint:
-	case EA_LastPoint:
-	case EA_PreviousPoint:
-	case EA_NextPoint: {
-		int count = (int)GetEditorState().active().points.size();
-		need(count > 0, "Path has no points");
-		int index = GetEditorState().state.point;
-		if (action == EA_FirstPoint)
-			index = 0;
-		else if (action == EA_LastPoint)
-			index = count - 1;
-		else
-			index += action == EA_NextPoint ? 1 : -1;
-		selectPoint(std::clamp(index, 0, count - 1));
-		break;
-	}
-	case EA_ScrubLeft:
-	case EA_ScrubRight:
-	case EA_PositionLeft:
-	case EA_PositionRight:
+	case EA_Left:
+	case EA_Right:
 		break;
 	default:
 		break;
 	}
-	if (action == EA_HandleIn || action == EA_HandleOut)
-		Tier0_Msg("Point %i: %s handle captured.\n", GetEditorState().state.point,
-				  action == EA_HandleIn ? "incoming" : "outgoing");
-	if (action == EA_Capture || action == EA_Replace || action == EA_Insert)
-		Tier0_Msg("Point %i captured.\n", GetEditorState().state.point);
 }
 } // namespace
-bool MirvCinematic_DrawEnabled(int layer)
-{
-	return useNewSystem && g_CampathDrawer.GetNewDrawEnabled() && g_CampathDrawer.GetNewDrawLayer(layer) && editing;
-}
-bool MirvCinematic_Command(IWrpCommandArgs * args)
+bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 {
 	try
 	{
-		if (args->ArgC() > 1 && !_stricmp(args->ArgV(1), "system"))
+		Args a{args, 1};
+		if (a.is(0, "system"))
 		{
-			if (args->ArgC() == 2)
+			if (a.count() == 1)
 			{
-				Tier0_Msg("mirv_campath system classic - Use classic commands and paths.\n"
-						  "mirv_campath system new - Use geometry and timing independently.\n"
-						  "Current value: %s\n",
-						  useNewSystem ? "new" : "classic");
+				Tier0_Msg("mirv_campath system classic|new\nCurrent value: %s\n",
+						  MirvCampathEditor_IsNewSystem() ? "new" : "classic");
 				return true;
 			}
-			need(args->ArgC() == 3, "Use mirv_campath system classic or new");
-			need(!_stricmp(args->ArgV(2), "classic") || !_stricmp(args->ArgV(2), "new"),
-				 "System must be classic or new");
-			selectSystem(!_stricmp(args->ArgV(2), "new"));
-			Tier0_Msg("Campath system: %s\n", useNewSystem ? "new" : "classic");
+			a.size(2);
+			need(a.is(1, "classic") || a.is(1, "new"), "System must be classic or new");
+			selectSystem(a.is(1, "new"));
 			return true;
 		}
-		bool compatibility = args->ArgC() > 1 && !_stricmp(args->ArgV(1), "cinematic");
-		if (compatibility)
-			selectSystem(true);
-		if (!useNewSystem)
+		if (!MirvCampathEditor_IsNewSystem())
 			return false;
-		run({args, compatibility ? 2 : 1});
+		if (editSettings(a))
+			return true;
+		if (a.is(0, "edit") && a.count() > 1)
+		{
+			if (a.is(1, "on"))
+			{
+				a.size(2);
+				editOn();
+				return true;
+			}
+			if (a.is(1, "off"))
+			{
+				a.size(2);
+				editOff();
+				return true;
+			}
+			if (a.is(1, "seek"))
+			{
+				a.size(2);
+				seekCursor();
+				return true;
+			}
+			if (a.is(1, "goto"))
+			{
+				a.size(3);
+				need(editing, "Enter editing first");
+				need(CampathPreview_GotoIndex(a.index(2)), "Invalid keyframe index");
+				return true;
+			}
+			if (a.is(1, "status"))
+			{
+				a.size(2);
+				Tier0_Msg("Editor: %i\nCampath enabled: %i\n", editing, activePath().Enabled_get());
+				return true;
+			}
+			if (a.is(1, "interp") && a.is(2, "position") && a.count() == 4)
+			{
+				CamPath::DoubleInterp method;
+				if (CamPath::DoubleInterp_FromString(a.at(3).c_str(), method))
+					activePath().Bezier_set(false);
+			}
+		}
+		if (a.is(0, "curve"))
+		{
+			if (a.count() == 1)
+			{
+				curveHelp();
+				return true;
+			}
+			if (a.is(1, "type"))
+			{
+				if (a.count() == 2)
+				{
+					curveHelp();
+					return true;
+				}
+				a.size(3);
+				if (a.is(2, "bezier"))
+					activePath().Bezier_set(true);
+				else
+				{
+					CamPath::DoubleInterp method;
+					need(a.is(2, "smooth") || CamPath::DoubleInterp_FromString(a.at(2).c_str(), method),
+						 "Choose default, linear, smooth or bezier");
+					if (a.is(2, "smooth"))
+						method = CamPath::DI_CUBIC;
+					activePath().Bezier_set(false);
+					activePath().PositionInterpMethod_set(method);
+				}
+				return true;
+			}
+			if (a.is(1, "reset"))
+			{
+				a.size(2);
+				activePath().ResetHandles(selectedKey().GetTime());
+				return true;
+			}
+			if (a.is(1, "handle"))
+			{
+				need(a.count() == 4 || a.count() == 6, "Use curve handle in|out capture|<x y z>");
+				need(a.is(2, "in") || a.is(2, "out"), "Choose in or out");
+				if (a.count() == 4)
+				{
+					need(a.is(3, "capture"), "Choose capture or a world-space offset");
+					captureHandle(a.is(2, "out"));
+				}
+				else
+					need(activePath().SetHandle(selectedKey().GetTime(), a.is(2, "out"), a.vec(3)),
+						 "Invalid handle offset");
+				return true;
+			}
+			curveHelp();
+			return true;
+		}
+		if (a.is(0, "draw") && (a.is(1, "keyIndex") || a.is(1, "handles")))
+		{
+			if (a.is(1, "handles"))
+			{
+				if (a.count() == 2)
+				{
+					Tier0_Msg("mirv_campath draw handles 0|1\nCurrent value: %i\n", g_CampathDrawer.GetDrawHandles());
+					return true;
+				}
+				a.size(3);
+				g_CampathDrawer.SetDrawHandles(a.flag(2));
+			}
+			else
+			{
+				if (a.count() == 2)
+				{
+					Tier0_Msg("mirv_campath draw keyIndex <pixels>\nCurrent value: %g\n",
+							  g_CampathDrawer.GetNewLabelHeight());
+					return true;
+				}
+				a.size(3);
+				double height = a.num(2);
+				need(height >= 0 && height <= 200, "Label height must be 0..200 pixels");
+				g_CampathDrawer.SetNewLabelHeight(float(height));
+			}
+			return true;
+		}
+		if (a.is(0, "time") || a.is(0, "timing") || a.is(0, "path") || a.is(0, "point") || a.is(0, "preview") ||
+			a.is(0, "cinematic") || a.is(0, "play") || a.is(0, "stop"))
+			throw std::runtime_error("Use classic commands: add captures pose/time, enabled controls playback, edit "
+									 "controls retiming, curve controls shape");
+		if (!a.count() || (a.is(0, "edit") && a.count() == 1))
+		{
+			editorHelp();
+			Tier0_Msg("mirv_campath curve - Curve/handle commands.\n");
+		}
+		return false; // All ordinary commands use the original implementation below.
 	}
 	catch (const std::exception & error)
 	{
 		Tier0_Warning("Campath: %s\n", error.what());
-		int offset = args->ArgC() > 1 && !_stricmp(args->ArgV(1), "cinematic") ? 2 : 1;
-		if (useNewSystem && args->ArgC() > offset)
-		{
-			std::string topic = args->ArgV(offset);
-			for (const auto & entry : campathHelp)
-				if (args->ArgC() > offset + 1 && std::string(entry.Name) == topic + " " + args->ArgV(offset + 1))
-				{
-					topic = entry.Name;
-					break;
-				}
-			if (_stricmp(topic.c_str(), "aim"))
-				help(topic);
-		}
+		return true;
 	}
-	return true;
 }
-int MirvCinematic_SelectedTimeKey()
+bool MirvCampathEditor_IsNewSystem()
 {
-	return editing ? selectedTimeKey : -1;
+	return g_Hook_VClient_RenderView.m_UseNewCampath;
 }
-bool MirvCinematic_IsNewSystem()
+bool MirvCampathEditor_IsEditing()
 {
-	return useNewSystem;
+	return MirvCampathEditor_IsNewSystem() && editing;
 }
-bool MirvCinematic_OwnsCamera()
+void MirvCampathEditor_Update()
 {
-	return useNewSystem && (!editing && playing);
-}
-bool MirvCinematic_IsEditing()
-{
-	return useNewSystem && editing;
-}
-void MirvCinematic_Update()
-{
-	if (!useNewSystem)
+	if (!editing)
 		return;
-	if (editing && g_Hook_VClient_RenderView.m_MirvInput &&
-		!g_Hook_VClient_RenderView.m_MirvInput->GetCameraControlMode())
+	auto * input = g_Hook_VClient_RenderView.m_MirvInput;
+	if (!input || !input->GetCameraControlMode())
 	{
 		editOff();
 		return;
 	}
-	if (editing && g_Hook_VClient_RenderView.IsMenuActive())
+	if (g_Hook_VClient_RenderView.IsMenuActive())
 	{
-		MirvCinematic_ReleaseKeys(true);
+		MirvCampathEditor_ReleaseKeys(true);
 		return;
 	}
-	int positionScrub = (actionHeld[EA_PositionRight] ? 1 : 0) - (actionHeld[EA_PositionLeft] ? 1 : 0);
-	if (editing && (scrub || positionScrub) && GetEditorState().state.selected >= 0 &&
-		!GetEditorState().active().points.empty())
+	ULONGLONG now = GetTickCount64();
+	int frame = g_MirvTime.GetFrameCount();
+	if (frame != lastFrame)
 	{
-		int frame = g_MirvTime.GetFrameCount();
-		ULONGLONG now = GetTickCount64();
-		if (frame != lastFrame)
+		lastFrame = frame;
+		double dt = lastMs ? double((std::min)(now - lastMs, ULONGLONG(100))) / 1000 : 0;
+		lastMs = now;
+		if (scrub && activePath().CanEval())
 		{
-			lastFrame = frame;
-			double dt = lastMs ? double((std::min)(now - lastMs, ULONGLONG(100))) / 1000 : 0;
-			lastMs = now;
-			if (positionScrub)
-				setCursorPosition(cursorFraction + positionScrub * dt * 0.2);
-			else
-				setCursorTime(cursorTime + scrub * dt);
+			g_CampathPreviewTime += scrub * dt;
+			CampathPreview_SetCamera();
 		}
 	}
-	else
-		lastMs = GetTickCount64();
 }
-bool MirvCinematic_Override(float & x, float & y, float & z, float & pitch, float & yaw, float & roll, float & fov)
+void MirvCampathEditor_ReleaseKeys(bool yieldKeyboard)
 {
-	try
-	{
-		Pose p;
-		if (!playing || !GetEditorState().evaluate(demoTime(), p))
-			return false;
-		Vec a = Angles(p.rotation);
-		x = float(p.position.X);
-		y = float(p.position.Y);
-		z = float(p.position.Z);
-		pitch = float(a.X);
-		yaw = float(a.Y);
-		roll = float(a.Z);
-		fov = float(p.fov);
-		return true;
-	}
-	catch (const std::exception &)
-	{
-		return false;
-	}
-}
-void MirvCinematic_ReleaseKeys(bool yieldKeyboard)
-{
+	initBindings();
 	if (yieldKeyboard)
 		std::fill(std::begin(swallowed), std::end(swallowed), false);
-	initBindings();
 	std::fill(std::begin(actionHeld), std::end(actionHeld), false);
 	std::fill(std::begin(pressedAction), std::end(pressedAction), -1);
 	scrub = 0;
 	lastMs = GetTickCount64();
 }
-bool MirvCinematic_KeyEvent(UINT message, WPARAM key, LPARAM flags)
+bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags)
 {
-	bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
-	bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
-	if (!down && !up)
-		return false;
-	if (key >= 256)
+	bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN, up = message == WM_KEYUP || message == WM_SYSKEYUP;
+	if ((!down && !up) || key >= 256)
 		return false;
 	initBindings();
 	if (g_Hook_VClient_RenderView.IsMenuActive())
 	{
-		MirvCinematic_ReleaseKeys(true);
+		MirvCampathEditor_ReleaseKeys(true);
 		return false;
 	}
 	if (up && swallowed[key])
 	{
 		swallowed[key] = false;
-		int action = pressedAction[key];
+		int i = pressedAction[key];
 		pressedAction[key] = -1;
-		if (action >= 0)
-			actionHeld[action] = false;
-		scrub = (actionHeld[EA_ScrubRight] ? 1 : 0) - (actionHeld[EA_ScrubLeft] ? 1 : 0);
+		if (i >= 0)
+			actionHeld[i] = false;
+		scrub = (actionHeld[EA_Right] ? 1 : 0) - (actionHeld[EA_Left] ? 1 : 0);
 		return true;
 	}
-	// A held key keeps its initial action until release, even if modifiers or
-	// the selected system change. Otherwise Shift+Left becoming Left can leave
-	// the old continuous navigation action held indefinitely.
 	if (down && swallowed[key])
 		return true;
-
-	if (!useNewSystem || !editing)
-		return false;
-	if (passThroughKey((unsigned int)key, nullptr))
+	if (!MirvCampathEditor_IsEditing() || passThroughKey(unsigned(key), nullptr))
 		return false;
 	unsigned modifiers = (GetKeyState(VK_SHIFT) & 0x8000 ? 1 : 0) | (GetKeyState(VK_CONTROL) & 0x8000 ? 2 : 0) |
 						 (GetKeyState(VK_MENU) & 0x8000 ? 4 : 0);
 	for (int i = 0; i < EA_Count; ++i)
 	{
-		const auto & binding = editorBindings[i];
+		auto binding = editorBindings[i];
 		if (binding.Key != key || binding.Modifiers != modifiers)
 			continue;
 		if (!down)
 			return false;
-		if ((flags & (1LL << 30)) && !swallowed[key])
+		if (flags & (1LL << 30))
 			return true;
-		bool repeat = swallowed[key] || (flags & (1LL << 30));
 		swallowed[key] = true;
 		pressedAction[key] = i;
 		actionHeld[i] = true;
-		scrub = (actionHeld[EA_ScrubRight] ? 1 : 0) - (actionHeld[EA_ScrubLeft] ? 1 : 0);
-		if (repeat)
-			return true;
+		scrub = (actionHeld[EA_Right] ? 1 : 0) - (actionHeld[EA_Left] ? 1 : 0);
 		try
 		{
-			executeEditorAction((EditorAction)i);
+			executeEditorAction(EditorAction(i));
 		}
 		catch (const std::exception & error)
 		{
@@ -3854,29 +2659,27 @@ bool MirvCinematic_KeyEvent(UINT message, WPARAM key, LPARAM flags)
 		}
 		return true;
 	}
-	for (const auto & custom : editorCommands)
-		if (custom.Binding.Key == key && custom.Binding.Modifiers == modifiers)
+	for (const auto & binding : editorCommands)
+		if (binding.Binding.Key == key && binding.Binding.Modifiers == modifiers)
 		{
 			if (!down)
 				return false;
-			if ((flags & (1LL << 30)) || swallowed[key])
+			if (flags & (1LL << 30))
 				return true;
 			swallowed[key] = true;
 			pressedAction[key] = -1;
-			std::string command = custom.Command;
+			std::string command = binding.Command;
 			if (g_VEngineClient)
-				g_VEngineClient->ExecuteClientCmd(command.c_str());
+				g_VEngineClient->ClientCmd_Unrestricted(command.c_str());
 			return true;
 		}
-
-	// Free-camera keys continue through MirvInput, which now owns the entire
-	// keyboard and masks the corresponding raw keyboard events too.
 	return false;
 }
 
 CON_COMMAND(mirv_campath, "camera paths")
 {
-    if (MirvCinematic_Command(args)) return;
+	if (MirvCampathEditor_Command(args))
+		return;
 	if (!g_Hook_VClient_RenderView.IsInstalled())
 	{
 		Tier0_Warning("Error: Hook not installed.\n");
@@ -3885,7 +2688,7 @@ CON_COMMAND(mirv_campath, "camera paths")
 
 	if (2 <= args->ArgC() && 0 == _stricmp("preview", args->ArgV(1)))
 	{
-		CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+		CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
 		if (args->ArgC() == 2) { CampathPreview_PrintHelp(); return; }
 		const char * cmd = args->ArgV(2);
 		if (0 == _stricmp(cmd, "toggleKey")) {
@@ -3986,7 +2789,8 @@ CON_COMMAND(mirv_campath, "camera paths")
 		return;
 	}
 
-	MirvCampath_ConCommand(args, Tier0_Msg, Tier0_Warning, &g_Hook_VClient_RenderView.m_CamPath, &g_MirvCampath_Time, &g_MirvCampath_Camera, &g_MirvCampath_Drawer);
+	MirvCampath_ConCommand(args, Tier0_Msg, Tier0_Warning, &g_Hook_VClient_RenderView.GetActiveCamPath(),
+						   &g_MirvCampath_Time, &g_MirvCampath_Camera, &g_MirvCampath_Drawer);
 	if (args->ArgC() == 1)
 		Tier0_Msg("mirv_campath system classic|new - Select the campath command tree.\nmirv_campath preview [...] - "
 				  "Navigate campath with free camera; use mirv_campath preview for help.\n");

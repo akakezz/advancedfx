@@ -169,14 +169,14 @@ int main()
 	}
 }
 #else
-#include "shared/CinematicPath.h"
-#include <algorithm>
+#include "shared/CamPath.h"
 #include <cmath>
-#include <functional>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
-using namespace cinematic;
+#include <vector>
 namespace
 {
 int checks = 0;
@@ -186,522 +186,226 @@ void check(bool ok, const char * message)
 	if (!ok)
 		throw std::runtime_error(message);
 }
-void near(double a, double b, double tolerance = 1e-7)
+void near(double a, double b, double tolerance = 1e-6)
 {
 	check(std::abs(a - b) <= tolerance, "Values differ");
 }
-void throws(const std::function<void()> & fn)
+void populate(CamPath & path, bool linear = true)
 {
-	bool caught = false;
-	try
+	if (linear)
 	{
-		fn();
+		path.PositionInterpMethod_set(CamPath::DI_LINEAR);
+		path.RotationInterpMethod_set(CamPath::QI_SLINEAR);
+		path.FovInterpMethod_set(CamPath::DI_LINEAR);
 	}
-	catch (const std::exception &)
+	path.Add(10, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	path.Add(20, CamPathValue(100, 0, 0, 0, 90, 0, 60));
+}
+void captureAndTiming()
+{
+	CamPath path;
+	populate(path);
+	check(path.CanEval(), "Native linear interpolation is available");
+	path.Add(15, CamPathValue(30, 0, 0, 0, 45, 0, 80));
+	check(path.GetSize() == 3, "Capturing between demo times inserts a native keyframe");
+	auto it = path.GetBegin();
+	near(it.GetTime(), 10);
+	++it;
+	near(it.GetTime(), 15);
+	near(it.GetValue().X, 30);
+	++it;
+	near(it.GetTime(), 20);
+	path.Add(15, CamPathValue(40, 0, 0, 0, 45, 0, 80));
+	check(path.GetSize() == 3, "Same-time native capture replaces a point");
+	near(path.Eval(15).X, 40);
+	path.Enabled_set(true);
+	path.SetOffset(3);
+	path.SetHold(true);
+	check(path.Enabled_get() && path.GetHold(), "Native enable and hold retained");
+	near(path.GetOffset(), 3);
+	path.CurveEditing_set(true);
+	path.SetHandle(10, true, Vector3(0, 100, 0));
+	path.SetHandle(15, false, Vector3(0, 100, 0));
+	path.SetStart(25);
+	near(path.GetLowerBound(), 25);
+	near(path.GetUpperBound(), 35);
+	Vector3 handle;
+	check(path.GetHandle(25, true, handle), "Handles follow native retiming");
+	near(handle.Y, 100);
+	path.SetDuration(20);
+	near(path.GetUpperBound(), 45);
+	near(path.Eval(30).Y, 75);
+	path.SelectNone();
+	path.SelectAdd(std::size_t(1), std::size_t(1));
+	path.SetStart(40);
+	it = path.GetBegin();
+	++it;
+	near(it.GetTime(), 40);
+	near(it.GetValue().InHandle.Y, 100);
+	path.Remove(40);
+	check(path.GetSize() == 2, "Native point removal removes its handles too");
+}
+void curves()
+{
+	CamPath classic, curved;
+	populate(classic);
+	populate(curved);
+	curved.CurveEditing_set(true);
+	for (int i = 0; i <= 40; ++i)
 	{
-		caught = true;
+		auto a = classic.Eval(10 + i * 0.25), b = curved.Eval(10 + i * 0.25);
+		near(a.X, b.X);
+		near(a.Y, b.Y);
+		near(a.Fov, b.Fov);
 	}
-	check(caught, "Expected rejection");
-}
-Point pt(double x, double y = 0, double z = 0)
-{
-	Point p;
-	p.pose.position = {x, y, z};
-	return p;
-}
-Path line()
-{
-	Path p;
-	p.id = 1;
-	p.curve = Curve::Linear;
-	p.duration = 10;
-	p.points = {pt(0), pt(50), pt(100)};
-	p.rebuild();
-	return p;
-}
-State state(Path p)
-{
-	State s;
-	s.paths.push_back(p);
-	s.selected = 0;
-	s.point = 0;
-	Validate(s);
-	return s;
-}
-void timeKeys()
-{
-	auto p = line();
-	auto geometry = p.points;
-	p.setTimeKey(10, 0);
-	p.setTimeKey(20, 1);
-	near(p.start, 10);
-	near(p.duration, 10);
-	check(p.scheduled && p.easeProgress, "Time-key scheduling enabled");
-	p.setTimeKey(15, 0.2);
-	near(p.evaluate(5).position.X, 20);
-	near(p.evaluate(2.5).position.X, 10);
-	near(p.timeKeys()[1].time, 15);
-	check(p.points.size() == geometry.size(), "Timing capture does not add spatial points");
-	p.setTimeKey(5, 0.5);
-	near(p.start, 5);
-	near(p.duration, 15);
-	near(p.evaluate(0).position.X, 50);
-	p.eraseTimeKey(0);
-	near(p.start, 10);
-	near(p.duration, 10);
-	near(p.timeKeys()[1].time, 15);
-	p.setTimeKey(12, 0.2);
-	near(p.evaluate(3).position.X, 20);
-	near(p.evaluate(4).position.X, 20);
-	p.ease = Ease::In;
-	near(p.evaluate(7.5).position.X, 40);
-	near(p.pointTime(2), 10);
-	p = line();
-	p.setTimeKey(10, 0);
-	p.setTimeKey(20, 1);
-	p.ease = Ease::In;
-	near(p.pointTime(1), std::sqrt(0.5) * 10);
-	near(p.distanceAtTime(5), 0.25);
+	check(!classic.SetHandle(10, true, Vector3(0, 100, 0)), "Classic system does not accept curve edits");
+	check(curved.SetHandle(10, true, Vector3(0, 100, 0)), "Outgoing handle set");
+	check(curved.SetHandle(20, false, Vector3(0, 100, 0)), "Incoming handle set");
+	near(curved.Eval(15).Y, 75);
+	near(curved.Eval(15).X, 50);
+	near(curved.Eval(15).Fov, classic.Eval(15).Fov);
+	auto a = classic.Eval(15).R, b = curved.Eval(15).R;
+	near(std::abs(DotProduct(a, b)), 1);
+	near(curved.GetLowerBound(), 10);
+	near(curved.GetUpperBound(), 20);
+	near(curved.Eval(10).Y, 0);
+	near(curved.Eval(20).Y, 0);
+	curved.CurveEditing_set(false);
+	near(curved.Eval(15).Y, 0);
+	curved.CurveEditing_set(true);
+	near(curved.Eval(15).Y, 75);
+	curved.Bezier_set(false);
+	near(curved.Eval(15).Y, 0);
+	curved.Bezier_set(true);
+	check(!curved.SetHandle(9, true, Vector3(1, 0, 0)), "Missing key rejected");
+	check(!curved.SetHandle(10, true, Vector3(std::numeric_limits<double>::infinity(), 0, 0)),
+		  "Nonfinite handle rejected");
+	check(!curved.SetHandle(10, true, Vector3(1e10, 0, 0)), "Oversized handle rejected");
+	near(curved.Eval(15).Y, 75);
+	curved.ResetHandles(10);
+	curved.ResetHandles(20);
+	near(curved.Eval(15).Y, 0);
+	Vector3 offset;
+	curved.GetHandle(10, true, offset);
+	near(offset.X, 100.0 / 3, 1e-5);
+	near(offset.Y, 0);
+	// Untouched segments use the exact original cubic interpolator.
+	CamPath native, cubic;
+	for (int i = 0; i < 4; ++i)
+	{
+		CamPathValue value(i * 20, (i % 2) * 30, 0, 0, i * 15, 0, 70 + i);
+		native.Add(10 + i * 5, value);
+		cubic.Add(10 + i * 5, value);
+	}
+	cubic.CurveEditing_set(true);
+	cubic.Bezier_set(true);
+	check(native.CanEval() && cubic.CanEval(), "Original cubic interpolation requirements retained");
+	for (int i = 0; i <= 60; ++i)
+	{
+		auto n = native.Eval(10 + i * 0.25), c = cubic.Eval(10 + i * 0.25);
+		near(n.X, c.X);
+		near(n.Y, c.Y);
+		near(n.Fov, c.Fov);
+	}
+	cubic.SetHandle(10, true, Vector3(0, 100, 0));
 	for (int i = 0; i <= 20; ++i)
-		near(p.distanceAtTime(i * 0.5) * 100, p.evaluate(i * 0.5).position.X);
-	State state;
-	state.paths = {p};
-	state.paths[0].id = 1;
-	state.selected = 0;
-	auto xml = Serialize(state);
-	auto loaded = Deserialize(xml);
-	check(loaded.paths[0].easeProgress, "Time-key easing survives XML");
-	near(loaded.paths[0].evaluate(5).position.X, 25);
-	near(loaded.paths[0].timeKeys()[1].time, 20);
-	std::string before = Serialize(state);
-	throws([&] { state.paths[0].setTimeKey(90000, 0.5); });
-	check(Serialize(state) == before, "Invalid capture preserves prior data");
-	throws([&] { p.setTimeKey(-1, 0); });
-	throws([&] { p.setTimeKey(11, 2); });
-	throws([&] { p.eraseTimeKey(2); });
-	p.setTimeKey(15, 0.3);
-	p.setTimeKey(15, 0.4);
-	check(p.progress.size() == 3, "Same-time capture replaces instead of duplicating");
-	near(p.evaluate(5).position.X, 40);
-	p.eraseTimeKey(1);
-	p.eraseTimeKey(1);
-	near(p.evaluate(4).position.X, 0);
-	p.eraseTimeKey(0);
-	check(p.progress.empty() && !p.scheduled && !p.easeProgress, "Deleting all timing keys unschedules movement");
-	Path empty;
-	throws([&] { empty.setTimeKey(10, 0); });
-	p = line();
-	p.progress = {{0, 0}, {1, 1}};
-	p.ease = Ease::In;
-	p.rebuild();
-	near(p.evaluate(5).position.X, 50);
-	check(!p.easeProgress, "Old motion tracks retain linear interpolation");
-	p = line();
-	p.points[1].hold = 1;
-	p.rebuild();
-	p.setTimeKey(10, 0);
-	p.setTimeKey(20, 1);
-	near(p.points[1].hold, 0);
-	near(p.evaluate(5).position.X, 50);
-	p = line();
-	p.setTimeKey(10, 0);
-	p.setTimeKey(12, 0.2);
-	p.setTimeKey(20, 1);
-	p.transition = 5;
-	p.replaceTimeKey(2, 22, 1);
-	near(p.duration, 12);
-	near(p.transition, 5);
-	auto unchanged = p.timeKeys();
-	throws([&] { p.replaceTimeKey(2, 12, 0.8); });
-	near(p.timeKeys().back().time, unchanged.back().time);
-	throws([&] { p.replaceTimeKey(9, 22, 1); });
-	throws([&] { p.replaceTimeKey(2, 22, -1); });
-	p = line();
-	p.ease = Ease::Smooth;
-	p.points[1].hold = 2;
-	p.rebuild();
-	for (double f : {0.1, 0.3, 0.5, 0.9})
-		near(p.distanceAtTime(p.timeAtDistance(f)), f);
-	p = line();
-	p.setTimeKey(10, 0.2);
-	p.setTimeKey(20, 0.8);
-	p.ease = Ease::Smooth;
-	for (double f : {0.2, 0.3, 0.5, 0.8})
-		near(p.distanceAtTime(p.timeAtDistance(f)), f);
-	throws([&] { p.timeAtDistance(1); });
-	throws([&] { p.timeAtDistance(-1); });
-	p = line();
-	p.setTimeKey(10, 0);
-	p.setTimeKey(20, 1);
-
-	Editor editor;
-	editor.create();
-	auto next = editor.state;
-	next.paths[0] = p;
-	next.paths[0].id = 1;
-	editor.commit(next);
-	next = editor.state;
-	next.paths[0].setTimeKey(15, 0.2);
-	editor.commit(next);
-	check(editor.undo(), "Time-key capture is undoable");
-	near(editor.active().evaluate(5).position.X, 50);
-	check(editor.redo(), "Time-key capture can redo");
-	near(editor.active().evaluate(5).position.X, 20);
+		near(native.Eval(20 + i * 0.25).Y, cubic.Eval(20 + i * 0.25).Y);
 }
-void timing()
+void placement()
 {
-	auto p = line();
-	near(p.Length(), 100);
-	near(p.evaluate(5).position.X, 50);
-	p.points[1].hold = 2;
-	p.rebuild();
-	auto ts = p.timeline();
-	near(ts[1].arrival, 4);
-	near(ts[1].departure, 6);
-	near(ts[2].arrival, 10);
-	near(p.evaluate(4).position.X, 50);
-	near(p.evaluate(5).position.X, 50);
-	near(p.evaluate(6).position.X, 50);
-	near(p.evaluate(10).position.X, 100);
-	p.points[0].seconds = 3;
-	p.rebuild();
-	near(p.pointTime(1), 3);
-	near(p.pointTime(2), 10);
-	p.points[1].seconds = 5;
-	p.rebuild();
-	near(p.pointTime(2), 10);
-	p.duration = 11;
-	throws([&] { p.rebuild(); });
-	p.duration = 9;
-	throws([&] { p.rebuild(); });
-	p = line();
-	p.points[1].stop = true;
-	p.rebuild();
-	double epsilon = 1e-4;
-	check(std::abs(p.evaluate(5 - epsilon).position.X - 50) / epsilon < 0.01, "Stop incoming velocity");
-	check(std::abs(p.evaluate(5 + epsilon).position.X - 50) / epsilon < 0.01, "Stop outgoing velocity");
-	p = line();
-	p.progress = {{0, 0}, {0.5, 1}, {1, 0}};
-	p.rebuild();
-	near(p.evaluate(5).position.X, 100);
-	near(p.evaluate(10).position.X, 0);
-	p.points[0].hold = 1;
-	throws([&] { p.rebuild(); });
-	p = line();
-	p.ease = Ease::Custom;
-	p.speed = {{0, 0}, {0.5, 0.25}, {1, 1}};
-	p.rebuild();
-	near(p.evaluate(2.5).position.X, 12.5);
-	p.speed = {{0, 0}, {0.5, 0.9}, {0.7, 0.3}, {1, 1}};
-	throws([&] { p.rebuild(); });
-	p = line();
-	p.points = {pt(0)};
-	p.points[0].hold = 2;
-	p.rebuild();
-	near(p.evaluate(9).position.X, 0);
-	p.rotations = {{0, Euler(0, 0, 0)}, {1, Euler(0, 90, 0)}};
-	p.fovs = {{0, 90}, {1, 50}};
-	p.rebuild();
-	near(Angles(p.evaluate(5).rotation).Y, 45);
-	near(p.evaluate(5).fov, 70);
-	p = line();
-	p.points = {pt(0), pt(0)};
-	p.points[1].pose.rotation = Euler(0, 90, 0);
-	p.rebuild();
-	near(Angles(p.evaluate(5).rotation).Y, 45);
-
-	// A zero-length segment within a moving path can still animate a turn.
-	p = line();
-	p.points = {pt(0), pt(0), pt(100)};
-	p.points[0].seconds = 2;
-	p.points[1].pose.rotation = Euler(0, 90, 0);
-	p.rebuild();
-	near(p.evaluate(1).position.X, 0);
-	near(Angles(p.evaluate(1).rotation).Y, 45);
-	p = line();
-	p.progress = {{0, 0}, {0.5, 1}, {1, 0}};
-	p.rebuild();
-	near(p.pointTime(1), 2.5);
-}
-void geometry()
-{
-	{
-		auto p = line();
-		p.points = {pt(0), pt(100), pt(100)};
-		p.points.back().pose.rotation = Euler(0, 90, 0);
-		p.rebuild();
-		near(Angles(p.atDistance(1).rotation).Y, 90);
-		near(Angles(p.evaluate(10).rotation).Y, 90);
-	}
-
-	auto p = line();
-	p.curve = Curve::Smooth;
-	p.points = {pt(0), pt(30, 50), pt(100, 10), pt(160)};
-	p.rebuild();
-	near((p.position(1) - p.points[1].pose.position).Length(), 0);
-	// Within a curved segment constant time increments should cover similar
-	// distance: arc-length mapping, rather than raw spline parameterization.
-	std::vector<double> d;
-	for (int i = 0; i < 100; ++i)
-		d.push_back((p.evaluate((i + 1) * 0.1).position - p.evaluate(i * 0.1).position).Length());
-	auto range = std::minmax_element(d.begin(), d.end());
-	check(*range.second / *range.first < 1.06, "Constant speed on spline");
-	p = line();
-	p.curve = Curve::Bezier;
-	p.points = {pt(0), pt(100)};
-	p.points[0].outHandle = {0, 100, 0};
-	p.points[1].inHandle = {0, 100, 0};
-	p.rebuild();
-	near(p.position(0.5).X, 50);
-	near(p.position(0.5).Y, 75);
-	p = line();
-	p.curve = Curve::Circle;
-	p.circleRadius = 100;
-	p.circleSweep = 180;
-	p.circleCenter = {10, 20, 30};
-	p.rebuild();
-	near(p.Length(), 100 * Pi);
-	for (int i = 0; i < 20; ++i)
-		near((p.evaluate(i * 0.5).position - p.circleCenter).Length(), 100);
-	p = line();
-	p.anchor = {{500, 200, 10}, Euler(0, 90, 0), 2};
-	p.rebuild();
-	Pose world = p.evaluate(10);
-	near(world.position.X, 500);
-	near(world.position.Y, 400);
-	near(Angles(world.rotation).Y, 90);
-	near(p.Length(), 200);
-	near(p.points.back().pose.position.X, 100);
-	Pose pose{{20, 30, 40}, Euler(20, -40, 15), 80};
-	auto round = p.toWorld(p.toLocal(pose));
-	near((round.position - pose.position).Length(), 0);
-	near(std::abs(round.rotation.W * pose.rotation.W + round.rotation.X * pose.rotation.X +
-				  round.rotation.Y * pose.rotation.Y + round.rotation.Z * pose.rotation.Z),
-		 1);
-	p = line();
-	p.constraints.grid = 8;
-	p.constraints.locked[2] = true;
-	p.constraints.plane.Z = 13;
-	p.capture({{11, 19, 27}, {}, 90});
-	near(p.points.back().pose.position.X, 8);
-	near(p.points.back().pose.position.Y, 16);
-	near(p.points.back().pose.position.Z, 13);
-	p = line();
-	p.fixedAim = true;
-	p.aimTarget = {0, 100, 0};
-	p.rebuild();
-	near(Angles(p.evaluate(0).rotation).Y, 90);
-	auto a = Euler(0, 179, 0), b = Euler(0, -179, 0);
-	near(std::abs(Angles(Slerp(a, b, 0.5)).Y), 180);
-	for (int pitch : {-90, -30, 0, 45, 90})
-		for (int yaw : {-170, -30, 80})
-			for (int roll : {-45, 0, 60})
-			{
-				Quat q = Euler(pitch, yaw, roll);
-				Vec e = Angles(q);
-				Quat r = Euler(e.X, e.Y, e.Z);
-				near(std::abs(q.W * r.W + q.X * r.X + q.Y * r.Y + q.Z * r.Z), 1, 1e-6);
-			}
+	CamPath path;
+	populate(path);
+	path.CurveEditing_set(true);
+	path.SetHandle(10, true, Vector3(0, 100, 0));
+	path.SetHandle(20, false, Vector3(0, 100, 0));
+	path.SetPosition(150, 100, 0);
+	near(path.Eval(15).X, 150);
+	near(path.Eval(15).Y, 175);
+	path.Rotate(0, 90, 0);
+	near(path.Eval(15).X, 75);
+	near(path.Eval(15).Y, 100);
+	Vector3 offset;
+	path.GetHandle(10, true, offset);
+	near(offset.X, -100);
+	near(offset.Y, 0);
+	path.AnchorTransform(150, 100, 0, 0, 90, 0, 0, 0, 0, 0, 0, 0);
+	near(path.Eval(15).X, 0);
+	near(path.Eval(15).Y, 75);
+	path.GetHandle(10, true, offset);
+	near(offset.X, 0);
+	near(offset.Y, 100);
 }
 void persistence()
 {
-	// Check all geometry/easing combinations under direct, nonsequential seeks.
-	for (Curve curve : {Curve::Linear, Curve::Smooth, Curve::Bezier, Curve::Circle})
-		for (Ease ease : {Ease::Linear, Ease::In, Ease::Out, Ease::Smooth, Ease::Smoother, Ease::Custom})
-		{
-			auto p = line();
-			p.curve = curve;
-			p.ease = ease;
-			p.points[0].outHandle = {0, 20, 0};
-			p.points[1].inHandle = {0, 20, 0};
-			p.rebuild();
-			for (double t : {0.0, 8.8, 2.2, 10.0, 1.0, 8.8, 0.0})
-			{
-				Pose a = p.evaluate(t);
-				p.evaluate(10 - t);
-				Pose b = p.evaluate(t);
-				near((a.position - b.position).Length(), 0);
-				near(a.fov, b.fov);
-			}
-		}
+	auto directory = std::filesystem::temp_directory_path() / "afx-campath-curve-tests";
+	std::filesystem::create_directories(directory);
+	auto file = directory / "curve.xml", old = directory / "native.xml", invalid = directory / "retired.xml";
+	CamPath path;
+	populate(path);
+	path.CurveEditing_set(true);
+	path.SetOffset(2);
+	path.SetHold(true);
+	path.SelectAll();
+	path.SetHandle(10, true, Vector3(0, 100, 0));
+	path.SetHandle(20, false, Vector3(0, 100, 0));
+	check(path.Save(file.wstring().c_str()), "Extended native XML saves");
+	CamPath loaded;
+	loaded.CurveEditing_set(true);
+	check(loaded.Load(file.wstring().c_str()), "Extended native XML loads");
+	check(loaded.Bezier_get() && loaded.CurveEditing_get() && loaded.GetHold(),
+		  "Curve mode, system gate and native hold retained");
+	near(loaded.GetOffset(), 2);
+	near(loaded.Eval(15).Y, 75);
+	check(loaded.GetBegin().GetValue().Selected, "Native selection persisted");
+	CamPath classic;
+	check(classic.Load(file.wstring().c_str()), "Classic can read the optional extensions");
+	near(classic.Eval(15).Y, 0);
+	check(classic.Save(file.wstring().c_str()), "Classic save retains optional handle data");
+	check(loaded.Load(file.wstring().c_str()), "Curve data survives classic round trip");
+	near(loaded.Eval(15).Y, 75);
+	CamPath original;
+	populate(original);
+	check(original.Save(old.wstring().c_str()), "Unextended classic file saves");
+	check(loaded.Load(old.wstring().c_str()), "Unextended classic file loads in new system");
+	check(!loaded.Bezier_get(), "Unextended file restores original interpolation");
+	near(loaded.Eval(15).Y, 0);
+	{
+		std::ofstream out(invalid);
+		out << "<cinematicCamera version=\"1\"/>";
+	}
+	check(!loaded.Load(invalid.wstring().c_str()), "Retired schema rejected clearly");
+	check(loaded.GetSize() == 2, "Rejected schema leaves the existing path intact");
+	{
+		std::ofstream out(invalid);
+		out << "<campath curve=\"bezier\"><points><p t=\"1\" outX=\"nan\" outY=\"0\" outZ=\"0\"/></points></campath>";
+	}
+	check(!loaded.Load(invalid.wstring().c_str()), "Invalid handle data rejected");
+	check(loaded.GetSize() == 2 && !loaded.Bezier_get(), "Invalid handle load restores native path and curve mode");
+	near(loaded.Eval(15).X, 50);
+	{
+		std::ofstream out(invalid);
+		out << "<campath><points><p t=\"1\" inX=\"3\"/></points></campath>";
+	}
+	check(!loaded.Load(invalid.wstring().c_str()), "Incomplete handle vector rejected");
+	check(loaded.GetSize() == 2, "Partial handle load preserves path");
+	{std::ofstream out(invalid);out<<"<campath/>";}
+	check(!loaded.Load(invalid.wstring().c_str()),"Missing keyframe container rejected");check(loaded.GetSize()==2,"Missing container preserves native keys");
 
-	auto p = line();
-	p.name = "A & B <camera> \"test\"";
-	p.anchor = {{1, 2, 3}, Euler(20, 50, 10), 2};
-	p.points[1].hold = 2;
-	p.points[1].stop = true;
-	p.points[0].outHandle = {5, 6, 7};
-	p.ease = Ease::Custom;
-	p.constraints.grid = 16;
-	p.constraints.locked[2] = true;
-	p.constraints.plane.Z = 8;
-	p.rotations = {{0, {}}, {1, Euler(0, 90, 0)}};
-	p.fovs = {{0, 80}, {1, 100}};
-	p.scheduled = true;
-	p.transition = 1;
-	p.rebuild();
-	State s = state(p);
-	auto text = Serialize(s);
-	auto loaded = Deserialize(text);
-	check(loaded.paths[0].name == p.name, "Escaped name roundtrip");
-	for (int i = 0; i <= 100; ++i)
-	{
-		auto a = p.evaluate(i * 0.1), b = loaded.paths[0].evaluate(i * 0.1);
-		near((a.position - b.position).Length(), 0);
-		near(a.fov, b.fov);
-		near(std::abs(a.rotation.W * b.rotation.W + a.rotation.X * b.rotation.X + a.rotation.Y * b.rotation.Y +
-					  a.rotation.Z * b.rotation.Z),
-			 1);
-	}
-	Editor e;
-	e.commit(s);
-	e.markSaved();
-	check(!e.dirty(), "Saved clean");
-	e.state.point = 1;
-	check(!e.dirty(), "Selection is not a data edit");
-	auto invalid = e.state;
-	invalid.paths[0].duration = -1;
-	auto unchanged = e.xml();
-	throws([&] { e.commit(invalid); });
-	check(e.xml() == unchanged, "Invalid edit is atomic");
-	e.duplicate();
-	check(e.dirty(), "Copy dirty");
-	check(!e.active().scheduled, "Copy must not compete with original schedule");
-	e.undo();
-	check(!e.dirty(), "Undo saved state");
-	e.redo();
-	check(e.state.paths.size() == 2, "Redo copy");
-	auto before = e.xml();
-	throws([&] { e.loadXml("<cinematic version=\"1\"><path duration=\"nan\"/></cinematic>", true); });
-	check(e.xml() == before, "Invalid load is atomic");
-	e.loadXml(text, false);
-	check(e.state.paths.size() == 3, "Append");
-	check(e.state.paths[2].id != 1, "Append remaps IDs");
-	e.undo();
-	check(e.state.paths.size() == 2, "Undo append");
-	for (const std::string bad :
-		 {"<cinematic version=\"99\"/>", "<!DOCTYPE x><cinematic version=\"1\"/>",
-		  "<cinematic version=\"1\"><path id=\"1\" name=\"&bad;\"/></cinematic>",
-		  "<cinematic version=\"1\" version=\"1\"/>", "<cinematic version=\"1\"></wrong>",
-		  "<cinematic version=\"1\"/>garbage", "<cinematic version=\"1\"><path id=\"1\" duration=\"-1\"/></cinematic>"})
-		throws([&] { Deserialize(bad); });
-	Editor classic;
-	classic.loadXml("<campath offset=\"2\"><points><p t=\"10\" x=\"0\" y=\"0\" z=\"0\" rx=\"0\" ry=\"0\" rz=\"0\"/><p "
-					"t=\"14\" x=\"40\" y=\"0\" z=\"0\" rx=\"0\" ry=\"0\" rz=\"90\"/></points></campath>",
-					true);
-	near(classic.active().start, 12);
-	near(classic.active().duration, 4);
-	near(classic.active().evaluate(2).position.X, 20);
-	near(Angles(classic.active().evaluate(2).rotation).Y, 45);
-	Editor exported;
-	exported.loadXml(classic.legacyXml(), true);
-	near(exported.active().evaluate(2).position.X, 20);
-	near(exported.active().start, 12);
-	s.paths[0].duration = std::numeric_limits<double>::infinity();
-	throws([&] { Validate(s); });
-}
-void compatibility()
-{
-	// Files written by the first implementation remain readable after moving
-	// persistence onto HLAE's existing RapidXML dependency.
-	const std::string original =
-		"<cinematic version=\"1\" selected=\"0\" point=\"1\">"
-		"<path id=\"42\" name=\"Saved &amp; reused\" duration=\"10\" curve=\"0\" start=\"20\" scheduled=\"1\">"
-		"<anchor x=\"100\" y=\"0\" z=\"0\" qw=\"1\" scale=\"2\"/>"
-		"<point x=\"0\" y=\"0\" z=\"0\" qw=\"1\" fov=\"90\"/>"
-		"<point x=\"50\" y=\"0\" z=\"0\" qw=\"1\" fov=\"60\"/>"
-		"</path></cinematic>";
-	auto loaded = Deserialize(original);
-	check(loaded.paths[0].id == 42, "Stable saved ID");
-	check(loaded.paths[0].name == "Saved & reused", "Escaped name compatibility");
-	near(loaded.paths[0].evaluate(5).position.X, 150);
-	near(loaded.paths[0].evaluate(5).fov, 75);
-	auto again = Deserialize(Serialize(loaded));
-	near(again.paths[0].evaluate(10).position.X, 200);
-	auto numeric = Deserialize("<cinematic version=\"1\"><path id=\"1\" name=\"A &#38; B\"/></cinematic>");
-	check(numeric.paths[0].name == "A & B", "Standard XML character reference");
-	for (const char * value : {"&unknown;", "&#0;", "&#xD800;", "&#1114112;", "&#;", "&"})
-	{
-		std::string bad = "<cinematic version=\"1\"><path id=\"1\" name=\"" + std::string(value) + "\"/></cinematic>";
-		throws([&] { Deserialize(bad); });
-	}
-	throws([&] { Deserialize("<cinematic version=\"1\">unexpected text</cinematic>"); });
-	throws([&] { Deserialize("<cinematic version=\"1\"><path id=\"1\"/><!DOCTYPE bad></cinematic>"); });
-	std::string deep;
-	for (int i = 0; i < 10000; ++i)
-		deep += "<x>";
-	for (int i = 0; i < 10000; ++i)
-		deep += "</x>";
-	throws([&] { Deserialize(deep); });
-	Path defaults;
-	defaults.id = 1;
-	defaults.points.push_back(Point{});
-	defaults.rebuild();
-	near(defaults.evaluate(0).position.Length(), 0);
-	near(defaults.evaluate(2).fov, 90);
-}
-void schedule()
-{
-	auto a = line();
-	a.scheduled = true;
-	a.start = 10;
-	a.holdEnd = false;
-	Editor e;
-	e.commit(state(a));
-	Pose p;
-	check(!e.evaluate(std::numeric_limits<double>::infinity(), p), "Reject non-finite schedule time");
-	check(!e.evaluate(9, p), "Release before start");
-	check(e.evaluate(15, p), "Scheduled active");
-	near(p.position.X, 50);
-	check(!e.evaluate(21, p), "Release after end");
-	auto n = e.state;
-	auto b = a;
-	b.id = 2;
-	b.start = 18;
-	b.anchor.origin = {1000, 0, 0};
-	n.paths.push_back(b);
-	e.commit(n);
-	check(e.overlaps().size() == 1, "Overlap detection");
-	check(e.evaluate(19, p), "New path wins");
-	near(p.position.X, 1010);
-	auto exact = p;
-	check(e.evaluate(12, p), "Backward seek");
-	near(p.position.X, 20);
-	e.evaluate(19, p);
-	near(p.position.X, exact.position.X);
-	n = e.state;
-	n.paths[1].transition = 2;
-	e.commit(n);
-	e.evaluate(18, p);
-	near(p.position.X, 80);
-	e.evaluate(19, p);
-	near(p.position.X, 550);
-	e.evaluate(20, p);
-	near(p.position.X, 1020);
-	n = e.state;
-	n.paths[1].holdEnd = true;
-	e.commit(n);
-	e.evaluate(1000, p);
-	near(p.position.X, 1100);
-	n = e.state;
-	n.paths[1].start = 10;
-	n.paths[1].transition = 0;
-	e.commit(n);
-	e.evaluate(11, p);
-	near(p.position.X, 1010);
+	std::filesystem::remove(file);
+	std::filesystem::remove(old);
+	std::filesystem::remove(invalid);
+	std::filesystem::remove(directory);
 }
 } // namespace
 int main()
 {
 	try
 	{
-		timeKeys();
-		timing();
-		geometry();
+		captureAndTiming();
+		curves();
+		placement();
 		persistence();
-		schedule();
-		compatibility();
-		std::cout << checks << " checks passed\n";
+		std::cout << checks << " campath checks passed\n";
 	}
 	catch (const std::exception & e)
 	{
@@ -709,5 +413,4 @@ int main()
 		return 1;
 	}
 }
-
 #endif

@@ -115,8 +115,6 @@ target_sources(AfxHookSource PRIVATE
     AfxShaders.h
     AfxStreams.cpp
     AfxStreams.h
-    ../shared/CinematicPath.cpp
-    ../shared/CinematicPath.h
     CampathDrawer.cpp
     CampathDrawer.h
     EntityIndexDrawer.cpp

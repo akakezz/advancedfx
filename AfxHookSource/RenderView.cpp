@@ -168,6 +168,7 @@ Hook_VClient_RenderView::Hook_VClient_RenderView()
 , handleZoomEnabled(false)
 , handleZoomMinUnzoomedFov(90.0)
 {
+	m_NewCamPath.CurveEditing_set(true);
 	m_Export = false;
 	m_FovOverride = false;
 	m_FovValue = 0.0;
@@ -226,7 +227,7 @@ bool Hook_VClient_RenderView::UiCursorStatus(bool & available, bool & visible) c
 bool Hook_VClient_RenderView::GetSuspendMirvInput() {
 	if (g_VEngineClient && g_VEngineClient->Con_IsVisible()) return true;
 	if (!m_MirvInput || !m_MirvInput->GetCameraControlMode()) return false;
-	if (FreecamMenuVisible() || (MirvCinematic_IsEditing() && AfxHookSource::Gui::WantsKeyboardInput()))
+	if (FreecamMenuVisible() || (MirvCampathEditor_IsEditing() && AfxHookSource::Gui::WantsKeyboardInput()))
 		return true;
 
 	// Optionally yield freecam input while TF2's UI cursor is visible.
@@ -425,7 +426,7 @@ void TrySetView(float Tx, float Ty, float Tz, float Rx, float Ry, float Rz, floa
 
 void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, float &Rx, float &Ry, float &Rz, float &Fov)
 {
-	MirvCinematic_Update();
+	MirvCampathEditor_Update();
 	MirvCampathPreview_Update();
 	bool originOrAnglesOverriden = false;
 
@@ -455,20 +456,22 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			if (g_MirvCam.ApplySource(Tx, Ty, Tz, Rz, Rx, Ry)) originOrAnglesOverriden = true;
 			break;
 
-		case Override_Campath:
-			if (MirvCinematic_IsNewSystem())
-				break;
-			if (m_CamPath.Enabled_get() && m_CamPath.CanEval())
+		case Override_Campath: {
+			CamPath & path = GetActiveCamPath();
+			if (path.Enabled_get() && path.CanEval())
 			{
-				double campathCurTime = curTime - m_CamPath.GetOffset();
-				if(m_CamPath.GetHold()) {
-					if(campathCurTime > m_CamPath.GetUpperBound()) campathCurTime = m_CamPath.GetUpperBound();
-					else if(campathCurTime < m_CamPath.GetLowerBound()) campathCurTime = m_CamPath.GetLowerBound();
+				double campathCurTime = curTime - path.GetOffset();
+				if (path.GetHold())
+				{
+					if (campathCurTime > path.GetUpperBound())
+						campathCurTime = path.GetUpperBound();
+					else if (campathCurTime < path.GetLowerBound())
+						campathCurTime = path.GetLowerBound();
 				}
 				// no extrapolation:
-				if (m_CamPath.GetLowerBound() <= campathCurTime && campathCurTime <= m_CamPath.GetUpperBound())
+				if (path.GetLowerBound() <= campathCurTime && campathCurTime <= path.GetUpperBound())
 				{
-					CamPathValue val = m_CamPath.Eval(campathCurTime);
+					CamPathValue val = path.Eval(campathCurTime);
 					QEulerAngles ang = val.R.ToQREulerAngles().ToQEulerAngles();
 
 					//Tier0_Msg("================",curTime);
@@ -489,6 +492,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				}
 			}
 			break;
+		}
 
 		case Override_Bvh:
 			if (m_Import)
@@ -536,15 +540,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			break;
 
 		case Override_Input:
-            if (MirvCinematic_OwnsCamera()) {
-                if (MirvCinematic_Override(Tx, Ty, Tz, Rx, Ry, Rz, Fov)) originOrAnglesOverriden = true;
-                else {
-                    Tx = GameCameraOrigin[0]; Ty = GameCameraOrigin[1]; Tz = GameCameraOrigin[2];
-                    Rx = GameCameraAngles[0]; Ry = GameCameraAngles[1]; Rz = GameCameraAngles[2];
-                    Fov = GameCameraFov;
-                }
-                break;
-            }
+
 			if (m_MirvInput->Override(m_LastFrameTime, Tx, Ty, Tz, Rx, Ry, Rz, Fov)) originOrAnglesOverriden = true;
 			break;
 
@@ -670,7 +666,7 @@ bool Hook_VClient_RenderView::ImportToCamPath(bool adjustInterp, double fov)
 	if(!m_Import)
 		return false;
 
-	bool bOk = g_BvhImport.CopyToCampath(m_ImportBaseTime, fov, m_CamPath);
+	bool bOk = g_BvhImport.CopyToCampath(m_ImportBaseTime, fov, GetActiveCamPath());
 
 	if(bOk)
 	{
@@ -678,12 +674,12 @@ bool Hook_VClient_RenderView::ImportToCamPath(bool adjustInterp, double fov)
 
 		if(adjustInterp)
 		{
-			m_CamPath.PositionInterpMethod_set(CamPath::DI_LINEAR);
-			m_CamPath.RotationInterpMethod_set(CamPath::QI_SLINEAR);
-			m_CamPath.FovInterpMethod_set(CamPath::DI_LINEAR);
+			GetActiveCamPath().PositionInterpMethod_set(CamPath::DI_LINEAR);
+			GetActiveCamPath().RotationInterpMethod_set(CamPath::QI_SLINEAR);
+			GetActiveCamPath().FovInterpMethod_set(CamPath::DI_LINEAR);
 		}
 
-		m_CamPath.Enabled_set(true);
+		GetActiveCamPath().Enabled_set(true);
 	}
 
 	return bOk;

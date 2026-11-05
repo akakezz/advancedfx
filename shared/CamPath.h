@@ -19,6 +19,11 @@ struct CamPathValue
 
 	bool Selected;
 
+	// World-space offsets from this keyframe. Unset handles follow the native
+	// position interpolator; classic paths ignore these optional extensions.
+	Vector3 InHandle{0, 0, 0}, OutHandle{0, 0, 0};
+	bool HasInHandle = false, HasOutHandle = false;
+
 	CamPathValue();
 
 	CamPathValue(double x, double y, double z, double pitch, double yaw, double roll, double fov);
@@ -32,7 +37,7 @@ struct CamPathIterator
 public:
 	CInterpolationMap<CamPathValue>::const_iterator wrapped;
 
-	CamPathIterator(CInterpolationMap<CamPathValue>::const_iterator & it);
+	CamPathIterator(CInterpolationMap<CamPathValue>::const_iterator const & it);
 
 	double GetTime() const;
 
@@ -91,6 +96,20 @@ public:
 	DoubleInterp FovInterpMethod_get(void) const;
 
 	void Add(double time, const CamPathValue & value);
+
+	void CurveEditing_set(bool enabled);
+	bool CurveEditing_get() const
+	{
+		return m_CurveEditing;
+	}
+	void Bezier_set(bool enabled);
+	bool Bezier_get() const
+	{
+		return m_Bezier;
+	}
+	bool GetHandle(double time, bool outgoing, Vector3 & offset) const;
+	bool SetHandle(double time, bool outgoing, const Vector3 & offset);
+	bool ResetHandles(double time);
 
 	void Remove(double time);
 	void Clear();
@@ -218,6 +237,7 @@ private:
 		return value.Selected;
 	}
 
+	bool m_CurveEditing = false, m_Bezier = false;
 	bool m_Enabled;
 	bool m_Hold = false;
 	DoubleInterp m_PositionInterpMethod;

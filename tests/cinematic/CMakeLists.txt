@@ -3,7 +3,7 @@ project(CinematicCameraTests LANGUAGES CXX)
 enable_testing()
 add_executable(cinematic_tests
     test_cinematic.cpp
-    ../../shared/CinematicPath.cpp
+    ../../shared/CamPath.cpp
     ../../shared/AfxMath.cpp
 )
 target_compile_features(cinematic_tests PRIVATE cxx_std_17)
@@ -12,6 +12,19 @@ target_include_directories(cinematic_tests PRIVATE ../.. ../../AfxHookSource)
 if(MSVC)
     target_compile_options(cinematic_tests PRIVATE /W4 /EHsc)
 else()
+    # Keep upstream's MSVC CRT spellings out of production code. The generated
+    # compatibility header lets Linux exercise the actual shared CamPath source.
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/msvc_crt_compat.h" [=[
+#include <cstdio>
+#include <cerrno>
+#include <filesystem>
+#include <strings.h>
+#define _stricmp strcasecmp
+#define _TRUNCATE ((size_t)-1)
+template<size_t N> int _snprintf_s(char (&buffer)[N],size_t,const char *format,double value){return std::snprintf(buffer,N,format,value);}
+inline int _wfopen_s(FILE **file,const wchar_t *name,const wchar_t *mode){std::string m;for(;*mode;++mode)m+=char(*mode);*file=std::fopen(std::filesystem::path(name).string().c_str(),m.c_str());return *file?0:errno;}
+]=])
+    target_compile_options(cinematic_tests PRIVATE -include "${CMAKE_CURRENT_BINARY_DIR}/msvc_crt_compat.h")
     target_compile_definitions(cinematic_tests PRIVATE abstract=)
     target_compile_options(cinematic_tests PRIVATE -Wall -Wextra -Wpedantic -Wno-deprecated-copy)
 endif()

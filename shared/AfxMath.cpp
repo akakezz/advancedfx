@@ -192,7 +192,7 @@ void spline(double x[], double y[], int n, bool y1Natural, double yp1, bool ynNa
     for (k = n - 2; k >= 0; k--)
         y2[k] = y2[k] * y2[k + 1] + u[k];
 
-	delete u;
+	delete[] u;
 }
 
 // NUMERICAL RECIPES IN C: THE ART OF SCIENTIFIC COMPUTING (ISBN 0-521-43108-5)
@@ -303,9 +303,9 @@ void qspline_init(
 
   rates(n,maxit,tol,wi,wf,h,a,b,c,dtheta,e,w,wprev);
 
-  delete c;
-  delete b;
-  delete a;
+  delete[] c;
+  delete[] b;
+  delete[] a;
   delete [] wprev;
 }
 

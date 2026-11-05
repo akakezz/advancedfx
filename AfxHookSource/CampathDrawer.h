@@ -36,22 +36,17 @@ public:
 	float GetDrawKeyframeIndex() { return m_DrawKeyframIndex; }
 	void SetDrawKeyframeIndex(float value) { m_DrawKeyframIndex = value; }
 
-	bool GetNewDrawEnabled() const
+	void OnActivePathChanged()
 	{
-		return m_NewDrawEnabled;
+		CamPathChanged();
 	}
-	void SetNewDrawEnabled(bool enabled)
+	bool GetDrawHandles() const
 	{
-		m_NewDrawEnabled = enabled;
+		return m_DrawHandles;
 	}
-	bool GetNewDrawLayer(int layer) const
+	void SetDrawHandles(bool enabled)
 	{
-		return layer >= 0 && layer < 8 && m_NewDrawLayers[layer];
-	}
-	void SetNewDrawLayer(int layer, bool value)
-	{
-		if (layer >= 0 && layer < 8)
-			m_NewDrawLayers[layer] = value;
+		m_DrawHandles = enabled;
 	}
 	float GetNewLabelHeight() const
 	{
@@ -240,20 +235,13 @@ private:
 			Vector3 From, To;
 			DWORD Color;
 		};
-		struct Camera
-		{
-			CamPathValue Value;
-			DWORD Color;
-		};
 		struct Label
 		{
 			Vector3 Position;
 			std::string Text;
 			DWORD Color;
-			float Row = 0;
 		};
 		std::vector<Line> Lines;
-		std::vector<Camera> Cameras;
 		std::vector<Label> Labels;
 		float LabelHeight = 32.0f;
 	};
@@ -302,8 +290,7 @@ private:
 	IDirect3DTexture9* m_DigitsTexture = nullptr;
 	IDirect3DTexture9 * m_LabelTexture = nullptr;
 	float m_NewLabelHeight = 32.0f;
-	bool m_NewDrawEnabled = true;
-	bool m_NewDrawLayers[8] = {true, true, true, true, true, false, true, false};
+	bool m_DrawHandles = true;
 	IAfxPixelShader* m_DrawTextureShader = nullptr;
 
 	CLessDynamicProperties * m_LessDynamicProperties = nullptr;
@@ -334,7 +321,7 @@ private:
 
 	bool BeginLabels(CDynamicProperties const * properties, bool names);
 	void DrawLabel(CDynamicProperties const * properties, Vector3 position, const std::string & text, float height,
-				   DWORD color, bool names, float row = 0);
+				   DWORD color, bool names);
 
 	void DrawCamera(const CamPathValue & cpv, DWORD colour, FLOAT screenInfo[4], int screenWidth, int screenHeight);
 

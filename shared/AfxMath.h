@@ -217,7 +217,7 @@ public:
 	{
 	}
 
-	CInterpolationMapViewIterator(typename CInterpolationMap<TMap>::const_iterator & mapIterator, T (* selector)(TMap const & value))
+	CInterpolationMapViewIterator(typename CInterpolationMap<TMap>::const_iterator const & mapIterator, T (* selector)(TMap const & value))
 	: m_MapIterator(mapIterator)
 	, m_Selector(selector)
 	{
@@ -557,11 +557,11 @@ private:
 
 	void Free()
 	{
-		delete m_Build.X2;
+		delete[] m_Build.X2;
 		m_Build.X2 = 0;
-		delete m_Build.X;
+		delete[] m_Build.X;
 		m_Build.X = 0;
-		delete m_Build.T;
+		delete[] m_Build.T;
 		m_Build.T = 0;
 	}
 };
@@ -756,13 +756,13 @@ private:
 		m_Build.Q_w = 0;
 		delete [] m_Build.Q_e;
 		m_Build.Q_e = 0;
-		delete m_Build.Q_dtheta;
+		delete[] m_Build.Q_dtheta;
 		m_Build.Q_dtheta = 0;
-		delete m_Build.Q_h;
+		delete[] m_Build.Q_h;
 		m_Build.Q_h = 0;
 		delete [] m_Build.Q_y;
 		m_Build.Q_y = 0;
-		delete m_Build.T;
+		delete[] m_Build.T;
 		m_Build.T = 0;
 	}
 };
