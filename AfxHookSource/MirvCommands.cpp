@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <utility>
 #include "RenderView.h"
+#include "Gui.h"
 #include "MirvTime.h"
 
 #include "WrpVEngineClient.h"
@@ -1734,9 +1735,11 @@ void MirvCampathPreview_ReleaseKeys()
 
 static void CampathPreview_PrintHelp()
 {
-	Tier0_Msg("mirv_campath preview undo|redo - Undo/redo a data edit.\nmirv_campath preview bind - Keyboard "
-			  "actions.\nInsert captures pose/time; [ and ] capture handles; Ctrl+Z/Y undo/redo.\nF6 captures hold "
-			  "release; Shift+F6 clears it; PageUp/Down selects paths.\n");
+	Tier0_Msg(
+		"mirv_campath preview allowSource 0|1 - Forward unused keys to Source.\nmirv_campath graph - Easing editor (F7 "
+		"in preview).\nmirv_campath preview undo|redo - Undo/redo a data edit.\nmirv_campath preview bind - Keyboard "
+		"actions.\nInsert captures pose/time; [ and ] capture handles; Ctrl+Z/Y undo/redo.\nF6 captures hold "
+		"release; Shift+F6 clears it; PageUp/Down selects paths.\n");
 	Tier0_Msg("mirv_campath preview enter - Begin preview mode and keyboard editing.\n"
 			  "mirv_campath preview toggle - Toggle Preview Mode on/off.\n"
 			  "mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, "
@@ -1774,12 +1777,20 @@ void initPassThrough()
 	uiPassThroughInitialized = true;
 	uiPassThrough[VK_ESCAPE] = uiPassThrough[VK_OEM_3] = true;
 }
+bool allowSourceCommands = false;
+bool previewUsesKey(unsigned key);
 bool passThroughKey(unsigned key, void *)
 {
 	initPassThrough();
-	return key == VK_MENU || ((GetKeyState(VK_MENU) & 0x8000) && (key == VK_TAB || key == VK_F4)) ||
-		   (key < 256 && uiPassThrough[key]);
+	if (key == VK_MENU || ((GetKeyState(VK_MENU) & 0x8000) && (key == VK_TAB || key == VK_F4)) ||
+		(key < 256 && uiPassThrough[key]))
+		return true;
+	if (!allowSourceCommands)
+		return false;
+	auto * input = g_Hook_VClient_RenderView.m_MirvInput;
+	return !(input && input->IsCameraKey(key)) && !previewUsesKey(key);
 }
+
 struct Args
 {
 	IWrpCommandArgs * a;
@@ -1849,6 +1860,7 @@ enum EditorAction
 	EA_Draw,
 	EA_Enabled,
 	EA_DemoUi,
+	EA_Graph,
 	EA_Undo,
 	EA_Redo,
 	EA_HoldCapture,
@@ -1883,6 +1895,7 @@ const EditorBinding defaultBindings[EA_Count] = {
 	{"draw", VK_F4, 0},
 	{"enabled", 'P', 2},
 	{"demoUi", VK_F2, 1},
+	{"graph", VK_F7, 0},
 	{"undo", 'Z', 2},
 	{"redo", 'Y', 2},
 	{"holdCapture", VK_F6, 0},
@@ -1987,10 +2000,40 @@ EditorBinding parseBinding(std::string text, EditorBinding binding)
 		 "Alt+Tab and Alt+F4 belong to the operating system");
 	return binding;
 }
+bool previewUsesKey(unsigned key)
+{
+	initBindings();
+	unsigned modifiers = (GetKeyState(VK_SHIFT) & 0x8000 ? 1 : 0) | (GetKeyState(VK_CONTROL) & 0x8000 ? 2 : 0) |
+						 (GetKeyState(VK_MENU) & 0x8000 ? 4 : 0);
+	if (key == g_CampathPreviewToggleKey || key == VK_SHIFT || key == VK_CONTROL)
+		return true;
+	for (auto & binding : editorBindings)
+		if (binding.Key == key && binding.Modifiers == modifiers)
+			return true;
+	for (auto & custom : editorCommands)
+		if (custom.Binding.Key == key && custom.Binding.Modifiers == modifiers)
+			return true;
+	return false;
+}
+
 bool editSettings(const Args & a)
 {
 	if (!a.is(0, "preview"))
 		return false;
+	if (a.is(1, "allowSource"))
+	{
+		if (a.count() == 2)
+		{
+			Tier0_Msg(
+				"mirv_campath preview allowSource 0|1 - Forward keys unused by preview/freecam.\nCurrent value: %i\n",
+				allowSourceCommands);
+			return true;
+		}
+		a.size(3);
+		allowSourceCommands = a.flag(2);
+		return true;
+	}
+
 	if (a.is(1, "command"))
 	{
 		initBindings();
@@ -2228,6 +2271,7 @@ void executeEditorAction(EditorAction action)
 		value.HasInHandle = previous.HasInHandle;
 		value.HasOutHandle = previous.HasOutHandle;
 		value.HoldDuration = previous.HoldDuration;
+		value.Ease = previous.Ease;
 		path.Add(key.GetTime(), value);
 		break;
 	}
@@ -2297,6 +2341,10 @@ void executeEditorAction(EditorAction action)
 	case EA_Enabled:
 		g_Hook_VClient_RenderView.m_CamPaths.Enabled_set(!g_Hook_VClient_RenderView.m_CamPaths.Enabled_get());
 		break;
+	case EA_Graph:
+		need(AfxHookSource::Gui::SetCampathGraphOpen(!AfxHookSource::Gui::GetCampathGraphOpen()),
+			 "Graph editor is unavailable in this build");
+		break;
 	case EA_DemoUi:
 		need(g_VEngineClient, "Engine interface unavailable");
 		g_VEngineClient->ExecuteClientCmd("demoui");
@@ -2311,6 +2359,7 @@ void executeEditorAction(EditorAction action)
 } // namespace
 bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 {
+	AfxHookSource::Gui::FinishCampathGraphEdit();
 	auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto before = paths.Capture();
 	try
@@ -2335,6 +2384,68 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 			paths.Enabled_set(a.flag(1));
 			return true;
 		}
+		if (a.is(0, "graph"))
+		{
+			need(a.count() == 1 || a.count() == 2, "Use graph [0|1]");
+			need(AfxHookSource::Gui::SetCampathGraphOpen(a.count() == 1 ? !AfxHookSource::Gui::GetCampathGraphOpen()
+																		: a.flag(1)),
+				 "Graph editor is unavailable in this build");
+			return true;
+		}
+		if (a.is(0, "edit") && a.is(1, "ease"))
+		{
+			if (a.count() < 4)
+			{
+				Tier0_Msg("mirv_campath edit ease all|selected <function> [in|out|inout]\nFunctions: inherit, linear, "
+						  "sine, quad, cubic, quart, quint, expo, circ, back, bounce, elastic, bezier.\nBezier: ... "
+						  "bezier <x1> <y1> <x2> <y2>\nBack: ... back <direction> [overshoot]\nElastic: ... elastic "
+						  "<direction> [amplitude period]\nCurrent path easing: %s %s\n",
+						  CamPathEase::ToString(activePath().GetEase().Type),
+						  CamPathEase::ToString(activePath().GetEase().Mode));
+				return true;
+			}
+			need(a.is(2, "all") || a.is(2, "selected"), "Choose all or selected outgoing segments");
+			CamPathEase ease;
+			need(CamPathEase::FromString(a.at(3).c_str(), ease.Type), "Unknown easing function");
+			if (ease.Type == CamPathEase::Bezier)
+			{
+				a.size(8);
+				ease.X1 = a.num(4);
+				ease.Y1 = a.num(5);
+				ease.X2 = a.num(6);
+				ease.Y2 = a.num(7);
+			}
+			else
+			{
+				if (a.count() >= 5)
+					need(CamPathEase::FromString(a.at(4).c_str(), ease.Mode), "Choose in, out or inout");
+				if (ease.Type == CamPathEase::Back && a.count() == 6)
+					ease.Overshoot = a.num(5);
+				else if (ease.Type == CamPathEase::Elastic && a.count() == 7)
+				{
+					ease.Amplitude = a.num(5);
+					ease.Period = a.num(6);
+				}
+				else
+					need(a.count() == 4 || a.count() == 5, "Unexpected easing parameters");
+			}
+			need(ease.Valid(),
+				 "Invalid easing parameters; Bezier time handles must stay ordered in 0..1 and values in -5..5");
+			if (a.is(2, "all"))
+				activePath().SetEase(ease);
+			else
+			{
+				std::vector<double> times;
+				for (auto it = activePath().GetBegin(); it != activePath().GetEnd(); ++it)
+					if (it.GetValue().Selected && std::next(it.wrapped) != activePath().GetEnd().wrapped)
+						times.push_back(it.GetTime());
+				need(!times.empty(), "Select a keyframe with an outgoing segment first");
+				for (double time : times)
+					activePath().SetKeyEase(time, ease);
+			}
+			return changed();
+		}
+
 		if (a.is(0, "path"))
 		{
 			auto find = [&](int arg) {
@@ -2559,21 +2670,22 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 		{
 			if (a.count() == 2)
 			{
-				Tier0_Msg("mirv_campath draw textSize <pixels> - Names and hold labels.\nCurrent value: %g\n",
+				Tier0_Msg("mirv_campath draw textSize <world height> - Names and hold labels.\nCurrent value: %g\n",
 						  g_CampathDrawer.GetLabelHeight());
 				return true;
 			}
 			a.size(3);
 			double height = a.num(2);
-			need(height >= 0 && height <= 200, "Text height must be 0..200 pixels");
+			need(height >= 0 && height <= 200, "Text height must be 0..200 world units");
 			g_CampathDrawer.SetLabelHeight(float(height));
 			return true;
 		}
 		if (!a.count())
 			Tier0_Msg("mirv_campath path - Named paths.\nmirv_campath saveAll <file.xml>\nmirv_campath curve - Curve "
-					  "handles.\n");
+					  "handles.\nmirv_campath graph - Toggle the easing editor.\n");
 		if (a.is(0, "edit") && a.count() == 1)
-			Tier0_Msg("mirv_campath edit hold - Keyframe holds.\nmirv_campath edit interp all - Set interpolation in "
+			Tier0_Msg("mirv_campath edit hold - Keyframe holds.\nmirv_campath edit ease - Segment "
+					  "timing/easing.\nmirv_campath edit interp all - Set interpolation in "
 					  "one command.\n");
 		return false;
 	}
@@ -2585,6 +2697,16 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 		return true;
 	}
 }
+bool MirvCampathEditor_IsGraphKey(unsigned key)
+{
+	if (!g_CampathPreviewActive)
+		return false;
+	initBindings();
+	unsigned modifiers = (GetKeyState(VK_SHIFT) & 0x8000 ? 1 : 0) | (GetKeyState(VK_CONTROL) & 0x8000 ? 2 : 0) |
+						 (GetKeyState(VK_MENU) & 0x8000 ? 4 : 0);
+	return editorBindings[EA_Graph].Key == key && editorBindings[EA_Graph].Modifiers == modifiers;
+}
+
 bool MirvCampathEditor_IsEditing()
 {
 	return g_CampathPreviewActive;
@@ -2684,6 +2806,7 @@ bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags)
 		g_CampathPreviewForward = actionHeld[EA_Right];
 		g_CampathPreviewBackward = actionHeld[EA_Left];
 		auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
+		AfxHookSource::Gui::FinishCampathGraphEdit();
 		auto before = paths.Capture();
 		try
 		{

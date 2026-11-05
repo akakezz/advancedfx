@@ -10,6 +10,45 @@
 using namespace Afx;
 using namespace Afx::Math;
 
+// Timing along an existing camera segment; this does not move its endpoints.
+struct CamPathEase
+{
+	enum Function
+	{
+		Inherit,
+		Linear,
+		Sine,
+		Quad,
+		Cubic,
+		Quart,
+		Quint,
+		Expo,
+		Circ,
+		Back,
+		Bounce,
+		Elastic,
+		Bezier,
+		Count
+	};
+	enum Direction
+	{
+		In,
+		Out,
+		InOut
+	};
+	Function Type = Inherit;
+	Direction Mode = InOut;
+	double X1 = 1.0 / 3, Y1 = 1.0 / 3, X2 = 2.0 / 3, Y2 = 2.0 / 3;
+	double Overshoot = 1.70158, Amplitude = 1, Period = 0.3;
+	bool Valid() const;
+	bool operator==(const CamPathEase & other) const;
+	double Eval(double progress) const;
+	static const char * ToString(Function value);
+	static bool FromString(const char * text, Function & value);
+	static const char * ToString(Direction value);
+	static bool FromString(const char * text, Direction & value);
+};
+
 struct CamPathValue
 {
 	double X;
@@ -28,6 +67,7 @@ struct CamPathValue
 	bool HasInHandle = false, HasOutHandle = false;
 
 	double HoldDuration = 0; // arrival + duration is the release time in path coordinates
+	CamPathEase Ease; // outgoing segment; Inherit uses the path setting
 	bool operator==(const CamPathValue & other) const;
 
 	CamPathValue();
@@ -95,6 +135,7 @@ public:
 		double Offset = 0;
 		bool Enabled = false, Hold = false, Bezier = false, CurveEditing = false;
 		std::string Name;
+		CamPathEase Ease;
 		bool operator==(const State & other) const;
 	};
 	State CaptureState() const;
@@ -105,6 +146,15 @@ public:
 	}
 	void SetName(const std::string & name);
 	bool SetKeyHold(double time, double releaseTime);
+	const CamPathEase & GetEase() const
+	{
+		return m_Ease;
+	}
+	void SetEase(const CamPathEase & value, bool clearOverrides = true);
+	bool SetKeyEase(double time, const CamPathEase & value);
+	CamPathEase GetKeyEase(double time, bool forPlayback = false) const;
+	bool SmoothHolds() const;
+	double GetSegmentProgress(double keyTime, double time) const;
 	void Validate() const;
 	std::string ToXml();
 	bool LoadXml(const std::string & xml);
@@ -219,6 +269,8 @@ public:
 	double GetOffset() const;
 
 private:
+	CamPathEase m_Ease;
+	CamPathValue EvalBase(double time);
 	struct CamPathChangedData {
 		CamPathChanged pFn;
 		void * pUserData;

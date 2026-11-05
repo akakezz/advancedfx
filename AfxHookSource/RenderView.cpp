@@ -223,10 +223,16 @@ bool Hook_VClient_RenderView::UiCursorStatus(bool & available, bool & visible) c
 	return available;
 }
 
+bool Hook_VClient_RenderView::IsSourceUiActive() const
+{
+	return (g_VEngineClient && g_VEngineClient->Con_IsVisible()) || FreecamMenuVisible();
+}
+
 bool Hook_VClient_RenderView::GetSuspendMirvInput() {
-	if (g_VEngineClient && g_VEngineClient->Con_IsVisible()) return true;
+	if (IsSourceUiActive())
+		return true;
 	if (!m_MirvInput || !m_MirvInput->GetCameraControlMode()) return false;
-	if (FreecamMenuVisible() || (MirvCampathEditor_IsEditing() && AfxHookSource::Gui::WantsKeyboardInput()))
+	if (AfxHookSource::Gui::WantsKeyboardInput())
 		return true;
 
 	// Optionally yield freecam input while TF2's UI cursor is visible.
@@ -643,6 +649,7 @@ bool Hook_VClient_RenderView::ImportToCamPath(bool adjustInterp, double fov)
 	if(!m_Import)
 		return false;
 
+	AfxHookSource::Gui::FinishCampathGraphEdit();
 	auto before = m_CamPaths.Capture();
 	bool bOk = g_BvhImport.CopyToCampath(m_ImportBaseTime, fov, GetActiveCamPath());
 

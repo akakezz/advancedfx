@@ -67,6 +67,7 @@ public:
 	// other engines keep their existing behavior unless this is enabled.
 	typedef bool (*KeyboardPassThroughFn)(unsigned int key, void * context);
 	void SetKeyboardCapture(bool enabled, KeyboardPassThroughFn passThrough = nullptr, void * context = nullptr);
+	bool IsCameraKey(unsigned int key);
 	bool GetKeyboardCapture() const
 	{
 		return m_KeyboardCapture;
@@ -215,6 +216,7 @@ public:
 	void ConCommand(advancedfx::ICommandArgs * args);
 
 private:
+	bool CameraKeyEvent(KeyState state, WPARAM key, LPARAM flags, bool apply);
 	class Mem
 	{
 	public:

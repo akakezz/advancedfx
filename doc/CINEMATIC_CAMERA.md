@@ -10,7 +10,7 @@ use the classic digit texture, placement and world-unit height.
 At each desired demo time and camera pose, run `mirv_campath add`. This captures
 position, rotation, FOV and current time. Seeking between existing timestamps and
 adding inserts a keyframe in chronological order. Adding at an existing timestamp
-replaces the pose and preserves its handles and hold.
+replaces the pose and preserves its handles, hold and segment easing.
 
 ```text
 mirv_campath draw enabled 1
@@ -57,6 +57,7 @@ move the camera without seeking the demo. Capture still uses the actual demo tim
 | PageUp / PageDown | Select previous / next named path |
 | Ctrl+N | Create and select a new path |
 | F4 | Toggle drawing |
+| F7 | Open/close the easing graph |
 | Ctrl+P | Toggle master playback enable |
 | Shift+F2 | Open the native demo UI |
 | Shift+Escape | End freecam and preview |
@@ -64,7 +65,7 @@ move the camera without seeking the demo. Capture still uses the actual demo tim
 Console equivalents include `preview <index>`, `preview interp <0..1>`,
 `preview seek`, `preview undo` and `preview redo`. `preview exit` retains the free
 camera pose; `mirv_input end` releases it. Undo/redo keep the current viewport and
-restore keyframes, handles, holds, interpolation, names and path membership.
+restore keyframes, handles, holds, interpolation, easing, names and path membership.
 History keeps the last 64 data edits, including loads and native timing/placement
 commands. Navigation, selection, saving and drawing settings do not create edits.
 A new data edit clears redo. The master playback switch is outside undo history.
@@ -84,6 +85,17 @@ Console, menus, demo UI and the HLAE GUI retain priority. Escape, grave, Alt+Tab
 and Alt+F4 remain available. `preview passthrough <key> 1` allows a custom menu or
 console binding through to Source. Input ownership and held navigation are
 released when focus or menus change.
+
+```text
+mirv_campath preview allowSource 1
+```
+
+This optional mode forwards keys/chords unused by preview and freecam to Source,
+so existing demo/game binds remain usable. Built-in and custom preview shortcuts,
+free-camera movement and camera speed keys keep priority. A press keeps its input
+owner until release, including when modifiers or this setting change. The default
+is `0`, which keeps exclusive preview keyboard capture. Explicit UI passthrough
+keys still take priority in either mode.
 
 ## Curve editing and interpolation
 
@@ -122,6 +134,56 @@ handles on an edited segment follow native tangents. `curve reset` restores
 selected handles to automatic. Choosing another position interpolation ignores
 stored handles until Bezier is re-enabled. Use `mirv_aim` for aiming.
 
+## Easing graph and segment presets
+
+```text
+mirv_campath graph
+```
+
+This toggles the graph; `graph 0|1` sets it explicitly. F7 does the same in preview.
+Close the console to use it. The graph uses HLAE's existing ImGui/Direct3D9 backend
+and works without entering preview. Native console, menus and demo UI retain
+input priority. Escape or the window close button closes the graph.
+
+The horizontal axis is path time in seconds. The vertical axis is progress from
+one camera key to the next (indices 0, 1, 2, ...). Orange bars show stationary
+holds; the plotted curves include automatic hold easing. These are timing curves;
+3D position handles remain editable in the viewport.
+
+- Click a camera key or a segment's square to select its outgoing segment.
+- Drag empty canvas space to box select several keys/segments; Shift adds.
+- Choose a function/direction and apply to selected segments or the entire path.
+- With Bezier easing selected, drag its purple time/value handles directly.
+- Middle-drag pans; the mouse wheel zooms around the cursor; Fit restores bounds.
+- Undo/Redo buttons and Ctrl+Z/Y use the same history as preview. One handle drag
+  creates one history entry. Selecting points or moving the graph view does not.
+
+Presets include linear, sine, quadratic, cubic, quartic, quintic, exponential,
+circular, back, bounce and elastic, with in/out/inout directions. Back exposes
+overshoot; elastic exposes amplitude and period. Custom cubic Bezier handles
+provide a freely editable curve with ordered time coordinates in 0..1 and value
+coordinates in -5..5. Back, elastic and Bezier can overshoot or reverse progress.
+Overshoot continues the current segment's endpoint tangent, without switching to
+an adjacent segment. Position, rotation and FOV share the timing curve.
+
+Console equivalents:
+
+```text
+mirv_campath edit ease all sine inout
+mirv_campath select #1 #2
+mirv_campath edit ease selected bounce out
+mirv_campath edit ease selected back out 1.7
+mirv_campath edit ease selected elastic out 1 0.3
+mirv_campath edit ease selected bezier 0.3 0 0.7 1
+mirv_campath edit ease selected inherit
+```
+
+An outgoing override belongs to its starting keyframe. Selecting keys 1 and 2
+changes segments 1→2 and 2→3. The final key has no outgoing segment. `inherit`
+uses the path's default; setting the entire path clears segment overrides.
+Applying `inherit` to the whole path restores native timing plus automatic smooth
+holds. This timing easing is independent of spatial `edit interp`/curve modes.
+
 ## Camera holds
 
 Select the arrival keyframe, advance the demo to the desired release tick, then
@@ -135,7 +197,11 @@ mirv_campath edit hold off
 
 A hold preserves the full pose, including rotation and FOV, through its release
 tick. After release, travel uses the remaining interval to reach the next
-keyframe at its existing arrival time. Release must precede that next arrival;
+keyframe at its existing arrival time. Smooth interpolation automatically slows
+to zero at arrival and accelerates from zero after release. Linear/step retain
+their deliberate sharp transitions when every channel uses those modes. Custom
+Bezier timing automatically flattens held endpoint tangents while retaining their
+time-handle controls. Release must precede that next arrival;
 conflicting holds, insertions and timing edits are rejected. A release equal to
 arrival clears the hold. A hold on the final key extends the shot; one held key
 can form a stationary shot. Native retiming moves/scales holds with their keys.
@@ -180,7 +246,7 @@ does not change the master playback switch. Recording autosave includes all
 paths when more than one exists. BVH import targets the selected path and can be
 undone. Supply `.xml` explicitly; saving overwrites the specified file.
 
-Classic XML remains supported. Handles, hold durations and names are optional
+Classic XML remains supported. Handles, hold durations, easing and names are optional
 attributes; numbers retain enough precision to round-trip. Older HLAE builds can
 read the basic keys but ignore these extensions. The earlier experimental
 `cinematicCamera` schema remains unsupported; retain those files and use the old
@@ -192,17 +258,22 @@ Native trajectory, camera, axis and index drawing run through `CCampathDrawer`
 for every path. Indices appear on the selected path using the classic methods;
 `draw keyIndex <height>` retains its original world-unit meaning. Path names and
 hold annotations reuse the drawer's padded alphabet atlas and text pass;
-`draw textSize <pixels>` controls them (default 20, zero hides them). Annotations
-have a screen-space margin above/left of the camera markers. Coincident labels
-stack. `draw handles 0|1` controls handle lines in the same native line pass.
+`draw textSize <world height>` controls them (default 20, zero hides them).
+Annotations keep a fixed world height and margin above their camera marker, face
+the view like indices, and use depth testing/alpha testing so walls occlude them.
+Coincident labels stack. Their size now changes with distance, like classic indices. `draw handles 0|1` controls handle lines in the same native line pass.
 Turn drawing off before clean recording.
 
-No new runtime files are introduced. `CamPath` holds optional handles/holds and
+No new runtime files are introduced. `CamPath` holds optional handles/holds/easing and
 state snapshots; `CamPathCollection` in the same files owns ordinary paths and
 bounded history. `AfxMath` supplies local interpolators through its existing map
 interfaces. Commands delegate to `MirvCampath_ConCommand`, and preview extends the
 existing free-camera flow. Rendering queues immutable native snapshots using the
-existing device lifecycle.
+existing device lifecycle. The previously disabled GUI scaffold is enabled with
+a SHA-256-pinned Dear ImGui 1.86 dependency fetched automatically by CMake. Its
+license is installed in `bin/licenses/imgui.txt`. The graph uses the existing
+GUI render cache, input hooks and graphics-reset lifecycle; sample/demo windows
+are removed. No patch or manual dependency copy is needed before compiling.
 
 Build normally using [BUILDING.md](../BUILDING.md). Standalone checks exercise the
 actual shared implementation:

@@ -12,7 +12,12 @@
 
 #if AFX_ENABLE_GUI
 
-#include <shared/imgui/imgui.h>
+#include <imgui.h>
+#include "RenderView.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cfloat>
 
 #include <SourceInterfaces.h>
 #include "WrpVEngineClient.h"
@@ -22,8 +27,6 @@
 #include <string>
 #include <vector>
 #include <mutex>
-
-#include "Model/Schedule.h"
 
 extern SourceSdkVer g_SourceSdkVer;
 extern WrpVEngineClient * g_VEngineClient;
@@ -45,8 +48,6 @@ bool m_FirstEndScene = true;
 bool m_GameCaptured = false;
 bool m_InMouseLook = false;
 bool m_HadSetCursorMouseLook = false;
-
-//Model::CSchedule m_Schedule(nullptr, "Schedule", "");
 
 // Data
 static HWND                     g_hWnd = 0;
@@ -114,8 +115,7 @@ struct CUSTOMVERTEX
 
 bool IsSupported()
 {
-	//return false;
-	return SourceSdkVer_CSGO == g_SourceSdkVer || SourceSdkVer_CSCO == g_SourceSdkVer;
+	return ImGui::GetCurrentContext() != nullptr;
 }
 
 bool IsInMouseLook()
@@ -126,6 +126,13 @@ bool IsInMouseLook()
 class CImGuiRenderCacheManager
 {
 public:
+	~CImGuiRenderCacheManager()
+	{
+		Dx9_Destroy();
+		for (auto * cache : m_FreeCaches)
+			delete cache;
+	}
+
 	void Dx9_Create(IDirect3DDevice9 * device)
 	{
 		Dx9_Destroy();
@@ -208,10 +215,20 @@ public:
 
 		cache->CacheRender(draw_data);
 
+		CImGuiRenderCache * stale = nullptr;
 		{
 			std::unique_lock<std::mutex> queuedLock(m_QueuedCachesMutex);
-
+			if (m_QueuedCaches.size() >= 2)
+			{
+				stale = m_QueuedCaches.front();
+				m_QueuedCaches.pop_front();
+			}
 			m_QueuedCaches.push_back(cache);
+		}
+		if (stale)
+		{
+			std::unique_lock<std::mutex> freeLock(m_FreeCachesMutex);
+			m_FreeCaches.push_back(stale);
 		}
 	}
 
@@ -250,7 +267,7 @@ private:
 		{
 			m_DrawListCount = 0;
 
-			if (!m_Device)
+			if (!m_Device || !draw_data || draw_data->TotalVtxCount == 0)
 				return;
 
 			ImGuiIO& io = ImGui::GetIO();
@@ -290,8 +307,12 @@ private:
 
 			if (m_pVB->Lock(0, (UINT)(draw_data->TotalVtxCount * sizeof(CUSTOMVERTEX)), (void**)&vtx_dst, D3DLOCK_DISCARD) < 0)
 				return;
-			if (m_pIB->Lock(0, (UINT)(draw_data->TotalIdxCount * sizeof(ImDrawIdx)), (void**)&idx_dst, D3DLOCK_DISCARD) < 0)
+			if (m_pIB->Lock(0, (UINT)(draw_data->TotalIdxCount * sizeof(ImDrawIdx)), (void **)&idx_dst,
+							D3DLOCK_DISCARD) < 0)
+			{
+				m_pVB->Unlock();
 				return;
+			}
 
 			for (int n = 0; n < draw_data->CmdListsCount; n++)
 			{
@@ -339,6 +360,7 @@ private:
 				}
 
 				drawList.m_VtxBuffer_Size = cmd_list->VtxBuffer.Size;
+				drawList.m_IdxBuffer_Size = cmd_list->IdxBuffer.Size;
 			}
 
 		}
@@ -386,6 +408,21 @@ private:
 			m_Device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
 			m_Device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
 			m_Device->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+			m_Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+			m_Device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+			m_Device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+			m_Device->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+			m_Device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+			m_Device->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD);
+			m_Device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+			m_Device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+			m_Device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+			m_Device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+			m_Device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+			m_Device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+			m_Device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+			m_Device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+
 			m_Device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
 			m_Device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
 			m_Device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
@@ -431,11 +468,13 @@ private:
 						const RECT r = { (LONG)pcmd->ClipRect.x, (LONG)pcmd->ClipRect.y, (LONG)pcmd->ClipRect.z, (LONG)pcmd->ClipRect.w };
 						m_Device->SetTexture(0, pcmd->TextureId && pcmd->TextureId == (void *)1 ? g_FontTexture : NULL);
 						m_Device->SetScissorRect(&r);
-						m_Device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, vtx_offset, 0, (UINT)cmd_list.m_VtxBuffer_Size, idx_offset, pcmd->ElemCount / 3);
+						m_Device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, vtx_offset + pcmd->VtxOffset, 0,
+													   (UINT)(cmd_list.m_VtxBuffer_Size - pcmd->VtxOffset),
+													   idx_offset + pcmd->IdxOffset, pcmd->ElemCount / 3);
 					}
-					idx_offset += pcmd->ElemCount;
 				}
 				vtx_offset += cmd_list.m_VtxBuffer_Size;
+				idx_offset += cmd_list.m_IdxBuffer_Size;
 			}
 
 			// Restore the DX9 state
@@ -456,6 +495,7 @@ private:
 			int m_DrawCommandSize = 0;
 			std::vector<ImDrawCmd> m_DrawCommands;
 			int m_VtxBuffer_Size;
+			int m_IdxBuffer_Size;
 		};
 
 		int m_DrawListCount;
@@ -498,10 +538,464 @@ enum EndPassThrougButtonUp
 EndPassThrougButtonUp m_EndPassThroughButtonUp = EPTBU_Left;
 bool m_IgnoreNextWM_MOUSEMOVE = false;
 
+// The graph edits timing on ordinary CamPath keyframes on the engine thread.
+namespace
+{
+struct CampathGraphState
+{
+	bool Open = false, Focus = false, Fit = true, Boxing = false, Editing = false;
+	ImVec2 BoxStart;
+	int Handle = -1;
+	double KeyTime = 0;
+	double XMin = 0, XMax = 1, YMin = -0.2, YMax = 1.2;
+	CamPath * LastPath = nullptr;
+	CamPathCollection::Snapshot Before;
+	CamPathEase Preset;
+} g_CampathGraph;
+
+bool SourceOwnsUi()
+{
+	bool available = false, visible = false;
+	g_Hook_VClient_RenderView.UiCursorStatus(available, visible);
+	return g_Hook_VClient_RenderView.IsSourceUiActive() || (available && visible);
+}
+
+bool GraphInteractive()
+{
+	return g_CampathGraph.Open && !SourceOwnsUi();
+}
+} // namespace
+
+void FinishCampathGraphEdit()
+{
+	auto & graph = g_CampathGraph;
+	if (graph.Editing)
+		g_Hook_VClient_RenderView.m_CamPaths.Record(graph.Before);
+	graph.Editing = false;
+	graph.Boxing = false;
+	graph.Handle = -1;
+}
+
+bool GetCampathGraphOpen()
+{
+	return g_CampathGraph.Open;
+}
+
+bool SetCampathGraphOpen(bool value)
+{
+	if (!ImGui::GetCurrentContext())
+		return false;
+	if (!value)
+	{
+		FinishCampathGraphEdit();
+		m_PassThrough = false;
+	}
+	if (value && !g_CampathGraph.Open)
+	{
+		g_CampathGraph.Focus = true;
+		g_CampathGraph.Fit = true;
+	}
+	g_CampathGraph.Open = value;
+	return true;
+}
+
+static void DrawCampathGraphCanvas(CamPath & path)
+{
+	auto & graph = g_CampathGraph;
+	auto & io = ImGui::GetIO();
+	std::vector<std::pair<double, CamPathValue>> keys;
+	for (auto it = path.GetBegin(); it != path.GetEnd(); ++it)
+		keys.emplace_back(it.GetTime(), it.GetValue());
+	if (keys.size() < 2)
+	{
+		ImGui::TextUnformatted("Capture at least two camera keys to edit segment easing.");
+		return;
+	}
+	if (graph.LastPath != &path)
+	{
+		graph.LastPath = &path;
+		graph.Fit = true;
+	}
+	if (graph.Fit)
+	{
+		graph.XMin = keys.front().first;
+		graph.XMax = path.GetUpperBound();
+		graph.YMin = 0;
+		graph.YMax = double(keys.size() - 1);
+		for (std::size_t i = 0; i + 1 < keys.size(); ++i)
+		{
+			CamPathEase ease = path.GetKeyEase(keys[i].first, true);
+			if (keys[i].second.Selected && ease.Type == CamPathEase::Bezier)
+			{
+				graph.YMin = (std::min)(graph.YMin, i + (std::min)(ease.Y1, ease.Y2));
+				graph.YMax = (std::max)(graph.YMax, i + (std::max)(ease.Y1, ease.Y2));
+			}
+			int samples =
+				ease.Type == CamPathEase::Elastic ? (std::max)(64, (std::min)(512, int(8 / ease.Period))) : 64;
+			for (int sample = 0; sample <= samples; ++sample)
+			{
+				double t = keys[i].first + (keys[i + 1].first - keys[i].first) * sample / samples;
+				double y = i + path.GetSegmentProgress(keys[i].first, t);
+				graph.YMin = (std::min)(graph.YMin, y);
+				graph.YMax = (std::max)(graph.YMax, y);
+			}
+		}
+		double xMargin = (graph.XMax - graph.XMin) * 0.08, yMargin = (graph.YMax - graph.YMin) * 0.15;
+		graph.XMin -= xMargin;
+		graph.XMax += xMargin;
+		graph.YMin -= yMargin;
+		graph.YMax += yMargin;
+		graph.Fit = false;
+	}
+	ImVec2 origin = ImGui::GetCursorScreenPos();
+	ImVec2 size = ImGui::GetContentRegionAvail();
+	size.x = (std::max)(size.x, 240.0f);
+	size.y = (std::max)(size.y, 220.0f);
+	ImGui::InvisibleButton("##CampathGraphCanvas", size,
+						   ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+	bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
+	ImVec2 min(origin.x + 48, origin.y + 16), max(origin.x + size.x - 16, origin.y + size.y - 30);
+	auto point = [&](double t, double progress) {
+		return ImVec2(float(min.x + (t - graph.XMin) / (graph.XMax - graph.XMin) * (max.x - min.x)),
+					  float(max.y - (progress - graph.YMin) / (graph.YMax - graph.YMin) * (max.y - min.y)));
+	};
+	auto world = [&](ImVec2 p) {
+		return std::make_pair(graph.XMin + (p.x - min.x) / (max.x - min.x) * (graph.XMax - graph.XMin),
+							  graph.YMin + (max.y - p.y) / (max.y - min.y) * (graph.YMax - graph.YMin));
+	};
+	auto distance = [](ImVec2 a, ImVec2 b) {
+		double x = a.x - b.x, y = a.y - b.y;
+		return x * x + y * y;
+	};
+	if (hovered && io.MouseWheel != 0)
+	{
+		auto center = world(io.MousePos);
+		double scale = std::pow(0.85, io.MouseWheel);
+		double xSpan = (graph.XMax - graph.XMin) * scale, ySpan = (graph.YMax - graph.YMin) * scale;
+		if (xSpan > 1e-5 && xSpan < 1e9 && ySpan > 1e-5 && ySpan < 1e7)
+		{
+			graph.XMin = center.first + (graph.XMin - center.first) * scale;
+			graph.XMax = graph.XMin + xSpan;
+			graph.YMin = center.second + (graph.YMin - center.second) * scale;
+			graph.YMax = graph.YMin + ySpan;
+		}
+	}
+	if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0))
+	{
+		double dx = -io.MouseDelta.x / (max.x - min.x) * (graph.XMax - graph.XMin),
+			   dy = io.MouseDelta.y / (max.y - min.y) * (graph.YMax - graph.YMin);
+		graph.XMin += dx;
+		graph.XMax += dx;
+		graph.YMin += dy;
+		graph.YMax += dy;
+	}
+	ImDrawList * draw = ImGui::GetWindowDrawList();
+	draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(20, 23, 29, 255));
+	for (int i = 0; i <= 8; ++i)
+	{
+		double t = graph.XMin + (graph.XMax - graph.XMin) * i / 8;
+		float x = point(t, 0).x;
+		char label[64];
+		std::snprintf(label, sizeof(label), "%.3g", t);
+		draw->AddLine(ImVec2(x, min.y), ImVec2(x, max.y), IM_COL32(52, 57, 65, 255));
+		draw->AddText(ImVec2(x, max.y + 4), IM_COL32(180, 186, 196, 255), label);
+	}
+	double yStep = (std::max)(1.0, std::ceil((graph.YMax - graph.YMin) / 10));
+	for (double y = std::ceil(graph.YMin / yStep) * yStep; y <= graph.YMax; y += yStep)
+	{
+		float at = point(0, y).y;
+		char label[32];
+		std::snprintf(label, sizeof(label), "%.0f", y);
+		draw->AddLine(ImVec2(min.x, at), ImVec2(max.x, at), IM_COL32(52, 57, 65, 255));
+		draw->AddText(ImVec2(origin.x + 4, at - 7), IM_COL32(180, 186, 196, 255), label);
+	}
+	draw->PushClipRect(min, max, true);
+	int hitKey = -1, hitHandle = -1;
+	double hitTime = 0;
+	for (std::size_t i = 0; i < keys.size(); ++i)
+	{
+		const auto & key = keys[i];
+		ImU32 color = key.second.Selected ? IM_COL32(255, 193, 77, 255) : IM_COL32(86, 192, 232, 255);
+		ImVec2 camera = point(key.first, double(i));
+		if (hovered && distance(camera, io.MousePos) < 81)
+			hitKey = int(i);
+		draw->AddCircleFilled(camera, 4, color);
+		if (key.second.HoldDuration > 0)
+		{
+			ImVec2 release = point(key.first + key.second.HoldDuration, double(i));
+			draw->AddLine(camera, release, IM_COL32(224, 135, 72, 255), 3);
+			draw->AddRectFilled(ImVec2(release.x - 3, release.y - 6), ImVec2(release.x + 3, release.y + 6),
+								IM_COL32(224, 135, 72, 255));
+		}
+		if (i + 1 == keys.size() || keys[i + 1].first < graph.XMin || key.first > graph.XMax)
+			continue;
+		double end = keys[i + 1].first, release = key.first + key.second.HoldDuration;
+		CamPathEase ease = path.GetKeyEase(key.first, true);
+		int samples = ease.Type == CamPathEase::Elastic ? (std::max)(64, (std::min)(512, int(8 / ease.Period))) : 96;
+		ImVec2 last = point(release, double(i));
+		for (int sample = 1; sample <= samples; ++sample)
+		{
+			double t = release + (end - release) * sample / samples;
+			ImVec2 next = point(t, i + path.GetSegmentProgress(key.first, t));
+			draw->AddLine(last, next, color, 2);
+			last = next;
+		}
+		ImVec2 segment = point((release + end) * 0.5, i + path.GetSegmentProgress(key.first, (release + end) * 0.5));
+		draw->AddRectFilled(ImVec2(segment.x - 4, segment.y - 4), ImVec2(segment.x + 4, segment.y + 4), color);
+		if (hovered && distance(segment, io.MousePos) < 81)
+			hitKey = int(i);
+		if (key.second.Selected && ease.Type == CamPathEase::Bezier)
+		{
+			ImVec2 a = point(release, double(i)), b = point(end, double(i + 1));
+			ImVec2 handles[] = {point(release + (end - release) * ease.X1, i + ease.Y1),
+								point(release + (end - release) * ease.X2, i + ease.Y2)};
+			for (int h = 0; h < 2; ++h)
+			{
+				draw->AddLine(h ? b : a, handles[h], IM_COL32(165, 142, 198, 255));
+				draw->AddCircleFilled(handles[h], 5, IM_COL32(209, 155, 255, 255));
+				if (hovered && distance(handles[h], io.MousePos) < 100)
+				{
+					hitHandle = h;
+					hitTime = key.first;
+				}
+			}
+		}
+	}
+	if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+	{
+		if (hitHandle >= 0)
+		{
+			graph.Before = g_Hook_VClient_RenderView.m_CamPaths.Capture();
+			graph.Editing = true;
+			graph.Handle = hitHandle;
+			graph.KeyTime = hitTime;
+		}
+		else if (hitKey >= 0)
+		{
+			if (!io.KeyShift)
+				path.SelectNone();
+			path.SelectAdd(std::size_t(hitKey), std::size_t(hitKey));
+			graph.Preset = path.GetKeyEase(keys[hitKey].first);
+		}
+		else
+		{
+			graph.Boxing = true;
+			graph.BoxStart = io.MousePos;
+		}
+	}
+	if (graph.Editing && graph.Handle >= 0 && io.MouseDown[0])
+	{
+		for (std::size_t i = 0; i + 1 < keys.size(); ++i)
+			if (keys[i].first == graph.KeyTime)
+			{
+				double release = keys[i].first + keys[i].second.HoldDuration, end = keys[i + 1].first;
+				auto cursor = world(io.MousePos);
+				CamPathEase ease = path.GetKeyEase(graph.KeyTime, true);
+				double x = std::clamp((cursor.first - release) / (end - release), 0.0, 1.0),
+					   y = std::clamp(cursor.second - i, -5.0, 5.0);
+				if (graph.Handle == 0)
+				{
+					ease.X1 = (std::min)(x, ease.X2);
+					ease.Y1 = path.SmoothHolds() && keys[i].second.HoldDuration > 0 ? 0 : y;
+				}
+				else
+				{
+					ease.X2 = (std::max)(x, ease.X1);
+					ease.Y2 = path.SmoothHolds() && keys[i + 1].second.HoldDuration > 0 ? 1 : y;
+				}
+				path.SetKeyEase(graph.KeyTime, ease);
+				graph.Preset = ease;
+				break;
+			}
+	}
+	if (graph.Boxing)
+	{
+		ImVec2 a((std::min)(graph.BoxStart.x, io.MousePos.x), (std::min)(graph.BoxStart.y, io.MousePos.y));
+		ImVec2 b((std::max)(graph.BoxStart.x, io.MousePos.x), (std::max)(graph.BoxStart.y, io.MousePos.y));
+		draw->AddRectFilled(a, b, IM_COL32(100, 160, 255, 40));
+		draw->AddRect(a, b, IM_COL32(120, 180, 255, 220));
+		if (!io.MouseDown[0])
+		{
+			if (!io.KeyShift)
+				path.SelectNone();
+			for (std::size_t i = 0; i < keys.size(); ++i)
+			{
+				ImVec2 p = point(keys[i].first, double(i));
+				bool inside = p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y;
+				if (i + 1 < keys.size())
+				{
+					double release = keys[i].first + keys[i].second.HoldDuration;
+					p = point((release + keys[i + 1].first) * 0.5,
+							  i + path.GetSegmentProgress(keys[i].first, (release + keys[i + 1].first) * 0.5));
+					inside = inside || (p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y);
+				}
+				if (inside)
+					path.SelectAdd(i, i);
+			}
+			graph.Boxing = false;
+		}
+	}
+	if (graph.Editing && !io.MouseDown[0])
+		FinishCampathGraphEdit();
+	draw->PopClipRect();
+	if (hovered && hitKey >= 0 && !io.MouseDown[0])
+	{
+		ImGui::BeginTooltip();
+		ImGui::Text("Key %i: %.3fs", hitKey, keys[hitKey].first);
+		if (std::size_t(hitKey + 1) < keys.size())
+		{
+			auto ease = path.GetKeyEase(keys[hitKey].first);
+			ImGui::Text("Outgoing: %s %s", CamPathEase::ToString(ease.Type), CamPathEase::ToString(ease.Mode));
+		}
+		ImGui::EndTooltip();
+	}
+}
+
+static void DrawCampathGraph()
+{
+	auto & graph = g_CampathGraph;
+	if (!graph.Open || SourceOwnsUi())
+	{
+		FinishCampathGraphEdit();
+		std::fill(std::begin(ImGui::GetIO().MouseDown), std::end(ImGui::GetIO().MouseDown), false);
+		std::fill(std::begin(ImGui::GetIO().KeysDown), std::end(ImGui::GetIO().KeysDown), false);
+		return;
+	}
+	ImGui::SetNextWindowSize(ImVec2(900, 600), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSizeConstraints(ImVec2(640, 450), ImVec2(FLT_MAX, FLT_MAX));
+	if (graph.Focus)
+	{
+		ImGui::SetNextWindowFocus();
+		graph.Focus = false;
+	}
+	if (!ImGui::Begin("Campath easing graph", &graph.Open,
+					  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
+	{
+		ImGui::End();
+		if (!graph.Open)
+			FinishCampathGraphEdit();
+		return;
+	}
+	auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
+	bool undo = false, redo = false;
+	if (ImGui::Button("Undo"))
+		undo = true;
+	ImGui::SameLine();
+	if (ImGui::Button("Redo"))
+		redo = true;
+	ImGui::SameLine();
+	if (ImGui::Button("Fit"))
+		graph.Fit = true;
+	if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::GetIO().KeyCtrl &&
+		!ImGui::GetIO().WantTextInput)
+	{
+		undo = undo || ImGui::IsKeyPressed('Z', false);
+		redo = redo || ImGui::IsKeyPressed('Y', false);
+	}
+	if (undo || redo)
+	{
+		FinishCampathGraphEdit();
+		if (undo)
+			paths.Undo();
+		else
+			paths.Redo();
+		graph.Fit = true;
+	}
+	ImGui::SameLine();
+	if (ImGui::BeginCombo("Path", paths.Active().GetName().c_str()))
+	{
+		for (std::size_t i = 0; i < paths.Size(); ++i)
+			if (ImGui::Selectable(paths.At(i).GetName().c_str(), i == paths.ActiveIndex()))
+			{
+				FinishCampathGraphEdit();
+				paths.Use(i);
+				graph.Fit = true;
+			}
+		ImGui::EndCombo();
+	}
+	auto & path = paths.Active();
+	if (ImGui::BeginCombo("Easing preset", CamPathEase::ToString(graph.Preset.Type)))
+	{
+		for (int i = 0; i < CamPathEase::Count; ++i)
+			if (ImGui::Selectable(CamPathEase::ToString(CamPathEase::Function(i)), graph.Preset.Type == i))
+				graph.Preset.Type = CamPathEase::Function(i);
+		ImGui::EndCombo();
+	}
+	if (graph.Preset.Type != CamPathEase::Bezier &&
+		ImGui::BeginCombo("Direction", CamPathEase::ToString(graph.Preset.Mode)))
+	{
+		for (auto mode : {CamPathEase::In, CamPathEase::Out, CamPathEase::InOut})
+			if (ImGui::Selectable(CamPathEase::ToString(mode), mode == graph.Preset.Mode))
+				graph.Preset.Mode = mode;
+		ImGui::EndCombo();
+	}
+	if (graph.Preset.Type == CamPathEase::Bezier)
+	{
+		float points[] = {float(graph.Preset.X1), float(graph.Preset.Y1), float(graph.Preset.X2),
+						  float(graph.Preset.Y2)};
+		if (ImGui::InputFloat4("Time/value handles", points))
+		{
+			graph.Preset.X1 = points[0];
+			graph.Preset.Y1 = points[1];
+			graph.Preset.X2 = points[2];
+			graph.Preset.Y2 = points[3];
+		}
+	}
+	if (graph.Preset.Type == CamPathEase::Back)
+	{
+		float value = float(graph.Preset.Overshoot);
+		if (ImGui::SliderFloat("Overshoot", &value, 0, 10))
+			graph.Preset.Overshoot = value;
+	}
+	if (graph.Preset.Type == CamPathEase::Elastic)
+	{
+		float amplitude = float(graph.Preset.Amplitude), period = float(graph.Preset.Period);
+		if (ImGui::SliderFloat("Amplitude", &amplitude, 1, 10))
+			graph.Preset.Amplitude = amplitude;
+		if (ImGui::SliderFloat("Period", &period, 0.01f, 2))
+			graph.Preset.Period = period;
+	}
+	std::vector<double> selected;
+	for (auto it = path.GetBegin(); it != path.GetEnd(); ++it)
+		if (it.GetValue().Selected && std::next(it.wrapped) != path.GetEnd().wrapped)
+			selected.push_back(it.GetTime());
+	ImGui::BeginDisabled(!graph.Preset.Valid() || selected.empty());
+	if (ImGui::Button("Apply to selected segments"))
+	{
+		auto before = paths.Capture();
+		for (double time : selected)
+			path.SetKeyEase(time, graph.Preset);
+		paths.Record(before);
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!graph.Preset.Valid());
+	if (ImGui::Button("Apply to entire path"))
+	{
+		auto before = paths.Capture();
+		path.SetEase(graph.Preset);
+		paths.Record(before);
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ImGui::Button("Select all"))
+		path.SelectAll();
+	ImGui::TextUnformatted(
+		"Click keys/squares or drag a box to select; Shift adds. Drag purple handles to edit Bezier easing.");
+	ImGui::TextUnformatted(
+		"Middle drag pans; wheel zooms. Time: path seconds; vertical: key progress. Orange bars: holds. Esc closes.");
+	ImGui::Text("%u segments selected. Path default: %s %s. Smooth holds flatten tangents.", unsigned(selected.size()),
+				CamPathEase::ToString(path.GetEase().Type), CamPathEase::ToString(path.GetEase().Mode));
+	DrawCampathGraphCanvas(path);
+	ImGui::End();
+	if (!graph.Open)
+		FinishCampathGraphEdit();
+}
+
 bool WantsKeyboardInput()
 {
-	return IsSupported() && m_Active && !m_PassThrough && ImGui::GetCurrentContext() &&
-		   ImGui::GetIO().WantCaptureKeyboard;
+	return IsSupported() && GraphInteractive() && !m_PassThrough &&
+		   (ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantCaptureMouse);
 }
 
 bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
@@ -509,7 +1003,45 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 	if (!IsSupported())
 		return false;
 
-	if (!m_Active)
+	if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE))
+	{
+		FinishCampathGraphEdit();
+		m_PassThrough = false;
+		std::fill(std::begin(m_KeyDownEaten), std::end(m_KeyDownEaten), false);
+		ImGui::GetIO().AddFocusEvent(false);
+	}
+	if (msg == WM_SETFOCUS || (msg == WM_ACTIVATE && LOWORD(wParam) != WA_INACTIVE))
+		ImGui::GetIO().AddFocusEvent(true);
+	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam < 256 && m_KeyDownEaten[wParam])
+		return true;
+	if (GraphInteractive() && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) &&
+		MirvCampathEditor_IsGraphKey(unsigned(wParam)))
+	{
+		if (!(lParam & (1LL << 30)))
+			SetCampathGraphOpen(false);
+		m_KeyDownEaten[wParam] = true;
+		return true;
+	}
+
+	if ((msg == WM_KEYUP || msg == WM_SYSKEYUP) && wParam < 256 && m_KeyDownEaten[wParam])
+	{
+		m_KeyDownEaten[wParam] = false;
+		ImGui::GetIO().KeysDown[wParam] = false;
+		return true;
+	}
+	if (GraphInteractive() && msg == WM_KEYDOWN && wParam == VK_ESCAPE && !ImGui::GetIO().WantTextInput)
+	{
+		SetCampathGraphOpen(false);
+		m_KeyDownEaten[wParam] = true;
+		return true;
+	}
+	if (wParam == VK_OEM_3 && (msg == WM_KEYDOWN || msg == WM_KEYUP))
+		return false;
+	if ((GetKeyState(VK_MENU) & 0x8000) && (wParam == VK_TAB || wParam == VK_F4) &&
+		(msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP))
+		return false;
+
+	if (!m_Active || !GraphInteractive())
 		return false;
 
 	if (m_PassThrough)
@@ -644,9 +1176,10 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 		if (wParam < 256)
 		{
 			io.KeysDown[wParam] = 1;
-			m_KeyDownEaten[wParam] = io.WantCaptureKeyboard;
+			if (!(lParam & (1LL << 30)))
+				m_KeyDownEaten[wParam] = (io.WantCaptureKeyboard || io.WantCaptureMouse);
 		}
-		return io.WantCaptureKeyboard;
+		return (io.WantCaptureKeyboard || io.WantCaptureMouse);
 	case WM_KEYUP:
 	case WM_SYSKEYUP:
 		{
@@ -657,13 +1190,13 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 				wasKeyDownEaten = m_KeyDownEaten[wParam];
 				m_KeyDownEaten[wParam] = false;
 			}
-			return io.WantCaptureKeyboard || wasKeyDownEaten;
+			return wasKeyDownEaten;
 		}
 	case WM_CHAR:
 		// You can also use ToAscii()+GetKeyboardState() to retrieve characters.
 		if (wParam > 0 && wParam < 0x10000)
 			io.AddInputCharacter((unsigned short)wParam);
-		return io.WantCaptureKeyboard;
+		return (io.WantCaptureKeyboard || io.WantCaptureMouse);
 	case WM_INPUT:
 		{
 			HRAWINPUT hRawInput = (HRAWINPUT)lParam;
@@ -677,7 +1210,8 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 			case RIM_TYPEMOUSE:
 				return IsInMouseLook();
 			case RIM_TYPEKEYBOARD:
-				return io.WantCaptureKeyboard;
+				// Source must be able to release a press that preceded GUI focus.
+				return !(inp.data.keyboard.Flags & RI_KEY_BREAK) && (io.WantCaptureKeyboard || io.WantCaptureMouse);
 			}
 			return false;
 		}
@@ -709,7 +1243,7 @@ bool OnSetCursorPos(__in int X, __in int Y)
 	m_GameCursorPos.x = X;
 	m_GameCursorPos.y = Y;
 
-	if (!m_Active)
+	if (!m_Active || !GraphInteractive())
 		return false;
 
 	if (m_PassThrough)
@@ -726,7 +1260,7 @@ bool OnGetCursorPos(__out LPPOINT lpPoint)
 	if (!IsSupported())
 		return false;
 
-	if (!m_Active || m_PassThrough || !IsInMouseLook())
+	if (!m_Active || !GraphInteractive() || m_PassThrough || !IsInMouseLook())
 	{
 		if (lpPoint)
 		{
@@ -761,7 +1295,7 @@ bool OnSetCursor(__in_opt HCURSOR hCursor, HCURSOR & result)
 
 	m_GameCursor = hCursor;
 
-	if (!m_Active)
+	if (!m_Active || !GraphInteractive())
 		return false;
 
 	if (m_PassThrough)
@@ -785,7 +1319,7 @@ bool OnSetCapture(HWND hWnd, HWND & result)
 
 	m_GameCaptured = hWnd && hWnd == g_hWnd;
 
-	if (!m_Active)
+	if (!m_Active || !GraphInteractive())
 		return false;
 
 	if (m_PassThrough)
@@ -808,7 +1342,7 @@ bool OnReleaseCapture()
 	m_GameCaptured = false;
 	m_InMouseLook = false;
 
-	if (!m_Active)
+	if (!m_Active || !GraphInteractive())
 		return false;
 
 	if (m_PassThrough)
@@ -914,6 +1448,8 @@ bool On_Direct3DDevice9_Init(void* hwnd, IDirect3DDevice9* device)
 	io.KeyMap[ImGuiKey_Z] = 'Z';
 
 	io.ImeWindowHandle = g_hWnd;
+	io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+	ImGui::StyleColorsDark();
 
 	DX9_CreateDeviceObjects();
 
@@ -937,35 +1473,7 @@ void DX9_InvalidateDeviceObjects()
 
 void DoFrame()
 {
-	static bool show_demo_window = true;
-	static bool show_another_window = false;
-	static ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-
-	{
-		static float f = 0.0f;
-		ImGui::Text("Hello, world!");
-		ImGui::SliderFloat("float", &f, 0.0f, 1.0f);
-		ImGui::ColorEdit3("clear color", (float*)&clear_color);
-		if (ImGui::Button("Demo Window")) show_demo_window ^= 1;
-		if (ImGui::Button("Another Window")) show_another_window ^= 1;
-		ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-		ImGui::Text("Look: %i | Want: %i | Through: %i\n", IsInMouseLook() ? 1 : 0, ImGui::GetIO().WantCaptureMouse ? 1 : 0, m_PassThrough ? 1 : 0);
-	}
-
-	// 2. Show another simple window. In most cases you will use an explicit Begin/End pair to name the window.
-	if (show_another_window)
-	{
-		ImGui::Begin("Another Window", &show_another_window);
-		ImGui::Text("Hello from another window!");
-		ImGui::End();
-	}
-
-	// 3. Show the ImGui test window. Most of the sample code is in ImGui::ShowTestWindow().
-	if (show_demo_window)
-	{
-		ImGui::SetNextWindowPos(ImVec2(650, 20), ImGuiCond_FirstUseEver);
-		ImGui::ShowDemoWindow(&show_demo_window);
-	}
+	DrawCampathGraph();
 }
 
 void On_Direct3DDevice9_Shutdown()
@@ -1022,7 +1530,7 @@ bool OnGameFrameRenderEnd()
 	if (!IsSupported())
 		return false;
 
-	if (!m_Active)
+	if (!m_Active || !g_hWnd || !g_pd3dDevice || !g_FontTexture)
 		return false;
 
 	ImGuiIO& io = ImGui::GetIO();
@@ -1048,8 +1556,9 @@ bool OnGameFrameRenderEnd()
 	// io.MouseDown : filled by WM_*BUTTON* events
 	// io.MouseWheel : filled by WM_MOUSEWHEEL events
 
-	// Set OS mouse position if requested last frame by io.WantMoveMouse flag (used when io.NavMovesTrue is enabled by user and using directional navigation)
-	if (io.WantMoveMouse)
+	// Set OS mouse position if requested last frame by io.WantSetMousePos flag (used when io.NavMovesTrue is enabled by
+	// user and using directional navigation)
+	if (io.WantSetMousePos)
 	{
 		POINT pos = { (int)io.MousePos.x, (int)io.MousePos.y };
 		ClientToScreen(g_hWnd, &pos);
@@ -1109,6 +1618,18 @@ void DllProcessAttach(void)
 }
 
 void DllProcessDetach(void)
+{
+}
+
+bool SetCampathGraphOpen(bool)
+{
+	return false;
+}
+bool GetCampathGraphOpen()
+{
+	return false;
+}
+void FinishCampathGraphEdit()
 {
 }
 

@@ -39,6 +39,16 @@ bool allowUi(unsigned int key, void *)
 {
 	return key == VK_ESCAPE || key == VK_OEM_3 || key == VK_F2;
 }
+struct InputPolicy
+{
+	MirvInput * Input;
+	bool AllowUnused = false;
+};
+bool allowUnused(unsigned int key, void * context)
+{
+	auto & policy = *static_cast<InputPolicy *>(context);
+	return allowUi(key, nullptr) || (policy.AllowUnused && key != VK_INSERT && !policy.Input->IsCameraKey(key));
+}
 RAWINPUT keyboard(USHORT key, bool release = false)
 {
 	RAWINPUT packet = {};
@@ -153,6 +163,35 @@ void inputTests()
 	inputCheck(packet.data.keyboard.VKey == 'K', "Focus loss yields raw input");
 	input.Supply_Focus(true);
 	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'K', 1), "Capture resumes on focus");
+	input.Supply_KeyEvent(MirvInput::KS_UP, 'K', 1);
+	InputPolicy policy{&input};
+	input.SetKeyboardCapture(true, allowUnused, &policy);
+	inputCheck(input.IsCameraKey('W') && !input.IsCameraKey('K'), "Camera ownership uses the native key dispatcher");
+	inputCheck(input.GetCamDForward() == 0, "Querying key ownership cannot move the camera");
+	input.Supply_KeyEvent(MirvInput::KS_DOWN, 'Q', 1);
+	packet = keyboard('Q');
+	raw(input, packet);
+	policy.AllowUnused = true;
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'Q', (1LL << 30) | 1),
+			   "A captured normal press stays owned when passthrough changes");
+	packet = keyboard('Q');
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 0, "A captured raw press stays owned when passthrough changes");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_UP, 'Q', 1), "Captured normal release stays owned");
+	packet = keyboard('Q', true);
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 0, "Captured raw release stays owned");
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_DOWN, 'K', 1), "Unused key reaches Source in permissive mode");
+	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_UP, 'K', 1), "Unused release reaches Source");
+	packet = keyboard('K');
+	raw(input, packet);
+	inputCheck(packet.data.keyboard.VKey == 'K', "Unused raw key reaches Source");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, VK_INSERT, 1), "A preview action remains captured");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_UP, VK_INSERT, 1), "A preview action release remains captured");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'W', 1) && input.GetCamDForward() > 0,
+			   "Native camera movement remains captured and usable");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1) && input.GetCamDForward() == 0,
+			   "Native camera release clears movement");
 }
 } // namespace
 int main()
@@ -520,12 +559,12 @@ void keyframeHolds()
 	curve.SetHandle(20, false, Vector3(0, 100, 0));
 	curve.SetKeyHold(10, 14);
 	near(curve.Eval(13).Y, 0);
-	near(curve.Eval(17).Y, 75);
+	check(curve.Eval(17).Y > 0 && curve.Eval(17).Y < 75, "A curved hold accelerates smoothly after release");
 	CamPath loaded;
 	loaded.CurveEditing_set(true);
 	check(loaded.LoadXml(curve.ToXml()), "Curves and holds share native XML");
 	near(loaded.Eval(13).Y, 0);
-	near(loaded.Eval(17).Y, 75);
+	near(loaded.Eval(17).Y, curve.Eval(17).Y);
 	auto valid = loaded.CaptureState();
 	check(!loaded.LoadXml("<campath><points><p t=\"10\" holdDuration=\"10\"/><p t=\"20\"/></points></campath>"),
 		  "Invalid XML overlap rejected");
@@ -673,6 +712,120 @@ void historyAndCollections()
 		++undoCount;
 	check(undoCount == 64, "History is bounded to 64 edits");
 }
+
+void easingAndSmoothHolds()
+{
+	for (int function = CamPathEase::Inherit; function < CamPathEase::Count; ++function)
+		for (auto direction : {CamPathEase::In, CamPathEase::Out, CamPathEase::InOut})
+		{
+			CamPathEase ease;
+			ease.Type = CamPathEase::Function(function);
+			ease.Mode = direction;
+			check(ease.Valid(), "All default easing presets are valid");
+			near(ease.Eval(0), 0);
+			near(ease.Eval(1), 1);
+			check(std::abs(ease.Eval(1e-8)) < 1e-3 && std::abs(ease.Eval(1 - 1e-8) - 1) < 1e-3,
+				  "Preset endpoints are continuous");
+			for (int i = 0; i <= 200; ++i)
+				check(std::isfinite(ease.Eval(i / 200.0)), "Preset samples remain finite");
+		}
+	CamPath path;
+	populate(path);
+	CamPathEase ease;
+	ease.Type = CamPathEase::Quad;
+	ease.Mode = CamPathEase::In;
+	path.SetEase(ease);
+	near(path.Eval(15).X, 25);
+	near(path.Eval(15).Fov, 82.5);
+	near(path.Eval(15).R.ToQREulerAngles().ToQEulerAngles().Yaw, 22.5);
+	path.Add(30, CamPathValue(200, 0, 0, 0, 180, 0, 30));
+	ease.Type = CamPathEase::Linear;
+	check(path.SetKeyEase(20, ease), "An outgoing segment can override path easing");
+	near(path.Eval(25).X, 150);
+	near(path.Eval(15).X, 25);
+	ease.Type = CamPathEase::Inherit;
+	path.SetKeyEase(20, ease);
+	near(path.Eval(25).X, 125);
+	check(!path.SetKeyEase(30, ease), "Final key has no outgoing segment to edit");
+	ease.Type = CamPathEase::Back;
+	ease.Mode = CamPathEase::Out;
+	path.SetKeyEase(10, ease);
+	check(path.Eval(17).X > 100, "Back easing overshoots the selected segment endpoint");
+	check(path.Eval(17).X < 120, "Overshoot stays with the current segment, not a different global interval");
+	ease.Type = CamPathEase::Bezier;
+	ease.X1 = 1.0 / 3;
+	ease.Y1 = 0;
+	ease.X2 = 2.0 / 3;
+	ease.Y2 = 1;
+	path.SetEase(ease);
+	near(path.Eval(12.5).X, 15.625, 1e-5);
+	ease.Y1 = -1;
+	ease.Y2 = 2;
+	path.SetKeyEase(10, ease);
+	check(path.Eval(11).X < 0, "Custom Bezier handles support anticipatory movement");
+	auto previous = path.CaptureState();
+	ease.X1 = 0.9;
+	ease.X2 = 0.1;
+	check(!path.SetKeyEase(10, ease), "Crossed time handles are rejected");
+	rejected([&] { path.SetEase(ease); }, "Invalid global easing is rejected");
+	check(path.CaptureState() == previous, "Invalid graph edits leave the path intact");
+
+	CamPath held;
+	populate(held);
+	held.PositionInterpMethod_set(CamPath::DI_SMOOTH);
+	held.Add(30, CamPathValue(200, 0, 0, 0, 180, 0, 30));
+	held.SetKeyHold(20, 24);
+	double epsilon = 1e-3;
+	check((held.Eval(20).X - held.Eval(20 - epsilon).X) / epsilon < 1e-3,
+		  "Smooth arrival decelerates to zero velocity");
+	check((held.Eval(24 + epsilon).X - held.Eval(24).X) / epsilon < 1e-3, "Smooth departure starts at zero velocity");
+	near(held.Eval(23).X, 100);
+	near(held.Eval(23).Fov, 60);
+	near(held.Eval(23).R.ToQREulerAngles().ToQEulerAngles().Yaw, 90);
+	near(held.Eval(30).X, 200);
+	ease = CamPathEase();
+	ease.Type = CamPathEase::Bezier;
+	ease.Y1 = 1;
+	ease.Y2 = 0;
+	held.SetEase(ease);
+	check((held.Eval(20).X - held.Eval(20 - epsilon).X) / epsilon < 0.1, "Bezier timing flattens held arrival tangent");
+	check((held.Eval(24 + epsilon).X - held.Eval(24).X) / epsilon < 0.1,
+		  "Bezier timing flattens held departure tangent");
+	CamPath restored;
+	restored.CurveEditing_set(held.CurveEditing_get());
+	check(restored.LoadXml(held.ToXml()), "Global easing and holds save through native XML");
+	check(restored.CaptureState() == held.CaptureState(), "Easing XML preserves parameters and metadata exactly");
+	CamPath perSegment;
+	perSegment.CurveEditing_set(path.CurveEditing_get());
+	check(perSegment.LoadXml(path.ToXml()), "Segment easing loads through native XML");
+	check(perSegment.CaptureState() == path.CaptureState(), "Per-segment easing round-trips");
+	auto valid = perSegment.CaptureState();
+	check(!perSegment.LoadXml("<campath ease=\"bezier\" easeX1=\"nan\"><points/></campath>"),
+		  "Nonfinite graph controls in XML rejected");
+	check(perSegment.CaptureState() == valid, "Invalid graph load is atomic");
+	check(!perSegment.LoadXml("<campath><points><p t=\"1\" ease=\"unknown\"/></points></campath>"),
+		  "Unknown segment easing rejected");
+	CamPathCollection history;
+	populate(history.Active());
+	auto before = history.Capture();
+	ease = CamPathEase();
+	ease.Type = CamPathEase::Bounce;
+	history.Active().SetEase(ease);
+	history.Record(before);
+	check(history.Undo() && history.Capture() == before, "Easing edits participate in existing history");
+	check(history.Redo() && history.Active().GetEase() == ease, "Redo restores easing settings");
+	history.New("Second easing path");
+	populate(history.Active());
+	ease.Type = CamPathEase::Elastic;
+	check(history.Active().SetKeyEase(10, ease), "Second path stores its own segment easing");
+	auto collectionFile = std::filesystem::temp_directory_path() / "afx-easing-collection.xml";
+	check(history.SaveAll(collectionFile.wstring().c_str()), "Easing collection saves");
+	CamPathCollection restoredCollection;
+	check(restoredCollection.Load(collectionFile.wstring().c_str()), "Easing collection loads");
+	check(restoredCollection.Capture() == history.Capture(),
+		  "Collection preserves path defaults and segment overrides");
+	std::filesystem::remove(collectionFile);
+}
 } // namespace
 int main()
 {
@@ -686,6 +839,7 @@ int main()
 		keyframeHolds();
 		collectionPlayback();
 		historyAndCollections();
+		easingAndSmoothHolds();
 		std::cout << checks << " campath checks passed\n";
 	}
 	catch (const std::exception & e)

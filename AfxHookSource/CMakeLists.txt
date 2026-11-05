@@ -67,6 +67,28 @@ endif()
 
 add_library(AfxHookSource MODULE)
 
+# Use the existing HLAE GUI/device backend for the campath graph editor.
+include(FetchContent)
+FetchContent_Declare(afx_imgui
+    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.86.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE
+    URL_HASH SHA256=6ba6ae8425a19bc52c5e067702c48b70e4403cd339cba02073a462730a63e825
+)
+FetchContent_MakeAvailable(afx_imgui)
+target_sources(AfxHookSource PRIVATE
+    "${afx_imgui_SOURCE_DIR}/imgui.cpp"
+    "${afx_imgui_SOURCE_DIR}/imgui_draw.cpp"
+    "${afx_imgui_SOURCE_DIR}/imgui_widgets.cpp"
+    "${afx_imgui_SOURCE_DIR}/imgui_tables.cpp"
+)
+target_include_directories(AfxHookSource PRIVATE "${afx_imgui_SOURCE_DIR}")
+target_compile_definitions(AfxHookSource PRIVATE AFX_ENABLE_GUI=1)
+if(CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
+    install(FILES "${afx_imgui_SOURCE_DIR}/LICENSE.txt" DESTINATION bin/licenses RENAME imgui.txt COMPONENT x64-source1)
+else()
+    install(FILES "${afx_imgui_SOURCE_DIR}/LICENSE.txt" DESTINATION bin/licenses RENAME imgui.txt)
+endif()
+
 add_dependencies(AfxHookSource
     OpenEXR
     AfxHookSourceShaders

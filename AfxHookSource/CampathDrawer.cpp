@@ -1198,14 +1198,14 @@ bool CCampathDrawer::BeginLabels(CDynamicProperties const * properties, bool nam
 	m_Device->SetRenderState(D3DRS_COLORWRITEENABLE, 15);
 	m_Device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
 	m_Device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-	m_Device->SetRenderState(D3DRS_ZENABLE, names ? D3DZB_FALSE : D3DZB_TRUE);
-	m_Device->SetRenderState(D3DRS_ZWRITEENABLE, names ? FALSE : TRUE);
+	m_Device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+	m_Device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
 	m_Device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
 	m_Device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
 	m_Device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
 	m_Device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
 	m_Device->SetRenderState(D3DRS_ALPHAREF, 1);
-	m_Device->SetRenderState(D3DRS_ALPHATESTENABLE, names ? FALSE : TRUE);
+	m_Device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
 	m_Device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
 	m_Device->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
 	m_Device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
@@ -1252,20 +1252,9 @@ void CCampathDrawer::DrawLabel(CDynamicProperties const * properties, Vector3 po
 	const auto & up = properties->GetPlaneUp();
 	if (names)
 	{
-		// Convert requested pixel height to a billboard world height using the
-		// existing projection and view-plane axes. Classic height stays in world units.
-		const auto & m = properties->GetWorldToScreenMatrix();
-		double w = m.m[3][0] * position.X + m.m[3][1] * position.Y + m.m[3][2] * position.Z + m.m[3][3];
-		double upY = m.m[1][0] * up.X + m.m[1][1] * up.Y + m.m[1][2] * up.Z;
-		if (w <= 0.01 || fabs(upY) < 1e-9 || !properties->GetScreenHeight())
-			return;
-		// Keep a clear screen-space margin between text and its path/camera
-		// marker. Scale the margin with the existing label-height setting.
-		float pixels = height;
-		double worldPerPixel = 2 * w / (fabs(upY) * properties->GetScreenHeight());
-		height = float(pixels * worldPerPixel);
-		position += up * ((12 + pixels * (2 + row * 1.3f)) * worldPerPixel);
-		position -= right * ((std::max)(24.0f, pixels) * worldPerPixel);
+		// Like native indices, annotations have a fixed world height and depth.
+		// Anchor their margin in world Z, so camera movement cannot move the label.
+		position.Z += height * (2 + row * 1.3f);
 		m_Device->SetRenderState(D3DRS_TEXTUREFACTOR, color);
 	}
 	for (size_t i = 0; i < text.size(); ++i)

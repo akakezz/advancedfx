@@ -59,6 +59,7 @@ try
 					value.HasInHandle = old.HasInHandle;
 					value.HasOutHandle = old.HasOutHandle;
 					value.HoldDuration = old.HoldDuration;
+					value.Ease = old.Ease;
 					break;
 				}
 			camPath->Add(time, value);
