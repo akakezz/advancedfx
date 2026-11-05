@@ -1221,7 +1221,8 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 		m_KeyDownEaten[wParam] = true;
 		return true;
 	}
-	if (wParam == VK_OEM_3 && (msg == WM_KEYDOWN || msg == WM_KEYUP))
+	if ((msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) &&
+		MirvCampathEditor_IsUiPassThrough(unsigned(wParam)))
 		return false;
 	if ((GetKeyState(VK_MENU) & 0x8000) && (wParam == VK_TAB || wParam == VK_F4) &&
 		(msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP))
@@ -1316,6 +1317,8 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 			case RIM_TYPEMOUSE:
 				return true;
 			case RIM_TYPEKEYBOARD:
+				if (MirvCampathEditor_IsUiPassThrough(inp.data.keyboard.VKey))
+					return false;
 				// Source must be able to release a press that preceded GUI focus.
 				return !(inp.data.keyboard.Flags & RI_KEY_BREAK);
 			}

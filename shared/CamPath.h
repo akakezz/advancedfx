@@ -65,6 +65,7 @@ struct CamPathValue
 	// position interpolator until explicitly edited.
 	Vector3 InHandle{0, 0, 0}, OutHandle{0, 0, 0};
 	bool HasInHandle = false, HasOutHandle = false;
+	bool HandlesAligned = true; // Opposite directions, independent lengths.
 
 	double HoldDuration = 0; // arrival + duration is the release time in path coordinates
 	CamPathEase Ease; // outgoing segment; Inherit uses the path setting
@@ -192,6 +193,7 @@ public:
 	}
 	bool GetHandle(double time, bool outgoing, Vector3 & offset) const;
 	bool SetHandle(double time, bool outgoing, const Vector3 & offset);
+	bool SetHandleMode(double time, bool aligned);
 	bool ResetHandles(double time);
 
 	void Remove(double time);

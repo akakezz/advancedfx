@@ -1550,10 +1550,17 @@ static void CampathPreview_UpdateSeek()
 	g_VEngineClient->ExecuteClientCmd(command.str().c_str());
 }
 
+static void CampathPreview_SetTravel(bool forward, bool backward)
+{
+	if (forward != g_CampathPreviewForward || backward != g_CampathPreviewBackward)
+		if (auto * input = g_Hook_VClient_RenderView.m_MirvInput)
+			input->ClearMovementInput();
+	g_CampathPreviewForward = forward;
+	g_CampathPreviewBackward = backward;
+}
 static void CampathPreview_StopTravel()
 {
-	g_CampathPreviewForward = false;
-	g_CampathPreviewBackward = false;
+	CampathPreview_SetTravel(false, false);
 }
 
 static UINT CampathPreview_ParseToggleKey(const char * name)
@@ -1587,6 +1594,12 @@ static UINT CampathPreview_ParseToggleKey(const char * name)
 		if (end != name + 2 && !*end && value > 0 && value < 256)
 			return (UINT)value;
 	}
+	if (!_stricmp(name, "shift"))
+		return VK_SHIFT;
+	if (!_stricmp(name, "lshift"))
+		return VK_LSHIFT;
+	if (!_stricmp(name, "rshift"))
+		return VK_RSHIFT;
 	if (!_stricmp(name, "rctrl") || !_stricmp(name, "rightctrl"))
 		return VK_RCONTROL;
 	if (!_stricmp(name, "lctrl") || !_stricmp(name, "leftctrl"))
@@ -1785,7 +1798,12 @@ void MirvCampathPreview_Update()
 	}
 
 	if (g_CampathPreviewForward || g_CampathPreviewBackward)
+	{
+		// Keep keyboard and mouse deltas out of the free-camera override which
+		// follows this update. Preview retains its input ownership and pose.
+		g_Hook_VClient_RenderView.m_MirvInput->ClearMovementInput();
 		CampathPreview_SetCamera();
+	}
 }
 
 static bool CampathPreview_GotoIndex(int index)
@@ -1860,6 +1878,9 @@ void initPassThrough()
 		return;
 	uiPassThroughInitialized = true;
 	uiPassThrough[VK_ESCAPE] = uiPassThrough[VK_OEM_3] = uiPassThrough[VK_F2] = true;
+	// Source needs the modifier press as well as F2 for its native demo UI.
+	// Preview chords still read Shift from GetKeyState and own their main key.
+	uiPassThrough[VK_SHIFT] = uiPassThrough[VK_LSHIFT] = uiPassThrough[VK_RSHIFT] = true;
 }
 bool allowSourceCommands = false;
 bool previewUsesKey(unsigned key);
@@ -2009,6 +2030,12 @@ std::string keyName(UINT key)
 		return std::string(1, (char)key);
 	switch (key)
 	{
+	case VK_SHIFT:
+		return "shift";
+	case VK_LSHIFT:
+		return "lshift";
+	case VK_RSHIFT:
+		return "rshift";
 	case VK_RCONTROL:
 		return "rctrl";
 	case VK_LCONTROL:
@@ -2327,6 +2354,7 @@ void curveHelp()
 		"mirv_campath curve type default|linear|smooth|monotone|step|cubic|bezier - Choose position interpolation.\n"
 		"mirv_campath curve handle in|out capture - Capture the selected keyframe handle at the camera.\n"
 		"mirv_campath curve handle in|out <x> <y> <z> - Set a world-space offset.\n"
+		"mirv_campath curve handle mode aligned|free - Link selected handles (new keys: aligned).\n"
 		"mirv_campath curve reset - Reset selected keyframe handles to native interpolation.\n");
 	Tier0_Msg("Current curve: %s\n", activePath().Bezier_get()
 										 ? "bezier"
@@ -2401,6 +2429,7 @@ void executeEditorAction(EditorAction action)
 		value.OutHandle = previous.OutHandle;
 		value.HasInHandle = previous.HasInHandle;
 		value.HasOutHandle = previous.HasOutHandle;
+		value.HandlesAligned = previous.HandlesAligned;
 		value.HoldDuration = previous.HoldDuration;
 		value.Ease = previous.Ease;
 		path.Add(key.GetTime(), value);
@@ -2788,6 +2817,25 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 				activePath().ResetHandles(selectedKey().GetTime());
 				return changed();
 			}
+			if (a.is(1, "handle") && a.is(2, "mode"))
+			{
+				if (a.count() == 3)
+				{
+					Tier0_Msg("mirv_campath curve handle mode aligned|free - Selected keyframes.\n");
+					return true;
+				}
+				a.size(4);
+				need(a.is(3, "aligned") || a.is(3, "free"), "Choose aligned or free");
+				bool selected = false;
+				for (auto it = activePath().GetBegin(); it != activePath().GetEnd(); ++it)
+					if (it.GetValue().Selected)
+					{
+						need(activePath().SetHandleMode(it.GetTime(), a.is(3, "aligned")), "Invalid curve handles");
+						selected = true;
+					}
+				need(selected, "Select keyframes first");
+				return changed();
+			}
 			if (a.is(1, "handle"))
 			{
 				need(a.count() == 4 || a.count() == 6, "Use curve handle in|out capture|<x y z>");
@@ -2873,6 +2921,11 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 		return true;
 	}
 }
+bool MirvCampathEditor_IsUiPassThrough(unsigned key)
+{
+	initPassThrough();
+	return key < 256 && uiPassThrough[key];
+}
 bool MirvCampathEditor_ShowHud()
 {
 	return g_CampathPreviewActive && g_CampathPreviewHud;
@@ -2926,7 +2979,7 @@ void MirvCampathEditor_ReleaseKeys(bool yieldKeyboard)
 		std::fill(std::begin(swallowed), std::end(swallowed), false);
 	std::fill(std::begin(actionHeld), std::end(actionHeld), false);
 	std::fill(std::begin(pressedAction), std::end(pressedAction), -1);
-	g_CampathPreviewForward = g_CampathPreviewBackward = false;
+	CampathPreview_StopTravel();
 	g_CampathPreviewLastMs = GetTickCount();
 }
 bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags)
@@ -2949,8 +3002,7 @@ bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags)
 		pressedAction[key] = -1;
 		if (i >= 0)
 			actionHeld[i] = false;
-		g_CampathPreviewForward = actionHeld[EA_Right];
-		g_CampathPreviewBackward = actionHeld[EA_Left];
+		CampathPreview_SetTravel(actionHeld[EA_Right], actionHeld[EA_Left]);
 		return true;
 	}
 	if (down && swallowed[key])
@@ -2988,8 +3040,7 @@ bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags)
 		swallowed[key] = true;
 		pressedAction[key] = i;
 		actionHeld[i] = true;
-		g_CampathPreviewForward = actionHeld[EA_Right];
-		g_CampathPreviewBackward = actionHeld[EA_Left];
+		CampathPreview_SetTravel(actionHeld[EA_Right], actionHeld[EA_Left]);
 		auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
 		AfxHookSource::Gui::FinishCampathGraphEdit();
 		auto before = paths.Capture();

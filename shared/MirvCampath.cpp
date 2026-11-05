@@ -58,6 +58,7 @@ try
 					value.OutHandle = old.OutHandle;
 					value.HasInHandle = old.HasInHandle;
 					value.HasOutHandle = old.HasOutHandle;
+					value.HandlesAligned = old.HandlesAligned;
 					value.HoldDuration = old.HoldDuration;
 					value.Ease = old.Ease;
 					break;

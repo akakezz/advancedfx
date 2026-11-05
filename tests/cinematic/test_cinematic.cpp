@@ -37,7 +37,8 @@ public:
 };
 bool allowUi(unsigned int key, void *)
 {
-	return key == VK_ESCAPE || key == VK_OEM_3 || key == VK_F2;
+	return key == VK_ESCAPE || key == VK_OEM_3 || key == VK_F2 || key == VK_SHIFT || key == VK_LSHIFT ||
+		   key == VK_RSHIFT;
 }
 struct InputPolicy
 {
@@ -102,6 +103,17 @@ void inputTests()
 	packet = keyboard(VK_F2);
 	raw(input, packet);
 	inputCheck(packet.data.keyboard.VKey == VK_F2, "Raw UI key allowed");
+	for (USHORT key : {VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_F2})
+	{
+		inputCheck(!input.Supply_KeyEvent(MirvInput::KS_DOWN, key, 1), "Native demo UI receives Shift and F2 presses");
+		packet = keyboard(key);
+		raw(input, packet);
+		inputCheck(packet.data.keyboard.VKey == key, "Native demo UI receives raw modifier/key presses");
+		inputCheck(!input.Supply_KeyEvent(MirvInput::KS_UP, key, 1), "Native demo UI receives modifier/key releases");
+		packet = keyboard(key, true);
+		raw(input, packet);
+		inputCheck(packet.data.keyboard.VKey == key, "Native demo UI receives raw modifier/key releases");
+	}
 	RAWINPUT packets[2] = {keyboard('J'), keyboard('L')};
 	UINT bytes = sizeof(packets);
 	input.Supply_RawInputBuffer(2, packets, &bytes, sizeof(RAWINPUTHEADER));
@@ -210,6 +222,33 @@ void inputTests()
 	input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1);
 	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'W', 1) && input.GetCamDForward() > 0,
 			   "Movement resumes after graph input is released");
+	input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1);
+	// Preview clears movement before every free-camera override during a scrub.
+	input.Supply_KeyEvent(MirvInput::KS_DOWN, 'W', 1);
+	RAWINPUT mouse = {};
+	mouse.header.dwType = RIM_TYPEMOUSE;
+	mouse.header.dwSize = sizeof(mouse);
+	mouse.data.mouse.lLastX = 25;
+	mouse.data.mouse.lLastY = -10;
+	raw(input, mouse);
+	inputCheck(input.GetCamDForward() != 0 && input.GetCamDYaw() != 0,
+			   "Keyboard and mouse accumulate before scrub lock");
+	input.SetTx(25);
+	input.SetTy(40);
+	input.SetTz(60);
+	input.SetRx(10);
+	input.SetRy(20);
+	input.SetRz(30);
+	input.SetFov(75);
+	input.ClearMovementInput();
+	float x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, fov = 90;
+	input.Override(0.25f, x, y, z, rx, ry, rz, fov);
+	inputCheck(x == 25 && y == 40 && z == 60 && rx == 10 && ry == 20 && rz == 30 && fov == 75,
+			   "Scrub camera pose survives free-camera evaluation with keyboard and mouse input");
+	inputCheck(input.GetCamDForward() == 0 && input.GetCamDYaw() == 0 && input.GetCamDPitch() == 0,
+			   "Scrub lock discards translation and rotation deltas");
+	inputCheck(input.GetKeyboardCapture() && input.GetCameraControlMode(),
+			   "Scrub lock retains input ownership and free-camera mode");
 	input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1);
 	policy.AllowUnused = false;
 	input.Supply_KeyEvent(MirvInput::KS_DOWN, 'Q', 1);
@@ -375,6 +414,103 @@ void curves()
 	cubic.SetHandle(10, true, Vector3(0, 100, 0));
 	for (int i = 0; i <= 20; ++i)
 		near(native.Eval(20 + i * 0.25).Y, cubic.Eval(20 + i * 0.25).Y);
+}
+void alignedHandles()
+{
+	CamPathCollection paths;
+	auto & path = paths.Active();
+	populate(path);
+	path.Add(30, CamPathValue(200, 100, 0, 0, 0, 0, 90));
+	check(std::next(path.GetBegin().wrapped)->second.HandlesAligned, "New keys use aligned spatial handles");
+	Vector3 in, out;
+	path.GetHandle(20, false, in);
+	double originalLength = in.Length();
+	check(path.SetHandle(20, true, Vector3(0, 0, 12)), "Set an aligned outgoing handle");
+	path.GetHandle(20, false, in);
+	near(in.X, 0);
+	near(in.Y, 0);
+	near(in.Z, -originalLength);
+	check(path.SetHandle(20, false, Vector3(3, 4, 0)), "Move the incoming aligned handle");
+	path.GetHandle(20, true, out);
+	near(out.X, -7.2);
+	near(out.Y, -9.6);
+	near(out.Z, 0);
+	near(out.Length(), 12);
+	path.GetHandle(20, false, in);
+	near(in.Length(), 5);
+	auto before = path.Eval(20 - 1e-5), at = path.Eval(20), after = path.Eval(20 + 1e-5);
+	Vector3 arrival(at.X - before.X, at.Y - before.Y, at.Z - before.Z),
+		departure(after.X - at.X, after.Y - at.Y, after.Z - at.Z);
+	arrival = arrival.Normalize();
+	departure = departure.Normalize();
+	near(arrival.X * departure.X + arrival.Y * departure.Y + arrival.Z * departure.Z, 1, 1e-5);
+	check(path.SetHandleMode(20, false), "Free handles remain available for corners");
+	path.SetHandle(20, false, Vector3(0, 5, 0));
+	path.SetHandle(20, true, Vector3(12, 0, 0));
+	path.GetHandle(20, false, in);
+	near(in.Y, 5);
+	near(in.X, 0);
+	auto corner = paths.Capture();
+	check(path.SetHandleMode(20, true), "Existing corners can be aligned");
+	path.GetHandle(20, false, in);
+	path.GetHandle(20, true, out);
+	near(in.X, -5);
+	near(in.Y, 0);
+	near(in.Length(), 5);
+	near(out.Length(), 12);
+	paths.Record(corner);
+	check(paths.Undo() && paths.Capture() == corner, "Undo restores both handle directions and mode");
+	check(paths.Redo() && std::next(paths.Active().GetBegin().wrapped)->second.HandlesAligned,
+		  "Redo restores alignment");
+	// Undo/redo can replace the active path object.
+	auto & current = paths.Active();
+	check(current.SetHandle(20, true, Vector3(0, 0, 0)), "A collapsed handle has no required direction");
+	check(current.SetHandle(20, true, Vector3(1e-200, 0, 0)), "Tiny nonzero handle alignment stays finite");
+	current.GetHandle(20, false, in);
+	near(in.X, -5);
+	near(in.Length(), 5);
+	auto valid = current.CaptureState();
+	check(!current.SetHandle(20, true, Vector3(std::numeric_limits<double>::quiet_NaN(), 0, 0)),
+		  "Invalid aligned handle rejected");
+	check(current.CaptureState() == valid, "Rejected alignment leaves both handles unchanged");
+	check(!current.SetHandle(std::numeric_limits<double>::quiet_NaN(), true, Vector3(1, 0, 0)),
+		  "Nonfinite handle key time rejected");
+	check(!current.SetHandleMode(std::numeric_limits<double>::quiet_NaN(), false), "Nonfinite mode key time rejected");
+	check(current.CaptureState() == valid, "Invalid key time cannot modify the first keyframe");
+	current.SetHandleMode(20, false);
+	current.SetHandle(20, false, Vector3(1e9, 1e9, 0));
+	valid = current.CaptureState();
+	check(!current.SetHandleMode(20, true), "Alignment which exceeds the handle bound is rejected");
+	check(current.CaptureState() == valid, "Rejected mode change is atomic");
+	current.SetHandle(20, false, Vector3(0, 5, 0));
+	CamPath restored;
+	restored.CurveEditing_set(true);
+	restored.Enabled_set(current.Enabled_get());
+	check(restored.LoadXml(current.ToXml()), "Handle modes load from native XML");
+	check(restored.CaptureState() == current.CaptureState(), "Free and aligned modes round-trip with the curve");
+	check(restored.SetHandleMode(20, true), "Loaded free handles can be aligned");
+	CamPath aligned;
+	aligned.CurveEditing_set(true);
+	aligned.Enabled_set(restored.Enabled_get());
+	check(aligned.LoadXml(restored.ToXml()) && aligned.CaptureState() == restored.CaptureState(),
+		  "Aligned controls round-trip exactly");
+	valid = aligned.CaptureState();
+	check(!aligned.LoadXml("<campath><points><p t=\"1\" handleMode=\"unknown\"/></points></campath>"),
+		  "Unknown handle mode rejected");
+	check(aligned.CaptureState() == valid, "Invalid mode load preserves the current path");
+	CamPath legacy;
+	legacy.CurveEditing_set(true);
+	check(legacy.LoadXml("<campath positionInterp=\"linear\" rotationInterp=\"sLinear\" fovInterp=\"linear\" "
+						 "curve=\"bezier\"><points>"
+						 "<p t=\"0\"/><p t=\"1\" inX=\"-10\" inY=\"0\" inZ=\"0\" outX=\"0\" outY=\"20\" outZ=\"0\"/>"
+						 "<p t=\"2\"/></points></campath>"),
+		  "Older authored handles load");
+	check(!std::next(legacy.GetBegin().wrapped)->second.HandlesAligned, "Legacy corners retain free handles");
+	legacy.SetHandle(1, true, Vector3(0, 30, 0));
+	legacy.GetHandle(1, false, in);
+	near(in.X, -10);
+	near(in.Y, 0);
+	check(legacy.GetBegin().GetValue().HandlesAligned, "Classic keys without authored handles use the aligned default");
 }
 void placement()
 {
@@ -859,6 +995,7 @@ int main()
 	{
 		captureAndTiming();
 		curves();
+		alignedHandles();
 		placement();
 		persistence();
 		localInterpolation();

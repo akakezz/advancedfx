@@ -37,7 +37,10 @@ mirv_campath preview enter
 Preview enables the existing free camera, drawing and keyboard capture. It also
 works with an empty path. Visit a keyframe, then fly freely to capture a handle or
 replacement pose; the selected keyframe stays selected. Scrubbing and visiting
-move the camera without seeking the demo. Capture still uses the actual demo time.
+move the camera without seeking the demo. While a scrub key is held, free-camera
+keyboard/mouse translation, rotation and FOV changes cannot move the camera off
+the path. Starting and stopping a scrub clear pending camera movement; releasing
+the scrub key restores free-camera editing. Capture still uses the actual demo time.
 
 | Key | Action |
 | --- | --- |
@@ -106,9 +109,13 @@ mirv_campath preview command ctrl+L none
 ```
 
 Shared `MirvInput` captures ordinary and raw keyboard input during preview.
-Console, menus, demo UI and the HLAE GUI retain priority. Escape, grave, F2, Alt+Tab
-and Alt+F4 remain available. `preview passthrough <key> 1` allows a custom menu or
-console binding through to Source. Input ownership and held navigation are
+Console, menus, demo UI and the HLAE GUI retain priority. Escape, grave, F2,
+Shift, Alt+Tab and Alt+F4 remain available. Both Shift and F2 reach Source so its
+native Shift+F2 shortcut can open the demo UI during preview or graph editing.
+Preview still owns the main keys of Shift combinations such as Shift+E and
+Shift+Y; their bindings do not need to change. Shift itself is a UI passthrough
+modifier, so a Source bind on Shift can also run. `preview passthrough <key> 1`
+allows a custom menu or console binding through to Source. Input ownership and held navigation are
 released when focus or menus change.
 
 ```text
@@ -133,6 +140,25 @@ Select one keyframe, fly to its desired control-handle endpoint, then capture.
 The keyboard alternative is Down/Up followed by `[` or `]`. Handles change only
 the position curve and stay attached during native retiming and placement.
 Incoming/outgoing offsets are world coordinates relative to the keyframe.
+
+New keyframes use **aligned** spatial handles: moving one rotates the opposite
+handle onto the same line, pointing the other way, while preserving the opposite
+handle's length. This keeps a continuous tangent direction through the keyframe.
+It does not force equal lengths or equal speed across the join. Collapsing a handle
+to zero leaves its direction undefined until it is moved away from the keyframe.
+
+```text
+mirv_campath curve handle mode aligned
+mirv_campath curve handle mode free
+```
+
+These commands affect selected keyframes and participate in undo/redo. Enabling
+alignment on an existing corner uses its outgoing direction when available,
+retaining both handle lengths. Free mode allows independent handles for deliberate
+corners. Save/load and pose recapture preserve the mode. Older files with authored
+handles and no mode keep those handles free to preserve their original curves;
+select those keys and apply `aligned` to convert them. This concerns spatial
+handles; the graph's time/value easing handles remain independent.
 
 ```text
 mirv_campath curve handle in -32 0 0
@@ -284,7 +310,7 @@ does not change the master playback switch. Recording autosave includes all
 paths when more than one exists. BVH import targets the selected path and can be
 undone. Supply `.xml` explicitly; saving overwrites the specified file.
 
-Classic XML remains supported. Handles, hold durations, easing and names are optional
+Classic XML remains supported. Handles, handle mode, hold durations, easing and names are optional
 attributes; numbers retain enough precision to round-trip. Older HLAE builds can
 read the basic keys but ignore these extensions. The earlier experimental
 `cinematicCamera` schema remains unsupported; retain those files and use the old

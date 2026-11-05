@@ -207,7 +207,7 @@ bool CamPathValue::operator==(const CamPathValue & b) const
 		   Fov == b.Fov && Selected == b.Selected && InHandle.X == b.InHandle.X && InHandle.Y == b.InHandle.Y &&
 		   InHandle.Z == b.InHandle.Z && OutHandle.X == b.OutHandle.X && OutHandle.Y == b.OutHandle.Y &&
 		   OutHandle.Z == b.OutHandle.Z && HasInHandle == b.HasInHandle && HasOutHandle == b.HasOutHandle &&
-		   HoldDuration == b.HoldDuration && Ease == b.Ease;
+		   HandlesAligned == b.HandlesAligned && HoldDuration == b.HoldDuration && Ease == b.Ease;
 }
 bool CamPath::State::operator==(const State & b) const
 {
@@ -724,6 +724,8 @@ void CamPath::Bezier_set(bool enabled)
 }
 bool CamPath::GetHandle(double time, bool outgoing, Vector3 & offset) const
 {
+	if (!std::isfinite(time))
+		return false;
 	auto point = m_Map.find(time);
 	if (point == m_Map.end())
 		return false;
@@ -772,23 +774,71 @@ bool CamPath::GetHandle(double time, bool outgoing, Vector3 & offset) const
 			 (span / (3 * (b - a)));
 	return true;
 }
+namespace
+{
+bool ValidCampathHandle(const Vector3 & handle)
+{
+	return std::isfinite(handle.X) && std::isfinite(handle.Y) && std::isfinite(handle.Z) && std::abs(handle.X) <= 1e9 &&
+		   std::abs(handle.Y) <= 1e9 && std::abs(handle.Z) <= 1e9;
+}
+bool StoreCampathHandle(CamPathValue & value, bool outgoing, const Vector3 & offset, const Vector3 & opposite)
+{
+	if (!ValidCampathHandle(offset))
+		return false;
+	double length = std::hypot(offset.X, offset.Y, offset.Z);
+	if (value.HandlesAligned && length > 0)
+	{
+		double otherLength = std::hypot(opposite.X, opposite.Y, opposite.Z);
+		Vector3 aligned(-offset.X / length * otherLength, -offset.Y / length * otherLength,
+						-offset.Z / length * otherLength);
+		if (!ValidCampathHandle(aligned))
+			return false;
+		(outgoing ? value.InHandle : value.OutHandle) = aligned;
+		(outgoing ? value.HasInHandle : value.HasOutHandle) = true;
+	}
+	(outgoing ? value.OutHandle : value.InHandle) = offset;
+	(outgoing ? value.HasOutHandle : value.HasInHandle) = true;
+	return true;
+}
+} // namespace
 bool CamPath::SetHandle(double time, bool outgoing, const Vector3 & offset)
 {
-	auto point = m_Map.find(time);
-	if (!m_CurveEditing || point == m_Map.end() || !std::isfinite(offset.X) || !std::isfinite(offset.Y) ||
-		!std::isfinite(offset.Z) || std::abs(offset.X) > 1e9 || std::abs(offset.Y) > 1e9 || std::abs(offset.Z) > 1e9)
+	if (!std::isfinite(time))
 		return false;
-	if (outgoing)
-	{
-		point->second.OutHandle = offset;
-		point->second.HasOutHandle = true;
-	}
-	else
-	{
-		point->second.InHandle = offset;
-		point->second.HasInHandle = true;
-	}
+	auto point = m_Map.find(time);
+	if (!m_CurveEditing || point == m_Map.end())
+		return false;
+	CamPathValue value = point->second;
+	Vector3 opposite;
+	GetHandle(time, !outgoing, opposite);
+	if (!StoreCampathHandle(value, outgoing, offset, opposite))
+		return false;
+	point->second = value;
 	m_Bezier = true;
+	Changed();
+	return true;
+}
+bool CamPath::SetHandleMode(double time, bool aligned)
+{
+	if (!std::isfinite(time))
+		return false;
+	auto point = m_Map.find(time);
+	if (!m_CurveEditing || point == m_Map.end())
+		return false;
+	CamPathValue value = point->second;
+	value.HandlesAligned = aligned;
+	if (aligned && (value.HasInHandle || value.HasOutHandle))
+	{
+		// Prefer the outgoing direction when aligning an existing corner. Keep
+		// both lengths, including the automatic handle when only one was edited.
+		bool outgoing = value.HasOutHandle && std::hypot(value.OutHandle.X, value.OutHandle.Y, value.OutHandle.Z) > 0;
+		Vector3 offset, opposite;
+		GetHandle(time, outgoing, offset);
+		GetHandle(time, !outgoing, opposite);
+		if (!StoreCampathHandle(value, outgoing, offset, opposite))
+			return false;
+	}
+	point->second = value;
 	Changed();
 	return true;
 }
@@ -1068,6 +1118,7 @@ std::string CamPath::ToXml()
 		pt->append_attribute(doc.allocate_attribute("qy", double2xml(doc,it.wrapped->second.R.Y)));
 		pt->append_attribute(doc.allocate_attribute("qz", double2xml(doc,it.wrapped->second.R.Z)));
 
+		pt->append_attribute(doc.allocate_attribute("handleMode", val.HandlesAligned ? "aligned" : "free"));
 		if (val.HoldDuration > 0)
 			pt->append_attribute(doc.allocate_attribute("holdDuration", double2xml(doc, val.HoldDuration)));
 
@@ -1216,6 +1267,9 @@ bool CamPath::LoadXml(const std::string & xml)
 					double dFov = fovA ? atof(fovA->value()) : 90.0;
 
 					CamPathValue r;
+					auto handleMode = cur_node->first_attribute("handleMode");
+					if (handleMode && _stricmp(handleMode->value(), "aligned") && _stricmp(handleMode->value(), "free"))
+						throw std::invalid_argument("Invalid handle mode");
 					r.Ease = ReadEase(cur_node);
 					r.X = dX;
 					r.Y = dY;
@@ -1282,7 +1336,11 @@ bool CamPath::LoadXml(const std::string & xml)
 					}
 					if (!bOk)
 						break;
-						m_Map[dT] = r;
+					// Older files keep explicitly authored corners. Unedited native
+					// keyframes and newly captured keys use aligned handles.
+					r.HandlesAligned =
+						handleMode ? !_stricmp(handleMode->value(), "aligned") : !r.HasInHandle && !r.HasOutHandle;
+					m_Map[dT] = r;
 					}
 			} while (false);
 		}
