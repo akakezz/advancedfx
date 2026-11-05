@@ -161,6 +161,7 @@ private:
 // Source 1 campath command/editor integration (implemented in MirvCommands.cpp).
 bool MirvCampathEditor_Command(IWrpCommandArgs * args);
 bool MirvCampathEditor_IsEditing();
+bool MirvCampathEditor_ShowHud();
 // Allow the graph toggle to close its focused GUI window using the same binding.
 bool MirvCampathEditor_IsGraphKey(unsigned key);
 bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags);

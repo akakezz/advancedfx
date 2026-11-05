@@ -517,7 +517,8 @@ namespace
 struct CampathGraphState
 {
 	bool Open = false, Focus = false, Fit = true, Boxing = false, Editing = false;
-	bool WindowFocused = true;
+	bool WindowFocused = true, EditAll = false;
+	double ContextTime = 0;
 	ImVec2 BoxStart;
 	int Handle = -1;
 	double KeyTime = 0;
@@ -567,7 +568,8 @@ void UpdateGraphInputOwnership()
 		if (GetCapture() == g_hWnd)
 			ReleaseCapture();
 		m_OwnCursor = m_Cursors.GetCursor(ImGuiMouseCursor_Arrow);
-		SetCursor(m_OwnCursor);
+		if (GetCursor() != m_OwnCursor)
+			SetCursor(m_OwnCursor);
 		POINT client = m_GameCursorPos;
 		ScreenToClient(g_hWnd, &client);
 		ImGui::GetIO().MousePos = ImVec2(float(client.x), float(client.y));
@@ -642,6 +644,81 @@ bool SetCampathGraphOpen(bool value)
 	return true;
 }
 
+static std::vector<double> GraphSelectedSegments(CamPath & path)
+{
+	std::vector<double> result;
+	for (auto it = path.GetBegin(); it != path.GetEnd(); ++it)
+		if (it.GetValue().Selected && std::next(it.wrapped) != path.GetEnd().wrapped)
+			result.push_back(it.GetTime());
+	return result;
+}
+
+static void ApplyGraphPreset(bool finish)
+{
+	auto & graph = g_CampathGraph;
+	auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
+	if (!graph.Preset.Valid())
+		return;
+	auto selected = GraphSelectedSegments(paths.Active());
+	if (!graph.EditAll && selected.empty())
+		return;
+	if (!graph.Editing)
+	{
+		graph.Before = paths.Capture();
+		graph.Editing = true;
+		graph.Handle = -1;
+	}
+	if (graph.EditAll)
+		paths.Active().SetEase(graph.Preset);
+	else
+		for (double time : selected)
+			paths.Active().SetKeyEase(time, graph.Preset);
+	if (finish)
+		FinishCampathGraphEdit();
+}
+
+static void DrawGraphSegmentMenu()
+{
+	if (!ImGui::BeginPopup("CampathSegmentMenu"))
+		return;
+	auto & graph = g_CampathGraph;
+	ImGui::Text("%u selected segments",
+				unsigned(GraphSelectedSegments(g_Hook_VClient_RenderView.GetActiveCamPath()).size()));
+	ImGui::Separator();
+	if (ImGui::BeginMenu("Preset"))
+	{
+		for (int i = 0; i < CamPathEase::Count; ++i)
+			if (ImGui::MenuItem(CamPathEase::ToString(CamPathEase::Function(i)), nullptr, graph.Preset.Type == i))
+			{
+				FinishCampathGraphEdit();
+				graph.Preset.Type = CamPathEase::Function(i);
+				ApplyGraphPreset(true);
+			}
+		ImGui::EndMenu();
+	}
+	if (ImGui::BeginMenu("Direction", graph.Preset.Type != CamPathEase::Bezier))
+	{
+		for (auto mode : {CamPathEase::In, CamPathEase::Out, CamPathEase::InOut})
+			if (ImGui::MenuItem(CamPathEase::ToString(mode), nullptr, graph.Preset.Mode == mode))
+			{
+				FinishCampathGraphEdit();
+				graph.Preset.Mode = mode;
+				ApplyGraphPreset(true);
+			}
+		ImGui::EndMenu();
+	}
+	if (ImGui::MenuItem("Reset preset parameters"))
+	{
+		FinishCampathGraphEdit();
+		CamPathEase value;
+		value.Type = graph.Preset.Type;
+		value.Mode = graph.Preset.Mode;
+		graph.Preset = value;
+		ApplyGraphPreset(true);
+	}
+	ImGui::EndPopup();
+}
+
 static void DrawCampathGraphCanvas(CamPath & path)
 {
 	auto & graph = g_CampathGraph;
@@ -695,7 +772,8 @@ static void DrawCampathGraphCanvas(CamPath & path)
 	size.x = (std::max)(size.x, 240.0f);
 	size.y = (std::max)(size.y, 220.0f);
 	ImGui::InvisibleButton("##CampathGraphCanvas", size,
-						   ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+						   ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle |
+							   ImGuiButtonFlags_MouseButtonRight);
 	bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
 	ImVec2 plotMin(origin.x + 48, origin.y + 16), plotMax(origin.x + size.x - 16, origin.y + size.y - 30);
 	auto point = [&](double t, double progress) {
@@ -753,7 +831,8 @@ static void DrawCampathGraphCanvas(CamPath & path)
 		draw->AddText(ImVec2(origin.x + 4, at - 7), IM_COL32(180, 186, 196, 255), label);
 	}
 	draw->PushClipRect(plotMin, plotMax, true);
-	int hitKey = -1, hitHandle = -1;
+	int hitKey = -1, hitHandle = -1, hitSegment = -1;
+	double nearestSegment = 64;
 	double hitTime = 0;
 	for (std::size_t i = 0; i < keys.size(); ++i)
 	{
@@ -781,6 +860,21 @@ static void DrawCampathGraphCanvas(CamPath & path)
 			double t = release + (end - release) * sample / samples;
 			ImVec2 next = point(t, i + path.GetSegmentProgress(key.first, t));
 			draw->AddLine(last, next, color, 2);
+			if (hovered)
+			{
+				double dx = next.x - last.x, dy = next.y - last.y, length = dx * dx + dy * dy;
+				double u =
+					length > 0
+						? std::clamp(((io.MousePos.x - last.x) * dx + (io.MousePos.y - last.y) * dy) / length, 0.0, 1.0)
+						: 0;
+				double error = distance(io.MousePos, ImVec2(float(last.x + u * dx), float(last.y + u * dy)));
+				if (error < nearestSegment)
+				{
+					nearestSegment = error;
+					hitSegment = int(i);
+				}
+			}
+
 			last = next;
 		}
 		ImVec2 segment = point((release + end) * 0.5, i + path.GetSegmentProgress(key.first, (release + end) * 0.5));
@@ -819,6 +913,7 @@ static void DrawCampathGraphCanvas(CamPath & path)
 				path.SelectNone();
 			path.SelectAdd(std::size_t(hitKey), std::size_t(hitKey));
 			graph.Preset = path.GetKeyEase(keys[hitKey].first);
+			graph.EditAll = false;
 		}
 		else
 		{
@@ -878,9 +973,28 @@ static void DrawCampathGraphCanvas(CamPath & path)
 			graph.Boxing = false;
 		}
 	}
-	if (graph.Editing && !io.MouseDown[0])
+	if (graph.Editing && graph.Handle >= 0 && !io.MouseDown[0])
 		FinishCampathGraphEdit();
 	draw->PopClipRect();
+	if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.MouseDown[0])
+	{
+		int target = hitSegment >= 0 ? hitSegment : hitKey;
+		if (target >= 0 && std::size_t(target + 1) < keys.size())
+		{
+			FinishCampathGraphEdit();
+			if (!keys[target].second.Selected)
+			{
+				path.SelectNone();
+				path.SelectAdd(std::size_t(target), std::size_t(target));
+			}
+			graph.EditAll = false;
+			graph.ContextTime = keys[target].first;
+			graph.Preset = path.GetKeyEase(graph.ContextTime);
+			ImGui::OpenPopup("CampathSegmentMenu");
+		}
+	}
+	DrawGraphSegmentMenu();
+
 	if (hovered && hitKey >= 0 && !io.MouseDown[0])
 	{
 		ImGui::BeginTooltip();
@@ -932,8 +1046,8 @@ static void DrawCampathGraph()
 	if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::GetIO().KeyCtrl &&
 		!ImGui::GetIO().WantTextInput)
 	{
-		undo = undo || ImGui::IsKeyPressed('Z', false);
-		redo = redo || ImGui::IsKeyPressed('Y', false);
+		undo = undo || (!ImGui::GetIO().KeyShift && ImGui::IsKeyPressed('Z', false));
+		redo = redo || (ImGui::GetIO().KeyShift && ImGui::IsKeyPressed('Z', false));
 	}
 	if (undo || redo)
 	{
@@ -957,19 +1071,45 @@ static void DrawCampathGraph()
 		ImGui::EndCombo();
 	}
 	auto & path = paths.Active();
+	auto selected = GraphSelectedSegments(path);
+	if (ImGui::BeginCombo("Scope", graph.EditAll ? "Entire path" : "Selected segments"))
+	{
+		if (ImGui::Selectable("Selected segments", !graph.EditAll))
+		{
+			FinishCampathGraphEdit();
+			graph.EditAll = false;
+			if (!selected.empty())
+				graph.Preset = path.GetKeyEase(selected.front());
+		}
+		if (ImGui::Selectable("Entire path", graph.EditAll))
+		{
+			FinishCampathGraphEdit();
+			graph.EditAll = true;
+			graph.Preset = path.GetEase();
+		}
+		ImGui::EndCombo();
+	}
+	bool changed = false, parameterActive = false;
+	ImGui::BeginDisabled(!graph.EditAll && selected.empty());
 	if (ImGui::BeginCombo("Easing preset", CamPathEase::ToString(graph.Preset.Type)))
 	{
 		for (int i = 0; i < CamPathEase::Count; ++i)
 			if (ImGui::Selectable(CamPathEase::ToString(CamPathEase::Function(i)), graph.Preset.Type == i))
+			{
 				graph.Preset.Type = CamPathEase::Function(i);
+				changed = true;
+			}
 		ImGui::EndCombo();
 	}
 	if (graph.Preset.Type != CamPathEase::Bezier &&
 		ImGui::BeginCombo("Direction", CamPathEase::ToString(graph.Preset.Mode)))
 	{
 		for (auto mode : {CamPathEase::In, CamPathEase::Out, CamPathEase::InOut})
-			if (ImGui::Selectable(CamPathEase::ToString(mode), mode == graph.Preset.Mode))
+			if (ImGui::Selectable(CamPathEase::ToString(mode), graph.Preset.Mode == mode))
+			{
 				graph.Preset.Mode = mode;
+				changed = true;
+			}
 		ImGui::EndCombo();
 	}
 	if (graph.Preset.Type == CamPathEase::Bezier)
@@ -982,49 +1122,48 @@ static void DrawCampathGraph()
 			graph.Preset.Y1 = points[1];
 			graph.Preset.X2 = points[2];
 			graph.Preset.Y2 = points[3];
+			changed = true;
 		}
+		parameterActive |= ImGui::IsItemActive();
 	}
 	if (graph.Preset.Type == CamPathEase::Back)
 	{
 		float value = float(graph.Preset.Overshoot);
 		if (ImGui::SliderFloat("Overshoot", &value, 0, 10))
+		{
 			graph.Preset.Overshoot = value;
+			changed = true;
+		}
+		parameterActive |= ImGui::IsItemActive();
 	}
 	if (graph.Preset.Type == CamPathEase::Elastic)
 	{
 		float amplitude = float(graph.Preset.Amplitude), period = float(graph.Preset.Period);
 		if (ImGui::SliderFloat("Amplitude", &amplitude, 1, 10))
+		{
 			graph.Preset.Amplitude = amplitude;
-		if (ImGui::SliderFloat("Period", &period, 0.01f, 2))
+			changed = true;
+		}
+		parameterActive |= ImGui::IsItemActive();
+		if (ImGui::SliderFloat("Period", &period, 0.01f, 10))
+		{
 			graph.Preset.Period = period;
-	}
-	std::vector<double> selected;
-	for (auto it = path.GetBegin(); it != path.GetEnd(); ++it)
-		if (it.GetValue().Selected && std::next(it.wrapped) != path.GetEnd().wrapped)
-			selected.push_back(it.GetTime());
-	ImGui::BeginDisabled(!graph.Preset.Valid() || selected.empty());
-	if (ImGui::Button("Apply to selected segments"))
-	{
-		auto before = paths.Capture();
-		for (double time : selected)
-			path.SetKeyEase(time, graph.Preset);
-		paths.Record(before);
+			changed = true;
+		}
+		parameterActive |= ImGui::IsItemActive();
 	}
 	ImGui::EndDisabled();
-	ImGui::SameLine();
-	ImGui::BeginDisabled(!graph.Preset.Valid());
-	if (ImGui::Button("Apply to entire path"))
-	{
-		auto before = paths.Capture();
-		path.SetEase(graph.Preset);
-		paths.Record(before);
-	}
-	ImGui::EndDisabled();
-	ImGui::SameLine();
+	if (changed)
+		ApplyGraphPreset(false);
+	if (graph.Editing && graph.Handle < 0 && !parameterActive)
+		FinishCampathGraphEdit();
+	if (!graph.Preset.Valid())
+		ImGui::TextUnformatted("Invalid controls: ordered time 0..1; value -5..5.");
 	if (ImGui::Button("Select all"))
 		path.SelectAll();
-	ImGui::TextUnformatted(
-		"Click keys/squares or drag a box to select; Shift adds. Drag purple handles to edit Bezier easing.");
+
+	ImGui::TextUnformatted("Click/box select; Shift adds. Right-click a segment for presets. Changes apply live; "
+						   "purple handles edit Bezier.");
 	ImGui::TextUnformatted(
 		"Middle drag pans; wheel zooms. Time: path seconds; vertical: key progress. Orange bars: holds. Esc closes.");
 	ImGui::Text("%u segments selected. Path default: %s %s. Smooth holds flatten tangents.", unsigned(selected.size()),
@@ -1090,6 +1229,12 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 
 	if (!m_Active || !GraphInteractive())
 		return false;
+
+	if (msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT)
+	{
+		SetCursor(m_OwnCursor ? m_OwnCursor : m_Cursors.GetCursor(ImGuiMouseCursor_Arrow));
+		return true;
+	}
 
 	ImGuiIO& io = ImGui::GetIO();
 	switch (msg)
@@ -1211,7 +1356,8 @@ bool OnSetCursor(__in_opt HCURSOR cursor, HCURSOR & result)
 		return false;
 	result = m_GameCursor;
 	m_GameCursor = cursor;
-	SetCursor(m_OwnCursor);
+	if (GetCursor() != m_OwnCursor)
+		SetCursor(m_OwnCursor);
 	return true;
 }
 
@@ -1380,9 +1526,25 @@ void DX9_InvalidateDeviceObjects()
 	io.Fonts->TexID = NULL;
 }
 
+static void DrawPreviewHud()
+{
+	if (!MirvCampathEditor_ShowHud() || SourceOwnsUi())
+		return;
+	ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_Always);
+	ImGui::SetNextWindowBgAlpha(0.65f);
+	ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+							 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+							 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+	if (ImGui::Begin("##CampathPreviewHud", nullptr, flags))
+		ImGui::TextColored(ImVec4(0.4f, 0.95f, 0.65f, 1), "Campath preview | %.32s",
+						   g_Hook_VClient_RenderView.GetActiveCamPath().GetName().c_str());
+	ImGui::End();
+}
+
 void DoFrame()
 {
 	DrawCampathGraph();
+	DrawPreviewHud();
 	UpdateGraphInputOwnership();
 }
 
@@ -1484,7 +1646,8 @@ bool OnGameFrameRenderEnd()
 	if (m_GraphInputOwned)
 	{
 		m_OwnCursor = m_Cursors.GetCursor(ImGui::GetMouseCursor());
-		SetCursor(m_OwnCursor);
+		if (GetCursor() != m_OwnCursor)
+			SetCursor(m_OwnCursor);
 	}
 
 	ImGui::EndFrame();

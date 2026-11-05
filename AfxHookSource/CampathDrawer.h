@@ -36,6 +36,23 @@ public:
 	float GetDrawKeyframeIndex() { return m_DrawKeyframIndex; }
 	void SetDrawKeyframeIndex(float value) { m_DrawKeyframIndex = value; }
 
+	bool GetStackLabels() const
+	{
+		return m_StackLabels;
+	}
+	void SetStackLabels(bool value)
+	{
+		m_StackLabels = value;
+	}
+	float GetStackWorldDistance() const
+	{
+		return m_StackWorldDistance;
+	}
+	void SetStackWorldDistance(float value)
+	{
+		m_StackWorldDistance = value;
+	}
+
 	bool GetDrawHandles() const
 	{
 		return m_DrawHandles;
@@ -120,6 +137,15 @@ private:
 			return m_PlaneUp;
 		}
 
+		bool StackLabels() const
+		{
+			return m_StackLabels;
+		}
+		float StackWorldDistance() const
+		{
+			return m_StackWorldDistance;
+		}
+
 		float GetDrawKeyframeIndex() const {
 			return m_DrawKeyFrameIndex;
 		}
@@ -148,6 +174,8 @@ private:
 		Vector3 m_PlaneRight;
 		Vector3 m_PlaneUp;
 
+		bool m_StackLabels;
+		float m_StackWorldDistance;
 		float m_DrawKeyFrameIndex;
 		bool m_DrawKeyframeAxis;
 		bool m_DrawKeyframeCam;
@@ -283,6 +311,8 @@ private:
 	IDirect3DVertexBuffer9 * m_VertexBuffer;
 	UINT m_VertexBufferVertexCount; // c_VertexBufferVertexCount
 	Vertex * m_LockedVertexBuffer;
+	bool m_StackLabels = true;
+	float m_StackWorldDistance = 32;
 	float m_DrawKeyframIndex = 18.0f;
 	IDirect3DTexture9* m_DigitsTexture = nullptr;
 	IDirect3DTexture9 * m_LabelTexture = nullptr;

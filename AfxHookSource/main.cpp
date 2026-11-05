@@ -2352,6 +2352,8 @@ LRESULT CALLBACK new_Afx_WindowProc(
 			MirvCampathPreview_ReleaseKeys();
 			MirvCampathEditor_ReleaseKeys(true);
 		}
+		if (uMsg == WM_SETCURSOR)
+			return TRUE;
 		if (uMsg == WM_INPUT)
 			return DefWindowProcW(hwnd, uMsg, wParam, lParam);
 		return 0;

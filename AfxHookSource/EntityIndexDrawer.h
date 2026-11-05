@@ -61,6 +61,14 @@ public:
 		outLastEyeDelta = m_StatLastEyeDelta;
 	}
 
+	// Shared overlap layout: retain world anchors and shift nearby screen labels.
+	struct LabelStackRect
+	{
+		double X, Y, Z;
+		float Left, Top, Right, Bottom, Step, Offset = 0;
+	};
+	static void StackLabelBounds(std::vector<LabelStackRect> & labels, float worldDistance);
+
 	struct Label
 	{
 		int index;

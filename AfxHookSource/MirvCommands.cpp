@@ -1474,6 +1474,82 @@ static DWORD g_CampathPreviewLastMs = 0;
 static UINT g_CampathPreviewToggleKey = 0;
 static bool g_CampathPreviewToggleHeld = false;
 
+enum class CampathSeekMode
+{
+	Play,
+	Pause,
+	Timescale
+};
+static CampathSeekMode g_CampathSeekMode = CampathSeekMode::Timescale;
+static double g_CampathSeekScale = 0;
+static bool g_CampathPreviewHud = true;
+struct CampathPendingSeek
+{
+	int Tick = -1, Initial = 0, Frame = 0, Total = 0;
+	DWORD Started = 0;
+	CampathSeekMode Mode = CampathSeekMode::Timescale;
+	double Scale = 0, PreviousScale = 1;
+	bool PreviousPaused = false;
+} g_CampathPendingSeek;
+
+static void CampathPreview_SeekTick(int tick)
+{
+	auto * demo = g_VEngineClient ? g_VEngineClient->GetDemoInfoEx() : nullptr;
+	if (!demo || !g_VEngineClient->IsPlayingDemo() || tick < 0 || tick > demo->GetDemoPlaybackTotalTicks())
+	{
+		Tier0_Warning("Campath preview: invalid demo seek target.\n");
+		return;
+	}
+	if (g_CampathPendingSeek.Tick < 0 || g_CampathPendingSeek.Total != demo->GetDemoPlaybackTotalTicks())
+	{
+		g_CampathPendingSeek.PreviousScale = demo->GetDemoPlaybackTimeScale();
+		g_CampathPendingSeek.PreviousPaused = g_VEngineClient->IsPaused();
+	}
+	g_CampathPendingSeek.Tick = tick;
+	g_CampathPendingSeek.Initial = demo->GetDemoPlaybackTick();
+	g_CampathPendingSeek.Total = demo->GetDemoPlaybackTotalTicks();
+	g_CampathPendingSeek.Frame = g_MirvTime.GetFrameCount();
+	g_CampathPendingSeek.Started = GetTickCount();
+	g_CampathPendingSeek.Mode = g_CampathSeekMode;
+	g_CampathPendingSeek.Scale = g_CampathSeekScale;
+	// Let Source perform the seek at normal speed and pause exactly at its
+	// destination. Apply the requested state only after that seek has arrived.
+	std::string command = "demo_timescale 1; demo_resume; demo_gototick " + std::to_string(tick) + " 0 1";
+	g_VEngineClient->ExecuteClientCmd(command.c_str());
+}
+
+static void CampathPreview_UpdateSeek()
+{
+	auto & seek = g_CampathPendingSeek;
+	if (seek.Tick < 0)
+		return;
+	auto * demo = g_VEngineClient ? g_VEngineClient->GetDemoInfoEx() : nullptr;
+	if (!demo || !g_VEngineClient->IsPlayingDemo() || demo->GetDemoPlaybackTotalTicks() != seek.Total)
+	{
+		seek.Tick = -1;
+		return;
+	}
+	int current = demo->GetDemoPlaybackTick();
+	bool arrived = g_MirvTime.GetFrameCount() != seek.Frame && current >= seek.Tick &&
+				   (seek.Tick >= seek.Initial || current < seek.Initial) && g_VEngineClient->IsPaused();
+	bool timeout = DWORD(GetTickCount() - seek.Started) > 60000;
+	if (!arrived && !timeout)
+		return;
+	std::ostringstream command;
+	command.imbue(std::locale::classic());
+	if (timeout && !arrived)
+	{
+		command << "demo_timescale " << seek.PreviousScale << (seek.PreviousPaused ? "; demo_pause" : "; demo_resume");
+		Tier0_Warning("Campath preview: seek did not reach its target; restoring playback state.\n");
+	}
+	else if (seek.Mode == CampathSeekMode::Pause)
+		command << "demo_timescale 1; demo_pause";
+	else
+		command << "demo_timescale " << (seek.Mode == CampathSeekMode::Play ? 1 : seek.Scale) << "; demo_resume";
+	seek.Tick = -1;
+	g_VEngineClient->ExecuteClientCmd(command.str().c_str());
+}
+
 static void CampathPreview_StopTravel()
 {
 	g_CampathPreviewForward = false;
@@ -1511,6 +1587,10 @@ static UINT CampathPreview_ParseToggleKey(const char * name)
 		if (end != name + 2 && !*end && value > 0 && value < 256)
 			return (UINT)value;
 	}
+	if (!_stricmp(name, "rctrl") || !_stricmp(name, "rightctrl"))
+		return VK_RCONTROL;
+	if (!_stricmp(name, "lctrl") || !_stricmp(name, "leftctrl"))
+		return VK_LCONTROL;
 	if (!_stricmp(name, "enter"))
 		return VK_RETURN;
 	if (!_stricmp(name, "delete"))
@@ -1648,6 +1728,7 @@ static void CampathPreview_Exit()
 // Called before the mirv_input view override is evaluated.
 void MirvCampathPreview_Update()
 {
+	CampathPreview_UpdateSeek();
 
 	if (!g_CampathPreviewActive)
 		return;
@@ -1738,15 +1819,18 @@ static void CampathPreview_PrintHelp()
 	Tier0_Msg(
 		"mirv_campath preview allowSource 0|1 - Forward unused keys to Source.\nmirv_campath graph - Easing editor (F7 "
 		"in preview).\nmirv_campath preview undo|redo - Undo/redo a data edit.\nmirv_campath preview bind - Keyboard "
-		"actions.\nInsert captures pose/time; [ and ] capture handles; Ctrl+Z/Y undo/redo.\nF6 captures hold "
-		"release; Shift+F6 clears it; PageUp/Down selects paths.\n");
+		"actions.\nE captures pose/time; Shift+E replaces; [ and ] capture handles; Ctrl+Z / Ctrl+Shift+Z "
+		"undo/redo.\nY captures hold "
+		"release; Shift+Y clears it; PageUp/Down selects paths.\n");
 	Tier0_Msg("mirv_campath preview enter - Begin preview mode and keyboard editing.\n"
 			  "mirv_campath preview toggle - Toggle Preview Mode on/off.\n"
 			  "mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, "
 			  "home, end, pageup, pagedown).\n"
 			  "mirv_campath preview <index> - Select a keyframe (0-based).\n"
 			  "mirv_campath preview interp <0..1> - Position between nearest keyframe and the following one.\n"
-			  "mirv_campath preview seek - Seek the demo to the current preview time.\n"
+			  "mirv_campath preview seek - Seek using the configured playback behavior (RCtrl).\n"
+			  "mirv_campath preview seekMode play|pause|timescale [value] - Default: timescale 0.\n"
+			  "mirv_campath preview hud 0|1 - Preview indicator. Ctrl+A selects all; Ctrl+Shift+A anchors.\n"
 			  "mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
 			  "Preview keys (console closed): UP/DOWN select previous/next; HOME/END select first/last.\n"
 			  "LEFT/RIGHT scrub interpolated paths; use UP/DOWN to visit individual keyframes.\n"
@@ -1775,7 +1859,7 @@ void initPassThrough()
 	if (uiPassThroughInitialized)
 		return;
 	uiPassThroughInitialized = true;
-	uiPassThrough[VK_ESCAPE] = uiPassThrough[VK_OEM_3] = true;
+	uiPassThrough[VK_ESCAPE] = uiPassThrough[VK_OEM_3] = uiPassThrough[VK_F2] = true;
 }
 bool allowSourceCommands = false;
 bool previewUsesKey(unsigned key);
@@ -1859,7 +1943,8 @@ enum EditorAction
 	EA_Curve,
 	EA_Draw,
 	EA_Enabled,
-	EA_DemoUi,
+	EA_SelectAll,
+	EA_AnchorPath,
 	EA_Graph,
 	EA_Undo,
 	EA_Redo,
@@ -1877,8 +1962,8 @@ struct EditorBinding
 	unsigned Modifiers;
 };
 const EditorBinding defaultBindings[EA_Count] = {
-	{"add", VK_INSERT, 0},
-	{"replace", VK_INSERT, 1},
+	{"add", 'E', 0},
+	{"replace", 'E', 1},
 	{"delete", VK_DELETE, 0},
 	{"visit", VK_TAB, 0},
 	{"previousPoint", VK_UP, 0},
@@ -1887,19 +1972,20 @@ const EditorBinding defaultBindings[EA_Count] = {
 	{"lastPoint", VK_END, 0},
 	{"scrubLeft", VK_LEFT, 0},
 	{"scrubRight", VK_RIGHT, 0},
-	{"seek", VK_RETURN, 2},
+	{"seek", VK_RCONTROL, 0},
 	{"handleIn", VK_OEM_4, 0},
 	{"handleOut", VK_OEM_6, 0},
 	{"resetHandles", 'B', 3},
 	{"curveType", 'B', 2},
 	{"draw", VK_F4, 0},
 	{"enabled", 'P', 2},
-	{"demoUi", VK_F2, 1},
+	{"selectAll", 'A', 2},
+	{"anchorPath", 'A', 3},
 	{"graph", VK_F7, 0},
 	{"undo", 'Z', 2},
-	{"redo", 'Y', 2},
-	{"holdCapture", VK_F6, 0},
-	{"holdClear", VK_F6, 1},
+	{"redo", 'Z', 3},
+	{"holdCapture", 'Y', 0},
+	{"holdClear", 'Y', 1},
 	{"previousPath", VK_PRIOR, 0},
 	{"nextPath", VK_NEXT, 0},
 	{"newPath", 'N', 2},
@@ -1923,6 +2009,10 @@ std::string keyName(UINT key)
 		return std::string(1, (char)key);
 	switch (key)
 	{
+	case VK_RCONTROL:
+		return "rctrl";
+	case VK_LCONTROL:
+		return "lctrl";
 	case VK_RETURN:
 		return "enter";
 	case VK_INSERT:
@@ -2005,7 +2095,8 @@ bool previewUsesKey(unsigned key)
 	initBindings();
 	unsigned modifiers = (GetKeyState(VK_SHIFT) & 0x8000 ? 1 : 0) | (GetKeyState(VK_CONTROL) & 0x8000 ? 2 : 0) |
 						 (GetKeyState(VK_MENU) & 0x8000 ? 4 : 0);
-	if (key == g_CampathPreviewToggleKey || key == VK_SHIFT || key == VK_CONTROL)
+	if (key == g_CampathPreviewToggleKey || key == VK_SHIFT || key == VK_CONTROL || key == VK_LCONTROL ||
+		key == VK_RCONTROL)
 		return true;
 	for (auto & binding : editorBindings)
 		if (binding.Key == key && binding.Modifiers == modifiers)
@@ -2020,6 +2111,47 @@ bool editSettings(const Args & a)
 {
 	if (!a.is(0, "preview"))
 		return false;
+	if (a.is(1, "hud"))
+	{
+		if (a.count() == 2)
+		{
+			Tier0_Msg("mirv_campath preview hud 0|1 - Compact preview indicator.\nCurrent value: %i\n",
+					  g_CampathPreviewHud);
+			return true;
+		}
+		a.size(3);
+		g_CampathPreviewHud = a.flag(2);
+		return true;
+	}
+	if (a.is(1, "seekMode"))
+	{
+		if (a.count() == 2)
+		{
+			const char * mode = g_CampathSeekMode == CampathSeekMode::Play	  ? "play"
+								: g_CampathSeekMode == CampathSeekMode::Pause ? "pause"
+																			  : "timescale";
+			Tier0_Msg("mirv_campath preview seekMode play|pause|timescale [value]\nCurrent value: %s", mode);
+			if (g_CampathSeekMode == CampathSeekMode::Timescale)
+				Tier0_Msg(" %g", g_CampathSeekScale);
+			Tier0_Msg("\n");
+			return true;
+		}
+		need(a.count() == 3 || a.count() == 4, "Use preview seekMode play|pause|timescale [value]");
+		if (a.is(2, "timescale"))
+		{
+			double value = a.count() == 4 ? a.num(3) : 0;
+			need(value >= 0 && value <= 1000, "Timescale must be in 0..1000");
+			g_CampathSeekScale = value;
+			g_CampathSeekMode = CampathSeekMode::Timescale;
+		}
+		else
+		{
+			a.size(3);
+			need(a.is(2, "play") || a.is(2, "pause"), "Choose play, pause or timescale");
+			g_CampathSeekMode = a.is(2, "play") ? CampathSeekMode::Play : CampathSeekMode::Pause;
+		}
+		return true;
+	}
 	if (a.is(1, "allowSource"))
 	{
 		if (a.count() == 2)
@@ -2179,8 +2311,7 @@ void seekCursor()
 	need(GetDemoTickFromClientTime(g_MirvTime.GetTime(), g_CampathPreviewTime + activePath().GetOffset(), tick),
 		 "Unable to calculate the demo tick");
 	need(tick >= 0, "Seek precedes demo start");
-	std::string command = "demo_gototick " + std::to_string(tick);
-	g_VEngineClient->ExecuteClientCmd(command.c_str());
+	CampathPreview_SeekTick(tick);
 }
 void captureHandle(bool outgoing)
 {
@@ -2345,10 +2476,29 @@ void executeEditorAction(EditorAction action)
 		need(AfxHookSource::Gui::SetCampathGraphOpen(!AfxHookSource::Gui::GetCampathGraphOpen()),
 			 "Graph editor is unavailable in this build");
 		break;
-	case EA_DemoUi:
-		need(g_VEngineClient, "Engine interface unavailable");
-		g_VEngineClient->ExecuteClientCmd("demoui");
+	case EA_SelectAll:
+		nativeCommand({"select", "all"});
 		break;
+	case EA_AnchorPath: {
+		auto anchor = selectedKey();
+		int index = 0;
+		std::vector<std::size_t> selected;
+		int anchorIndex = 0;
+		for (auto it = path.GetBegin(); it != path.GetEnd(); ++it, ++index)
+		{
+			if (it.GetValue().Selected)
+				selected.push_back(index);
+			if (it.GetTime() == anchor.GetTime())
+				anchorIndex = index;
+		}
+		std::string name = "#" + std::to_string(anchorIndex);
+		nativeCommand({"select", "all"});
+		nativeCommand({"edit", "anchor", name.c_str(), "current"});
+		path.SelectNone();
+		for (auto point : selected)
+			path.SelectAdd(point, point);
+		break;
+	}
 	case EA_Left:
 	case EA_Right:
 		break;
@@ -2655,6 +2805,27 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 			curveHelp();
 			return true;
 		}
+		if (a.is(0, "draw") && (a.is(1, "stackLabels") || a.is(1, "stackWorldDistance")))
+		{
+			if (a.count() == 2)
+			{
+				Tier0_Msg("mirv_campath draw stackLabels 0|1 (current %i)\nmirv_campath draw stackWorldDistance "
+						  "<units> (current %g)\n",
+						  g_CampathDrawer.GetStackLabels(), g_CampathDrawer.GetStackWorldDistance());
+				return true;
+			}
+			a.size(3);
+			if (a.is(1, "stackLabels"))
+				g_CampathDrawer.SetStackLabels(a.flag(2));
+			else
+			{
+				double value = a.num(2);
+				need(value >= 0 && value <= 1e6, "Stack distance must be 0..1000000");
+				g_CampathDrawer.SetStackWorldDistance(float(value));
+			}
+			return true;
+		}
+
 		if (a.is(0, "draw") && a.is(1, "handles"))
 		{
 			if (a.count() == 2)
@@ -2683,6 +2854,11 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 		if (!a.count())
 			Tier0_Msg("mirv_campath path - Named paths.\nmirv_campath saveAll <file.xml>\nmirv_campath curve - Curve "
 					  "handles.\nmirv_campath graph - Toggle the easing editor.\n");
+		if (a.is(0, "draw") && a.count() == 1)
+			Tier0_Msg("mirv_campath draw textSize <world height> - Path/hold labels.\n"
+					  "mirv_campath draw handles 0|1 - Curve handles.\n"
+					  "mirv_campath draw stackLabels 0|1 - Stack nearby overlapping indices.\n"
+					  "mirv_campath draw stackWorldDistance <units> - Nearby threshold (default 32).\n");
 		if (a.is(0, "edit") && a.count() == 1)
 			Tier0_Msg("mirv_campath edit hold - Keyframe holds.\nmirv_campath edit ease - Segment "
 					  "timing/easing.\nmirv_campath edit interp all - Set interpolation in "
@@ -2697,6 +2873,11 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 		return true;
 	}
 }
+bool MirvCampathEditor_ShowHud()
+{
+	return g_CampathPreviewActive && g_CampathPreviewHud;
+}
+
 bool MirvCampathEditor_IsGraphKey(unsigned key)
 {
 	if (!g_CampathPreviewActive)
@@ -2753,6 +2934,8 @@ bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags)
 	bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN, up = message == WM_KEYUP || message == WM_SYSKEYUP;
 	if ((!down && !up) || key >= 256)
 		return false;
+	if (key == VK_CONTROL)
+		key = (flags & (1LL << 24)) ? VK_RCONTROL : VK_LCONTROL;
 	initBindings();
 	if (g_Hook_VClient_RenderView.IsMenuActive())
 	{
@@ -2791,6 +2974,8 @@ bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags)
 		return false;
 	unsigned modifiers = (GetKeyState(VK_SHIFT) & 0x8000 ? 1 : 0) | (GetKeyState(VK_CONTROL) & 0x8000 ? 2 : 0) |
 						 (GetKeyState(VK_MENU) & 0x8000 ? 4 : 0);
+	if (key == VK_RCONTROL || key == VK_LCONTROL)
+		modifiers &= ~2u;
 	for (int i = 0; i < EA_Count; ++i)
 	{
 		auto binding = editorBindings[i];
@@ -2812,7 +2997,7 @@ bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags)
 		{
 			executeEditorAction(EditorAction(i));
 			if (i == EA_Add || i == EA_Replace || i == EA_Delete || i == EA_In || i == EA_Out || i == EA_Reset ||
-				i == EA_NewPath)
+				i == EA_NewPath || i == EA_AnchorPath)
 				paths.Record(before);
 		}
 		catch (const std::exception & error)
@@ -2926,21 +3111,17 @@ CON_COMMAND(mirv_campath, "camera paths")
 			return;
 		}
 		if (0 == _stricmp(cmd, "seek") && args->ArgC() == 3) {
-			const double curtime = g_MirvCampath_Time.GetTime();
-			int tick = -1;
-			if (!g_MirvCampath_Time.GetDemoTickFromClientTime(curtime, g_CampathPreviewTime + path.GetOffset(), tick) || tick < 0) {
-				Tier0_Warning("Campath preview: unable to calculate demo tick.\n");
-				return;
+			try
+			{
+				seekCursor();
 			}
-			std::ostringstream seekCommand;
-			seekCommand << "demo_gototick " << tick;
-            int currentTick = -1;
-            g_MirvCampath_Time.GetCurrentDemoTick(currentTick);
-            Tier0_Msg("Campath preview: time %.6f (client %.6f), current demo tick %i, requested tick %i.\n",
-                g_CampathPreviewTime, g_CampathPreviewTime + path.GetOffset(), currentTick, tick);
-			g_VEngineClient->ExecuteClientCmd(seekCommand.str().c_str());
+			catch (const std::exception & error)
+			{
+				Tier0_Warning("Campath preview: %s\n", error.what());
+			}
 			return;
 		}
+
 		if (args->ArgC() == 3) {
 			char * end = nullptr;
 			const long value = strtol(cmd, &end, 10);

@@ -2,6 +2,7 @@
 #include "stdafx.h"
 
 #include "CampathDrawer.h"
+#include "EntityIndexDrawer.h"
 #include <algorithm>
 #include <utility>
 #include <map>
@@ -384,6 +385,8 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer * drawer, 
 	}
 
 	m_DrawKeyFrameIndex = active ? drawer->m_DrawKeyframIndex : 0;
+	m_StackLabels = drawer->m_StackLabels;
+	m_StackWorldDistance = drawer->m_StackWorldDistance;
 	m_DrawKeyframeAxis = drawer->m_DrawKeyframeAxis;
 	m_DrawKeyframeCam = drawer->m_DrawKeyframeCam;
 
@@ -555,15 +558,69 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 
 		if (dynamicPorperties->GetDrawKeyframeIndex() && BeginLabels(dynamicPorperties, false))
 		{
+			struct IndexLabel
+			{
+				Vector3 Position;
+				std::string Text;
+				double WorldPerPixel;
+			};
+			std::vector<IndexLabel> indices;
+			std::vector<CEntityIndexDrawer::LabelStackRect> bounds;
+			float height = dynamicPorperties->GetDrawKeyframeIndex();
+			const auto & right = dynamicPorperties->GetPlaneRight();
+			const auto & up = dynamicPorperties->GetPlaneUp();
+			auto project = [&](Vector3 v, float & x, float & y) {
+				double w = worldToScreenMatrix.m[3][0] * v.X + worldToScreenMatrix.m[3][1] * v.Y +
+						   worldToScreenMatrix.m[3][2] * v.Z + worldToScreenMatrix.m[3][3];
+				if (w <= 0.001)
+					return false;
+				x = float((0.5 + 0.5 *
+									 (worldToScreenMatrix.m[0][0] * v.X + worldToScreenMatrix.m[0][1] * v.Y +
+									  worldToScreenMatrix.m[0][2] * v.Z + worldToScreenMatrix.m[0][3]) /
+									 w) *
+						  screenWidth);
+				y = float((0.5 - 0.5 *
+									 (worldToScreenMatrix.m[1][0] * v.X + worldToScreenMatrix.m[1][1] * v.Y +
+									  worldToScreenMatrix.m[1][2] * v.Z + worldToScreenMatrix.m[1][3]) /
+									 w) *
+						  screenHeight);
+				return true;
+			};
 			int index = 0;
 			for (auto it = lessDynamicProperties->GetKeyframesBegin(); it != lessDynamicProperties->GetKeyframesEnd();
 				 ++it, ++index)
 			{
 				auto value = it->GetValue();
-				DrawLabel(dynamicPorperties, Vector3(value.X, value.Y, value.Z), std::to_string(index),
-						  dynamicPorperties->GetDrawKeyframeIndex(), 0xFFFFFFFF, false);
+				Vector3 position(value.X, value.Y, value.Z);
+				std::string text = std::to_string(index);
+				float x, y, ux, uy;
+				if (!project(position, x, y) || !project(position + up * height, ux, uy))
+					continue;
+				CEntityIndexDrawer::LabelStackRect box = {
+					position.X, position.Y, position.Z, x, y, x, y, float(std::abs(uy - y) + 5)};
+				for (double edge : {-0.5, 0.5})
+					for (double side : {0.0, 1.0})
+					{
+						float px, py;
+						if (project(position + up * (edge * height) - right * (side * 0.5 * height * text.size()), px,
+									py))
+						{
+							box.Left = (std::min)(box.Left, px);
+							box.Right = (std::max)(box.Right, px);
+							box.Top = (std::min)(box.Top, py);
+							box.Bottom = (std::max)(box.Bottom, py);
+						}
+					}
+				indices.push_back({position, text, std::abs(uy - y) > 1e-6 ? height / (uy - y) : 0});
+				bounds.push_back(box);
 			}
+			if (dynamicPorperties->StackLabels())
+				CEntityIndexDrawer::StackLabelBounds(bounds, dynamicPorperties->StackWorldDistance());
+			for (std::size_t i = 0; i < indices.size(); ++i)
+				DrawLabel(dynamicPorperties, indices[i].Position + up * (bounds[i].Offset * indices[i].WorldPerPixel),
+						  indices[i].Text, height, 0xFFFFFFFF, false);
 		}
+
 		if (annotations && annotations->LabelHeight > 0 && !annotations->Labels.empty() &&
 			BeginLabels(dynamicPorperties, true))
 			for (const auto & label : annotations->Labels)

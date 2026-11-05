@@ -41,25 +41,26 @@ move the camera without seeking the demo. Capture still uses the actual demo tim
 
 | Key | Action |
 | --- | --- |
-| Insert | Capture pose and current demo time |
-| Shift+Insert | Replace selected pose, retaining its timestamp, handles and hold |
+| E | Capture pose and current demo time |
+| Shift+E | Replace selected pose, retaining its timestamp, handles and hold |
 | Delete | Delete selected keyframe |
 | Up / Down | Visit and select previous / next keyframe |
 | Home / End | Visit and select first / last keyframe |
 | Left / Right | Scrub interpolated movement in time |
 | Tab | Return to the preview cursor |
-| Ctrl+Enter | Seek the demo to the preview cursor |
+| Right Ctrl | Seek the demo to the preview cursor; timescale 0 on arrival by default |
 | [ / ] | Capture incoming / outgoing handle at the free camera |
 | Ctrl+Shift+B | Reset selected keyframe handles |
 | Ctrl+B | Cycle linear, smooth, monotone, step and Bezier interpolation |
-| F6 / Shift+F6 | Capture / clear selected keyframe hold release |
-| Ctrl+Z / Ctrl+Y | Undo / redo a data edit |
+| Y / Shift+Y | Capture the selected keyframe's release tick / clear its hold |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / redo a data edit |
 | PageUp / PageDown | Select previous / next named path |
 | Ctrl+N | Create and select a new path |
 | F4 | Toggle drawing |
 | F7 | Open/close the easing graph |
 | Ctrl+P | Toggle master playback enable |
-| Shift+F2 | Open the native demo UI |
+| Ctrl+A | Select all keyframes using native selection |
+| Ctrl+Shift+A | Anchor the whole path: selected keyframe to the current free-camera pose |
 | Shift+Escape | End freecam and preview |
 
 Console equivalents include `preview <index>`, `preview interp <0..1>`,
@@ -69,6 +70,30 @@ restore keyframes, handles, holds, interpolation, easing, names and path members
 History keeps the last 64 data edits, including loads and native timing/placement
 commands. Navigation, selection, saving and drawing settings do not create edits.
 A new data edit clears redo. The master playback switch is outside undo history.
+
+For anchoring, select one reference keyframe, fly to the desired camera pose, then
+press Ctrl+Shift+A. This runs native `select all` and `edit anchor #<index> current`
+and restores the selection. Anchoring is one undoable edit.
+
+Seeking always lets Source reach the target before applying the chosen behavior:
+
+```text
+mirv_campath preview seekMode timescale 0
+mirv_campath preview seekMode timescale 0.25
+mirv_campath preview seekMode pause
+mirv_campath preview seekMode play
+```
+
+The session default is `timescale 0`: the demo is resumed at zero speed after
+seeking. `pause` uses native demo pause at normal speed; `play` resumes at normal
+speed. Timescale accepts values in 0..1000. The same behavior applies to Right
+Ctrl and `preview seek`. Failed seeks restore the prior pause state and timescale.
+
+A small top-left **Campath preview | path name** indicator appears during preview.
+Use `mirv_campath preview hud 0` to hide it, or `1` to restore it. It accepts no
+mouse or keyboard input and hides while native menus/console own the UI. Preview
+bindings/settings, including seek behavior and the indicator, are session options;
+put their commands in a cfg to retain them.
 
 Run `preview bind` to list actions. Bindings and existing console commands can be
 assigned to chords; session settings can be restored through a cfg:
@@ -81,7 +106,7 @@ mirv_campath preview command ctrl+L none
 ```
 
 Shared `MirvInput` captures ordinary and raw keyboard input during preview.
-Console, menus, demo UI and the HLAE GUI retain priority. Escape, grave, Alt+Tab
+Console, menus, demo UI and the HLAE GUI retain priority. Escape, grave, F2, Alt+Tab
 and Alt+F4 remain available. `preview passthrough <key> 1` allows a custom menu or
 console binding through to Source. Input ownership and held navigation are
 released when focus or menus change.
@@ -158,15 +183,22 @@ holds; the plotted curves include automatic hold easing. These are timing curves
 
 - Click a camera key or a segment's square to select its outgoing segment.
 - Drag empty canvas space to box select several keys/segments; Shift adds.
-- Choose a function/direction and apply to selected segments or the entire path.
+- Right-click any segment curve to choose its preset or in/out/inout direction.
+  Clicking inside an existing multi-selection preserves it; clicking an unselected
+  segment selects that segment. The menu also resets preset parameters.
+- Choose **Selected segments** or **Entire path** in Scope. Preset, direction and
+  parameter changes apply live; there is no separate Apply step.
 - With Bezier easing selected, drag its purple time/value handles directly.
 - Middle-drag pans; the mouse wheel zooms around the cursor; Fit restores bounds.
-- Undo/Redo buttons and Ctrl+Z/Y use the same history as preview. One handle drag
-  creates one history entry. Selecting points or moving the graph view does not.
+- Undo/Redo buttons and Ctrl+Z / Ctrl+Shift+Z use the same history as preview.
+  One handle or parameter-slider drag creates one history entry. Selecting points
+  or moving the graph view does not.
 
 Presets include linear, sine, quadratic, cubic, quartic, quintic, exponential,
 circular, back, bounce and elastic, with in/out/inout directions. Back exposes
-overshoot; elastic exposes amplitude and period. Custom cubic Bezier handles
+overshoot; elastic exposes amplitude and period. Moving these sliders updates
+the actual path and graph immediately, before releasing the mouse. Custom cubic
+Bezier handles
 provide a freely editable curve with ordered time coordinates in 0..1 and value
 coordinates in -5..5. Back, elastic and Bezier can overshoot or reverse progress.
 Overshoot continues the current segment's endpoint tangent, without switching to
@@ -193,7 +225,7 @@ holds. This timing easing is independent of spatial `edit interp`/curve modes.
 ## Camera holds
 
 Select the arrival keyframe, advance the demo to the desired release tick, then
-press F6 or use:
+press Y to capture its release tick (Shift+Y clears the hold), or use:
 
 ```text
 mirv_campath edit hold capture
@@ -267,7 +299,14 @@ hold annotations reuse the drawer's padded alphabet atlas and text pass;
 `draw textSize <world height>` controls them (default 20, zero hides them).
 Annotations keep a fixed world height and margin above their camera marker, face
 the view like indices, and use depth testing/alpha testing so walls occlude them.
-Coincident labels stack. Their size now changes with distance, like classic indices. `draw handles 0|1` controls handle lines in the same native line pass.
+Overlapping keyframe indices use the entity-index drawer's shared stacking
+layout, with their native digit texture, world size and depth testing. Nearby
+world anchors stack upward in keyframe order; distant anchors remain independent
+even when their projections overlap. `draw stackLabels 0|1` toggles this (default
+1); `draw stackWorldDistance <units>` sets the nearby threshold (default 32).
+Path/hold annotations also stack at coincident anchors. Their size changes with
+distance, like classic indices. `draw handles 0|1` controls handle lines in the
+same native line pass.
 Turn drawing off before clean recording.
 
 No new runtime files are introduced. `CamPath` holds optional handles/holds/easing and
