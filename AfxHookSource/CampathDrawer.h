@@ -46,11 +46,11 @@ public:
 	}
 	bool GetNewDrawLayer(int layer) const
 	{
-		return layer >= 0 && layer < 6 && m_NewDrawLayers[layer];
+		return layer >= 0 && layer < 8 && m_NewDrawLayers[layer];
 	}
 	void SetNewDrawLayer(int layer, bool value)
 	{
-		if (layer >= 0 && layer < 6)
+		if (layer >= 0 && layer < 8)
 			m_NewDrawLayers[layer] = value;
 	}
 	float GetNewLabelHeight() const
@@ -250,6 +250,7 @@ private:
 			Vector3 Position;
 			std::string Text;
 			DWORD Color;
+			float Row = 0;
 		};
 		std::vector<Line> Lines;
 		std::vector<Camera> Cameras;
@@ -302,7 +303,7 @@ private:
 	IDirect3DTexture9 * m_LabelTexture = nullptr;
 	float m_NewLabelHeight = 32.0f;
 	bool m_NewDrawEnabled = true;
-	bool m_NewDrawLayers[6] = {true, true, true, true, true, true};
+	bool m_NewDrawLayers[8] = {true, true, true, true, true, true, true, true};
 	IAfxPixelShader* m_DrawTextureShader = nullptr;
 
 	CLessDynamicProperties * m_LessDynamicProperties = nullptr;
@@ -333,7 +334,7 @@ private:
 
 	bool BeginLabels(CDynamicProperties const * properties, bool names);
 	void DrawLabel(CDynamicProperties const * properties, Vector3 position, const std::string & text, float height,
-				   DWORD color, bool names);
+				   DWORD color, bool names, float row = 0);
 
 	void DrawCamera(const CamPathValue & cpv, DWORD colour, FLOAT screenInfo[4], int screenWidth, int screenHeight);
 

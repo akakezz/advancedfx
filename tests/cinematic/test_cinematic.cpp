@@ -130,7 +130,8 @@ void inputTests()
 	inputCheck(packet.data.keyboard.VKey == 'P', "Pre-editor repeat keeps its Source-owned release");
 	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'Q', (1LL << 30) | 1), "Pre-editor normal repeat is blocked");
 	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_UP, 'Q', 1), "Pre-editor normal release remains Source-owned");
-	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'W', (1LL << 30) | 1), "Pre-editor movement repeat is captured");
+	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'W', (1LL << 30) | 1),
+			   "Pre-editor movement repeat is captured");
 	inputCheck(input.GetCamDForward() == 0, "Pre-editor repeat cannot start camera movement");
 	inputCheck(!input.Supply_KeyEvent(MirvInput::KS_UP, 'W', 1), "Pre-editor movement release reaches Source");
 	inputCheck(input.Supply_KeyEvent(MirvInput::KS_DOWN, 'N', 1), "Capture press before editor exits");
@@ -226,6 +227,126 @@ State state(Path p)
 	s.point = 0;
 	Validate(s);
 	return s;
+}
+void timeKeys()
+{
+	auto p = line();
+	auto geometry = p.points;
+	p.setTimeKey(10, 0);
+	p.setTimeKey(20, 1);
+	near(p.start, 10);
+	near(p.duration, 10);
+	check(p.scheduled && p.easeProgress, "Time-key scheduling enabled");
+	p.setTimeKey(15, 0.2);
+	near(p.evaluate(5).position.X, 20);
+	near(p.evaluate(2.5).position.X, 10);
+	near(p.timeKeys()[1].time, 15);
+	check(p.points.size() == geometry.size(), "Timing capture does not add spatial points");
+	p.setTimeKey(5, 0.5);
+	near(p.start, 5);
+	near(p.duration, 15);
+	near(p.evaluate(0).position.X, 50);
+	p.eraseTimeKey(0);
+	near(p.start, 10);
+	near(p.duration, 10);
+	near(p.timeKeys()[1].time, 15);
+	p.setTimeKey(12, 0.2);
+	near(p.evaluate(3).position.X, 20);
+	near(p.evaluate(4).position.X, 20);
+	p.ease = Ease::In;
+	near(p.evaluate(7.5).position.X, 40);
+	near(p.pointTime(2), 10);
+	p = line();
+	p.setTimeKey(10, 0);
+	p.setTimeKey(20, 1);
+	p.ease = Ease::In;
+	near(p.pointTime(1), std::sqrt(0.5) * 10);
+	near(p.distanceAtTime(5), 0.25);
+	for (int i = 0; i <= 20; ++i)
+		near(p.distanceAtTime(i * 0.5) * 100, p.evaluate(i * 0.5).position.X);
+	State state;
+	state.paths = {p};
+	state.paths[0].id = 1;
+	state.selected = 0;
+	auto xml = Serialize(state);
+	auto loaded = Deserialize(xml);
+	check(loaded.paths[0].easeProgress, "Time-key easing survives XML");
+	near(loaded.paths[0].evaluate(5).position.X, 25);
+	near(loaded.paths[0].timeKeys()[1].time, 20);
+	std::string before = Serialize(state);
+	throws([&] { state.paths[0].setTimeKey(90000, 0.5); });
+	check(Serialize(state) == before, "Invalid capture preserves prior data");
+	throws([&] { p.setTimeKey(-1, 0); });
+	throws([&] { p.setTimeKey(11, 2); });
+	throws([&] { p.eraseTimeKey(2); });
+	p.setTimeKey(15, 0.3);
+	p.setTimeKey(15, 0.4);
+	check(p.progress.size() == 3, "Same-time capture replaces instead of duplicating");
+	near(p.evaluate(5).position.X, 40);
+	p.eraseTimeKey(1);
+	p.eraseTimeKey(1);
+	near(p.evaluate(4).position.X, 0);
+	p.eraseTimeKey(0);
+	check(p.progress.empty() && !p.scheduled && !p.easeProgress, "Deleting all timing keys unschedules movement");
+	Path empty;
+	throws([&] { empty.setTimeKey(10, 0); });
+	p = line();
+	p.progress = {{0, 0}, {1, 1}};
+	p.ease = Ease::In;
+	p.rebuild();
+	near(p.evaluate(5).position.X, 50);
+	check(!p.easeProgress, "Old motion tracks retain linear interpolation");
+	p = line();
+	p.points[1].hold = 1;
+	p.rebuild();
+	p.setTimeKey(10, 0);
+	p.setTimeKey(20, 1);
+	near(p.points[1].hold, 0);
+	near(p.evaluate(5).position.X, 50);
+	p = line();
+	p.setTimeKey(10, 0);
+	p.setTimeKey(12, 0.2);
+	p.setTimeKey(20, 1);
+	p.transition = 5;
+	p.replaceTimeKey(2, 22, 1);
+	near(p.duration, 12);
+	near(p.transition, 5);
+	auto unchanged = p.timeKeys();
+	throws([&] { p.replaceTimeKey(2, 12, 0.8); });
+	near(p.timeKeys().back().time, unchanged.back().time);
+	throws([&] { p.replaceTimeKey(9, 22, 1); });
+	throws([&] { p.replaceTimeKey(2, 22, -1); });
+	p = line();
+	p.ease = Ease::Smooth;
+	p.points[1].hold = 2;
+	p.rebuild();
+	for (double f : {0.1, 0.3, 0.5, 0.9})
+		near(p.distanceAtTime(p.timeAtDistance(f)), f);
+	p = line();
+	p.setTimeKey(10, 0.2);
+	p.setTimeKey(20, 0.8);
+	p.ease = Ease::Smooth;
+	for (double f : {0.2, 0.3, 0.5, 0.8})
+		near(p.distanceAtTime(p.timeAtDistance(f)), f);
+	throws([&] { p.timeAtDistance(1); });
+	throws([&] { p.timeAtDistance(-1); });
+	p = line();
+	p.setTimeKey(10, 0);
+	p.setTimeKey(20, 1);
+
+	Editor editor;
+	editor.create();
+	auto next = editor.state;
+	next.paths[0] = p;
+	next.paths[0].id = 1;
+	editor.commit(next);
+	next = editor.state;
+	next.paths[0].setTimeKey(15, 0.2);
+	editor.commit(next);
+	check(editor.undo(), "Time-key capture is undoable");
+	near(editor.active().evaluate(5).position.X, 50);
+	check(editor.redo(), "Time-key capture can redo");
+	near(editor.active().evaluate(5).position.X, 20);
 }
 void timing()
 {
@@ -574,6 +695,7 @@ int main()
 {
 	try
 	{
+		timeKeys();
 		timing();
 		geometry();
 		persistence();

@@ -5,6 +5,8 @@
 #include <shared/CinematicPath.h>
 #include <algorithm>
 #include <utility>
+#include <map>
+#include <tuple>
 
 #include "SourceInterfaces.h"
 #include "RenderView.h"
@@ -554,7 +556,7 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 				BeginLabels(dynamicPorperties, true))
 				for (const auto & label : newProperties->Labels)
 					DrawLabel(dynamicPorperties, label.Position, label.Text, newProperties->LabelHeight, label.Color,
-							  true);
+							  true, label.Row);
 		}
 		else if (dynamicPorperties->GetDrawKeyframeIndex() && BeginLabels(dynamicPorperties, false))
 		{
@@ -1094,7 +1096,7 @@ void CCampathDrawer::BuildNewProperties(CNewProperties & data)
 			}
 		}
 		if (MirvCinematic_DrawEnabled(2))
-			data.Labels.push_back({p.pointWorld(0).position + Vec{0, 0, 16}, std::to_string(j) + ": " + p.name, color});
+			data.Labels.push_back({p.pointWorld(0).position, std::to_string(j) + ": " + p.name, color, 1});
 		for (std::size_t i = 0; i < p.points.size(); ++i)
 		{
 			Pose pose = p.pointWorld(i);
@@ -1120,6 +1122,57 @@ void CCampathDrawer::BuildNewProperties(CNewProperties & data)
 				}
 			}
 		}
+		if (MirvCinematic_DrawEnabled(6))
+		{
+			auto * globals = g_Hook_VClient_RenderView.GetGlobals();
+			double tick = globals ? globals->interval_per_tick_get() : 0;
+			std::map<std::tuple<double, double, double>, int> rows;
+			for (std::size_t i = 0; i < p.progress.size(); ++i)
+			{
+				auto key = p.progress[i];
+				Vec pos = p.atDistance(key.value).position;
+				double seconds = p.start + key.time * p.duration;
+				DWORD c = selected && int(i) == MirvCinematic_SelectedTimeKey() ? 0xFFFFFF00
+						  : selected											? 0xFFFFAA55
+																				: color;
+				line(pos - Vec{5, 0, 0}, pos + Vec{5, 0, 0}, c);
+				line(pos - Vec{0, 5, 0}, pos + Vec{0, 5, 0}, c);
+				line(pos - Vec{0, 0, 5}, pos + Vec{0, 0, 5}, c);
+				if (MirvCinematic_DrawEnabled(2))
+				{
+					char text[160];
+					if (tick > 0)
+						snprintf(text, sizeof(text), "T%u: %.3fs / tick %.0f", unsigned(i), seconds,
+								 std::round(seconds / tick));
+					else
+						snprintf(text, sizeof(text), "T%u: %.3fs", unsigned(i), seconds);
+					// Stack holds/revisits at the same position instead of overprinting labels.
+					float row =
+						2 +
+						float(rows[{std::round(pos.X * 1000), std::round(pos.Y * 1000), std::round(pos.Z * 1000)}]++);
+					data.Labels.push_back({pos, text, c, row});
+				}
+			}
+		}
+		if (selected && MirvCinematic_DrawEnabled(7))
+		{
+			// Equal time samples visualize the actual evaluator, including easing,
+			// custom speed, holds and reversals. Tight spacing means slower travel.
+			for (int i = 0; i <= 32; ++i)
+			{
+				Vec pos = p.evaluate(p.duration * i / 32).position;
+				line(pos - Vec{0, 0, 2}, pos + Vec{0, 0, 2}, 0xFFFFFFFF);
+			}
+			if (MirvCinematic_DrawEnabled(2))
+			{
+				const char * names[] = {"linear", "in", "out", "smooth", "smoother", "custom"};
+				char text[160];
+				snprintf(text, sizeof(text), "%s: equal-time marks %.3fs apart",
+						 p.progress.empty() || p.easeProgress ? names[int(p.ease)] : "linear motion", p.duration / 32);
+				data.Labels.push_back({p.atDistance(0).position, text, 0xFFFFFFFF, -1});
+			}
+		}
+
 		if (MirvCinematic_DrawEnabled(4))
 			for (int axis = 0; axis < 3; ++axis)
 				if (p.constraints.locked[axis])
@@ -1296,7 +1349,7 @@ bool CCampathDrawer::BeginLabels(CDynamicProperties const * properties, bool nam
 }
 
 void CCampathDrawer::DrawLabel(CDynamicProperties const * properties, Vector3 position, const std::string & text,
-							   float height, DWORD color, bool names)
+							   float height, DWORD color, bool names, float row)
 {
 	const auto & right = properties->GetPlaneRight();
 	const auto & up = properties->GetPlaneUp();
@@ -1310,7 +1363,7 @@ void CCampathDrawer::DrawLabel(CDynamicProperties const * properties, Vector3 po
 		if (w <= 0.01 || fabs(upY) < 1e-9 || !properties->GetScreenHeight())
 			return;
 		height = (float)(height * 2 * w / (fabs(upY) * properties->GetScreenHeight()));
-		position += up * (double)height;
+		position += up * (double)(height * (1 + row * 1.2f));
 		m_Device->SetRenderState(D3DRS_TEXTUREFACTOR, color);
 	}
 	for (size_t i = 0; i < text.size(); ++i)

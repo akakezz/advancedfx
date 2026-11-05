@@ -395,7 +395,7 @@ Pose Path::evaluate(double seconds) const
 	double t = std::clamp(seconds, 0.0, duration), normalized = t / duration;
 	Pose p;
 	if (!progress.empty())
-		p = atDistance(scalar(progress, normalized));
+		p = atDistance(progressAt(normalized));
 	else if (t >= duration)
 		p = atDistance(1);
 	else
@@ -466,23 +466,185 @@ Pose Path::evaluate(double seconds) const
 	}
 	return p;
 }
-double Path::pointTime(std::size_t i) const
+double Path::pointDistance(std::size_t i) const
 {
 	require(i < points.size(), "Invalid point index");
+	return m_Cache->length > 1e-9 ? m_Cache->nodes.at(i) / m_Cache->length
+		   : points.size() > 1	  ? double(i) / double(points.size() - 1)
+								  : 0;
+}
+double Path::progressAt(double t) const
+{
+	if (!easeProgress)
+		return scalar(progress, t);
+	auto b =
+		std::upper_bound(progress.begin(), progress.end(), t, [](double v, const ScalarKey & k) { return v < k.time; });
+	if (b == progress.begin())
+		return b->value;
+	if (b == progress.end())
+		return progress.back().value;
+	auto a = b - 1;
+	return a->value + (b->value - a->value) * eased((t - a->time) / (b->time - a->time), false, false);
+}
+double Path::distanceAtTime(double seconds) const
+{
+	require(!points.empty() && finite(seconds), "Cannot evaluate empty path or non-finite time");
+	double t = std::clamp(seconds, 0.0, duration);
+	if (!progress.empty())
+		return progressAt(t / duration);
+	if (t >= duration)
+		return 1;
+	auto spans = timeline();
+	for (std::size_t i = 0; i < points.size(); ++i)
+	{
+		if (t <= spans[i].departure)
+			return pointDistance(i);
+		if (i + 1 < points.size() && t < spans[i].departure + spans[i].travel)
+		{
+			double u = eased((t - spans[i].departure) / spans[i].travel, points[i].stop || points[i].hold > 0,
+							 points[i + 1].stop || points[i + 1].hold > 0);
+			return pointDistance(i) + (pointDistance(i + 1) - pointDistance(i)) * u;
+		}
+	}
+	return 1;
+}
+double Path::pointTime(std::size_t i) const
+{
 	if (progress.empty())
+	{
+		require(i < points.size(), "Invalid point index");
 		return timeline().at(i).arrival;
-	double node = m_Cache->length > 1e-9 ? m_Cache->nodes.at(i) / m_Cache->length
-				  : points.size() > 1	 ? double(i) / double(points.size() - 1)
-										 : 0;
+	}
+	return timeAtDistance(pointDistance(i));
+}
+double Path::timeAtDistance(double node) const
+{
+	require(!points.empty() && finite(node) && node >= 0 && node <= 1, "Invalid path position");
+	if (progress.empty())
+	{
+		auto spans = timeline();
+		for (std::size_t i = 0; i < points.size(); ++i)
+		{
+			double a = pointDistance(i);
+			if (node == a)
+				return spans[i].arrival;
+			if (i + 1 < points.size())
+			{
+				double b = pointDistance(i + 1);
+				if (node > a && node <= b && b > a)
+				{
+					double target = (node - a) / (b - a), lo = 0, hi = 1;
+					for (int j = 0; j < 60; ++j)
+					{
+						double mid = (lo + hi) * 0.5;
+						if (eased(mid, points[i].stop || points[i].hold > 0,
+								  points[i + 1].stop || points[i + 1].hold > 0) < target)
+							lo = mid;
+						else
+							hi = mid;
+					}
+					return spans[i].departure + spans[i].travel * (lo + hi) * 0.5;
+				}
+			}
+		}
+		return 0;
+	}
 	if (node == progress.front().value)
 		return progress.front().time * duration;
 	for (std::size_t j = 1; j < progress.size(); ++j)
 	{
 		auto a = progress[j - 1], b = progress[j];
 		if (node >= (std::min)(a.value, b.value) && node <= (std::max)(a.value, b.value) && a.value != b.value)
-			return duration * (a.time + (b.time - a.time) * (node - a.value) / (b.value - a.value));
+		{
+			double u = (node - a.value) / (b.value - a.value);
+			if (easeProgress)
+			{
+				double lo = 0, hi = 1;
+				for (int step = 0; step < 60; ++step)
+				{
+					double m = (lo + hi) * 0.5;
+					if (eased(m, false, false) < u)
+						lo = m;
+					else
+						hi = m;
+				}
+				u = (lo + hi) * 0.5;
+			}
+			return duration * (a.time + (b.time - a.time) * u);
+		}
 	}
-	throw std::runtime_error("This point is not visited by the custom motion track");
+	throw std::runtime_error("This path position is not visited by the timing keys");
+}
+std::vector<ScalarKey> Path::timeKeys() const
+{
+	auto keys = progress;
+	for (auto & key : keys)
+		key.time = start + key.time * duration;
+	return keys;
+}
+void Path::assignTimeKeys(std::vector<ScalarKey> keys)
+{
+	Path next = *this;
+	if (keys.empty())
+	{
+		next.progress.clear();
+		next.easeProgress = false;
+		next.scheduled = false;
+	}
+	else
+	{
+		next.start = keys.front().time;
+		next.duration = keys.size() > 1 ? keys.back().time - next.start : 5;
+		for (auto & key : keys)
+			key.time = (key.time - next.start) / next.duration;
+		next.progress = std::move(keys);
+		next.easeProgress = true;
+		next.scheduled = true;
+		// Explicit time keys replace legacy automatic segment/hold timing. Equal
+		// positions at different times express holds without another mechanism.
+		for (auto & point : next.points)
+		{
+			point.hold = point.seconds = 0;
+			point.stop = false;
+		}
+	}
+	next.rebuild();
+	*this = std::move(next);
+}
+void Path::setTimeKey(double seconds, double fraction)
+{
+	require(!points.empty(), "Capture geometry before timing");
+	require(finite(seconds) && seconds >= 0 && finite(fraction) && fraction >= 0 && fraction <= 1,
+			"Invalid timing key");
+	auto keys = timeKeys();
+	auto it = std::lower_bound(keys.begin(), keys.end(), seconds,
+							   [](const ScalarKey & key, double t) { return key.time < t; });
+	if (it != keys.end() && std::abs(it->time - seconds) < 1e-9)
+		it->value = fraction;
+	else
+		keys.insert(it, {seconds, fraction});
+	assignTimeKeys(std::move(keys));
+}
+void Path::replaceTimeKey(std::size_t index, double seconds, double fraction)
+{
+	require(finite(seconds) && seconds >= 0 && finite(fraction) && fraction >= 0 && fraction <= 1,
+			"Invalid timing key");
+	auto keys = timeKeys();
+	require(index < keys.size(), "Invalid timing key index");
+	keys.erase(keys.begin() + index);
+	auto it = std::lower_bound(keys.begin(), keys.end(), seconds,
+							   [](const ScalarKey & key, double t) { return key.time < t; });
+	require(it == keys.end() || std::abs(it->time - seconds) >= 1e-9,
+			"Another timing key already occupies this demo time");
+	keys.insert(it, {seconds, fraction});
+	assignTimeKeys(std::move(keys));
+}
+void Path::eraseTimeKey(std::size_t index)
+{
+	auto keys = timeKeys();
+	require(index < keys.size(), "Invalid timing key index");
+	keys.erase(keys.begin() + index);
+	assignTimeKeys(std::move(keys));
 }
 void Path::capture(Pose world, int index, bool replace)
 {
@@ -1009,6 +1171,7 @@ std::string Serialize(const State & s)
 		w.a("ease", int(p.ease));
 		w.a("rotationInterp", int(p.rotationInterp));
 		w.a("fovInterp", int(p.fovInterp));
+		w.a("easeProgress", p.easeProgress);
 		w.a("fixedAim", p.fixedAim);
 		w.v("aim", p.aimTarget);
 		w.begin("anchor");
@@ -1147,6 +1310,7 @@ State Deserialize(const std::string & xml)
 		p.ease = Ease(integer(n, "ease"));
 		p.rotationInterp = Interp(integer(n, "rotationInterp"));
 		p.fovInterp = Interp(integer(n, "fovInterp"));
+		p.easeProgress = boolean(n, "easeProgress");
 		p.fixedAim = boolean(n, "fixedAim");
 		p.aimTarget = vec(n, "aim");
 		p.speed.clear();

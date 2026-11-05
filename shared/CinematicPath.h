@@ -104,6 +104,7 @@ struct Path
 	Ease ease = Ease::Linear;
 	Interp rotationInterp = Interp::Linear, fovInterp = Interp::Linear;
 	std::vector<ScalarKey> speed{{0, 0}, {1, 1}}; // per-segment cumulative speed curve
+	bool easeProgress = false; // time-key easing; older motion tracks retain linear interpolation
 	std::vector<ScalarKey> progress; // optional whole-movement time -> distance, supports reversals
 	std::vector<RotationKey> rotations; // independent normalized time -> local rotation
 	std::vector<ScalarKey> fovs; // independent normalized time -> FOV
@@ -123,6 +124,13 @@ struct Path
 		return m_Cache->length * anchor.scale;
 	}
 	double pointTime(std::size_t index) const;
+	double pointDistance(std::size_t index) const;
+	double timeAtDistance(double fraction) const;
+	double distanceAtTime(double seconds) const;
+	std::vector<ScalarKey> timeKeys() const; // absolute demo seconds -> path fraction
+	void setTimeKey(double demoSeconds, double fraction);
+	void replaceTimeKey(std::size_t index, double demoSeconds, double fraction);
+	void eraseTimeKey(std::size_t index);
 	void capture(Pose world, int index = -1, bool replace = false);
 
 private:
@@ -135,6 +143,8 @@ private:
 	};
 	std::shared_ptr<Cache> m_Cache = std::make_shared<Cache>();
 	double distanceParameter(double fraction) const;
+	double progressAt(double normalized) const;
+	void assignTimeKeys(std::vector<ScalarKey> keys);
 	double eased(double t, bool stopA, bool stopB) const;
 };
 struct State

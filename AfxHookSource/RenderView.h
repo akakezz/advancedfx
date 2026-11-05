@@ -152,6 +152,7 @@ bool MirvCinematic_Override(float & x, float & y, float & z, float & pitch, floa
 bool MirvCinematic_OwnsCamera();
 bool MirvCinematic_IsEditing();
 bool MirvCinematic_IsNewSystem();
+int MirvCinematic_SelectedTimeKey();
 void MirvCinematic_Update();
 bool MirvCinematic_KeyEvent(UINT message, WPARAM key, LPARAM flags);
 void MirvCinematic_ReleaseKeys(bool yieldKeyboard = false);
