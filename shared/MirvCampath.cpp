@@ -6,6 +6,7 @@
 
 #include <sstream>
 #include <iomanip>
+#include <stdexcept>
 
 void MirvCampath_PrintTimeFormated(double time, advancedfx::Con_Printf_t conMessage)
 {
@@ -34,6 +35,7 @@ void MirvCampath_PrintTimeFormated(double time, advancedfx::Con_Printf_t conMess
 }
 
 void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Printf_t conMessage, advancedfx::Con_Printf_t conWarning, CamPath* camPath, IMirvCampath_Time* mirvTime, IMirvCampath_Camera* mirvCamera, IMirvCampath_Drawer* mirvDrawer)
+try
 {
 	int argc = args->ArgC();
 
@@ -45,10 +47,21 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 		{
 			SMirvCameraValue camera = mirvCamera->GetCamera();
 
-			camPath->Add(
-				mirvTime->GetTime() - camPath->GetOffset(),
-				CamPathValue(camera.X, camera.Y, camera.Z, camera.Pitch, camera.Yaw, camera.Roll, camera.Fov)
-			);
+			double time = mirvTime->GetTime() - camPath->GetOffset();
+			CamPathValue value(camera.X, camera.Y, camera.Z, camera.Pitch, camera.Yaw, camera.Roll, camera.Fov);
+			// Recapturing a pose keeps its optional curve and hold metadata.
+			for (auto it = camPath->GetBegin(); it != camPath->GetEnd(); ++it)
+				if (it.GetTime() == time)
+				{
+					auto old = it.GetValue();
+					value.InHandle = old.InHandle;
+					value.OutHandle = old.OutHandle;
+					value.HasInHandle = old.HasInHandle;
+					value.HasOutHandle = old.HasOutHandle;
+					value.HoldDuration = old.HoldDuration;
+					break;
+				}
+			camPath->Add(time, value);
 
 			return;
 		}
@@ -1049,7 +1062,9 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 	}
 
 	conMessage("%s add - Adds current demotime and view as keyframe.\n", args->ArgV(0));
-	conMessage("%s enabled 0|1 - Set whether the camera path is active or not. Please note that at least 4 keyframes are required to activate it successfully!\n", args->ArgV(0));
+	conMessage("%s enabled 0|1 - Set whether the camera path is active or not. Interpolation must be evaluable (cubic: "
+			   "4 keys; linear/smooth/monotone: 2).\n",
+			   args->ArgV(0));
 	if(mirvDrawer) conMessage("%s draw [...] - Controls drawing of the camera path.\n", args->ArgV(0));
 	conMessage("%s clear - Removes all [or all selected] keyframes.\n", args->ArgV(0));
 	conMessage("%s print - Prints detailed information.\n", args->ArgV(0));
@@ -1061,4 +1076,8 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 	conMessage("%s offset [...] - Offset campath.\n", args->ArgV(0));
 	conMessage("%s hold [...]\n", args->ArgV(0));
 	return;
+}
+catch (const std::invalid_argument & error)
+{
+	conWarning("Campath: %s\n", error.what());
 }

@@ -28,6 +28,9 @@ template <class OutIt, class Ch> inline OutIt print_pi_node(OutIt, const xml_nod
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <stdexcept>
+#include <set>
+#include <sstream>
 
 #include <math.h>
 
@@ -38,6 +41,108 @@ template <class OutIt, class Ch> inline OutIt print_pi_node(OutIt, const xml_nod
 #ifdef max
 #undef max
 #endif
+
+namespace
+{
+void ValidateKeys(const CInterpolationMap<CamPathValue> & keys)
+{
+	for (auto it = keys.begin(); it != keys.end(); ++it)
+	{
+		double release = it->first + it->second.HoldDuration;
+		if (!std::isfinite(it->first) || !std::isfinite(release) || !std::isfinite(it->second.HoldDuration) ||
+			it->second.HoldDuration < 0)
+			throw std::invalid_argument("Invalid keyframe hold");
+		auto next = std::next(it);
+		if (it->second.HoldDuration > 0 && next != keys.end() && release >= next->first)
+			throw std::invalid_argument("Hold release must precede the next keyframe arrival");
+	}
+}
+bool ReadCampathFile(const wchar_t * file, std::string & xml)
+{
+	std::ifstream input(std::filesystem::path(file), std::ios::binary | std::ios::ate);
+	if (!input)
+		return false;
+	auto length = input.tellg();
+	if (length < 0 || length > 64 * 1024 * 1024)
+		return false;
+	xml.resize(std::size_t(length));
+	input.seekg(0);
+	return bool(input.read(xml.data(), std::streamsize(length)));
+}
+} // namespace
+bool CamPathValue::operator==(const CamPathValue & b) const
+{
+	return X == b.X && Y == b.Y && Z == b.Z && R.W == b.R.W && R.X == b.R.X && R.Y == b.R.Y && R.Z == b.R.Z &&
+		   Fov == b.Fov && Selected == b.Selected && InHandle.X == b.InHandle.X && InHandle.Y == b.InHandle.Y &&
+		   InHandle.Z == b.InHandle.Z && OutHandle.X == b.OutHandle.X && OutHandle.Y == b.OutHandle.Y &&
+		   OutHandle.Z == b.OutHandle.Z && HasInHandle == b.HasInHandle && HasOutHandle == b.HasOutHandle &&
+		   HoldDuration == b.HoldDuration;
+}
+bool CamPath::State::operator==(const State & b) const
+{
+	return Keys == b.Keys && Position == b.Position && Fov == b.Fov && Rotation == b.Rotation && Offset == b.Offset &&
+		   Enabled == b.Enabled && Hold == b.Hold && Bezier == b.Bezier && CurveEditing == b.CurveEditing &&
+		   Name == b.Name;
+}
+CamPath::State CamPath::CaptureState() const
+{
+	State s;
+	s.Keys = m_Map;
+	s.Position = m_PositionInterpMethod;
+	s.Fov = m_FovInterpMethod;
+	s.Rotation = m_RotationInterpMethod;
+	s.Offset = m_Offset;
+	s.Enabled = m_Enabled;
+	s.Hold = m_Hold;
+	s.Bezier = m_Bezier;
+	s.CurveEditing = m_CurveEditing;
+	s.Name = m_Name;
+	return s;
+}
+void CamPath::RestoreState(const State & s)
+{
+	ValidateKeys(s.Keys);
+	if (s.Name.size() > 256 || !std::isfinite(s.Offset))
+		throw std::invalid_argument("Invalid path state");
+	m_Map = s.Keys;
+	m_Offset = s.Offset;
+	m_Enabled = s.Enabled;
+	m_Hold = s.Hold;
+	m_Bezier = s.Bezier;
+	m_CurveEditing = s.CurveEditing;
+	m_Name = s.Name;
+	PositionInterpMethod_set(s.Position);
+	RotationInterpMethod_set(s.Rotation);
+	FovInterpMethod_set(s.Fov);
+	DoInterpolationMapChangedAll();
+	Changed();
+}
+void CamPath::SetName(const std::string & name)
+{
+	if (name.size() > 256)
+		throw std::invalid_argument("Path name exceeds 256 bytes");
+	m_Name = name;
+	Changed();
+}
+void CamPath::Validate() const
+{
+	ValidateKeys(m_Map);
+	if (!std::isfinite(m_Offset))
+		throw std::invalid_argument("Invalid path offset");
+}
+bool CamPath::SetKeyHold(double time, double release)
+{
+	auto it = m_Map.find(time);
+	if (it == m_Map.end() || !std::isfinite(time) || !std::isfinite(release) || !std::isfinite(release - time) ||
+		release < time)
+		return false;
+	auto next = std::next(it);
+	if (release > time && next != m_Map.end() && release >= next->first)
+		return false;
+	it->second.HoldDuration = release - time;
+	Changed();
+	return true;
+}
 
 bool CamPath::DoubleInterp_FromString(char const * value, DoubleInterp & outValue)
 {
@@ -57,6 +162,22 @@ bool CamPath::DoubleInterp_FromString(char const * value, DoubleInterp & outValu
 		return true;
 	}
 
+	if (!_stricmp(value, "smooth"))
+	{
+		outValue = DI_SMOOTH;
+		return true;
+	}
+	if (!_stricmp(value, "monotone"))
+	{
+		outValue = DI_MONOTONE;
+		return true;
+	}
+	if (!_stricmp(value, "step"))
+	{
+		outValue = DI_STEP;
+		return true;
+	}
+
 	return false;
 }
 
@@ -64,6 +185,12 @@ char const * CamPath::DoubleInterp_ToString(DoubleInterp value)
 {
 	switch(value)
 	{
+	case DI_SMOOTH:
+		return "smooth";
+	case DI_MONOTONE:
+		return "monotone";
+	case DI_STEP:
+		return "step";
 	case DI_DEFAULT:
 		return "default";
 	case DI_LINEAR:
@@ -93,6 +220,17 @@ bool CamPath::QuaternionInterp_FromString(char const * value, QuaternionInterp &
 		return true;
 	}
 
+	if (!_stricmp(value, "sSmooth"))
+	{
+		outValue = QI_SMOOTH;
+		return true;
+	}
+	if (!_stricmp(value, "sStep"))
+	{
+		outValue = QI_STEP;
+		return true;
+	}
+
 	return false;
 }
 
@@ -100,6 +238,10 @@ char const * CamPath::QuaternionInterp_ToString(QuaternionInterp value)
 {
 	switch(value)
 	{
+	case QI_SMOOTH:
+		return "sSmooth";
+	case QI_STEP:
+		return "sStep";
 	case QI_DEFAULT:
 		return "default";
 	case QI_SLINEAR:
@@ -227,6 +369,18 @@ void CamPath::PositionInterpMethod_set(DoubleInterp value)
 
 	switch(value)
 	{
+	case DI_SMOOTH:
+	case DI_MONOTONE:
+	case DI_STEP: {
+		auto mode = value == DI_SMOOTH	   ? CLocalDoubleInterpolation<CamPathValue>::Smooth
+					: value == DI_MONOTONE ? CLocalDoubleInterpolation<CamPathValue>::Monotone
+										   : CLocalDoubleInterpolation<CamPathValue>::Step;
+		m_XInterp = new CLocalDoubleInterpolation<CamPathValue>(&m_XView, mode);
+		m_YInterp = new CLocalDoubleInterpolation<CamPathValue>(&m_YView, mode);
+		m_ZInterp = new CLocalDoubleInterpolation<CamPathValue>(&m_ZView, mode);
+		break;
+	}
+
 	case DI_LINEAR:
 		m_XInterp = new CLinearDoubleInterpolation<CamPathValue>(&m_XView);
 		m_YInterp = new CLinearDoubleInterpolation<CamPathValue>(&m_YView);
@@ -255,6 +409,11 @@ void CamPath::RotationInterpMethod_set(QuaternionInterp value)
 
 	switch(value)
 	{
+	case QI_SMOOTH:
+	case QI_STEP:
+		m_RInterp = new CLocalQuaternionInterpolation<CamPathValue>(&m_RView, value == QI_STEP);
+		break;
+
 	case QI_SLINEAR:
 		m_RInterp = new CSLinearQuaternionInterpolation<CamPathValue>(&m_RView);
 		break;
@@ -279,6 +438,16 @@ void CamPath::FovInterpMethod_set(DoubleInterp value)
 
 	switch(value)
 	{
+	case DI_SMOOTH:
+	case DI_MONOTONE:
+	case DI_STEP: {
+		auto mode = value == DI_SMOOTH	   ? CLocalDoubleInterpolation<CamPathValue>::Smooth
+					: value == DI_MONOTONE ? CLocalDoubleInterpolation<CamPathValue>::Monotone
+										   : CLocalDoubleInterpolation<CamPathValue>::Step;
+		m_FovInterp = new CLocalDoubleInterpolation<CamPathValue>(&m_FovView, mode);
+		break;
+	}
+
 	case DI_LINEAR:
 		m_FovInterp = new CLinearDoubleInterpolation<CamPathValue>(&m_FovView);
 		break;
@@ -297,6 +466,21 @@ CamPath::DoubleInterp CamPath::FovInterpMethod_get(void) const
 
 void CamPath::Add(double time, const CamPathValue & value)
 {
+	if (!std::isfinite(time) || !std::isfinite(value.HoldDuration) || value.HoldDuration < 0 ||
+		!std::isfinite(time + value.HoldDuration))
+		throw std::invalid_argument("Invalid keyframe hold/time");
+	auto next = m_Map.lower_bound(time);
+	auto following = next;
+	if (next != m_Map.end() && next->first == time)
+		++following;
+	if (value.HoldDuration > 0 && following != m_Map.end() && time + value.HoldDuration >= following->first)
+		throw std::invalid_argument("Hold release must precede the next keyframe arrival");
+	if (next != m_Map.begin())
+	{
+		auto previous = std::prev(next);
+		if (previous->second.HoldDuration > 0 && previous->first + previous->second.HoldDuration >= time)
+			throw std::invalid_argument("New arrival overlaps the previous keyframe hold");
+	}
 	m_Map[time] = value;
 	DoInterpolationMapChangedAll();
 	Changed();
@@ -360,7 +544,8 @@ bool CamPath::GetHandle(double time, bool outgoing, Vector3 & offset) const
 	// Derive automatic handles from the existing interpolator. Only segments
 	// with an explicitly edited handle use Bezier evaluation below.
 	double epsilon = (std::min)(std::abs(span) * 1e-4, 1e-3);
-	double a = (std::max)(GetLowerBound(), time - epsilon), b = (std::min)(GetUpperBound(), time + epsilon);
+	double a = (std::max)(m_Map.cbegin()->first, time - epsilon),
+		   b = (std::min)(m_Map.crbegin()->first, time + epsilon);
 	if (b <= a)
 	{
 		offset = {0, 0, 0};
@@ -458,17 +643,35 @@ double CamPath::GetLowerBound() const
 
 double CamPath::GetUpperBound() const
 {
-	return (--m_Map.cend())->first;
+	auto last = std::prev(m_Map.cend());
+	return last->first + last->second.HoldDuration;
 }
 
 bool CamPath::CanEval(void) const
 {
+	if (m_Map.size() == 1 && m_Map.begin()->second.HoldDuration > 0)
+		return true;
 	return m_XInterp->CanEval() && m_YInterp->CanEval() && m_ZInterp->CanEval() && m_RInterp->CanEval() &&
 		   m_FovInterp->CanEval() && m_SelectedInterp->CanEval();
 }
 
 CamPathValue CamPath::Eval(double t)
 {
+	if (m_Map.size() == 1 && m_Map.begin()->second.HoldDuration > 0)
+		return m_Map.begin()->second;
+	// Hold the entire captured pose, then compress travel into the time left
+	// before the next existing arrival. Native interpolation still does the work.
+	auto hold = m_Map.upper_bound(t);
+	if (hold != m_Map.begin())
+	{
+		auto key = std::prev(hold);
+		double release = key->first + key->second.HoldDuration;
+		if (key->second.HoldDuration > 0 && t <= release)
+			return key->second;
+		if (key->second.HoldDuration > 0 && hold != m_Map.end() && t < hold->first)
+			t = key->first + (t - release) * (hold->first - key->first) / (hold->first - release);
+	}
+
 	CamPathValue val;
 	
 	val.X = m_XInterp->Eval(t);
@@ -504,11 +707,11 @@ CamPathValue CamPath::Eval(double t)
 char * double2xml(rapidxml::xml_document<> & doc, double value)
 {
 	char szTmp[196];
-	_snprintf_s(szTmp, _TRUNCATE,"%f", value);
+	_snprintf_s(szTmp, _TRUNCATE, "%.17g", value);
 	return doc.allocate_string(szTmp);
 }
 
-bool CamPath::Save(wchar_t const * fileName)
+std::string CamPath::ToXml()
 {
 	rapidxml::xml_document<> doc;
 
@@ -518,6 +721,9 @@ bool CamPath::Save(wchar_t const * fileName)
 	doc.append_node(decl);
 
 	rapidxml::xml_node<> * cam = doc.allocate_node(rapidxml::node_element, "campath");
+	if (!m_Name.empty())
+		cam->append_attribute(doc.allocate_attribute("name", doc.allocate_string(m_Name.c_str())));
+
 	if (m_Bezier)
 		cam->append_attribute(doc.allocate_attribute("curve", "bezier"));
 	if(DI_DEFAULT != m_PositionInterpMethod)
@@ -567,6 +773,9 @@ bool CamPath::Save(wchar_t const * fileName)
 		pt->append_attribute(doc.allocate_attribute("qy", double2xml(doc,it.wrapped->second.R.Y)));
 		pt->append_attribute(doc.allocate_attribute("qz", double2xml(doc,it.wrapped->second.R.Z)));
 
+		if (val.HoldDuration > 0)
+			pt->append_attribute(doc.allocate_attribute("holdDuration", double2xml(doc, val.HoldDuration)));
+
 		if (val.HasInHandle)
 		{
 			pt->append_attribute(doc.allocate_attribute("inX", double2xml(doc, val.InHandle.X)));
@@ -589,51 +798,40 @@ bool CamPath::Save(wchar_t const * fileName)
 	std::string xmlString;
 	rapidxml::print(std::back_inserter(xmlString), doc);
 
-	std::ofstream ofs(std::filesystem::path(fileName), std::ios_base::binary);
-
-	bool bOk = !ofs.fail();
-
-	if (bOk)
-	{
-		ofs << doc;
-	}
-
-	if (ofs.fail())
-		bOk = false;
-
-	ofs.close();
-	
-	return bOk;
+	return xmlString;
+}
+bool CamPath::Save(wchar_t const * fileName)
+{
+	std::ofstream output(std::filesystem::path(fileName), std::ios::binary);
+	if (!output)
+		return false;
+	output << ToXml();
+	return bool(output);
 }
 
-bool CamPath::Load(wchar_t const * fileName)
+bool CamPath::Load(const wchar_t * fileName)
 {
-	bool bOk = false;
-
-	FILE * pFile = 0;
-
-	_wfopen_s(&pFile, fileName, L"rb");
-
-	if(!pFile)
+	std::string xml;
+	return ReadCampathFile(fileName, xml) && LoadXml(xml);
+}
+bool CamPath::LoadXml(const std::string & xml)
+{
+	if (xml.size() > 64 * 1024 * 1024)
 		return false;
-	
+	bool bOk = true;
+	std::vector<char> data(xml.begin(), xml.end());
+	data.push_back(0);
+	char * pData = data.data();
+
 	CInterpolationMap<CamPathValue> previous;
 	CopyMap(previous, m_Map);
 	auto position = m_PositionInterpMethod;
 	auto rotation = m_RotationInterpMethod;
 	auto fov = m_FovInterpMethod;
 	double oldOffset = m_Offset;
+	std::string oldName = m_Name;
 	bool oldHold = m_Hold, oldBezier = m_Bezier;
 
-	fseek(pFile, 0, SEEK_END);
-	size_t fileSize = ftell(pFile);
-	rewind(pFile);
-
-	char * pData = new char[fileSize+1];
-	pData[fileSize] = 0;
-
-	size_t readSize = fread(pData, sizeof(char), fileSize, pFile);
-	bOk = readSize == fileSize;
 	if(bOk)
 	{
 		try
@@ -650,7 +848,11 @@ bool CamPath::Load(wchar_t const * fileName)
 					break;
 				}
 
-				// Optional handle data does not enable curve evaluation in the classic system.
+				auto name = cur_node->first_attribute("name");
+				if (name)
+					m_Name = name->value();
+
+				// Loading optional handles preserves the caller's curve-editing capability.
 				auto curve = cur_node->first_attribute("curve");
 				m_Bezier = curve && !_stricmp(curve->value(), "bezier");
 
@@ -722,6 +924,19 @@ bool CamPath::Load(wchar_t const * fileName)
 					r.Z = dZ;
 					r.Fov = dFov;
 					r.Selected = selectedA != nullptr;
+					auto holdDuration = cur_node->first_attribute("holdDuration");
+					if (holdDuration)
+					{
+						char * end = nullptr;
+						r.HoldDuration = strtod(holdDuration->value(), &end);
+						if (end == holdDuration->value() || *end || !std::isfinite(r.HoldDuration) ||
+							r.HoldDuration < 0)
+						{
+							bOk = false;
+							break;
+						}
+					}
+
 					if (qwA && qxA && qyA && qzA)
 						r.R =
 							Quaternion(atof(qwA->value()), atof(qxA->value()), atof(qyA->value()), atof(qzA->value()));
@@ -779,12 +994,23 @@ bool CamPath::Load(wchar_t const * fileName)
 		}
 	}
 
-	delete[] pData;
-
-	fclose(pFile);
+	if (bOk)
+	{
+		try
+		{
+			Validate();
+			if (m_Name.size() > 256)
+				bOk = false;
+		}
+		catch (const std::exception &)
+		{
+			bOk = false;
+		}
+	}
 
 	if (!bOk)
 	{
+		m_Name = oldName;
 		CopyMap(m_Map, previous);
 		m_Bezier = oldBezier;
 		m_Hold = oldHold;
@@ -939,6 +1165,7 @@ void CamPath::SetStart(double t, bool relative)
 		}
 	}
 
+	ValidateKeys(tempMap);
 	CopyMap(m_Map, tempMap);
 
 	DoInterpolationMapChangedAll();
@@ -948,7 +1175,7 @@ void CamPath::SetStart(double t, bool relative)
 	
 void CamPath::SetDuration(double t)
 {
-	if (m_Map.size() < 2)
+	if (m_Map.empty() || (m_Map.size() == 1 && m_Map.begin()->second.HoldDuration == 0))
 		return;
 
 	CInterpolationMap<CamPathValue> tempMap;
@@ -966,18 +1193,18 @@ void CamPath::SetDuration(double t)
 			{
 				selectAll = false;
 				first = it->first;
-				last = first;
+				last = first + it->second.HoldDuration;
 			}
 			else
 			{
-				last = it->first;
+				last = it->first + it->second.HoldDuration;
 			}
 		}
 	}
 
 	double oldDuration = selectAll ? GetDuration() : last -first;
 
-	m_Map.clear();
+	CInterpolationMap<CamPathValue> result;
 
 	double scale = oldDuration ? t / oldDuration : 0.0;
 	bool isFirst = true;
@@ -988,21 +1215,24 @@ void CamPath::SetDuration(double t)
 		double curT = it->first;
 		CamPathValue curValue = it->second;
 
-		if(selectAll || curValue.Selected)
+		if (selectAll || curValue.Selected)
 		{
+			curValue.HoldDuration *= scale;
 			if(isFirst)
 			{
-				m_Map[curT] = curValue;
+				result[curT] = curValue;
 				firstT = curT;
 				isFirst = false;
 			}
 			else
-				m_Map[firstT+scale*(curT-firstT)] = curValue;
+				result[firstT + scale * (curT - firstT)] = curValue;
 		}
 		else
-			m_Map[curT] = curValue;
+			result[curT] = curValue;
 	}
 
+	ValidateKeys(result);
+	m_Map = std::move(result);
 	DoInterpolationMapChangedAll();
 
 	Changed();
@@ -1448,10 +1678,7 @@ void CamPath::CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<C
 
 double CamPath::GetDuration() const
 {
-	if (m_Map.size() < 2)
-		return 0.0;
-
-	return (--m_Map.cend())->first - m_Map.cbegin()->first;
+	return m_Map.empty() ? 0 : GetUpperBound() - GetLowerBound();
 }
 
 void CamPath::SetOffset(double value)
@@ -1480,5 +1707,286 @@ void CamPath::OnChangedRemove(CamPathChanged pCamPathChanged, void * pUserData)
 			m_OnChangedIt = m_OnChanged.erase(it);
 		else
 			m_OnChanged.erase(it);
+	}
+}
+
+std::unique_ptr<CamPath> CamPathCollection::MakePath()
+{
+	auto path = std::make_unique<CamPath>();
+	path->CurveEditing_set(true);
+	path->PositionInterpMethod_set(CamPath::DI_SMOOTH);
+	path->RotationInterpMethod_set(CamPath::QI_SLINEAR);
+	path->FovInterpMethod_set(CamPath::DI_LINEAR);
+	path->Enabled_set(true);
+	return path;
+}
+CamPathCollection::CamPathCollection()
+{
+	New();
+}
+void CamPathCollection::Changed(void * self)
+{
+	static_cast<CamPathCollection *>(self)->Notify();
+}
+void CamPathCollection::Notify()
+{
+	auto listeners = m_Listeners;
+	for (auto & entry : listeners)
+		entry.first(entry.second);
+}
+void CamPathCollection::OnChangedAdd(CamPathChanged callback, void * context)
+{
+	m_Listeners.emplace_back(callback, context);
+}
+void CamPathCollection::OnChangedRemove(CamPathChanged callback, void * context)
+{
+	m_Listeners.erase(std::remove(m_Listeners.begin(), m_Listeners.end(), std::make_pair(callback, context)),
+					  m_Listeners.end());
+}
+void CamPathCollection::Use(std::size_t index)
+{
+	if (index >= Size())
+		throw std::invalid_argument("Invalid path index");
+	m_Active = index;
+	Notify();
+}
+void CamPathCollection::New(std::string name)
+{
+	if (Size() >= 128)
+		throw std::invalid_argument("Maximum 128 paths");
+	auto exists = [&](const std::string & n) {
+		for (auto & path : m_Paths)
+			if (path->GetName() == n)
+				return true;
+		return false;
+	};
+	if (name.empty())
+	{
+		int n = 1;
+		do
+		{
+			name = "Path " + std::to_string(n++);
+		} while (exists(name));
+	}
+	if (exists(name) || name.size() > 256)
+		throw std::invalid_argument("Path names must be unique and at most 256 bytes");
+	auto path = MakePath();
+	path->SetName(name);
+	path->OnChangedAdd(Changed, this);
+	m_Paths.push_back(std::move(path));
+	m_Active = Size() - 1;
+	Notify();
+}
+void CamPathCollection::Rename(const std::string & name)
+{
+	if (name.empty() || name.size() > 256)
+		throw std::invalid_argument("A path name must contain 1..256 bytes");
+	for (std::size_t i = 0; i < Size(); ++i)
+		if (i != m_Active && At(i).GetName() == name)
+			throw std::invalid_argument("Path names must be unique");
+	Active().SetName(name);
+}
+void CamPathCollection::Remove(std::size_t index)
+{
+	if (index >= Size() || Size() == 1)
+		throw std::invalid_argument("Keep at least one path; use clear to empty it");
+	m_Paths.erase(m_Paths.begin() + index);
+	if (m_Active > index)
+		--m_Active;
+	else if (m_Active >= Size())
+		m_Active = Size() - 1;
+	Notify();
+}
+CamPathCollection::Snapshot CamPathCollection::Capture() const
+{
+	Snapshot result;
+	result.Active = m_Active;
+	for (auto & path : m_Paths)
+		result.Paths.push_back(path->CaptureState());
+	return result;
+}
+void CamPathCollection::Restore(const Snapshot & snapshot)
+{
+	if (snapshot.Paths.empty() || snapshot.Paths.size() > 128 || snapshot.Active >= snapshot.Paths.size())
+		throw std::invalid_argument("Invalid path collection");
+	std::vector<std::unique_ptr<CamPath>> paths;
+	std::set<std::string> names;
+	for (const auto & state : snapshot.Paths)
+	{
+		if (state.Name.empty() || !names.insert(state.Name).second)
+			throw std::invalid_argument("Path names must be nonempty and unique");
+		auto path = MakePath();
+		path->RestoreState(state);
+		path->OnChangedAdd(Changed, this);
+		paths.push_back(std::move(path));
+	}
+	m_Paths = std::move(paths);
+	m_Active = snapshot.Active;
+	Notify();
+}
+void CamPathCollection::Record(const Snapshot & before)
+{
+	if (before == Capture())
+		return;
+	m_Undo.push_back(before);
+	if (m_Undo.size() > 64)
+		m_Undo.erase(m_Undo.begin());
+	m_Redo.clear();
+}
+bool CamPathCollection::Undo()
+{
+	if (m_Undo.empty())
+		return false;
+	auto state = m_Undo.back();
+	auto current = Capture();
+	Restore(state);
+	m_Undo.pop_back();
+	m_Redo.push_back(std::move(current));
+	return true;
+}
+bool CamPathCollection::Redo()
+{
+	if (m_Redo.empty())
+		return false;
+	auto state = m_Redo.back();
+	auto current = Capture();
+	Restore(state);
+	m_Redo.pop_back();
+	m_Undo.push_back(std::move(current));
+	return true;
+}
+bool CamPathCollection::Eval(double time, CamPathValue & value)
+{
+	if (!m_Enabled || !std::isfinite(time))
+		return false;
+	CamPath * chosen = nullptr;
+	double start = 0;
+	for (auto & entry : m_Paths)
+	{
+		auto & path = *entry;
+		if (!path.Enabled_get() || !path.CanEval())
+			continue;
+		double at = path.GetLowerBound() + path.GetOffset();
+		if (at <= time && (time <= path.GetUpperBound() + path.GetOffset() || path.GetHold()) &&
+			(!chosen || at >= start))
+		{
+			chosen = &path;
+			start = at;
+		}
+	}
+	// Preserve classic global hold before the first arrival as well.
+	if (!chosen)
+		for (auto & entry : m_Paths)
+		{
+			auto & path = *entry;
+			if (!path.Enabled_get() || !path.CanEval() || !path.GetHold())
+				continue;
+			double at = path.GetLowerBound() + path.GetOffset();
+			if (!chosen || at < start)
+			{
+				chosen = &path;
+				start = at;
+			}
+		}
+	if (!chosen)
+		return false;
+	double t = time - chosen->GetOffset();
+	if (chosen->GetHold())
+		t = std::clamp(t, chosen->GetLowerBound(), chosen->GetUpperBound());
+	if (t < chosen->GetLowerBound() || t > chosen->GetUpperBound())
+		return false;
+	value = chosen->Eval(t);
+	return true;
+}
+bool CamPathCollection::SaveAll(const wchar_t * file)
+{
+	rapidxml::xml_document<> doc;
+	auto root = doc.allocate_node(rapidxml::node_element, "campaths");
+	doc.append_node(root);
+	root->append_attribute(doc.allocate_attribute("version", "1"));
+	std::string selected = std::to_string(m_Active);
+	root->append_attribute(doc.allocate_attribute("active", doc.allocate_string(selected.c_str())));
+	// clone_node shares string storage; keep all native XML buffers alive until
+	// the outer document is printed. Serialization stays in CamPath::ToXml.
+	std::vector<std::string> buffers;
+	buffers.reserve(Size());
+	for (auto & path : m_Paths)
+	{
+		buffers.push_back(path->ToXml());
+		rapidxml::xml_document<> child;
+		child.parse<0>(buffers.back().data());
+		auto node = doc.clone_node(child.first_node("campath"));
+		node->append_attribute(doc.allocate_attribute("enabled", path->Enabled_get() ? "1" : "0"));
+		root->append_node(node);
+	}
+	std::ofstream out(std::filesystem::path(file), std::ios::binary);
+	if (!out)
+		return false;
+	out << doc;
+	return bool(out);
+}
+bool CamPathCollection::Load(const wchar_t * file)
+{
+	std::string xml;
+	if (!ReadCampathFile(file, xml))
+		return false;
+	try
+	{
+		std::vector<char> buffer(xml.begin(), xml.end());
+		buffer.push_back(0);
+		rapidxml::xml_document<> doc;
+		doc.parse<0>(buffer.data());
+		Snapshot result;
+		if (auto root = doc.first_node("campaths"))
+		{
+			auto version = root->first_attribute("version");
+			if (!version || std::string(version->value()) != "1")
+				return false;
+			auto active = root->first_attribute("active");
+			if (active)
+			{
+				char * end = nullptr;
+				unsigned long number = strtoul(active->value(), &end, 10);
+				if (end == active->value() || *end)
+					return false;
+				result.Active = std::size_t(number);
+			}
+			for (auto node = root->first_node("campath"); node; node = node->next_sibling("campath"))
+			{
+				if (result.Paths.size() >= 128)
+					return false;
+				std::string child;
+				rapidxml::print(std::back_inserter(child), *node);
+				auto path = MakePath();
+				path->SetName("Path " + std::to_string(result.Paths.size() + 1));
+				if (!path->LoadXml(child))
+					return false;
+				auto enabled = node->first_attribute("enabled");
+				if (enabled)
+				{
+					if (std::string(enabled->value()) != "0" && std::string(enabled->value()) != "1")
+						return false;
+					path->Enabled_set(std::string(enabled->value()) == "1");
+				}
+				result.Paths.push_back(path->CaptureState());
+			}
+		}
+		else if (doc.first_node("campath"))
+		{
+			result = Capture();
+			auto path = MakePath();
+			path->RestoreState(result.Paths[result.Active]);
+			if (!path->LoadXml(xml))
+				return false;
+			result.Paths[result.Active] = path->CaptureState();
+		}
+		else
+			return false;
+		Restore(result);
+		return true;
+	}
+	catch (const std::exception &)
+	{
+		return false;
 	}
 }

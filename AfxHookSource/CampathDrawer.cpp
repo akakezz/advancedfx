@@ -4,6 +4,8 @@
 #include "CampathDrawer.h"
 #include <algorithm>
 #include <utility>
+#include <map>
+#include <tuple>
 
 #include "SourceInterfaces.h"
 #include "RenderView.h"
@@ -85,7 +87,7 @@ CCampathDrawer::~CCampathDrawer()
 	if (m_DrawTextureShader) m_DrawTextureShader->Release();
 	if(m_PixelShader) m_PixelShader->Release();
 	if(m_VertexShader) m_VertexShader->Release();
-	if(m_LessDynamicProperties) m_LessDynamicProperties->Release();
+	CamPathChanged();
 }
 
 void CCampathDrawer::AutoPolyLineStart()
@@ -231,10 +233,10 @@ void CCampathDrawer::CampathChangedFn(void * pUserData) {
 
 void CCampathDrawer::CamPathChanged()
 {
-	if(m_LessDynamicProperties) {
-		m_LessDynamicProperties->Release();
-		m_LessDynamicProperties = nullptr;
-	}
+	for (auto * snapshot : m_PathSnapshots)
+		if (snapshot)
+			snapshot->Release();
+	m_PathSnapshots.clear();
 }
 
 void CCampathDrawer::Draw_set(bool value)
@@ -269,25 +271,23 @@ void CCampathDrawer::EndDevice()
 	m_Device = nullptr;
 }
 
-void CCampathDrawer::Begin() {
-	g_Hook_VClient_RenderView.m_CamPath.OnChangedAdd(CCampathDrawer::CampathChangedFn,this);
-	g_Hook_VClient_RenderView.m_NewCamPath.OnChangedAdd(CCampathDrawer::CampathChangedFn, this);
+void CCampathDrawer::Begin()
+{
+	g_Hook_VClient_RenderView.m_CamPaths.OnChangedAdd(CampathChangedFn, this);
 	CamPathChanged();
 }
-
-void CCampathDrawer::End() {
-	g_Hook_VClient_RenderView.m_CamPath.OnChangedRemove(CCampathDrawer::CampathChangedFn,this);
-	g_Hook_VClient_RenderView.m_NewCamPath.OnChangedRemove(CCampathDrawer::CampathChangedFn, this);
+void CCampathDrawer::End()
+{
+	g_Hook_VClient_RenderView.m_CamPaths.OnChangedRemove(CampathChangedFn, this);
 }
 
 #define ValToUCCondInv(value,invert) ((invert) ? 0xFF -(unsigned char)(value) : (unsigned char)(value) )
 
-CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer * drawer) {
-	m_CurTime = g_MirvTime.GetTime() - g_Hook_VClient_RenderView.GetActiveCamPath().GetOffset();
-	m_InCampath = 1 <= g_Hook_VClient_RenderView.GetActiveCamPath().GetSize() &&
-				  g_Hook_VClient_RenderView.GetActiveCamPath().GetLowerBound() <= m_CurTime &&
-				  m_CurTime <= g_Hook_VClient_RenderView.GetActiveCamPath().GetUpperBound();
-	m_CampathEnabled = g_Hook_VClient_RenderView.GetActiveCamPath().Enabled_get();
+CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer * drawer, CamPath & path, bool active)
+{
+	m_CurTime = g_MirvTime.GetTime() - path.GetOffset();
+	m_InCampath = 1 <= path.GetSize() && path.GetLowerBound() <= m_CurTime && m_CurTime <= path.GetUpperBound();
+	m_CampathEnabled = g_Hook_VClient_RenderView.m_CamPaths.Enabled_get() && path.Enabled_get();
 
 	g_VEngineClient->GetScreenSize(m_ScreenWidth, m_ScreenHeight);
 
@@ -383,23 +383,22 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer * drawer) 
 		m_PlaneUp.Normalize();		
 	}
 
-	m_DrawKeyFrameIndex = drawer->m_DrawKeyframIndex;
+	m_DrawKeyFrameIndex = active ? drawer->m_DrawKeyframIndex : 0;
 	m_DrawKeyframeAxis = drawer->m_DrawKeyframeAxis;
 	m_DrawKeyframeCam = drawer->m_DrawKeyframeCam;
 
-	if (g_Hook_VClient_RenderView.GetActiveCamPath().CanEval() &&
-		2 <= g_Hook_VClient_RenderView.GetActiveCamPath().GetSize())
+	if (path.CanEval() && 1 <= path.GetSize())
 	{
-		m_CurrentValue = g_Hook_VClient_RenderView.GetActiveCamPath().Eval(m_CurTime);
+		m_CurrentValue = path.Eval(m_CurTime);
 	}
 }
 
-CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer * drawer) {
+CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer * drawer, CamPath & path)
+{
 
-	m_CampathCanEval = g_Hook_VClient_RenderView.GetActiveCamPath().CanEval();
+	m_CampathCanEval = path.CanEval();
 
-	for (CamPathIterator it = g_Hook_VClient_RenderView.GetActiveCamPath().GetBegin();
-		 it != g_Hook_VClient_RenderView.GetActiveCamPath().GetEnd(); ++it)
+	for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it)
 	{
 		m_Keyframes.emplace_back(it.GetTime(), it.GetValue());
 	}
@@ -410,12 +409,12 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer * 
 		// so it should be done only when s.th.
 		// changed (which is what we do here).
 
-		auto last = g_Hook_VClient_RenderView.GetActiveCamPath().GetBegin();
+		auto last = path.GetBegin();
 		auto it = last;
 
 		TempPoint * pts = new TempPoint[c_CameraTrajectoryMaxPointsPerInterval];
 
-		for (++it; it != g_Hook_VClient_RenderView.GetActiveCamPath().GetEnd(); ++it)
+		for (++it; it != path.GetEnd(); ++it)
 		{
 			double delta = it.GetTime() - last.GetTime();
 
@@ -423,7 +422,7 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer * 
 			{
 				double t = last.GetTime() + delta*((double)i/(c_CameraTrajectoryMaxPointsPerInterval-1));
 
-				CamPathValue cpv = g_Hook_VClient_RenderView.GetActiveCamPath().Eval(t);
+				CamPathValue cpv = path.Eval(t);
 
 				pts[i].t = t;
 				pts[i].y = Vector3(cpv.X, cpv.Y, cpv.Z);
@@ -435,49 +434,57 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer * 
 			// add all points except the last one (to avoid duplicates):
 			for(TempPoint * pt = &(pts[0]); pt && pt->nextPt; pt = pt->nextPt)
 			{
-				m_TrajectoryPoints.emplace_back(pt->t, g_Hook_VClient_RenderView.GetActiveCamPath().Eval(pt->t));
+				m_TrajectoryPoints.emplace_back(pt->t, path.Eval(pt->t));
 			}
 
 			last = it;
 		}
 
 		// add last point:
-		m_TrajectoryPoints.emplace_back(
-			pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t,
-			g_Hook_VClient_RenderView.GetActiveCamPath().Eval(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t));
+		m_TrajectoryPoints.emplace_back(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t,
+										path.Eval(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t));
 
 		delete[] pts;
 	}
 }
 
 void CCampathDrawer::CCampathDrawerFunctor::operator()() {
-	g_CampathDrawer.OnPostRenderAllTools_DrawingThread(m_DynamicProperties, m_LessDynamicProperties, m_NewProperties);
+	g_CampathDrawer.OnPostRenderAllTools_DrawingThread(m_DynamicProperties, m_LessDynamicProperties, m_Annotations);
 }
 
-void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
-	// Actually we are often called twice per frame , once after 3d skybox
-	// and once after world is drawn, maybe we will be even called more times.
-
+void CCampathDrawer::OnPostRenderAllTools_EngineThread()
+{
 	if (!m_Draw)
 		return;
-
-	if(nullptr == m_LessDynamicProperties) {
-		m_LessDynamicProperties = new CLessDynamicProperties(this); // CPU expensive.
-		m_LessDynamicProperties->AddRef();		
-	}
-
-	CNewProperties * properties = nullptr;
-	if (MirvCampathEditor_IsNewSystem() && g_VEngineClient)
+	auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
+	if (m_PathSnapshots.size() != paths.Size())
 	{
-		properties = new CNewProperties;
-		BuildNewProperties(*properties);
+		CamPathChanged();
+		m_PathSnapshots.resize(paths.Size(), nullptr);
 	}
-	MaterialSystem_ExecuteOnRenderThread(new CCampathDrawerFunctor(this, properties));
+	std::map<std::tuple<double, double, double>, int> rows;
+	for (std::size_t i = 0; i < paths.Size(); ++i)
+	{
+		auto & path = paths.At(i);
+		bool active = i == paths.ActiveIndex();
+		if (!m_PathSnapshots[i])
+		{
+			m_PathSnapshots[i] = new CLessDynamicProperties(this, path);
+			m_PathSnapshots[i]->AddRef();
+		}
+		auto * annotations = new CAnnotations;
+		BuildAnnotations(*annotations, path, active);
+		for (auto & label : annotations->Labels)
+			label.Row = float(rows[{std::round(label.Position.X * 1000), std::round(label.Position.Y * 1000),
+									std::round(label.Position.Z * 1000)}]++);
+		MaterialSystem_ExecuteOnRenderThread(
+			new CCampathDrawerFunctor(this, path, m_PathSnapshots[i], active, annotations));
+	}
 }
 
 void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dynamicPorperties,
 														CLessDynamicProperties * lessDynamicProperties,
-														CNewProperties * newProperties)
+														CAnnotations * annotations)
 {
 	if(!m_VertexShader)
 	{
@@ -546,26 +553,22 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 			m_Device->SetVertexShaderConstantF(50, vPlaneN, 1);
 		}
 
-		// Both systems share label setup/projection. Classic retains its hex font.
-		if (newProperties)
-		{
-			if (newProperties->LabelHeight > 0 && !newProperties->Labels.empty() &&
-				BeginLabels(dynamicPorperties, true))
-				for (const auto & label : newProperties->Labels)
-					DrawLabel(dynamicPorperties, label.Position, label.Text, newProperties->LabelHeight, label.Color,
-							  true);
-		}
-		else if (dynamicPorperties->GetDrawKeyframeIndex() && BeginLabels(dynamicPorperties, false))
+		if (dynamicPorperties->GetDrawKeyframeIndex() && BeginLabels(dynamicPorperties, false))
 		{
 			int index = 0;
 			for (auto it = lessDynamicProperties->GetKeyframesBegin(); it != lessDynamicProperties->GetKeyframesEnd();
 				 ++it, ++index)
 			{
-				const auto & value = it->GetValue();
+				auto value = it->GetValue();
 				DrawLabel(dynamicPorperties, Vector3(value.X, value.Y, value.Z), std::to_string(index),
 						  dynamicPorperties->GetDrawKeyframeIndex(), 0xFFFFFFFF, false);
 			}
 		}
+		if (annotations && annotations->LabelHeight > 0 && !annotations->Labels.empty() &&
+			BeginLabels(dynamicPorperties, true))
+			for (const auto & label : annotations->Labels)
+				DrawLabel(dynamicPorperties, label.Position, label.Text, annotations->LabelHeight, label.Color, true,
+						  label.Row);
 
 		m_Device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
 		m_Device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_ALPHA | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_RED);
@@ -588,12 +591,12 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 
 		m_Device->SetFVF(CCampathDrawer_VertexFVF);
 
-		if (newProperties)
+		if (annotations)
 		{
 			m_Device->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
 			newCScreenInfo[2] = c_CameraTrajectoryPixelWidth;
 			m_Device->SetVertexShaderConstantF(48, newCScreenInfo, 1);
-			for (const auto & line : newProperties->Lines)
+			for (const auto & line : annotations->Lines)
 				AutoSingleLine(line.From, line.Color, line.To, line.Color);
 			AutoSingleLineFlush();
 			m_Device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
@@ -1037,19 +1040,34 @@ double CCampathDrawer::ShortestDistanceToSegment(TempPoint * pt, TempPoint * sta
 	return (pt->y -(start->y +t*(end->y -start->y))).Length();
 }
 
-void CCampathDrawer::BuildNewProperties(CNewProperties & data)
+void CCampathDrawer::BuildAnnotations(CAnnotations & data, CamPath & path, bool active)
 {
-	data.LabelHeight = m_NewLabelHeight;
-	auto & path = g_Hook_VClient_RenderView.GetActiveCamPath();
+	data.LabelHeight = m_LabelHeight;
 	int index = 0;
 	for (auto it = path.GetBegin(); it != path.GetEnd(); ++it, ++index)
 	{
 		auto value = it.GetValue();
 		Vector3 pos(value.X, value.Y, value.Z);
-		DWORD color = value.Selected ? 0xFFFFFF00 : 0xFF55CFFF;
-		data.Labels.push_back({pos, std::to_string(index), color});
-		if (m_DrawHandles && path.Bezier_get() && (value.Selected || MirvCampathEditor_IsEditing()))
+		std::string text = index == 0 ? path.GetName() : "";
+		if (value.HoldDuration > 0)
 		{
+			int tick = 0;
+			char hold[96];
+			if (g_VEngineClient && g_VEngineClient->IsPlayingDemo() && g_VEngineClient->GetDemoInfoEx() &&
+				g_Hook_VClient_RenderView.GetGlobals() &&
+				g_Hook_VClient_RenderView.GetGlobals()->interval_per_tick_get() > 0 &&
+				GetDemoTickFromClientTime(g_MirvTime.GetTime(), it.GetTime() + value.HoldDuration + path.GetOffset(),
+										  tick))
+				snprintf(hold, sizeof(hold), "hold -> tick %i", tick);
+			else
+				snprintf(hold, sizeof(hold), "hold -> %.3fs", it.GetTime() + value.HoldDuration + path.GetOffset());
+			if (!text.empty())
+				text += " | ";
+			text += hold;
+		}
+		if (!text.empty())
+			data.Labels.push_back({pos, text, active ? 0xFF55CFFF : 0xFFAAAAAA});
+		if (active && m_DrawHandles && path.Bezier_get() && (value.Selected || MirvCampathEditor_IsEditing()))
 			for (bool outgoing : {false, true})
 			{
 				if ((outgoing && std::size_t(index + 1) == path.GetSize()) || (!outgoing && index == 0))
@@ -1058,12 +1076,11 @@ void CCampathDrawer::BuildNewProperties(CNewProperties & data)
 				if (!path.GetHandle(it.GetTime(), outgoing, offset))
 					continue;
 				Vector3 end = pos + offset;
-				DWORD handleColor = outgoing ? 0xFFFF88EE : 0xFF88AAFF;
-				data.Lines.push_back({pos, end, handleColor});
-				data.Lines.push_back({end - Vector3(2, 0, 0), end + Vector3(2, 0, 0), handleColor});
-				data.Lines.push_back({end - Vector3(0, 0, 2), end + Vector3(0, 0, 2), handleColor});
+				DWORD color = outgoing ? 0xFFFF88EE : 0xFF88AAFF;
+				data.Lines.push_back({pos, end, color});
+				data.Lines.push_back({end - Vector3(2, 0, 0), end + Vector3(2, 0, 0), color});
+				data.Lines.push_back({end - Vector3(0, 0, 2), end + Vector3(0, 0, 2), color});
 			}
-		}
 	}
 }
 
@@ -1229,7 +1246,7 @@ bool CCampathDrawer::BeginLabels(CDynamicProperties const * properties, bool nam
 }
 
 void CCampathDrawer::DrawLabel(CDynamicProperties const * properties, Vector3 position, const std::string & text,
-							   float height, DWORD color, bool names)
+							   float height, DWORD color, bool names, float row)
 {
 	const auto & right = properties->GetPlaneRight();
 	const auto & up = properties->GetPlaneUp();
@@ -1247,7 +1264,7 @@ void CCampathDrawer::DrawLabel(CDynamicProperties const * properties, Vector3 po
 		float pixels = height;
 		double worldPerPixel = 2 * w / (fabs(upY) * properties->GetScreenHeight());
 		height = float(pixels * worldPerPixel);
-		position += up * ((12 + pixels * 2) * worldPerPixel);
+		position += up * ((12 + pixels * (2 + row * 1.3f)) * worldPerPixel);
 		position -= right * ((std::max)(24.0f, pixels) * worldPerPixel);
 		m_Device->SetRenderState(D3DRS_TEXTUREFACTOR, color);
 	}

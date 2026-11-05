@@ -6985,14 +6985,22 @@ void CAfxStreams::Console_Record_Start2()
 		{
 			(*it)->StartCapture(m_TakeDir, frameTime);
 		}
-#endif //#ifndef _WIN64	
+#endif // #ifndef _WIN64
 
-		if(m_CampathAutoSave && 0 < g_Hook_VClient_RenderView.GetActiveCamPath().GetSize())
+		if (m_CampathAutoSave)
 		{
-			std::wstring campathFileName(m_TakeDir);
-			campathFileName.append(L"\\campath.xml");
-			if(!g_Hook_VClient_RenderView.GetActiveCamPath().Save(campathFileName.c_str()))
-				advancedfx::Warning("Error: Failed saving campath.xml to take folder.\n");
+			auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
+			bool hasKeys = false;
+			for (std::size_t i = 0; i < paths.Size(); ++i)
+				hasKeys = hasKeys || paths.At(i).GetSize() > 0;
+			if (hasKeys)
+			{
+				std::wstring file(m_TakeDir);
+				file.append(L"\\campath.xml");
+				bool ok = paths.Size() > 1 ? paths.SaveAll(file.c_str()) : paths.Active().Save(file.c_str());
+				if (!ok)
+					advancedfx::Warning("Error: Failed saving campath.xml to take folder.\n");
+			}
 		}
 
 		if (m_CamExport)

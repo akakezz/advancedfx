@@ -36,10 +36,6 @@ public:
 	float GetDrawKeyframeIndex() { return m_DrawKeyframIndex; }
 	void SetDrawKeyframeIndex(float value) { m_DrawKeyframIndex = value; }
 
-	void OnActivePathChanged()
-	{
-		CamPathChanged();
-	}
 	bool GetDrawHandles() const
 	{
 		return m_DrawHandles;
@@ -48,13 +44,13 @@ public:
 	{
 		m_DrawHandles = enabled;
 	}
-	float GetNewLabelHeight() const
+	float GetLabelHeight() const
 	{
-		return m_NewLabelHeight;
+		return m_LabelHeight;
 	}
-	void SetNewLabelHeight(float value)
+	void SetLabelHeight(float value)
 	{
-		m_NewLabelHeight = value;
+		m_LabelHeight = value;
 	}
 
 	void BeginDevice(IDirect3DDevice9 * device);
@@ -82,7 +78,7 @@ private:
 
 	class CDynamicProperties {
 	public:
-		CDynamicProperties(CCampathDrawer * drawer);
+		CDynamicProperties(CCampathDrawer * drawer, CamPath & path, bool active);
 
 		double GetCurTime() const {
 			return m_CurTime;
@@ -193,7 +189,7 @@ private:
 			CamPathValue m_Value;
 		};
 
-		CLessDynamicProperties(CCampathDrawer * drawer);
+		CLessDynamicProperties(CCampathDrawer * drawer, CamPath & path);
 
 		bool GetCampathCanEval() const {
 			return m_CampathCanEval;
@@ -226,9 +222,8 @@ private:
 		std::list<CKeyframe> m_TrajectoryPoints;
 	};
 
-	// Geometry snapshots for untimed/new paths use the same shaders, line buffer,
-	// frustum drawing and device lifetime as classic campath.
-	struct CNewProperties
+	// Additional handle lines and name/hold labels share the native draw pass.
+	struct CAnnotations
 	{
 		struct Line
 		{
@@ -240,20 +235,22 @@ private:
 			Vector3 Position;
 			std::string Text;
 			DWORD Color;
+			float Row = 0;
 		};
 		std::vector<Line> Lines;
 		std::vector<Label> Labels;
-		float LabelHeight = 32.0f;
+		float LabelHeight = 20.0f;
 	};
-	void BuildNewProperties(CNewProperties & data);
+	void BuildAnnotations(CAnnotations & data, CamPath & path, bool active);
 
 	class CCampathDrawerFunctor : public CMaterialSystemFunctor {
 	public:
-		CCampathDrawerFunctor(CCampathDrawer * drawer, CNewProperties * newProperties = nullptr)
+		CCampathDrawerFunctor(CCampathDrawer * drawer, CamPath & path, CLessDynamicProperties * snapshot, bool active,
+							  CAnnotations * annotations)
 		{
-			m_NewProperties = newProperties;
-			m_DynamicProperties = new CDynamicProperties(drawer);
-			m_LessDynamicProperties = drawer->m_LessDynamicProperties;
+			m_Annotations = annotations;
+			m_DynamicProperties = new CDynamicProperties(drawer, path, active);
+			m_LessDynamicProperties = snapshot;
 			if (m_LessDynamicProperties)
 				m_LessDynamicProperties->AddRef();
 		}
@@ -261,14 +258,14 @@ private:
 		virtual ~CCampathDrawerFunctor() {
 			if (m_LessDynamicProperties)
 				m_LessDynamicProperties->Release();
-			delete m_NewProperties;
+			delete m_Annotations;
 			delete m_DynamicProperties;
 		}
 
 		virtual void operator()();
 
 	private:
-		CNewProperties * m_NewProperties;
+		CAnnotations * m_Annotations;
 		CDynamicProperties * m_DynamicProperties;
 		CLessDynamicProperties * m_LessDynamicProperties;
 	};
@@ -289,11 +286,11 @@ private:
 	float m_DrawKeyframIndex = 18.0f;
 	IDirect3DTexture9* m_DigitsTexture = nullptr;
 	IDirect3DTexture9 * m_LabelTexture = nullptr;
-	float m_NewLabelHeight = 32.0f;
+	float m_LabelHeight = 20.0f;
 	bool m_DrawHandles = true;
 	IAfxPixelShader* m_DrawTextureShader = nullptr;
 
-	CLessDynamicProperties * m_LessDynamicProperties = nullptr;
+	std::vector<CLessDynamicProperties *> m_PathSnapshots;
 
 	static void CampathChangedFn(void * pUserData);
 
@@ -321,13 +318,13 @@ private:
 
 	bool BeginLabels(CDynamicProperties const * properties, bool names);
 	void DrawLabel(CDynamicProperties const * properties, Vector3 position, const std::string & text, float height,
-				   DWORD color, bool names);
+				   DWORD color, bool names, float row = 0);
 
 	void DrawCamera(const CamPathValue & cpv, DWORD colour, FLOAT screenInfo[4], int screenWidth, int screenHeight);
 
 	void OnPostRenderAllTools_DrawingThread(CDynamicProperties * dynamicPorperties,
 											CLessDynamicProperties * lessDynamicProperties,
-											CNewProperties * newProperties = nullptr);
+											CAnnotations * annotations = nullptr);
 };
 
 extern CCampathDrawer g_CampathDrawer;

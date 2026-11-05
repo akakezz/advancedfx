@@ -2325,7 +2325,6 @@ FARPROC WINAPI new_Engine_GetProcAddress(HMODULE hModule, LPCSTR lpProcName)
 }
 
 // Campath preview captures navigation keys while active and its optional toggle key at any time.
-extern bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam);
 extern void MirvCampathPreview_ReleaseKeys();
 
 WNDPROC g_NextWindProc;
@@ -2357,8 +2356,6 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	}
 
 	if (MirvCampathEditor_KeyEvent(uMsg, wParam, lParam))
-		return 0;
-	if (!MirvCampathEditor_IsNewSystem() && MirvCampathPreview_KeyEvent(uMsg, wParam, lParam))
 		return 0;
 
 	switch(uMsg)

@@ -35,12 +35,10 @@ public:
 		Override_Interop = 10
 	};
 
-	CamPath m_CamPath;
-	CamPath m_NewCamPath;
-	bool m_UseNewCampath = false;
+	CamPathCollection m_CamPaths;
 	CamPath & GetActiveCamPath()
 	{
-		return m_UseNewCampath ? m_NewCamPath : m_CamPath;
+		return m_CamPaths.Active();
 	}
 
 	bool ViewOverrideReset = true;
@@ -153,7 +151,8 @@ private:
 // Source 1 campath command/editor integration (implemented in MirvCommands.cpp).
 bool MirvCampathEditor_Command(IWrpCommandArgs * args);
 bool MirvCampathEditor_IsEditing();
-bool MirvCampathEditor_IsNewSystem();
-void MirvCampathEditor_Update();
 bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags);
 void MirvCampathEditor_ReleaseKeys(bool yieldKeyboard = false);
+
+void MirvCampathEditor_OnPreview(bool active);
+bool GetDemoTickFromClientTime(double curTime, double targetTime, int & outTick);

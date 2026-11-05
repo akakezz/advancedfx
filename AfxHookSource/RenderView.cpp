@@ -168,7 +168,6 @@ Hook_VClient_RenderView::Hook_VClient_RenderView()
 , handleZoomEnabled(false)
 , handleZoomMinUnzoomedFov(90.0)
 {
-	m_NewCamPath.CurveEditing_set(true);
 	m_Export = false;
 	m_FovOverride = false;
 	m_FovValue = 0.0;
@@ -426,7 +425,6 @@ void TrySetView(float Tx, float Ty, float Tz, float Rx, float Ry, float Rz, floa
 
 void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, float &Rx, float &Ry, float &Rz, float &Fov)
 {
-	MirvCampathEditor_Update();
 	MirvCampathPreview_Update();
 	bool originOrAnglesOverriden = false;
 
@@ -457,39 +455,18 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			break;
 
 		case Override_Campath: {
-			CamPath & path = GetActiveCamPath();
-			if (path.Enabled_get() && path.CanEval())
+			CamPathValue value;
+			if (m_CamPaths.Eval(curTime, value))
 			{
-				double campathCurTime = curTime - path.GetOffset();
-				if (path.GetHold())
-				{
-					if (campathCurTime > path.GetUpperBound())
-						campathCurTime = path.GetUpperBound();
-					else if (campathCurTime < path.GetLowerBound())
-						campathCurTime = path.GetLowerBound();
-				}
-				// no extrapolation:
-				if (path.GetLowerBound() <= campathCurTime && campathCurTime <= path.GetUpperBound())
-				{
-					CamPathValue val = path.Eval(campathCurTime);
-					QEulerAngles ang = val.R.ToQREulerAngles().ToQEulerAngles();
-
-					//Tier0_Msg("================",curTime);
-					//Tier0_Msg("currenTime = %f",curTime);
-					//Tier0_Msg("vCp = %f %f %f\n", val.X, val.Y, val.Z);
-
-					originOrAnglesOverriden = true;
-
-					Tx = (float)val.X;
-					Ty = (float)val.Y;
-					Tz = (float)val.Z;
-
-					Rx = (float)ang.Pitch;
-					Ry = (float)ang.Yaw;
-					Rz = (float)ang.Roll;
-
-					Fov = (float)val.Fov;
-				}
+				QEulerAngles angles = value.R.ToQREulerAngles().ToQEulerAngles();
+				Tx = float(value.X);
+				Ty = float(value.Y);
+				Tz = float(value.Z);
+				Rx = float(angles.Pitch);
+				Ry = float(angles.Yaw);
+				Rz = float(angles.Roll);
+				Fov = float(value.Fov);
+				originOrAnglesOverriden = true;
 			}
 			break;
 		}
@@ -666,6 +643,7 @@ bool Hook_VClient_RenderView::ImportToCamPath(bool adjustInterp, double fov)
 	if(!m_Import)
 		return false;
 
+	auto before = m_CamPaths.Capture();
 	bool bOk = g_BvhImport.CopyToCampath(m_ImportBaseTime, fov, GetActiveCamPath());
 
 	if(bOk)
@@ -682,6 +660,13 @@ bool Hook_VClient_RenderView::ImportToCamPath(bool adjustInterp, double fov)
 		GetActiveCamPath().Enabled_set(true);
 	}
 
+	if (bOk)
+	{
+		m_CamPaths.Enabled_set(true);
+		m_CamPaths.Record(before);
+	}
+	else
+		m_CamPaths.Restore(before);
 	return bOk;
 }
 

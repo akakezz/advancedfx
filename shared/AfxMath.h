@@ -377,7 +377,7 @@ public:
 
 	virtual bool CanEval(void) const
 	{
-		return 2 <= m_View->GetSize();
+		return 1 <= m_View->GetSize();
 	}
 
 	/// <remarks>
@@ -467,6 +467,105 @@ public:
 
 private:
 	CInterpolationMapView<TMap, double> * m_View;
+};
+
+// Local Hermite and step interpolation reuse the existing map/view interface.
+// Smooth and monotone modes need two keys, without a global spline rebuild.
+template <class TMap> class CLocalDoubleInterpolation : public CInterpolation<double>
+{
+public:
+	enum Mode
+	{
+		Smooth,
+		Monotone,
+		Step
+	};
+	CLocalDoubleInterpolation(CInterpolationMapView<TMap, double> * view, Mode mode) : m_View(view), m_Mode(mode)
+	{
+	}
+	void InterpolationMapChanged() override
+	{
+	}
+	bool CanEval() const override
+	{
+		return m_View->GetSize() >= (m_Mode == Step ? 1u : 2u);
+	}
+	double Eval(double time) override
+	{
+		CInterpolationMapViewIterator<TMap, double> a, b;
+		m_View->GetNearestInterval(time, a, b);
+		double t0 = a.GetTime(), t1 = b.GetTime(), v0 = a.GetValue(), v1 = b.GetValue();
+		if (time <= t0)
+			return v0;
+		if (time >= t1)
+			return v1;
+		if (m_Mode == Step)
+			return v0;
+		double h = t1 - t0, d = (v1 - v0) / h, m0 = d, m1 = d;
+		if (a != m_View->GetBegin())
+		{
+			auto prev = a;
+			--prev;
+			double hp = t0 - prev.GetTime(), dp = (v0 - prev.GetValue()) / hp;
+			m0 = m_Mode == Smooth ? (v1 - prev.GetValue()) / (h + hp) : Slope(dp, d, hp, h);
+		}
+		auto next = b;
+		++next;
+		if (next != m_View->GetEnd())
+		{
+			double hn = next.GetTime() - t1, dn = (next.GetValue() - v1) / hn;
+			m1 = m_Mode == Smooth ? (next.GetValue() - v0) / (h + hn) : Slope(d, dn, h, hn);
+		}
+		double u = (time - t0) / h, u2 = u * u, u3 = u2 * u;
+		return (2 * u3 - 3 * u2 + 1) * v0 + (u3 - 2 * u2 + u) * h * m0 + (-2 * u3 + 3 * u2) * v1 + (u3 - u2) * h * m1;
+	}
+
+private:
+	static double Slope(double a, double b, double ha, double hb)
+	{
+		if (a * b <= 0)
+			return 0;
+		double w0 = 2 * hb + ha, w1 = hb + 2 * ha;
+		return (w0 + w1) / (w0 / a + w1 / b);
+	}
+	CInterpolationMapView<TMap, double> * m_View;
+	Mode m_Mode;
+};
+template <class TMap> class CLocalQuaternionInterpolation : public CInterpolation<Quaternion>
+{
+public:
+	CLocalQuaternionInterpolation(CInterpolationMapView<TMap, Quaternion> * view, bool step)
+		: m_View(view), m_Step(step)
+	{
+	}
+	void InterpolationMapChanged() override
+	{
+	}
+	bool CanEval() const override
+	{
+		return m_View->GetSize() >= (m_Step ? 1u : 2u);
+	}
+	Quaternion Eval(double time) override
+	{
+		CInterpolationMapViewIterator<TMap, Quaternion> a, b;
+		m_View->GetNearestInterval(time, a, b);
+		if (time <= a.GetTime())
+			return a.GetValue();
+		if (time >= b.GetTime())
+			return b.GetValue();
+		if (m_Step)
+			return a.GetValue();
+		double u = (time - a.GetTime()) / (b.GetTime() - a.GetTime());
+		u = u * u * (3 - 2 * u);
+		Quaternion q = a.GetValue(), r = b.GetValue();
+		if (DotProduct(q, r) < 0)
+			r = -1.0 * r;
+		return q.Slerp(r, u);
+	}
+
+private:
+	CInterpolationMapView<TMap, Quaternion> * m_View;
+	bool m_Step;
 };
 
 template<class TMap>

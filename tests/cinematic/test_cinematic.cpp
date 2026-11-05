@@ -396,6 +396,283 @@ void persistence()
 	std::filesystem::remove(invalid);
 	std::filesystem::remove(directory);
 }
+
+template <class F> void rejected(F operation, const char * message)
+{
+	bool failed = false;
+	try
+	{
+		operation();
+	}
+	catch (const std::invalid_argument &)
+	{
+		failed = true;
+	}
+	check(failed, message);
+}
+
+void localInterpolation()
+{
+	CamPath path;
+	populate(path);
+	for (auto mode : {CamPath::DI_SMOOTH, CamPath::DI_MONOTONE, CamPath::DI_STEP})
+	{
+		path.PositionInterpMethod_set(mode);
+		path.FovInterpMethod_set(mode);
+		path.RotationInterpMethod_set(mode == CamPath::DI_STEP ? CamPath::QI_STEP : CamPath::QI_SMOOTH);
+		check(path.CanEval(), "Local interpolation works with two keyframes");
+		near(path.Eval(10).X, 0);
+		near(path.Eval(20).X, 100);
+		near(path.Eval(15).X, mode == CamPath::DI_STEP ? 0 : 50);
+		near(path.Eval(15).Fov, mode == CamPath::DI_STEP ? 90 : 75);
+		near(path.Eval(15).R.ToQREulerAngles().ToQEulerAngles().Yaw, mode == CamPath::DI_STEP ? 0 : 45);
+	}
+	path.Remove(20);
+	check(path.CanEval(), "Stepped interpolation supports a single stationary keyframe");
+	near(path.Eval(10).X, 0);
+
+	CamPath monotone;
+	monotone.PositionInterpMethod_set(CamPath::DI_MONOTONE);
+	monotone.FovInterpMethod_set(CamPath::DI_MONOTONE);
+	monotone.RotationInterpMethod_set(CamPath::QI_SLINEAR);
+	const double times[] = {0, 0.1, 4, 5, 20};
+	const double values[] = {0, 10, 10, 9, 100};
+	for (int i = 0; i < 5; ++i)
+		monotone.Add(times[i], CamPathValue(values[i], 0, 0, 0, 0, 0, 60 + values[i]));
+	for (int segment = 0; segment < 4; ++segment)
+		for (int i = 0; i <= 100; ++i)
+		{
+			double t = times[segment] + (times[segment + 1] - times[segment]) * i / 100.0;
+			auto value = monotone.Eval(t);
+			double lower = (std::min)(values[segment], values[segment + 1]);
+			double upper = (std::max)(values[segment], values[segment + 1]);
+			check(value.X >= lower - 1e-6 && value.X <= upper + 1e-6, "Monotone positions cannot overshoot");
+			check(value.Fov >= 60 + lower - 1e-6 && value.Fov <= 60 + upper + 1e-6, "Monotone FOV cannot overshoot");
+		}
+	CamPath restored;
+	check(restored.LoadXml(monotone.ToXml()), "New interpolation settings survive native XML");
+	check(restored.PositionInterpMethod_get() == CamPath::DI_MONOTONE, "Position mode restored");
+	near(restored.Eval(4.5).X, monotone.Eval(4.5).X);
+}
+
+void keyframeHolds()
+{
+	CamPath path;
+	populate(path);
+	check(path.SetKeyHold(10, 14), "Full-pose hold accepted");
+	for (double t : {10.0, 12.0, 14.0})
+	{
+		auto value = path.Eval(t);
+		near(value.X, 0);
+		near(value.Fov, 90);
+		near(std::abs(DotProduct(value.R, path.GetBegin().GetValue().R)), 1);
+	}
+	near(path.Eval(17).X, 50);
+	near(path.Eval(17).Fov, 75);
+	near(path.Eval(17).R.ToQREulerAngles().ToQEulerAngles().Yaw, 45);
+	near(path.Eval(20).X, 100);
+	auto before = path.CaptureState();
+	check(!path.SetKeyHold(10, 20), "Release at the next arrival leaves no travel time and is rejected");
+	check(!path.SetKeyHold(10, 21), "Overlapping release rejected");
+	check(!path.SetKeyHold(10, 9), "Release before arrival rejected");
+	check(!path.SetKeyHold(10, std::numeric_limits<double>::infinity()), "Nonfinite release rejected");
+	check(!path.SetKeyHold(11, 12), "Missing held key rejected");
+	rejected([&] { path.Add(12, CamPathValue()); }, "New arrival inside an existing hold rejected");
+	check(path.CaptureState() == before, "Rejected hold/insertion is atomic");
+	path.SelectNone();
+	path.SelectAdd(std::size_t(0), std::size_t(0));
+	auto selected = path.CaptureState();
+	rejected([&] { path.SetStart(18); }, "Retiming cannot move a hold into the next arrival");
+	rejected([&] { path.SetDuration(20); }, "Scaling one hold cannot overlap an unselected arrival");
+	check(path.CaptureState() == selected, "Rejected timing edits preserve the complete path");
+	path.SelectNone();
+
+	path.SetStart(30);
+	near(path.GetBegin().GetValue().HoldDuration, 4);
+	near(path.Eval(34).X, 0);
+	path.SetDuration(20);
+	near(path.GetBegin().GetValue().HoldDuration, 8);
+	near(path.GetUpperBound(), 50);
+	near(path.Eval(44).X, 50);
+	check(path.SetKeyHold(50, 55), "Final keyframe can extend the path with a hold");
+	near(path.GetUpperBound(), 55);
+	near(path.GetDuration(), 25);
+	near(path.Eval(55).X, 100);
+	near(path.Eval(55).Fov, 60);
+	path.SelectAll();
+	path.SetDuration(50);
+	near(path.GetUpperBound(), 80);
+	near(path.GetBegin().GetValue().HoldDuration, 16);
+
+	CamPath single;
+	single.Add(3, CamPathValue(10, 20, 30, 15, 25, 35, 80));
+	check(single.SetKeyHold(3, 8) && single.CanEval(), "A single held keyframe is a stationary shot");
+	near(single.Eval(8).X, 10);
+	single.SetDuration(10);
+	near(single.GetUpperBound(), 13);
+	check(single.SetKeyHold(3, 3), "A release equal to arrival removes the hold");
+	check(!single.CanEval(), "Native cubic requirements return when the single hold is cleared");
+
+	CamPath curve;
+	populate(curve);
+	curve.CurveEditing_set(true);
+	curve.SetHandle(10, true, Vector3(0, 100, 0));
+	curve.SetHandle(20, false, Vector3(0, 100, 0));
+	curve.SetKeyHold(10, 14);
+	near(curve.Eval(13).Y, 0);
+	near(curve.Eval(17).Y, 75);
+	CamPath loaded;
+	loaded.CurveEditing_set(true);
+	check(loaded.LoadXml(curve.ToXml()), "Curves and holds share native XML");
+	near(loaded.Eval(13).Y, 0);
+	near(loaded.Eval(17).Y, 75);
+	auto valid = loaded.CaptureState();
+	check(!loaded.LoadXml("<campath><points><p t=\"10\" holdDuration=\"10\"/><p t=\"20\"/></points></campath>"),
+		  "Invalid XML overlap rejected");
+	check(loaded.CaptureState() == valid, "Invalid XML hold preserves all state");
+	check(!loaded.LoadXml("<campath><points><p t=\"10\" holdDuration=\"nan\"/></points></campath>"),
+		  "Nonfinite XML hold rejected");
+}
+
+void collectionPlayback()
+{
+	CamPathCollection paths;
+	populate(paths.Active());
+	check(paths.Active().CurveEditing_get(), "Curve editing belongs to the ordinary path");
+	CamPathValue value;
+	check(!paths.Eval(15, value), "Master enable initially off");
+	paths.Enabled_set(true);
+	check(paths.Eval(15, value), "Ordinary path plays when enabled");
+	near(value.X, 50);
+	paths.New("Close shot");
+	check(paths.Active().PositionInterpMethod_get() == CamPath::DI_SMOOTH,
+		  "Fresh paths use two-key smooth interpolation");
+	paths.Active().Add(12, CamPathValue(1000, 0, 0, 0, 0, 0, 90));
+	paths.Active().Add(18, CamPathValue(1600, 0, 0, 0, 0, 0, 90));
+	paths.Use(0);
+	check(paths.Eval(13, value), "Latest starting overlapping path plays even if another is selected");
+	near(value.X, 1100);
+	check(paths.Eval(19, value), "Earlier path resumes when a shorter overlapping path ends");
+	near(value.X, 90);
+	paths.At(1).Enabled_set(false);
+	check(paths.Eval(13, value), "Muted path does not participate in playback");
+	near(value.X, 30);
+	paths.At(1).Enabled_set(true);
+	paths.At(1).SetOffset(10);
+	check(!paths.Eval(21, value), "Time gaps do not override the demo camera");
+	check(paths.Eval(23, value), "Path offsets shift automatic playback");
+	near(value.X, 1100);
+	paths.At(1).SetKeyHold(18, 20);
+	check(paths.Eval(30, value), "Final keyframe release extends automatic playback");
+	near(value.X, 1600);
+	check(!paths.Eval(30.1, value), "Final hold releases after its endpoint");
+	paths.Active().SetHold(true);
+	check(paths.Eval(0, value), "Classic path-level hold preserves before-start pose");
+	near(value.X, 0);
+	check(paths.Eval(50, value), "Classic path-level hold preserves after-end pose");
+	near(value.X, 100);
+	paths.Enabled_set(false);
+	check(!paths.Eval(15, value), "Master switch disables all paths");
+
+	CamPathCollection tie;
+	populate(tie.Active());
+	tie.New("Later in list");
+	tie.Active().Add(10, CamPathValue(999, 0, 0, 0, 0, 0, 90));
+	tie.Active().Add(20, CamPathValue(999, 0, 0, 0, 0, 0, 90));
+	tie.Enabled_set(true);
+	check(tie.Eval(15, value), "Equal starting times have a deterministic winner");
+	near(value.X, 999);
+}
+
+void historyAndCollections()
+{
+	CamPathCollection paths;
+	auto empty = paths.Capture();
+	populate(paths.Active());
+	paths.Record(empty);
+	check(paths.Undo(), "Undo capture to an empty path");
+	check(paths.Active().GetSize() == 0, "Undo restores native keys");
+	check(paths.Redo(), "Redo capture");
+	check(paths.Active().GetSize() == 2, "Redo restores native keys");
+	auto before = paths.Capture();
+	paths.Active().SetKeyHold(10, 13);
+	paths.Active().SetHandle(10, true, Vector3(0, 100, 0));
+	paths.Rename("Wide & <shot> \"A\"");
+	paths.Record(before);
+	auto edited = paths.Capture();
+	check(paths.Undo() && paths.Capture() == before, "Undo restores holds, handles, settings and names together");
+	check(paths.Redo() && paths.Capture() == edited, "Redo restores complete edited state");
+	before = paths.Capture();
+	paths.New("Second");
+	paths.Record(before);
+	check(paths.Undo() && paths.Capture() == before, "Undo removes created path and restores selection");
+	check(paths.Redo() && paths.Size() == 2 && paths.ActiveIndex() == 1, "Redo restores created path");
+	before = paths.Capture();
+	rejected([&] { paths.Rename(paths.At(0).GetName()); }, "Duplicate names rejected");
+	rejected([&] { paths.New("Second"); }, "Duplicate path creation rejected");
+	check(paths.Capture() == before, "Rejected collection edits are atomic");
+	paths.Remove(0);
+	paths.Record(before);
+	check(paths.Undo() && paths.Capture() == before, "Undo path deletion");
+	paths.Enabled_set(true);
+	before = paths.Capture();
+	paths.Rename("A different second shot");
+	paths.Record(before);
+	check(!paths.Redo(), "New edit invalidates redo history");
+	check(paths.Undo() && paths.Enabled_get(), "Undo never toggles the master playback switch");
+
+	auto directory = std::filesystem::temp_directory_path() / "afx-campath-collection-tests";
+	std::filesystem::create_directories(directory);
+	auto group = directory / "all.xml", single = directory / "one.xml";
+	paths.At(0).Enabled_set(false);
+	check(paths.SaveAll(group.wstring().c_str()), "Collection saves through native serializer");
+	CamPathCollection loaded;
+	check(loaded.Load(group.wstring().c_str()), "Collection XML loads");
+	check(loaded.Capture() == paths.Capture(),
+		  "Collection XML preserves names, selection, holds, curves and muted paths");
+	check(!loaded.Enabled_get(), "Loading does not start playback");
+	before = paths.Capture();
+	paths.New("Unsaved third path");
+	auto preLoad = paths.Capture();
+	check(paths.Load(group.wstring().c_str()), "Loading a collection replaces the collection");
+	paths.Record(preLoad);
+	check(paths.Undo() && paths.Capture() == preLoad, "Undo restores a replaced collection");
+	check(paths.Redo() && paths.Capture() == before, "Redo reapplies a collection load");
+	loaded.Use(0);
+	check(loaded.Active().Save(single.wstring().c_str()), "One selected path saves as native campath XML");
+	CamPathCollection one;
+	check(one.Load(single.wstring().c_str()) && one.Size() == 1, "Single native XML auto-detected");
+	near(one.Active().GetBegin().GetValue().HoldDuration, 3);
+	check(one.Active().GetName() == paths.At(0).GetName(), "Escaped names survive both native and collection XML");
+	auto original = loaded.Capture();
+	for (const auto & xml :
+		 {"<campaths version=\"99\"/>",
+		  "<campaths version=\"1\" active=\"5\"><campath name=\"One\"><points/></campath></campaths>",
+		  "<campaths version=\"1\"><campath name=\"One\"><points/></campath><campath "
+		  "name=\"One\"><points/></campath></campaths>",
+		  "<campaths version=\"1\"><campath name=\"One\" enabled=\"2\"><points/></campath></campaths>"})
+	{
+		{
+			std::ofstream output(group);
+			output << xml;
+		}
+		check(!loaded.Load(group.wstring().c_str()), "Malformed collection rejected");
+		check(loaded.Capture() == original, "Malformed collection leaves all existing paths intact");
+	}
+	std::filesystem::remove_all(directory);
+
+	CamPathCollection bounded;
+	for (int i = 0; i < 70; ++i)
+	{
+		auto state = bounded.Capture();
+		bounded.Rename("Shot " + std::to_string(i));
+		bounded.Record(state);
+	}
+	int undoCount = 0;
+	while (bounded.Undo())
+		++undoCount;
+	check(undoCount == 64, "History is bounded to 64 edits");
+}
 } // namespace
 int main()
 {
@@ -405,6 +682,10 @@ int main()
 		curves();
 		placement();
 		persistence();
+		localInterpolation();
+		keyframeHolds();
+		collectionPlayback();
+		historyAndCollections();
 		std::cout << checks << " campath checks passed\n";
 	}
 	catch (const std::exception & e)

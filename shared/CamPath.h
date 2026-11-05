@@ -3,6 +3,9 @@
 #include "AfxMath.h"
 
 #include <list>
+#include <memory>
+#include <string>
+#include <vector>
 
 using namespace Afx;
 using namespace Afx::Math;
@@ -20,9 +23,12 @@ struct CamPathValue
 	bool Selected;
 
 	// World-space offsets from this keyframe. Unset handles follow the native
-	// position interpolator; classic paths ignore these optional extensions.
+	// position interpolator until explicitly edited.
 	Vector3 InHandle{0, 0, 0}, OutHandle{0, 0, 0};
 	bool HasInHandle = false, HasOutHandle = false;
+
+	double HoldDuration = 0; // arrival + duration is the release time in path coordinates
+	bool operator==(const CamPathValue & other) const;
 
 	CamPathValue();
 
@@ -60,14 +66,19 @@ public:
 		DI_DEFAULT = 0,
 		DI_LINEAR = 1,
 		DI_CUBIC = 2,
-		_DI_COUNT = 3
+		DI_SMOOTH = 3,
+		DI_MONOTONE = 4,
+		DI_STEP = 5,
+		_DI_COUNT = 6
 	};
 
 	enum QuaternionInterp {
 		QI_DEFAULT = 0,
 		QI_SLINEAR = 1,
 		QI_SCUBIC = 2,
-		_QI_COUNT = 3,
+		QI_SMOOTH = 3,
+		QI_STEP = 4,
+		_QI_COUNT = 5,
 	};
 
 	static bool DoubleInterp_FromString(char const * value, DoubleInterp & outValue);
@@ -75,6 +86,28 @@ public:
 
 	static bool QuaternionInterp_FromString(char const * value, QuaternionInterp & outValue);
 	static char const * QuaternionInterp_ToString(QuaternionInterp value);
+
+	struct State
+	{
+		CInterpolationMap<CamPathValue> Keys;
+		DoubleInterp Position = DI_DEFAULT, Fov = DI_DEFAULT;
+		QuaternionInterp Rotation = QI_DEFAULT;
+		double Offset = 0;
+		bool Enabled = false, Hold = false, Bezier = false, CurveEditing = false;
+		std::string Name;
+		bool operator==(const State & other) const;
+	};
+	State CaptureState() const;
+	void RestoreState(const State & state);
+	const std::string & GetName() const
+	{
+		return m_Name;
+	}
+	void SetName(const std::string & name);
+	bool SetKeyHold(double time, double releaseTime);
+	void Validate() const;
+	std::string ToXml();
+	bool LoadXml(const std::string & xml);
 
 	CamPath();
 	
@@ -237,6 +270,7 @@ private:
 		return value.Selected;
 	}
 
+	std::string m_Name;
 	bool m_CurveEditing = false, m_Bezier = false;
 	bool m_Enabled;
 	bool m_Hold = false;
@@ -265,4 +299,70 @@ private:
 	void CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<CamPathValue> & src);
 
 	void DoInterpolationMapChangedAll(void);
+};
+
+// A small owner/history for ordinary CamPath instances. No second evaluator or
+// timing model is introduced; each entry keeps native timestamped keyframes.
+class CamPathCollection
+{
+public:
+	struct Snapshot
+	{
+		std::vector<CamPath::State> Paths;
+		std::size_t Active = 0;
+		bool operator==(const Snapshot & other) const
+		{
+			return Active == other.Active && Paths == other.Paths;
+		}
+	};
+	CamPathCollection();
+	std::size_t Size() const
+	{
+		return m_Paths.size();
+	}
+	std::size_t ActiveIndex() const
+	{
+		return m_Active;
+	}
+	CamPath & Active()
+	{
+		return *m_Paths.at(m_Active);
+	}
+	CamPath & At(std::size_t index)
+	{
+		return *m_Paths.at(index);
+	}
+	void Use(std::size_t index);
+	void New(std::string name = "");
+	void Rename(const std::string & name);
+	void Remove(std::size_t index);
+	Snapshot Capture() const;
+	void Restore(const Snapshot & state);
+	void Record(const Snapshot & before);
+	bool Undo();
+	bool Redo();
+	bool Enabled_get() const
+	{
+		return m_Enabled;
+	}
+	void Enabled_set(bool value)
+	{
+		m_Enabled = value;
+		Notify();
+	}
+	bool Eval(double time, CamPathValue & value);
+	bool SaveAll(const wchar_t * file);
+	bool Load(const wchar_t * file);
+	void OnChangedAdd(CamPathChanged callback, void * context);
+	void OnChangedRemove(CamPathChanged callback, void * context);
+
+private:
+	std::vector<std::unique_ptr<CamPath>> m_Paths;
+	std::size_t m_Active = 0;
+	bool m_Enabled = false;
+	std::vector<Snapshot> m_Undo, m_Redo;
+	std::vector<std::pair<CamPathChanged, void *>> m_Listeners;
+	std::unique_ptr<CamPath> MakePath();
+	void Notify();
+	static void Changed(void * self);
 };
