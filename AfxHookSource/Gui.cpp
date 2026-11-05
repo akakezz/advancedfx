@@ -654,14 +654,14 @@ static void DrawCampathGraphCanvas(CamPath & path)
 	ImGui::InvisibleButton("##CampathGraphCanvas", size,
 						   ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
 	bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
-	ImVec2 min(origin.x + 48, origin.y + 16), max(origin.x + size.x - 16, origin.y + size.y - 30);
+	ImVec2 plotMin(origin.x + 48, origin.y + 16), plotMax(origin.x + size.x - 16, origin.y + size.y - 30);
 	auto point = [&](double t, double progress) {
-		return ImVec2(float(min.x + (t - graph.XMin) / (graph.XMax - graph.XMin) * (max.x - min.x)),
-					  float(max.y - (progress - graph.YMin) / (graph.YMax - graph.YMin) * (max.y - min.y)));
+		return ImVec2(float(plotMin.x + (t - graph.XMin) / (graph.XMax - graph.XMin) * (plotMax.x - plotMin.x)),
+					  float(plotMax.y - (progress - graph.YMin) / (graph.YMax - graph.YMin) * (plotMax.y - plotMin.y)));
 	};
 	auto world = [&](ImVec2 p) {
-		return std::make_pair(graph.XMin + (p.x - min.x) / (max.x - min.x) * (graph.XMax - graph.XMin),
-							  graph.YMin + (max.y - p.y) / (max.y - min.y) * (graph.YMax - graph.YMin));
+		return std::make_pair(graph.XMin + (p.x - plotMin.x) / (plotMax.x - plotMin.x) * (graph.XMax - graph.XMin),
+							  graph.YMin + (plotMax.y - p.y) / (plotMax.y - plotMin.y) * (graph.YMax - graph.YMin));
 	};
 	auto distance = [](ImVec2 a, ImVec2 b) {
 		double x = a.x - b.x, y = a.y - b.y;
@@ -682,8 +682,8 @@ static void DrawCampathGraphCanvas(CamPath & path)
 	}
 	if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0))
 	{
-		double dx = -io.MouseDelta.x / (max.x - min.x) * (graph.XMax - graph.XMin),
-			   dy = io.MouseDelta.y / (max.y - min.y) * (graph.YMax - graph.YMin);
+		double dx = -io.MouseDelta.x / (plotMax.x - plotMin.x) * (graph.XMax - graph.XMin),
+			   dy = io.MouseDelta.y / (plotMax.y - plotMin.y) * (graph.YMax - graph.YMin);
 		graph.XMin += dx;
 		graph.XMax += dx;
 		graph.YMin += dy;
@@ -697,8 +697,8 @@ static void DrawCampathGraphCanvas(CamPath & path)
 		float x = point(t, 0).x;
 		char label[64];
 		std::snprintf(label, sizeof(label), "%.3g", t);
-		draw->AddLine(ImVec2(x, min.y), ImVec2(x, max.y), IM_COL32(52, 57, 65, 255));
-		draw->AddText(ImVec2(x, max.y + 4), IM_COL32(180, 186, 196, 255), label);
+		draw->AddLine(ImVec2(x, plotMin.y), ImVec2(x, plotMax.y), IM_COL32(52, 57, 65, 255));
+		draw->AddText(ImVec2(x, plotMax.y + 4), IM_COL32(180, 186, 196, 255), label);
 	}
 	double yStep = (std::max)(1.0, std::ceil((graph.YMax - graph.YMin) / 10));
 	for (double y = std::ceil(graph.YMin / yStep) * yStep; y <= graph.YMax; y += yStep)
@@ -706,10 +706,10 @@ static void DrawCampathGraphCanvas(CamPath & path)
 		float at = point(0, y).y;
 		char label[32];
 		std::snprintf(label, sizeof(label), "%.0f", y);
-		draw->AddLine(ImVec2(min.x, at), ImVec2(max.x, at), IM_COL32(52, 57, 65, 255));
+		draw->AddLine(ImVec2(plotMin.x, at), ImVec2(plotMax.x, at), IM_COL32(52, 57, 65, 255));
 		draw->AddText(ImVec2(origin.x + 4, at - 7), IM_COL32(180, 186, 196, 255), label);
 	}
-	draw->PushClipRect(min, max, true);
+	draw->PushClipRect(plotMin, plotMax, true);
 	int hitKey = -1, hitHandle = -1;
 	double hitTime = 0;
 	for (std::size_t i = 0; i < keys.size(); ++i)
