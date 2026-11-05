@@ -27,6 +27,7 @@ template <class OutIt, class Ch> inline OutIt print_pi_node(OutIt, const xml_nod
 #include <fstream>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <stdexcept>
 #include <set>
@@ -213,7 +214,7 @@ bool CamPath::State::operator==(const State & b) const
 {
 	return Keys == b.Keys && Position == b.Position && Fov == b.Fov && Rotation == b.Rotation && Offset == b.Offset &&
 		   Enabled == b.Enabled && Hold == b.Hold && Bezier == b.Bezier && CurveEditing == b.CurveEditing &&
-		   Name == b.Name && Ease == b.Ease;
+		   Name == b.Name && Ease == b.Ease && ContinuousSpeed == b.ContinuousSpeed;
 }
 CamPath::State CamPath::CaptureState() const
 {
@@ -229,6 +230,7 @@ CamPath::State CamPath::CaptureState() const
 	s.CurveEditing = m_CurveEditing;
 	s.Name = m_Name;
 	s.Ease = m_Ease;
+	s.ContinuousSpeed = m_ContinuousSpeed;
 	return s;
 }
 void CamPath::RestoreState(const State & s)
@@ -244,6 +246,7 @@ void CamPath::RestoreState(const State & s)
 	m_CurveEditing = s.CurveEditing;
 	m_Name = s.Name;
 	m_Ease = s.Ease;
+	m_ContinuousSpeed = s.ContinuousSpeed;
 	PositionInterpMethod_set(s.Position);
 	RotationInterpMethod_set(s.Rotation);
 	FovInterpMethod_set(s.Fov);
@@ -330,7 +333,7 @@ bool CamPath::SmoothHolds() const
 		   (m_FovInterpMethod != DI_LINEAR && m_FovInterpMethod != DI_STEP);
 }
 
-double CamPath::GetSegmentProgress(double time, double at) const
+double CamPath::GetSegmentProgress(double time, double at, bool applySpeed) const
 {
 	auto key = m_Map.find(time);
 	if (key == m_Map.end())
@@ -357,7 +360,151 @@ double CamPath::GetSegmentProgress(double time, double at) const
 		else if (arrive)
 			u = 1 - start(1 - u);
 	}
+	if (applySpeed && UseContinuousSpeed(time))
+		return TravelDistanceProgress(time, u);
 	return ease.Eval(u);
+}
+
+void CamPath::SpeedContinuous_set(bool enabled)
+{
+	m_ContinuousSpeed = enabled;
+	Changed();
+}
+bool CamPath::UseContinuousSpeed(double time) const
+{
+	if (!m_ContinuousSpeed || !m_XInterp->CanEval() || !m_YInterp->CanEval() || !m_ZInterp->CanEval() ||
+		(m_PositionInterpMethod == DI_STEP && !(m_CurveEditing && m_Bezier)))
+		return false;
+	auto ease = GetKeyEase(time);
+	return ease.Type == CamPathEase::Inherit || ease.Type == CamPathEase::Linear;
+}
+Vector3 CamPath::MotionSegment::Derivative(double u) const
+{
+	double v = 1 - u;
+	return (Points[1] - Points[0]) * (3 * v * v) + (Points[2] - Points[1]) * (6 * u * v) +
+		   (Points[3] - Points[2]) * (3 * u * u);
+}
+double CamPath::MotionSegment::ArcLength(double from, double to) const
+{
+	// Eight-point Gauss-Legendre quadrature on a small cached interval.
+	static const double nodes[] = {0.1834346424956498, 0.5255324099163290, 0.7966664774136267, 0.9602898564975363};
+	static const double weights[] = {0.3626837833783620, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763};
+	double middle = (from + to) * 0.5, half = (to - from) * 0.5, result = 0;
+	for (int i = 0; i < 4; ++i)
+		for (double sign : {-1.0, 1.0})
+		{
+			auto d = Derivative(middle + sign * half * nodes[i]);
+			result += weights[i] * std::hypot(d.X, d.Y, d.Z);
+		}
+	return half * result;
+}
+double CamPath::MotionSegment::Parameter(double distance) const
+{
+	if (!std::isfinite(distance) || Length <= 1e-12 || distance <= 0)
+		return 0;
+	if (distance >= Length)
+		return 1;
+	auto upper = std::upper_bound(Distances.begin(), Distances.end(), distance);
+	std::size_t bin = std::size_t(upper - Distances.begin()) - 1;
+	double from = double(bin) / 64, low = from, high = double(bin + 1) / 64;
+	double u = low + (high - low) * (distance - Distances[bin]) / (Distances[bin + 1] - Distances[bin]);
+	for (int i = 0; i < 20; ++i)
+	{
+		double error = Distances[bin] + ArcLength(from, u) - distance;
+		if (std::abs(error) <= (std::max)(1e-10, Length * 1e-12))
+			break;
+		if (error < 0)
+			low = u;
+		else
+			high = u;
+		auto derivative = Derivative(u);
+		double speed = std::hypot(derivative.X, derivative.Y, derivative.Z);
+		double next = speed > 1e-12 ? u - error / speed : (low + high) * 0.5;
+		u = next > low && next < high ? next : (low + high) * 0.5;
+	}
+	return u;
+}
+void CamPath::BuildMotionCache() const
+{
+	if (m_MotionCacheValid)
+		return;
+	m_MotionSegments.clear();
+	if (m_Map.size() < 2)
+	{
+		m_MotionCacheValid = true;
+		return;
+	}
+	for (auto key = m_Map.begin(), next = std::next(key); next != m_Map.end(); ++key, ++next)
+	{
+		MotionSegment segment;
+		segment.Time = key->first;
+		segment.End = next->first;
+		double span = next->first - key->first;
+		// Native position interpolation is piecewise cubic (or linear). Recover
+		// its controls without changing the authored curve or its handles.
+		segment.Points[0] = EvalPosition(key->first);
+		segment.Points[3] = EvalPosition(next->first);
+		Vector3 a =
+			EvalPosition(key->first + span / 3) - segment.Points[0] * (8.0 / 27) - segment.Points[3] * (1.0 / 27);
+		Vector3 b =
+			EvalPosition(key->first + 2 * span / 3) - segment.Points[0] * (1.0 / 27) - segment.Points[3] * (8.0 / 27);
+		segment.Points[1] = a * 3 - b * 1.5;
+		segment.Points[2] = b * 3 - a * 1.5;
+		segment.Distances[0] = 0;
+		for (int i = 1; i <= 64; ++i)
+			segment.Distances[i] = segment.Distances[i - 1] + segment.ArcLength(double(i - 1) / 64, double(i) / 64);
+		segment.Length = segment.Distances[64];
+		m_MotionSegments.push_back(segment);
+	}
+	m_MotionCacheValid = true;
+}
+double CamPath::TravelDistanceProgress(double time, double u) const
+{
+	BuildMotionCache();
+	auto it = std::lower_bound(m_MotionSegments.begin(), m_MotionSegments.end(), time,
+							   [](const MotionSegment & a, double t) { return a.Time < t; });
+	if (it == m_MotionSegments.end() || it->Time != time || !(it->Length > 1e-12) || !std::isfinite(it->Length))
+		return u;
+	std::size_t index = std::size_t(it - m_MotionSegments.begin());
+	auto key = m_Map.find(time), next = std::next(key);
+	double duration = next->first - time - key->second.HoldDuration;
+	double rate = it->Length / duration, v0 = rate, v1 = rate;
+	if (!std::isfinite(rate))
+		return u;
+	auto slope = [](double a, double b, double ha, double hb) {
+		if (!(a > 0 && b > 0) || !std::isfinite(a) || !std::isfinite(b))
+			return 0.0;
+		double w0 = 2 * hb + ha, w1 = hb + 2 * ha;
+		return (w0 + w1) / (w0 / a + w1 / b);
+	};
+	if (key->second.HoldDuration > 0)
+		v0 = 0;
+	else if (index > 0)
+	{
+		auto previous = std::prev(key);
+		double h = time - previous->first - previous->second.HoldDuration;
+		v0 = slope(m_MotionSegments[index - 1].Length / h, rate, h, duration);
+	}
+	if (next->second.HoldDuration > 0)
+		v1 = 0;
+	else if (index + 1 < m_MotionSegments.size())
+	{
+		double h = m_MotionSegments[index + 1].End - next->first - next->second.HoldDuration;
+		v1 = slope(rate, m_MotionSegments[index + 1].Length / h, duration, h);
+	}
+	double u2 = u * u, u3 = u2 * u;
+	double progress =
+		(-2 * u3 + 3 * u2) + (u3 - 2 * u2 + u) * duration * v0 / it->Length + (u3 - u2) * duration * v1 / it->Length;
+	return std::isfinite(progress) ? std::clamp(progress, 0.0, 1.0) : u;
+}
+double CamPath::TravelParameter(double time, double progress) const
+{
+	BuildMotionCache();
+	auto it = std::lower_bound(m_MotionSegments.begin(), m_MotionSegments.end(), time,
+							   [](const MotionSegment & a, double t) { return a.Time < t; });
+	return it != m_MotionSegments.end() && it->Time == time && it->Length > 1e-12 && std::isfinite(it->Length)
+			   ? it->Parameter(progress * it->Length)
+			   : progress;
 }
 
 bool CamPath::DoubleInterp_FromString(char const * value, DoubleInterp & outValue)
@@ -704,6 +851,7 @@ void CamPath::Add(double time, const CamPathValue & value)
 
 void CamPath::Changed()
 {
+	m_MotionCacheValid = false;
 	for (m_OnChangedIt = m_OnChanged.begin(); m_OnChangedIt != m_OnChanged.end(); m_OnChangedIt++)
 	{
 		m_OnChangedIt->Notify();
@@ -934,12 +1082,23 @@ CamPathValue CamPath::Eval(double t)
 	if (next == m_Map.end())
 		return EvalBase(t);
 	CamPathEase ease = GetKeyEase(key->first);
-	if (key->second.HoldDuration == 0 && next->second.HoldDuration == 0 &&
+	if (!UseContinuousSpeed(key->first) && key->second.HoldDuration == 0 && next->second.HoldDuration == 0 &&
 		(ease.Type == CamPathEase::Inherit || ease.Type == CamPathEase::Linear))
 		return EvalBase(t);
-	double progress = GetSegmentProgress(key->first, t), span = next->first - key->first;
+	double progress = GetSegmentProgress(key->first, t, false), span = next->first - key->first;
 	if (progress >= 0 && progress <= 1)
-		return EvalBase(key->first + progress * span);
+	{
+		auto value = EvalBase(key->first + progress * span);
+		if (UseContinuousSpeed(key->first))
+		{
+			double parameter = TravelParameter(key->first, GetSegmentProgress(key->first, t));
+			auto position = EvalPosition(key->first + parameter * span);
+			value.X = position.X;
+			value.Y = position.Y;
+			value.Z = position.Z;
+		}
+		return value;
+	}
 	// Overshooting easing continues the current segment's endpoint tangent,
 	// rather than jumping into another segment of the global interpolator.
 	bool before = progress < 0;
@@ -964,16 +1123,9 @@ CamPathValue CamPath::Eval(double t)
 	return value;
 }
 
-CamPathValue CamPath::EvalBase(double t)
+Vector3 CamPath::EvalPosition(double t) const
 {
-	CamPathValue val;
-	
-	val.X = m_XInterp->Eval(t);
-	val.Y = m_YInterp->Eval(t);
-	val.Z = m_ZInterp->Eval(t);
-	val.R = m_RInterp->Eval(t);
-	val.Fov = m_FovInterp->Eval(t);
-	val.Selected = m_SelectedInterp->Eval(t);
+	Vector3 position(m_XInterp->Eval(t), m_YInterp->Eval(t), m_ZInterp->Eval(t));
 	if (m_CurveEditing && m_Bezier && m_Map.size() > 1)
 	{
 		auto b = m_Map.upper_bound(t);
@@ -989,12 +1141,23 @@ CamPathValue CamPath::EvalBase(double t)
 				double u = (t - a->first) / (b->first - a->first), v = 1 - u;
 				Vector3 pos =
 					p0 * (v * v * v) + (p0 + out) * (3 * v * v * u) + (p3 + in) * (3 * v * u * u) + p3 * (u * u * u);
-				val.X = pos.X;
-				val.Y = pos.Y;
-				val.Z = pos.Z;
+				position = pos;
 			}
 		}
 	}
+	return position;
+}
+CamPathValue CamPath::EvalBase(double t)
+{
+	CamPathValue val;
+
+	auto position = EvalPosition(t);
+	val.X = position.X;
+	val.Y = position.Y;
+	val.Z = position.Z;
+	val.R = m_RInterp->Eval(t);
+	val.Fov = m_FovInterp->Eval(t);
+	val.Selected = m_SelectedInterp->Eval(t);
 	return val;
 }
 
@@ -1065,6 +1228,8 @@ std::string CamPath::ToXml()
 
 	rapidxml::xml_node<> * cam = doc.allocate_node(rapidxml::node_element, "campath");
 	WriteEase(doc, cam, m_Ease);
+	if (m_ContinuousSpeed)
+		cam->append_attribute(doc.allocate_attribute("continuousSpeed", "1"));
 	if (!m_Name.empty())
 		cam->append_attribute(doc.allocate_attribute("name", doc.allocate_string(m_Name.c_str())));
 
@@ -1177,7 +1342,7 @@ bool CamPath::LoadXml(const std::string & xml)
 	double oldOffset = m_Offset;
 	std::string oldName = m_Name;
 	CamPathEase oldEase = m_Ease;
-	bool oldHold = m_Hold, oldBezier = m_Bezier;
+	bool oldHold = m_Hold, oldBezier = m_Bezier, oldContinuousSpeed = m_ContinuousSpeed;
 
 	if(bOk)
 	{
@@ -1200,6 +1365,10 @@ bool CamPath::LoadXml(const std::string & xml)
 				if (name)
 					m_Name = name->value();
 
+				auto speed = cur_node->first_attribute("continuousSpeed");
+				if (speed && std::strcmp(speed->value(), "0") && std::strcmp(speed->value(), "1"))
+					throw std::invalid_argument("Invalid continuous speed setting");
+				m_ContinuousSpeed = speed && !std::strcmp(speed->value(), "1");
 				// Loading optional handles preserves the caller's curve-editing capability.
 				auto curve = cur_node->first_attribute("curve");
 				m_Bezier = curve && !_stricmp(curve->value(), "bezier");
@@ -1370,6 +1539,7 @@ bool CamPath::LoadXml(const std::string & xml)
 		m_Ease = oldEase;
 		CopyMap(m_Map, previous);
 		m_Bezier = oldBezier;
+		m_ContinuousSpeed = oldContinuousSpeed;
 		m_Hold = oldHold;
 		m_Offset = oldOffset;
 		PositionInterpMethod_set(position);
@@ -2074,6 +2244,7 @@ std::unique_ptr<CamPath> CamPathCollection::MakePath()
 	path->PositionInterpMethod_set(CamPath::DI_SMOOTH);
 	path->RotationInterpMethod_set(CamPath::QI_SLINEAR);
 	path->FovInterpMethod_set(CamPath::DI_LINEAR);
+	path->SpeedContinuous_set(true);
 	path->Enabled_set(true);
 	return path;
 }

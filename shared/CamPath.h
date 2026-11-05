@@ -2,6 +2,7 @@
 
 #include "AfxMath.h"
 
+#include <array>
 #include <list>
 #include <memory>
 #include <string>
@@ -134,7 +135,7 @@ public:
 		DoubleInterp Position = DI_DEFAULT, Fov = DI_DEFAULT;
 		QuaternionInterp Rotation = QI_DEFAULT;
 		double Offset = 0;
-		bool Enabled = false, Hold = false, Bezier = false, CurveEditing = false;
+		bool Enabled = false, Hold = false, Bezier = false, CurveEditing = false, ContinuousSpeed = false;
 		std::string Name;
 		CamPathEase Ease;
 		bool operator==(const State & other) const;
@@ -155,7 +156,12 @@ public:
 	bool SetKeyEase(double time, const CamPathEase & value);
 	CamPathEase GetKeyEase(double time, bool forPlayback = false) const;
 	bool SmoothHolds() const;
-	double GetSegmentProgress(double keyTime, double time) const;
+	double GetSegmentProgress(double keyTime, double time, bool applySpeed = true) const;
+	void SpeedContinuous_set(bool enabled);
+	bool SpeedContinuous_get() const
+	{
+		return m_ContinuousSpeed;
+	}
 	void Validate() const;
 	std::string ToXml();
 	bool LoadXml(const std::string & xml);
@@ -324,6 +330,23 @@ private:
 		return value.Selected;
 	}
 
+	struct MotionSegment
+	{
+		double Time, End, Length;
+		std::array<Vector3, 4> Points;
+		std::array<double, 65> Distances;
+		Vector3 Derivative(double u) const;
+		double ArcLength(double from, double to) const;
+		double Parameter(double distance) const;
+	};
+	void BuildMotionCache() const;
+	Vector3 EvalPosition(double time) const;
+	double TravelDistanceProgress(double time, double progress) const;
+	double TravelParameter(double time, double progress) const;
+	bool UseContinuousSpeed(double time) const;
+	bool m_ContinuousSpeed = false;
+	mutable bool m_MotionCacheValid = false;
+	mutable std::vector<MotionSegment> m_MotionSegments;
 	std::string m_Name;
 	bool m_CurveEditing = false, m_Bezier = false;
 	bool m_Enabled;

@@ -70,7 +70,7 @@ Console equivalents include `preview <index>`, `preview interp <0..1>`,
 `preview seek`, `preview undo` and `preview redo`. `preview exit` retains the free
 camera pose; `mirv_input end` releases it. Undo/redo keep the current viewport and
 restore keyframes, handles, holds, interpolation, easing, names and path membership.
-History keeps the last 64 data edits, including loads and native timing/placement
+History keeps the last 64 data edits, including loads, travel speed and native timing/placement
 commands. Navigation, selection, saving and drawing settings do not create edits.
 A new data edit clears redo. The master playback switch is outside undo history.
 
@@ -184,6 +184,42 @@ handle change; other segments retain their chosen native interpolator. Unset
 handles on an edited segment follow native tangents. `curve reset` restores
 selected handles to automatic. Choosing another position interpolation ignores
 stored handles until Bezier is re-enabled. Use `mirv_aim` for aiming.
+
+## Continuous travel through keyframes
+
+Keyframes remain full camera poses with classic indices. New paths enable
+continuous travel speed; existing files retain native speed unless enabled:
+
+```text
+mirv_campath edit speed continuous
+mirv_campath edit speed native
+```
+
+Continuous travel changes how position moves along the existing curve. It keeps
+keyframe positions, arrival times, handles and curve shape, and matches travel
+speed on either side of ordinary joins. Speed can vary between keys; it is not a
+constant-speed retime. This also handles aligned Bezier tangents with different
+lengths. Use aligned handles or a smooth curve for a continuous travel direction.
+Rotation and FOV retain their own time interpolation.
+
+The setting applies to inherited/linear segment timing. Holds retain their smooth
+stops, and explicit sine/back/bounce/elastic/Bezier easing retains its authored
+effect. `edit ease all inherit` clears intentional easing if you want uninterrupted
+travel throughout. Step interpolation and stationary intervals retain their
+meaning. Duplicate positions still constrain the camera to revisit that position.
+
+The existing `sSmooth` rotation mode now uses a local spherical spline with
+shared angular velocity through joins, rather than restarting an ease-in/out at
+each key. It works with two keys and handles unequal time intervals. Choose it
+with `edit interp rotation sSmooth`, or use `edit interp all smooth` for smooth
+position and rotation. Holds and explicit easing can still stop rotation.
+Classic `sLinear` and `sCubic` retain their previous behavior.
+
+The graph's **Continuous travel speed** checkbox controls the same setting and
+supports undo/redo. Its plot shows the resulting travel progress; rotation/FOV
+retain native timing when only continuous travel modifies position. Save/load,
+collections and undo/redo preserve the setting. Older files without it use native
+speed. No additional keyframe types or tracks are introduced.
 
 ## Easing graph and segment presets
 

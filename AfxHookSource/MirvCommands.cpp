@@ -2571,6 +2571,20 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 				 "Graph editor is unavailable in this build");
 			return true;
 		}
+		if (a.is(0, "edit") && a.is(1, "speed"))
+		{
+			if (a.count() == 2)
+			{
+				Tier0_Msg("mirv_campath edit speed continuous|native - Travel speed through ordinary keys; keeps curve "
+						  "and arrival times.\nCurrent value: %s\n",
+						  activePath().SpeedContinuous_get() ? "continuous" : "native");
+				return true;
+			}
+			a.size(3);
+			need(a.is(2, "continuous") || a.is(2, "native"), "Choose continuous or native");
+			activePath().SpeedContinuous_set(a.is(2, "continuous"));
+			return changed();
+		}
 		if (a.is(0, "edit") && a.is(1, "ease"))
 		{
 			if (a.count() < 4)
@@ -2908,7 +2922,8 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 					  "mirv_campath draw stackLabels 0|1 - Stack nearby overlapping indices.\n"
 					  "mirv_campath draw stackWorldDistance <units> - Nearby threshold (default 32).\n");
 		if (a.is(0, "edit") && a.count() == 1)
-			Tier0_Msg("mirv_campath edit hold - Keyframe holds.\nmirv_campath edit ease - Segment "
+			Tier0_Msg("mirv_campath edit speed continuous|native - Travel speed.\nmirv_campath edit hold - Keyframe "
+					  "holds.\nmirv_campath edit ease - Segment "
 					  "timing/easing.\nmirv_campath edit interp all - Set interpolation in "
 					  "one command.\n");
 		return false;

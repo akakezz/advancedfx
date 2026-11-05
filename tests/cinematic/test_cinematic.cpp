@@ -292,6 +292,8 @@ void check(bool ok, const char * message)
 }
 void near(double a, double b, double tolerance = 1e-6)
 {
+	if (!(std::abs(a - b) <= tolerance))
+		std::cerr << "Expected " << b << ", got " << a << " (tolerance " << tolerance << ")\n";
 	check(std::abs(a - b) <= tolerance, "Values differ");
 }
 void populate(CamPath & path, bool linear = true)
@@ -511,6 +513,192 @@ void alignedHandles()
 	near(in.X, -10);
 	near(in.Y, 0);
 	check(legacy.GetBegin().GetValue().HandlesAligned, "Classic keys without authored handles use the aligned default");
+}
+void continuousTravel()
+{
+	CamPath native;
+	populate(native);
+	native.CurveEditing_set(true);
+	native.Add(30, CamPathValue(200, 0, 0, 0, 160, 0, 45));
+	native.SetHandle(10, true, Vector3(1, 0, 0));
+	native.SetHandle(20, false, Vector3(-2, 0, 0));
+	native.SetHandle(20, true, Vector3(35, 0, 0));
+	native.SetHandle(30, false, Vector3(-1, 0, 0));
+	CamPath flow;
+	flow.RestoreState(native.CaptureState());
+	auto authored = flow.CaptureState();
+	flow.SpeedContinuous_set(true);
+	for (int i = 0; i <= 200; ++i)
+	{
+		double t = 10 + i * 0.1;
+		auto a = flow.Eval(t), b = native.Eval(t);
+		near(a.X, (t - 10) * 10, 1e-5);
+		near(a.Y, 0);
+		near(a.Fov, b.Fov);
+		near(std::abs(DotProduct(a.R, b.R)), 1);
+	}
+	double e = 1e-4;
+	near((flow.Eval(20).X - flow.Eval(20 - e).X) / e, 10, 0.005);
+	near((flow.Eval(20 + e).X - flow.Eval(20).X) / e, 10, 0.005);
+	auto stored = flow.CaptureState();
+	stored.ContinuousSpeed = false;
+	check(stored == authored, "Continuous travel preserves keyframes, handles and arrival times");
+	flow.SpeedContinuous_set(false);
+	check(flow.CaptureState() == authored, "Native speed restores the original path state");
+	for (int i = 0; i <= 200; ++i)
+		near(flow.Eval(10 + i * 0.1).X, native.Eval(10 + i * 0.1).X);
+	flow.SpeedContinuous_set(true);
+	flow.SetPosition(200, 0, 0);
+	near(flow.Eval(15).X, 150, 1e-5);
+	flow.SetDuration(40);
+	near(flow.Eval(20).X, 150, 1e-5);
+	check(flow.GetSize() == 3, "Continuous speed uses ordinary full camera keyframes");
+	CamPath curved;
+	curved.RestoreState(native.CaptureState());
+	curved.SetHandle(10, true, Vector3(10, 30, 5));
+	curved.SetHandle(20, false, Vector3(-5, 0, 0));
+	curved.SetHandle(20, true, Vector3(40, 0, 0));
+	curved.SetHandle(30, false, Vector3(-10, -40, -5));
+	CamPath curvedFlow;
+	curvedFlow.RestoreState(curved.CaptureState());
+	curvedFlow.SpeedContinuous_set(true);
+	for (int i = 1; i < 100; ++i)
+	{
+		double t = 10 + i * 0.2;
+		auto p = curvedFlow.Eval(t);
+		double lo = t < 20 ? 10 : 20, hi = t < 20 ? 20 : 30;
+		for (int n = 0; n < 45; ++n)
+		{
+			double m = (lo + hi) / 2;
+			if (curved.Eval(m).X < p.X)
+				lo = m;
+			else
+				hi = m;
+		}
+		auto q = curved.Eval((lo + hi) / 2);
+		near(p.X, q.X, 1e-5);
+		near(p.Y, q.Y, 1e-5);
+		near(p.Z, q.Z, 1e-5);
+	}
+	auto a = curvedFlow.Eval(20 - e), b = curvedFlow.Eval(20), c = curvedFlow.Eval(20 + e);
+	Vector3 va((b.X - a.X) / e, (b.Y - a.Y) / e, (b.Z - a.Z) / e),
+		vb((c.X - b.X) / e, (c.Y - b.Y) / e, (c.Z - b.Z) / e);
+	check(va.Length() > 1 && vb.Length() > 1, "Curved travel passes through ordinary keyframes without stopping");
+	near((va - vb).Length(), 0, 0.02);
+	curvedFlow.SetKeyHold(20, 23);
+	near(curvedFlow.Eval(21).X, 100);
+	near(curvedFlow.Eval(22).X, 100);
+	near((curvedFlow.Eval(20).X - curvedFlow.Eval(20 - e).X) / e, 0, 0.01);
+	near((curvedFlow.Eval(23 + e).X - curvedFlow.Eval(23).X) / e, 0, 0.01);
+	for (auto type :
+		 {CamPathEase::Sine, CamPathEase::Back, CamPathEase::Bounce, CamPathEase::Elastic, CamPathEase::Bezier})
+	{
+		CamPathEase ease;
+		ease.Type = type;
+		curved.SetEase(ease);
+		curvedFlow.RestoreState(curved.CaptureState());
+		curvedFlow.SpeedContinuous_set(true);
+		for (int i = 0; i <= 100; ++i)
+		{
+			double t = 10 + i * 0.2;
+			auto x = curved.Eval(t), y = curvedFlow.Eval(t);
+			near(x.X, y.X);
+			near(x.Y, y.Y);
+			near(x.Fov, y.Fov);
+			near(std::abs(DotProduct(x.R, y.R)), 1);
+		}
+	}
+	CamPath stationary;
+	stationary.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	stationary.RotationInterpMethod_set(CamPath::QI_SLINEAR);
+	stationary.FovInterpMethod_set(CamPath::DI_LINEAR);
+	stationary.Add(10, CamPathValue(5, 6, 7, 0, 0, 0, 90));
+	stationary.Add(20, CamPathValue(5, 6, 7, 0, 0, 0, 90));
+	stationary.SpeedContinuous_set(true);
+	for (int i = 0; i <= 20; ++i)
+	{
+		auto p = stationary.Eval(10 + i * 0.5);
+		near(p.X, 5);
+		near(p.Y, 6);
+		near(p.Z, 7);
+	}
+	stationary.PositionInterpMethod_set(CamPath::DI_STEP);
+	near(stationary.Eval(15).X, 5);
+	CamPath notReady;
+	notReady.SpeedContinuous_set(true);
+	notReady.Add(0, CamPathValue());
+	notReady.Add(1, CamPathValue(1, 0, 0, 0, 0, 0, 90));
+	near(notReady.GetSegmentProgress(0, 0.5), 0.5);
+	CamPath tiny;
+	tiny.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	tiny.RotationInterpMethod_set(CamPath::QI_SLINEAR);
+	tiny.FovInterpMethod_set(CamPath::DI_LINEAR);
+	tiny.Add(0, CamPathValue());
+	tiny.Add(1e-320, CamPathValue(100, 0, 0, 0, 0, 0, 90));
+	tiny.SpeedContinuous_set(true);
+	check(std::isfinite(tiny.Eval(5e-321).X),
+		  "Unrepresentable travel rates fall back without producing nonfinite camera positions");
+	CamPath saved;
+	saved.RestoreState(flow.CaptureState());
+	CamPath loaded;
+	loaded.CurveEditing_set(true);
+	check(loaded.LoadXml(saved.ToXml()), "Continuous travel saves in native XML");
+	check(loaded.CaptureState() == saved.CaptureState(), "Continuous speed and all pose metadata round-trip");
+	auto valid = loaded.CaptureState();
+	check(!loaded.LoadXml("<campath continuousSpeed=\"bad\"><points/></campath>"), "Invalid speed setting is rejected");
+	check(loaded.CaptureState() == valid, "Rejected speed settings restore the previous path");
+	check(loaded.LoadXml(native.ToXml()) && !loaded.SpeedContinuous_get(),
+		  "Older native files retain native speed by default");
+	CamPathCollection history;
+	check(history.Active().SpeedContinuous_get(), "New paths enable continuous travel");
+	populate(history.Active());
+	auto before = history.Capture();
+	history.Active().SpeedContinuous_set(false);
+	history.Record(before);
+	check(history.Undo() && history.Capture() == before, "Undo restores travel interpolation");
+	check(history.Redo() && !history.Active().SpeedContinuous_get(), "Redo restores native speed");
+}
+void continuousRotation()
+{
+	CamPath path;
+	path.PositionInterpMethod_set(CamPath::DI_SMOOTH);
+	path.RotationInterpMethod_set(CamPath::QI_SMOOTH);
+	path.FovInterpMethod_set(CamPath::DI_LINEAR);
+	path.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	path.Add(2, CamPathValue(20, 0, 0, 0, 20, 0, 90));
+	path.Add(7, CamPathValue(70, 0, 0, 0, 70, 0, 90));
+	double e = 1e-4;
+	auto a = path.Eval(2 - e), b = path.Eval(2), c = path.Eval(2 + e);
+	near((b.X - a.X) / e, 10, 0.001);
+	near((c.X - b.X) / e, 10, 0.001);
+	double left = (b.R.ToQREulerAngles().ToQEulerAngles().Yaw - a.R.ToQREulerAngles().ToQEulerAngles().Yaw) / e;
+	double right = (c.R.ToQREulerAngles().ToQEulerAngles().Yaw - b.R.ToQREulerAngles().ToQEulerAngles().Yaw) / e;
+	near(left, 10, 0.01);
+	near(right, 10, 0.01);
+	CamPath turning;
+	turning.PositionInterpMethod_set(CamPath::DI_SMOOTH);
+	turning.FovInterpMethod_set(CamPath::DI_LINEAR);
+	turning.RotationInterpMethod_set(CamPath::QI_SMOOTH);
+	turning.Add(0, CamPathValue(0, 0, 0, 10, 170, 5, 90));
+	turning.Add(2, CamPathValue(20, 0, 0, 25, -175, -10, 90));
+	turning.Add(6, CamPathValue(60, 0, 0, -5, -140, 20, 90));
+	auto qa = turning.Eval(2 - e).R, qb = turning.Eval(2).R, qc = turning.Eval(2 + e).R;
+	if (DotProduct(qa, qb) < 0)
+		qa = -1.0 * qa;
+	if (DotProduct(qb, qc) < 0)
+		qc = -1.0 * qc;
+	Vector3 axisA, axisB;
+	double speedA = qa.GetAng(qb, axisA) / e, speedB = qb.GetAng(qc, axisB) / e;
+	near(speedA, speedB, 0.002);
+	check(speedA > 0.01, "Smooth rotation carries angular velocity through wrapped nonuniform keys");
+	near((axisA - axisB).Length(), 0, 0.002);
+	near(qb.Norm(), 1);
+	CamPath same;
+	populate(same);
+	same.RotationInterpMethod_set(CamPath::QI_SMOOTH);
+	same.SetAngles(0, 0, 0);
+	for (int i = 0; i <= 40; ++i)
+		near(same.Eval(10 + i * 0.25).R.Norm(), 1);
 }
 void placement()
 {
@@ -996,6 +1184,8 @@ int main()
 		captureAndTiming();
 		curves();
 		alignedHandles();
+		continuousTravel();
+		continuousRotation();
 		placement();
 		persistence();
 		localInterpolation();

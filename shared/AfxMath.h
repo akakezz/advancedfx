@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 /*
 
 About Quake coordinate system:
@@ -555,15 +557,47 @@ public:
 			return b.GetValue();
 		if (m_Step)
 			return a.GetValue();
-		double u = (time - a.GetTime()) / (b.GetTime() - a.GetTime());
-		u = u * u * (3 - 2 * u);
-		Quaternion q = a.GetValue(), r = b.GetValue();
-		if (DotProduct(q, r) < 0)
-			r = -1.0 * r;
-		return q.Slerp(r, u);
+		double span = b.GetTime() - a.GetTime(), u = (time - a.GetTime()) / span;
+		Quaternion q = a.GetValue().Normalized(), r = b.GetValue().Normalized();
+		Vector3 velocityA = Log(q, r) * (1 / span), velocityB = Log(r, q) * (-1 / span);
+		if (a != m_View->GetBegin())
+		{
+			auto previous = a;
+			--previous;
+			velocityA = (Log(q, r) - Log(q, previous.GetValue())) * (1 / (b.GetTime() - previous.GetTime()));
+		}
+		auto next = b;
+		++next;
+		if (next != m_View->GetEnd())
+			velocityB = (Log(r, next.GetValue()) - Log(r, q)) * (1 / (next.GetTime() - a.GetTime()));
+		Quaternion c0 = q * Exp(velocityA * (span / 3)), c1 = r * Exp(velocityB * (-span / 3));
+		Quaternion p = Blend(q, c0, u), m = Blend(c0, c1, u), n = Blend(c1, r, u);
+		return Blend(Blend(p, m, u), Blend(m, n, u), u);
 	}
 
 private:
+	static Vector3 Log(Quaternion q, Quaternion r)
+	{
+		q = q.Normalized();
+		r = r.Normalized();
+		if (DotProduct(q, r) < 0)
+			r = -1.0 * r;
+		Vector3 axis;
+		double angle = q.GetAng(r, axis);
+		return axis * (angle / 2);
+	}
+	static Quaternion Exp(const Vector3 & v)
+	{
+		double length = std::sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
+		double scale = length > 1e-12 ? std::sin(length) / length : 1;
+		return Quaternion(std::cos(length), v.X * scale, v.Y * scale, v.Z * scale);
+	}
+	static Quaternion Blend(Quaternion q, Quaternion r, double u)
+	{
+		if (DotProduct(q, r) < 0)
+			r = -1.0 * r;
+		return q.Slerp(r, u).Normalized();
+	}
 	CInterpolationMapView<TMap, Quaternion> * m_View;
 	bool m_Step;
 };

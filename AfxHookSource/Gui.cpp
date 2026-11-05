@@ -1071,6 +1071,17 @@ static void DrawCampathGraph()
 		ImGui::EndCombo();
 	}
 	auto & path = paths.Active();
+	bool continuous = path.SpeedContinuous_get();
+	if (ImGui::Checkbox("Continuous travel speed", &continuous))
+	{
+		FinishCampathGraphEdit();
+		auto before = paths.Capture();
+		path.SpeedContinuous_set(continuous);
+		paths.Record(before);
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Keeps ordinary movement speed continuous. Holds and non-linear easing keep their effects. "
+						  "Rotation and FOV retain native timing.");
 	auto selected = GraphSelectedSegments(path);
 	if (ImGui::BeginCombo("Scope", graph.EditAll ? "Entire path" : "Selected segments"))
 	{
@@ -1164,8 +1175,8 @@ static void DrawCampathGraph()
 
 	ImGui::TextUnformatted("Click/box select; Shift adds. Right-click a segment for presets. Changes apply live; "
 						   "purple handles edit Bezier.");
-	ImGui::TextUnformatted(
-		"Middle drag pans; wheel zooms. Time: path seconds; vertical: key progress. Orange bars: holds. Esc closes.");
+	ImGui::TextUnformatted("Middle drag pans; wheel zooms. Time: path seconds; vertical: travel progress. Orange bars: "
+						   "holds. Esc closes.");
 	ImGui::Text("%u segments selected. Path default: %s %s. Smooth holds flatten tangents.", unsigned(selected.size()),
 				CamPathEase::ToString(path.GetEase().Type), CamPathEase::ToString(path.GetEase().Mode));
 	DrawCampathGraphCanvas(path);
