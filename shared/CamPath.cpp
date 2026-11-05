@@ -174,15 +174,51 @@ double CamPathEase::Eval(double u) const
 	return u < 0.5 ? 0.5 * easeIn(2 * u) : 1 - 0.5 * easeIn(2 - 2 * u);
 }
 
+const char * CamPathEase::ChannelToString(Channel value)
+{
+	switch (value)
+	{
+	case Position:
+		return "position";
+	case Angles:
+		return "angles";
+	case Fov:
+		return "fov";
+	default:
+		return "all";
+	}
+}
+bool CamPathEase::ChannelFromString(const char * text, Channel & value)
+{
+	for (auto channel : {All, Position, Angles, Fov})
+		if (!_stricmp(text, ChannelToString(channel)))
+		{
+			value = channel;
+			return true;
+		}
+	if (!_stricmp(text, "rotation"))
+	{
+		value = Angles;
+		return true;
+	}
+	return false;
+}
 namespace
 {
+bool ValidChannelEases(const std::array<std::optional<CamPathEase>, 3> & values)
+{
+	for (const auto & value : values)
+		if (value && !value->Valid())
+			return false;
+	return true;
+}
 void ValidateKeys(const CInterpolationMap<CamPathValue> & keys)
 {
 	for (auto it = keys.begin(); it != keys.end(); ++it)
 	{
 		double release = it->first + it->second.HoldDuration;
 		if (!std::isfinite(it->first) || !std::isfinite(release) || !std::isfinite(it->second.HoldDuration) ||
-			it->second.HoldDuration < 0 || !it->second.Ease.Valid())
+			it->second.HoldDuration < 0 || !it->second.Ease.Valid() || !ValidChannelEases(it->second.ChannelEase))
 			throw std::invalid_argument("Invalid keyframe hold");
 		auto next = std::next(it);
 		if (it->second.HoldDuration > 0 && next != keys.end() && release >= next->first)
@@ -208,13 +244,15 @@ bool CamPathValue::operator==(const CamPathValue & b) const
 		   Fov == b.Fov && Selected == b.Selected && InHandle.X == b.InHandle.X && InHandle.Y == b.InHandle.Y &&
 		   InHandle.Z == b.InHandle.Z && OutHandle.X == b.OutHandle.X && OutHandle.Y == b.OutHandle.Y &&
 		   OutHandle.Z == b.OutHandle.Z && HasInHandle == b.HasInHandle && HasOutHandle == b.HasOutHandle &&
-		   HandlesAligned == b.HandlesAligned && HoldDuration == b.HoldDuration && Ease == b.Ease;
+		   HandlesAligned == b.HandlesAligned && HoldDuration == b.HoldDuration && Ease == b.Ease &&
+		   ChannelEase == b.ChannelEase;
 }
 bool CamPath::State::operator==(const State & b) const
 {
 	return Keys == b.Keys && Position == b.Position && Fov == b.Fov && Rotation == b.Rotation && Offset == b.Offset &&
 		   Enabled == b.Enabled && Hold == b.Hold && Bezier == b.Bezier && CurveEditing == b.CurveEditing &&
-		   Name == b.Name && Ease == b.Ease && ContinuousSpeed == b.ContinuousSpeed;
+		   Name == b.Name && Ease == b.Ease && ContinuousSpeed == b.ContinuousSpeed && ChannelEase == b.ChannelEase &&
+		   BlendStrength == b.BlendStrength;
 }
 CamPath::State CamPath::CaptureState() const
 {
@@ -230,13 +268,16 @@ CamPath::State CamPath::CaptureState() const
 	s.CurveEditing = m_CurveEditing;
 	s.Name = m_Name;
 	s.Ease = m_Ease;
+	s.ChannelEase = m_ChannelEase;
+	s.BlendStrength = m_BlendStrength;
 	s.ContinuousSpeed = m_ContinuousSpeed;
 	return s;
 }
 void CamPath::RestoreState(const State & s)
 {
 	ValidateKeys(s.Keys);
-	if (s.Name.size() > 256 || !std::isfinite(s.Offset) || !s.Ease.Valid())
+	if (s.Name.size() > 256 || !std::isfinite(s.Offset) || !s.Ease.Valid() || !ValidChannelEases(s.ChannelEase) ||
+		!std::isfinite(s.BlendStrength) || s.BlendStrength < 0 || s.BlendStrength > 1)
 		throw std::invalid_argument("Invalid path state");
 	m_Map = s.Keys;
 	m_Offset = s.Offset;
@@ -246,6 +287,8 @@ void CamPath::RestoreState(const State & s)
 	m_CurveEditing = s.CurveEditing;
 	m_Name = s.Name;
 	m_Ease = s.Ease;
+	m_ChannelEase = s.ChannelEase;
+	m_BlendStrength = s.BlendStrength;
 	m_ContinuousSpeed = s.ContinuousSpeed;
 	PositionInterpMethod_set(s.Position);
 	RotationInterpMethod_set(s.Rotation);
@@ -263,7 +306,8 @@ void CamPath::SetName(const std::string & name)
 void CamPath::Validate() const
 {
 	ValidateKeys(m_Map);
-	if (!std::isfinite(m_Offset))
+	if (!std::isfinite(m_Offset) || !ValidChannelEases(m_ChannelEase) || !std::isfinite(m_BlendStrength) ||
+		m_BlendStrength < 0 || m_BlendStrength > 1)
 		throw std::invalid_argument("Invalid path offset");
 }
 bool CamPath::SetKeyHold(double time, double release)
@@ -280,33 +324,75 @@ bool CamPath::SetKeyHold(double time, double release)
 	return true;
 }
 
-void CamPath::SetEase(const CamPathEase & value, bool clearOverrides)
+const CamPathEase & CamPath::GetEase(CamPathEase::Channel channel) const
 {
-	if (!value.Valid())
+	if (channel != CamPathEase::All)
+	{
+		const auto & value = m_ChannelEase.at(std::size_t(channel - 1));
+		if (value && value->Type != CamPathEase::Inherit)
+			return *value;
+	}
+	return m_Ease;
+}
+void CamPath::SetEase(const CamPathEase & value, bool clearOverrides, CamPathEase::Channel channel)
+{
+	if (!value.Valid() || channel < CamPathEase::All || channel >= CamPathEase::ChannelCount)
 		throw std::invalid_argument("Invalid easing controls");
-	m_Ease = value;
-	if (clearOverrides)
-		for (auto & key : m_Map)
-			key.second.Ease = CamPathEase();
+	if (channel == CamPathEase::All)
+	{
+		m_Ease = value;
+		m_ChannelEase = {};
+		if (clearOverrides)
+			for (auto & key : m_Map)
+			{
+				key.second.Ease = CamPathEase();
+				key.second.ChannelEase = {};
+			}
+	}
+	else
+	{
+		auto index = std::size_t(channel - 1);
+		m_ChannelEase[index] = value.Type == CamPathEase::Inherit ? std::nullopt : std::optional<CamPathEase>(value);
+		if (clearOverrides)
+			for (auto & key : m_Map)
+				key.second.ChannelEase[index] =
+					value.Type == CamPathEase::Inherit ? std::nullopt : std::optional<CamPathEase>(CamPathEase());
+	}
 	Changed();
 }
-
-bool CamPath::SetKeyEase(double time, const CamPathEase & value)
+bool CamPath::SetKeyEase(double time, const CamPathEase & value, CamPathEase::Channel channel)
 {
-	if (!std::isfinite(time))
+	if (!std::isfinite(time) || channel < CamPathEase::All || channel >= CamPathEase::ChannelCount)
 		return false;
 	auto key = m_Map.find(time);
 	if (key == m_Map.end() || std::next(key) == m_Map.end() || !value.Valid())
 		return false;
-	key->second.Ease = value;
+	if (channel == CamPathEase::All)
+	{
+		key->second.Ease = value;
+		key->second.ChannelEase = {};
+	}
+	else
+		key->second.ChannelEase[std::size_t(channel - 1)] = value;
 	Changed();
 	return true;
 }
-
-CamPathEase CamPath::GetKeyEase(double time, bool forPlayback) const
+CamPathEase CamPath::GetKeyEase(double time, bool forPlayback, CamPathEase::Channel channel) const
 {
 	auto key = m_Map.find(time);
-	CamPathEase ease = key != m_Map.end() && key->second.Ease.Type != CamPathEase::Inherit ? key->second.Ease : m_Ease;
+	CamPathEase ease = GetEase(channel);
+	if (key != m_Map.end())
+	{
+		const auto & channels = key->second.ChannelEase;
+		if (channel != CamPathEase::All && channels.at(std::size_t(channel - 1)))
+		{
+			const auto & value = *channels[std::size_t(channel - 1)];
+			if (value.Type != CamPathEase::Inherit)
+				ease = value;
+		}
+		else if (key->second.Ease.Type != CamPathEase::Inherit)
+			ease = key->second.Ease;
+	}
 	if (forPlayback && key != m_Map.end() && ease.Type == CamPathEase::Bezier && SmoothHolds())
 	{
 		auto next = std::next(key);
@@ -333,7 +419,7 @@ bool CamPath::SmoothHolds() const
 		   (m_FovInterpMethod != DI_LINEAR && m_FovInterpMethod != DI_STEP);
 }
 
-double CamPath::GetSegmentProgress(double time, double at, bool applySpeed) const
+double CamPath::GetSegmentProgress(double time, double at, bool applySpeed, CamPathEase::Channel channel) const
 {
 	auto key = m_Map.find(time);
 	if (key == m_Map.end())
@@ -347,7 +433,7 @@ double CamPath::GetSegmentProgress(double time, double at, bool applySpeed) cons
 	if (at >= next->first)
 		return 1;
 	double u = (at - release) / (next->first - release);
-	CamPathEase ease = GetKeyEase(time, true);
+	CamPathEase ease = GetKeyEase(time, true, channel == CamPathEase::All ? CamPathEase::Position : channel);
 	if (SmoothHolds() && ease.Type != CamPathEase::Bezier)
 	{
 		bool depart = key->second.HoldDuration > 0, arrive = next->second.HoldDuration > 0;
@@ -360,11 +446,37 @@ double CamPath::GetSegmentProgress(double time, double at, bool applySpeed) cons
 		else if (arrive)
 			u = 1 - start(1 - u);
 	}
-	if (applySpeed && UseContinuousSpeed(time))
-		return TravelDistanceProgress(time, u);
+	if (applySpeed && (channel == CamPathEase::All || channel == CamPathEase::Position) && UseContinuousSpeed(time))
+		return BlendedTravelProgress(time, u);
 	return ease.Eval(u);
 }
 
+void CamPath::BlendStrength_set(double value)
+{
+	if (!std::isfinite(value) || value < 0 || value > 1)
+		throw std::invalid_argument("Blend strength must be in 0..1");
+	m_BlendStrength = value;
+	Changed();
+}
+bool CamPath::GetSegmentMidpoint(double time, Vector3 & position) const
+{
+	if (!std::isfinite(time) || !m_XInterp->CanEval() || !m_YInterp->CanEval() || !m_ZInterp->CanEval())
+		return false;
+	auto key = m_Map.find(time);
+	if (key == m_Map.end() || std::next(key) == m_Map.end())
+		return false;
+	if (IsStepSegment(time))
+	{
+		auto next = std::next(key);
+		position =
+			Vector3(key->second.X + next->second.X, key->second.Y + next->second.Y, key->second.Z + next->second.Z) *
+			0.5;
+		return true;
+	}
+	double parameter = TravelParameter(time, 0.5);
+	position = EvalPosition(time + parameter * (std::next(key)->first - time));
+	return true;
+}
 void CamPath::SpeedContinuous_set(bool enabled)
 {
 	m_ContinuousSpeed = enabled;
@@ -373,10 +485,48 @@ void CamPath::SpeedContinuous_set(bool enabled)
 bool CamPath::UseContinuousSpeed(double time) const
 {
 	if (!m_ContinuousSpeed || !m_XInterp->CanEval() || !m_YInterp->CanEval() || !m_ZInterp->CanEval() ||
-		(m_PositionInterpMethod == DI_STEP && !(m_CurveEditing && m_Bezier)))
+		IsStepSegment(time))
 		return false;
-	auto ease = GetKeyEase(time);
-	return ease.Type == CamPathEase::Inherit || ease.Type == CamPathEase::Linear;
+	return true;
+}
+bool CamPath::IsStepSegment(double time) const
+{
+	if (m_PositionInterpMethod != DI_STEP)
+		return false;
+	auto key = m_Map.find(time);
+	if (!(m_CurveEditing && m_Bezier) || key == m_Map.end() || std::next(key) == m_Map.end())
+		return true;
+	return !key->second.HasOutHandle && !std::next(key)->second.HasInHandle;
+}
+Vector3 CamPath::MotionSegment::Point(double u) const
+{
+	double v = 1 - u;
+	return Points[0] * (v * v * v) + Points[1] * (3 * v * v * u) + Points[2] * (3 * v * u * u) +
+		   Points[3] * (u * u * u);
+}
+double CamPath::MotionSegment::DistanceProgress(double parameter) const
+{
+	if (!(Length > 1e-12) || !std::isfinite(Length) || !std::isfinite(parameter))
+		return parameter;
+	if (parameter < 0)
+		return parameter * ((Point(0.001) - Points[0]) * 1000).Length() / Length;
+	if (parameter > 1)
+		return 1 + (parameter - 1) * ((Points[3] - Point(0.999)) * 1000).Length() / Length;
+	if (parameter >= 1)
+		return 1;
+	std::size_t bin = (std::min)(std::size_t(63), std::size_t(parameter * 64));
+	return (Distances[bin] + ArcLength(double(bin) / 64, parameter)) / Length;
+}
+double CamPath::MotionSegment::ProfileProgress(double u) const
+{
+	if (u <= 0)
+		return 0;
+	if (u >= 1)
+		return 1;
+	std::size_t count = ProfileDistance.size() - 1, i = (std::min)(count - 1, std::size_t(u * count));
+	double x = u * count - i, x2 = x * x, x3 = x2 * x;
+	return (2 * x3 - 3 * x2 + 1) * ProfileDistance[i] + (-2 * x3 + 3 * x2) * ProfileDistance[i + 1] +
+		   (x3 - 2 * x2 + x) * ProfileSpeed[i] / count + (x3 - x2) * ProfileSpeed[i + 1] / count;
 }
 Vector3 CamPath::MotionSegment::Derivative(double u) const
 {
@@ -450,6 +600,10 @@ void CamPath::BuildMotionCache() const
 			EvalPosition(key->first + 2 * span / 3) - segment.Points[0] * (1.0 / 27) - segment.Points[3] * (8.0 / 27);
 		segment.Points[1] = a * 3 - b * 1.5;
 		segment.Points[2] = b * 3 - a * 1.5;
+		// A stepped interval has no travel to blend with its neighbors. Bezier
+		// mode can still contain unedited intervals using that native mode.
+		if (IsStepSegment(key->first))
+			segment.Points.fill(segment.Points[0]);
 		segment.Distances[0] = 0;
 		for (int i = 1; i <= 64; ++i)
 			segment.Distances[i] = segment.Distances[i - 1] + segment.ArcLength(double(i - 1) / 64, double(i) / 64);
@@ -457,20 +611,19 @@ void CamPath::BuildMotionCache() const
 		m_MotionSegments.push_back(segment);
 	}
 	m_MotionCacheValid = true;
+	if (m_ContinuousSpeed && m_BlendStrength > 0)
+		for (std::size_t i = 0; i < m_MotionSegments.size(); ++i)
+			BuildBlendProfile(i);
 }
-double CamPath::TravelDistanceProgress(double time, double u) const
+std::pair<double, double> CamPath::TravelSlopes(std::size_t index) const
 {
-	BuildMotionCache();
-	auto it = std::lower_bound(m_MotionSegments.begin(), m_MotionSegments.end(), time,
-							   [](const MotionSegment & a, double t) { return a.Time < t; });
-	if (it == m_MotionSegments.end() || it->Time != time || !(it->Length > 1e-12) || !std::isfinite(it->Length))
-		return u;
-	std::size_t index = std::size_t(it - m_MotionSegments.begin());
+	const auto * it = &m_MotionSegments[index];
+	double time = it->Time;
 	auto key = m_Map.find(time), next = std::next(key);
 	double duration = next->first - time - key->second.HoldDuration;
 	double rate = it->Length / duration, v0 = rate, v1 = rate;
 	if (!std::isfinite(rate))
-		return u;
+		return {1, 1};
 	auto slope = [](double a, double b, double ha, double hb) {
 		if (!(a > 0 && b > 0) || !std::isfinite(a) || !std::isfinite(b))
 			return 0.0;
@@ -492,10 +645,102 @@ double CamPath::TravelDistanceProgress(double time, double u) const
 		double h = m_MotionSegments[index + 1].End - next->first - next->second.HoldDuration;
 		v1 = slope(rate, m_MotionSegments[index + 1].Length / h, duration, h);
 	}
+	return {duration * v0 / it->Length, duration * v1 / it->Length};
+}
+double CamPath::TravelDistanceProgress(double time, double u) const
+{
+	BuildMotionCache();
+	auto it = std::lower_bound(m_MotionSegments.begin(), m_MotionSegments.end(), time,
+							   [](const MotionSegment & a, double t) { return a.Time < t; });
+	if (it == m_MotionSegments.end() || it->Time != time || !(it->Length > 1e-12) || !std::isfinite(it->Length))
+		return u;
+	std::size_t index = std::size_t(it - m_MotionSegments.begin());
+	auto slopes = TravelSlopes(index);
 	double u2 = u * u, u3 = u2 * u;
-	double progress =
-		(-2 * u3 + 3 * u2) + (u3 - 2 * u2 + u) * duration * v0 / it->Length + (u3 - u2) * duration * v1 / it->Length;
+	double progress = (-2 * u3 + 3 * u2) + (u3 - 2 * u2 + u) * slopes.first + (u3 - u2) * slopes.second;
 	return std::isfinite(progress) ? std::clamp(progress, 0.0, 1.0) : u;
+}
+void CamPath::BuildBlendProfile(std::size_t index) const
+{
+	auto & segment = m_MotionSegments[index];
+	auto ease = GetKeyEase(segment.Time, true, CamPathEase::Position);
+	if (ease.Type == CamPathEase::Inherit || ease.Type == CamPathEase::Linear || !(segment.Length > 1e-12) ||
+		!std::isfinite(segment.Length))
+		return;
+	std::size_t count = ease.Type == CamPathEase::Elastic
+							? std::size_t((std::min)(2048.0, (std::max)(256.0, std::ceil(16 / ease.Period))))
+							: 256;
+	std::vector<double> raw(count + 1), positive(count + 1), negative(count + 1), base(count + 1);
+	for (std::size_t i = 0; i <= count; ++i)
+		raw[i] = segment.DistanceProgress(ease.Eval(double(i) / count));
+	auto slopes = TravelSlopes(index);
+	auto ramp = [](double x) {
+		x = std::clamp(x, 0.0, 1.0);
+		return x * x * (3 - 2 * x);
+	};
+	double sumPositive = 0, sumNegative = 0, sumBase = 0;
+	for (std::size_t i = 0; i <= count; ++i)
+	{
+		double u = double(i) / count, weight = ramp(u / 0.2) * ramp((1 - u) / 0.2);
+		double speed = (raw[(std::min)(i + 1, count)] - raw[i ? i - 1 : 0]) * count / (i == 0 || i == count ? 1 : 2);
+		double baseline =
+			(-6 * u * u + 6 * u) + (3 * u * u - 4 * u + 1) * slopes.first + (3 * u * u - 2 * u) * slopes.second;
+		positive[i] = weight * (std::max)(speed, 0.0);
+		negative[i] = weight * (std::min)(speed, 0.0);
+		base[i] = (1 - weight) * (std::max)(baseline, 0.0);
+		double factor = (i == 0 || i == count ? 0.5 : 1) / double(count);
+		sumPositive += factor * positive[i];
+		sumNegative += factor * negative[i];
+		sumBase += factor * base[i];
+	}
+	// Preserve reversals, then scale forward travel so the camera still reaches
+	// the next key on time. Matching boundary speeds do not change arrival times.
+	double scale = (1 - sumBase - sumNegative) / sumPositive;
+	if (!(sumPositive > 1e-12) || !std::isfinite(scale) || scale < 0)
+		return;
+	segment.ProfileDistance.assign(count + 1, 0);
+	segment.ProfileSpeed.resize(count + 1);
+	for (std::size_t i = 0; i <= count; ++i)
+	{
+		segment.ProfileSpeed[i] = base[i] + scale * positive[i] + negative[i];
+		if (i)
+			segment.ProfileDistance[i] =
+				segment.ProfileDistance[i - 1] + (segment.ProfileSpeed[i - 1] + segment.ProfileSpeed[i]) / (2 * count);
+	}
+	segment.ProfileDistance.back() = 1;
+}
+double CamPath::BlendedTravelProgress(double time, double u) const
+{
+	BuildMotionCache();
+	auto it = std::lower_bound(m_MotionSegments.begin(), m_MotionSegments.end(), time,
+							   [](const MotionSegment & a, double t) { return a.Time < t; });
+	if (it == m_MotionSegments.end() || it->Time != time)
+		return GetKeyEase(time, true, CamPathEase::Position).Eval(u);
+	auto ease = GetKeyEase(time, true, CamPathEase::Position);
+	if (m_BlendStrength >= 1)
+		return it->ProfileDistance.empty() ? TravelDistanceProgress(time, u) : it->ProfileProgress(u);
+	double original = it->DistanceProgress(ease.Eval(u));
+	if (m_BlendStrength <= 0)
+		return original;
+	double blended = it->ProfileDistance.empty() ? TravelDistanceProgress(time, u) : it->ProfileProgress(u);
+	return original * (1 - m_BlendStrength) + blended * m_BlendStrength;
+}
+Vector3 CamPath::EvalTravelPosition(double time, double progress) const
+{
+	BuildMotionCache();
+	auto it = std::lower_bound(m_MotionSegments.begin(), m_MotionSegments.end(), time,
+							   [](const MotionSegment & a, double t) { return a.Time < t; });
+	if (it == m_MotionSegments.end() || it->Time != time)
+		return EvalPosition(time);
+	if (progress < 0 || progress > 1)
+	{
+		bool end = progress > 1;
+		Vector3 direction = end ? it->Points[3] - it->Point(0.999) : it->Point(0.001) - it->Points[0];
+		double length = direction.Length();
+		return it->Points[end ? 3 : 0] +
+			   direction * (length > 1e-12 ? (progress - (end ? 1 : 0)) * it->Length / length : 0);
+	}
+	return EvalPosition(time + it->Parameter(progress * it->Length) * (it->End - time));
 }
 double CamPath::TravelParameter(double time, double progress) const
 {
@@ -830,7 +1075,7 @@ CamPath::DoubleInterp CamPath::FovInterpMethod_get(void) const
 void CamPath::Add(double time, const CamPathValue & value)
 {
 	if (!std::isfinite(time) || !std::isfinite(value.HoldDuration) || value.HoldDuration < 0 ||
-		!std::isfinite(time + value.HoldDuration) || !value.Ease.Valid())
+		!std::isfinite(time + value.HoldDuration) || !value.Ease.Valid() || !ValidChannelEases(value.ChannelEase))
 		throw std::invalid_argument("Invalid keyframe hold/time");
 	auto next = m_Map.lower_bound(time);
 	auto following = next;
@@ -1069,34 +1314,66 @@ bool CamPath::CanEval(void) const
 		   m_FovInterp->CanEval() && m_SelectedInterp->CanEval();
 }
 
+CamPathValue CamPath::EvalChannelBase(double time, CamPathEase::Channel channel)
+{
+	CamPathValue value;
+	if (channel == CamPathEase::Position)
+	{
+		auto p = EvalPosition(time);
+		value.X = p.X;
+		value.Y = p.Y;
+		value.Z = p.Z;
+	}
+	else if (channel == CamPathEase::Angles)
+		value.R = m_RInterp->Eval(time);
+	else if (channel == CamPathEase::Fov)
+		value.Fov = m_FovInterp->Eval(time);
+	else
+		return EvalBase(time);
+	return value;
+}
 CamPathValue CamPath::Eval(double t)
+{
+	if (m_Map.size() == 1 && m_Map.begin()->second.HoldDuration > 0)
+		return m_Map.begin()->second;
+	auto value = EvalTimed(t, CamPathEase::Position);
+	value.R = EvalTimed(t, CamPathEase::Angles).R;
+	value.Fov = EvalTimed(t, CamPathEase::Fov).Fov;
+	value.Selected = m_SelectedInterp->Eval(t);
+	auto next = m_Map.upper_bound(t);
+	if (next != m_Map.begin() && next != m_Map.end())
+	{
+		auto key = std::prev(next);
+		if (t > key->first + key->second.HoldDuration && UseContinuousSpeed(key->first) && m_BlendStrength > 0)
+		{
+			auto p = EvalTravelPosition(key->first, GetSegmentProgress(key->first, t, true, CamPathEase::Position));
+			value.X = p.X;
+			value.Y = p.Y;
+			value.Z = p.Z;
+		}
+	}
+	return value;
+}
+CamPathValue CamPath::EvalTimed(double t, CamPathEase::Channel channel)
 {
 	if (m_Map.size() == 1 && m_Map.begin()->second.HoldDuration > 0)
 		return m_Map.begin()->second;
 	auto next = m_Map.upper_bound(t);
 	if (next == m_Map.begin())
-		return EvalBase(t);
+		return EvalChannelBase(t, channel);
 	auto key = std::prev(next);
 	if (key->second.HoldDuration > 0 && t <= key->first + key->second.HoldDuration)
 		return key->second;
 	if (next == m_Map.end())
-		return EvalBase(t);
-	CamPathEase ease = GetKeyEase(key->first);
-	if (!UseContinuousSpeed(key->first) && key->second.HoldDuration == 0 && next->second.HoldDuration == 0 &&
+		return EvalChannelBase(t, channel);
+	CamPathEase ease = GetKeyEase(key->first, false, channel);
+	if (key->second.HoldDuration == 0 && next->second.HoldDuration == 0 &&
 		(ease.Type == CamPathEase::Inherit || ease.Type == CamPathEase::Linear))
-		return EvalBase(t);
-	double progress = GetSegmentProgress(key->first, t, false), span = next->first - key->first;
+		return EvalChannelBase(t, channel);
+	double progress = GetSegmentProgress(key->first, t, false, channel), span = next->first - key->first;
 	if (progress >= 0 && progress <= 1)
 	{
-		auto value = EvalBase(key->first + progress * span);
-		if (UseContinuousSpeed(key->first))
-		{
-			double parameter = TravelParameter(key->first, GetSegmentProgress(key->first, t));
-			auto position = EvalPosition(key->first + parameter * span);
-			value.X = position.X;
-			value.Y = position.Y;
-			value.Z = position.Z;
-		}
+		auto value = EvalChannelBase(key->first + progress * span, channel);
 		return value;
 	}
 	// Overshooting easing continues the current segment's endpoint tangent,
@@ -1104,9 +1381,9 @@ CamPathValue CamPath::Eval(double t)
 	bool before = progress < 0;
 	double end = before ? key->first : next->first;
 	double sampleTime = end + (before ? 1 : -1) * span * 1e-3;
-	CamPathValue value = EvalBase(end), sample = EvalBase(sampleTime);
+	CamPathValue value = EvalChannelBase(end, channel), sample = EvalChannelBase(sampleTime, channel);
 	double factor = (key->first + progress * span - end) / (sampleTime - end);
-	if (m_PositionInterpMethod != DI_STEP || (m_CurveEditing && m_Bezier))
+	if (!IsStepSegment(key->first))
 	{
 		value.X += (sample.X - value.X) * factor;
 		value.Y += (sample.Y - value.Y) * factor;
@@ -1170,40 +1447,44 @@ char * double2xml(rapidxml::xml_document<> & doc, double value)
 
 namespace
 {
-void WriteEase(rapidxml::xml_document<> & doc, rapidxml::xml_node<> * node, const CamPathEase & ease)
+void WriteEase(rapidxml::xml_document<> & doc, rapidxml::xml_node<> * node, const CamPathEase & ease,
+			   const std::string & prefix = "ease", bool force = false)
 {
-	if (ease == CamPathEase())
+	if (!force && ease == CamPathEase())
 		return;
-	node->append_attribute(doc.allocate_attribute("ease", CamPathEase::ToString(ease.Type)));
-	node->append_attribute(doc.allocate_attribute("easeMode", CamPathEase::ToString(ease.Mode)));
-	for (auto item : {std::make_pair("easeX1", ease.X1),
-					  {"easeY1", ease.Y1},
-					  {"easeX2", ease.X2},
-					  {"easeY2", ease.Y2},
-					  {"easeOvershoot", ease.Overshoot},
-					  {"easeAmplitude", ease.Amplitude},
-					  {"easePeriod", ease.Period}})
-		node->append_attribute(doc.allocate_attribute(item.first, double2xml(doc, item.second)));
+	node->append_attribute(
+		doc.allocate_attribute(doc.allocate_string((prefix + "").c_str()), CamPathEase::ToString(ease.Type)));
+	node->append_attribute(
+		doc.allocate_attribute(doc.allocate_string((prefix + "Mode").c_str()), CamPathEase::ToString(ease.Mode)));
+	for (auto item : {std::make_pair("X1", ease.X1),
+					  {"Y1", ease.Y1},
+					  {"X2", ease.X2},
+					  {"Y2", ease.Y2},
+					  {"Overshoot", ease.Overshoot},
+					  {"Amplitude", ease.Amplitude},
+					  {"Period", ease.Period}})
+		node->append_attribute(
+			doc.allocate_attribute(doc.allocate_string((prefix + item.first).c_str()), double2xml(doc, item.second)));
 }
 
-CamPathEase ReadEase(rapidxml::xml_node<> * node)
+CamPathEase ReadEase(rapidxml::xml_node<> * node, const std::string & prefix = "ease")
 {
 	CamPathEase ease;
-	if (auto attr = node->first_attribute("ease"))
+	if (auto attr = node->first_attribute((prefix + "").c_str()))
 		if (!CamPathEase::FromString(attr->value(), ease.Type))
 			throw std::invalid_argument("Unknown easing function");
-	if (auto attr = node->first_attribute("easeMode"))
+	if (auto attr = node->first_attribute((prefix + "Mode").c_str()))
 		if (!CamPathEase::FromString(attr->value(), ease.Mode))
 			throw std::invalid_argument("Unknown easing direction");
-	for (auto item : {std::make_pair("easeX1", &ease.X1),
-					  {"easeY1", &ease.Y1},
-					  {"easeX2", &ease.X2},
-					  {"easeY2", &ease.Y2},
-					  {"easeOvershoot", &ease.Overshoot},
-					  {"easeAmplitude", &ease.Amplitude},
-					  {"easePeriod", &ease.Period}})
+	for (auto item : {std::make_pair("X1", &ease.X1),
+					  {"Y1", &ease.Y1},
+					  {"X2", &ease.X2},
+					  {"Y2", &ease.Y2},
+					  {"Overshoot", &ease.Overshoot},
+					  {"Amplitude", &ease.Amplitude},
+					  {"Period", &ease.Period}})
 	{
-		if (auto attr = node->first_attribute(item.first))
+		if (auto attr = node->first_attribute((prefix + item.first).c_str()))
 		{
 			char * end = nullptr;
 			*item.second = std::strtod(attr->value(), &end);
@@ -1214,6 +1495,23 @@ CamPathEase ReadEase(rapidxml::xml_node<> * node)
 	if (!ease.Valid())
 		throw std::invalid_argument("Invalid easing controls");
 	return ease;
+}
+void WriteChannelEases(rapidxml::xml_document<> & doc, rapidxml::xml_node<> * node,
+					   const std::array<std::optional<CamPathEase>, 3> & values)
+{
+	const char * names[] = {"positionEase", "anglesEase", "fovEase"};
+	for (std::size_t i = 0; i < values.size(); ++i)
+		if (values[i])
+			WriteEase(doc, node, *values[i], names[i], true);
+}
+std::array<std::optional<CamPathEase>, 3> ReadChannelEases(rapidxml::xml_node<> * node)
+{
+	std::array<std::optional<CamPathEase>, 3> values;
+	const char * names[] = {"positionEase", "anglesEase", "fovEase"};
+	for (std::size_t i = 0; i < values.size(); ++i)
+		if (node->first_attribute(names[i]))
+			values[i] = ReadEase(node, names[i]);
+	return values;
 }
 } // namespace
 
@@ -1228,6 +1526,9 @@ std::string CamPath::ToXml()
 
 	rapidxml::xml_node<> * cam = doc.allocate_node(rapidxml::node_element, "campath");
 	WriteEase(doc, cam, m_Ease);
+	WriteChannelEases(doc, cam, m_ChannelEase);
+	if (m_BlendStrength != 1)
+		cam->append_attribute(doc.allocate_attribute("blendStrength", double2xml(doc, m_BlendStrength)));
 	if (m_ContinuousSpeed)
 		cam->append_attribute(doc.allocate_attribute("continuousSpeed", "1"));
 	if (!m_Name.empty())
@@ -1270,6 +1571,7 @@ std::string CamPath::ToXml()
 
 		rapidxml::xml_node<> * pt = doc.allocate_node(rapidxml::node_element, "p");
 		WriteEase(doc, pt, val.Ease);
+		WriteChannelEases(doc, pt, val.ChannelEase);
 		pt->append_attribute(doc.allocate_attribute("t", double2xml(doc,time)));
 		pt->append_attribute(doc.allocate_attribute("x", double2xml(doc,val.X)));
 		pt->append_attribute(doc.allocate_attribute("y", double2xml(doc,val.Y)));
@@ -1342,6 +1644,8 @@ bool CamPath::LoadXml(const std::string & xml)
 	double oldOffset = m_Offset;
 	std::string oldName = m_Name;
 	CamPathEase oldEase = m_Ease;
+	auto oldChannelEase = m_ChannelEase;
+	double oldBlendStrength = m_BlendStrength;
 	bool oldHold = m_Hold, oldBezier = m_Bezier, oldContinuousSpeed = m_ContinuousSpeed;
 
 	if(bOk)
@@ -1361,6 +1665,17 @@ bool CamPath::LoadXml(const std::string & xml)
 				}
 
 				m_Ease = ReadEase(cur_node);
+				m_ChannelEase = ReadChannelEases(cur_node);
+				m_BlendStrength = 1;
+				if (auto blend = cur_node->first_attribute("blendStrength"))
+				{
+					char * end = nullptr;
+					m_BlendStrength = std::strtod(blend->value(), &end);
+					if (end == blend->value() || *end || !std::isfinite(m_BlendStrength) || m_BlendStrength < 0 ||
+						m_BlendStrength > 1)
+						throw std::invalid_argument("Invalid blend strength");
+				}
+
 				auto name = cur_node->first_attribute("name");
 				if (name)
 					m_Name = name->value();
@@ -1440,6 +1755,7 @@ bool CamPath::LoadXml(const std::string & xml)
 					if (handleMode && _stricmp(handleMode->value(), "aligned") && _stricmp(handleMode->value(), "free"))
 						throw std::invalid_argument("Invalid handle mode");
 					r.Ease = ReadEase(cur_node);
+					r.ChannelEase = ReadChannelEases(cur_node);
 					r.X = dX;
 					r.Y = dY;
 					r.Z = dZ;
@@ -1537,6 +1853,8 @@ bool CamPath::LoadXml(const std::string & xml)
 	{
 		m_Name = oldName;
 		m_Ease = oldEase;
+		m_ChannelEase = oldChannelEase;
+		m_BlendStrength = oldBlendStrength;
 		CopyMap(m_Map, previous);
 		m_Bezier = oldBezier;
 		m_ContinuousSpeed = oldContinuousSpeed;

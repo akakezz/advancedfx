@@ -52,6 +52,7 @@ the scrub key restores free-camera editing. Capture still uses the actual demo t
 | Left / Right | Scrub interpolated movement in time |
 | Tab | Return to the preview cursor |
 | Right Ctrl | Seek the demo to the preview cursor; timescale 0 on arrival by default |
+| H | Toggle mouse editing of spatial Bezier handles |
 | [ / ] | Capture incoming / outgoing handle at the free camera |
 | Ctrl+Shift+B | Reset selected keyframe handles |
 | Ctrl+B | Cycle linear, smooth, monotone, step and Bezier interpolation |
@@ -131,6 +132,17 @@ keys still take priority in either mode.
 
 ## Curve editing and interpolation
 
+In preview, press **H** to show the pointer and spatial handles. Click and drag a
+handle to reshape the path in a plane facing the camera. The mouse wheel changes
+its depth; holding X, Y or Z constrains movement to that world axis. Aligned
+handles retain their opposite handle's length. Each completed drag is one undoable
+edit. Escape or right-click cancels the current drag; H returns to camera controls.
+The graph can remain open while dragging handles outside its window. Native menus
+and focus changes retain input priority. `preview handles 0|1` is the console
+equivalent; `preview bind mouseHandles <chord>` changes the shortcut.
+
+The existing free-camera capture and console controls remain available:
+
 ```text
 mirv_campath select #1 #1
 mirv_campath curve handle out capture
@@ -193,6 +205,7 @@ continuous travel speed; existing files retain native speed unless enabled:
 ```text
 mirv_campath edit speed continuous
 mirv_campath edit speed native
+mirv_campath edit speed blend 75
 ```
 
 Continuous travel changes how position moves along the existing curve. It keeps
@@ -202,11 +215,22 @@ constant-speed retime. This also handles aligned Bezier tangents with different
 lengths. Use aligned handles or a smooth curve for a continuous travel direction.
 Rotation and FOV retain their own time interpolation.
 
-The setting applies to inherited/linear segment timing. Holds retain their smooth
-stops, and explicit sine/back/bounce/elastic/Bezier easing retains its authored
-effect. `edit ease all inherit` clears intentional easing if you want uninterrupted
-travel throughout. Step interpolation and stationary intervals retain their
-meaning. Duplicate positions still constrain the camera to revisit that position.
+**Blend strength** accepts 0..100 percent. At 0, position follows its original
+interpolation and easing exactly. At 100, neighboring segments share their travel
+speed at ordinary joins. Intermediate strengths blend between those results; they
+reduce speed changes without guaranteeing matching boundary speeds. The command
+also enables continuous travel. New paths default to 100 percent; existing files
+without continuous travel enabled keep their original behavior.
+
+Sine, back, bounce, elastic and custom Bezier presets also support blending. Their
+speed profiles blend toward a shared boundary speed near each join, retaining
+their character in the segment interior. Forward travel is adjusted so arrival
+times remain unchanged. Intentional reversals remain possible. A stronger blend
+changes more of the authored easing near joins; use 0 for the exact preset.
+Holds still stop the full camera pose. Step interpolation and stationary intervals
+retain their meaning. Duplicate positions still constrain the camera to revisit
+that position. Speed continuity cannot remove a sharp change in travel direction;
+use aligned handles or smooth geometry for that.
 
 The existing `sSmooth` rotation mode now uses a local spherical spline with
 shared angular velocity through joins, rather than restarting an ease-in/out at
@@ -215,11 +239,11 @@ with `edit interp rotation sSmooth`, or use `edit interp all smooth` for smooth
 position and rotation. Holds and explicit easing can still stop rotation.
 Classic `sLinear` and `sCubic` retain their previous behavior.
 
-The graph's **Continuous travel speed** checkbox controls the same setting and
-supports undo/redo. Its plot shows the resulting travel progress; rotation/FOV
-retain native timing when only continuous travel modifies position. Save/load,
-collections and undo/redo preserve the setting. Older files without it use native
-speed. No additional keyframe types or tracks are introduced.
+The graph's **Continuous travel speed** checkbox and **Blend strength (%)** slider
+control the same settings and support undo/redo. Position's plot shows the
+resulting travel progress. Blending does not change the Angles or FOV timing
+channels. Save/load, collections and undo/redo preserve these settings. No
+additional keyframe types or tracks are introduced.
 
 ## Easing graph and segment presets
 
@@ -234,7 +258,8 @@ input priority. While the graph is open, preview/freecam retain their modes and
 camera pose, but their keyboard and mouse controls pause. The pointer becomes
 visible and free to move throughout the graph, including before its first hover
 or click. F7 in preview, Escape, or the window close button closes the graph and
-restores the camera controls. Held movement and mouse deltas are cleared at each
+restores camera controls unless H's mouse-handle mode remains enabled. Held
+movement and mouse deltas are cleared at each
 handoff. Opening native menus or changing window focus temporarily yields input
 without closing the graph.
 
@@ -243,6 +268,9 @@ one camera key to the next (indices 0, 1, 2, ...). Orange bars show stationary
 holds; the plotted curves include automatic hold easing. These are timing curves;
 3D position handles remain editable in the viewport.
 
+- Choose **All**, **Position**, **Angles** or **FOV** in Channel. Each group can
+  have its own presets, directions, parameters and custom Bezier timing handles.
+  All edits the groups together and previews Position's resulting progress.
 - Click a camera key or a segment's square to select its outgoing segment.
 - Drag empty canvas space to box select several keys/segments; Shift adds.
 - Right-click any segment curve to choose its preset or in/out/inout direction.
@@ -264,7 +292,10 @@ Bezier handles
 provide a freely editable curve with ordered time coordinates in 0..1 and value
 coordinates in -5..5. Back, elastic and Bezier can overshoot or reverse progress.
 Overshoot continues the current segment's endpoint tangent, without switching to
-an adjacent segment. Position, rotation and FOV share the timing curve.
+an adjacent segment. Position, angles and FOV share a timing curve until a channel
+override is set. The Angles group applies one easing to the rotation as a whole;
+it does not split pitch, yaw and roll. These controls change timing between full
+camera keyframes; they do not create separate keyframe types.
 
 Console equivalents:
 
@@ -276,6 +307,9 @@ mirv_campath edit ease selected back out 1.7
 mirv_campath edit ease selected elastic out 1 0.3
 mirv_campath edit ease selected bezier 0.3 0 0.7 1
 mirv_campath edit ease selected inherit
+mirv_campath edit ease fov selected sine inout
+mirv_campath edit ease angles all cubic inout
+mirv_campath edit ease position selected elastic out 1 0.3
 ```
 
 An outgoing override belongs to its starting keyframe. Selecting keys 1 and 2
@@ -283,6 +317,12 @@ changes segments 1→2 and 2→3. The final key has no outgoing segment. `inheri
 uses the path's default; setting the entire path clears segment overrides.
 Applying `inherit` to the whole path restores native timing plus automatic smooth
 holds. This timing easing is independent of spatial `edit interp`/curve modes.
+The optional `position|angles|fov` before `all|selected` limits a change to that
+channel. Without it, changes apply to all three channels and clear independent
+overrides in the affected scope. Channel-specific `inherit` uses that channel's
+path default, falling back to the shared default. Applying it to an entire channel
+clears that channel's overrides and restores the shared timing. Holds continue
+to preserve the full pose across all channels.
 
 ## Camera holds
 
@@ -348,7 +388,10 @@ undone. Supply `.xml` explicitly; saving overwrites the specified file.
 
 Classic XML remains supported. Handles, handle mode, hold durations, easing and names are optional
 attributes; numbers retain enough precision to round-trip. Older HLAE builds can
-read the basic keys but ignore these extensions. The earlier experimental
+read the basic keys but ignore these extensions. Independent channel easing and
+blend strength use optional attributes in the same native XML and round-trip
+through both single-path and collection saves. Files containing only shared
+easing retain that shared behavior. The earlier experimental
 `cinematicCamera` schema remains unsupported; retain those files and use the old
 build's `exportLegacy` command if conversion is needed.
 
@@ -357,7 +400,7 @@ build's `exportLegacy` command if conversion is needed.
 Native trajectory, camera, axis and index drawing run through `CCampathDrawer`
 for every path. Indices appear on the selected path using the classic methods;
 `draw keyIndex <height>` retains its original world-unit meaning. Path names and
-hold annotations reuse the drawer's padded alphabet atlas and text pass;
+hold/segment annotations reuse the drawer's padded alphabet atlas and text pass;
 `draw textSize <world height>` controls them (default 20, zero hides them).
 Annotations keep a fixed world height and margin above their camera marker, face
 the view like indices, and use depth testing/alpha testing so walls occlude them.
@@ -369,6 +412,11 @@ even when their projections overlap. `draw stackLabels 0|1` toggles this (defaul
 Path/hold annotations also stack at coincident anchors. Their size changes with
 distance, like classic indices. `draw handles 0|1` controls handle lines in the
 same native line pass.
+Segment durations appear above the geometric middle of each segment on the
+selected path, in seconds and rounded demo ticks. The duration runs from one
+arrival to the next, including any hold; it is not spatial length. When tick data
+is unavailable only seconds are shown. `draw segments 0|1` toggles these labels
+(default 1); the existing `draw textSize` controls their world size and spacing.
 Turn drawing off before clean recording.
 
 No new runtime files are introduced. `CamPath` holds optional handles/holds/easing and

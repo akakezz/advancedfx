@@ -17,6 +17,8 @@ bool WantsKeyboardInput();
 bool SetCampathGraphOpen(bool value);
 bool GetCampathGraphOpen();
 void FinishCampathGraphEdit();
+bool SetCampathHandlesOpen(bool value);
+bool GetCampathHandlesOpen();
 bool OnSetCursorPos(__in int X, __in int Y);
 bool OnGetCursorPos(__out LPPOINT lpPoint);
 bool OnSetCursor(__in_opt HCURSOR hCursor, HCURSOR & result);

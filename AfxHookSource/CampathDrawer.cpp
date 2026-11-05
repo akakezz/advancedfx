@@ -2,6 +2,7 @@
 #include "stdafx.h"
 
 #include "CampathDrawer.h"
+#include "Gui.h"
 #include "EntityIndexDrawer.h"
 #include <algorithm>
 #include <utility>
@@ -1124,7 +1125,29 @@ void CCampathDrawer::BuildAnnotations(CAnnotations & data, CamPath & path, bool 
 		}
 		if (!text.empty())
 			data.Labels.push_back({pos, text, active ? 0xFF55CFFF : 0xFFAAAAAA});
-		if (active && m_DrawHandles && path.Bezier_get() && (value.Selected || MirvCampathEditor_IsEditing()))
+		if (active && m_DrawSegments)
+		{
+			auto next = it;
+			++next;
+			if (next != path.GetEnd())
+			{
+				double seconds = next.GetTime() - it.GetTime();
+				auto end = next.GetValue();
+				Vector3 midpoint = (pos + Vector3(end.X, end.Y, end.Z)) * 0.5;
+				path.GetSegmentMidpoint(it.GetTime(), midpoint);
+				char label[96];
+				double interval = g_Hook_VClient_RenderView.GetGlobals()
+									  ? g_Hook_VClient_RenderView.GetGlobals()->interval_per_tick_get()
+									  : 0;
+				if (std::isfinite(interval) && interval > 0 && seconds / interval < 9e15)
+					std::snprintf(label, sizeof(label), "%.3fs / %.0f ticks", seconds, std::round(seconds / interval));
+				else
+					std::snprintf(label, sizeof(label), "%.3fs", seconds);
+				data.Labels.push_back({midpoint, label, 0xFFDDDDAA});
+			}
+		}
+		if (active && m_DrawHandles && (path.Bezier_get() || AfxHookSource::Gui::GetCampathHandlesOpen()) &&
+			(value.Selected || MirvCampathEditor_IsEditing()))
 			for (bool outgoing : {false, true})
 			{
 				if ((outgoing && std::size_t(index + 1) == path.GetSize()) || (!outgoing && index == 0))

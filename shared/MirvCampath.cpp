@@ -61,6 +61,7 @@ try
 					value.HandlesAligned = old.HandlesAligned;
 					value.HoldDuration = old.HoldDuration;
 					value.Ease = old.Ease;
+					value.ChannelEase = old.ChannelEase;
 					break;
 				}
 			camPath->Add(time, value);

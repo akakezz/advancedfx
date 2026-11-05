@@ -61,6 +61,14 @@ public:
 	{
 		m_DrawHandles = enabled;
 	}
+	bool GetDrawSegments() const
+	{
+		return m_DrawSegments;
+	}
+	void SetDrawSegments(bool enabled)
+	{
+		m_DrawSegments = enabled;
+	}
 	float GetLabelHeight() const
 	{
 		return m_LabelHeight;
@@ -318,6 +326,7 @@ private:
 	IDirect3DTexture9 * m_LabelTexture = nullptr;
 	float m_LabelHeight = 20.0f;
 	bool m_DrawHandles = true;
+	bool m_DrawSegments = true;
 	IAfxPixelShader* m_DrawTextureShader = nullptr;
 
 	std::vector<CLessDynamicProperties *> m_PathSnapshots;

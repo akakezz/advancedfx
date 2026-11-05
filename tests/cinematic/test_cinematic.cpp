@@ -598,6 +598,7 @@ void continuousTravel()
 		curved.SetEase(ease);
 		curvedFlow.RestoreState(curved.CaptureState());
 		curvedFlow.SpeedContinuous_set(true);
+		curvedFlow.BlendStrength_set(0);
 		for (int i = 0; i <= 100; ++i)
 		{
 			double t = 10 + i * 0.2;
@@ -699,6 +700,178 @@ void continuousRotation()
 	same.SetAngles(0, 0, 0);
 	for (int i = 0; i <= 40; ++i)
 		near(same.Eval(10 + i * 0.25).R.Norm(), 1);
+}
+void channelEasingAndBlend()
+{
+	CamPath path;
+	populate(path);
+	path.Add(30, CamPathValue(200, 0, 0, 0, 160, 0, 40));
+	CamPathEase shared;
+	shared.Type = CamPathEase::Sine;
+	path.SetEase(shared);
+	auto baseline = path.Eval(12.5);
+	CamPathEase fov;
+	fov.Type = CamPathEase::Quad;
+	fov.Mode = CamPathEase::In;
+	path.SetEase(fov, true, CamPathEase::Fov);
+	auto changed = path.Eval(12.5);
+	near(changed.X, baseline.X);
+	near(std::abs(DotProduct(changed.R, baseline.R)), 1);
+	near(changed.Fov, 90 + (60 - 90) * 0.0625);
+	CamPathEase angle;
+	angle.Type = CamPathEase::Bounce;
+	angle.Mode = CamPathEase::Out;
+	path.SetKeyEase(10, angle, CamPathEase::Angles);
+	auto rotated = path.Eval(12.5);
+	near(rotated.X, changed.X);
+	near(rotated.Fov, changed.Fov);
+	check(std::abs(DotProduct(rotated.R, changed.R)) < 0.999, "Angle easing changes independently of position and FOV");
+	CamPathEase selected;
+	selected.Type = CamPathEase::Cubic;
+	selected.Mode = CamPathEase::In;
+	path.SetKeyEase(10, selected);
+	CamPathEase linear;
+	linear.Type = CamPathEase::Linear;
+	path.SetEase(linear, true, CamPathEase::Fov);
+	check(path.GetKeyEase(10, false, CamPathEase::Fov).Type == CamPathEase::Linear,
+		  "Whole-path FOV edit overrides shared segment easing only for FOV");
+	check(path.GetKeyEase(10, false, CamPathEase::Position).Type == CamPathEase::Cubic,
+		  "FOV changes preserve positional overrides");
+	path.SetKeyEase(10, angle, CamPathEase::Angles);
+	path.SetKeyEase(10, CamPathEase(), CamPathEase::Fov);
+	check(path.GetKeyEase(10, false, CamPathEase::Fov).Type == CamPathEase::Linear,
+		  "Per-channel inherit follows its path default");
+	auto stored = path.CaptureState();
+	CamPath loaded;
+	check(loaded.LoadXml(path.ToXml()), "Independent channel easings save in native XML");
+	check(loaded.CaptureState() == stored, "Optional channel overrides and explicit inherit round-trip");
+	check(!loaded.LoadXml("<campath fovEase=\"unknown\"><points/></campath>"), "Invalid channel easing is rejected");
+	check(loaded.CaptureState() == stored, "Failed channel load is atomic");
+	check(
+		!loaded.LoadXml("<campath><points><p t=\"1\" anglesEase=\"bezier\" anglesEaseX1=\"nan\"/></points></campath>"),
+		"Nonfinite per-key channel controls are rejected");
+	path.SetEase(CamPathEase());
+	for (auto ch : {CamPathEase::Position, CamPathEase::Angles, CamPathEase::Fov})
+		check(path.GetKeyEase(10, false, ch).Type == CamPathEase::Inherit,
+			  "All-channel edits reset independent overrides together");
+	CamPathCollection history;
+	populate(history.Active());
+	auto before = history.Capture();
+	history.Active().SetKeyEase(10, angle, CamPathEase::Angles);
+	history.Record(before);
+	check(history.Undo() && history.Capture() == before, "Channel edits use shared undo");
+	check(history.Redo() && history.Active().GetKeyEase(10, false, CamPathEase::Angles).Type == CamPathEase::Bounce,
+		  "Channel redo restores the chosen channel only");
+	for (auto type : {CamPathEase::Sine, CamPathEase::Quad, CamPathEase::Cubic, CamPathEase::Quart, CamPathEase::Quint,
+					  CamPathEase::Expo, CamPathEase::Circ, CamPathEase::Back, CamPathEase::Bounce,
+					  CamPathEase::Elastic, CamPathEase::Bezier})
+	{
+		CamPath raw;
+		populate(raw);
+		raw.Add(30, CamPathValue(200, 0, 0, 0, 160, 0, 40));
+		CamPathEase ease;
+		ease.Type = type;
+		raw.SetEase(ease);
+		CamPath blended;
+		blended.RestoreState(raw.CaptureState());
+		blended.SpeedContinuous_set(true);
+		double e = 1e-4;
+		auto at = blended.Eval(20), left = blended.Eval(20 - e), right = blended.Eval(20 + e);
+		near((at.X - left.X) / e, 10, 0.03);
+		near((right.X - at.X) / e, 10, 0.03);
+		for (double t : {10.0, 20.0, 30.0})
+			near(blended.Eval(t).X, raw.Eval(t).X);
+		std::vector<double> original, full;
+		for (int i = 0; i <= 100; ++i)
+		{
+			double t = 10 + i * 0.2;
+			auto a = raw.Eval(t), b = blended.Eval(t);
+			original.push_back(a.X);
+			full.push_back(b.X);
+			near(a.Fov, b.Fov);
+			near(std::abs(DotProduct(a.R, b.R)), 1);
+			check(std::isfinite(b.X), "Blended easing produces finite camera positions");
+		}
+		blended.BlendStrength_set(0);
+		for (int i = 0; i <= 100; ++i)
+			near(blended.Eval(10 + i * 0.2).X, original[i]);
+		blended.BlendStrength_set(0.5);
+		for (int i = 0; i <= 100; ++i)
+			near(blended.Eval(10 + i * 0.2).X, (original[i] + full[i]) * 0.5, 1e-5);
+		blended.BlendStrength_set(1);
+		if (type <= CamPathEase::Circ)
+		{
+			double previous = -1e-8;
+			for (int i = 0; i <= 500; ++i)
+			{
+				double x = blended.Eval(10 + i * 0.04).X;
+				check(x >= previous - 1e-6, "Non-reversing presets stay monotone after endpoint blending");
+				previous = x;
+			}
+		}
+		blended.SetKeyHold(20, 23);
+		for (double t : {20.0, 21.0, 22.9, 23.0})
+		{
+			auto p = blended.Eval(t);
+			near(p.X, 100);
+			near(p.Fov, 60);
+			near(std::abs(DotProduct(p.R, raw.Eval(20).R)), 1);
+		}
+	}
+	CamPath marked;
+	populate(marked);
+	marked.CurveEditing_set(true);
+	marked.SetHandle(10, true, Vector3(1, 0, 0));
+	marked.SetHandle(20, false, Vector3(-20, 0, 0));
+	Vector3 middle;
+	check(marked.GetSegmentMidpoint(10, middle), "Native geometry exposes a segment midpoint for labels");
+	near(middle.X, 50, 1e-6);
+	marked.SetEase(angle);
+	marked.SetKeyHold(10, 12);
+	marked.SpeedContinuous_set(true);
+	marked.BlendStrength_set(0.37);
+	Vector3 same;
+	marked.GetSegmentMidpoint(10, same);
+	near((middle - same).Length(), 0, 1e-6);
+	CamPath stepped;
+	populate(stepped);
+	stepped.Add(30, CamPathValue(200, 0, 0, 0, 160, 0, 40));
+	stepped.PositionInterpMethod_set(CamPath::DI_STEP);
+	stepped.CurveEditing_set(true);
+	stepped.SetHandle(10, true, Vector3(30, 0, 0));
+	stepped.SpeedContinuous_set(true);
+	for (double t : {20.1, 25.0, 29.9})
+		near(stepped.Eval(t).X, 100);
+	check(stepped.GetSegmentMidpoint(20, same), "Unedited stepped segment still exposes a label midpoint");
+	near(same.X, 150);
+	auto valid = marked.CaptureState();
+	bool rejected = false;
+	try
+	{
+		marked.BlendStrength_set(std::numeric_limits<double>::quiet_NaN());
+	}
+	catch (const std::invalid_argument &)
+	{
+		rejected = true;
+	}
+	check(rejected && marked.CaptureState() == valid, "Invalid blend strength does not mutate data");
+	CamPath roundtrip;
+	roundtrip.CurveEditing_set(true);
+	check(roundtrip.LoadXml(marked.ToXml()) && roundtrip.CaptureState() == marked.CaptureState(),
+		  "Blend strength, holds and handles round-trip together");
+	check(!roundtrip.LoadXml("<campath blendStrength=\"1.1\"><points/></campath>"),
+		  "Out-of-range serialized blend strength is rejected");
+	auto collectionFile = std::filesystem::temp_directory_path() / "afx-channel-sequence.xml";
+	history.Active().BlendStrength_set(0.42);
+	history.Active().SetEase(fov, true, CamPathEase::Fov);
+	history.New("Channels");
+	populate(history.Active());
+	history.Active().SetKeyEase(10, angle, CamPathEase::Angles);
+	check(history.SaveAll(collectionFile.wstring().c_str()), "Independent channel sequence saves");
+	CamPathCollection restored;
+	check(restored.Load(collectionFile.wstring().c_str()) && restored.Capture() == history.Capture(),
+		  "Collection preserves channel settings and blend strengths");
+	std::filesystem::remove(collectionFile);
 }
 void placement()
 {
@@ -1186,6 +1359,7 @@ int main()
 		alignedHandles();
 		continuousTravel();
 		continuousRotation();
+		channelEasingAndBlend();
 		placement();
 		persistence();
 		localInterpolation();

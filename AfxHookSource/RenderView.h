@@ -165,6 +165,7 @@ bool MirvCampathEditor_ShowHud();
 bool MirvCampathEditor_IsUiPassThrough(unsigned key);
 // Allow the graph toggle to close its focused GUI window using the same binding.
 bool MirvCampathEditor_IsGraphKey(unsigned key);
+bool MirvCampathEditor_IsHandleKey(unsigned key);
 bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags);
 void MirvCampathEditor_ReleaseKeys(bool yieldKeyboard = false);
 

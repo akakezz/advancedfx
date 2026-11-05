@@ -1837,7 +1837,8 @@ static void CampathPreview_PrintHelp()
 	Tier0_Msg(
 		"mirv_campath preview allowSource 0|1 - Forward unused keys to Source.\nmirv_campath graph - Easing editor (F7 "
 		"in preview).\nmirv_campath preview undo|redo - Undo/redo a data edit.\nmirv_campath preview bind - Keyboard "
-		"actions.\nE captures pose/time; Shift+E replaces; [ and ] capture handles; Ctrl+Z / Ctrl+Shift+Z "
+		"actions.\nH toggles mouse handles (drag; wheel depth; Esc cancels/exits).\nE captures pose/time; Shift+E "
+		"replaces; [ and ] capture handles; Ctrl+Z / Ctrl+Shift+Z "
 		"undo/redo.\nY captures hold "
 		"release; Shift+Y clears it; PageUp/Down selects paths.\n");
 	Tier0_Msg("mirv_campath preview enter - Begin preview mode and keyboard editing.\n"
@@ -1966,6 +1967,7 @@ enum EditorAction
 	EA_Enabled,
 	EA_SelectAll,
 	EA_AnchorPath,
+	EA_MouseHandles,
 	EA_Graph,
 	EA_Undo,
 	EA_Redo,
@@ -2002,6 +2004,7 @@ const EditorBinding defaultBindings[EA_Count] = {
 	{"enabled", 'P', 2},
 	{"selectAll", 'A', 2},
 	{"anchorPath", 'A', 3},
+	{"mouseHandles", 'H', 0},
 	{"graph", VK_F7, 0},
 	{"undo", 'Z', 2},
 	{"redo", 'Z', 3},
@@ -2138,6 +2141,19 @@ bool editSettings(const Args & a)
 {
 	if (!a.is(0, "preview"))
 		return false;
+	if (a.is(1, "handles"))
+	{
+		if (a.count() == 2)
+		{
+			Tier0_Msg(
+				"mirv_campath preview handles 0|1 - Pointer for dragging 3D curve handles (H).\nCurrent value: %i\n",
+				AfxHookSource::Gui::GetCampathHandlesOpen());
+			return true;
+		}
+		a.size(3);
+		need(AfxHookSource::Gui::SetCampathHandlesOpen(a.flag(2)), "Enter preview first; GUI backend required");
+		return true;
+	}
 	if (a.is(1, "hud"))
 	{
 		if (a.count() == 2)
@@ -2432,6 +2448,7 @@ void executeEditorAction(EditorAction action)
 		value.HandlesAligned = previous.HandlesAligned;
 		value.HoldDuration = previous.HoldDuration;
 		value.Ease = previous.Ease;
+		value.ChannelEase = previous.ChannelEase;
 		path.Add(key.GetTime(), value);
 		break;
 	}
@@ -2500,6 +2517,10 @@ void executeEditorAction(EditorAction action)
 		break;
 	case EA_Enabled:
 		g_Hook_VClient_RenderView.m_CamPaths.Enabled_set(!g_Hook_VClient_RenderView.m_CamPaths.Enabled_get());
+		break;
+	case EA_MouseHandles:
+		need(AfxHookSource::Gui::SetCampathHandlesOpen(!AfxHookSource::Gui::GetCampathHandlesOpen()),
+			 "Mouse handle editing requires preview and the GUI backend");
 		break;
 	case EA_Graph:
 		need(AfxHookSource::Gui::SetCampathGraphOpen(!AfxHookSource::Gui::GetCampathGraphOpen()),
@@ -2575,10 +2596,25 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 		{
 			if (a.count() == 2)
 			{
-				Tier0_Msg("mirv_campath edit speed continuous|native - Travel speed through ordinary keys; keeps curve "
+				Tier0_Msg("mirv_campath edit speed continuous|native; edit speed blend <0..100> - Travel speed through "
+						  "ordinary keys; keeps curve "
 						  "and arrival times.\nCurrent value: %s\n",
 						  activePath().SpeedContinuous_get() ? "continuous" : "native");
 				return true;
+			}
+			if (a.is(2, "blend"))
+			{
+				if (a.count() == 3)
+				{
+					Tier0_Msg(
+						"mirv_campath edit speed blend <0..100> - Continuity blend strength.\nCurrent value: %g\n",
+						activePath().BlendStrength_get() * 100);
+					return true;
+				}
+				a.size(4);
+				activePath().BlendStrength_set(a.num(3) / 100);
+				activePath().SpeedContinuous_set(true);
+				return changed();
 			}
 			a.size(3);
 			need(a.is(2, "continuous") || a.is(2, "native"), "Choose continuous or native");
@@ -2587,45 +2623,54 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 		}
 		if (a.is(0, "edit") && a.is(1, "ease"))
 		{
-			if (a.count() < 4)
+			CamPathEase::Channel channel = CamPathEase::All;
+			Args e = a;
+			if (a.count() > 2 && !a.is(2, "all") && !a.is(2, "selected"))
 			{
-				Tier0_Msg("mirv_campath edit ease all|selected <function> [in|out|inout]\nFunctions: inherit, linear, "
+				need(CamPathEase::ChannelFromString(a.at(2).c_str(), channel),
+					 "Choose position, angles, fov, all or selected");
+				++e.offset;
+			}
+			if (e.count() < 4)
+			{
+				Tier0_Msg("mirv_campath edit ease [position|angles|fov] all|selected <function> "
+						  "[in|out|inout]\nFunctions: inherit, linear, "
 						  "sine, quad, cubic, quart, quint, expo, circ, back, bounce, elastic, bezier.\nBezier: ... "
 						  "bezier <x1> <y1> <x2> <y2>\nBack: ... back <direction> [overshoot]\nElastic: ... elastic "
 						  "<direction> [amplitude period]\nCurrent path easing: %s %s\n",
-						  CamPathEase::ToString(activePath().GetEase().Type),
-						  CamPathEase::ToString(activePath().GetEase().Mode));
+						  CamPathEase::ToString(activePath().GetEase(channel).Type),
+						  CamPathEase::ToString(activePath().GetEase(channel).Mode));
 				return true;
 			}
-			need(a.is(2, "all") || a.is(2, "selected"), "Choose all or selected outgoing segments");
+			need(e.is(2, "all") || e.is(2, "selected"), "Choose all or selected outgoing segments");
 			CamPathEase ease;
-			need(CamPathEase::FromString(a.at(3).c_str(), ease.Type), "Unknown easing function");
+			need(CamPathEase::FromString(e.at(3).c_str(), ease.Type), "Unknown easing function");
 			if (ease.Type == CamPathEase::Bezier)
 			{
-				a.size(8);
-				ease.X1 = a.num(4);
-				ease.Y1 = a.num(5);
-				ease.X2 = a.num(6);
-				ease.Y2 = a.num(7);
+				e.size(8);
+				ease.X1 = e.num(4);
+				ease.Y1 = e.num(5);
+				ease.X2 = e.num(6);
+				ease.Y2 = e.num(7);
 			}
 			else
 			{
-				if (a.count() >= 5)
-					need(CamPathEase::FromString(a.at(4).c_str(), ease.Mode), "Choose in, out or inout");
-				if (ease.Type == CamPathEase::Back && a.count() == 6)
-					ease.Overshoot = a.num(5);
-				else if (ease.Type == CamPathEase::Elastic && a.count() == 7)
+				if (e.count() >= 5)
+					need(CamPathEase::FromString(e.at(4).c_str(), ease.Mode), "Choose in, out or inout");
+				if (ease.Type == CamPathEase::Back && e.count() == 6)
+					ease.Overshoot = e.num(5);
+				else if (ease.Type == CamPathEase::Elastic && e.count() == 7)
 				{
-					ease.Amplitude = a.num(5);
-					ease.Period = a.num(6);
+					ease.Amplitude = e.num(5);
+					ease.Period = e.num(6);
 				}
 				else
-					need(a.count() == 4 || a.count() == 5, "Unexpected easing parameters");
+					need(e.count() == 4 || e.count() == 5, "Unexpected easing parameters");
 			}
 			need(ease.Valid(),
 				 "Invalid easing parameters; Bezier time handles must stay ordered in 0..1 and values in -5..5");
-			if (a.is(2, "all"))
-				activePath().SetEase(ease);
+			if (e.is(2, "all"))
+				activePath().SetEase(ease, true, channel);
 			else
 			{
 				std::vector<double> times;
@@ -2634,7 +2679,7 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 						times.push_back(it.GetTime());
 				need(!times.empty(), "Select a keyframe with an outgoing segment first");
 				for (double time : times)
-					activePath().SetKeyEase(time, ease);
+					activePath().SetKeyEase(time, ease, channel);
 			}
 			return changed();
 		}
@@ -2888,6 +2933,18 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 			return true;
 		}
 
+		if (a.is(0, "draw") && a.is(1, "segments"))
+		{
+			if (a.count() == 2)
+			{
+				Tier0_Msg("mirv_campath draw segments 0|1 - Segment duration labels.\nCurrent value: %i\n",
+						  g_CampathDrawer.GetDrawSegments());
+				return true;
+			}
+			a.size(3);
+			g_CampathDrawer.SetDrawSegments(a.flag(2));
+			return true;
+		}
 		if (a.is(0, "draw") && a.is(1, "handles"))
 		{
 			if (a.count() == 2)
@@ -2917,8 +2974,9 @@ bool MirvCampathEditor_Command(IWrpCommandArgs * args)
 			Tier0_Msg("mirv_campath path - Named paths.\nmirv_campath saveAll <file.xml>\nmirv_campath curve - Curve "
 					  "handles.\nmirv_campath graph - Toggle the easing editor.\n");
 		if (a.is(0, "draw") && a.count() == 1)
-			Tier0_Msg("mirv_campath draw textSize <world height> - Path/hold labels.\n"
-					  "mirv_campath draw handles 0|1 - Curve handles.\n"
+			Tier0_Msg("mirv_campath draw textSize <world height> - Path/hold/segment labels.\n"
+					  "mirv_campath draw handles 0|1 - Curve handles.\nmirv_campath draw segments 0|1 - Segment "
+					  "duration labels.\n"
 					  "mirv_campath draw stackLabels 0|1 - Stack nearby overlapping indices.\n"
 					  "mirv_campath draw stackWorldDistance <units> - Nearby threshold (default 32).\n");
 		if (a.is(0, "edit") && a.count() == 1)
@@ -2956,12 +3014,23 @@ bool MirvCampathEditor_IsGraphKey(unsigned key)
 	return editorBindings[EA_Graph].Key == key && editorBindings[EA_Graph].Modifiers == modifiers;
 }
 
+bool MirvCampathEditor_IsHandleKey(unsigned key)
+{
+	if (!g_CampathPreviewActive)
+		return false;
+	initBindings();
+	unsigned modifiers = (GetKeyState(VK_SHIFT) & 0x8000 ? 1 : 0) | (GetKeyState(VK_CONTROL) & 0x8000 ? 2 : 0) |
+						 (GetKeyState(VK_MENU) & 0x8000 ? 4 : 0);
+	return editorBindings[EA_MouseHandles].Key == key && editorBindings[EA_MouseHandles].Modifiers == modifiers;
+}
 bool MirvCampathEditor_IsEditing()
 {
 	return g_CampathPreviewActive;
 }
 void MirvCampathEditor_OnPreview(bool active)
 {
+	if (!active)
+		AfxHookSource::Gui::SetCampathHandlesOpen(false);
 	auto & view = g_Hook_VClient_RenderView;
 	auto * input = view.m_MirvInput;
 	if (active)

@@ -5,6 +5,7 @@
 #include <array>
 #include <list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,16 @@ struct CamPathEase
 		Bezier,
 		Count
 	};
+	enum Channel
+	{
+		All,
+		Position,
+		Angles,
+		Fov,
+		ChannelCount
+	};
+	static const char * ChannelToString(Channel value);
+	static bool ChannelFromString(const char * text, Channel & value);
 	enum Direction
 	{
 		In,
@@ -69,6 +80,7 @@ struct CamPathValue
 	bool HandlesAligned = true; // Opposite directions, independent lengths.
 
 	double HoldDuration = 0; // arrival + duration is the release time in path coordinates
+	std::array<std::optional<CamPathEase>, 3> ChannelEase;
 	CamPathEase Ease; // outgoing segment; Inherit uses the path setting
 	bool operator==(const CamPathValue & other) const;
 
@@ -138,6 +150,8 @@ public:
 		bool Enabled = false, Hold = false, Bezier = false, CurveEditing = false, ContinuousSpeed = false;
 		std::string Name;
 		CamPathEase Ease;
+		std::array<std::optional<CamPathEase>, 3> ChannelEase;
+		double BlendStrength = 1;
 		bool operator==(const State & other) const;
 	};
 	State CaptureState() const;
@@ -148,15 +162,21 @@ public:
 	}
 	void SetName(const std::string & name);
 	bool SetKeyHold(double time, double releaseTime);
-	const CamPathEase & GetEase() const
-	{
-		return m_Ease;
-	}
-	void SetEase(const CamPathEase & value, bool clearOverrides = true);
-	bool SetKeyEase(double time, const CamPathEase & value);
-	CamPathEase GetKeyEase(double time, bool forPlayback = false) const;
+	const CamPathEase & GetEase(CamPathEase::Channel channel = CamPathEase::All) const;
+	void SetEase(const CamPathEase & value, bool clearOverrides = true,
+				 CamPathEase::Channel channel = CamPathEase::All);
+	bool SetKeyEase(double time, const CamPathEase & value, CamPathEase::Channel channel = CamPathEase::All);
+	CamPathEase GetKeyEase(double time, bool forPlayback = false,
+						   CamPathEase::Channel channel = CamPathEase::All) const;
 	bool SmoothHolds() const;
-	double GetSegmentProgress(double keyTime, double time, bool applySpeed = true) const;
+	double GetSegmentProgress(double keyTime, double time, bool applySpeed = true,
+							  CamPathEase::Channel channel = CamPathEase::All) const;
+	void BlendStrength_set(double value);
+	double BlendStrength_get() const
+	{
+		return m_BlendStrength;
+	}
+	bool GetSegmentMidpoint(double time, Vector3 & position) const;
 	void SpeedContinuous_set(bool enabled);
 	bool SpeedContinuous_get() const
 	{
@@ -335,15 +355,28 @@ private:
 		double Time, End, Length;
 		std::array<Vector3, 4> Points;
 		std::array<double, 65> Distances;
+		std::vector<double> ProfileDistance, ProfileSpeed;
+		Vector3 Point(double u) const;
+		double DistanceProgress(double parameter) const;
+		double ProfileProgress(double u) const;
 		Vector3 Derivative(double u) const;
 		double ArcLength(double from, double to) const;
 		double Parameter(double distance) const;
 	};
 	void BuildMotionCache() const;
 	Vector3 EvalPosition(double time) const;
+	bool IsStepSegment(double time) const;
+	std::pair<double, double> TravelSlopes(std::size_t index) const;
+	void BuildBlendProfile(std::size_t index) const;
+	double BlendedTravelProgress(double time, double u) const;
+	Vector3 EvalTravelPosition(double time, double progress) const;
 	double TravelDistanceProgress(double time, double progress) const;
 	double TravelParameter(double time, double progress) const;
 	bool UseContinuousSpeed(double time) const;
+	CamPathValue EvalTimed(double time, CamPathEase::Channel channel);
+	CamPathValue EvalChannelBase(double time, CamPathEase::Channel channel);
+	std::array<std::optional<CamPathEase>, 3> m_ChannelEase;
+	double m_BlendStrength = 1;
 	bool m_ContinuousSpeed = false;
 	mutable bool m_MotionCacheValid = false;
 	mutable std::vector<MotionSegment> m_MotionSegments;
