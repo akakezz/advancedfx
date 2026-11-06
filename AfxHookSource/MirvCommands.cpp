@@ -1459,6 +1459,7 @@ static DWORD g_CampathPreviewLastMs = 0;
 // 0 disables the dedicated toggle key.
 static UINT g_CampathPreviewToggleKey = 0;
 static bool g_CampathPreviewToggleHeld = false;
+static bool g_CampathPreviewUndoHeld = false;
 
 static void CampathPreview_StopTravel()
 {
@@ -1601,6 +1602,12 @@ static void CampathPreview_Exit()
 // Called before the mirv_input view override is evaluated.
 void MirvCampathPreview_Update()
 {
+	static int historyFrame = -1;
+	if (historyFrame != g_MirvTime.GetFrameCount())
+	{
+		historyFrame = g_MirvTime.GetFrameCount();
+		AfxHookSource::CameraOverlay::UpdateHistory();
+	}
 	if (!g_CampathPreviewActive)
 		return;
 
@@ -1625,8 +1632,9 @@ void MirvCampathPreview_Update()
 	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 	if (!CampathPreview_CanShow(path))
 	{
-		g_CampathPreviewActive = false;
+		// Undoing the first capture must leave preview alive so redo still works.
 		CampathPreview_StopTravel();
+		g_CampathPreviewLastMs = 0;
 		return;
 	}
 
@@ -1718,6 +1726,12 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 	const bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
 	if (!down && !up)
 		return false;
+	// Consume the matching release even if Ctrl or preview was released first.
+	if (up && key == 'Z' && g_CampathPreviewUndoHeld)
+	{
+		g_CampathPreviewUndoHeld = false;
+		return true;
+	}
 
 	if (g_Hook_VClient_RenderView.IsMenuActive())
 	{
@@ -1744,6 +1758,15 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 
 	if (!g_CampathPreviewActive)
 		return false;
+	if (key == 'Z' && (g_CampathPreviewUndoHeld || (down && (GetKeyState(VK_CONTROL) & 0x8000))))
+	{
+		if (down && !g_CampathPreviewUndoHeld && !CampathPreview_IsRepeatKey(lParam))
+		{
+			g_CampathPreviewUndoHeld = true;
+			AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+		}
+		return true;
+	}
 	if (key != VK_LEFT && key != VK_RIGHT && key != VK_UP && key != VK_DOWN
 		&& key != VK_HOME && key != VK_END)
 		return false;
@@ -1786,6 +1809,7 @@ void MirvCampathPreview_ReleaseKeys()
 {
 	CampathPreview_StopTravel();
 	g_CampathPreviewToggleHeld = false;
+	g_CampathPreviewUndoHeld = false;
 }
 
 static void CampathPreview_PrintHelp()
@@ -1796,6 +1820,8 @@ static void CampathPreview_PrintHelp()
 		"mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, home, end, pageup, pagedown).\n"
 		"mirv_campath preview <index> - Select a keyframe (0-based).\n"
 		"mirv_campath preview interp <0..1> - Position between nearest keyframe and the following one.\n"
+		"mirv_campath preview undo|redo - Undo / redo camera path edits.\n"
+		"CTRL+Z undoes; CTRL+SHIFT+Z redoes in preview, including edits made with the overlay closed.\n"
 		"mirv_campath preview seek - Seek the demo to the current preview time.\n"
 		"mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
 		"Preview keys (console closed): UP/DOWN select next/previous; HOME/END select first/last.\n"
@@ -1812,11 +1838,28 @@ CON_COMMAND(mirv_campath, "camera paths")
 		return;
 	}
 
+	// Capture before the first mutation, including console-only editing sessions.
+	struct EditScope
+	{
+		EditScope() { AfxHookSource::CameraOverlay::BeginEdit(); }
+		~EditScope() { AfxHookSource::CameraOverlay::FinishEdit(); }
+	} editScope;
+	if (args->ArgC() == 2 && (! _stricmp("undo", args->ArgV(1)) || ! _stricmp("redo", args->ArgV(1))))
+	{
+		AfxHookSource::CameraOverlay::HistoryUndo(! _stricmp("redo", args->ArgV(1)));
+		return;
+	}
+
 	if (2 <= args->ArgC() && 0 == _stricmp("preview", args->ArgV(1)))
 	{
 		CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 		if (args->ArgC() == 2) { CampathPreview_PrintHelp(); return; }
 		const char * cmd = args->ArgV(2);
+		if (args->ArgC() == 3 && (! _stricmp(cmd, "undo") || ! _stricmp(cmd, "redo")))
+		{
+			AfxHookSource::CameraOverlay::HistoryUndo(! _stricmp(cmd, "redo"));
+			return;
+		}
 		if (0 == _stricmp(cmd, "toggleKey")) {
             if (args->ArgC() == 3) {
                 Tier0_Msg("Campath preview toggle key: VK %u (0 = disabled).\n", g_CampathPreviewToggleKey);
@@ -1916,7 +1959,9 @@ CON_COMMAND(mirv_campath, "camera paths")
 	}
 
 	MirvCampath_ConCommand(args, Tier0_Msg, Tier0_Warning, &g_Hook_VClient_RenderView.m_CamPath, &g_MirvCampath_Time, &g_MirvCampath_Camera, &g_MirvCampath_Drawer);
-	if (args->ArgC() == 1) Tier0_Msg("mirv_campath preview [...] - Navigate campath with free camera; use mirv_campath preview for help.\n");
+	if (args->ArgC() == 1) Tier0_Msg(
+		"mirv_campath preview [...] - Navigate campath with free camera; use mirv_campath preview for help.\n"
+		"mirv_campath undo|redo - Undo / redo camera path edits (also CTRL+Z / CTRL+SHIFT+Z in preview).\n");
 }
 
 CON_COMMAND(mirv_camexport, "controls camera motion data export") {

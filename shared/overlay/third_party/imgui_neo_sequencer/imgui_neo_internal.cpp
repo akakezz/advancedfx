@@ -55,8 +55,10 @@ namespace ImGui {
                 secondaryFrames *= 10;
             }
 
-            for(int32_t i = 0; i < count; i++) {
-                const uint32_t frame = viewStart + (uint32_t)i;
+            // Iterate only visible tick marks, not every demo tick at full zoom-out.
+            const uint32_t firstTick = (primaryFrames - viewStart % primaryFrames) % primaryFrames;
+            for(uint32_t i = firstTick; i < (uint32_t)count; i += primaryFrames) {
+                const uint32_t frame = viewStart + i;
                 const bool primaryFrame = (frame % primaryFrames) == 0;
                 const bool secondaryFrame = (frame % secondaryFrames) == 0;
                 if(!primaryFrame && !secondaryFrame) continue;

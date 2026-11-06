@@ -18,9 +18,11 @@
 #include <string.h>
 
 #include <algorithm>
+#include <cstddef>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
+#include <cmath>
 
 #ifndef _WIN64
 // g_Entitylist_csgo is only set for CS:GO / CSCO and is null for other games (e.g. TF2).
@@ -5439,6 +5441,93 @@ bool Mirv_Tf2_GetBones(int entityIndex, MirvTf2Bone_t * outBones, int & outCount
 // ---- TF2 bone names (read from the model's studio header) ----
 
 extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
+
+// Minimal Source SDK 2013 / TF2 EngineTraceClient003 ABI (not CS:GO's 004).
+// Ray_t has no world-axis pointer in TF2; TraceRay is virtual slot 4.
+// Keep these adapters beside the existing TF2 entity/model interface adapters.
+struct alignas(16) MirvTf2Ray_t
+{
+	float start[4], delta[4], startOffset[4], extents[4];
+	bool isRay, isSwept;
+};
+struct MirvTf2Trace_t
+{
+	float start[3], end[3];
+	struct { float normal[3], distance; unsigned char type, signBits, padding[2]; } plane;
+	float fraction;
+	int contents;
+	unsigned short dispFlags;
+	bool allSolid, startSolid;
+	float fractionLeftSolid;
+	struct { const char *name; short surfaceProps; unsigned short flags; } surface;
+	int hitGroup;
+	short physicsBone;
+	void *entity;
+	int hitbox;
+};
+static_assert(sizeof(MirvTf2Ray_t) == 80, "TF2 Ray_t ABI");
+static_assert(sizeof(MirvTf2Trace_t) == (sizeof(void *) == 8 ? 104 : 84), "TF2 trace_t size");
+static_assert(offsetof(MirvTf2Trace_t, entity) == (sizeof(void *) == 8 ? 88 : 76), "TF2 trace_t ABI");
+class CMirvTf2TraceFilter
+{
+public:
+	virtual bool ShouldHitEntity(void *entity, int) { return entity != m_Skip; }
+	virtual int GetTraceType() const { return 0; } // TRACE_EVERYTHING: walls occlude selection.
+	explicit CMirvTf2TraceFilter(void *skip) : m_Skip(skip) {}
+private:
+	void *m_Skip;
+};
+class CMirvTf2EngineTrace
+{
+public:
+	virtual void _UNUSED_GetPointContents() = 0;
+	virtual void _UNUSED_GetPointContents_Collideable() = 0;
+	virtual void _UNUSED_ClipRayToEntity() = 0;
+	virtual void _UNUSED_ClipRayToCollideable() = 0;
+	virtual void TraceRay(const MirvTf2Ray_t &, unsigned int, CMirvTf2TraceFilter *, MirvTf2Trace_t *) = 0;
+};
+
+bool Mirv_Tf2_TraceEntity(const double origin[3], const double angles[3], int &outIndex)
+{
+	outIndex = -1;
+	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
+		return false;
+	auto *tools = CClientToolsTf2::Instance();
+	auto *iface = tools ? tools->GetClientTools() : nullptr;
+	static CMirvTf2EngineTrace *trace = nullptr;
+	if (!trace && g_AppSystemFactory)
+		trace = reinterpret_cast<CMirvTf2EngineTrace *>(g_AppSystemFactory("EngineTraceClient003", nullptr));
+	if (!trace || !iface)
+		return false;
+	double forward[3], right[3], up[3];
+	MakeVectors(angles[2], angles[0], angles[1], forward, right, up);
+	MirvTf2Ray_t ray = {};
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		if (!std::isfinite(origin[axis]) || !std::isfinite(forward[axis]))
+			return false;
+		ray.start[axis] = float(origin[axis]);
+		ray.delta[axis] = float(56756.0 * forward[axis]); // World diagonal, MAX_TRACE_LENGTH.
+	}
+	ray.isRay = ray.isSwept = true;
+	MirvTf2Trace_t hit = {};
+	CMirvTf2TraceFilter filter(iface->GetLocalPlayer());
+	trace->TraceRay(ray, 0x4600400B, &filter, &hit); // MASK_SHOT, including hitboxes.
+	if (hit.entity && (hit.fraction < 1.0f || hit.startSolid || hit.allSolid))
+	{
+		// Resolve through tool entities rather than dereferencing static-prop hits.
+		for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+			if (ent == hit.entity)
+			{
+				const int index = iface->GetEntIndex(ent);
+				if (0 < index && index < 2048)
+					outIndex = index;
+				break;
+			}
+	}
+	return true;
+}
+
 
 // Minimal IVModelInfo (public Source SDK interface "VModelInfoClient006") up to GetStudiomodel.
 // The declarations mirror the SDK's IVModelInfo in order (including the overloads), so the compiler

@@ -43,8 +43,11 @@ interpolation. Classic console capture with `mirv_campath add` remains available
 
 ## Sequencer and curve editor
 
-Enable **Show Sequencer**. The timeline displays demo ticks, supports selection and
-dragging key times, and exposes a right-click menu:
+Enable **Show Sequencer**. The timeline spans the entire demo, including future
+ticks, and displays its current visible range. Scroll the wheel to zoom around the
+pointer. Middle-drag or Shift+wheel to move through the timeline, or drag its
+overview bar. **Fit demo** restores the full range. Navigation does not retime keys.
+The sequencer supports selecting and dragging keys and exposes a right-click menu:
 
 - **Remove** deletes the key.
 - **Get** moves the free camera to the key's pose.
@@ -56,7 +59,10 @@ slider evaluates the path without seeking; Follow Preview keeps the resulting
 camera pose. **Add keyframe at preview** inserts an evaluated camera pose.
 
 Enable **Show Curve Editor** to display X/Y/Z, FOV, pitch/yaw/roll individually or
-in combination. Normalization makes channels with different units readable.
+in combination; X is visible initially. Normalization makes channels with different
+units readable. Wheel zooms time around the pointer; Ctrl+wheel zooms values.
+Middle-drag pans both axes. **Fit graph** resets the view. The sequencer window
+can be resized vertically; zoom and pan no longer require sliders.
 Right-click a key for Auto, Flat, Linear or Free tangent modes, applied to the
 incoming side, outgoing side or both.
 
@@ -64,7 +70,10 @@ incoming side, outgoing side or both.
 - Hold **Shift** while dragging to change its weight/influence.
 - Hold **Alt** to edit a side independently for an intentional corner.
 - **Undo / Redo** or **Ctrl+Z / Ctrl+Shift+Z** restore data edits while the overlay
-  owns input. A drag is one edit. History retains 64 entries.
+  owns input, and in native `mirv_campath preview` mode with the overlay closed.
+  Console edits enter the same history, starting with the first edit. A drag is
+  one edit. History retains 64 entries. Console equivalents are
+  `mirv_campath undo|redo` and `mirv_campath preview undo|redo`.
 
 Weighted curves solve their time coordinate during playback, so the graph and the
 camera use the same curve. Euler channels unwrap adjacent angles to avoid ordinary
@@ -94,10 +103,17 @@ and Ctrl snapping are available. **C** toggles free-camera control. Camera Contr
 also provides FOV, roll and keyboard speed sliders.
 
 The **Observing** tab lists TF2 players with a text filter. **View** spectates a
-player; **Attach** uses the existing TF2 attachment system. Enter a bone index
-(`-1` for the entity) and forward/left/up offsets before attaching. **Bones** prints
-the player's bones. Fly to a composition and use **Capture relative framing** to
-follow the target from that composition. **Detach** clears the attachment.
+player; **Attach** uses the existing TF2 attachment system. Click a player name
+or **Bones** to select that player, then choose a named model bone from the
+**Bone** dropdown (or **Entity origin**). **Attach selected** applies that target,
+bone and forward/left/up offsets. Fly to a composition and use **Capture relative
+framing** to follow the target from that composition. **Detach** clears the attachment.
+
+**Trace entity** selects the entity under the camera crosshair, including non-player
+entities. Aim the camera before opening the menu. Walls and static map geometry
+block the trace. The panel reports hits, misses and unavailable engine hooks.
+This uses TF2's `EngineTraceClient003`; the original console command
+`mirv_traceentity` is CS:GO-specific in this HLAE base.
 
 ## Recording, files and settings
 

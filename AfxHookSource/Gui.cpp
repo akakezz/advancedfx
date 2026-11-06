@@ -864,6 +864,9 @@ bool On_Direct3DDevice9_Init(void* hwnd, IDirect3DDevice9* device)
 	if (io.BackendPlatformUserData)
 		ImGui_ImplWin32_Shutdown();
 	ImGui_ImplWin32_Init(g_hWnd);
+	// HLAE owns the OS cursor through its existing import hooks. The Win32
+	// backend must not reset its shape during NewFrame / WM_SETCURSOR.
+	io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 	io.ConfigWindowsMoveFromTitleBarOnly = true;
 	io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 	ImGui::StyleColorsDark();

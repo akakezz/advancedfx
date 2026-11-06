@@ -304,6 +304,9 @@ struct MirvTf2BoneName_t
 /// <returns>Number of bones with names (0 if names are not available).</returns>
 int Mirv_Tf2_GetBoneNames(int entityIndex, MirvTf2BoneName_t * outNames);
 
+// True if tracing is available. outIndex is -1 when no networked entity was hit.
+bool Mirv_Tf2_TraceEntity(const double origin[3], const double angles[3], int & outIndex);
+
 /// <summary>Parses a bone argument: A bone index or (part of) a bone name. Prints a warning if it fails.</summary>
 /// <returns>true on success.</returns>
 bool Mirv_Tf2_ParseBoneArg(int entityIndex, const char * arg, int & outBone);

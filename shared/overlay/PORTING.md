@@ -29,7 +29,10 @@ required. Earlier experimental per-segment easing is replaced in this branch.
 
 The existing HLAE GUI supplies the engine-thread UI, immutable draw-data cache,
 Direct3D9 rendering and device-reset handling. Its cursor hooks also cover capture,
-confinement and visibility. No second ImGui context or rendering backend is added.
+confinement and visibility. The Win32 backend's duplicate cursor-shape updates are
+disabled so the existing ownership hooks are the sole cursor controller. TF2's
+`vguimatsurface.dll` also uses these hooks, covering direct surface cursor changes.
+No second ImGui context or rendering backend is added.
 The overlay automatically closes when recording starts, and stale draw caches are
 not rendered after closing. Other Source engines do not activate this TF2 UI.
 
@@ -38,6 +41,15 @@ intervals share derivatives at ordinary keys, including unequally spaced keys.
 Authored positions and timestamps still determine speed; this is not a constant
 speed retime. Flat tangents and deliberate reversals can still stop movement.
 Classic interpolation settings and native console commands remain available.
+
+The sequencer reads total demo ticks through the existing engine wrapper. Both
+editors support pointer-centered wheel zoom, middle-drag panning and Fit controls.
+Neo Sequencer retains its overview scrollbar, and its ruler visits only visible
+tick marks rather than iterating over the entire demo each frame. Native preview
+and console edits share the overlay's bounded undo history. Observing reuses TF2
+player/model queries for selection and named bones. Its trace picker uses a small
+Source SDK 2013 `EngineTraceClient003` adapter with 32/64-bit layout checks; it
+does not call the CS:GO-only `mirv_traceentity` command.
 
 ## Engine-specific features
 

@@ -52,6 +52,9 @@ namespace ImGui
         float FilledHeight = 0.0f; // Height of whole sequencer
 
         float Zoom = 1.0f;
+        bool Panning = false;
+        double PanStartOffset = 0.0;
+        float PanStartMouse = 0.0f;
 
         ImGuiID Id;
 
@@ -94,6 +97,55 @@ namespace ImGui
 
     //Global context stuff
     static bool inSequencer = false;
+    static bool fitNextSequencer = false;
+    void SetNextNeoSequencerFit() { fitNextSequencer = true; }
+
+    // Navigate the existing view rather than modifying demo/keyframe times.
+    static void navigateView(ImGuiNeoSequencerInternalData& context)
+    {
+        const double total = ImMax(1.0, double(context.EndFrame) - context.StartFrame + 1.0);
+        const float width = ImMax(1.0f, context.Size.x - context.ValuesWidth);
+        const auto& io = GetIO();
+        const ImRect bounds(context.TopLeftCursor, context.TopLeftCursor + context.Size);
+        const bool hovered = IsWindowHovered() && bounds.Contains(io.MousePos);
+        if (fitNextSequencer)
+        {
+            context.Zoom = 1.0f;
+            context.OffsetFrame = 0;
+            fitNextSequencer = false;
+        }
+        if (hovered && context.StateOfSelection == SelectionState::Idle && !context.HoldingCurrentFrame && !context.HoldingZoomSlider)
+        {
+            if (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f)
+            {
+                SetKeyOwner(ImGuiKey_MouseWheelY, context.Id);
+                SetKeyOwner(ImGuiKey_MouseWheelX, context.Id);
+                if (io.KeyShift || io.MouseWheelH != 0.0f)
+                    context.OffsetFrame += FrameIndexType((io.MouseWheelH - io.MouseWheel) * total / context.Zoom * 0.1);
+                else
+                {
+                    const double at = ImClamp(double((io.MousePos.x - context.TopBarStartCursor.x - context.ValuesWidth) / width), 0.0, 1.0);
+                    const double oldSpan = total / context.Zoom;
+                    context.Zoom = ImClamp(context.Zoom * powf(1.2f, io.MouseWheel), 1.0f, float(total));
+                    context.OffsetFrame += FrameIndexType(llround(at * (oldSpan - total / context.Zoom)));
+                }
+            }
+            if (IsMouseClicked(ImGuiMouseButton_Middle))
+            {
+                context.Panning = true;
+                context.PanStartOffset = context.OffsetFrame;
+                context.PanStartMouse = io.MousePos.x;
+            }
+        }
+        if (!IsMouseDown(ImGuiMouseButton_Middle)) context.Panning = false;
+        if (context.Panning)
+        {
+            context.OffsetFrame = FrameIndexType(llround(context.PanStartOffset - (io.MousePos.x - context.PanStartMouse) * total / (context.Zoom * width)));
+            SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        }
+        const auto maxOffset = FrameIndexType(ImMax(0.0, total - ceil(total / context.Zoom)));
+        context.OffsetFrame = ImClamp(context.OffsetFrame, FrameIndexType(0), maxOffset);
+    }
 
     // Height of timeline right now
     static float currentTimelineHeight = 0.0f;
@@ -108,6 +160,14 @@ namespace ImGui
 
     // Data of all sequencers, this is main c++ part and I should create C alternative or use imgui ImVector or something
     static std::unordered_map<ImGuiID, ImGuiNeoSequencerInternalData> sequencerData;
+
+    void GetNeoSequencerView(FrameIndexType *startFrame, FrameIndexType *endFrame)
+    {
+        IM_ASSERT(inSequencer);
+        const auto& context = sequencerData.at(currentSequencer);
+        *startFrame = context.StartFrame + context.OffsetFrame;
+        *endFrame = ImMin(context.EndFrame, *startFrame + FrameIndexType(ceil((double(context.EndFrame) - context.StartFrame + 1.0) / context.Zoom)) - 1);
+    }
 
     static ImVector<ImGuiNeoKeyframeDuplicate> keyframeDuplicates;
     // Per-timeline counter for keyframe labels (0,1,2,...) shown under keyframes
@@ -608,19 +668,6 @@ namespace ImGui
 
         if (hovered)
         {
-            SetKeyOwner(ImGuiKey_MouseWheelY, GetItemID());
-            const float currentScroll = GetIO().MouseWheel;
-
-            // Use multiplicative zoom for consistent feel at all scales
-            if (currentScroll != 0.0f)
-            {
-                const float step = 1.20f; // per wheel detent
-                const float factor = (currentScroll > 0.0f)
-                    ? powf(step,  currentScroll)
-                    : powf(1.0f / step, -currentScroll);
-                const float maxZoom = (float)ImMax<FrameIndexType>(1, totalFrames);
-                context.Zoom = ImClamp(context.Zoom * factor, 1.0f, maxZoom);
-            }
             const auto newZoomWidth = (FrameIndexType) ceil((float) totalFrames / (context.Zoom));
 
             if (*start + context.OffsetFrame + newZoomWidth > *end)
@@ -969,6 +1016,8 @@ namespace ImGui
             context.TopBarSize.y = CalcTextSize("100").y + imStyle.FramePadding.y * 2.0f;
 
         currentSequencer = window->IDStack[window->IDStack.size() - 1];
+
+        navigateView(context);
 
         auto backgroundSize = context.Size;
         const float topCut = abs(context.TopLeftCursor.y - cursor.y);

@@ -95,7 +95,17 @@ void FinishEdit()
 	}
 	g_Editing = false;
 }
-static void HistoryUndo(bool redo)
+void BeginEdit()
+{
+	HistoryObserve();
+}
+void UpdateHistory()
+{
+	HistoryObserve();
+	if (!IsOpen())
+		FinishEdit();
+}
+void HistoryUndo(bool redo)
 {
 	FinishEdit();
 	auto &from = redo ? g_Redo : g_Undo;
@@ -174,9 +184,11 @@ static bool g_SequencerNeedsRefresh = false;
 static bool g_ShowCurveEditor = false;
 static float g_CurvePadding = 12.0f;
 static float g_CurveValueScale = 1.0f;
+// View transforms are independent of camera data and undo history.
 static float g_CurveValueOffset = 0.0f;
+static double g_CurveTimeZoom = 1.0, g_CurveTimeCenter = 0.5;
 static std::vector<int> g_CurveSelection;
-static bool g_CurveShow[7] = {false, false, false, false, false, false, false};
+static bool g_CurveShow[7] = {true, false, false, false, false, false, false};
 static int g_CurveFocusChannel = -1; // -1 = none
 struct CurveCache
 {
@@ -326,9 +338,41 @@ static void DrawObserving()
 	ImGui::SameLine();
 	if (ImGui::Button("Capture relative framing"))
 		Afx_ExecClientCmd("mirv_cam attach capture; mirv_input end");
-	static int bone = -1;
-	ImGui::InputInt("Bone (-1 = entity)", &bone);
-	bone = std::clamp(bone, -1, 4095);
+	static int bone = -1, selectedEntity = -1, selectedUser = 0;
+	static std::string traceStatus;
+	char selectedName[64] = {};
+	int currentUser = 0;
+	if (selectedUser &&
+		(!Mirv_Tf2_GetPlayerInfo(selectedEntity, selectedName, sizeof(selectedName), &currentUser) ||
+		 currentUser != selectedUser))
+	{
+		selectedEntity = -1;
+		selectedUser = 0;
+		bone = -1;
+	}
+	if (ImGui::Button("Trace entity"))
+	{
+		int index = -1;
+		if (!Mirv_Tf2_TraceEntity(g_Hook_VClient_RenderView.LastCameraOrigin,
+								g_Hook_VClient_RenderView.LastCameraAngles, index))
+			traceStatus = "TF2 tracing interface is unavailable.";
+		else if (index < 0)
+			traceStatus = "No entity under the camera crosshair (world geometry blocks the trace).";
+		else
+		{
+			selectedEntity = index;
+			selectedUser = 0;
+			int user = 0;
+			if (Mirv_Tf2_GetPlayerInfo(index, selectedName, sizeof(selectedName), &user))
+				selectedUser = user;
+			bone = -1;
+			traceStatus = "Selected entity " + std::to_string(index) + ".";
+		}
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("Aim the camera first; trace selects the entity at the center of the view.");
+	if (!traceStatus.empty())
+		ImGui::TextWrapped("%s", traceStatus.c_str());
 	static float offset[3] = {0, 0, 0};
 	ImGui::InputFloat3("Forward / left / up", offset);
 	static ImGuiTextFilter filter;
@@ -350,7 +394,15 @@ static void DrawObserving()
 			ImGui::PushID(i);
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
-			ImGui::Text("%d: %s", i, name);
+			char label[100];
+			sprintf_s(label, "%d: %s", i, name);
+			if (ImGui::Selectable(label, selectedEntity == i))
+			{
+				if (selectedEntity != i || selectedUser != user)
+					bone = -1;
+				selectedEntity = i;
+				selectedUser = user;
+			}
 			ImGui::TableNextColumn();
 			if (ImGui::Button("View"))
 			{
@@ -362,16 +414,16 @@ static void DrawObserving()
 			if (ImGui::Button("Attach"))
 			{
 				char cmd[256];
-				sprintf_s(cmd, "mirv_input end; mirv_cam attach %d %d %.6f %.6f %.6f", i, bone, offset[0],
-						  offset[1], offset[2]);
+				sprintf_s(cmd, "mirv_input end; mirv_cam attach %d %d %.6f %.6f %.6f", i,
+						  selectedEntity == i ? bone : -1, offset[0], offset[1], offset[2]);
 				Afx_ExecClientCmd(cmd);
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Bones"))
 			{
-				char cmd[80];
-				sprintf_s(cmd, "mirv_listbones %d", i);
-				Afx_ExecClientCmd(cmd);
+				selectedEntity = i;
+				selectedUser = user;
+				bone = -1;
 			}
 			ImGui::PopID();
 		}
@@ -379,9 +431,42 @@ static void DrawObserving()
 	}
 	if (ImGui::Button("List players in console"))
 		Afx_ExecClientCmd("mirv_listplayers");
-	ImGui::SameLine();
-	if (ImGui::Button("Trace entity"))
-		Afx_ExecClientCmd("mirv_traceentity");
+	if (selectedEntity > 0)
+	{
+		ImGui::Separator();
+		ImGui::Text("Selected entity: %d", selectedEntity);
+		MirvTf2BoneName_t names[MIRV_TF2_MAX_BONES] = {};
+		const int count = Mirv_Tf2_GetBoneNames(selectedEntity, names);
+		if (bone >= count)
+			bone = -1;
+		char preview[100];
+		if (bone < 0)
+			sprintf_s(preview, "Entity origin");
+		else
+			sprintf_s(preview, "%d: %s", bone, names[bone].name);
+		if (ImGui::BeginCombo("Bone", preview))
+		{
+			if (ImGui::Selectable("Entity origin", bone < 0))
+				bone = -1;
+			for (int i = 0; i < count; ++i)
+			{
+				char label[100];
+				sprintf_s(label, "%d: %s", i, names[i].name[0] ? names[i].name : "(unnamed)");
+				if (ImGui::Selectable(label, bone == i))
+					bone = i;
+			}
+			ImGui::EndCombo();
+		}
+		if (!count)
+			ImGui::TextDisabled("No model bones available for this entity.");
+		if (ImGui::Button("Attach selected"))
+		{
+			char cmd[256];
+			sprintf_s(cmd, "mirv_input end; mirv_cam attach %d %d %.6f %.6f %.6f", selectedEntity, bone,
+					  offset[0], offset[1], offset[2]);
+			Afx_ExecClientCmd(cmd);
+		}
+	}
 	ImGui::EndTabItem();
 }
 void Initialize()
@@ -969,8 +1054,8 @@ void Draw()
 	// Sequencer window (ImGui Neo Sequencer) – Source1 port of DX11 implementation
 	if (g_ShowSequencer)
 	{
-		ImGui::SetNextWindowSize(ImVec2(900, 330), ImGuiCond_FirstUseEver);
-		ImGui::SetNextWindowPos(ImVec2(20, (std::max)(380.0f, ImGui::GetIO().DisplaySize.y - 360)),
+		ImGui::SetNextWindowSize(ImVec2(900, 520), ImGuiCond_FirstUseEver);
+		ImGui::SetNextWindowPos(ImVec2(20, (std::max)(380.0f, ImGui::GetIO().DisplaySize.y - 560)),
 								ImGuiCond_FirstUseEver);
 		if (ImGui::Begin("HLAE Sequencer", &g_ShowSequencer, ImGuiWindowFlags_NoCollapse))
 		{
@@ -978,14 +1063,14 @@ void Draw()
 			static ImGui::FrameIndexType s_seqStart = 0;
 			static ImGui::FrameIndexType s_seqEnd = 0;
 			static bool s_seqInit = false;
+			static ImGui::FrameIndexType visibleStart = 0, visibleEnd = 0;
 
-			// Drive end frame with live demo tick
 			int curDemoTick = 0;
-			if (GetCurrentDemoTick(curDemoTick))
-			{
-				if (curDemoTick > (int)s_seqEnd)
-					s_seqEnd = (ImGui::FrameIndexType)curDemoTick;
-			}
+			const bool haveDemoTick = GetCurrentDemoTick(curDemoTick);
+			int demoTotalTicks = 0;
+			if (g_VEngineClient)
+				if (auto *demo = g_VEngineClient->GetDemoInfoEx())
+					demoTotalTicks = demo->GetDemoPlaybackTotalTicks();
 			ImGui::FrameIndexType prevFrame = s_seqFrame;
 
 			// Initial content bounds (max campath tick)
@@ -1026,6 +1111,18 @@ void Draw()
 				s_seqInit = true;
 			}
 
+			// The view can zoom/pan independently of the immutable demo bounds.
+			static int s_lastDemoTotal = -1;
+			static bool s_fitTimeline = false;
+			if (demoTotalTicks != s_lastDemoTotal)
+			{
+				s_fitTimeline = true;
+				s_lastDemoTotal = demoTotalTicks;
+			}
+			s_seqStart = 0;
+			s_seqEnd = demoTotalTicks > 0 ? demoTotalTicks
+										 : (std::max)(s_seqEnd, (std::max)(1, curDemoTick));
+
 			// Layout sizes similar to DX11
 			ImGuiStyle &st = ImGui::GetStyle();
 			float availY = ImGui::GetContentRegionAvail().y;
@@ -1048,9 +1145,15 @@ void Draw()
 				const ImGuiNeoSequencerFlags seqFlags = ImGuiNeoSequencerFlags_AlwaysShowHeader |
 														ImGuiNeoSequencerFlags_EnableSelection |
 														ImGuiNeoSequencerFlags_Selection_EnableDragging;
+				if (s_fitTimeline)
+				{
+					ImGui::SetNextNeoSequencerFit();
+					s_fitTimeline = false;
+				}
 				if (ImGui::BeginNeoSequencer("##demo_seq", &s_seqFrame, &s_seqStart, &s_seqEnd, seqSize,
 											 seqFlags))
 				{
+					ImGui::GetNeoSequencerView(&visibleStart, &visibleEnd);
 					// Cache (ticks <-> times <-> values)
 					struct KfCache
 					{
@@ -1410,6 +1513,10 @@ void Draw()
 			}
 			ImGui::EndChild();
 
+			if (ImGui::SmallButton("Fit demo"))
+				s_fitTimeline = true;
+			ImGui::SameLine();
+			ImGui::TextDisabled("View %d - %d | Wheel: zoom | MMB / Shift+wheel: pan", visibleStart, visibleEnd);
 			// Controls row
 			if (ImGui::SmallButton("Toggle Pause"))
 			{
@@ -1563,22 +1670,15 @@ void Draw()
 				}
 				if (!g_CurveShow[6] && g_CurveFocusChannel == 6)
 					g_CurveFocusChannel = -1;
-				// Sliders on same row with reserved right space
-				// Two equal-width sliders that grow/shrink with window size
-				ImGui::SameLine();
+				if (ImGui::Button("Fit graph"))
 				{
-					const ImGuiStyle &st = ImGui::GetStyle();
-					const float rightGap = 110.0f * g_UiScale; // small reserve at far right to avoid clipping
-					float avail = ImGui::GetContentRegionAvail().x;
-					float per = (avail - rightGap - st.ItemSpacing.x) * 0.5f;
-					// if (per < 100.0f) per = (avail > 0.0f ? avail * 0.45f : 100.0f);
-
-					ImGui::SetNextItemWidth(per);
-					ImGui::SliderFloat("Zoom Y", &g_CurveValueScale, 0.1f, 10.0f, "%.2fx");
-					ImGui::SameLine();
-					ImGui::SetNextItemWidth(per);
-					ImGui::SliderFloat("Offset Y", &g_CurveValueOffset, -1000.0f, 1000.0f, "%.1f");
+					g_CurveTimeZoom = 1.0;
+					g_CurveTimeCenter = 0.5;
+					g_CurveValueScale = 1.0f;
+					g_CurveValueOffset = 0.0f;
 				}
+				ImGui::SameLine();
+				ImGui::TextDisabled("Wheel: zoom time | Ctrl+wheel: zoom values | MMB drag: pan");
 
 				// Keep cache fresh (standalone)
 				if (!g_CurveCache.valid ||
@@ -1587,12 +1687,51 @@ void Draw()
 
 				if (g_CurveCache.times.size() >= 2 && g_Hook_VClient_RenderView.m_CamPath.CanEval())
 				{
-					ImVec2 canvasSize(ImGui::GetContentRegionAvail().x, 220.0f);
+					ImVec2 canvasSize((std::max)(80.0f, ImGui::GetContentRegionAvail().x),
+						(std::max)(180.0f, ImGui::GetContentRegionAvail().y - 2 * ImGui::GetFrameHeightWithSpacing()));
 					ImGui::BeginChild("##campath_curve2", canvasSize, true,
 									  ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar);
 					ImDrawList *dl = ImGui::GetWindowDrawList();
 					ImVec2 p0 = ImGui::GetCursorScreenPos();
+					// Use the child's content area, not its outer size (which includes padding).
+					canvasSize = ImGui::GetContentRegionAvail();
 					ImVec2 p1 = ImVec2(p0.x + canvasSize.x, p0.y + canvasSize.y);
+					auto &io = ImGui::GetIO();
+					const float plotWidth = (std::max)(1.0f, canvasSize.x - 2 * g_CurvePadding);
+					const float plotHeight = (std::max)(1.0f, canvasSize.y - 2 * g_CurvePadding);
+					const bool hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(p0, p1);
+					if (hovered && !ImGui::IsAnyItemActive() && io.MouseWheel != 0.0f)
+					{
+						ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, ImGui::GetID("##graph_navigation"));
+						if (io.KeyCtrl)
+						{
+							const float y = (p1.y - g_CurvePadding - io.MousePos.y) / plotHeight - 0.5f;
+							const float oldScale = g_CurveValueScale;
+							g_CurveValueScale = std::clamp(oldScale * std::pow(1.2f, io.MouseWheel), 0.02f, 100.0f);
+							g_CurveValueOffset += y * (1.0f / oldScale - 1.0f / g_CurveValueScale);
+						}
+						else
+						{
+							const double x = (io.MousePos.x - p0.x - g_CurvePadding) / plotWidth - 0.5;
+							const double oldZoom = g_CurveTimeZoom;
+							g_CurveTimeZoom = std::clamp(oldZoom * std::pow(1.2, io.MouseWheel), 1.0, 10000.0);
+							g_CurveTimeCenter += x * (1.0 / oldZoom - 1.0 / g_CurveTimeZoom);
+						}
+					}
+					static bool panning = false;
+					if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
+						panning = true;
+					if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle))
+						panning = false;
+					if (panning)
+					{
+						g_CurveTimeCenter -= io.MouseDelta.x / (plotWidth * g_CurveTimeZoom);
+						g_CurveValueOffset += io.MouseDelta.y / (plotHeight * g_CurveValueScale);
+						ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+					}
+					g_CurveTimeCenter = std::clamp(g_CurveTimeCenter, 0.5 / g_CurveTimeZoom,
+												 1.0 - 0.5 / g_CurveTimeZoom);
+					dl->PushClipRect(p0, p1, true);
 
 					// Background + border
 					dl->AddRectFilled(p0, p1, IM_COL32(18, 22, 26, 255));
@@ -1600,14 +1739,18 @@ void Draw()
 
 					// Screen-space helpers
 					auto toX = [&](double t) {
-						double tMin = g_CurveCache.times.front();
-						double tMax = g_CurveCache.times.back();
+						double duration = g_CurveCache.times.back() - g_CurveCache.times.front();
+						double tMin = g_CurveCache.times.front() +
+									  duration * (g_CurveTimeCenter - 0.5 / g_CurveTimeZoom);
+						double tMax = tMin + duration / g_CurveTimeZoom;
 						double u = (t - tMin) / (tMax - tMin + 1e-12);
 						return p0.x + (float)u * (canvasSize.x - 2 * g_CurvePadding) + g_CurvePadding;
 					};
 					auto fromX = [&](float px) -> double {
-						double tMin = g_CurveCache.times.front();
-						double tMax = g_CurveCache.times.back();
+						double duration = g_CurveCache.times.back() - g_CurveCache.times.front();
+						double tMin = g_CurveCache.times.front() +
+									  duration * (g_CurveTimeCenter - 0.5 / g_CurveTimeZoom);
+						double tMax = tMin + duration / g_CurveTimeZoom;
 						double u = (px - (p0.x + g_CurvePadding)) / (canvasSize.x - 2 * g_CurvePadding);
 						if (u < 0.0)
 							u = 0.0;
@@ -1724,7 +1867,7 @@ void Draw()
 						}
 						if (vMax - vMin < 1e-6)
 							vMax = vMin + 1.0;
-						vCenter[ch] = 0.5 * (vMin + vMax) + (double)g_CurveValueOffset;
+						vCenter[ch] = 0.5 * (vMin + vMax);
 						vHalf[ch] = 0.5 * (vMax - vMin);
 					}
 
@@ -1734,11 +1877,8 @@ void Draw()
 						{
 							double norm =
 								(v - vCenter[ch]) / (vHalf[ch] > 1e-12 ? vHalf[ch] : 1e-12); // [-1..1]
-							double yNorm = (norm * 0.5 * (double)g_CurveValueScale + 0.5);	 // 0..1
-							if (yNorm < 0.0)
-								yNorm = 0.0;
-							if (yNorm > 1.0)
-								yNorm = 1.0;
+							// Leave values unclamped; the canvas clips curves instead of flattening them.
+							double yNorm = ((norm * 0.5 - g_CurveValueOffset) * (double)g_CurveValueScale + 0.5);
 							return p1.y - (float)yNorm * (canvasSize.y - 2.0f * g_CurvePadding) -
 								   g_CurvePadding;
 						}
@@ -1748,11 +1888,7 @@ void Draw()
 							// Anchor = focused channel if any, else first visible.
 							int ach = anchorCh;
 							double norm = (v - vCenter[ach]) / (vHalf[ach] > 1e-12 ? vHalf[ach] : 1e-12);
-							double yNorm = (norm * 0.5 * (double)g_CurveValueScale + 0.5);
-							if (yNorm < 0.0)
-								yNorm = 0.0;
-							if (yNorm > 1.0)
-								yNorm = 1.0;
+							double yNorm = ((norm * 0.5 - g_CurveValueOffset) * (double)g_CurveValueScale + 0.5);
 							return p1.y - (float)yNorm * (canvasSize.y - 2.0f * g_CurvePadding) -
 								   g_CurvePadding;
 						}
@@ -2035,12 +2171,12 @@ void Draw()
 									auto fromYToValue = [&](int chX) -> double {
 										double yNorm = (p1.y - newY - g_CurvePadding) /
 													   (canvasSize.y - 2 * g_CurvePadding);
-										double norm = (yNorm - 0.5) / (0.5 * (double)g_CurveValueScale);
+										double norm = 2.0 * ((yNorm - 0.5) / g_CurveValueScale + g_CurveValueOffset);
 										if (norm < -10.0)
 											norm = -10.0;
 										if (norm > 10.0)
 											norm = 10.0;
-										bool perChannel = g_CurveNormalize || (g_CurveFocusChannel < 0);
+										const bool perChannel = g_CurveNormalize;
 										int ach2 = anchorCh;
 										return perChannel ? (vCenter[chX] + norm * vHalf[chX])
 														  : (vCenter[ach2] + norm * vHalf[ach2]);
@@ -2131,12 +2267,12 @@ void Draw()
 									auto fromYToValue = [&](int chX) -> double {
 										double yNorm = (p1.y - newY - g_CurvePadding) /
 													   (canvasSize.y - 2 * g_CurvePadding);
-										double norm = (yNorm - 0.5) / (0.5 * (double)g_CurveValueScale);
+										double norm = 2.0 * ((yNorm - 0.5) / g_CurveValueScale + g_CurveValueOffset);
 										if (norm < -10.0)
 											norm = -10.0;
 										if (norm > 10.0)
 											norm = 10.0;
-										bool perChannel = g_CurveNormalize || (g_CurveFocusChannel < 0);
+										const bool perChannel = g_CurveNormalize;
 										int ach2 = anchorCh;
 										return perChannel ? (vCenter[chX] + norm * vHalf[chX])
 														  : (vCenter[ach2] + norm * vHalf[ach2]);
@@ -2217,6 +2353,7 @@ void Draw()
 					} // segments
 
 					// Draw the curve-editor popup ONCE per frame (outside loops)
+					dl->PopClipRect();
 					if (ImGui::BeginPopup("campath_curve_kf_ctx"))
 					{
 						if (g_CurveCtxKeyIndex >= 0 && g_CurveCtxChannel >= 0)
@@ -2299,7 +2436,7 @@ void Draw()
 				}
 				else
 				{
-					ImGui::TextDisabled("Add at least 4 keyframes to edit curves.");
+					ImGui::TextDisabled("Add at least 2 keys in Custom or Linear mode (Classic Cubic needs 4).");
 				}
 			}
 			// Preview slider driving Mirv camera (Source1 input)
@@ -2401,21 +2538,11 @@ void Draw()
 					s_draggingPointer = false;
 				}
 			}
-			else if (curDemoTick > 0)
+			else if (haveDemoTick)
 			{
-				s_seqFrame = (ImGui::FrameIndexType)curDemoTick;
+				s_seqFrame = std::clamp(curDemoTick, int(s_seqStart), int(s_seqEnd));
 			}
 
-			// Auto-height fit
-			{
-				ImVec2 cur = ImGui::GetWindowSize();
-				float remain = ImGui::GetContentRegionAvail().y;
-				float desired = cur.y - remain;
-				float min_h = ImGui::GetFrameHeightWithSpacing() * 3.0f;
-				if (desired < min_h)
-					desired = min_h;
-				ImGui::SetWindowSize(ImVec2(cur.x, desired));
-			}
 			ImGui::End();
 		}
 	}

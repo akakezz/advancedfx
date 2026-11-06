@@ -3355,6 +3355,7 @@ void LibraryHooksA(HMODULE hModule, LPCSTR lpLibFileName)
 	static bool bFirstPanorama = true;
 	static bool bFirstStdshader_dx9 = true;
 	static bool bFirstVgui2 = true;
+	static bool bFirstVguiMatSurface = true;
 
 	CommonHooks();
 
@@ -3500,11 +3501,20 @@ void LibraryHooksA(HMODULE hModule, LPCSTR lpLibFileName)
 
 		g_Import_vgui2.Apply(hModule);
 	}
+	else if (bFirstVguiMatSurface && StringEndsWith(lpLibFileName, "vguimatsurface.dll")
+		&& (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified))
+	{
+		bFirstVguiMatSurface = false;
+		// TF2's surface can hide/reset the OS cursor directly. Reuse the same
+		// cursor ownership hooks as vgui2 instead of competing once per frame.
+		g_Import_vgui2.Apply(hModule);
+	}
 }
 
 void LibraryHooksW(HMODULE hModule, LPCWSTR lpLibFileName)
 {
 	static bool bFirstLauncher = true;
+	static bool bFirstVguiMatSurface = true;
 
 	CommonHooks();
 
@@ -3524,6 +3534,12 @@ void LibraryHooksW(HMODULE hModule, LPCWSTR lpLibFileName)
 		bFirstLauncher = false;
 
 		g_Import_launcher.Apply(hModule);
+	}
+	else if (bFirstVguiMatSurface && StringEndsWithW(lpLibFileName, L"vguimatsurface.dll")
+		&& (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified))
+	{
+		bFirstVguiMatSurface = false;
+		g_Import_vgui2.Apply(hModule);
 	}
 }
 
