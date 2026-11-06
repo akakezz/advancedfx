@@ -192,7 +192,15 @@ double-click to add one and right-click an interior point to remove it. The X ax
 is normalized moving time across the whole path, excluding explicit holds and
 stationary intervals. Y is relative speed. The system integrates and normalizes
 that profile to cover the same spatial distance in the requested duration. Zero
-speed is allowed, but an entirely zero profile is rejected.
+speed is allowed, but an entirely zero profile is rejected. Integration is analytic
+between speed points, so narrow ramps retain their area during playback and reload.
+Zero-speed intervals remain stationary.
+
+Clicking a speed point leaves timing unchanged. Dragging changes the profile;
+Escape cancels that gesture. Closing the editor, switching shots or changing the path
+through another editing action ends the drag without restoring stale shot data.
+**Lock key times** also locks speed editing and distance retiming. Speed points
+stay within the visible chart, and the plotted profile is clipped to its bounds.
 
 Editing this profile immediately retimes the existing camera keys and preserves
 the spatial curve. It does not restart easing at camera keyframes. Arrival times
@@ -223,7 +231,9 @@ Rotational noise is composed as a local orientation offset; quaternion component
 are not modified individually. Noise is deterministic at each path time, so
 scrubbing and recording do not change it. Finite ranges, amplitudes, frequencies
 and seeds are validated. Native files, collection files, undo and recovery retain
-the modifier settings; classic export bakes their evaluated result.
+the modifier settings; classic export bakes their evaluated result. FOV noise
+returns smoothly to the authored FOV at its range boundaries, including legacy
+paths whose base FOV lies outside the normal noise limits.
 
 ```text
 mirv_campath speedProfile list
@@ -375,7 +385,16 @@ Captures with pitch beyond 90 degrees or explicitly unwrapped yaw/roll retain
 those authored values. Custom Euler interpolation and numeric editing can express
 complete turns: for example, yaw 0 to yaw 720 gives two turns. Editing another
 angle component retains the untouched winding; rotation and anchor transforms
-retain an equivalent Euler representation near the authored angles. Quaternion
+retain an equivalent Euler representation near the authored angles.
+
+Rotate and Anchor also transform effective position velocities and accelerations,
+baking automatic positional tangents when needed to preserve the shaped curve.
+For a rotation that mixes XYZ axes, varying axes must have compatible handle time
+weights. Otherwise the transform is rejected without changing the path; align
+those weights first. Axis-permutation rotations can preserve differing weights.
+This preserves positional geometry; Custom Euler angle curves still interpolate
+between the transformed key orientations and do not promise an identical rotated
+orientation at every intermediate time. Quaternion
 Linear/Classic modes continue to use quaternion orientation, which does not encode
 a turn count; use Custom rotation for deliberate spins.
 
@@ -445,6 +464,10 @@ with playback/visibility flags reset. Classic whole-path hold remains available
 before its start even when an unused second path exists. Failed loads preserve current work and saves use
 an adjacent temporary file before replacing the target. Collection XML requires
 this branch; older HLAE versions do not understand its additional features.
+
+Native and collection saves reject invalid path data, including nonfinite offsets.
+Loading an invalid offset leaves the current path intact; console offset changes
+also reject malformed or nonfinite numbers.
 
 An asterisk marks unsaved edits. Recovery backups are written every 30 seconds by
 default under `%LOCALAPPDATA%/advancedfx/camera-recovery` (or HLAE's folder when

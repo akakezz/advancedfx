@@ -156,3 +156,29 @@ rather than quantizing all keys. Undo retains current save targets. Partial
 clearing retains offsets, final-shot removal resets flags, and before-start hold
 selection does not depend on an unused shot's presence. Headless checks cover the
 new controls, cancellation, save/load, export and deterministic evaluation.
+
+## Review fixes: speed editing and transforms
+
+Speed gestures retain only profile controls and an owning path ID/revision; they
+never restore a full path snapshot per frame. Closing the overlay, changing the
+active shot, or an external path edit invalidates the gesture. A click alone does
+not retime, time locks cover profile editing and distance retiming, and the chart
+clips drawing and constrains handles to its displayed range. Regression tests
+exercise interrupted drags, external capture, cancellation and locked controls.
+
+The quintic-smoothed speed profile has an analytic integral and a bracketed
+inverse, avoiding missed narrow ramps from uniform sampling. Zero-speed plateaus
+map to the start/end of the corresponding travel arc. Distance retiming rejects
+colliding arrival timestamps atomically and reuses affine-rescaled arc samples.
+Tangent baking walks the expanded key map once rather than repeatedly searching
+it. An optimized cloud CPU benchmark reduced repeated speed edits at 1,000 keys
+from about 160 ms to 5 ms; this excludes UI rendering and TF2 runtime overhead.
+
+Rotate/Anchor bake and rotate positional derivatives, including minimum-jerk
+accelerations. Independently weighted scalar time curves are not closed under
+arbitrary spatial rotation: incompatible varying XYZ weights are rejected before
+mutation. Signed axis permutations and compatible weights preserve geometry.
+Existing FOV/rotation interpolation metadata and unselected key orientations are
+retained; Custom Euler orientation interpolation remains a key-pose transform.
+Finite offsets are validated at setter/load/save boundaries, and FOV noise keeps
+legacy out-of-range base values continuous at modifier fades.

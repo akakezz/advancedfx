@@ -946,6 +946,153 @@ void speedRamps()
 		++originalKey;
 	}
 }
+
+void reviewBoundaryRegressions()
+{
+	CamPath p;
+	custom(p);
+	p.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	p.Add(2, CamPathValue(10, 0, 0, 0, 0, 0, 90));
+	const std::vector<CamPath::SpeedKey> narrow{{0, 0}, {0.500001, 0}, {0.500002, 1}, {0.500003, 0}, {1, 0}};
+	check(p.ApplySpeedProfile(narrow, 2), "Narrow positive-area ramp is usable");
+	near(p.Eval(0.5).X, 0);
+	near(p.Eval(1.5).X, 10);
+	near(p.GetDuration(), 2);
+	std::string xml;
+	check(p.SaveToString(xml), "Narrow ramp serializes");
+	CamPath loaded;
+	check(loaded.LoadFromString(xml), "Accepted narrow ramp reloads");
+	for (int i = 0; i <= 80; ++i)
+	{
+		double t = 1.000002 + i * 0.00000005;
+		near(p.Eval(t).X, loaded.Eval(t).X, 1e-6);
+	}
+	const auto valid = p.CaptureState();
+	for (double invalid : {std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+						   std::numeric_limits<double>::quiet_NaN()})
+		check(!p.SetOffset(invalid) && p.CaptureState() == valid,
+			  "Non-finite offset is rejected without mutation");
+	for (const char *invalid : {"nan", "inf", "1e999", "junk", "2junk"})
+	{
+		auto bad = xml;
+		const auto root = bad.find("<campath ");
+		bad.insert(root + 9, std::string("offset=\"") + invalid + "\" ");
+		const auto previous = loaded.CaptureState();
+		check(!loaded.LoadFromString(bad) && loaded.CaptureState() == previous, "Bad XML offsets are atomic");
+	}
+	auto invalid = valid;
+	invalid.Offset = std::numeric_limits<double>::infinity();
+	p.RestoreState(invalid);
+	check(!p.SaveToString(xml), "Invalid state cannot be serialized");
+	p.RestoreState(valid);
+	CamPath crowded;
+	custom(crowded);
+	crowded.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	crowded.Add(1e8, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	crowded.Add(1e8 + 1, CamPathValue(1e-8, 0, 0, 0, 0, 0, 90));
+	crowded.Add(1e8 + 2, CamPathValue(1e8, 0, 0, 0, 0, 0, 90));
+	const auto crowdedState = crowded.CaptureState();
+	check(!crowded.RetimeByDistance(2) && crowded.CaptureState() == crowdedState,
+		  "Retiming cannot drop keys when timestamps lose precision");
+	CamPath fov;
+	custom(fov);
+	fov.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 200));
+	fov.Add(2, CamPathValue(10, 0, 0, 0, 0, 0, 200));
+	CamPath::NoiseModifier noise;
+	noise.Begin = 0;
+	noise.End = 2;
+	noise.Amplitude[3] = 20;
+	check(fov.SetModifiers({noise}), "Wide-FOV modifier accepted");
+	near(fov.Eval(0).Fov, 200);
+	near(fov.Eval(1e-6).Fov, 200, 1e-8);
+	for (int i = 0; i <= 100; ++i)
+		check(fov.Eval(i * .02).Fov <= 200 + 1e-9 && fov.Eval(i * .02).Fov >= 0.01 - 1e-9,
+			  "Noise respects limits without snapping the wide base");
+	fov.SetFov(90);
+	noise.Amplitude[3] = 500;
+	fov.SetModifiers({noise});
+	for (int i = 0; i <= 100; ++i)
+		check(fov.Eval(i * .02).Fov >= 0.01 && fov.Eval(i * .02).Fov <= 179,
+			  "Ordinary FOV noise remains bounded");
+}
+void transformedCurves()
+{
+	for (int method = 0; method < 4; ++method)
+	{
+		CamPath original;
+		populate(original);
+		AutoTangentSettings settings;
+		settings.Method = (AutoTangentMethod)method;
+		original.SetAutoTangentSettings(settings);
+		CamPath rotated;
+		rotated.RestoreState(original.CaptureState());
+		check(rotated.Rotate(0, 30, 0), "Global profile rotates with effective derivatives");
+		const double c = std::cos(30 * 3.14159265358979323846 / 180), sn = 0.5;
+		// Original bounds are X 0..240 and Y 0..80.
+		for (int i = 0; i <= 100; ++i)
+		{
+			const double t = i * .08;
+			auto a = original.Eval(t), b = rotated.Eval(t);
+			near(b.X, 120 + c * (a.X - 120) - sn * (a.Y - 40), 1e-6);
+			near(b.Y, 40 + sn * (a.X - 120) + c * (a.Y - 40), 1e-6);
+			near(b.Z, a.Z, 1e-6);
+			near(b.Fov, a.Fov, 1e-6);
+		}
+	}
+	CamPath weighted;
+	populate(weighted);
+	weighted.SelectAll();
+	for (int ch = 0; ch < 3; ++ch)
+	{
+		weighted.SetTangentMode((CamPath::Channel)ch, true, true, CamPath::TM_FREE);
+		weighted.SetTangent((CamPath::Channel)ch, true, true, 8 * (ch + 1), 8 * (ch + 1));
+		weighted.SetTangentWeight((CamPath::Channel)ch, true, true, 0.5, 1.5);
+	}
+	CamPath source;
+	source.RestoreState(weighted.CaptureState());
+	check(weighted.AnchorTransform(0, 0, 0, 0, 0, 0, 100, 200, 300, 0, 30, 0),
+		  "Shared weighted time handles anchor without distortion");
+	for (int i = 0; i <= 100; ++i)
+	{
+		auto a = source.Eval(i * .08), b = weighted.Eval(i * .08);
+		near(b.X, 100 + std::sqrt(3.0) / 2 * a.X - 0.5 * a.Y, 1e-6);
+		near(b.Y, 200 + 0.5 * a.X + std::sqrt(3.0) / 2 * a.Y, 1e-6);
+		near(b.Z, 300 + a.Z, 1e-6);
+	}
+	CamPath mixed;
+	populate(mixed);
+	mixed.SelectAll();
+	mixed.SetTangentMode(CamPath::CH_X, true, true, CamPath::TM_FREE);
+	mixed.SetTangent(CamPath::CH_X, true, true, 8, 8);
+	mixed.SetTangentWeight(CamPath::CH_X, true, true, 0.5, 1.5);
+	const auto before = mixed.CaptureState();
+	check(!mixed.Rotate(0, 30, 0) && mixed.CaptureState() == before,
+		  "Incompatible mixed time weights reject atomically");
+	check(mixed.Rotate(0, 90, 0), "Axis permutation also permutes independent time weights");
+	CamPath beforeMixed;
+	beforeMixed.RestoreState(before);
+	for (int i = 0; i <= 100; ++i)
+	{
+		auto a = beforeMixed.Eval(i * .08), b = mixed.Eval(i * .08);
+		near(b.X, 160 - a.Y, 1e-6);
+		near(b.Y, a.X - 80, 1e-6);
+	}
+	CamPath classic;
+	for (int i = 0; i < 5; ++i)
+		classic.Add(i, CamPathValue(10 * i, 4 * i, 2 * i, i * 7, i * 15, i * 3, 90));
+	CamPath classicBefore;
+	classicBefore.RestoreState(classic.CaptureState());
+	check(classic.AnchorTransform(0, 0, 0, 0, 0, 0, 20, 30, 40, 10, 20, 30),
+		  "Classic quaternion path anchors");
+	const auto q = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(10, 20, 30)));
+	for (int i = 0; i <= 80; ++i)
+		near(std::abs(DotProduct(classic.Eval(i * .05).R, q * classicBefore.Eval(i * .05).R)), 1, 1e-6);
+	CamPath single;
+	single.Add(1, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	check(single.AnchorTransform(0, 0, 0, 0, 0, 0, 10, 20, 30, 0, 0, 0),
+		  "Unevaluable captured pose remains transformable");
+	near(single.GetBegin().GetValue().X, 10);
+}
 } // namespace
 int main()
 {
@@ -964,6 +1111,8 @@ int main()
 		reviewedRegressions();
 		minimumJerkAndModifiers();
 		speedRamps();
+		reviewBoundaryRegressions();
+		transformedCurves();
 		std::cout << checks << " TF2 camera checks passed\n";
 	}
 	catch (const std::exception &e)

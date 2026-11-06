@@ -924,11 +924,10 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 										char const* arg4 = args->ArgV(4);
 										char const* arg5 = args->ArgV(5);
 
-										camPath->Rotate(
-											atof(arg3),
-											atof(arg4),
-											atof(arg5)
-										);
+										if (!camPath->Rotate(atof(arg3), atof(arg4), atof(arg5)))
+											conWarning("Transform rejected: incompatible XYZ time weights or "
+													   "a neighbouring hold. Align handle weights before "
+													   "rotating mixed axes.\n");
 										return;
 									}
 									else if (!_stricmp(arg2, "anchor"))
@@ -1036,10 +1035,14 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 
 												if (bOk && argOfs == argc)
 												{
-													camPath->AnchorTransform(
-														anchorX, anchorY, anchorZ, anchorYPitch, anchorZYaw, anchorXRoll
-														, destX, destY, destZ, destYPitch, destZYaw, destXRoll
-													);
+													if (!camPath->AnchorTransform(
+															anchorX, anchorY, anchorZ, anchorYPitch,
+															anchorZYaw, anchorXRoll, destX, destY, destZ,
+															destYPitch, destZYaw, destXRoll))
+														conWarning(
+															"Transform rejected: incompatible XYZ time "
+															"weights or a neighbouring hold. Align handle "
+															"weights before rotating mixed axes.\n");
 
 													return;
 												}
@@ -1381,7 +1384,8 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 						{
 							offset += mirvTime->GetCurTime() - it.GetTime();
 
-							camPath->SetOffset(offset);
+							if (!camPath->SetOffset(offset))
+								conWarning("Offset must be finite; existing offset retained.\n");
 
 							return;
 						}
@@ -1419,15 +1423,24 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 
 					offset += mirvTime->GetCurTime() - camPath->GetLowerBound();
 
-					camPath->SetOffset(offset);
+					if (!camPath->SetOffset(offset))
+						conWarning("Offset must be finite; existing offset retained.\n");
 
 					return;
 				}
 				else
 				{
 					offset = camPath->GetOffset();
-					offset += atof(arg2);
-					camPath->SetOffset(offset);
+					char *end = nullptr;
+					const double delta = std::strtod(arg2, &end);
+					if (end == arg2 || *end || !std::isfinite(delta))
+					{
+						conWarning("Offset must be a finite number.\n");
+						return;
+					}
+					offset += delta;
+					if (!camPath->SetOffset(offset))
+						conWarning("Offset must be finite; existing offset retained.\n");
 					return;
 				}
 			}

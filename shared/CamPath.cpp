@@ -256,48 +256,76 @@ bool CamPath::MakeScalarCurvesEditable()
 }
 bool CamPath::BakeTangents()
 {
-	if (!CanEval())
-		return false;
-	// Classic quaternion splines cannot be represented exactly by Euler Beziers.
-	if ((m_PositionInterpMethod != DI_CUSTOM && m_PositionInterpMethod != DI_LINEAR) ||
+	if (!CanEval() || (m_PositionInterpMethod != DI_CUSTOM && m_PositionInterpMethod != DI_LINEAR) ||
 		(m_FovInterpMethod != DI_CUSTOM && m_FovInterpMethod != DI_LINEAR))
 		return false;
 	auto keys = m_Map;
-	size_t index = 0;
+	CInterpolation<double> *scalars[] = {m_XInterp, m_YInterp, m_ZInterp, m_FovInterp};
+	auto *rotation = m_RotationInterpMethod == QI_CUSTOM
+						 ? static_cast<CEulerHermiteQuaternionInterpolation<CamPathValue> *>(m_RInterp)
+						 : nullptr;
+	// Walk the expanded map once. Public index lookup is for individual editor
+	// requests; using it for each channel of every key made baking quadratic.
+	auto expanded = m_EvalMap.begin();
+	size_t expandedIndex = 0;
 	for (auto &key : keys)
 	{
-		if (m_RotationInterpMethod == QI_CUSTOM)
+		while (expanded != m_EvalMap.end() && expanded->first < key.first)
 		{
-			auto q = key.second.R;
-			key.second.SetEulerAngles(
-				static_cast<CEulerHermiteQuaternionInterpolation<CamPathValue> *>(m_RInterp)->EvalAngles(
-					key.first));
-			key.second.R = q;
+			++expanded;
+			++expandedIndex;
+		}
+		const size_t arrivalIndex = expandedIndex;
+		const double release = key.first + key.second.HoldDuration;
+		while (expanded != m_EvalMap.end() && expanded->first < release)
+		{
+			++expanded;
+			++expandedIndex;
+		}
+		const size_t releaseIndex = expandedIndex;
+		if (rotation)
+		{
+			const auto quaternion = key.second.R;
+			key.second.SetEulerAngles(rotation->EvalAngles(key.first));
+			key.second.R = quaternion;
 		}
 		for (int ch = 0; ch < 7; ++ch)
 		{
-			double in, out, wi, wo;
-			if (GetTangent((Channel)ch, index, false, in, wi) &&
-				GetTangent((Channel)ch, index, true, out, wo))
+			if (ch < 3	  ? m_PositionInterpMethod != DI_CUSTOM
+				: ch == 3 ? m_FovInterpMethod != DI_CUSTOM
+						  : !rotation)
+				continue;
+			double incoming, outgoing, wi, wo, ai, ao;
+			const bool tangents =
+				ch < 4 ? static_cast<CHermiteDoubleInterpolation<CamPathValue> *>(scalars[ch])
+								 ->GetTangent(arrivalIndex, false, incoming, wi) &&
+							 static_cast<CHermiteDoubleInterpolation<CamPathValue> *>(scalars[ch])
+								 ->GetTangent(releaseIndex, true, outgoing, wo)
+					   : rotation->GetTangent(arrivalIndex, ch - 4, false, incoming, wi) &&
+							 rotation->GetTangent(releaseIndex, ch - 4, true, outgoing, wo);
+			if (!tangents)
+				continue;
+			key.second.*TangentIn[ch] = incoming;
+			key.second.*TangentOut[ch] = outgoing;
+			key.second.*WeightIn[ch] = wi;
+			key.second.*WeightOut[ch] = wo;
+			key.second.*ModeIn[ch] = key.second.*ModeOut[ch] = TM_FREE;
+			const bool acceleration =
+				ch < 4 ? static_cast<CHermiteDoubleInterpolation<CamPathValue> *>(scalars[ch])
+								 ->GetAcceleration(arrivalIndex, false, ai) &&
+							 static_cast<CHermiteDoubleInterpolation<CamPathValue> *>(scalars[ch])
+								 ->GetAcceleration(releaseIndex, true, ao)
+					   : rotation->GetAcceleration(arrivalIndex, ch - 4, false, ai) &&
+							 rotation->GetAcceleration(releaseIndex, ch - 4, true, ao);
+			if (acceleration)
 			{
-				key.second.*TangentIn[ch] = in;
-				key.second.*TangentOut[ch] = out;
-				key.second.*WeightIn[ch] = wi;
-				key.second.*WeightOut[ch] = wo;
-				key.second.*ModeIn[ch] = key.second.*ModeOut[ch] = TM_FREE;
-				double ai, ao;
-				if (GetAcceleration((Channel)ch, index, false, ai) &&
-					GetAcceleration((Channel)ch, index, true, ao))
-				{
-					key.second.AccelerationMask |= 1u << ch;
-					key.second.AccelerationIn[ch] = ai;
-					key.second.AccelerationOut[ch] = ao;
-				}
-				else
-					key.second.AccelerationMask &= ~(1u << ch);
+				key.second.AccelerationMask |= 1u << ch;
+				key.second.AccelerationIn[ch] = ai;
+				key.second.AccelerationOut[ch] = ao;
 			}
+			else
+				key.second.AccelerationMask &= ~(1u << ch);
 		}
-		++index;
 	}
 	return ReplaceKeys(keys);
 }
@@ -480,9 +508,9 @@ void CamPath::BuildArcs()
 				const auto vm = sample(middle);
 				const double leftLength = distance(va, vm), rightLength = distance(vm, vb);
 				const double direct = distance(va, vb), halves = leftLength + rightLength;
-				if (depth < 9 && (halves - direct > (std::max)(1e-6, halves * 1e-5) ||
-								  std::abs(leftLength - rightLength) > (std::max)(1e-6, halves * 0.002) ||
-								  (b - a) > (arc.End - arc.Begin) / 64))
+				if (depth < 9 &&
+					(halves - direct > (std::max)(1e-6, halves * 1e-5) ||
+					 std::abs(leftLength - rightLength) > (std::max)(1e-6, halves * 0.002) || depth < 3))
 				{
 					subdivide(a, va, middle, vm, depth + 1);
 					subdivide(middle, vm, b, vb, depth + 1);
@@ -537,8 +565,10 @@ double CamPath::MapDistanceTime(double time)
 			const double target = arc.Length * u;
 			auto found = std::lower_bound(arc.Distances.begin(), arc.Distances.end(), target);
 			const size_t index = (size_t)std::distance(arc.Distances.begin(), found);
-			if (!index || index >= arc.Times.size())
-				return time;
+			if (!index)
+				return arc.Begin;
+			if (index >= arc.Times.size())
+				return arc.End;
 			const double before = arc.Distances[index - 1], after = arc.Distances[index];
 			const double factor = after > before ? (target - before) / (after - before) : 0;
 			return arc.Times[index - 1] + factor * (arc.Times[index] - arc.Times[index - 1]);
@@ -613,11 +643,31 @@ bool CamPath::RetimeByDistance(double duration)
 				key.second.AccelerationOut[ch] *= scale * scale;
 			}
 		}
-		retimed.emplace(arrival[index++], key.second);
+		if (!retimed.emplace(arrival[index++], key.second).second)
+		{
+			RestoreState(original);
+			return false;
+		}
 	}
 	m_DistanceTiming = true;
+	auto arcs = std::move(m_Arcs);
 	if (ReplaceKeys(retimed))
+	{
+		auto key = retimed.begin();
+		for (size_t i = 0; i < arcs.size(); ++i, ++key)
+		{
+			auto &arc = arcs[i];
+			const double previousBegin = arc.Begin;
+			arc.Begin = key->first + key->second.HoldDuration;
+			arc.End = std::next(key)->first;
+			for (auto &time : arc.Times)
+				time = arc.Begin + (oldSpan[i] > 0 ? (time - previousBegin) * newSpan[i] / oldSpan[i] : 0);
+		}
+		m_Arcs = std::move(arcs);
+		m_ArcDirty = false;
 		return true;
+	}
+	m_Arcs = std::move(arcs);
 	RestoreState(original);
 	return false;
 }
@@ -1383,7 +1433,8 @@ CamPathValue CamPath::Eval(double time)
 			value.Z += offset[2];
 		}
 		if (offset[3] != 0)
-			value.Fov = std::clamp(value.Fov + offset[3], 0.01, 179.0);
+			value.Fov =
+				std::clamp(value.Fov + offset[3], (std::min)(0.01, value.Fov), (std::max)(179.0, value.Fov));
 		if (offset[4] != 0 || offset[5] != 0 || offset[6] != 0)
 			value.SetOrientation(value.R * Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(
 											   QEulerAngles(offset[4], offset[5], offset[6]))));
@@ -1396,14 +1447,20 @@ void CamPath::BuildSpeedProfile()
 	if (!m_SpeedDirty)
 		return;
 	m_SpeedDirty = false;
-	m_SpeedArea.assign(4097, 0);
-	for (size_t i = 1; i < m_SpeedArea.size(); ++i)
-		m_SpeedArea[i] = m_SpeedArea[i - 1] +
-						 (GetProfileSpeed(double(i - 1) / 4096) + GetProfileSpeed(double(i) / 4096)) / 8192;
-	const double total = m_SpeedArea.back();
-	if (total > 1e-12)
-		for (auto &a : m_SpeedArea)
-			a /= total;
+	m_SpeedArea.assign(m_SpeedProfile.empty() ? 2 : m_SpeedProfile.size(), 0);
+	if (m_SpeedProfile.empty())
+	{
+		m_SpeedIntegral = 1;
+		m_SpeedArea.back() = 1;
+		return;
+	}
+	for (size_t i = 1; i < m_SpeedProfile.size(); ++i)
+		m_SpeedArea[i] = m_SpeedArea[i - 1] + (m_SpeedProfile[i].Time - m_SpeedProfile[i - 1].Time) *
+												  (m_SpeedProfile[i].Speed + m_SpeedProfile[i - 1].Speed) / 2;
+	m_SpeedIntegral = m_SpeedArea.back();
+	if (m_SpeedIntegral > 1e-9)
+		for (auto &area : m_SpeedArea)
+			area /= m_SpeedIntegral;
 }
 double CamPath::GetProfileSpeed(double time)
 {
@@ -1416,29 +1473,54 @@ double CamPath::GetProfileSpeed(double time)
 		return right->Speed;
 	if (right == m_SpeedProfile.end())
 		return m_SpeedProfile.back().Speed;
-	auto left = std::prev(right);
-	// Smooth, nonnegative speed controls; no restart at camera keyframes.
+	const auto left = std::prev(right);
 	const double u = SmoothStep5((time - left->Time) / (right->Time - left->Time));
 	return left->Speed + (right->Speed - left->Speed) * u;
 }
 double CamPath::ProfileDistance(double time)
 {
 	BuildSpeedProfile();
-	const double index = std::clamp(time, 0.0, 1.0) * 4096;
-	const auto i = (size_t)index;
-	return i >= 4096 ? 1 : m_SpeedArea[i] + (m_SpeedArea[i + 1] - m_SpeedArea[i]) * (index - i);
+	time = std::clamp(time, 0.0, 1.0);
+	if (m_SpeedProfile.empty())
+		return time;
+	if (time <= 0)
+		return 0;
+	if (time >= 1)
+		return 1;
+	auto right = std::upper_bound(m_SpeedProfile.begin(), m_SpeedProfile.end(), time,
+								  [](double t, const SpeedKey &key) { return t < key.Time; });
+	const size_t i = size_t(right - m_SpeedProfile.begin() - 1);
+	const auto &left = m_SpeedProfile[i];
+	const double h = right->Time - left.Time, u = (time - left.Time) / h;
+	// Exact integral of the quintic smoothstep used by the speed curve.
+	const double integral = u * u * u * u * (2.5 + u * (-3 + u));
+	return m_SpeedArea[i] + h * (left.Speed * u + (right->Speed - left.Speed) * integral) / m_SpeedIntegral;
 }
 double CamPath::ProfileTime(double distance)
 {
 	BuildSpeedProfile();
+	if (distance <= 0)
+		return 0;
+	if (distance >= 1)
+		return 1;
+	if (m_SpeedProfile.empty())
+		return distance;
 	auto found = std::lower_bound(m_SpeedArea.begin(), m_SpeedArea.end(), distance);
 	const size_t i = size_t(found - m_SpeedArea.begin());
 	if (!i)
 		return 0;
-	if (i >= 4097)
+	if (i >= m_SpeedArea.size())
 		return 1;
-	const double a = m_SpeedArea[i - 1], b = m_SpeedArea[i];
-	return (i - 1 + (b > a ? (distance - a) / (b - a) : 0)) / 4096;
+	double low = m_SpeedProfile[i - 1].Time, high = m_SpeedProfile[i].Time;
+	for (int iteration = 0; iteration < 55; ++iteration)
+	{
+		const double middle = (low + high) * 0.5;
+		if (ProfileDistance(middle) < distance)
+			low = middle;
+		else
+			high = middle;
+	}
+	return (low + high) * 0.5;
 }
 bool CamPath::ApplySpeedProfile(const std::vector<SpeedKey> &keys, double duration)
 {
@@ -1474,6 +1556,8 @@ char * double2xml(rapidxml::xml_document<> & doc, double value)
 
 bool CamPath::SaveToString(std::string &xmlString)
 {
+	if (!std::isfinite(m_Offset) || !ValidKeys(m_Map))
+		return false;
 	rapidxml::xml_document<> doc;
 
 	rapidxml::xml_node<> * decl = doc.allocate_node(rapidxml::node_declaration);
@@ -2020,7 +2104,17 @@ bool CamPath::LoadInternal(std::string xml)
 				FovInterpMethod_set(fovInterp);
 
 				rapidxml::xml_attribute<>* offsetA = cur_node->first_attribute("offset");
-				double offset = offsetA ? atof(offsetA->value()) : 0.0;
+				double offset = 0;
+				if (offsetA)
+				{
+					char *end = nullptr;
+					offset = std::strtod(offsetA->value(), &end);
+					if (end == offsetA->value() || *end || !std::isfinite(offset))
+					{
+						bOk = false;
+						break;
+					}
+				}
 				SetOffset(offset);
 
 				rapidxml::xml_attribute<> * holdA = cur_node->first_attribute("hold");
@@ -3085,238 +3179,219 @@ void CamPath::SetTangentWeight(Channel ch, bool setIn, bool setOut, double wIn, 
 	Changed();
 }
 
-void CamPath::Rotate(double yPitch, double zYaw, double xRoll)
+bool CamPath::Transform(const double matrix[3][3], const Quaternion &orientation, const double source[3],
+						const double destination[3])
 {
-	if (m_Map.size() < 1)
-		return;
-	auto keys = m_Map;
-
-	bool selectAll = true;
-
-	for(CInterpolationMap<CamPathValue>::const_iterator it = m_Map.begin(); it != m_Map.end(); ++it)
-	{
-		if(it->second.Selected)
+	if (m_Map.empty())
+		return false;
+	const auto original = CaptureState();
+	CamPath work;
+	work.RestoreState(original);
+	// Use a temporary native path: an unsupported transform or an invalid hold
+	// must leave modes, derivatives and all original data untouched.
+	const bool evaluated = work.CanEval();
+	if (evaluated && (!work.MakeScalarCurvesEditable() || !work.BakeTangents()))
+		return false;
+	auto state = work.CaptureState();
+	auto &keys = state.Keys;
+	state.Fov = original.Fov;
+	state.Rotation = original.Rotation;
+	bool all = true;
+	for (const auto &key : keys)
+		if (key.second.Selected)
+			all = false;
+	// An unweighted cubic can be represented exactly as a quintic as well. This
+	// allows mixing it with a minimum-jerk axis without dropping higher derivatives.
+	if (evaluated && state.Position == DI_CUSTOM &&
+		state.AutoTangents.Method == AutoTangentMethod::MinimumJerk)
+		for (int ch = 0; ch < 3; ++ch)
 		{
-			if(selectAll)
+			bool unit = true;
+			for (const auto &key : keys)
+				unit &= std::abs(key.second.*WeightIn[ch] - 1) < 1e-10 &&
+						std::abs(key.second.*WeightOut[ch] - 1) < 1e-10;
+			if (!unit)
+				continue;
+			for (auto key = keys.begin(); key != keys.end(); ++key)
 			{
-				selectAll = false;
-				break;
+				if (key->second.AccelerationMask & (1u << ch))
+					continue;
+				double ai = 0, ao = 0;
+				if (key != keys.begin())
+				{
+					const auto prev = std::prev(key);
+					const double h = key->first - prev->first - prev->second.HoldDuration;
+					if (h > 0)
+						ai = -6 *
+								 (GetChannelValue(key->second, (Channel)ch) -
+								  GetChannelValue(prev->second, (Channel)ch)) /
+								 (h * h) +
+							 (2 * (prev->second.*TangentOut[ch]) + 4 * (key->second.*TangentIn[ch])) / h;
+				}
+				const auto next = std::next(key);
+				if (next != keys.end())
+				{
+					const double h = next->first - key->first - key->second.HoldDuration;
+					if (h > 0)
+						ao = 6 *
+								 (GetChannelValue(next->second, (Channel)ch) -
+								  GetChannelValue(key->second, (Channel)ch)) /
+								 (h * h) -
+							 (4 * (key->second.*TangentOut[ch]) + 2 * (next->second.*TangentIn[ch])) / h;
+				}
+				key->second.AccelerationMask |= 1u << ch;
+				key->second.AccelerationIn[ch] = ai;
+				key->second.AccelerationOut[ch] = ao;
 			}
 		}
-	}
-
-	// calcualte mid:
-
-	double minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0;
-	bool first = true;
-
-	for(CInterpolationMap<CamPathValue>::const_iterator it = m_Map.begin(); it != m_Map.end(); ++it)
+	for (auto &key : keys)
 	{
-		if(selectAll || it->second.Selected)
+		const auto &authored = original.Keys.at(key.first);
+		key.second.AccelerationMask = (key.second.AccelerationMask & 7) | (authored.AccelerationMask & 0x78);
+		for (int ch = 3; ch < 7; ++ch)
 		{
-			CamPathValue curValue = it->second;
-
-			if(first)
-			{
-				minX = curValue.X;
-				minY = curValue.Y;
-				minZ = curValue.Z;
-				maxX = curValue.X;
-				maxY = curValue.Y;
-				maxZ = curValue.Z;
-				first = false;
-			}
-			else
-			{
-				minX = std::min(minX, curValue.X);
-				minY = std::min(minY, curValue.Y);
-				minZ = std::min(minZ, curValue.Z);
-				maxX = std::max(maxX, curValue.X);
-				maxY = std::max(maxY, curValue.Y);
-				maxZ = std::max(maxZ, curValue.Z);
-			}
+			key.second.*TangentIn[ch] = authored.*TangentIn[ch];
+			key.second.*TangentOut[ch] = authored.*TangentOut[ch];
+			key.second.*ModeIn[ch] = authored.*ModeIn[ch];
+			key.second.*ModeOut[ch] = authored.*ModeOut[ch];
+			key.second.*WeightIn[ch] = authored.*WeightIn[ch];
+			key.second.*WeightOut[ch] = authored.*WeightOut[ch];
+			key.second.AccelerationIn[ch] = authored.AccelerationIn[ch];
+			key.second.AccelerationOut[ch] = authored.AccelerationOut[ch];
 		}
+		key.second.R = authored.R;
+		key.second.HasEuler = authored.HasEuler;
+		key.second.EulerPitch = authored.EulerPitch;
+		key.second.EulerYaw = authored.EulerYaw;
+		key.second.EulerRoll = authored.EulerRoll;
 	}
-
-	double x0 = (maxX +minX) / 2;
-	double y0 = (maxY +minY) / 2;
-	double z0 = (maxZ +minZ) / 2;
-
-	// build rotation matrix:
-	double R[3][3];
-	{
-		double angle;
-		double sr, sp, sy, cr, cp, cy;
-
-		angle = zYaw * (M_PI*2 / 360);
-		sy = sin(angle);
-		cy = cos(angle);
-		angle = yPitch * (M_PI*2 / 360);
-		sp = sin(angle);
-		cp = cos(angle);
-		angle = xRoll * (M_PI*2 / 360);
-		sr = sin(angle);
-		cr = cos(angle);
-
-		// R = YAW * (PITCH * ROLL)
-		R[0][0] = cy*cp;
-		R[0][1] = cy*sp*sr -sy*cr;
-		R[0][2] = cy*sp*cr +sy*sr;
-		R[1][0] = sy*cp;
-		R[1][1] = sy*sp*sr +cy*cr;
-		R[1][2] = sy*sp*cr +cy*-sr;
-		R[2][0] = -sp;
-		R[2][1] = cp*sr;
-		R[2][2] = cp*cr;
-	}
-	Quaternion quatR = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(yPitch, zYaw, xRoll)));
-
-	// rotate:
-
-	for (CInterpolationMap<CamPathValue>::iterator it = keys.begin(); it != keys.end(); ++it)
-	{
-		double curT = it->first;
-		CamPathValue curValue = it->second;
-
-		if(selectAll || curValue.Selected)
+	bool constant[3] = {true, true, true};
+	for (int ch = 0; ch < 3; ++ch)
+		for (const auto &key : keys)
+			constant[ch] &= GetChannelValue(key.second, (Channel)ch) ==
+								GetChannelValue(keys.begin()->second, (Channel)ch) &&
+							key.second.*TangentIn[ch] == 0 && key.second.*TangentOut[ch] == 0 &&
+							(!(key.second.AccelerationMask & (1u << ch)) ||
+							 (key.second.AccelerationIn[ch] == 0 && key.second.AccelerationOut[ch] == 0));
+	for (auto &key : keys)
+		if (all || key.second.Selected)
 		{
-			// update position:
+			const auto before = key.second;
+			const auto &authored = original.Keys.at(key.first);
+			double incoming[3] = {}, outgoing[3] = {}, ai[3] = {}, ao[3] = {};
+			const double position[] = {before.X - source[0], before.Y - source[1], before.Z - source[2]};
+			double result[3] = {};
+			unsigned char accelerationMask = 0;
+			for (int row = 0; row < 3; ++row)
 			{
-				// translate into origin:
-				double x = curValue.X -x0;
-				double y = curValue.Y -y0;
-				double z = curValue.Z -z0;
-
-				// rotate:
-				double Rx = R[0][0]*x +R[0][1]*y +R[0][2]*z;
-				double Ry = R[1][0]*x +R[1][1]*y +R[1][2]*z;
-				double Rz = R[2][0]*x +R[2][1]*y +R[2][2]*z;
-
-				// translate back:
-				curValue.X = Rx +x0;
-				curValue.Y = Ry +y0;
-				curValue.Z = Rz +z0;
+				int basis = -1;
+				for (int ch = 0; ch < 3; ++ch)
+				{
+					result[row] += matrix[row][ch] * position[ch];
+					incoming[row] += matrix[row][ch] * (before.*TangentIn[ch]);
+					outgoing[row] += matrix[row][ch] * (before.*TangentOut[ch]);
+					if (before.AccelerationMask & (1u << ch))
+					{
+						ai[row] += matrix[row][ch] * before.AccelerationIn[ch];
+						ao[row] += matrix[row][ch] * before.AccelerationOut[ch];
+					}
+					if (std::abs(matrix[row][ch]) < 1e-10 || constant[ch])
+						continue;
+					if (basis >= 0 && evaluated && state.Position == DI_CUSTOM &&
+						(std::abs(before.*WeightIn[ch] - before.*WeightIn[basis]) > 1e-10 ||
+						 std::abs(before.*WeightOut[ch] - before.*WeightOut[basis]) > 1e-10))
+						return false;
+					basis = ch;
+				}
+				key.second.*WeightIn[row] = basis >= 0 ? before.*WeightIn[basis] : 1;
+				key.second.*WeightOut[row] = basis >= 0 ? before.*WeightOut[basis] : 1;
+				if (basis >= 0 ? bool(before.AccelerationMask & (1u << basis))
+							   : evaluated && state.AutoTangents.Method == AutoTangentMethod::MinimumJerk)
+					accelerationMask |= 1u << row;
 			}
-
-			// update rotation:
+			key.second.X = result[0] + destination[0];
+			key.second.Y = result[1] + destination[1];
+			key.second.Z = result[2] + destination[2];
+			for (int ch = 0; ch < 3; ++ch)
 			{
-				curValue.SetOrientation(quatR * curValue.R);
+				key.second.*TangentIn[ch] = incoming[ch];
+				key.second.*TangentOut[ch] = outgoing[ch];
+				key.second.AccelerationIn[ch] = ai[ch];
+				key.second.AccelerationOut[ch] = ao[ch];
 			}
-
-			// update:
-			it->second = curValue;
+			key.second.AccelerationMask = (authored.AccelerationMask & 0x78) | accelerationMask;
+			key.second.SetOrientation(orientation * key.second.R);
 		}
-
-	}
-
-	ReplaceKeys(keys);
+	if (!ValidKeys(keys))
+		return false;
+	RestoreState(state);
+	return true;
 }
-
-void CamPath::AnchorTransform(double anchorX, double anchorY, double anchorZ, double anchorYPitch, double anchorZYaw, double anchorXRoll, double destX, double destY, double destZ, double destYPitch, double destZYaw, double destXRoll)
+namespace
 {
-	if (m_Map.size() < 1)
-		return;
-	auto keys = m_Map;
-
-	bool selectAll = true;
-
-	for(CInterpolationMap<CamPathValue>::const_iterator it = m_Map.begin(); it != m_Map.end(); ++it)
+void OrientationMatrix(const Quaternion &orientation, double matrix[3][3])
+{
+	const auto angles = orientation.ToQREulerAngles().ToQEulerAngles();
+	double forward[3], right[3], up[3];
+	MakeVectors(angles.Roll, angles.Pitch, angles.Yaw, forward, right, up);
+	for (int row = 0; row < 3; ++row)
 	{
-		if(it->second.Selected)
+		matrix[row][0] = forward[row];
+		matrix[row][1] = -right[row];
+		matrix[row][2] = up[row];
+	}
+}
+} // namespace
+bool CamPath::Rotate(double pitch, double yaw, double roll)
+{
+	if (m_Map.empty() || !std::isfinite(pitch) || !std::isfinite(yaw) || !std::isfinite(roll))
+		return false;
+	bool all = true;
+	for (const auto &key : m_Map)
+		if (key.second.Selected)
+			all = false;
+	double low[3] = {}, high[3] = {};
+	bool first = true;
+	for (const auto &key : m_Map)
+		if (all || key.second.Selected)
 		{
-			if(selectAll)
+			const double p[] = {key.second.X, key.second.Y, key.second.Z};
+			for (int ch = 0; ch < 3; ++ch)
 			{
-				selectAll = false;
-				break;
+				if (first)
+					low[ch] = high[ch] = p[ch];
+				else
+				{
+					low[ch] = (std::min)(low[ch], p[ch]);
+					high[ch] = (std::max)(high[ch], p[ch]);
+				}
 			}
+			first = false;
 		}
-	}
-
-	Quaternion quatAnchor = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(anchorYPitch, anchorZYaw, anchorXRoll)));
-	Quaternion quatDest = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(destYPitch, destZYaw, destXRoll)));
-
-	// Make sure we take the shortest path:
-	double dotProduct = DotProduct(quatDest, quatAnchor);
-	if (dotProduct<0.0)
-	{
-		quatAnchor = -1.0 * quatAnchor;
-	}
-
-	Quaternion quatR = quatDest * (/*(1.0 / quatAnchor.Norm()) * */quatAnchor.Conjugate());
-
-	QEulerAngles angles = quatR.ToQREulerAngles().ToQEulerAngles();
-
-	double yPitch = angles.Pitch;
-	double zYaw = angles.Yaw;
-	double xRoll = angles.Roll;
-
-	// build rotation matrix:
-	double R[3][3];
-	{
-		double angle;
-		double sr, sp, sy, cr, cp, cy;
-
-		angle = zYaw * (M_PI*2 / 360);
-		sy = sin(angle);
-		cy = cos(angle);
-		angle = yPitch * (M_PI*2 / 360);
-		sp = sin(angle);
-		cp = cos(angle);
-		angle = xRoll * (M_PI*2 / 360);
-		sr = sin(angle);
-		cr = cos(angle);
-
-		// R = YAW * (PITCH * ROLL)
-		R[0][0] = cy*cp;
-		R[0][1] = cy*sp*sr -sy*cr;
-		R[0][2] = cy*sp*cr +sy*sr;
-		R[1][0] = sy*cp;
-		R[1][1] = sy*sp*sr +cy*cr;
-		R[1][2] = sy*sp*cr +cy*-sr;
-		R[2][0] = -sp;
-		R[2][1] = cp*sr;
-		R[2][2] = cp*cr;
-	}
-
-	// rotate:
-
-	for (CInterpolationMap<CamPathValue>::iterator it = keys.begin(); it != keys.end(); ++it)
-	{
-		double curT = it->first;
-		CamPathValue curValue = it->second;
-
-		if(selectAll || curValue.Selected)
-		{
-			// update position:
-			{
-				// translate into anchor:
-				double x = curValue.X -anchorX;
-				double y = curValue.Y -anchorY;
-				double z = curValue.Z -anchorZ;
-
-				// rotate:
-				double Rx = R[0][0]*x +R[0][1]*y +R[0][2]*z;
-				double Ry = R[1][0]*x +R[1][1]*y +R[1][2]*z;
-				double Rz = R[2][0]*x +R[2][1]*y +R[2][2]*z;
-
-				// translate into destination:
-				curValue.X = Rx +destX;
-				curValue.Y = Ry +destY;
-				curValue.Z = Rz +destZ;
-			}
-
-			// update rotation:
-			{
-				curValue.SetOrientation(quatR * curValue.R);
-			}
-
-			// update:
-			it->second = curValue;
-		}
-
-	}
-
-	ReplaceKeys(keys);
+	double center[3];
+	for (int ch = 0; ch < 3; ++ch)
+		center[ch] = low[ch] * 0.5 + high[ch] * 0.5;
+	const auto orientation =
+		Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(pitch, yaw, roll)));
+	double matrix[3][3];
+	OrientationMatrix(orientation, matrix);
+	return Transform(matrix, orientation, center, center);
+}
+bool CamPath::AnchorTransform(double ax, double ay, double az, double ap, double ayaw, double ar, double dx,
+							  double dy, double dz, double dp, double dyaw, double dr)
+{
+	for (double value : {ax, ay, az, ap, ayaw, ar, dx, dy, dz, dp, dyaw, dr})
+		if (!std::isfinite(value))
+			return false;
+	const auto anchor =
+				   Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(ap, ayaw, ar))),
+			   destination =
+				   Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(dp, dyaw, dr)));
+	const auto orientation = destination * anchor.Conjugate();
+	double matrix[3][3];
+	OrientationMatrix(orientation, matrix);
+	const double source[] = {ax, ay, az}, target[] = {dx, dy, dz};
+	return Transform(matrix, orientation, source, target);
 }
 
 void CamPath::CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<CamPathValue> & src)
@@ -3337,11 +3412,15 @@ double CamPath::GetDuration() const
 	return GetUpperBound() - GetLowerBound();
 }
 
-void CamPath::SetOffset(double value)
+bool CamPath::SetOffset(double value)
 {
+	if (!std::isfinite(value))
+		return false;
+	if (value == m_Offset)
+		return true;
 	m_Offset = value;
-
 	Changed();
+	return true;
 }
 
 double CamPath::GetOffset() const
@@ -3763,7 +3842,8 @@ bool CamPathCollection::SaveAll(const wchar_t *fileName, bool recovery)
 		CamPath path;
 		path.RestoreState(*entry.Data);
 		std::string xml;
-		path.SaveToString(xml);
+		if (!path.SaveToString(xml))
+			return false;
 		xml.push_back(0);
 		rapidxml::xml_document<> pathDoc;
 		pathDoc.parse<0>(xml.data());

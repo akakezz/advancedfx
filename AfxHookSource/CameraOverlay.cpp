@@ -38,6 +38,20 @@ static std::atomic_bool g_Open{false}, g_MouseLook{false};
 static bool g_Docking = true;
 static bool g_CurveKeyDrag = false, g_CancelGesture = false;
 static std::unique_ptr<CamPathCollection::State> g_GestureStart;
+struct SpeedDrag
+{
+	int Index = -1;
+	unsigned long long PathId = 0, Revision = 0;
+	std::vector<CamPath::SpeedKey> Keys;
+	double Duration = 0;
+	float Maximum = 1;
+};
+static SpeedDrag g_SpeedDrag;
+static void ResetSpeedDrag()
+{
+	g_SpeedDrag = SpeedDrag{};
+}
+
 static bool g_GraphRightCtrlHeld = false, g_GraphRightCtrlChord = false;
 static bool g_Autosave = true;
 static double g_AutosaveSeconds = 30;
@@ -84,6 +98,7 @@ void BeginEdit()
 }
 void FinishEdit()
 {
+	ResetSpeedDrag();
 	g_Hook_VClient_RenderView.m_CamPaths.FinishEdit();
 	UpdateRecovery(false);
 }
@@ -95,6 +110,7 @@ void UpdateHistory()
 }
 void HistoryUndo(bool redo)
 {
+	ResetSpeedDrag();
 	g_CurveKeyDrag = false;
 	g_GestureStart.reset();
 	g_CancelGesture = ImGui::GetCurrentContext() && ImGui::IsMouseDown(0);
@@ -771,31 +787,49 @@ static void DrawKeyInspector()
 }
 static void DrawSpeedProfile(CamPath &path)
 {
+	auto &document = g_Hook_VClient_RenderView.m_CamPaths;
+	const auto owner = document.GetId(document.GetActive());
+	if (g_SpeedDrag.Index >= 0 &&
+		(g_SpeedDrag.PathId != owner || g_SpeedDrag.Revision != path.GetRevision() || g_LockKeyTimes ||
+		 g_CancelGesture || IsMouseLook()))
+	{
+		ResetSpeedDrag();
+		// An external edit must not be undone by Escape using the old drag snapshot.
+		g_GestureStart.reset();
+	}
+	ImGui::BeginDisabled(g_LockKeyTimes);
+	if (ImGui::Button("Constant speed"))
+	{
+		ResetSpeedDrag();
+		if (!path.ApplySpeedProfile({}, path.GetDuration()))
+			g_DocumentStatus = "This path cannot be retimed; existing data retained.";
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Ease start / end"))
+	{
+		ResetSpeedDrag();
+		if (!path.ApplySpeedProfile({{0, 0}, {0.25, 1}, {0.75, 1}, {1, 0}}, path.GetDuration()))
+			g_DocumentStatus = "This path cannot be retimed; existing data retained.";
+	}
 	auto profile = path.GetSpeedProfile();
 	if (profile.empty())
 		profile = {{0, 1}, {1, 1}};
-	if (ImGui::Button("Constant speed"))
-		path.ApplySpeedProfile({}, path.GetDuration());
-	ImGui::SameLine();
-	if (ImGui::Button("Ease start / end"))
-		path.ApplySpeedProfile({{0, 0}, {0.25, 1}, {0.75, 1}, {1, 0}}, path.GetDuration());
-	static int dragging = -1;
-	static CamPath::State original;
-	static float dragMaximum = 1;
-	const ImVec2 origin = ImGui::GetCursorScreenPos(), size(ImGui::GetContentRegionAvail().x, 110);
+	const ImVec2 origin = ImGui::GetCursorScreenPos(),
+				 size((std::max)(32.0f, ImGui::GetContentRegionAvail().x), 110);
 	ImGui::InvisibleButton("##speed_profile", size);
 	auto *draw = ImGui::GetWindowDrawList();
 	auto &io = ImGui::GetIO();
 	float maximum = 1;
 	for (const auto &key : profile)
 		maximum = (std::max)(maximum, (float)key.Speed * 1.15f);
-	if (dragging >= 0)
-		maximum = dragMaximum;
+	if (g_SpeedDrag.Index >= 0)
+		maximum = g_SpeedDrag.Maximum;
 	auto point = [&](const CamPath::SpeedKey &key)
 	{
 		return ImVec2(origin.x + 8 + (size.x - 16) * (float)key.Time,
 					  origin.y + size.y - 8 - (size.y - 16) * (float)key.Speed / maximum);
 	};
+	draw->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
 	draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(18, 22, 26, 255));
 	ImVec2 last = point({0, path.GetProfileSpeed(0)});
 	for (int i = 1; i <= 128; ++i)
@@ -804,68 +838,82 @@ static void DrawSpeedProfile(CamPath &path)
 		draw->AddLine(last, next, IM_COL32(90, 210, 240, 255), 2);
 		last = next;
 	}
+	bool hitPoint = false;
 	for (size_t i = 0; i < profile.size(); ++i)
 	{
-		const auto p = point(profile[i]);
-		draw->AddCircleFilled(p, 5, IM_COL32(255, 210, 90, 255));
-		if (ImGui::IsItemHovered() && std::abs(io.MousePos.x - p.x) < 8 && std::abs(io.MousePos.y - p.y) < 8)
+		const auto position = point(profile[i]);
+		draw->AddCircleFilled(position, 5, IM_COL32(255, 210, 90, 255));
+		if (ImGui::IsItemHovered() && std::abs(io.MousePos.x - position.x) < 8 &&
+			std::abs(io.MousePos.y - position.y) < 8)
 		{
-			if (ImGui::IsMouseClicked(0))
+			hitPoint = true;
+			if (ImGui::IsMouseClicked(0) && !g_LockKeyTimes)
 			{
-				dragging = (int)i;
-				original = path.CaptureState();
-				dragMaximum = maximum;
+				g_SpeedDrag.Index = (int)i;
+				g_SpeedDrag.PathId = owner;
+				g_SpeedDrag.Revision = path.GetRevision();
+				g_SpeedDrag.Keys = profile;
+				g_SpeedDrag.Duration = path.GetDuration();
+				g_SpeedDrag.Maximum = maximum;
 			}
-			if (ImGui::IsMouseClicked(1) && i > 0 && i + 1 < profile.size())
+			if (ImGui::IsMouseClicked(1) && !g_LockKeyTimes && i > 0 && i + 1 < profile.size())
 			{
+				ResetSpeedDrag();
 				profile.erase(profile.begin() + i);
-				path.ApplySpeedProfile(profile, path.GetDuration());
+				if (!path.ApplySpeedProfile(profile, path.GetDuration()))
+					g_DocumentStatus = "Speed edit rejected; existing data retained.";
 				break;
 			}
 		}
 	}
-	if (dragging >= 0 && ImGui::IsMouseDown(0) && !g_CancelGesture)
+	draw->PopClipRect();
+	if (g_SpeedDrag.Index >= 0 && ImGui::IsMouseDragging(0) && !g_LockKeyTimes && !g_CancelGesture)
 	{
-		auto candidate = original.SpeedProfile;
-		if (candidate.empty())
-			candidate = {{0, 1}, {1, 1}};
-		if ((size_t)dragging < candidate.size())
+		auto candidate = g_SpeedDrag.Keys;
+		auto &key = candidate[g_SpeedDrag.Index];
+		const float mouseY = std::clamp(io.MousePos.y, origin.y + 8, origin.y + size.y - 8);
+		key.Speed = std::clamp(double(origin.y + size.y - 8 - mouseY) / (size.y - 16) * g_SpeedDrag.Maximum,
+							   0.0, 100.0);
+		const size_t index = (size_t)g_SpeedDrag.Index;
+		if (index > 0 && index + 1 < candidate.size())
 		{
-			auto &key = candidate[dragging];
-			key.Speed = std::clamp(
-				double(origin.y + size.y - 8 - io.MousePos.y) / (size.y - 16) * dragMaximum, 0.0, 100.0);
-			if (dragging > 0 && (size_t)dragging + 1 < candidate.size())
-				key.Time = std::clamp(
-					double(io.MousePos.x - origin.x - 8) / (size.x - 16),
-					candidate[dragging - 1].Time +
-						(std::min)(0.001,
-								   (candidate[dragging + 1].Time - candidate[dragging - 1].Time) * 0.25),
-					candidate[dragging + 1].Time -
-						(std::min)(0.001,
-								   (candidate[dragging + 1].Time - candidate[dragging - 1].Time) * 0.25));
-			path.RestoreState(original);
-			if (!path.ApplySpeedProfile(candidate, path.GetDuration()))
+			const double margin =
+				(std::min)(0.001, (candidate[index + 1].Time - candidate[index - 1].Time) * 0.25);
+			key.Time = std::clamp(double(io.MousePos.x - origin.x - 8) / (size.x - 16),
+								  candidate[index - 1].Time + margin, candidate[index + 1].Time - margin);
+		}
+		if (candidate != path.GetSpeedProfile())
+		{
+			if (!path.ApplySpeedProfile(candidate, g_SpeedDrag.Duration))
 				g_DocumentStatus = "Speed profile needs nonzero area and a retimable path.";
+			g_SpeedDrag.Revision = path.GetRevision();
 		}
 	}
 	if (!ImGui::IsMouseDown(0))
-		dragging = -1;
-	if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && profile.size() < 128)
+		ResetSpeedDrag();
+	if (!hitPoint && !g_LockKeyTimes && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) &&
+		profile.size() < 128)
 	{
+		const float y = std::clamp(io.MousePos.y, origin.y + 8, origin.y + size.y - 8);
 		CamPath::SpeedKey key{
 			std::clamp(double(io.MousePos.x - origin.x - 8) / (size.x - 16), 0.001, 0.999),
-			std::clamp(double(origin.y + size.y - 8 - io.MousePos.y) / (size.y - 16) * maximum, 0.0, 100.0)};
+			std::clamp(double(origin.y + size.y - 8 - y) / (size.y - 16) * maximum, 0.0, 100.0)};
 		auto at = std::lower_bound(profile.begin(), profile.end(), key.Time,
 								   [](const CamPath::SpeedKey &a, double t) { return a.Time < t; });
-		if (at != profile.end() && std::abs(at->Time - key.Time) > 0.001)
+		if (at != profile.end() && std::abs(at->Time - key.Time) > 0.001 &&
+			(at == profile.begin() || key.Time - std::prev(at)->Time > 0.001))
 		{
 			profile.insert(at, key);
-			path.ApplySpeedProfile(profile, path.GetDuration());
+			if (!path.ApplySpeedProfile(profile, path.GetDuration()))
+				g_DocumentStatus = "Speed edit rejected; existing data retained.";
 		}
 	}
+	ImGui::EndDisabled();
 	ImGui::TextWrapped("Drag speed points; double-click to add; right-click an interior point to remove. X "
 					   "is moving time (0-100%%), Y is relative speed. Retiming moves arrivals and hold "
 					   "releases, retaining hold durations. Camera keys do not restart this ramp.");
+	if (g_LockKeyTimes)
+		ImGui::TextDisabled("Unlock key times to edit the speed profile or retime this path.");
 }
 static void DrawModifierControls(CamPath &path)
 {
@@ -1007,10 +1055,12 @@ static void DrawSpeedControls()
 		ImGui::TextDisabled("Position only keeps angle / FOV easing on its own time axis.");
 		static double duration = 10;
 		ImGui::InputDouble("Total duration (seconds)", &duration, 0, 0, "%.3f");
+		ImGui::BeginDisabled(g_LockKeyTimes);
 		if (ImGui::Button("Retime by distance"))
 			if (!path.RetimeByDistance(duration))
 				g_DocumentStatus = "Retime requires Custom/Linear channels, nonzero travel and enough "
 								   "duration for all holds.";
+		ImGui::EndDisabled();
 		ImGui::TextWrapped(
 			"Retime distributes travel time by distance and keeps holds and stationary intervals. It "
 			"preserves the spatial curve. Reset Auto or changing geometry may require retiming again.");

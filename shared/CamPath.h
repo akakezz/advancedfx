@@ -286,9 +286,11 @@ public:
 	void SetTangentMode(Channel ch, bool setIn, bool setOut, unsigned char mode);
 	void SetTangentWeight(Channel ch, bool setIn, bool setOut, double wIn, double wOut);
 
-	void Rotate(double yPitch, double zYaw, double xRoll);
+	bool Rotate(double yPitch, double zYaw, double xRoll);
 
-	void AnchorTransform(double anchorX, double anchorY, double anchorZ, double anchorYPitch, double anchorZYaw, double anchorXRoll, double destX, double destY, double destZ, double destYPitch, double destZYaw, double destXRoll);
+	bool AnchorTransform(double anchorX, double anchorY, double anchorZ, double anchorYPitch,
+						 double anchorZYaw, double anchorXRoll, double destX, double destY, double destZ,
+						 double destYPitch, double destZYaw, double destXRoll);
 
 	size_t SelectAll();
 
@@ -318,11 +320,13 @@ public:
 
 	void OnChangedRemove(CamPathChanged pCamPathChanged, void * pUserData);
 
-	void SetOffset(double value);
+	bool SetOffset(double value);
 
 	double GetOffset() const;
 
 private:
+  bool Transform(const double matrix[3][3], const Quaternion &orientation, const double source[3],
+				 const double destination[3]);
   friend class CamPathCollection;
   bool LoadInternal(std::string xml);
   struct CamPathChangedData
@@ -596,6 +600,7 @@ private:
 	std::vector<SpeedKey> m_SpeedProfile;
 	std::vector<NoiseModifier> m_Modifiers;
 	std::vector<double> m_SpeedArea;
+	double m_SpeedIntegral = 1;
 	bool m_SpeedDirty = true;
 	void BuildSpeedProfile();
 	double ProfileDistance(double time);
