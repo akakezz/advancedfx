@@ -21,6 +21,8 @@ const char *AutoTangentMethodToString(AutoTangentMethod method)
 		return "catmullrom";
 	case AutoTangentMethod::Monotone:
 		return "monotone";
+	case AutoTangentMethod::MinimumJerk:
+		return "minimumjerk";
 	default:
 		return "unknown";
 	}
@@ -38,13 +40,230 @@ bool AutoTangentMethodFromString(const char *text, AutoTangentMethod &method)
 	}
 	return false;
 }
+namespace
+{
+// Quintic coefficients in normalized interval time.
+void Quintic(double delta, double v0, double a0, double v1, double a1, double h, double c[6])
+{
+	c[0] = 0;
+	c[1] = h * v0;
+	c[2] = h * h * a0 / 2;
+	const double d = delta - c[1] - c[2], v = h * v1 - c[1] - 2 * c[2], a = h * h * a1 - 2 * c[2];
+	c[3] = 10 * d - 4 * v + a / 2;
+	c[4] = -15 * d + 7 * v - a;
+	c[5] = 6 * d - 3 * v + a / 2;
+}
+} // namespace
+bool CMinimumJerkCurve::Build(const double *times, const double *values, int count,
+							  const std::vector<unsigned char> &constraints, const double *velocities,
+							  const double *accelerations)
+{
+	if (count < 2)
+		return false;
+	const int n = 2 * count;
+	std::vector<std::array<double, 4>> band(n);
+	std::vector<double> rhs(n), fixedValues(n);
+	std::vector<bool> fixed(n);
+	auto matrix = [&](int i, int j) -> double &
+	{
+		if (i < j)
+			std::swap(i, j);
+		return band[i][i - j];
+	};
+	for (int i = 0; i < count; ++i)
+	{
+		const auto constraint = constraints.empty() ? 0 : constraints[i];
+		fixed[2 * i] = i == 0 || i == count - 1 || constraint != 0;
+		fixed[2 * i + 1] = i == 0 || i == count - 1 || constraint == 1 || (constraint & 4);
+		fixedValues[2 * i + 1] = (constraint & 4) && accelerations ? accelerations[i] : 0;
+		fixedValues[2 * i] = constraint != 1 && velocities ? velocities[i] : 0;
+		if (!std::isfinite(times[i]) || !std::isfinite(values[i]) || (i && times[i] <= times[i - 1]))
+			return false;
+	}
+	for (int i = 0; i < count - 1; ++i)
+	{
+		const double h = times[i + 1] - times[i];
+		double base[6], basis[4][6];
+		Quintic(values[i + 1] - values[i], 0, 0, 0, 0, h, base);
+		for (int j = 0; j < 4; ++j)
+			Quintic(0, j == 0, j == 1, j == 2, j == 3, h, basis[j]);
+		auto inner = [&](const double *a, const double *b)
+		{
+			const double x[] = {6 * a[3], 24 * a[4], 60 * a[5]}, y[] = {6 * b[3], 24 * b[4], 60 * b[5]};
+			double sum = 0;
+			for (int p = 0; p < 3; ++p)
+				for (int q = 0; q < 3; ++q)
+					sum += x[p] * y[q] / (p + q + 1);
+			return sum / std::pow(h, 5);
+		};
+		for (int j = 0; j < 4; ++j)
+		{
+			rhs[2 * i + j] -= inner(basis[j], base);
+			for (int k = 0; k <= j; ++k)
+				matrix(2 * i + j, 2 * i + k) += inner(basis[j], basis[k]);
+		}
+	}
+	std::vector<double> scales(n);
+	for (int i = 0; i < n; ++i)
+	{
+		if (!(matrix(i, i) > 0) || !std::isfinite(matrix(i, i)))
+			return false;
+		scales[i] = std::sqrt(matrix(i, i));
+	}
+	for (int i = 0; i < n; ++i)
+	{
+		rhs[i] /= scales[i];
+		fixedValues[i] *= scales[i];
+		for (int j = (std::max)(0, i - 3); j <= i; ++j)
+			matrix(i, j) /= scales[i] * scales[j];
+	}
+	for (int i = 0; i < n; ++i)
+		if (fixed[i])
+		{
+			for (int j = (std::max)(0, i - 3); j < (std::min)(n, i + 4); ++j)
+				if (j != i)
+				{
+					rhs[j] -= matrix(i, j) * fixedValues[i];
+					matrix(i, j) = 0;
+				}
+			matrix(i, i) = 1;
+			rhs[i] = fixedValues[i];
+		}
+	// Cholesky factorization of the symmetric band matrix, half bandwidth three.
+	for (int i = 0; i < n; ++i)
+		for (int j = (std::max)(0, i - 3); j <= i; ++j)
+		{
+			double sum = matrix(i, j);
+			for (int k = (std::max)(0, i - 3); k < j; ++k)
+				if (j - k <= 3)
+					sum -= matrix(i, k) * matrix(j, k);
+			if (i == j)
+			{
+				if (!(sum > 0) || !std::isfinite(sum))
+					return false;
+				matrix(i, j) = std::sqrt(sum);
+			}
+			else
+				matrix(i, j) = sum / matrix(j, j);
+		}
+	for (int i = 0; i < n; ++i)
+	{
+		for (int j = (std::max)(0, i - 3); j < i; ++j)
+			rhs[i] -= matrix(i, j) * rhs[j];
+		rhs[i] /= matrix(i, i);
+	}
+	for (int i = n - 1; i >= 0; --i)
+	{
+		for (int j = i + 1; j < (std::min)(n, i + 4); ++j)
+			rhs[i] -= matrix(j, i) * rhs[j];
+		rhs[i] /= matrix(i, i);
+		if (!std::isfinite(rhs[i]))
+			return false;
+	}
+	m_Times.assign(times, times + count);
+	m_Values.assign(values, values + count);
+	m_Velocities.resize(count);
+	m_Accelerations.resize(count);
+	for (int i = 0; i < count; ++i)
+	{
+		m_Velocities[i] = rhs[2 * i] / scales[2 * i];
+		m_Accelerations[i] = rhs[2 * i + 1] / scales[2 * i + 1];
+	}
+	m_InV = m_OutV = m_Velocities;
+	m_InA = m_OutA = m_Accelerations;
+	return true;
+}
+double CMinimumJerkCurve::Eval(double time) const
+{
+	if (time <= m_Times.front())
+		return m_Values.front();
+	if (time >= m_Times.back())
+		return m_Values.back();
+	const auto i = size_t(std::upper_bound(m_Times.begin(), m_Times.end(), time) - m_Times.begin() - 1);
+	const double h = m_Times[i + 1] - m_Times[i], u = (time - m_Times[i]) / h;
+	double c[6];
+	Quintic(m_Values[i + 1] - m_Values[i], m_OutV[i], m_OutA[i], m_InV[i + 1], m_InA[i + 1], h, c);
+	return m_Values[i] + u * (c[1] + u * (c[2] + u * (c[3] + u * (c[4] + u * c[5]))));
+}
+double EvalQuinticHermite(double u, double h, double left, double right, double v0, double v1, double a0,
+						  double a1, double *velocity, double *acceleration)
+{
+	double c[6];
+	Quintic(right - left, v0, a0, v1, a1, h, c);
+	if (velocity)
+		*velocity = (c[1] + u * (2 * c[2] + u * (3 * c[3] + u * (4 * c[4] + u * 5 * c[5])))) / h;
+	if (acceleration)
+		*acceleration = (2 * c[2] + u * (6 * c[3] + u * (12 * c[4] + u * 20 * c[5]))) / (h * h);
+	return left + u * (c[1] + u * (c[2] + u * (c[3] + u * (c[4] + u * c[5]))));
+}
+void CMinimumJerkCurve::OverrideDerivatives(const double *incoming, const double *outgoing,
+											const double *accelIn, const double *accelOut)
+{
+	for (size_t i = 0; i < m_Times.size(); ++i)
+	{
+		if (accelIn && std::isfinite(accelIn[i]))
+		{
+			m_InV[i] = incoming[i];
+			m_InA[i] = accelIn[i];
+		}
+		if (accelOut && std::isfinite(accelOut[i]))
+		{
+			m_OutV[i] = outgoing[i];
+			m_OutA[i] = accelOut[i];
+		}
+	}
+}
+bool BuildEditableMinimumJerk(const double *times, const double *values, int count, double *incoming,
+							  double *outgoing, const double *weightsIn, const double *weightsOut,
+							  const std::vector<unsigned char> &constraints,
+							  const AutoTangentSettings &settings, CMinimumJerkCurve &curve,
+							  const double *accelIn, const double *accelOut)
+{
+	if (settings.Method != AutoTangentMethod::MinimumJerk)
+		return false;
+	auto fixed = constraints;
+	std::vector<double> accelerations(count);
+	for (int i = 0; i < count; ++i)
+	{
+		if (std::abs(weightsIn[i] - 1) > 1e-9 || std::abs(weightsOut[i] - 1) > 1e-9 ||
+			(fixed[i] && std::abs(incoming[i] - outgoing[i]) > 1e-9 &&
+			 !(accelIn && accelOut && std::isfinite(accelIn[i]) && std::isfinite(accelOut[i]))))
+			return false;
+		if (accelIn && accelOut && std::isfinite(accelIn[i]) && accelIn[i] == accelOut[i])
+		{
+			fixed[i] |= 4;
+			accelerations[i] = accelIn[i];
+		}
+		if (settings.Tension > 0 && !fixed[i])
+			fixed[i] = 2;
+	}
+	if (!curve.Build(times, values, count, fixed, outgoing, accelerations.data()))
+		return false;
+	curve.OverrideDerivatives(incoming, outgoing, accelIn, accelOut);
+	for (int i = 0; i < count; ++i)
+	{
+		if (!(accelIn && std::isfinite(accelIn[i])))
+			incoming[i] = curve.Velocity(i);
+		if (!(accelOut && std::isfinite(accelOut[i])))
+			outgoing[i] = curve.Velocity(i);
+	}
+	return true;
+}
+
 void ComputeAutoTangents(double *times, double *values, int count, const AutoTangentSettings &settings,
                          std::vector<double> &slopes)
 {
 	slopes.assign(count, 0.0);
 	if (count < 2)
 		return;
-	if (settings.Method == AutoTangentMethod::Spline)
+	if (settings.Method == AutoTangentMethod::MinimumJerk)
+	{
+		CMinimumJerkCurve curve;
+		if (curve.Build(times, values, count))
+			for (int i = 0; i < count; ++i)
+				slopes[i] = curve.Velocity(i);
+	}
+	else if (settings.Method == AutoTangentMethod::Spline)
 	{
 		// Keep the original smooth start/stop boundary conditions. Each key has
 		// one derivative shared by the intervals on both sides.

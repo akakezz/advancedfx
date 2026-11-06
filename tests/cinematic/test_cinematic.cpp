@@ -25,6 +25,8 @@ void check(bool ok, const char *message)
 }
 void near(double a, double b, double tolerance = 1e-6)
 {
+	if (!(std::isfinite(a) && std::isfinite(b) && std::abs(a - b) <= tolerance))
+		std::cerr << "Expected near: " << a << " vs " << b << " tolerance " << tolerance << "\n";
 	check(std::isfinite(a) && std::isfinite(b) && std::abs(a - b) <= tolerance,
 		  "Numeric camera result differs");
 }
@@ -494,6 +496,31 @@ void consoleProfiles()
 	}
 	command("auto", "unknown"); check(path.CaptureState() == before, "Unknown console profile preserves path");
 	command("auto", "monotone"); check(path.GetAutoTangentSettings().Method == AutoTangentMethod::Monotone, "Console selects shape-preserving interpolation");
+	command("auto", "minimumjerk");
+	check(path.GetAutoTangentSettings().Method == AutoTangentMethod::MinimumJerk,
+		  "Console selects minimum jerk");
+	auto call = [&](std::initializer_list<const char *> values)
+	{
+		Args args;
+		args.Values = values;
+		MirvCampath_ConCommand(&args, IgnoreConsole, IgnoreConsole, &path, nullptr, nullptr, nullptr);
+	};
+	call({"mirv_campath", "modifier", "noise", "0", "2", "position", "4", "2"});
+	check(path.GetModifiers().size() == 1, "Console creates range noise");
+	call({"mirv_campath", "modifier", "set", "0", "seed", "17"});
+	check(path.GetModifiers()[0].Seed == 17, "Console edits deterministic seed");
+	const auto validModifier = path.CaptureState();
+	call({"mirv_campath", "modifier", "set", "0", "frequency", "nan"});
+	check(path.CaptureState() == validModifier, "Invalid console modifier retains data");
+	call({"mirv_campath", "modifier", "clear"});
+	check(path.GetModifiers().empty(), "Console clears modifiers");
+	call({"mirv_campath", "speedProfile", "point", "0", "0"});
+	check(path.GetDistanceTiming() && path.GetSpeedProfile().front().Speed == 0,
+		  "Console edits whole-path speed profile");
+	call({"mirv_campath", "speedProfile", "point", "1", "0"});
+	check(path.GetSpeedProfile().back().Speed == 1, "Zero-area speed command cannot replace valid ramp");
+	call({"mirv_campath", "speedProfile", "reset"});
+	check(path.GetSpeedProfile().empty(), "Console restores constant speed");
 }
 void independentTimingAndExport()
 {
@@ -687,6 +714,238 @@ void files()
 	check(q.GetAutoTangentSettings() == AutoTangentSettings{}, "Old XML resets profile and tension to original defaults");
 	std::filesystem::remove(file);
 }
+
+void reviewedRegressions()
+{
+	CamPath path;
+	populate(path);
+	CamPathCollection doc(path);
+	const auto dir = std::filesystem::temp_directory_path();
+	const auto a = dir / "hlae-save-a.xml", b = dir / "hlae-save-b.xml";
+	check(doc.SaveOne(a.wstring().c_str()), "Save first target");
+	doc.BeginEdit();
+	path.SetPosition(100, 0, 0);
+	doc.FinishEdit();
+	check(doc.SaveOne(b.wstring().c_str()), "Save as new target");
+	check(doc.Undo() && doc.GetFileName() == b.wstring(), "Undo retains current save destination");
+	path.SetOffset(10);
+	path.SelectNone();
+	path.SelectAdd(size_t(1), size_t(1));
+	path.Clear();
+	near(path.GetOffset(), 10);
+	check(path.GetSize() == 4, "Partial clear retains other keys and offset");
+	doc.SetFlags(0, true, true, false);
+	doc.Remove(0);
+	check(!doc.IsMuted(0) && !doc.IsSolo(0) && doc.IsVisible(0) && !path.HasKeyHolds(),
+		  "Last-path removal resets placeholder flags");
+	populate(path);
+	path.SetHold(true);
+	check(doc.GetPlaybackIndex(-1, false) == 0, "Whole-path hold covers before-start time");
+	doc.NewPath("Empty");
+	check(doc.GetPlaybackIndex(-1, false) == 0, "Unused path does not change before-start hold");
+	CamPath held;
+	custom(held);
+	held.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	held.Add(1, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	held.Add(2, CamPathValue(10, 0, 0, 0, 0, 0, 90));
+	check(held.SetKeyHold(0, 1), "Valid shared hold boundary");
+	held.SelectNone();
+	held.SelectAdd(size_t(1), size_t(1));
+	const auto original = held.CaptureState();
+	held.SetPosition(5, 0, 0);
+	check(held.CaptureState() == original, "Legacy position edit rejects invalid held boundary atomically");
+	held.SetAngles(0, 90, 0);
+	check(held.CaptureState() == original, "Legacy angle edit validates held boundary");
+	held.SetFov(110);
+	check(held.CaptureState() == original, "Legacy FOV edit validates held boundary");
+	std::string xml;
+	held.SaveToString(xml);
+	CamPath reload;
+	check(reload.LoadFromString(xml), "Rejected edits leave reloadable data");
+	std::filesystem::remove(a);
+	std::filesystem::remove(b);
+}
+void minimumJerkAndModifiers()
+{
+	CamPath p;
+	populate(p);
+	AutoTangentSettings settings;
+	settings.Method = AutoTangentMethod::MinimumJerk;
+	check(p.SetAutoTangentSettings(settings), "Minimum-jerk profile accepted");
+	for (double t : {1., 3., 4.})
+	{
+		const double e = 1e-4;
+		const double left = (p.Eval(t).X - 2 * p.Eval(t - e).X + p.Eval(t - 2 * e).X) / (e * e),
+					 right = (p.Eval(t + 2 * e).X - 2 * p.Eval(t + e).X + p.Eval(t).X) / (e * e);
+		near(left, right, 0.05);
+		check(p.GetSpeed(t) > 1, "Minimum jerk flows through ordinary keys");
+	}
+	std::vector<CamPathValue> before;
+	for (int i = 0; i <= 200; ++i)
+		before.push_back(p.Eval(8.0 * i / 200));
+	check(p.Insert(2.2), "Quintic can be subdivided without a new key type");
+	for (int i = 0; i <= 200; ++i)
+	{
+		near(p.Eval(8.0 * i / 200).X, before[i].X, 1e-7);
+		near(p.Eval(8.0 * i / 200).Fov, before[i].Fov, 1e-7);
+		near(std::abs(DotProduct(p.Eval(8.0 * i / 200).R, before[i].R)), 1, 1e-7);
+	}
+	std::string xml;
+	p.SaveToString(xml);
+	CamPath loaded;
+	check(loaded.LoadFromString(xml), "Quintic derivatives round trip");
+	for (int i = 0; i <= 100; ++i)
+		near(loaded.Eval(8.0 * i / 100).X, p.Eval(8.0 * i / 100).X, 1e-7);
+	const auto jerkOriginal = p.CaptureState();
+	check(p.RetimeByDistance(12), "Minimum jerk supports distance retiming");
+	near(p.GetDuration(), 12, 1e-6);
+	CamPath originalJerk, retimedJerk;
+	originalJerk.RestoreState(jerkOriginal);
+	auto jerkRetimed = p.CaptureState();
+	jerkRetimed.DistanceTiming = false;
+	retimedJerk.RestoreState(jerkRetimed);
+	auto leftBefore = jerkOriginal.Keys.cbegin(), leftAfter = jerkRetimed.Keys.cbegin();
+	for (; std::next(leftBefore) != jerkOriginal.Keys.end(); ++leftBefore, ++leftAfter)
+		for (int i = 0; i <= 40; ++i)
+		{
+			const double u = i / 40.0;
+			auto a = originalJerk.Eval(leftBefore->first +
+									   u * (std::next(leftBefore)->first - leftBefore->first)),
+				 b = retimedJerk.Eval(leftAfter->first +
+									  u * (std::next(leftAfter)->first - leftAfter->first));
+			near(a.X, b.X, 1e-6);
+			near(a.Y, b.Y, 1e-6);
+			near(a.Z, b.Z, 1e-6);
+			near(a.Fov, b.Fov, 1e-6);
+			near(std::abs(DotProduct(a.R, b.R)), 1, 1e-6);
+		}
+
+	CamPath weightedJerk;
+	weightedJerk.RestoreState(jerkOriginal);
+	check(weightedJerk.BakeTangents(), "Quintic tangents bake");
+	weightedJerk.SelectAll();
+	weightedJerk.SetTangentWeight(CamPath::CH_X, true, true, 0.5, 1.5);
+	std::vector<double> weightedBefore;
+	for (int i = 0; i <= 100; ++i)
+		weightedBefore.push_back(weightedJerk.Eval(i * .08).X);
+	check(weightedJerk.Insert(2.4), "Weighted fallback inserts as the actual cubic evaluator");
+	for (int i = 0; i <= 100; ++i)
+		near(weightedJerk.Eval(i * .08).X, weightedBefore[i], 1e-6);
+	CamPath noise;
+	populate(noise);
+	const auto authored = noise.CaptureState().Keys;
+	CamPath::NoiseModifier m;
+	m.Begin = 0.5;
+	m.End = 5;
+	m.FadeIn = 0.5;
+	m.FadeOut = 1;
+	m.Amplitude[0] = 5;
+	m.Amplitude[4] = 2;
+	m.Frequency = 2.3;
+	check(noise.SetModifiers({m}), "Range noise accepted");
+	near(noise.Eval(0).X, noise.EvalUnmodified(0).X);
+	near(noise.Eval(5).X, noise.EvalUnmodified(5).X);
+	const auto sample = noise.Eval(2.1);
+	noise.Eval(4.9);
+	check(noise.Eval(2.1) == sample, "Noise scrubbing is deterministic");
+	check(std::abs(sample.X - noise.EvalUnmodified(2.1).X) > 0.01, "Noise affects selected range/channel");
+	near(sample.Fov, noise.EvalUnmodified(2.1).Fov);
+	check(noise.CaptureState().Keys == authored, "Modifiers retain authored key data");
+	noise.SaveToString(xml);
+	check(loaded.LoadFromString(xml), "Noise saves and loads");
+	check(loaded.Eval(2.1) == sample, "Noise playback survives file round trip");
+	m.End = m.Begin;
+	const auto valid = noise.CaptureState();
+	check(!noise.SetModifiers({m}) && noise.CaptureState() == valid,
+		  "Invalid modifier range is rejected atomically");
+	CamPath held;
+	custom(held);
+	held.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	check(held.SetKeyHold(0, 4), "Stationary shot hold");
+	m.Begin = 0;
+	m.End = 4;
+	m.Amplitude[0] = 3;
+	check(held.SetModifiers({m}), "Explicit noise can affect a hold");
+	check(std::abs(held.Eval(2).X) > 0.001, "Held base receives selected noise");
+	near(held.EvalUnmodified(2).X, 0);
+	CamPath classic;
+	for (int i = 0; i < 5; ++i)
+		classic.Add(i, CamPathValue(i * i * 10, i * 5, 0, 0, i * 20, 0, 90 + i * 5));
+	std::vector<CamPathValue> classicValues;
+	for (int i = 0; i <= 100; ++i)
+		classicValues.push_back(classic.Eval(i * .04));
+	check(classic.MakeScalarCurvesEditable() && classic.RotationInterpMethod_get() == CamPath::QI_DEFAULT,
+		  "Classic scalar editing preserves quaternion backend");
+	for (int i = 0; i <= 100; ++i)
+	{
+		near(classic.Eval(i * .04).X, classicValues[i].X, 1e-7);
+		near(classic.Eval(i * .04).Fov, classicValues[i].Fov, 1e-7);
+		near(std::abs(DotProduct(classic.Eval(i * .04).R, classicValues[i].R)), 1, 1e-7);
+	}
+	const auto file = std::filesystem::temp_directory_path() / "hlae-noise-bake.xml";
+	check(noise.ExportClassic(file.wstring().c_str(), 1.0 / 120), "Modifiers bake into classic XML");
+	CamPath baked;
+	check(baked.Load(file.wstring().c_str()), "Noise bake reloads as classic linear data");
+	check(baked.GetModifiers().empty() && baked.GetSpeedProfile().empty(),
+		  "Classic bake contains no editor extensions");
+	for (int i = 0; i <= 240; ++i)
+	{
+		const double t = 8.0 * i / 240;
+		near(baked.Eval(t).X, noise.Eval(t).X, 0.01);
+	}
+	std::filesystem::remove(file);
+	CamPath jerkHold;
+	populate(jerkHold);
+	jerkHold.SetAutoTangentSettings(settings);
+	check(jerkHold.SetKeyHold(1, 1.5), "Minimum-jerk hold accepted");
+	near(jerkHold.Eval(1.2).X, 30);
+	check(jerkHold.GetSpeed(1 - 1e-5) < 0.01 && jerkHold.GetSpeed(1.5 + 1e-5) < 0.01,
+		  "Quintic holds have smooth arrival and release");
+}
+void speedRamps()
+{
+	CamPath p;
+	populate(p);
+	const auto originals = p.CaptureState();
+	std::vector<CamPath::SpeedKey> profile{{0, 0}, {0.25, 1}, {0.75, 1}, {1, 0}};
+	check(p.ApplySpeedProfile(profile, 10), "Whole-path speed ramp retimes existing keys");
+	near(p.GetDuration(), 10, 1e-6);
+	check(p.GetSpeed(0.001) < p.GetSpeed(4) * 0.1 && p.GetSpeed(9.999) < p.GetSpeed(4) * 0.1,
+		  "Ramp eases at path endpoints");
+	for (auto it = p.GetBegin(); it != p.GetEnd(); ++it)
+		if (it.GetTime() > 0 && it.GetTime() < 10)
+		{
+			const double e = 1e-3;
+			check(p.GetSpeed(it.GetTime()) > 1, "Speed profile does not stop at ordinary camera keys");
+			near(p.GetSpeed(it.GetTime() - e), p.GetSpeed(it.GetTime() + e), 0.5);
+		}
+	std::string xml;
+	p.SaveToString(xml);
+	CamPath loaded;
+	check(loaded.LoadFromString(xml), "Speed profile round trip");
+	for (int i = 0; i <= 100; ++i)
+		near(p.Eval(i * .1).X, loaded.Eval(i * .1).X, 1e-6);
+	const auto valid = p.CaptureState();
+	check(!p.ApplySpeedProfile({{0, 0}, {1, 0}}, 10) && p.CaptureState() == valid,
+		  "Zero-area speed ramp rejected");
+	check(!p.ApplySpeedProfile({{0, 1}, {0.5, -1}, {1, 1}}, 10), "Negative speed rejected");
+	for (int i = 0; i < 12; ++i)
+		check(p.ApplySpeedProfile(i % 2 ? profile : std::vector<CamPath::SpeedKey>{{0, 1}, {0.5, 2}, {1, 1}},
+								  10),
+			  "Repeated live ramps remain retimable");
+	CamPath source;
+	source.RestoreState(originals);
+	p.SetDistanceTiming(false);
+	auto retimed = p.CaptureState();
+	// Ramping may change arrivals, but authored positions and key count stay intact.
+	check(p.GetSize() == source.GetSize(), "Speed ramps preserve native key count");
+	auto originalKey = originals.Keys.begin();
+	for (const auto &key : retimed.Keys)
+	{
+		near(key.second.X, originalKey->second.X);
+		++originalKey;
+	}
+}
 } // namespace
 int main()
 {
@@ -702,6 +961,9 @@ int main()
 		independentTimingAndExport();
 		shotControlsAndSelectionCost();
 		files();
+		reviewedRegressions();
+		minimumJerkAndModifiers();
+		speedRamps();
 		std::cout << checks << " TF2 camera checks passed\n";
 	}
 	catch (const std::exception &e)

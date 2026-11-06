@@ -43,6 +43,194 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 	{
 		char const* subcmd = args->ArgV(1);
 
+		if (!_stricmp("modifier", subcmd))
+		{
+			auto modifiers = camPath->GetModifiers();
+			auto number = [&](int i, double &value)
+			{
+				if (i >= argc)
+					return false;
+				char *end = nullptr;
+				value = std::strtod(args->ArgV(i), &end);
+				return end != args->ArgV(i) && !*end && std::isfinite(value);
+			};
+			bool handled = false, valid = false;
+			if (argc == 3 && !_stricmp(args->ArgV(2), "list"))
+			{
+				for (size_t i = 0; i < modifiers.size(); ++i)
+				{
+					const auto &m = modifiers[i];
+					conMessage("%u: noise %.6f..%.6f s, fades %.3f/%.3f s, %.3f Hz, seed %u, enabled %d\n",
+							   (unsigned)i, m.Begin, m.End, m.FadeIn, m.FadeOut, m.Frequency, m.Seed,
+							   m.Enabled);
+				}
+				return;
+			}
+			if (argc == 3 && !_stricmp(args->ArgV(2), "clear"))
+			{
+				handled = true;
+				modifiers.clear();
+				valid = true;
+			}
+			double index = 0;
+			if (argc == 4 && !_stricmp(args->ArgV(2), "remove"))
+			{
+				handled = true;
+				valid =
+					number(3, index) && index >= 0 && index < modifiers.size() && index == std::floor(index);
+				if (valid)
+					modifiers.erase(modifiers.begin() + (size_t)index);
+			}
+			if ((argc == 7 || argc == 8) && !_stricmp(args->ArgV(2), "noise"))
+			{
+				handled = true;
+				CamPath::NoiseModifier m;
+				double amplitude = 0;
+				valid = number(3, m.Begin) && number(4, m.End) && number(6, amplitude) &&
+						(argc == 7 || number(7, m.Frequency));
+				m.FadeIn = m.FadeOut = (std::max)(0.0, (m.End - m.Begin) * 0.15);
+				const char *names[] = {"x", "y", "z", "fov", "pitch", "yaw", "roll"};
+				bool channel = false;
+				for (int ch = 0; ch < 7; ++ch)
+					if (!_stricmp(args->ArgV(5), names[ch]) ||
+						(ch < 3 && !_stricmp(args->ArgV(5), "position")) ||
+						(ch >= 4 && !_stricmp(args->ArgV(5), "angles")))
+					{
+						m.Amplitude[ch] = amplitude;
+						channel = true;
+					}
+				valid &= channel;
+				if (valid)
+					modifiers.push_back(m);
+			}
+			if (argc == 6 && !_stricmp(args->ArgV(2), "set"))
+			{
+				handled = true;
+				double value = 0;
+				valid = number(3, index) && index >= 0 && index < modifiers.size() &&
+						index == std::floor(index) && number(5, value);
+				if (valid)
+				{
+					auto &m = modifiers[(size_t)index];
+					const char *field = args->ArgV(4);
+					if (!_stricmp(field, "begin"))
+						m.Begin = value;
+					else if (!_stricmp(field, "end"))
+						m.End = value;
+					else if (!_stricmp(field, "fadeIn"))
+						m.FadeIn = value;
+					else if (!_stricmp(field, "fadeOut"))
+						m.FadeOut = value;
+					else if (!_stricmp(field, "frequency"))
+						m.Frequency = value;
+					else if (!_stricmp(field, "seed"))
+					{
+						valid = value >= 0 && value <= 1000000000 && value == std::floor(value);
+						if (valid)
+							m.Seed = (unsigned)value;
+					}
+					else if (!_stricmp(field, "enabled") || !_stricmp(field, "cameraSpace"))
+					{
+						valid = value == 0 || value == 1;
+						if (valid)
+						{
+							if (!_stricmp(field, "enabled"))
+								m.Enabled = value != 0;
+							else
+								m.CameraSpace = value != 0;
+						}
+					}
+					else
+					{
+						const char *names[] = {"x", "y", "z", "fov", "pitch", "yaw", "roll"};
+						valid = false;
+						for (int ch = 0; ch < 7; ++ch)
+							if (!_stricmp(field, names[ch]))
+							{
+								m.Amplitude[ch] = value;
+								valid = true;
+							}
+					}
+				}
+			}
+			if (handled)
+			{
+				if (!valid || !camPath->SetModifiers(modifiers))
+					conWarning("Modifier edit rejected; existing modifiers retained. Check range, fades, "
+							   "amplitude and frequency.\n");
+				return;
+			}
+			conMessage("%s modifier list|clear|remove <index>\n%s modifier noise <begin seconds> <end "
+					   "seconds> <position|angles|x|y|z|fov|pitch|yaw|roll> <amplitude> [frequency=1]\n%s "
+					   "modifier set <index> "
+					   "<begin|end|fadeIn|fadeOut|frequency|seed|enabled|cameraSpace|x|y|z|fov|pitch|yaw|"
+					   "roll> <value>\n",
+					   args->ArgV(0), args->ArgV(0), args->ArgV(0));
+			return;
+		}
+		if (!_stricmp("speedProfile", subcmd))
+		{
+			auto profile = camPath->GetSpeedProfile();
+			if (profile.empty())
+				profile = {{0, 1}, {1, 1}};
+			auto number = [&](int i, double &value)
+			{
+				if (i >= argc)
+					return false;
+				char *end = nullptr;
+				value = std::strtod(args->ArgV(i), &end);
+				return end != args->ArgV(i) && !*end && std::isfinite(value);
+			};
+			if (argc == 3 && !_stricmp(args->ArgV(2), "list"))
+			{
+				for (size_t i = 0; i < profile.size(); ++i)
+					conMessage("%u: time %.6f, speed %.6f\n", (unsigned)i, profile[i].Time, profile[i].Speed);
+				return;
+			}
+			bool handled = false, valid = false;
+			if (argc == 3 && !_stricmp(args->ArgV(2), "reset"))
+			{
+				handled = valid = true;
+				profile.clear();
+			}
+			if (argc == 5 && !_stricmp(args->ArgV(2), "point"))
+			{
+				handled = true;
+				CamPath::SpeedKey key;
+				valid = number(3, key.Time) && number(4, key.Speed) && key.Time >= 0 && key.Time <= 1;
+				if (valid)
+				{
+					auto at =
+						std::lower_bound(profile.begin(), profile.end(), key.Time,
+										 [](const CamPath::SpeedKey &a, double t) { return a.Time < t; });
+					if (at != profile.end() && std::abs(at->Time - key.Time) < 1e-9)
+						*at = key;
+					else
+						profile.insert(at, key);
+				}
+			}
+			if (argc == 4 && !_stricmp(args->ArgV(2), "remove"))
+			{
+				handled = true;
+				double index;
+				valid =
+					number(3, index) && index > 0 && index + 1 < profile.size() && index == std::floor(index);
+				if (valid)
+					profile.erase(profile.begin() + (size_t)index);
+			}
+			if (handled)
+			{
+				if (!valid || !camPath->ApplySpeedProfile(profile, camPath->GetDuration()))
+					conWarning("Speed edit rejected; requires a playable retimable path, nonnegative speeds "
+							   "and nonzero profile area.\n");
+				return;
+			}
+			conMessage(
+				"%s speedProfile list|reset|point <normalized time 0..1> <relative speed 0..100>|remove "
+				"<index>\nSpeed edits retime existing arrivals across the whole path.\n",
+				args->ArgV(0));
+			return;
+		}
 		if (!_stricmp("add", subcmd) && 2 == argc)
 		{
 			SMirvCameraValue camera = mirvCamera->GetCamera();
@@ -364,7 +552,8 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 						{
 							if (!AutoTangentMethodFromString(args->ArgV(4), settings.Method))
 							{
-								conMessage("Unknown Auto interpolation. Use spline|catmullrom|monotone.\n");
+								conMessage("Unknown Auto interpolation. Use "
+										   "spline|catmullrom|monotone|minimumjerk.\n");
 								return;
 							}
 						}
@@ -391,9 +580,10 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 						}
 						return;
 					}
-					conMessage("%s edit interp auto <spline|catmullrom|monotone> - Whole-path Auto interpolation; "
-					           "enables Custom on all channels.\n",
-					           args->ArgV(0));
+					conMessage("%s edit interp auto <spline|catmullrom|monotone|minimumjerk> - Whole-path "
+							   "Auto interpolation; "
+							   "enables Custom on all channels.\n",
+							   args->ArgV(0));
 					conMessage("%s edit interp tension <0..1> - Whole-path Auto tangent tension; 1 deliberately stops at "
 					           "keys.\n",
 					           args->ArgV(0));
@@ -946,7 +1136,10 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 											else
 											{
 												// Interp usage when no further args
-												conMessage("%s edit interp auto <spline|catmullrom|monotone> - Whole path, enables Custom.\n", args->ArgV(0));
+												conMessage("%s edit interp auto "
+														   "<spline|catmullrom|monotone|minimumjerk> - Whole "
+														   "path, enables Custom.\n",
+														   args->ArgV(0));
 												conMessage("%s edit interp tension <0..1> - Whole-path Auto tangent tension.\n", args->ArgV(0));
 												conMessage("%s edit interp position [...]\n", args->ArgV(0));
 												conMessage("%s edit interp rotation [...]\n", args->ArgV(0));

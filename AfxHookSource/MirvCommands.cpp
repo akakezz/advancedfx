@@ -1919,12 +1919,18 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 	}
 	const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0,
 			   shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-	if (key == 'E' || key == 'Y' || (key == 'A' && control))
+	if (key == 'E' || key == 'Y' || key == VK_DELETE || (key == 'A' && control))
 	{
 		if (down && key < 256 && !g_CampathPreviewEditHeld[key] && !CampathPreview_IsRepeatKey(lParam))
 		{
 			g_CampathPreviewEditHeld[key] = true;
-			if (key == 'E')
+			if (key == VK_DELETE)
+			{
+				AfxHookSource::CameraOverlay::BeginEdit();
+				g_Hook_VClient_RenderView.m_CamPath.DeleteSelected();
+				AfxHookSource::CameraOverlay::FinishEdit();
+			}
+			else if (key == 'E')
 				AfxHookSource::CameraOverlay::PreviewCapture(shift);
 			else if (key == 'Y')
 				AfxHookSource::CameraOverlay::PreviewHold(shift);

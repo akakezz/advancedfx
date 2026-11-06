@@ -40,6 +40,7 @@ u x v = (u_1 X + u_2 Y + u_3 Z) x (v_1 X + v_2 Y + v_3 Z)
 
 */
 
+#include <array>
 #include <cmath>
 #include <atomic>
 #include <map>
@@ -417,6 +418,7 @@ enum class AutoTangentMethod
 	Spline,
 	CatmullRom,
 	Monotone,
+	MinimumJerk,
 	Count
 };
 struct AutoTangentSettings
@@ -430,8 +432,39 @@ struct AutoTangentSettings
 };
 const char *AutoTangentMethodToString(AutoTangentMethod method);
 bool AutoTangentMethodFromString(const char *text, AutoTangentMethod &method);
+double EvalQuinticHermite(double u, double h, double left, double right, double v0, double v1, double a0,
+						  double a1, double *velocity = nullptr, double *acceleration = nullptr);
 void ComputeAutoTangents(double *times, double *values, int count, const AutoTangentSettings &settings,
                          std::vector<double> &slopes);
+
+// Global quintic interpolation minimizing the integral of squared jerk.
+// Adjacent intervals share velocity and acceleration. The banded solve is O(n).
+class CMinimumJerkCurve
+{
+  public:
+	bool Build(const double *times, const double *values, int count,
+			   const std::vector<unsigned char> &constraints = {}, const double *velocities = nullptr,
+			   const double *accelerations = nullptr);
+	double Eval(double time) const;
+	double Velocity(size_t index) const
+	{
+		return m_Velocities[index];
+	}
+	double Acceleration(size_t index, bool outgoing) const
+	{
+		return outgoing ? m_OutA[index] : m_InA[index];
+	}
+	void OverrideDerivatives(const double *incoming, const double *outgoing, const double *accelIn,
+							 const double *accelOut);
+
+  private:
+	std::vector<double> m_Times, m_Values, m_Velocities, m_Accelerations, m_InV, m_OutV, m_InA, m_OutA;
+};
+bool BuildEditableMinimumJerk(const double *times, const double *values, int count, double *incoming,
+							  double *outgoing, const double *weightsIn, const double *weightsOut,
+							  const std::vector<unsigned char> &constraints,
+							  const AutoTangentSettings &settings, CMinimumJerkCurve &curve,
+							  const double *accelIn = nullptr, const double *accelOut = nullptr);
 
 // Hermite (per-key slope) interpolation for doubles.
 // Uses per-key in/out slopes and modes resolved via provided selectors.
@@ -460,11 +493,13 @@ template <class TMap> class CHermiteDoubleInterpolation : public CInterpolation<
 								unsigned char (*modeInSelector)(const TMap &),
 								unsigned char (*modeOutSelector)(const TMap &),
 								double (*wInSelector)(const TMap &), double (*wOutSelector)(const TMap &),
-		const AutoTangentSettings *autoSettings = nullptr)
+								const AutoTangentSettings *autoSettings = nullptr,
+								double (*accelSelector)(const TMap &, bool) = nullptr)
 		: m_Map(map), m_ValueSelector(valueSelector), m_TanInSelector(tanInSelector),
 		  m_TanOutSelector(tanOutSelector), m_ModeInSelector(modeInSelector),
 		  m_ModeOutSelector(modeOutSelector), m_WInSelector(wInSelector ? wInSelector : &DefaultWeight),
-		  m_WOutSelector(wOutSelector ? wOutSelector : &DefaultWeight), m_AutoSettings(autoSettings)
+		  m_WOutSelector(wOutSelector ? wOutSelector : &DefaultWeight), m_AutoSettings(autoSettings),
+		  m_AccelSelector(accelSelector)
 	{
 		InterpolationMapChanged();
 	}
@@ -599,7 +634,27 @@ template <class TMap> class CHermiteDoubleInterpolation : public CInterpolation<
 				// else Free already set from raw
 			}
 
+			std::vector<unsigned char> constraints(n);
+			std::vector<double> accelIn, accelOut;
+			size_t keyIndex = 0;
+			for (const auto &entry : *m_Map)
+			{
+				const auto mi = m_ModeInSelector(entry.second), mo = m_ModeOutSelector(entry.second);
+				if (m_AccelSelector)
+				{
+					accelIn.push_back(m_AccelSelector(entry.second, false));
+					accelOut.push_back(m_AccelSelector(entry.second, true));
+				}
+				constraints[keyIndex++] = mi == 1 || mo == 1 ? 1 : mi || mo ? 2 : 0;
+			}
+			m_UseJerk = BuildEditableMinimumJerk(
+				m_Build.T, m_Build.V, (int)n, m_Build.MIn, m_Build.MOut, m_Build.WIn, m_Build.WOut,
+				constraints, m_AutoSettings ? *m_AutoSettings : AutoTangentSettings{}, m_Jerk,
+				accelIn.empty() ? nullptr : accelIn.data(), accelOut.empty() ? nullptr : accelOut.data());
 		}
+
+		if (m_UseJerk)
+			return m_Jerk.Eval(t);
 
 		// Clamp for no extrapolation
 		if (t <= m_Build.T[0])
@@ -652,6 +707,18 @@ template <class TMap> class CHermiteDoubleInterpolation : public CInterpolation<
 		return true;
 	}
 
+	bool GetAcceleration(size_t index, bool outgoing, double &acceleration)
+	{
+		if (index >= m_Map->size() || !CanEval())
+			return false;
+		Eval(m_Map->begin()->first);
+		std::lock_guard<std::mutex> lock(m_Lock);
+		if (!m_UseJerk)
+			return false;
+		acceleration = m_Jerk.Acceleration(index, outgoing);
+		return true;
+	}
+
   private:
 	CInterpolationMap<TMap> *m_Map;
 	double (*m_ValueSelector)(const TMap &);
@@ -666,6 +733,10 @@ template <class TMap> class CHermiteDoubleInterpolation : public CInterpolation<
 	double (*m_WInSelector)(const TMap &) = &DefaultWeight;
 	double (*m_WOutSelector)(const TMap &) = &DefaultWeight;
 	const AutoTangentSettings *m_AutoSettings = nullptr;
+
+	double (*m_AccelSelector)(const TMap &, bool) = nullptr;
+	CMinimumJerkCurve m_Jerk;
+	bool m_UseJerk = false;
 
 	struct Build_s
 	{
@@ -723,14 +794,15 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 		double (*wInYaw)(const TMap &), double (*wOutYaw)(const TMap &),
 		const AutoTangentSettings *autoSettings = nullptr,
 		QEulerAngles (*eulerSelector)(const TMap &) = nullptr,
-		bool (*exactEulerSelector)(const TMap &) = nullptr)
+		bool (*exactEulerSelector)(const TMap &) = nullptr,
+		double (*accelSelector)(const TMap &, int, bool) = nullptr)
 		: m_Map(map), m_TanInRoll(tanInRoll), m_TanOutRoll(tanOutRoll), m_ModeInRoll(modeInRoll),
 		  m_ModeOutRoll(modeOutRoll), m_WInRoll(wInRoll), m_WOutRoll(wOutRoll), m_TanInPitch(tanInPitch),
 		  m_TanOutPitch(tanOutPitch), m_ModeInPitch(modeInPitch), m_ModeOutPitch(modeOutPitch),
 		  m_WInPitch(wInPitch), m_WOutPitch(wOutPitch), m_TanInYaw(tanInYaw), m_TanOutYaw(tanOutYaw),
 		  m_ModeInYaw(modeInYaw), m_ModeOutYaw(modeOutYaw), m_WInYaw(wInYaw), m_WOutYaw(wOutYaw),
 		  m_AutoSettings(autoSettings), m_EulerSelector(eulerSelector),
-		  m_ExactEulerSelector(exactEulerSelector)
+		  m_ExactEulerSelector(exactEulerSelector), m_AccelSelector(accelSelector)
 	{
 		InterpolationMapChanged();
 	}
@@ -767,6 +839,8 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 			Build();
 		}
 
+		if (m_UseJerk[0] && m_UseJerk[1] && m_UseJerk[2])
+			return QEulerAngles(m_Jerk[0].Eval(t), m_Jerk[1].Eval(t), m_Jerk[2].Eval(t));
 		// Clamp for no extrapolation
 		if (t <= m_T[0])
 		{
@@ -812,7 +886,8 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 		double roll =
 			hermite(m_Roll[klo], m_Roll[khi], m_RollOut[klo], m_RollIn[khi], m_RollWOut[klo], m_RollWIn[khi]);
 
-		return QEulerAngles(pitch, yaw, roll);
+		return QEulerAngles(m_UseJerk[0] ? m_Jerk[0].Eval(t) : pitch, m_UseJerk[1] ? m_Jerk[1].Eval(t) : yaw,
+							m_UseJerk[2] ? m_Jerk[2].Eval(t) : roll);
 	}
 
 	bool GetTangent(size_t index, int channel, bool outgoing, double &slope, double &weight)
@@ -827,6 +902,18 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 			: channel == 1 ? (outgoing ? m_YawWOut : m_YawWIn) : (outgoing ? m_RollWOut : m_RollWIn);
 		slope = slopes[index];
 		weight = weights[index];
+		return true;
+	}
+
+	bool GetAcceleration(size_t index, int channel, bool outgoing, double &acceleration)
+	{
+		if (index >= m_Map->size() || channel < 0 || channel > 2 || !CanEval())
+			return false;
+		Eval(m_Map->begin()->first);
+		std::lock_guard<std::mutex> lock(m_Lock);
+		if (!m_UseJerk[channel])
+			return false;
+		acceleration = m_Jerk[channel].Acceleration(index, outgoing);
 		return true;
 	}
 
@@ -858,6 +945,10 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 	const AutoTangentSettings *m_AutoSettings = nullptr;
 	QEulerAngles (*m_EulerSelector)(const TMap &) = nullptr;
 	bool (*m_ExactEulerSelector)(const TMap &) = nullptr;
+
+	double (*m_AccelSelector)(const TMap &, int, bool) = nullptr;
+	CMinimumJerkCurve m_Jerk[3];
+	bool m_UseJerk[3] = {};
 
 	// Cached arrays
 	int m_n = 0;
@@ -1072,6 +1163,31 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 					m_RollOut[k] = autoRoll[k];
 			}
 		}
+		std::vector<unsigned char> constraints[3];
+		std::vector<double> accelIn[3], accelOut[3];
+		for (const auto &entry : *m_Map)
+		{
+			const auto &v = entry.second;
+			const unsigned char mi[] = {m_ModeInPitch(v), m_ModeInYaw(v), m_ModeInRoll(v)},
+								mo[] = {m_ModeOutPitch(v), m_ModeOutYaw(v), m_ModeOutRoll(v)};
+			for (int ch = 0; ch < 3; ++ch)
+			{
+				constraints[ch].push_back(mi[ch] == 1 || mo[ch] == 1 ? 1 : mi[ch] || mo[ch] ? 2 : 0);
+				if (m_AccelSelector)
+				{
+					accelIn[ch].push_back(m_AccelSelector(v, ch, false));
+					accelOut[ch].push_back(m_AccelSelector(v, ch, true));
+				}
+			}
+		}
+		double *values[] = {m_Pitch, m_Yaw, m_Roll}, *incoming[] = {m_PitchIn, m_YawIn, m_RollIn},
+			   *outgoing[] = {m_PitchOut, m_YawOut, m_RollOut}, *win[] = {m_PitchWIn, m_YawWIn, m_RollWIn},
+			   *wout[] = {m_PitchWOut, m_YawWOut, m_RollWOut};
+		for (int ch = 0; ch < 3; ++ch)
+			m_UseJerk[ch] = BuildEditableMinimumJerk(m_T, values[ch], m_n, incoming[ch], outgoing[ch],
+													 win[ch], wout[ch], constraints[ch], settings, m_Jerk[ch],
+													 accelIn[ch].empty() ? nullptr : accelIn[ch].data(),
+													 accelOut[ch].empty() ? nullptr : accelOut[ch].data());
 	}
 
 	void Free()
@@ -1277,6 +1393,27 @@ public:
 		splint(m_Build.T, m_Build.X, m_Build.X2, n, t, &result);
 
 		return result;
+	}
+
+	double Derivative(double time, double *acceleration = nullptr)
+	{
+		Eval(time);
+		const int n = m_View->GetSize();
+		time = std::clamp(time, m_Build.T[0], m_Build.T[n - 1]);
+		int left = 0, right = n - 1;
+		while (right - left > 1)
+		{
+			const int middle = (left + right) / 2;
+			if (m_Build.T[middle] > time)
+				right = middle;
+			else
+				left = middle;
+		}
+		const double h = m_Build.T[right] - m_Build.T[left], a = (m_Build.T[right] - time) / h, b = 1 - a;
+		if (acceleration)
+			*acceleration = a * m_Build.X2[left] + b * m_Build.X2[right];
+		return (m_Build.X[right] - m_Build.X[left]) / h +
+			   h * ((1 - 3 * a * a) * m_Build.X2[left] + (3 * b * b - 1) * m_Build.X2[right]) / 6;
 	}
 
 private:

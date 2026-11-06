@@ -39,20 +39,38 @@ Choose **Interpolation** in the Campath tab or curve editor:
 | Spline | Original whole-path spline with a smooth start and stop |
 | Catmull-Rom | Shared tangents based on neighboring keys and their time spacing; travels through keys and uses nonzero endpoint slopes |
 | Shape-preserving (Monotone) | PCHIP interpolation limits overshoot in each automatic channel; peaks, reversals and plateaus can flatten a channel |
+| Minimum jerk | A global quintic solve shares velocity and acceleration through ordinary keys; supports two keys |
 | Classic cubic | Original HLAE interpolation with its four-key requirement |
 | Linear | Straight interpolation with two keys; corners can change velocity abruptly |
 
 Spline, Catmull-Rom and Monotone share one automatic derivative at each key
-between its incoming and outgoing intervals. They are whole-path settings for
-position, angles and FOV. **Tension** adjusts Auto tangents across the entire path:
+between its incoming and outgoing intervals. The **Interpolation** menu chooses the position and FOV profile.
+**Rotation** independently selects editable Euler curves, Classic quaternion spline,
+or quaternion linear interpolation. The effective native modes are printed below
+the controls; profile changes retain the chosen rotation backend. Editable Euler
+rotation uses the same Auto profile as position/FOV. **Tension** adjusts Auto tangents across the entire path:
 0% preserves their full slopes; 100% flattens them and deliberately stops at keys.
 Intermediate values reduce the slopes. Existing Free, Flat and Linear tangent
-edits are retained. Return those tangents to Auto to apply the chosen profile.
+edits are retained. **Recalculate Auto when changing profile** explicitly resets
+position/FOV tangents and editable Euler tangents when selecting a new profile. Return those tangents to Auto to apply the chosen profile.
 
 For flowing travel, start with Catmull-Rom at 0% tension. Authored positions and
 timestamps still determine speed; these profiles do not promise constant speed
 between arbitrarily timed positions. Classic console capture with
 `mirv_campath add` remains available. Existing files keep their interpolation.
+**Edit Classic position / FOV tangents** converts those scalar curves to editable
+curves using their exact calculated derivatives, retaining their shape and the
+Classic quaternion rotation backend. Holds still require conversion to Custom;
+the editor now explains that restriction explicitly.
+
+Minimum jerk minimizes integrated squared jerk over the entire channel, using
+shared velocity and acceleration at keys. It can overshoot and is not a constant
+speed mode. Linked, unweighted slope edits become derivative constraints in that
+solve. Broken slopes or weighted handles use the existing cubic evaluator on the
+affected channel; Shift-weight dragging is disabled for minimum jerk. Explicit
+holds use zero velocity and acceleration at arrival and release. Insertion and
+distance retiming preserve quintic shape by retaining its effective derivatives.
+
 Profile and tension settings save in the same XML and participate in undo/redo;
 older XML files use the original defaults.
 
@@ -74,11 +92,13 @@ Long names are clipped in the name column and shown fully in tooltips. The
 sequencer supports selecting and dragging keys and exposes a right-click menu:
 
 - **Remove** deletes the key.
-- **Get** moves the free camera to the key's pose.
+- **Get** releases path preview and moves the free camera to the key's pose.
 - **Set** captures the current pose at its timestamp, preserving tangent metadata.
 - **Edit** selects the key for the viewport gizmo.
 
-Use the pause/speed buttons or scrub the timeline to navigate the demo. The preview
+Use **Play**, **Freeze**, the speed buttons, or scrub the timeline to navigate the demo. Play resumes Source at 1x; Freeze uses `demo_timescale 0` and resumes
+Source's pause state. Speed buttons also resume Source, so they work after either
+pause or timescale freezing. The preview
 slider evaluates the path without seeking. **Preview path** in either panel and
 `mirv_campath preview` operate the same cursor and camera. Opening or closing the
 overlay retains that cursor; right-mouse flying explicitly exits preview.
@@ -108,8 +128,16 @@ box on empty canvas. Right-click a channel checkbox to focus editing when
 normalized channels overlap. Drag keys to change time and that channel's value;
 Shift locks the dominant axis, and Alt snaps time displacement to demo ticks.
 Selection is shared by native commands, graph editing and timeline highlights.
+**Frame selected** fits the selected keys in time and visible values. **Delete
+selected keys** or **Delete** removes the native selection in one undoable edit;
+it retains the path offset. Timeline dragging preserves fractional times and
+leaves unselected timestamps untouched. A rejected drag also retains selection.
+The inspector's **Lock key times** protects graph/timeline retiming and editor hold
+capture. Checked X/Y/Z/FOV/Pitch/Yaw/Roll boxes lock those channels for graph,
+inspector, replacement and gizmo pose edits. Anchoring requires unlocked pose
+channels. Explicit console commands remain available independently of editor locks.
 Selected keys move together. **Escape** cancels an unfinished mouse drag,
-including handles, timeline retiming and the viewport gizmo. Colliding times and overlapping holds are rejected
+including handles, modifier envelopes, speed points, timeline retiming and the viewport gizmo. Colliding times and overlapping holds are rejected
 without deleting keys. The **Selected key inspector** provides exact path time,
 demo tick, position, angles, FOV and hold duration. Numeric changes apply as an
 offset to all selected keys (hold duration applies the same duration).
@@ -158,6 +186,64 @@ without a mode retain their original whole-pose clock; new files store the choic
 Retime still changes the arrival timestamps of existing keys for every channel.
 Turning Distance timing off restores ordinary interpolation in the new time layout.
 
+**Editable speed profile** is in Travel speed / distance timing. Choose **Constant
+speed** or **Ease start / end** as a starting point. Drag the speed points;
+double-click to add one and right-click an interior point to remove it. The X axis
+is normalized moving time across the whole path, excluding explicit holds and
+stationary intervals. Y is relative speed. The system integrates and normalizes
+that profile to cover the same spatial distance in the requested duration. Zero
+speed is allowed, but an entirely zero profile is rejected.
+
+Editing this profile immediately retimes the existing camera keys and preserves
+the spatial curve. It does not restart easing at camera keyframes. Arrival times
+and hold release times move; hold durations remain unchanged. The current total
+path duration is retained. Use Total duration / Retime by distance to choose a
+new duration. Noise ranges keep their explicit path-second coordinates when the
+base path is retimed. The upper speed display shows the resulting evaluated
+movement; the editable profile describes the base travel timing.
+
+## Selective noise modifiers
+
+Open **Range modifiers** in the graph. Use **Draw modifier range** and drag across
+the graph, enter exact path seconds or demo ticks, or use **Range from selected
+keys**. The range can cover part of an interval or a hold; it is not restricted to
+camera key boundaries. **Add noise to range** initially affects visible/focused
+channels. Per-channel amplitudes can then be edited independently.
+
+Each modifier has begin/end, fade-in/out durations, frequency, seed, enable and
+camera-space controls. Drag the boundaries and fade markers in the shaded strip
+above the graph, or use exact numeric values. Envelope edges use smooth fades.
+The dim curve is the unmodified evaluated path; the bright curve includes the
+modifier, including movement during an explicitly covered hold. A stationary
+base pose remains unchanged underneath. Modifiers apply in list order and can be
+reordered, bypassed or removed.
+
+Position noise can use world space or the camera's forward/right/up axes.
+Rotational noise is composed as a local orientation offset; quaternion components
+are not modified individually. Noise is deterministic at each path time, so
+scrubbing and recording do not change it. Finite ranges, amplitudes, frequencies
+and seeds are validated. Native files, collection files, undo and recovery retain
+the modifier settings; classic export bakes their evaluated result.
+
+```text
+mirv_campath speedProfile list
+mirv_campath speedProfile point 0 0
+mirv_campath speedProfile point 0.25 1
+mirv_campath speedProfile point 1 0
+mirv_campath speedProfile reset
+mirv_campath modifier noise 10 12 position 3 2
+mirv_campath modifier list
+mirv_campath modifier set 0 yaw 1.5
+mirv_campath modifier set 0 fadeIn 0.4
+mirv_campath modifier set 0 cameraSpace 1
+mirv_campath modifier remove 0
+```
+
+Speed-point times use 0..1 and speeds use relative nonnegative values. Modifier
+range/fade times use path seconds; position amplitudes use units and angle/FOV
+amplitudes use degrees. The console exposes the same validation and evaluator as
+the graph. No separate camera system or renderer is introduced.
+
 Console equivalents remain under the native command tree, for example:
 
 ```text
@@ -172,7 +258,7 @@ mirv_campath edit tangent x both 20
 mirv_campath edit tangentweight x both 1
 ```
 
-`edit interp auto spline|catmullrom|monotone` chooses the profile and enables
+`edit interp auto spline|catmullrom|monotone|minimumjerk` chooses the profile and enables
 Custom interpolation on all channels with one command. `edit interp tension`
 accepts 0..1. The existing per-channel interpolation commands remain available.
 
@@ -252,6 +338,7 @@ open editor when a text field is not being edited:
 | Shift+E | Replace the one selected key's pose, keeping its time, hold and tangents |
 | Y | Capture the selected keys' hold release at current demo time |
 | Shift+Y | Clear selected holds |
+| Delete | Delete selected keys, preserving path offset |
 | Ctrl+A | Select all keys |
 | Ctrl+Shift+A | Anchor the selection from its first selected key to the current camera, using HLAE's existing anchor command |
 | Right Ctrl alone | Seek to the preview cursor on release |
@@ -295,7 +382,9 @@ a turn count; use Custom rotation for deliberate spins.
 **Export classic XML** exports the selected shot, including a muted alternate,
 as sampled ordinary HLAE linear-position/FOV and spherical-linear rotation keys.
 Choose **Sample FPS** (default 120). Original key and hold-release times are
-included, and extra rotation samples preserve fast complete turns. The file has
+included, and extra rotation samples preserve fast complete turns. Enabled noise
+ranges receive additional samples at boundaries/fades and at least eight samples
+per noise lattice interval, subject to the export limits. The file has
 no custom tangents, per-key hold or distance-timing extensions. The editing path,
 its indices, native save target and savepoint remain unchanged. Exports are bounded
 to 100,000 samples and the native reader's 64 MiB file limit; an excessive request
@@ -350,7 +439,10 @@ FFmpeg profiles require HLAE's normal FFmpeg installation.
 **Save all** / **Save all as** write a named-path collection. Open the corresponding
 format with **Open path** or **Open collection**. Files retain custom tangents,
 weights, holds, Euler winding and distance timing. Old classic files still load.
-Save appends `.xml` when needed. Failed loads preserve current work and saves use
+Save appends `.xml` when needed. Undoing authoring changes after Save As retains
+the current save destination. Removing the final shot creates a clean placeholder
+with playback/visibility flags reset. Classic whole-path hold remains available
+before its start even when an unused second path exists. Failed loads preserve current work and saves use
 an adjacent temporary file before replacing the target. Collection XML requires
 this branch; older HLAE versions do not understand its additional features.
 
@@ -388,7 +480,6 @@ These checks support review; the complete MSVC build, in-game input handoffs,
 gizmo axes/projection, device resets and recorded output still require testing in TF2.
 
 Selection changes keep trajectory and distance caches intact; the drawer updates
-selection colors without resampling geometry. A CPU check with 32 shots of 500
-keys measured approximately 0.006 ms per playback query and 0.009 ms per selection
-update in this cloud environment. These are CPU measurements, not TF2 frame-rate
-or GPU guarantees.
+selection colors without resampling geometry. Minimum-jerk curves use a cached
+banded solve rather than solving again on each evaluation. GPU performance and
+high-frequency world-path drawing still require measurement in TF2.

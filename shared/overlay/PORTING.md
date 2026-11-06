@@ -132,3 +132,27 @@ hold labels and interval labels have independent visibility controls. World dept
 testing and device resources remain in the same renderer. GPU / in-game behavior
 still needs verification in TF2; cloud tests cover core evaluation, editor input,
 portable label layout, and targeted Windows x86/x64 compilation.
+
+
+## Whole-path timing and selective modifiers
+
+The native CamPath now stores an integrated whole-path speed profile and bounded
+range noise modifiers. The same Eval result drives playback, preview, graph,
+classic world drawing and sampled export; EvalUnmodified exposes the base for
+authoring and comparison. Noise uses a seeded smooth lattice function and local
+quaternion offsets, with explicit time ranges and smooth envelopes. No mutable
+per-frame random state, second evaluator subsystem or renderer was introduced.
+
+The existing scalar/Euler editable interpolation classes can cache a global
+minimum-jerk quintic curve from AfxMath. The solve uses a symmetric band matrix
+and shared derivatives. Saved high-order derivatives preserve exact subdivision
+and geometry under retiming. Classic scalar derivatives can be exposed as editable
+handles while retaining Classic quaternion rotation. UI controls report effective
+modes and distinguish preserving authored tangents from resetting Auto.
+
+All pose editing routes use validated native map replacement. Gizmo updates are
+one pose operation and retain selection; timeline edits use tick displacement
+rather than quantizing all keys. Undo retains current save targets. Partial
+clearing retains offsets, final-shot removal resets flags, and before-start hold
+selection does not depend on an unused shot's presence. Headless checks cover the
+new controls, cancellation, save/load, export and deterministic evaluation.

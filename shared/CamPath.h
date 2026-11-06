@@ -4,6 +4,7 @@
 
 #include <list>
 #include <string>
+#include <limits>
 #include <memory>
 
 using namespace Afx;
@@ -25,6 +26,8 @@ struct CamPathValue
 	bool HasEuler = false;
 	double EulerPitch = 0, EulerYaw = 0, EulerRoll = 0;
 	double HoldDuration = 0;
+	unsigned char AccelerationMask = 0;
+	double AccelerationIn[7] = {}, AccelerationOut[7] = {};
 	QEulerAngles GetEulerAngles() const;
 	void SetEulerAngles(const QEulerAngles &angles);
 	void SetOrientation(const Quaternion &orientation);
@@ -146,6 +149,22 @@ public:
 	const AutoTangentSettings &GetAutoTangentSettings() const { return m_AutoTangentSettings; }
 	bool SetAutoTangentSettings(const AutoTangentSettings &settings);
 
+	struct SpeedKey
+	{
+		double Time = 0, Speed = 1;
+		bool operator==(const SpeedKey &b) const
+		{
+			return Time == b.Time && Speed == b.Speed;
+		}
+	};
+	struct NoiseModifier
+	{
+		double Begin = 0, End = 1, FadeIn = 0.2, FadeOut = 0.2, Frequency = 1;
+		double Amplitude[7] = {};
+		unsigned int Seed = 1;
+		bool Enabled = true, CameraSpace = false;
+		bool operator==(const NoiseModifier &b) const;
+	};
 	struct State
 	{
 		CInterpolationMap<CamPathValue> Keys;
@@ -156,6 +175,8 @@ public:
 		AutoTangentSettings AutoTangents;
 		bool DistanceTiming = false;
 		bool DistanceTimingPose = false;
+		std::vector<SpeedKey> SpeedProfile;
+		std::vector<NoiseModifier> Modifiers;
 		bool operator==(const State &other) const;
 	};
 	State CaptureState() const;
@@ -186,6 +207,7 @@ public:
 	/// Must not be called if CanEval() returns false!<br />
 	/// </remarks>
 	CamPathValue Eval(double t);
+	CamPathValue EvalUnmodified(double time);
 
 	bool Save(wchar_t const * fileName);
 	bool Load(wchar_t const *fileName);
@@ -219,12 +241,28 @@ public:
 	};
 	bool ReplaceKeys(const CInterpolationMap<CamPathValue> &keys);
 	bool UpdateKey(double oldTime, double newTime, const CamPathValue &value);
+	bool ReplacePose(double time, const CamPathValue &pose, unsigned int channels = 127);
+	bool DeleteSelected();
 	bool SetKeyHold(size_t index, double releaseTime);
 	bool HasKeyHolds() const;
 	bool Insert(double time);
 	bool BakeTangents();
+	bool MakeScalarCurvesEditable();
 	double GetSpeed(double time);
 	bool RetimeByDistance(double duration);
+	const std::vector<SpeedKey> &GetSpeedProfile() const
+	{
+		return m_SpeedProfile;
+	}
+	bool ApplySpeedProfile(const std::vector<SpeedKey> &keys, double duration);
+	double GetProfileSpeed(double time);
+	const std::vector<NoiseModifier> &GetModifiers() const
+	{
+		return m_Modifiers;
+	}
+	bool SetModifiers(const std::vector<NoiseModifier> &modifiers);
+	static double ModifierInfluence(const NoiseModifier &modifier, double time);
+
 	bool GetDistanceTiming() const
 	{
 		return m_DistanceTiming;
@@ -243,6 +281,7 @@ public:
 	static double GetChannelValue(const CamPathValue &value, Channel channel);
 	static void SetChannelValue(CamPathValue &value, Channel channel, double component);
 	bool GetTangent(Channel ch, size_t index, bool outgoing, double &slope, double &weight);
+	bool GetAcceleration(Channel ch, size_t index, bool outgoing, double &acceleration);
 	void SetTangent(Channel ch, bool setIn, bool setOut, double slopeIn, double slopeOut);
 	void SetTangentMode(Channel ch, bool setIn, bool setOut, unsigned char mode);
 	void SetTangentWeight(Channel ch, bool setIn, bool setOut, double wIn, double wOut);
@@ -309,6 +348,31 @@ private:
 	std::list<struct CamPathChangedData> m_OnChanged;
 	std::list<struct CamPathChangedData>::iterator m_OnChangedIt;
 
+	static double AccelerationSelector(const CamPathValue &v, int ch, bool outgoing)
+	{
+		return v.AccelerationMask & (1u << ch) ? (outgoing ? v.AccelerationOut[ch] : v.AccelerationIn[ch])
+											   : (std::numeric_limits<double>::quiet_NaN)();
+	}
+	static double XAcceleration(const CamPathValue &v, bool outgoing)
+	{
+		return AccelerationSelector(v, 0, outgoing);
+	}
+	static double YAcceleration(const CamPathValue &v, bool outgoing)
+	{
+		return AccelerationSelector(v, 1, outgoing);
+	}
+	static double ZAcceleration(const CamPathValue &v, bool outgoing)
+	{
+		return AccelerationSelector(v, 2, outgoing);
+	}
+	static double FovAcceleration(const CamPathValue &v, bool outgoing)
+	{
+		return AccelerationSelector(v, 3, outgoing);
+	}
+	static double EulerAcceleration(const CamPathValue &v, int ch, bool outgoing)
+	{
+		return AccelerationSelector(v, ch + 4, outgoing);
+	}
 	static double XSelector(CamPathValue const & value)
 	{
 		return value.X;
@@ -529,6 +593,13 @@ private:
 	CInterpolationMap<CamPathValue> m_Map;
 	CInterpolationMap<CamPathValue> m_EvalMap;
 	CamPathValue EvalRaw(double time);
+	std::vector<SpeedKey> m_SpeedProfile;
+	std::vector<NoiseModifier> m_Modifiers;
+	std::vector<double> m_SpeedArea;
+	bool m_SpeedDirty = true;
+	void BuildSpeedProfile();
+	double ProfileDistance(double time);
+	double ProfileTime(double distance);
 	bool m_DistanceTiming = false, m_DistanceTimingPose = false, m_ArcDirty = true;
 	struct ArcSegment
 	{
