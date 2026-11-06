@@ -1461,6 +1461,79 @@ static DWORD g_CampathPreviewLastMs = 0;
 static UINT g_CampathPreviewToggleKey = 0;
 static bool g_CampathPreviewToggleHeld = false;
 static bool g_CampathPreviewUndoHeld = false;
+static bool g_CampathPreviewEditHeld[256] = {};
+static bool g_CampathRightCtrlHeld = false, g_CampathRightCtrlChord = false;
+static int g_CampathSeekMode = 0, g_CampathSeekTarget = -1, g_CampathSeekFrom = 0,
+		   g_CampathSeekPendingMode = 0;
+static double g_CampathSeekScale = 0, g_CampathSeekPendingScale = 0;
+static DWORD g_CampathSeekStarted = 0;
+int MirvCampathPreview_GetSeekMode()
+{
+	return g_CampathSeekMode;
+}
+double MirvCampathPreview_GetSeekScale()
+{
+	return g_CampathSeekScale;
+}
+bool MirvCampathPreview_SetSeekOptions(int mode, double scale)
+{
+	if (mode < 0 || mode > 2 || !std::isfinite(scale) || scale < 0 || scale > 100)
+		return false;
+	g_CampathSeekMode = mode;
+	g_CampathSeekScale = scale;
+	return true;
+}
+bool MirvCampathPreview_SeekTick(int tick)
+{
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || tick < 0 ||
+		!GetCurrentDemoTick(g_CampathSeekFrom))
+		return false;
+	if (auto *demo = g_VEngineClient->GetDemoInfoEx())
+		if (demo->GetDemoPlaybackTotalTicks() > 0)
+			tick = (std::min)(tick, demo->GetDemoPlaybackTotalTicks() - 1);
+	g_CampathSeekTarget = tick;
+	g_CampathSeekPendingMode = g_CampathSeekMode;
+	g_CampathSeekPendingScale = g_CampathSeekScale;
+	g_CampathSeekStarted = GetTickCount();
+	std::ostringstream command;
+	command << "demo_timescale 1;demo_resume;demo_gototick " << tick << " 0 1";
+	g_VEngineClient->ClientCmd_Unrestricted(command.str().c_str());
+	return true;
+}
+static void CampathPreview_FinishSeek()
+{
+	if (g_CampathSeekTarget < 0 || !g_VEngineClient)
+		return;
+	int tick;
+	if (!g_VEngineClient->IsPlayingDemo())
+	{
+		g_CampathSeekTarget = -1;
+		Tier0_Warning("Camera seek did not complete; after-seek behavior was not applied.\n");
+		return;
+	}
+	if (!GetCurrentDemoTick(tick))
+		return;
+	const bool arrived = g_CampathSeekFrom <= g_CampathSeekTarget
+							 ? tick >= g_CampathSeekTarget
+							 : tick < g_CampathSeekFrom && tick >= g_CampathSeekTarget - 1;
+	if (!arrived)
+	{
+		if (GetTickCount() - g_CampathSeekStarted > 120000)
+		{
+			g_CampathSeekTarget = -1;
+			Tier0_Warning("Camera seek timed out before reaching its target.\n");
+		}
+		return;
+	}
+	std::ostringstream command;
+	if (g_CampathSeekPendingMode == 1)
+		command << "demo_timescale 1;demo_pause";
+	else
+		command << "demo_timescale " << (g_CampathSeekPendingMode == 2 ? 1 : g_CampathSeekPendingScale)
+				<< ";demo_resume";
+	g_CampathSeekTarget = -1;
+	g_VEngineClient->ClientCmd_Unrestricted(command.str().c_str());
+}
 
 static void CampathPreview_StopTravel()
 {
@@ -1642,15 +1715,13 @@ bool MirvCampathPreview_Seek()
 													  g_CampathPreviewTime + path.GetOffset(), tick) ||
 		tick < 0)
 		return false;
-	std::ostringstream command;
-	command << "demo_gototick " << tick;
-	g_VEngineClient->ClientCmd_Unrestricted(command.str().c_str());
-	return true;
+	return MirvCampathPreview_SeekTick(tick);
 }
 
 // Called before the mirv_input view override is evaluated.
 void MirvCampathPreview_Update()
 {
+	CampathPreview_FinishSeek();
 	static int historyFrame = -1;
 	if (historyFrame != g_MirvTime.GetFrameCount())
 	{
@@ -1778,10 +1849,27 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 	const bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
 	if (!down && !up)
 		return false;
+	const bool rightCtrl = key == VK_RCONTROL || (key == VK_CONTROL && (lParam & (1LL << 24)));
+	if (up && rightCtrl && g_CampathRightCtrlHeld)
+	{
+		g_CampathRightCtrlHeld = false;
+		if (!g_CampathRightCtrlChord && g_CampathPreviewActive && !g_Hook_VClient_RenderView.IsMenuActive())
+			MirvCampathPreview_Seek();
+		return true;
+	}
+	if (down && g_CampathRightCtrlHeld && !rightCtrl)
+		g_CampathRightCtrlChord = true;
+
 	// Consume the matching release even if Ctrl or preview was released first.
 	if (up && key == 'Z' && g_CampathPreviewUndoHeld)
 	{
 		g_CampathPreviewUndoHeld = false;
+		return true;
+	}
+
+	if (up && key < 256 && g_CampathPreviewEditHeld[key])
+	{
+		g_CampathPreviewEditHeld[key] = false;
 		return true;
 	}
 
@@ -1810,6 +1898,16 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 
 	if (!g_CampathPreviewActive)
 		return false;
+	if (rightCtrl)
+	{
+		if (down && !CampathPreview_IsRepeatKey(lParam))
+		{
+			g_CampathRightCtrlHeld = true;
+			g_CampathRightCtrlChord = false;
+		}
+		return true;
+	}
+
 	if (key == 'Z' && (g_CampathPreviewUndoHeld || (down && (GetKeyState(VK_CONTROL) & 0x8000))))
 	{
 		if (down && !g_CampathPreviewUndoHeld && !CampathPreview_IsRepeatKey(lParam))
@@ -1819,6 +1917,25 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		}
 		return true;
 	}
+	const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0,
+			   shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+	if (key == 'E' || key == 'Y' || (key == 'A' && control))
+	{
+		if (down && key < 256 && !g_CampathPreviewEditHeld[key] && !CampathPreview_IsRepeatKey(lParam))
+		{
+			g_CampathPreviewEditHeld[key] = true;
+			if (key == 'E')
+				AfxHookSource::CameraOverlay::PreviewCapture(shift);
+			else if (key == 'Y')
+				AfxHookSource::CameraOverlay::PreviewHold(shift);
+			else if (shift)
+				AfxHookSource::CameraOverlay::PreviewAnchor();
+			else
+				AfxHookSource::CameraOverlay::PreviewSelectAll();
+		}
+		return true;
+	}
+
 	if (key != VK_LEFT && key != VK_RIGHT && key != VK_UP && key != VK_DOWN
 		&& key != VK_HOME && key != VK_END)
 		return false;
@@ -1862,6 +1979,10 @@ void MirvCampathPreview_ReleaseKeys()
 	CampathPreview_StopTravel();
 	g_CampathPreviewToggleHeld = false;
 	g_CampathPreviewUndoHeld = false;
+	for (auto &held : g_CampathPreviewEditHeld)
+		held = false;
+	g_CampathRightCtrlHeld = false;
+	g_CampathRightCtrlChord = false;
 }
 
 static void CampathPreview_PrintHelp()
@@ -1869,17 +1990,20 @@ static void CampathPreview_PrintHelp()
 	Tier0_Msg(
 		"mirv_campath preview enter - Begin preview mode (one or more keyframes).\n"
 		"mirv_campath preview toggle - Toggle Preview Mode on/off.\n"
-		"mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, home, end, pageup, pagedown).\n"
+		"mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, "
+		"home, end, pageup, pagedown).\n"
 		"mirv_campath preview <index> - Select a keyframe (0-based).\n"
 		"mirv_campath preview interp <0..1> - Position between nearest keyframe and the following one.\n"
 		"mirv_campath preview undo|redo - Undo / redo camera path edits.\n"
 		"CTRL+Z undoes; CTRL+SHIFT+Z redoes in preview, including edits made with the overlay closed.\n"
 		"mirv_campath preview seek - Seek the demo to the current preview time.\n"
 		"mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
+		"mirv_campath preview afterSeek timescale <0..100>|pause|continue - Default: timescale 0.\n"
+		"E captures; Shift+E replaces; Y captures hold release; Shift+Y clears it; RCtrl seeks.\n"
+		"Ctrl+A selects all; Ctrl+Shift+A anchors the selection using its first key.\n"
 		"Preview keys (console closed): UP/DOWN select next/previous; HOME/END select first/last.\n"
 		"LEFT/RIGHT scrub interpolated paths, or step through keyframes if interpolation is unavailable.\n"
-		"HOME/END jump without seeking the demo (unless assigned as toggleKey); use preview seek to seek.\n"
-	);
+		"HOME/END jump without seeking the demo (unless assigned as toggleKey); use preview seek to seek.\n");
 }
 
 CON_COMMAND(mirv_campath, "camera paths")
@@ -1898,6 +2022,25 @@ CON_COMMAND(mirv_campath, "camera paths")
 	} editScope;
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto &path = g_Hook_VClient_RenderView.m_CamPath;
+	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "exportClassic"))
+	{
+		bool ok = false;
+		if (args->ArgC() == 3 || args->ArgC() == 4)
+		{
+			double fps = 120;
+			char *end = nullptr;
+			if (args->ArgC() == 4)
+				fps = strtod(args->ArgV(3), &end);
+			std::wstring file;
+			ok = (!end || (end != args->ArgV(3) && !*end)) && std::isfinite(fps) && fps > 0 && fps <= 1000 &&
+				 UTF8StringToWideString(args->ArgV(2), file) && path.ExportClassic(file.c_str(), 1 / fps);
+		}
+		if (!ok)
+			Tier0_Warning("mirv_campath exportClassic <file.xml> [sample fps=120] - Export selected path as "
+						  "sampled native linear keys. Editing data is retained.\n");
+		return;
+	}
+
 	if (args->ArgC() >= 2 && (!_stricmp(args->ArgV(1), "save") || !_stricmp(args->ArgV(1), "load")))
 	{
 		const bool save = !_stricmp(args->ArgV(1), "save");
@@ -1924,8 +2067,10 @@ CON_COMMAND(mirv_campath, "camera paths")
 		if (!_stricmp(action, "list") && args->ArgC() <= 3)
 		{
 			for (size_t i = 0; i < paths.GetCount(); ++i)
-				Tier0_Msg("%s%u: %s%s\n", i == paths.GetActive() ? "* " : "  ", (unsigned)i,
-						  paths.GetName(i).c_str(), paths.IsDirty(i) ? " *" : "");
+				Tier0_Msg("%s#%u: %s | %s%s | %s%s\n", i == paths.GetActive() ? "* " : "  ", (unsigned)i,
+						  paths.GetName(i).c_str(), paths.IsMuted(i) ? "muted" : "playback",
+						  paths.IsSolo(i) ? ", solo" : "", paths.IsVisible(i) ? "visible" : "hidden",
+						  paths.IsDirty(i) ? " *" : "");
 			return;
 		}
 		if ((!_stricmp(action, "new") || !_stricmp(action, "duplicate")) && args->ArgC() <= 4)
@@ -1948,9 +2093,20 @@ CON_COMMAND(mirv_campath, "camera paths")
 			}
 			ok = !_stricmp(action, "use") ? paths.Select(index) : paths.Remove(index);
 		}
+		if ((!_stricmp(action, "mute") || !_stricmp(action, "solo") || !_stricmp(action, "visible")) &&
+			args->ArgC() == 4 && (!_stricmp(args->ArgV(3), "0") || !_stricmp(args->ArgV(3), "1")))
+		{
+			const auto i = paths.GetActive();
+			const bool value = atoi(args->ArgV(3)) != 0;
+			ok = paths.SetFlags(i, !_stricmp(action, "mute") ? value : paths.IsMuted(i),
+								!_stricmp(action, "solo") ? value : paths.IsSolo(i),
+								!_stricmp(action, "visible") ? value : paths.IsVisible(i));
+		}
+
 		if (!ok)
 			Tier0_Msg("mirv_campath path list\nmirv_campath path new|duplicate [name]\nmirv_campath path "
-					  "use|remove <0-based index|name>\nmirv_campath path rename <name>\nNames must be "
+					  "use|remove <0-based index|name>\nmirv_campath path rename <name>\nmirv_campath path "
+					  "mute|solo|visible <0|1> - Selected path.\nNames must be "
 					  "nonempty and unique. Quote names containing spaces.\n");
 		return;
 	}
@@ -2016,12 +2172,19 @@ CON_COMMAND(mirv_campath, "camera paths")
 	}
 	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "distanceTiming"))
 	{
-		if (args->ArgC() == 3 && (!_stricmp(args->ArgV(2), "0") || !_stricmp(args->ArgV(2), "1")))
+		const bool scope =
+			args->ArgC() != 4 || !_stricmp(args->ArgV(3), "position") || !_stricmp(args->ArgV(3), "pose");
+		if ((args->ArgC() == 3 || args->ArgC() == 4) && scope &&
+			(!_stricmp(args->ArgV(2), "0") || !_stricmp(args->ArgV(2), "1")))
+		{
+			if (args->ArgC() == 4)
+				path.SetDistanceTimingPose(!_stricmp(args->ArgV(3), "pose"));
 			path.SetDistanceTiming(atoi(args->ArgV(2)) != 0);
+		}
 		else
-			Tier0_Msg("mirv_campath distanceTiming <0|1> (currently %d) - Map existing intervals by "
-					  "distance. Retime also aligns their travel speeds.\n",
-					  path.GetDistanceTiming() ? 1 : 0);
+			Tier0_Msg("mirv_campath distanceTiming <0|1> [position|pose] (currently %d, %s) - Retime also "
+					  "aligns travel speeds.\n",
+					  path.GetDistanceTiming(), path.GetDistanceTimingPose() ? "pose" : "position");
 		return;
 	}
 
@@ -2036,6 +2199,26 @@ CON_COMMAND(mirv_campath, "camera paths")
 		CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 		if (args->ArgC() == 2) { CampathPreview_PrintHelp(); return; }
 		const char * cmd = args->ArgV(2);
+		if (!_stricmp(cmd, "afterSeek"))
+		{
+			bool ok = false;
+			if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "pause"))
+				ok = MirvCampathPreview_SetSeekOptions(1, g_CampathSeekScale);
+			if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "continue"))
+				ok = MirvCampathPreview_SetSeekOptions(2, g_CampathSeekScale);
+			if (args->ArgC() == 5 && !_stricmp(args->ArgV(3), "timescale"))
+			{
+				char *end;
+				double scale = strtod(args->ArgV(4), &end);
+				ok = end != args->ArgV(4) && !*end && MirvCampathPreview_SetSeekOptions(0, scale);
+			}
+			if (!ok)
+				Tier0_Msg("mirv_campath preview afterSeek timescale <0..100>|pause|continue (mode %d, scale "
+						  "%.3f)\n",
+						  g_CampathSeekMode, g_CampathSeekScale);
+			return;
+		}
+
 		if (args->ArgC() == 3 && (! _stricmp(cmd, "undo") || ! _stricmp(cmd, "redo")))
 		{
 			AfxHookSource::CameraOverlay::HistoryUndo(! _stricmp(cmd, "redo"));
@@ -2131,13 +2314,15 @@ CON_COMMAND(mirv_campath, "camera paths")
 
 	MirvCampath_ConCommand(args, Tier0_Msg, Tier0_Warning, &g_Hook_VClient_RenderView.m_CamPath, &g_MirvCampath_Time, &g_MirvCampath_Camera, &g_MirvCampath_Drawer);
 	if (args->ArgC() == 1)
-		Tier0_Msg("mirv_campath preview [...] - Navigate campath with free camera; use mirv_campath preview "
-				  "for help.\n"
-				  "mirv_campath path [...] | insert [seconds] | keyHold <index> [release|clear] | retime "
-				  "<seconds> | distanceTiming <0|1>\n"
-				  "mirv_campath save|load <file.xml> [all] - Selected path or collection.\n"
-				  "mirv_campath undo|redo - Undo / redo camera path edits (also CTRL+Z / CTRL+SHIFT+Z in "
-				  "preview).\n");
+		Tier0_Msg(
+			"mirv_campath preview [...] - Navigate campath with free camera; use mirv_campath preview "
+			"for help.\n"
+			"mirv_campath path [...] | insert [seconds] | keyHold <index> [release|clear] | retime "
+			"<seconds> | distanceTiming <0|1>\n"
+			"mirv_campath save|load <file.xml> [all] - Selected path or collection.\n"
+			"mirv_campath exportClassic <file.xml> [sample fps=120] - Bake selected path for older HLAE.\n"
+			"mirv_campath undo|redo - Undo / redo camera path edits (also CTRL+Z / CTRL+SHIFT+Z in "
+			"preview).\n");
 }
 
 CON_COMMAND(mirv_camexport, "controls camera motion data export") {

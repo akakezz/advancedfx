@@ -62,7 +62,16 @@ Enable **Show Sequencer**. The timeline spans the entire demo, including future
 ticks, and displays its current visible range. Scroll the wheel to zoom around the
 pointer. Middle-drag or Shift+wheel to move through the timeline, or drag its
 overview bar. **Fit demo** restores the full range. Navigation does not retime keys.
-The sequencer supports selecting and dragging keys and exposes a right-click menu:
+Named paths appear on separate tracks. The editing track has draggable keys;
+other tracks show reference keys and holds. Click another path's name or range to
+make it the editing path. **Playback / cuts** shows which eligible shot wins each
+time interval, including overlaps and returns to an earlier shot. It displays the
+planned sequence while global playback is disabled. Yellow boundaries identify
+switches; the Campath tab also names the current playback winner.
+
+Wheel over the time area zooms; wheel over track names scrolls a tall collection.
+Long names are clipped in the name column and shown fully in tooltips. The
+sequencer supports selecting and dragging keys and exposes a right-click menu:
 
 - **Remove** deletes the key.
 - **Get** moves the free camera to the key's pose.
@@ -84,16 +93,23 @@ to Auto** when you want them recalculated. Classic quaternion/cubic interpolatio
 cannot be split exactly by this editor and insertion is rejected there. **Add
 point** remains normal pose-and-demo-time capture.
 
-Enable **Show Curve Editor** to display X/Y/Z, FOV, pitch/yaw/roll individually or
+Enable **Show graph**, or **Show Curve Editor** in the sequencer, to open the
+dockable **Campath Graph** window. It displays X/Y/Z, FOV, pitch/yaw/roll individually or
 in combination; X is visible initially. Normalization makes channels with different
 units readable. Wheel zooms time around the pointer; Ctrl+wheel zooms values.
 Middle-drag pans both axes. **Fit graph** resets the view. The sequencer window
-can be resized vertically; zoom and pan no longer require sliders.
+can be resized vertically; zoom and pan no longer require sliders. Graph time
+labels show demo ticks / path seconds; value labels and cursor tooltips show the
+focused channel (or first visible channel). Tooltips also report evaluated values
+for every visible channel. Holds have release markers, including final holds and
+single-key stationary shots.
 Click a graph key to select it, Ctrl-click to extend/toggle selection, or drag a
 box on empty canvas. Right-click a channel checkbox to focus editing when
 normalized channels overlap. Drag keys to change time and that channel's value;
 Shift locks the dominant axis, and Alt snaps time displacement to demo ticks.
-Selected keys move together. Colliding times and overlapping holds are rejected
+Selection is shared by native commands, graph editing and timeline highlights.
+Selected keys move together. **Escape** cancels an unfinished mouse drag,
+including handles, timeline retiming and the viewport gizmo. Colliding times and overlapping holds are rejected
 without deleting keys. The **Selected key inspector** provides exact path time,
 demo tick, position, angles, FOV and hold duration. Numeric changes apply as an
 offset to all selected keys (hold duration applies the same duration).
@@ -101,7 +117,16 @@ offset to all selected keys (hold duration applies the same duration).
 Right-click a key for Auto, Flat, Linear or Free tangent modes, applied to the
 incoming side, outgoing side or both. Clicking a selected key preserves the
 selection for batch tangent changes. **Reset selected tangents to Auto** resets
-visible/focused channels, including their handle weights.
+visible/focused channels, including their handle weights. **Reset whole path to
+Auto** recalculates all channels without changing selection. Circles identify Auto
+tangents; squares identify authored/baked tangents, and the interpolation controls
+report their counts. Insert and retime preserve shape by baking automatic tangents;
+changing profile or tension then affects only tangents still set to Auto.
+
+Handles and tangent menus are available only for Custom channels. Linear and
+Classic curves are drawn from their actual evaluator and expose no inactive
+handles. Distance-timed channels are also drawn from playback; disable distance
+timing to edit their underlying handles directly.
 
 - Drag a curve handle to edit the shared slope through that key.
 - Hold **Shift** while dragging to change its weight/influence.
@@ -126,6 +151,11 @@ channels are required; the total duration must leave time for travel. This enabl
 ramps into and out of explicit holds. Ordinary keys share the overall travel
 speed after retiming; geometric corners can still change direction abruptly.
 Changing positions, tangents or holds afterward can require another retime.
+New paths apply distance timing to **position only**. Angle and FOV curves keep
+their own time coordinate within the retimed key intervals. **Apply distance timing
+to angles / FOV too** restores the shared pose clock when desired. Earlier files
+without a mode retain their original whole-pose clock; new files store the choice.
+Retime still changes the arrival timestamps of existing keys for every channel.
 Turning Distance timing off restores ordinary interpolation in the new time layout.
 
 Console equivalents remain under the native command tree, for example:
@@ -157,9 +187,20 @@ and Remove controls. Native keyframe indices remain zero based within that path.
 the evaluable path with the latest start at the current demo time; ties go to the
 later path in the list. Selecting another path changes the editing target, not
 playback priority. All paths use ordinary native keys and the classic drawer.
+Each path has **Mute playback**, **Solo playback** and **Visible in world**.
+Duplicates start muted. Muting excludes a path; if any paths are soloed, only soloed
+paths are eligible. Mute wins over solo, so muting the only soloed path does not
+silently enable other takes. Visibility controls world drawing independently.
+These flags save with both single-path files and collections and participate in
+undo/redo.
+
 Names, hold releases and interval durations are drawn with the classic text
 projection and depth test, using the existing GUI font atlas for full text.
-**Key label size** also scales these labels; zero hides text.
+**Key label size** also scales these labels; zero hides text. Indices and extended
+labels share an overlap layout and stack upward when projected areas collide.
+**Path names**, **Hold labels** and **Segment durations** can be hidden separately.
+World projection and depth testing remain in the classic drawer; no second
+world renderer is used.
 
 In the inspector, set **Hold (seconds)**, **Capture hold release** at the current
 demo time, or **Clear hold**. A held key keeps its complete pose from arrival until
@@ -177,6 +218,9 @@ mirv_campath path new "Second shot"
 mirv_campath path duplicate "Alternate shot"
 mirv_campath path use 0
 mirv_campath path rename "Opening"
+mirv_campath path mute 0
+mirv_campath path solo 1
+mirv_campath path visible 0
 mirv_campath path remove "Alternate shot"
 mirv_campath insert
 mirv_campath insert 12.5
@@ -184,6 +228,8 @@ mirv_campath keyHold 1
 mirv_campath keyHold 1 14.0
 mirv_campath keyHold 1 clear
 mirv_campath retime 10
+mirv_campath distanceTiming 1 position
+mirv_campath distanceTiming 1 pose
 mirv_campath distanceTiming 0
 mirv_campath save "opening.xml"
 mirv_campath save "sequence.xml" all
@@ -194,6 +240,76 @@ mirv_campath load "sequence.xml" all
 captures the current demo time; an explicit release uses path seconds. Path
 selection/removal accepts a zero-based path index or a quoted name. Undo restores
 path creation, removal, renaming and camera edits across the document.
+
+## Preview shortcuts and seeking
+
+The shortcuts below work in native preview with the overlay closed, and in the
+open editor when a text field is not being edited:
+
+| Key | Action |
+| --- | --- |
+| E | Capture pose and current demo time |
+| Shift+E | Replace the one selected key's pose, keeping its time, hold and tangents |
+| Y | Capture the selected keys' hold release at current demo time |
+| Shift+Y | Clear selected holds |
+| Ctrl+A | Select all keys |
+| Ctrl+Shift+A | Anchor the selection from its first selected key to the current camera, using HLAE's existing anchor command |
+| Right Ctrl alone | Seek to the preview cursor on release |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
+| Up / Down | Native preview: next / previous key |
+| Home / End | Native preview: first / last key |
+| Left / Right | Native preview: scrub, or step keys if interpolation is unavailable |
+
+Using Right Ctrl as part of another chord does not also seek. Shift remains
+available for Source's Shift+F2 demo UI. The Campath tab also provides capture,
+replace, select-all and anchor buttons.
+
+**After seeking** chooses Timescale, Pause or Continue (1x), with **Timescale 0**
+as the default. This applies to preview seek, Goto Start and timeline scrubbing.
+The seek temporarily resumes at 1x, asks Source to pause at the target, and applies
+the chosen behavior after arrival. Setting timescale before resuming at the target
+keeps zero-timescale models and particles frozen. Seeking does not move the
+independent preview cursor.
+
+```text
+mirv_campath preview afterSeek timescale 0
+mirv_campath preview afterSeek timescale 0.25
+mirv_campath preview afterSeek pause
+mirv_campath preview afterSeek continue
+```
+
+The mode and timescale persist in the existing ImGui settings file. Source's
+console and menus retain input priority.
+
+## Rotation authoring and classic export
+
+Ordinary wrapped captures still unwrap across +180/-180 using the short route.
+Captures with pitch beyond 90 degrees or explicitly unwrapped yaw/roll retain
+those authored values. Custom Euler interpolation and numeric editing can express
+complete turns: for example, yaw 0 to yaw 720 gives two turns. Editing another
+angle component retains the untouched winding; rotation and anchor transforms
+retain an equivalent Euler representation near the authored angles. Quaternion
+Linear/Classic modes continue to use quaternion orientation, which does not encode
+a turn count; use Custom rotation for deliberate spins.
+
+**Export classic XML** exports the selected shot, including a muted alternate,
+as sampled ordinary HLAE linear-position/FOV and spherical-linear rotation keys.
+Choose **Sample FPS** (default 120). Original key and hold-release times are
+included, and extra rotation samples preserve fast complete turns. The file has
+no custom tangents, per-key hold or distance-timing extensions. The editing path,
+its indices, native save target and savepoint remain unchanged. Exports are bounded
+to 100,000 samples and the native reader's 64 MiB file limit; an excessive request
+fails without replacing the destination.
+
+```text
+mirv_campath exportClassic "opening-classic.xml" 120
+```
+
+This is a sampled approximation, not an editable copy of the original curve.
+Increase sample FPS for fast or sharply curved movement. The exported file has
+additional keyframes and can be used by older HLAE versions. Save path / Save all
+remain the formats for retaining the editable project. Export is for one selected
+shot; collections retain their own native format and playback rules.
 
 ## Gizmos and observing
 
@@ -248,7 +364,7 @@ Save As; older backups remain until discarded. Undo history itself is not persis
 
 Settings include a demo browser, UI scale, fonts and docking. Availability of the
 extra fonts depends on Windows. UI preferences, panel layout and last-used
-folders are stored in HLAE's existing `AfxHookSource_imgui.ini`. Key label size is
+folders are stored in HLAE's existing `AfxHookSource_imgui.ini`. Key label size and label visibility are
 adjustable in the Campath tab using the classic world-space index renderer.
 
 [Port inventory and source attribution](../shared/overlay/PORTING.md)
@@ -270,3 +386,9 @@ python tests/cinematic/test_overlay.py --imgui-dir <path-to-imgui-v1.89.9-dockin
 
 These checks support review; the complete MSVC build, in-game input handoffs,
 gizmo axes/projection, device resets and recorded output still require testing in TF2.
+
+Selection changes keep trajectory and distance caches intact; the drawer updates
+selection colors without resampling geometry. A CPU check with 32 shots of 500
+keys measured approximately 0.006 ms per playback query and 0.009 ms per selection
+update in this cloud environment. These are CPU measurements, not TF2 frame-rate
+or GPU guarantees.

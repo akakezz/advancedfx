@@ -20,6 +20,11 @@ bool MirvCampathPreview_SetActive(bool active);
 double MirvCampathPreview_GetTime();
 bool MirvCampathPreview_SetTime(double time);
 bool MirvCampathPreview_Seek();
+// 0: resume at the chosen timescale, 1: pause, 2: continue at normal speed.
+bool MirvCampathPreview_SeekTick(int tick);
+bool MirvCampathPreview_SetSeekOptions(int mode, double timescale);
+int MirvCampathPreview_GetSeekMode();
+double MirvCampathPreview_GetSeekScale();
 
 // Hook_VClient_RenderView /////////////////////////////////////////////////////
 

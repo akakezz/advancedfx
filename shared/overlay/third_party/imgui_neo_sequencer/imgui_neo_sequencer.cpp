@@ -116,7 +116,8 @@ namespace ImGui
         }
         if (hovered && context.StateOfSelection == SelectionState::Idle && !context.HoldingCurrentFrame && !context.HoldingZoomSlider)
         {
-            if (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f)
+            if ((io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f) &&
+                io.MousePos.x >= context.TopLeftCursor.x + context.ValuesWidth)
             {
                 SetKeyOwner(ImGuiKey_MouseWheelY, context.Id);
                 SetKeyOwner(ImGuiKey_MouseWheelX, context.Id);
@@ -774,7 +775,8 @@ namespace ImGui
             {
                 case SelectionState::Idle:
                 {
-                    if (!IsMouseClicked(ImGuiMouseButton_Left)) return;
+                    if (!IsWindowHovered() || !IsMouseClicked(ImGuiMouseButton_Left))
+                        return;
 
                     context.SelectionMouseStart = GetMousePos();
                     context.StateOfSelection = SelectionState::Selecting;
@@ -903,7 +905,8 @@ namespace ImGui
             }
         }
         const float width = groupBB.Max.x - arrowBB.Min.x;
-        context.ValuesWidth = std::max(context.ValuesWidth, width); // Make left panel wide enough
+        context.ValuesWidth = ImMin(std::max(context.ValuesWidth, width),
+                                    ImMax(32.0f, context.Size.x * 0.35f)); // Make left panel wide enough
         return addGroupRes && addArrowRes;
     }
 
@@ -927,7 +930,8 @@ namespace ImGui
             }
         }
         const float width = groupBB.Max.x - groupBB.Min.x;
-        context.ValuesWidth = std::max(context.ValuesWidth, width); // Make left panel wide enough
+        context.ValuesWidth = ImMin(std::max(context.ValuesWidth, width),
+                                    ImMax(32.0f, context.Size.x * 0.35f)); // Make left panel wide enough
 
         return addGroupRes;
     }
@@ -1009,6 +1013,7 @@ namespace ImGui
         context.StartFrame = *startFrame;
         context.EndFrame = *endFrame;
         context.Size = realSize;
+        context.ValuesWidth = ImMin(context.ValuesWidth, ImMax(32.0f, context.Size.x * 0.35f));
 
         context.TopBarSize = ImVec2(context.Size.x, style.TopBarHeight);
 
@@ -1207,7 +1212,7 @@ namespace ImGui
         labelSize.y += imStyle.FramePadding.y * 2 + style.ItemSpacing.y * 2;
         labelSize.x += imStyle.FramePadding.x * 2 + style.ItemSpacing.x * 2 +
                        (float) currentTimelineDepth * style.DepthItemSpacing;
-
+        labelSize.x = ImMin(labelSize.x, ImMax(32.0f, context.Size.x * 0.35f));
 
         bool isGroup = flags & ImGuiNeoTimelineFlags_Group && closable;
         bool addRes = false;
@@ -1240,6 +1245,9 @@ namespace ImGui
             ImVec4 color = GetStyleColorVec4(ImGuiCol_Text);
             if (IsItemHovered()) color.w *= 0.7f;
 
+            GetWindowDrawList()->PushClipRect(
+                context.ValuesCursor,
+                context.ValuesCursor + ImVec2{context.ValuesWidth, currentTimelineHeight}, true);
             RenderNeoTimelineLabel(label,
                                    context.ValuesCursor + imStyle.FramePadding +
                                    ImVec2{(float) currentTimelineDepth * style.DepthItemSpacing, 0},
@@ -1247,7 +1255,9 @@ namespace ImGui
                                    color,
                                    isGroup,
                                    isGroup && (*open));
-
+            GetWindowDrawList()->PopClipRect();
+            if (IsItemHovered())
+                SetTooltip("%s", label);
         }
 
         if (result)
@@ -1314,6 +1324,64 @@ namespace ImGui
         IM_ASSERT(!context.TimelineStack.empty() && "Not in timeline!");
 
         createKeyframe(value);
+    }
+
+    void NeoSetKeyframeSelected(int32_t *value, bool selected)
+    {
+        IM_ASSERT(inSequencer);
+        auto &context = sequencerData[currentSequencer];
+        const auto id = getKeyframeID(value);
+        const bool found = context.Selection.contains(id);
+        if (selected && !found)
+            context.Selection.push_back(id);
+        else if (!selected && found)
+            context.Selection.find_erase(id);
+        context.IsLastKeyframeSelected = selected;
+    }
+
+    bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption)
+    {
+        IM_ASSERT(inSequencer);
+        auto &context = sequencerData[currentSequencer];
+        IM_ASSERT(!context.TimelineStack.empty());
+        if (end < begin)
+            return false;
+        const float left = context.StartValuesCursor.x + GetStyle().FramePadding.x + context.ValuesWidth;
+        const float right = context.TopLeftCursor.x + context.Size.x;
+        float x0 = left + getKeyframePositionX(begin, context),
+              x1 = left + getKeyframePositionX(end, context);
+        if (x1 < left || x0 > right)
+            return false;
+        x0 = ImMax(left, x0);
+        x1 = ImMin(right, x1);
+        const float y0 = context.ValuesCursor.y + 3, y1 = context.ValuesCursor.y + currentTimelineHeight - 3;
+        ImRect bounds(ImVec2(x0, y0), ImVec2(ImMax(x0 + 3, x1), y1));
+        auto *draw = GetWindowDrawList();
+        draw->PushClipRect(ImVec2(left, y0), ImVec2(right, y1), true);
+        if (begin == end)
+            draw->AddLine(ImVec2(x0, y0), ImVec2(x0, y1), color, 2);
+        else
+            draw->AddRectFilled(bounds.Min, bounds.Max, color, 3);
+        draw->PopClipRect();
+        const bool hover = IsWindowHovered() && IsMouseHoveringRect(bounds.Min, bounds.Max);
+        if (hover && caption)
+        {
+            BeginTooltip();
+            TextUnformatted(caption);
+            Text("%d - %d ticks", begin, end);
+            EndTooltip();
+        }
+        return hover && IsMouseClicked(ImGuiMouseButton_Left);
+    }
+    void NeoCancelSelection()
+    {
+        IM_ASSERT(inSequencer);
+        auto &context = sequencerData[currentSequencer];
+        context.StateOfSelection = SelectionState::Idle;
+        context.Selection.clear();
+        context.SelectionData.clear();
+        context.DraggingSelectionStart.clear();
+        context.StartDragging = true;
     }
 
     bool IsNeoKeyframeHovered()

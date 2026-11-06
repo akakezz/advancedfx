@@ -17,6 +17,10 @@ void HistoryUndo(bool redo);
 bool SaveDocument(const wchar_t *fileName, bool all);
 bool LoadDocument(const wchar_t *fileName, bool all);
 void FlushRecovery();
+bool PreviewCapture(bool replace);
+bool PreviewHold(bool clear);
+void PreviewSelectAll();
+bool PreviewAnchor();
 namespace Recording
 {
 const char *GetName();

@@ -27,6 +27,7 @@ struct CamPathValue
 	double HoldDuration = 0;
 	QEulerAngles GetEulerAngles() const;
 	void SetEulerAngles(const QEulerAngles &angles);
+	void SetOrientation(const Quaternion &orientation);
 
 	// Per-key tangents and modes (for Hermite interpolation)
 	double TxIn, TxOut;
@@ -154,6 +155,7 @@ public:
 		double Offset;
 		AutoTangentSettings AutoTangents;
 		bool DistanceTiming = false;
+		bool DistanceTimingPose = false;
 		bool operator==(const State &other) const;
 	};
 	State CaptureState() const;
@@ -228,6 +230,16 @@ public:
 		return m_DistanceTiming;
 	}
 	void SetDistanceTiming(bool enabled);
+	bool GetDistanceTimingPose() const
+	{
+		return m_DistanceTimingPose;
+	}
+	void SetDistanceTimingPose(bool enabled);
+	bool ExportClassic(const wchar_t *fileName, double sampleInterval);
+	unsigned long long GetGeometryRevision() const
+	{
+		return m_GeometryRevision;
+	}
 	static double GetChannelValue(const CamPathValue &value, Channel channel);
 	static void SetChannelValue(CamPathValue &value, Channel channel, double component);
 	bool GetTangent(Channel ch, size_t index, bool outgoing, double &slope, double &weight);
@@ -517,7 +529,7 @@ private:
 	CInterpolationMap<CamPathValue> m_Map;
 	CInterpolationMap<CamPathValue> m_EvalMap;
 	CamPathValue EvalRaw(double time);
-	bool m_DistanceTiming = false, m_ArcDirty = true;
+	bool m_DistanceTiming = false, m_DistanceTimingPose = false, m_ArcDirty = true;
 	struct ArcSegment
 	{
 		double Begin, End, Length = 0;
@@ -551,7 +563,8 @@ private:
 	CInterpolation<bool> * m_SelectedInterp;
 
 	unsigned long long m_Revision = 0;
-	void Changed();
+	unsigned long long m_GeometryRevision = 0;
+	void Changed(bool geometry = true);
 	void CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<CamPathValue> & src);
 
 	void DoInterpolationMapChangedAll(void);
@@ -568,6 +581,7 @@ class CamPathCollection
 		std::string Name;
 		std::shared_ptr<const CamPath::State> Data;
 		std::wstring FileName;
+		bool Muted = false, Solo = false, Visible = true;
 	};
 	struct State
 	{
@@ -584,6 +598,10 @@ class CamPathCollection
 	size_t GetActive() const
 	{
 		return m_ActiveIndex;
+	}
+	unsigned long long GetId(size_t index) const
+	{
+		return m_Paths.at(index).Id;
 	}
 	const std::string &GetName(size_t index) const
 	{
@@ -603,6 +621,20 @@ class CamPathCollection
 	bool Remove(size_t index);
 	CamPath *GetPath(size_t index);
 	CamPath *GetPlaybackPath(double clientTime);
+	size_t GetPlaybackIndex(double clientTime, bool respectEnabled = true);
+	bool SetFlags(size_t index, bool muted, bool solo, bool visible);
+	bool IsMuted(size_t index) const
+	{
+		return m_Paths.at(index).Muted;
+	}
+	bool IsSolo(size_t index) const
+	{
+		return m_Paths.at(index).Solo;
+	}
+	bool IsVisible(size_t index) const
+	{
+		return m_Paths.at(index).Visible;
+	}
 	bool SaveOne(const wchar_t *fileName);
 	bool LoadOne(const wchar_t *fileName);
 	bool SaveAll(const wchar_t *fileName, bool recovery = false);

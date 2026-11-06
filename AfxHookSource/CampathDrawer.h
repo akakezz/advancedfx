@@ -11,6 +11,7 @@
 #include "Gui.h"
 #include <vector>
 #include <string>
+#include <cmath>
 
 #define CCampathDrawer_VertexFVF D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX0 | D3DFVF_TEXCOORDSIZE3(0) | D3DFVF_TEX1 | D3DFVF_TEXCOORDSIZE3(1) | D3DFVF_TEX2 | D3DFVF_TEXCOORDSIZE3(2)
 
@@ -35,7 +36,35 @@ public:
 	bool GetDrawKeyframeCam() { return m_DrawKeyframeCam; }
 
 	float GetDrawKeyframeIndex() { return m_DrawKeyframIndex; }
-	void SetDrawKeyframeIndex(float value) { m_DrawKeyframIndex = value; }
+	void SetDrawKeyframeIndex(float value)
+	{
+		if (std::isfinite(value) && value >= 0)
+			m_DrawKeyframIndex = (std::min)(value, 512.0f);
+	}
+	bool GetDrawNames() const
+	{
+		return m_DrawNames;
+	}
+	bool GetDrawHolds() const
+	{
+		return m_DrawHolds;
+	}
+	bool GetDrawDurations() const
+	{
+		return m_DrawDurations;
+	}
+	void SetDrawNames(bool value)
+	{
+		m_DrawNames = value;
+	}
+	void SetDrawHolds(bool value)
+	{
+		m_DrawHolds = value;
+	}
+	void SetDrawDurations(bool value)
+	{
+		m_DrawDurations = value;
+	}
 
 	void BeginDevice(IDirect3DDevice9 * device);
 	void EndDevice();
@@ -70,6 +99,7 @@ private:
 		  std::vector<AfxHookSource::Gui::WorldGlyph> Glyphs;
 	  };
 	  std::vector<Text> Labels;
+	  std::vector<float> IndexRows;
 
 	  double GetCurTime() const
 	  {
@@ -181,7 +211,8 @@ private:
 			CamPathValue m_Value;
 		};
 
-		CLessDynamicProperties(CCampathDrawer *drawer, CamPath *path);
+		CLessDynamicProperties(CCampathDrawer *drawer, CamPath *path,
+							   const CLessDynamicProperties *previous = nullptr);
 
 		bool GetCampathCanEval() const {
 			return m_CampathCanEval;
@@ -199,19 +230,33 @@ private:
 			return m_Keyframes.size();
 		}
 
+		bool IsSelected(double time) const
+		{
+			if (m_Selection.empty())
+				return false;
+			auto next = m_Selection.lower_bound(time);
+			if (next == m_Selection.begin())
+				return next->second;
+			if (next == m_Selection.end())
+				return std::prev(next)->second;
+			return next->first == time ? next->second : std::prev(next)->second && next->second;
+		}
 		std::list<CKeyframe>::const_iterator GetTrajectoryPointsBegin() const {
-			return m_TrajectoryPoints.cbegin();
+			return m_TrajectoryPoints->cbegin();
 		}
 
 		std::list<CKeyframe>::const_iterator GetTrajectoryPointsEnd() const {
-			return m_TrajectoryPoints.cend();
+			return m_TrajectoryPoints->cend();
 		}
 
 	private:
 		std::atomic_int m_RefCount = 0;
 		bool m_CampathCanEval;
 		std::list<CKeyframe> m_Keyframes;
-		std::list<CKeyframe> m_TrajectoryPoints;
+		std::shared_ptr<const std::list<CKeyframe>> m_TrajectoryPoints;
+		unsigned long long m_GeometryRevision = 0;
+		const CamPath *m_Source = nullptr;
+		std::map<double, bool> m_Selection;
 	};
 
 	class CCampathDrawerFunctor : public CMaterialSystemFunctor {
@@ -260,7 +305,9 @@ private:
 	IDirect3DTexture9* m_DigitsTexture = nullptr;
 	IAfxPixelShader* m_DrawTextureShader = nullptr;
 
-	CLessDynamicProperties * m_LessDynamicProperties = nullptr;
+	CLessDynamicProperties *m_LessDynamicProperties = nullptr;
+	bool m_PropertiesDirty = true;
+	bool m_DrawNames = true, m_DrawHolds = true, m_DrawDurations = true;
 
 	static void CampathChangedFn(void * pUserData);
 

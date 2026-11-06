@@ -120,6 +120,11 @@ namespace ImGui {
     // Fully customizable timeline with per key callback
     IMGUI_API bool BeginNeoTimelineEx(const char* label, bool * open = nullptr, ImGuiNeoTimelineFlags flags = ImGuiNeoTimelineFlags_None);
     IMGUI_API void NeoKeyframe(int32_t* value);
+    IMGUI_API void NeoSetKeyframeSelected(int32_t *value, bool selected);
+    // Read-only ranges / markers share the ruler transform without retaining editable pointers.
+    IMGUI_API bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color,
+                                   const char *caption = nullptr);
+    IMGUI_API void NeoCancelSelection();
 
     IMGUI_API bool IsNeoKeyframeHovered();
     IMGUI_API bool IsNeoKeyframeSelected();

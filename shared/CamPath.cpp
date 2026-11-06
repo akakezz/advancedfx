@@ -117,9 +117,28 @@ bool CamPath::ReplaceKeys(const CInterpolationMap<CamPathValue> &keys)
 {
 	if (!ValidKeys(keys))
 		return false;
+	bool geometry = m_Map.size() != keys.size();
+	if (!geometry)
+	{
+		auto previous = m_Map.begin();
+		for (const auto &key : keys)
+		{
+			auto a = key.second, b = previous->second;
+			a.Selected = b.Selected = false;
+			if (key.first != previous->first || !(a == b))
+			{
+				geometry = true;
+				break;
+			}
+			++previous;
+		}
+	}
 	m_Map = keys;
-	DoInterpolationMapChangedAll();
-	Changed();
+	if (geometry)
+		DoInterpolationMapChangedAll();
+	else
+		m_SelectedInterp->InterpolationMapChanged();
+	Changed(geometry);
 	return true;
 }
 bool CamPath::UpdateKey(double oldTime, double newTime, const CamPathValue &value)
@@ -215,7 +234,7 @@ bool CamPath::Insert(double time)
 		time >= GetUpperBound())
 		return false;
 	const auto original = CaptureState();
-	const double curveTime = MapDistanceTime(time);
+	const double positionCurveTime = MapDistanceTime(time);
 	const auto pose = Eval(time);
 	if (!BakeTangents())
 		return false;
@@ -243,6 +262,7 @@ bool CamPath::Insert(double time)
 	// different time weights and therefore different Bezier parameters.
 	for (int ch = 0; ch < 7; ++ch)
 	{
+		const double curveTime = ch < 3 || m_DistanceTimingPose ? positionCurveTime : time;
 		const bool custom = ch < 3	  ? m_PositionInterpMethod == DI_CUSTOM
 							: ch == 3 ? m_FovInterpMethod == DI_CUSTOM
 									  : m_RotationInterpMethod == QI_CUSTOM;
@@ -315,6 +335,13 @@ void CamPath::SetDistanceTiming(bool enabled)
 		return;
 	m_DistanceTiming = enabled;
 	Changed();
+}
+void CamPath::SetDistanceTimingPose(bool enabled)
+{
+	if (m_DistanceTimingPose == enabled)
+		return;
+	m_DistanceTimingPose = enabled;
+	Changed(false);
 }
 void CamPath::BuildArcs()
 {
@@ -615,6 +642,8 @@ CamPathValue::CamPathValue(double x, double y, double z, double pitch, double ya
 	  TRyIn(0.0), TRyOut(0.0), TRyModeIn(0), TRyModeOut(0), TRzIn(0.0), TRzOut(0.0), TRzModeIn(0),
 	  TRzModeOut(0), TRxWIn(1.0), TRxWOut(1.0), TRyWIn(1.0), TRyWOut(1.0), TRzWIn(1.0), TRzWOut(1.0)
 {
+	if (std::abs(pitch) > 90 || std::abs(yaw) > 180 || std::abs(roll) > 180)
+		SetEulerAngles(QEulerAngles(pitch, yaw, roll));
 }
 
 CamPathValue::CamPathValue(double x, double y, double z, double q_w, double q_x, double q_y, double q_z,
@@ -640,6 +669,33 @@ void CamPathValue::SetEulerAngles(const QEulerAngles &angles)
 	EulerYaw = angles.Yaw;
 	EulerRoll = angles.Roll;
 	R = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(angles));
+}
+
+void CamPathValue::SetOrientation(const Quaternion &orientation)
+{
+	const auto result = orientation;
+	if (!HasEuler)
+	{
+		R = result;
+		return;
+	}
+	const auto previous = GetEulerAngles(), base = result.ToQREulerAngles().ToQEulerAngles();
+	auto near = [](double angle, double reference)
+	{ return reference + std::remainder(angle - reference, 360.0); };
+	auto candidate = [&](QEulerAngles a)
+	{
+		return QEulerAngles(near(a.Pitch, previous.Pitch), near(a.Yaw, previous.Yaw),
+							near(a.Roll, previous.Roll));
+	};
+	auto first = candidate(base),
+		 second = candidate(QEulerAngles(180 - base.Pitch, base.Yaw + 180, base.Roll + 180));
+	auto distance = [&](const QEulerAngles &a)
+	{
+		double p = a.Pitch - previous.Pitch, y = a.Yaw - previous.Yaw, r = a.Roll - previous.Roll;
+		return p * p + y * y + r * r;
+	};
+	SetEulerAngles(distance(first) <= distance(second) ? first : second);
+	R = result;
 }
 
 CamPathIterator::CamPathIterator(CInterpolationMap<CamPathValue>::const_iterator it) : wrapped(it)
@@ -930,12 +986,12 @@ bool CamPath::State::operator==(const State &other) const
 	return Keys == other.Keys && Position == other.Position && Fov == other.Fov &&
 		   Rotation == other.Rotation && Enabled == other.Enabled && Hold == other.Hold &&
 		   Offset == other.Offset && AutoTangents == other.AutoTangents &&
-		   DistanceTiming == other.DistanceTiming;
+		   DistanceTiming == other.DistanceTiming && DistanceTimingPose == other.DistanceTimingPose;
 }
 CamPath::State CamPath::CaptureState() const
 {
 	return {m_Map,	  m_PositionInterpMethod, m_FovInterpMethod, m_RotationInterpMethod, m_Enabled, m_Hold,
-			m_Offset, m_AutoTangentSettings,  m_DistanceTiming};
+			m_Offset, m_AutoTangentSettings,  m_DistanceTiming,	 m_DistanceTimingPose};
 }
 void CamPath::RestoreState(const State &state)
 {
@@ -945,6 +1001,7 @@ void CamPath::RestoreState(const State &state)
 	m_Hold = state.Hold;
 	m_AutoTangentSettings = state.AutoTangents;
 	m_DistanceTiming = state.DistanceTiming;
+	m_DistanceTimingPose = state.DistanceTimingPose;
 	PositionInterpMethod_set(state.Position);
 	RotationInterpMethod_set(state.Rotation);
 	FovInterpMethod_set(state.Fov);
@@ -961,9 +1018,14 @@ void CamPath::Add(double time, const CamPathValue &value)
 	ReplaceKeys(keys);
 }
 
-void CamPath::Changed()
+void CamPath::Changed(bool geometry)
 {
 	++m_Revision;
+	if (geometry)
+	{
+		++m_GeometryRevision;
+		m_ArcDirty = true;
+	}
 	for(m_OnChangedIt = m_OnChanged.begin(); m_OnChangedIt != m_OnChanged.end(); m_OnChangedIt++) {
 		m_OnChangedIt->Notify();
 		if(m_OnChangedIt == m_OnChanged.end()) break;
@@ -1064,7 +1126,14 @@ CamPathValue CamPath::EvalRaw(double t)
 
 CamPathValue CamPath::Eval(double time)
 {
-	return EvalRaw(MapDistanceTime(time));
+	if (!m_DistanceTiming || m_DistanceTimingPose)
+		return EvalRaw(MapDistanceTime(time));
+	auto value = EvalRaw(time);
+	const double positionTime = MapDistanceTime(time);
+	value.X = m_XInterp->Eval(positionTime);
+	value.Y = m_YInterp->Eval(positionTime);
+	value.Z = m_ZInterp->Eval(positionTime);
+	return value;
 }
 
 char * double2xml(rapidxml::xml_document<> & doc, double value)
@@ -1092,6 +1161,9 @@ bool CamPath::SaveToString(std::string &xmlString)
 		cam->append_attribute(doc.allocate_attribute("fovInterp", DoubleInterp_ToString(m_FovInterpMethod)));
 	if (m_DistanceTiming)
 		cam->append_attribute(doc.allocate_attribute("distanceTiming", "1"));
+	// Missing mode in earlier files means the original whole-pose clock.
+	cam->append_attribute(
+		doc.allocate_attribute("distanceTimingMode", m_DistanceTimingPose ? "pose" : "position"));
 	if (m_AutoTangentSettings.Method != AutoTangentMethod::Spline)
 		cam->append_attribute(doc.allocate_attribute("autoInterp", AutoTangentMethodToString(m_AutoTangentSettings.Method)));
 	if (m_AutoTangentSettings.Tension != 0)
@@ -1246,6 +1318,8 @@ bool ReadPathFile(const std::filesystem::path &fileName, std::string &xml)
 }
 bool WritePathFile(const std::filesystem::path &fileName, const std::string &xml)
 {
+	if (xml.size() > 64 * 1024 * 1024)
+		return false;
 	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
 	auto temporary = fileName;
 	temporary += ".hlae-writing-" + std::to_string(suffix);
@@ -1272,6 +1346,92 @@ bool CamPath::Save(wchar_t const *fileName)
 	std::string xml;
 	return SaveToString(xml) && WritePathFile(std::filesystem::path(fileName), xml);
 }
+bool CamPath::ExportClassic(const wchar_t *fileName, double interval)
+{
+	if (m_Map.size() > 100000 || !CanEval() || !std::isfinite(interval) || interval <= 0 ||
+		GetDuration() / interval > 100000)
+		return false;
+	std::map<double, CamPathValue> samples;
+	const double begin = GetLowerBound(), end = GetUpperBound();
+	for (size_t i = 0; i <= (size_t)std::ceil((end - begin) / interval); ++i)
+	{
+		const double time = (std::min)(end, begin + i * interval);
+		samples[time] = Eval(time);
+	}
+	for (const auto &key : m_Map)
+	{
+		samples[key.first] = Eval(key.first);
+		if (key.second.HoldDuration > 0)
+			samples[key.first + key.second.HoldDuration] = Eval(key.first + key.second.HoldDuration);
+	}
+	if (samples.size() > 100000)
+		return false;
+	std::vector<double> intervals;
+	for (const auto &sample : samples)
+		intervals.push_back(sample.first);
+	bool valid = true;
+	std::function<void(double, double, int)> refine = [&](double a, double b, int depth)
+	{
+		const auto left = Eval(a), right = Eval(b);
+		if (!ValidValue(left) || !ValidValue(right))
+		{
+			valid = false;
+			return;
+		}
+		const auto la = left.GetEulerAngles(), ra = right.GetEulerAngles();
+		const bool turns = (left.HasEuler && right.HasEuler) &&
+						   ((std::max)({std::abs(ra.Pitch - la.Pitch), std::abs(ra.Yaw - la.Yaw),
+										std::abs(ra.Roll - la.Roll)}) > 90);
+		const double dot = std::abs(DotProduct(left.R, right.R) / (left.R.Norm() * right.R.Norm()));
+		if (!turns && dot >= 0.70710678118)
+			return;
+		if (depth >= 20 || samples.size() >= 100000)
+		{
+			valid = false;
+			return;
+		}
+		const double middle = (a + b) * 0.5;
+		if (middle <= a || middle >= b)
+		{
+			valid = false;
+			return;
+		}
+		samples[middle] = Eval(middle);
+		refine(a, middle, depth + 1);
+		refine(middle, b, depth + 1);
+	};
+	for (size_t i = 1; i < intervals.size() && valid; ++i)
+		refine(intervals[i - 1], intervals[i], 0);
+	if (!valid)
+		return false;
+
+	rapidxml::xml_document<> doc;
+	auto *root = doc.allocate_node(rapidxml::node_element, "campath");
+	doc.append_node(root);
+	root->append_attribute(doc.allocate_attribute("positionInterp", "linear"));
+	root->append_attribute(doc.allocate_attribute("rotationInterp", "sLinear"));
+	root->append_attribute(doc.allocate_attribute("fovInterp", "linear"));
+	if (m_Offset)
+		root->append_attribute(doc.allocate_attribute("offset", double2xml(doc, m_Offset)));
+	if (m_Hold)
+		root->append_attribute(doc.allocate_attribute("hold"));
+	auto *points = doc.allocate_node(rapidxml::node_element, "points");
+	root->append_node(points);
+	for (const auto &sample : samples)
+	{
+		auto *point = doc.allocate_node(rapidxml::node_element, "p");
+		points->append_node(point);
+		const auto &value = sample.second;
+		const char *names[] = {"t", "x", "y", "z", "qw", "qx", "qy", "qz", "fov"};
+		const double values[] = {sample.first, value.X,	  value.Y,	 value.Z,  value.R.W,
+								 value.R.X,	   value.R.Y, value.R.Z, value.Fov};
+		for (int i = 0; i < 9; ++i)
+			point->append_attribute(doc.allocate_attribute(names[i], double2xml(doc, values[i])));
+	}
+	std::string xml;
+	rapidxml::print(std::back_inserter(xml), doc);
+	return WritePathFile(std::filesystem::path(fileName), xml);
+}
 bool CamPath::Load(wchar_t const *fileName)
 {
 	std::string xml;
@@ -1283,6 +1443,7 @@ bool CamPath::LoadFromString(const std::string &xml)
 	auto backup = m_Map;
 	const auto autoBackup = m_AutoTangentSettings;
 	const bool distanceBackup = m_DistanceTiming;
+	const bool distancePoseBackup = m_DistanceTimingPose;
 	auto position = m_PositionInterpMethod;
 	auto rotation = m_RotationInterpMethod;
 	auto fov = m_FovInterpMethod;
@@ -1308,6 +1469,7 @@ bool CamPath::LoadFromString(const std::string &xml)
 		m_Map = std::move(backup);
 		m_AutoTangentSettings = autoBackup;
 		m_DistanceTiming = distanceBackup;
+		m_DistanceTimingPose = distancePoseBackup;
 		m_Offset = offset;
 		m_Hold = hold;
 		PositionInterpMethod_set(position);
@@ -1341,6 +1503,15 @@ bool CamPath::LoadInternal(std::string xml)
 				}
 
 				m_DistanceTiming = cur_node->first_attribute("distanceTiming") != nullptr;
+				auto *distanceMode = cur_node->first_attribute("distanceTimingMode");
+				if (distanceMode && strcmp(distanceMode->value(), "pose") &&
+					strcmp(distanceMode->value(), "position"))
+				{
+					bOk = false;
+					break;
+				}
+				m_DistanceTimingPose =
+					distanceMode ? !strcmp(distanceMode->value(), "pose") : m_DistanceTiming;
 				AutoTangentSettings autoSettings;
 				if (auto *method = cur_node->first_attribute("autoInterp"))
 					if (!AutoTangentMethodFromString(method->value(), autoSettings.Method))
@@ -1740,7 +1911,7 @@ size_t CamPath::SelectAll()
 	}
 
 	m_SelectedInterp->InterpolationMapChanged();
-	Changed();
+	Changed(false);
 
 	return m_Map.size();
 }
@@ -1753,7 +1924,7 @@ void CamPath::SelectNone()
 	}
 
 	m_SelectedInterp->InterpolationMapChanged();
-	Changed();
+	Changed(false);
 }
 
 size_t CamPath::SelectInvert()
@@ -1768,7 +1939,7 @@ size_t CamPath::SelectInvert()
 	}
 
 	m_SelectedInterp->InterpolationMapChanged();
-	Changed();
+	Changed(false);
 
 	return selected;
 }
@@ -1788,7 +1959,7 @@ size_t CamPath::SelectAdd(size_t min, size_t max)
 	}
 
 	m_SelectedInterp->InterpolationMapChanged();
-	Changed();
+	Changed(false);
 
 	return selected;
 }
@@ -1805,7 +1976,7 @@ size_t CamPath::SelectAdd(double min, size_t count)
 	}
 
 	m_SelectedInterp->InterpolationMapChanged();
-	Changed();
+	Changed(false);
 
 	return selected;
 }
@@ -1822,7 +1993,7 @@ size_t CamPath::SelectAdd(double min, double max)
 	}
 
 	m_SelectedInterp->InterpolationMapChanged();
-	Changed();
+	Changed(false);
 
 	return selected;
 }
@@ -1995,18 +2166,9 @@ void CamPath::SetAngles(double yPitch, double zYaw, double xRoll, bool setY, boo
 
 		if(selectAll || curValue.Selected)
 		{
-			if(setY && setZ && setX) {
-				curValue.HasEuler = false;
-				curValue.R = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(yPitch, zYaw, xRoll)));
-			} else {
-				QEulerAngles angles = curValue.R.ToQREulerAngles().ToQEulerAngles();
-				curValue.HasEuler = false;
-				curValue.R = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(
-					(setY ? yPitch : angles.Pitch),
-					(setZ ? zYaw : angles.Yaw),
-					(setX ? xRoll : angles.Roll)
-				)));
-			}
+			const auto angles = curValue.GetEulerAngles();
+			curValue.SetEulerAngles(QEulerAngles(setY ? yPitch : angles.Pitch, setZ ? zYaw : angles.Yaw,
+												 setX ? xRoll : angles.Roll));
 
 			it->second = curValue;
 		}
@@ -2480,10 +2642,7 @@ void CamPath::Rotate(double yPitch, double zYaw, double xRoll)
 
 			// update rotation:
 			{
-				Quaternion quatQ = curValue.R;
-
-				curValue.HasEuler = false;
-				curValue.R = quatR * quatQ;
+				curValue.SetOrientation(quatR * curValue.R);
 			}
 
 			// update:
@@ -2593,10 +2752,7 @@ void CamPath::AnchorTransform(double anchorX, double anchorY, double anchorZ, do
 
 			// update rotation:
 			{
-				Quaternion quatQ = curValue.R;
-
-				curValue.HasEuler = false;
-				curValue.R = quatR * quatQ;
+				curValue.SetOrientation(quatR * curValue.R);
 			}
 
 			// update:
@@ -2663,7 +2819,7 @@ bool SamePathContent(const CamPath::State &a, const CamPath::State &b)
 {
 	if (a.Position != b.Position || a.Fov != b.Fov || a.Rotation != b.Rotation || a.Hold != b.Hold ||
 		a.Offset != b.Offset || !(a.AutoTangents == b.AutoTangents) || a.DistanceTiming != b.DistanceTiming ||
-		a.Keys.size() != b.Keys.size())
+		a.DistanceTimingPose != b.DistanceTimingPose || a.Keys.size() != b.Keys.size())
 		return false;
 	auto right = b.Keys.begin();
 	for (const auto &left : a.Keys)
@@ -2727,9 +2883,8 @@ void CamPathCollection::Sync()
 }
 void CamPathCollection::Notify()
 {
-	m_Caches.clear();
-	m_CacheStates.clear();
-	m_ActivePath.Changed();
+	// GetPath refreshes cached states by immutable state identity, including after reordering.
+	m_ActivePath.Changed(false);
 }
 CamPathCollection::State CamPathCollection::CaptureState() const
 {
@@ -2756,6 +2911,8 @@ bool CamPathCollection::SameContent(const State &a, const State &b)
 		return false;
 	for (size_t i = 0; i < a.Paths.size(); ++i)
 		if (a.Paths[i].Id != b.Paths[i].Id || a.Paths[i].Name != b.Paths[i].Name ||
+			a.Paths[i].Muted != b.Paths[i].Muted || a.Paths[i].Solo != b.Paths[i].Solo ||
+			a.Paths[i].Visible != b.Paths[i].Visible ||
 			(a.Paths[i].Data != b.Paths[i].Data && !SamePathContent(*a.Paths[i].Data, *b.Paths[i].Data)))
 			return false;
 	return true;
@@ -2799,8 +2956,11 @@ bool CamPathCollection::NewPath(const std::string &name, bool duplicate)
 		state.Offset = 0;
 		state.Hold = false;
 		state.DistanceTiming = false;
+		state.DistanceTimingPose = false;
 	}
 	m_Paths.push_back({m_NextId++, title, std::make_shared<CamPath::State>(std::move(state)), {}});
+	m_Paths.back().Muted = duplicate;
+	m_Paths.back().Solo = false;
 	return Select(m_Paths.size() - 1);
 }
 bool CamPathCollection::Rename(const std::string &name)
@@ -2858,36 +3018,55 @@ CamPath *CamPathCollection::GetPath(size_t index)
 	m_Caches[index]->Enabled_set(m_ActivePath.Enabled_get());
 	return m_Caches[index].get();
 }
-CamPath *CamPathCollection::GetPlaybackPath(double clientTime)
+bool CamPathCollection::SetFlags(size_t index, bool muted, bool solo, bool visible)
 {
-	if (!m_ActivePath.Enabled_get())
-		return nullptr;
+	if (index >= m_Paths.size())
+		return false;
+	auto &entry = m_Paths[index];
+	if (entry.Muted == muted && entry.Solo == solo && entry.Visible == visible)
+		return true;
+	entry.Muted = muted;
+	entry.Solo = solo;
+	entry.Visible = visible;
+	m_ActivePath.Changed(false);
+	return true;
+}
+size_t CamPathCollection::GetPlaybackIndex(double clientTime, bool respectEnabled)
+{
+	if (respectEnabled && !m_ActivePath.Enabled_get())
+		return m_Paths.size();
 	const auto &active = *CurrentState();
+	bool solo = false;
+	for (const auto &entry : m_Paths)
+		solo |= entry.Solo;
 	size_t best = m_Paths.size();
 	double latest = -std::numeric_limits<double>::infinity();
 	for (size_t i = 0; i < m_Paths.size(); ++i)
 	{
+		if (m_Paths[i].Muted || (solo && !m_Paths[i].Solo))
+			continue;
 		const auto &state = i == m_ActiveIndex ? active : *m_Paths[i].Data;
 		if (state.Keys.empty())
 			continue;
 		const double start = state.Keys.begin()->first + state.Offset;
 		const double end =
 			state.Keys.rbegin()->first + state.Keys.rbegin()->second.HoldDuration + state.Offset;
-		if (clientTime >= start && (clientTime <= end || state.Hold) && start >= latest)
+		if (clientTime >= start && (clientTime <= end || state.Hold) && start >= latest &&
+			GetPath(i)->CanEval())
 		{
-			auto *path = GetPath(i);
-			if (path->CanEval())
-			{
-				best = i;
-				latest = start;
-			}
+			best = i;
+			latest = start;
 		}
 	}
-	if (best < m_Paths.size())
-		return GetPath(best);
-	if (m_Paths.size() == 1 && active.Hold && m_ActivePath.CanEval())
-		return &m_ActivePath;
-	return nullptr;
+	if (best == m_Paths.size() && m_Paths.size() == 1 && !m_Paths[0].Muted && active.Hold &&
+		m_ActivePath.CanEval())
+		return 0;
+	return best;
+}
+CamPath *CamPathCollection::GetPlaybackPath(double clientTime)
+{
+	const auto index = GetPlaybackIndex(clientTime);
+	return index < m_Paths.size() ? GetPath(index) : nullptr;
 }
 bool CamPathCollection::IsDirty(size_t index) const
 {
@@ -2896,7 +3075,9 @@ bool CamPathCollection::IsDirty(size_t index) const
 	const auto &current = index == m_ActiveIndex ? *CurrentState() : *m_Paths[index].Data;
 	for (const auto &saved : m_Saved.Paths)
 		if (saved.Id == m_Paths[index].Id)
-			return saved.Name != m_Paths[index].Name || !SamePathContent(*saved.Data, current);
+			return saved.Name != m_Paths[index].Name || saved.Muted != m_Paths[index].Muted ||
+				   saved.Solo != m_Paths[index].Solo || saved.Visible != m_Paths[index].Visible ||
+				   !SamePathContent(*saved.Data, current);
 	return true;
 }
 bool CamPathCollection::IsDirty() const
@@ -2935,6 +3116,10 @@ bool CamPathCollection::SaveOne(const wchar_t *fileName)
 		auto *root = doc.first_node("campath");
 		root->append_attribute(
 			doc.allocate_attribute("name", doc.allocate_string(GetName(m_ActiveIndex).c_str())));
+		const auto &entry = m_Paths[m_ActiveIndex];
+		root->append_attribute(doc.allocate_attribute("muted", entry.Muted ? "1" : "0"));
+		root->append_attribute(doc.allocate_attribute("solo", entry.Solo ? "1" : "0"));
+		root->append_attribute(doc.allocate_attribute("visible", entry.Visible ? "1" : "0"));
 		std::string output;
 		rapidxml::print(std::back_inserter(output), doc);
 		if (!WritePathFile(std::filesystem::path(fileName), output))
@@ -2956,6 +3141,7 @@ bool CamPathCollection::LoadOne(const wchar_t *fileName)
 	CamPath loaded;
 	if (!loaded.LoadFromString(xml))
 		return false;
+	bool muted = false, solo = false, visible = true;
 	std::string name = std::filesystem::path(fileName).stem().u8string();
 	try
 	{
@@ -2965,6 +3151,19 @@ bool CamPathCollection::LoadOne(const wchar_t *fileName)
 		doc.parse<0>(input.data());
 		if (auto *tag = doc.first_node("campath")->first_attribute("name"))
 			name = tag->value();
+		for (const char *flag : {"muted", "solo", "visible"})
+			if (auto *attr = doc.first_node("campath")->first_attribute(flag))
+			{
+				if (strcmp(attr->value(), "0") && strcmp(attr->value(), "1"))
+					return false;
+				bool value = !strcmp(attr->value(), "1");
+				if (!strcmp(flag, "muted"))
+					muted = value;
+				else if (!strcmp(flag, "solo"))
+					solo = value;
+				else
+					visible = value;
+			}
 	}
 	catch (const rapidxml::parse_error &)
 	{
@@ -2977,6 +3176,7 @@ bool CamPathCollection::LoadOne(const wchar_t *fileName)
 	m_ActivePath.Enabled_set(enabled);
 	m_Paths[m_ActiveIndex].Name = name;
 	m_Paths[m_ActiveIndex].FileName = fileName;
+	SetFlags(m_ActiveIndex, muted, solo, visible);
 	Notify();
 	MarkSaved(false);
 	return true;
@@ -3001,6 +3201,9 @@ bool CamPathCollection::SaveAll(const wchar_t *fileName, bool recovery)
 		pathDoc.parse<0>(xml.data());
 		auto *copy = CloneOwnedNode(doc, pathDoc.first_node("campath"));
 		copy->append_attribute(doc.allocate_attribute("name", doc.allocate_string(entry.Name.c_str())));
+		copy->append_attribute(doc.allocate_attribute("muted", entry.Muted ? "1" : "0"));
+		copy->append_attribute(doc.allocate_attribute("solo", entry.Solo ? "1" : "0"));
+		copy->append_attribute(doc.allocate_attribute("visible", entry.Visible ? "1" : "0"));
 		copy->append_attribute(
 			doc.allocate_attribute("id", doc.allocate_string(std::to_string(entry.Id).c_str())));
 		root->append_node(copy);
@@ -3074,6 +3277,19 @@ bool CamPathCollection::LoadAll(const wchar_t *fileName, bool recovery)
 				if (entry.Id == id)
 					return false;
 			state.Paths.push_back({id, title, std::make_shared<CamPath::State>(path.CaptureState()), {}});
+			for (const char *flag : {"muted", "solo", "visible"})
+				if (auto *attr = node->first_attribute(flag))
+				{
+					if (strcmp(attr->value(), "0") && strcmp(attr->value(), "1"))
+						return false;
+					bool value = !strcmp(attr->value(), "1");
+					if (!strcmp(flag, "muted"))
+						state.Paths.back().Muted = value;
+					else if (!strcmp(flag, "solo"))
+						state.Paths.back().Solo = value;
+					else
+						state.Paths.back().Visible = value;
+				}
 		}
 	}
 	catch (const rapidxml::parse_error &)

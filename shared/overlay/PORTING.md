@@ -90,10 +90,12 @@ base are retained; no SDK source is imported into the project.
 ## Native path document extensions
 
 The existing `CamPath` now supports exact subdivision of Custom/Linear curves,
-per-key full-pose holds, optional distance timing, and raw authored Euler winding.
+per-key full-pose holds, optional position-only / whole-pose distance timing, and raw authored Euler winding.
 A `CamPathCollection` in the same shared files manages named shots, savepoints and
-bounded authoring history. Playback selects the latest-starting eligible shot.
-The editor adds key dragging/box selection, exact numeric inspection, speed display,
+bounded authoring history. Playback selects the latest-starting eligible shot after mute/solo filtering.
+Per-shot visibility is independent; duplicates start muted. Flags round-trip in
+single-path files and collections.
+The editor adds key dragging/box selection, cancellable drags, exact numeric inspection, speed display,
 and recovery autosaves. Single paths retain native XML; collections wrap those
 paths with names and identifiers. No parallel path evaluator was introduced.
 
@@ -103,3 +105,30 @@ GUI font atlas because the classic hex texture contains only digits; projection,
 depth testing, shader and device resources remain in the classic drawer. No second
 world renderer or ImGui context is added. With GUI disabled, legacy numeric labels
 remain available, but full-text labels need the GUI atlas.
+
+The graph now lives in a dockable window and reports axis / cursor measurements.
+Only active Custom channels expose handles; manual/baked tangents have distinct
+markers and reset controls. The existing Neo Sequencer receives small read-only
+range/marker and cancel APIs, used for named reference tracks, holds and playback
+cut intervals without retaining pointers into inactive path data. Native / graph selection is
+synchronized with active-track highlights, and selection updates no longer queue
+duplicate console commands. Label widths
+are bounded to leave time-axis space, and the name column scrolls vertically.
+
+Preview seeks share one controller and apply timescale, pause or continue after
+Source reaches the target. Console, keyboard and overlay capture/replace/hold
+controls share the same actions and history. Right Ctrl alone seeks on release;
+using it as a modifier does not. Existing HLAE anchoring is reused.
+
+Classic export samples the real evaluator into the original linear XML format,
+without branch extensions or changes to editing data. Authored winding and high
+pitch captures are retained for Custom rotation; ordinary quaternion keys preserve
+short-route unwrapping. Rotation subdivision protects complete turns during baking.
+
+The classic drawer shares immutable trajectory samples across selection-only
+updates and computes selection colors from the current key selection. Its existing
+numeric renderer and GUI-atlas text share a bounded spatial overlap layout. Names,
+hold labels and interval labels have independent visibility controls. World depth
+testing and device resources remain in the same renderer. GPU / in-game behavior
+still needs verification in TF2; cloud tests cover core evaluation, editor input,
+portable label layout, and targeted Windows x86/x64 compilation.

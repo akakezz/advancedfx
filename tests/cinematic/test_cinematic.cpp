@@ -404,6 +404,8 @@ void collections()
 	check(paths.Undo(true) && paths.GetName(0) == "Opening & dolly", "Rename redoes");
 	paths.BeginEdit();
 	check(paths.NewPath("Close-up", true), "Duplicate copies an ordinary native path");
+	check(paths.IsMuted(1), "Duplicate does not change playback until unmuted");
+	paths.SetFlags(1, false, false, true);
 	paths.FinishEdit();
 	check(paths.GetCount() == 2 && paths.GetActive() == 1, "Duplicate becomes the editable shot");
 	auto data = active.CaptureState();
@@ -493,6 +495,145 @@ void consoleProfiles()
 	command("auto", "unknown"); check(path.CaptureState() == before, "Unknown console profile preserves path");
 	command("auto", "monotone"); check(path.GetAutoTangentSettings().Method == AutoTangentMethod::Monotone, "Console selects shape-preserving interpolation");
 }
+void independentTimingAndExport()
+{
+	CamPath path;
+	custom(path);
+	path.FovInterpMethod_set(CamPath::DI_LINEAR);
+	path.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 60));
+	path.Add(2, CamPathValue(100, 0, 0, 0, 90, 0, 100));
+	const auto original = path.Eval(0.5);
+	path.SetDistanceTiming(true);
+	near(path.Eval(0.5).X, 25, 0.003);
+	near(path.Eval(0.5).Fov, 70);
+	near(std::abs(DotProduct(original.R, path.Eval(0.5).R)), 1);
+	path.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	near(path.Eval(0.5).X, 25, 0.003);
+	path.PositionInterpMethod_set(CamPath::DI_CUSTOM);
+	near(path.Eval(0.5).X, 25, 0.003);
+	path.SetDistanceTimingPose(true);
+	check(path.Eval(0.5).Fov > 72, "Whole-pose distance timing remains available explicitly");
+	path.SetDistanceTimingPose(false);
+	std::vector<CamPathValue> before;
+	for (int i = 0; i <= 100; ++i)
+		before.push_back(path.Eval(i / 50.0));
+	check(path.Insert(0.5), "Position-only distance path can be split without changing independent channels");
+	for (int i = 0; i <= 100; ++i)
+	{
+		auto value = path.Eval(i / 50.0);
+		near(value.X, before[i].X, 0.01);
+		near(value.Fov, before[i].Fov, 1e-6);
+		near(std::abs(DotProduct(value.R, before[i].R)), 1, 1e-6);
+	}
+	std::string xml;
+	check(path.SaveToString(xml), "Independent timing saves");
+	CamPath loaded;
+	check(loaded.LoadFromString(xml) && !loaded.GetDistanceTimingPose(), "Position-only mode round-trips");
+	auto mode = xml.find(" distanceTimingMode=\"position\"");
+	check(mode != std::string::npos, "Explicit mode is written");
+	xml.erase(mode, std::string(" distanceTimingMode=\"position\"").size());
+	check(loaded.LoadFromString(xml) && loaded.GetDistanceTimingPose(),
+		  "Older distance files retain their whole-pose timing");
+	CamPath spin;
+	custom(spin);
+	spin.Add(10, CamPathValue(0, 0, 0, 100, 0, 0, 60));
+	spin.Add(12, CamPathValue(40, 10, 0, 100, 720, 0, 100));
+	check(spin.GetBegin().GetValue().HasEuler, "Capture preserves pitch beyond the quaternion Euler fold");
+	near((++spin.GetBegin()).GetValue().GetEulerAngles().Yaw, 720);
+	near(spin.Eval(11).GetEulerAngles().Yaw, 360, 1e-5);
+	spin.SetAngles(0, 0, 30, false, false, true);
+	near(spin.GetBegin().GetValue().GetEulerAngles().Pitch, 100);
+	near((++spin.GetBegin()).GetValue().GetEulerAngles().Yaw, 720);
+	CamPath turn;
+	custom(turn);
+	turn.Add(0, CamPathValue(0, 0, 0, 0, 720, 0, 90));
+	turn.Add(1, CamPathValue(1, 0, 0, 0, 810, 0, 90));
+	turn.Rotate(0, 90, 0);
+	near(turn.GetBegin().GetValue().GetEulerAngles().Yaw, 810, 1e-5);
+	CamPath wrap;
+	custom(wrap);
+	wrap.Add(0, CamPathValue(0, 0, 0, 0, 170, 0, 90));
+	wrap.Add(1, CamPathValue(1, 0, 0, 0, -170, 0, 90));
+	near(std::abs(wrap.Eval(0.5).GetEulerAngles().Yaw), 180, 1e-5);
+	const auto authored = spin.CaptureState();
+	auto file = std::filesystem::temp_directory_path() / "hlae-classic-export.xml";
+	check(spin.ExportClassic(file.wstring().c_str(), 1.0 / 120), "Classic bake samples the actual evaluator");
+	check(spin.CaptureState() == authored, "Export leaves keys and savepoints unchanged");
+	CamPath baked;
+	check(baked.Load(file.wstring().c_str()), "Baked XML uses the native reader");
+	check(baked.PositionInterpMethod_get() == CamPath::DI_LINEAR &&
+			  baked.RotationInterpMethod_get() == CamPath::QI_SLINEAR && !baked.HasKeyHolds() &&
+			  !baked.GetDistanceTiming(),
+		  "Classic file requires no custom evaluator or hold metadata");
+	for (int i = 0; i <= 240; ++i)
+	{
+		auto a = spin.Eval(10 + i / 120.0), b = baked.Eval(10 + i / 120.0);
+		near(a.X, b.X, 0.001);
+		near(a.Fov, b.Fov, 0.001);
+		near(std::abs(DotProduct(a.R, b.R)), 1, 1e-6);
+	}
+	std::ifstream input(file);
+	std::string data((std::istreambuf_iterator<char>(input)), {});
+	input.close();
+	check(data.find("eulerPitch") == std::string::npos && data.find("tx_mode") == std::string::npos &&
+			  data.find("distanceTiming") == std::string::npos,
+		  "Classic export strips branch-specific extensions");
+	check(!spin.ExportClassic(file.wstring().c_str(), 0) &&
+			  !spin.ExportClassic(file.wstring().c_str(), 1e-12),
+		  "Invalid or excessive sample requests are rejected");
+	check(spin.ExportClassic(file.wstring().c_str(), 2),
+		  "Fast spins are refined even at a low nominal sample rate");
+	check(baked.Load(file.wstring().c_str()) && baked.GetSize() > 8,
+		  "Rotation subdivision prevents full turns aliasing into a stationary camera");
+	std::filesystem::remove(file);
+}
+void shotControlsAndSelectionCost()
+{
+	CamPath active;
+	populate(active);
+	CamPathCollection document(active);
+	active.Enabled_set(true);
+	document.BeginEdit();
+	document.NewPath("Alternate", true);
+	document.FinishEdit();
+	check(document.IsMuted(1) && document.GetPlaybackIndex(1) == 0,
+		  "Duplicating a path does not steal playback");
+	document.BeginEdit();
+	document.SetFlags(1, false, true, false);
+	document.FinishEdit();
+	check(document.GetPlaybackIndex(1) == 1 && !document.IsVisible(1),
+		  "Solo and visibility are independent playback / drawing controls");
+	document.SetFlags(1, true, true, false);
+	check(document.GetPlaybackIndex(1) == document.GetCount(),
+		  "Muting a solo path does not unexpectedly enable other takes");
+	document.SetFlags(1, false, true, false);
+	check(document.Undo() && document.IsMuted(1) && document.IsVisible(1), "Path controls undo together");
+	check(document.Undo(true) && document.IsSolo(1) && !document.IsVisible(1), "Path controls redo together");
+	auto file = std::filesystem::temp_directory_path() / "hlae-shot-flags.xml";
+	check(document.SaveOne(file.wstring().c_str()), "Single-path flags save with its name");
+	CamPath loadedPath;
+	CamPathCollection loaded(loadedPath);
+	check(loaded.LoadOne(file.wstring().c_str()) && loaded.IsSolo(0) && !loaded.IsVisible(0),
+		  "Single-path flags round-trip");
+	check(document.SaveAll(file.wstring().c_str()) && loaded.LoadAll(file.wstring().c_str()) &&
+			  loaded.IsSolo(1) && !loaded.IsVisible(1),
+		  "Collection flags round-trip");
+	std::filesystem::remove(file);
+	const auto geometry = active.GetGeometryRevision();
+	for (int i = 0; i < 1000; ++i)
+	{
+		active.SelectNone();
+		active.SelectAdd(size_t(i % 5), size_t(i % 5));
+	}
+	check(active.GetGeometryRevision() == geometry,
+		  "Selection does not invalidate trajectory sampling or arc-length data");
+	auto keys = active.CaptureState().Keys;
+	for (auto &key : keys)
+		key.second.Selected = !key.second.Selected;
+	active.ReplaceKeys(keys);
+	check(active.GetGeometryRevision() == geometry,
+		  "Graph selection replacement also keeps geometry caches valid");
+}
 void files()
 {
 	CamPath p;
@@ -558,6 +699,8 @@ int main()
 		distanceAndHoldEdits();
 		collections();
 		consoleProfiles();
+		independentTimingAndExport();
+		shotControlsAndSelectionCost();
 		files();
 		std::cout << checks << " TF2 camera checks passed\n";
 	}

@@ -22,6 +22,8 @@
 #include <stdio.h>
 #include <string>
 #include <algorithm>
+#include <map>
+#include <limits>
 extern bool GetDemoTickFromClientTime(double, double, int &);
 extern bool GetCurrentDemoTime(double &);
 
@@ -55,6 +57,48 @@ struct AFXDRAWTEXTUREVERTEX
 };
 #define D3DFVF_AFXDRAWTEXTUREVERTEX (D3DFVF_XYZ|D3DFVF_TEX1|D3DFVF_TEXCOORDSIZE1(1))
 
+// Screen-space overlap tests choose world-space billboard offsets. All glyphs still
+// use the classic depth-tested projection; no screen overlay renderer is involved.
+struct WorldLabelRect
+{
+	float L, T, R, B;
+};
+static std::map<std::pair<int, int>, std::vector<WorldLabelRect>> g_WorldLabelCells;
+static int PlaceWorldLabel(WorldLabelRect bounds, float step, int width, int height)
+{
+	if (!std::isfinite(bounds.L) || !std::isfinite(bounds.R) || !std::isfinite(bounds.T) ||
+		!std::isfinite(bounds.B) || !std::isfinite(step) || step <= 0 || width <= 0 || height <= 0)
+		return -1;
+	for (int row = 0; row < 64; ++row)
+	{
+		WorldLabelRect b{bounds.L, bounds.T - step * row, bounds.R, bounds.B - step * row};
+		if (b.R < 0 || b.L > width || b.B < 0 || b.T > height)
+			continue;
+		int x0 = (int)(std::max)(0.0f, b.L) / 64, x1 = (int)(std::min)((float)width, b.R) / 64;
+		int y0 = (int)(std::max)(0.0f, b.T) / 64, y1 = (int)(std::min)((float)height, b.B) / 64;
+		bool overlap = false;
+		for (int y = y0; y <= y1 && !overlap; ++y)
+			for (int x = x0; x <= x1 && !overlap; ++x)
+			{
+				auto cell = g_WorldLabelCells.find({x, y});
+				if (cell == g_WorldLabelCells.end())
+					continue;
+				for (const auto &a : cell->second)
+					if (b.L < a.R + 2 && b.R > a.L - 2 && b.T < a.B + 2 && b.B > a.T - 2)
+					{
+						overlap = true;
+						break;
+					}
+			}
+		if (overlap)
+			continue;
+		for (int y = y0; y <= y1; ++y)
+			for (int x = x0; x <= x1; ++x)
+				g_WorldLabelCells[{x, y}].push_back(b);
+		return row;
+	}
+	return -1;
+}
 
 // CCampathDrawer //////////////////////////////////////////////////////////////
 
@@ -224,10 +268,7 @@ void CCampathDrawer::CampathChangedFn(void * pUserData) {
 
 void CCampathDrawer::CamPathChanged()
 {
-	if(m_LessDynamicProperties) {
-		m_LessDynamicProperties->Release();
-		m_LessDynamicProperties = nullptr;
-	}
+	m_PropertiesDirty = true;
 }
 
 void CCampathDrawer::Draw_set(bool value)
@@ -370,6 +411,58 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 		m_PlaneUp.Normalize();		
 	}
 
+	auto place = [&](const CamPathValue &anchor, float base, float width) -> float
+	{
+		const float size = drawer->m_DrawKeyframIndex;
+		if (!(size > 0) || width <= 0)
+			return -1;
+		auto project = [&](double x, double y, double z, float &sx, float &sy)
+		{
+			const auto &m = m_WorldToScreenMatrix.m;
+			double w = m[3][0] * x + m[3][1] * y + m[3][2] * z + m[3][3];
+			if (w <= 1e-5 || !std::isfinite(w))
+				return false;
+			sx = (float)((m[0][0] * x + m[0][1] * y + m[0][2] * z + m[0][3]) / w * 0.5 + 0.5) * m_ScreenWidth;
+			sy =
+				(float)(0.5 - (m[1][0] * x + m[1][1] * y + m[1][2] * z + m[1][3]) / w * 0.5) * m_ScreenHeight;
+			return std::isfinite(sx) && std::isfinite(sy);
+		};
+		WorldLabelRect rect{(std::numeric_limits<float>::max)(), (std::numeric_limits<float>::max)(),
+							-(std::numeric_limits<float>::max)(), -(std::numeric_limits<float>::max)()};
+		for (int corner = 0; corner < 4; ++corner)
+		{
+			double x = (corner & 1 ? 0.5 : -0.5) * width * size,
+				   y = (base + (corner & 2 ? 0.5 : -0.5)) * size;
+			float sx, sy;
+			if (!project(anchor.X + x * m_PlaneRight.X + y * m_PlaneUp.X,
+						 anchor.Y + x * m_PlaneRight.Y + y * m_PlaneUp.Y,
+						 anchor.Z + x * m_PlaneRight.Z + y * m_PlaneUp.Z, sx, sy))
+				return -1;
+			rect.L = (std::min)(rect.L, sx);
+			rect.R = (std::max)(rect.R, sx);
+			rect.T = (std::min)(rect.T, sy);
+			rect.B = (std::max)(rect.B, sy);
+		}
+		float x0, y0, x1, y1;
+		if (!project(anchor.X, anchor.Y, anchor.Z, x0, y0) ||
+			!project(anchor.X + m_PlaneUp.X * size * 1.35, anchor.Y + m_PlaneUp.Y * size * 1.35,
+					 anchor.Z + m_PlaneUp.Z * size * 1.35, x1, y1))
+			return -1;
+		const int row =
+			PlaceWorldLabel(rect, (std::max)(1.0f, std::abs(y1 - y0)), m_ScreenWidth, m_ScreenHeight);
+		return row < 0 ? -1 : base + row * 1.35f;
+	};
+	size_t keyIndex = 0;
+	for (auto it = path->GetBegin(); it != path->GetEnd(); ++it, ++keyIndex)
+	{
+		size_t digits = std::to_string(keyIndex).size();
+		auto anchor = it.GetValue();
+		// Numeric quads extend to the left of their anchor in the legacy renderer.
+		anchor.X -= m_PlaneRight.X * drawer->m_DrawKeyframIndex * digits * 0.25;
+		anchor.Y -= m_PlaneRight.Y * drawer->m_DrawKeyframIndex * digits * 0.25;
+		anchor.Z -= m_PlaneRight.Z * drawer->m_DrawKeyframIndex * digits * 0.25;
+		IndexRows.push_back(place(anchor, 0, (float)digits * 0.5f));
+	}
 	// Capture glyph metrics and text on the engine thread. Queued render work retains
 	// only immutable values, never a pointer to an editable or deleted camera path.
 	auto label = [&](const CamPathValue &anchor, float height, const std::string &text)
@@ -391,13 +484,22 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 			if (AfxHookSource::Gui::GetWorldGlyph(code, glyph))
 				result.Glyphs.push_back(glyph);
 		}
-		Labels.push_back(std::move(result));
+		float width = 0;
+		for (const auto &glyph : result.Glyphs)
+			width += glyph.Advance;
+		const float placed = place(anchor, height, width);
+		if (placed >= 0)
+		{
+			result.Height = placed;
+			Labels.push_back(std::move(result));
+		}
 	};
 	if (path->GetSize())
 	{
-		label(path->GetBegin().GetValue(), 3.2f, name);
+		if (drawer->m_DrawNames)
+			label(path->GetBegin().GetValue(), 3.2f, name);
 		for (auto it = path->GetBegin(); it != path->GetEnd(); ++it)
-			if (it.GetValue().HoldDuration > 0)
+			if (drawer->m_DrawHolds && it.GetValue().HoldDuration > 0)
 			{
 				const double release = it.GetTime() + it.GetValue().HoldDuration + path->GetOffset();
 				int tick = 0;
@@ -411,7 +513,7 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 					snprintf(text, sizeof(text), "Hold -> %.3f s", release);
 				label(it.GetValue(), 1.8f, text);
 			}
-		if (path->CanEval())
+		if (drawer->m_DrawDurations && path->CanEval())
 		{
 			auto left = path->GetBegin(), right = left;
 			++right;
@@ -441,7 +543,8 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 	}
 }
 
-CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer *drawer, CamPath *path)
+CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer *drawer, CamPath *path,
+															   const CLessDynamicProperties *previous)
 {
 
 	m_CampathCanEval = path->CanEval();
@@ -449,7 +552,18 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer *d
 	for (CamPathIterator it = path->GetBegin(); it != path->GetEnd(); ++it)
 	{
 		m_Keyframes.emplace_back(it.GetTime(), it.GetValue());
+		m_Selection[it.GetTime()] = it.GetValue().Selected;
 	}
+
+	m_GeometryRevision = path->GetGeometryRevision();
+	m_Source = path;
+	if (previous && previous->m_Source == path && previous->m_GeometryRevision == m_GeometryRevision)
+	{
+		m_TrajectoryPoints = previous->m_TrajectoryPoints;
+		return;
+	}
+	auto trajectory = std::make_shared<std::list<CKeyframe>>();
+	m_TrajectoryPoints = trajectory;
 
 	if(m_CampathCanEval && 2 <= m_Keyframes.size()) {
 		// Build trajectory points.
@@ -482,15 +596,15 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer *d
 			// add all points except the last one (to avoid duplicates):
 			for(TempPoint * pt = &(pts[0]); pt && pt->nextPt; pt = pt->nextPt)
 			{
-				m_TrajectoryPoints.emplace_back(pt->t, path->Eval(pt->t));
+				trajectory->emplace_back(pt->t, path->Eval(pt->t));
 			}
 
 			last = it;
 		}
 
 		// add last point:
-		m_TrajectoryPoints.emplace_back(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t,
-										path->Eval(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t));
+		trajectory->emplace_back(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t,
+								 path->Eval(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t));
 
 		delete[] pts;
 	}
@@ -507,19 +621,27 @@ void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
 	if(!m_Draw)
 		return;
 
-	if(nullptr == m_LessDynamicProperties) {
-		m_LessDynamicProperties =
-			new CLessDynamicProperties(this, &g_Hook_VClient_RenderView.m_CamPath); // CPU expensive.
-		m_LessDynamicProperties->AddRef();
-	}
-
+	g_WorldLabelCells.clear();
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
-	MaterialSystem_ExecuteOnRenderThread(new CCampathDrawerFunctor(this, &g_Hook_VClient_RenderView.m_CamPath,
-																   paths.GetName(paths.GetActive()),
-																   m_LessDynamicProperties));
+	if (paths.IsVisible(paths.GetActive()))
+	{
+		if (!m_LessDynamicProperties || m_PropertiesDirty)
+		{
+			auto *previous = m_LessDynamicProperties;
+			m_LessDynamicProperties =
+				new CLessDynamicProperties(this, &g_Hook_VClient_RenderView.m_CamPath, previous);
+			m_LessDynamicProperties->AddRef();
+			if (previous)
+				previous->Release();
+			m_PropertiesDirty = false;
+		}
+		MaterialSystem_ExecuteOnRenderThread(
+			new CCampathDrawerFunctor(this, &g_Hook_VClient_RenderView.m_CamPath,
+									  paths.GetName(paths.GetActive()), m_LessDynamicProperties));
+	}
 	const auto state = paths.CaptureState();
 	for (size_t i = 0; i < paths.GetCount(); ++i)
-		if (i != paths.GetActive())
+		if (i != paths.GetActive() && paths.IsVisible(i))
 		{
 			auto *path = paths.GetPath(i);
 			const auto id = state.Paths[i].Id;
@@ -741,6 +863,14 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 
 					for (auto it = lessDynamicProperties->GetKeyframesBegin(); it != lessDynamicProperties->GetKeyframesEnd(); it++)
 					{
+						const float indexRow = index < (int)dynamicPorperties->IndexRows.size()
+												   ? dynamicPorperties->IndexRows[index]
+												   : 0;
+						if (indexRow < 0)
+						{
+							++index;
+							continue;
+						}
 						int digits = 0;
 						for (int t = index; 0 < t; t = t / 10)
 						{
@@ -759,8 +889,8 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 							val = val / 10;
 
 							float left = -0.5f * drawKeyFrameIndex * (i + 1);
-							float top = 0.5f * drawKeyFrameIndex;
-							float bottom = -0.5f * drawKeyFrameIndex;
+							float top = (indexRow + 0.5f) * drawKeyFrameIndex;
+							float bottom = (indexRow - 0.5f) * drawKeyFrameIndex;
 							float right = left + 0.5f * drawKeyFrameIndex;
 
 							float tx = (32 * (cval % 8)) / 256.0f;
@@ -915,6 +1045,7 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 
 				// emit current point:
 				{
+					curPtValue.Selected = lessDynamicProperties->IsSelected(curPtTime);
 					double deltaTime = abs(curTime -curPtTime);
 
 					DWORD colour;
