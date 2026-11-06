@@ -8,8 +8,6 @@
 #include <d3d9.h>
 #include <list>
 #include <atomic>
-#include <vector>
-#include <string>
 
 #define CCampathDrawer_VertexFVF D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX0 | D3DFVF_TEXCOORDSIZE3(0) | D3DFVF_TEX1 | D3DFVF_TEXCOORDSIZE3(1) | D3DFVF_TEX2 | D3DFVF_TEXCOORDSIZE3(2)
 
@@ -36,48 +34,6 @@ public:
 	float GetDrawKeyframeIndex() { return m_DrawKeyframIndex; }
 	void SetDrawKeyframeIndex(float value) { m_DrawKeyframIndex = value; }
 
-	bool GetStackLabels() const
-	{
-		return m_StackLabels;
-	}
-	void SetStackLabels(bool value)
-	{
-		m_StackLabels = value;
-	}
-	float GetStackWorldDistance() const
-	{
-		return m_StackWorldDistance;
-	}
-	void SetStackWorldDistance(float value)
-	{
-		m_StackWorldDistance = value;
-	}
-
-	bool GetDrawHandles() const
-	{
-		return m_DrawHandles;
-	}
-	void SetDrawHandles(bool enabled)
-	{
-		m_DrawHandles = enabled;
-	}
-	bool GetDrawSegments() const
-	{
-		return m_DrawSegments;
-	}
-	void SetDrawSegments(bool enabled)
-	{
-		m_DrawSegments = enabled;
-	}
-	float GetLabelHeight() const
-	{
-		return m_LabelHeight;
-	}
-	void SetLabelHeight(float value)
-	{
-		m_LabelHeight = value;
-	}
-
 	void BeginDevice(IDirect3DDevice9 * device);
 	void EndDevice();
 	void Reset();
@@ -103,7 +59,7 @@ private:
 
 	class CDynamicProperties {
 	public:
-		CDynamicProperties(CCampathDrawer * drawer, CamPath & path, bool active);
+		CDynamicProperties(CCampathDrawer * drawer);
 
 		double GetCurTime() const {
 			return m_CurTime;
@@ -145,15 +101,6 @@ private:
 			return m_PlaneUp;
 		}
 
-		bool StackLabels() const
-		{
-			return m_StackLabels;
-		}
-		float StackWorldDistance() const
-		{
-			return m_StackWorldDistance;
-		}
-
 		float GetDrawKeyframeIndex() const {
 			return m_DrawKeyFrameIndex;
 		}
@@ -182,8 +129,6 @@ private:
 		Vector3 m_PlaneRight;
 		Vector3 m_PlaneUp;
 
-		bool m_StackLabels;
-		float m_StackWorldDistance;
 		float m_DrawKeyFrameIndex;
 		bool m_DrawKeyframeAxis;
 		bool m_DrawKeyframeCam;
@@ -225,7 +170,7 @@ private:
 			CamPathValue m_Value;
 		};
 
-		CLessDynamicProperties(CCampathDrawer * drawer, CamPath & path);
+		CLessDynamicProperties(CCampathDrawer * drawer);
 
 		bool GetCampathCanEval() const {
 			return m_CampathCanEval;
@@ -258,50 +203,22 @@ private:
 		std::list<CKeyframe> m_TrajectoryPoints;
 	};
 
-	// Additional handle lines and name/hold labels share the native draw pass.
-	struct CAnnotations
-	{
-		struct Line
-		{
-			Vector3 From, To;
-			DWORD Color;
-		};
-		struct Label
-		{
-			Vector3 Position;
-			std::string Text;
-			DWORD Color;
-			float Row = 0;
-		};
-		std::vector<Line> Lines;
-		std::vector<Label> Labels;
-		float LabelHeight = 20.0f;
-	};
-	void BuildAnnotations(CAnnotations & data, CamPath & path, bool active);
-
 	class CCampathDrawerFunctor : public CMaterialSystemFunctor {
 	public:
-		CCampathDrawerFunctor(CCampathDrawer * drawer, CamPath & path, CLessDynamicProperties * snapshot, bool active,
-							  CAnnotations * annotations)
-		{
-			m_Annotations = annotations;
-			m_DynamicProperties = new CDynamicProperties(drawer, path, active);
-			m_LessDynamicProperties = snapshot;
-			if (m_LessDynamicProperties)
-				m_LessDynamicProperties->AddRef();
+		CCampathDrawerFunctor(CCampathDrawer * drawer) {
+			m_DynamicProperties = new CDynamicProperties(drawer);
+			m_LessDynamicProperties = drawer->m_LessDynamicProperties;
+			m_LessDynamicProperties->AddRef();
 		}
 
 		virtual ~CCampathDrawerFunctor() {
-			if (m_LessDynamicProperties)
-				m_LessDynamicProperties->Release();
-			delete m_Annotations;
+			m_LessDynamicProperties->Release();
 			delete m_DynamicProperties;
 		}
 
 		virtual void operator()();
 
 	private:
-		CAnnotations * m_Annotations;
 		CDynamicProperties * m_DynamicProperties;
 		CLessDynamicProperties * m_LessDynamicProperties;
 	};
@@ -319,17 +236,11 @@ private:
 	IDirect3DVertexBuffer9 * m_VertexBuffer;
 	UINT m_VertexBufferVertexCount; // c_VertexBufferVertexCount
 	Vertex * m_LockedVertexBuffer;
-	bool m_StackLabels = true;
-	float m_StackWorldDistance = 32;
 	float m_DrawKeyframIndex = 18.0f;
 	IDirect3DTexture9* m_DigitsTexture = nullptr;
-	IDirect3DTexture9 * m_LabelTexture = nullptr;
-	float m_LabelHeight = 20.0f;
-	bool m_DrawHandles = true;
-	bool m_DrawSegments = true;
 	IAfxPixelShader* m_DrawTextureShader = nullptr;
 
-	std::vector<CLessDynamicProperties *> m_PathSnapshots;
+	CLessDynamicProperties * m_LessDynamicProperties = nullptr;
 
 	static void CampathChangedFn(void * pUserData);
 
@@ -355,15 +266,9 @@ private:
 	static void RamerDouglasPeucker(TempPoint * start, TempPoint * end, double epsilon);
 	static double ShortestDistanceToSegment(TempPoint * pt, TempPoint * start, TempPoint * end);
 
-	bool BeginLabels(CDynamicProperties const * properties, bool names);
-	void DrawLabel(CDynamicProperties const * properties, Vector3 position, const std::string & text, float height,
-				   DWORD color, bool names, float row = 0);
-
 	void DrawCamera(const CamPathValue & cpv, DWORD colour, FLOAT screenInfo[4], int screenWidth, int screenHeight);
 
-	void OnPostRenderAllTools_DrawingThread(CDynamicProperties * dynamicPorperties,
-											CLessDynamicProperties * lessDynamicProperties,
-											CAnnotations * annotations = nullptr);
+	void OnPostRenderAllTools_DrawingThread(CDynamicProperties * dynamicPorperties, CLessDynamicProperties * lessDynamicProperties);
 };
 
 extern CCampathDrawer g_CampathDrawer;

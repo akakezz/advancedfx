@@ -1,49 +1,16 @@
 cmake_minimum_required(VERSION 3.24)
-project(CinematicCameraTests LANGUAGES CXX)
+project(tf2_camera_tests LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
 enable_testing()
-add_executable(cinematic_tests
-    test_cinematic.cpp
-    ../../shared/CamPath.cpp
-    ../../shared/AfxMath.cpp
-)
-target_compile_features(cinematic_tests PRIVATE cxx_std_17)
-target_compile_definitions(cinematic_tests PRIVATE _USE_MATH_DEFINES=)
+add_executable(cinematic_tests test_cinematic.cpp ../../shared/CamPath.cpp ../../shared/AfxMath.cpp)
 target_include_directories(cinematic_tests PRIVATE ../.. ../../AfxHookSource)
-if(MSVC)
-    target_compile_options(cinematic_tests PRIVATE /W4 /EHsc)
-else()
-    # Keep upstream's MSVC CRT spellings out of production code. The generated
-    # compatibility header lets Linux exercise the actual shared CamPath source.
-    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/msvc_crt_compat.h" [=[
-#include <cstdio>
-#include <cerrno>
-#include <filesystem>
-#include <strings.h>
-#define _stricmp strcasecmp
-#define _TRUNCATE ((size_t)-1)
-template<size_t N> int _snprintf_s(char (&buffer)[N],size_t,const char *format,double value){return std::snprintf(buffer,N,format,value);}
-inline int _wfopen_s(FILE **file,const wchar_t *name,const wchar_t *mode){std::string m;for(;*mode;++mode)m+=char(*mode);*file=std::fopen(std::filesystem::path(name).string().c_str(),m.c_str());return *file?0:errno;}
-]=])
-    target_compile_options(cinematic_tests PRIVATE -include "${CMAKE_CURRENT_BINARY_DIR}/msvc_crt_compat.h")
+if(NOT MSVC)
     target_compile_definitions(cinematic_tests PRIVATE abstract=)
-    target_compile_options(cinematic_tests PRIVATE -Wall -Wextra -Wpedantic -Wno-deprecated-copy)
+    target_compile_options(cinematic_tests PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/msvc_crt_compat.h)
 endif()
-add_test(NAME cinematic_core COMMAND cinematic_tests)
+add_test(NAME camera_core COMMAND cinematic_tests)
 
-# These tests exercise the real Windows message/raw-input implementation using
-# fake camera/menu dependencies; they do not require an injected game process.
-if(WIN32 AND MSVC)
-    add_executable(cinematic_input_tests
-        test_cinematic.cpp
-        ../../shared/MirvInput.cpp
-        ../../shared/AfxMath.cpp
-        ../../shared/AfxConsole.cpp
-        ../../shared/StringTools.cpp
-    )
-    target_compile_features(cinematic_input_tests PRIVATE cxx_std_17)
-    target_compile_definitions(cinematic_input_tests PRIVATE AFX_CAMPATH_INPUT_TESTS _USE_MATH_DEFINES=)
-    target_include_directories(cinematic_input_tests PRIVATE ../.. ../../AfxHookSource)
-    target_compile_options(cinematic_input_tests PRIVATE /W4 /EHsc)
-    target_link_libraries(cinematic_input_tests PRIVATE user32)
-    add_test(NAME cinematic_input COMMAND cinematic_input_tests)
+if(UNIX AND DEFINED AFX_IMGUI_SOURCE_DIR)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME camera_overlay_gui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_overlay.py" --imgui-dir "${AFX_IMGUI_SOURCE_DIR}" --build-dir "${CMAKE_CURRENT_BINARY_DIR}/overlay-gui")
 endif()

@@ -90,12 +90,6 @@ mirv_input camera uiCursor 1
 
 While in freecam, **Escape** opens the game menu and **Shift+Escape** exits freecam.
 
-## Cinematic camera editor
+## TF2 camera overlay (feature branch)
 
-The optional cinematic editor separates path geometry from motion timing and adds
-multiple paths, placement, animation tracks, sequencing and interactive drawing.
-Start with `mirv_campath edit on`, capture points with Insert, then preview with Tab.
-
-See [the complete cinematic camera guide](doc/CINEMATIC_CAMERA.md) for commands,
-examples, compatibility details and the Windows review checklist. Use
-`mirv_campath edit off` to return to classic campath commands.
+[Paper overlay port: camera work, sequencer, curves, observing and recording](doc/CINEMATIC_CAMERA.md)

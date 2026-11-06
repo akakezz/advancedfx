@@ -428,16 +428,8 @@ bool MirvInput::GetCameraControlMode(void)
 	return m_CameraControlMode;
 }
 
-void MirvInput::ClearMovementInput(bool yieldKeyboard)
+void MirvInput::ClearMovementInput()
 {
-	if (yieldKeyboard)
-	{
-		for (bool & key : m_CapturedKeys)
-			key = false;
-		for (bool & key : m_CapturedRawKeys)
-			key = false;
-	}
-
 	m_CamForward = m_CamForwardI = 0.0;
 	m_CamLeft = m_CamLeftI = 0.0;
 	m_CamUp = m_CamUpI = 0.0;
@@ -662,21 +654,6 @@ void MirvInput::MouseFovNegativeSpeed_set(double value)
 	m_MouseFovNegativeSpeed = value;
 }
 
-void MirvInput::SetKeyboardCapture(bool enabled, KeyboardPassThroughFn passThrough, void * context)
-{
-	if (enabled != m_KeyboardCapture)
-		ClearMovementInput();
-	m_KeyboardCapture = enabled;
-	m_KeyboardPassThrough = passThrough;
-	m_KeyboardContext = context;
-	m_IgnoreNextKey = m_IgnoreKeyUp = false;
-}
-
-bool MirvInput::CapturesKey(unsigned int key) const
-{
-	return m_KeyboardCapture && key < 256 && (!m_KeyboardPassThrough || !m_KeyboardPassThrough(key, m_KeyboardContext));
-}
-
 bool MirvInput::Supply_CharEvent(WPARAM wParam, LPARAM lParam)
 {
 	if(!m_Focus)
@@ -685,18 +662,9 @@ bool MirvInput::Supply_CharEvent(WPARAM wParam, LPARAM lParam)
 	if(m_Dependencies->GetSuspendMirvInput())
 		return false;
 
-	bool captureChar = false;
-	if (m_KeyboardCapture)
-	{
-		SHORT key = VkKeyScanExW((WCHAR)wParam, GetKeyboardLayout(0));
-		captureChar = key == -1 || CapturesKey((unsigned int)key & 255);
-		if (!captureChar)
-			return false;
-	}
-
 	if(m_IgnoreNextKey)
 	{
-		return captureChar;
+		return false;
 	}
 
 	if(m_CameraControlMode)
@@ -717,207 +685,131 @@ bool MirvInput::Supply_CharEvent(WPARAM wParam, LPARAM lParam)
 		return true;
 	}
 
-	return captureChar;
-}
-
-bool MirvInput::IsCameraKey(unsigned int key)
-{
-	return m_CameraControlMode && (key == VK_OEM_PLUS || key == VK_OEM_MINUS || CameraKeyEvent(KS_DOWN, key, 0, false));
-}
-
-bool MirvInput::CameraKeyEvent(KeyState keyState, WPARAM wParam, LPARAM lParam, bool apply)
-{
-	switch (wParam)
-	{
-	case VK_ADD:
-		if (!apply)
-			return true;
-		return true;
-	case VK_SUBTRACT:
-		if (!apply)
-			return true;
-		return true;
-	case VK_ESCAPE:
-		if (!apply)
-			return true;
-		if (!m_MenuAwareEscape)
-		{
-			if (KS_UP == keyState)
-				SetCameraControlMode(false);
-			return true;
-		}
-		// Normal Escape belongs to Source's main menu. Shift+Escape is
-		// the built-in free-camera exit shortcut (independent of aliases).
-		if (KS_DOWN == keyState && (GetKeyState(VK_SHIFT) & 0x8000))
-		{
-			m_ShiftEscapeHeld = true;
-			return true;
-		}
-		if (KS_UP == keyState && m_ShiftEscapeHeld)
-		{
-			m_ShiftEscapeHeld = false;
-			SetCameraControlMode(false);
-			return true;
-		}
-		return false;
-	case VK_CONTROL:
-		if (!apply)
-			return true;
-		if (KS_UP == keyState && !m_KeyboardCapture)
-			m_IgnoreNextKey = true;
-		return true;
-	case VK_HOME:
-	case VK_NUMPAD5:
-		if (!apply)
-			return true;
-		if (KS_DOWN == keyState)
-		{
-			m_CamResetView = true;
-			m_CamSpeed = 1.0;
-		}
-		return true;
-	case 0x57: // W key
-	case VK_NUMPAD8:
-		if (!apply)
-			return true;
-		m_CamForward = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardForwardSpeed : 0.0;
-		return true;
-	case 0x53: // S key
-	case VK_NUMPAD2:
-		if (!apply)
-			return true;
-		m_CamForwardI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardBackwardSpeed : 0.0;
-		return true;
-	case 0x41: // A key
-	case VK_NUMPAD4:
-		if (!apply)
-			return true;
-		m_CamLeft = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardLeftSpeed : 0.0;
-		return true;
-	case 0x44: // D key
-	case VK_NUMPAD6:
-		if (!apply)
-			return true;
-		m_CamLeftI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardRightSpeed : 0.0;
-		return true;
-	case 0x52: // R key
-	case VK_NUMPAD9:
-		if (!apply)
-			return true;
-		m_CamUp = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardUpSpeed : 0.0;
-		return true;
-	case 0x46: // F key
-	case VK_NUMPAD3:
-		if (!apply)
-			return true;
-		m_CamUpI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardDownSpeed : 0.0;
-		return true;
-	case VK_NUMPAD1:
-	case VK_NEXT:
-		if (!apply)
-			return true;
-		m_CamFov = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardFovPositiveSpeed : 0.0;
-		return true;
-	case VK_NUMPAD7:
-	case VK_PRIOR:
-		if (!apply)
-			return true;
-		m_CamFovI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardFovNegativeSpeed : 0.0;
-		return true;
-	case 0x58: // X key
-	case VK_DECIMAL:
-		if (!apply)
-			return true;
-		m_CamRoll = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardRollPositiveSpeed : 0.0;
-		return true;
-	case 0x5A: // Z key
-	case VK_NUMPAD0:
-		if (!apply)
-			return true;
-		m_CamRollI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardRollNegativeSpeed : 0.0;
-		return true;
-	case VK_DOWN:
-		if (!apply)
-			return true;
-		m_CamPitch = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardPitchPositiveSpeed : 0.0;
-		return true;
-	case VK_UP:
-		if (!apply)
-			return true;
-		m_CamPitchI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardPitchNegativeSpeed : 0.0;
-		return true;
-	case VK_LEFT:
-		if (!apply)
-			return true;
-		m_CamYaw = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardYawPositiveSpeed : 0.0;
-		return true;
-	case VK_RIGHT:
-		if (!apply)
-			return true;
-		m_CamYawI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardYawNegativeSpeed : 0.0;
-		return true;
-	}
 	return false;
 }
 
 bool MirvInput::Supply_KeyEvent(KeyState keyState, WPARAM wParam, LPARAM lParam)
 {
-	if (!m_Focus)
+	if(!m_Focus)
 		return false;
 
-	if (m_Dependencies->GetSuspendMirvInput())
+	if(m_Dependencies->GetSuspendMirvInput())
 	{
-		if (wParam < 256)
-			m_CapturedKeys[wParam] = false;
 		ClearMovementInput();
-		m_IgnoreKeyUp = !m_KeyboardCapture && KS_DOWN == keyState;
+		m_IgnoreKeyUp = KS_DOWN == keyState;
 		return false;
 	}
 
-	bool captureKey = CapturesKey((unsigned int)wParam) || (wParam < 256 && m_CapturedKeys[wParam]);
-	if (wParam < 256)
-	{
-		if (keyState == KS_UP && m_CapturedKeys[wParam])
-		{
-			m_CapturedKeys[wParam] = false;
-			// Process the release below as well, so held camera movement resets.
-			captureKey = true;
-		}
-		else if (captureKey && keyState == KS_UP)
-		{
-			// This press began before the editor owned input: let Source release it.
-			return false;
-		}
-		else if (captureKey && keyState == KS_DOWN)
-		{
-			// Ignore repeats that began before capture, including camera keys.
-			// Their release still belongs to Source, so do not start movement.
-			if ((lParam & (1LL << 30)) && !m_CapturedKeys[wParam])
-				return true;
-			m_CapturedKeys[wParam] = true;
-		}
-	}
-	if (m_IgnoreKeyUp && KS_UP == keyState)
+	if(m_IgnoreKeyUp && KS_UP == keyState)
 	{
 		m_IgnoreKeyUp = false;
-		return captureKey;
+		return false;
 	}
 
-	if (m_IgnoreNextKey)
+	if(m_IgnoreNextKey)
 	{
-		if (KS_UP == keyState)
+		if(KS_UP == keyState)
 			m_IgnoreNextKey = false;
 
-		return captureKey;
+		return false;
 	}
 
-	if (m_KeyboardCapture && !captureKey && wParam != VK_ESCAPE)
-		return false;
+	if(m_CameraControlMode)
+	{
+		switch(wParam)
+		{
+		case VK_ADD:
+			return true;
+		case VK_SUBTRACT:
+			return true;
+		case VK_ESCAPE:
+			if (!m_MenuAwareEscape)
+			{
+				if (KS_UP == keyState)
+					SetCameraControlMode(false);
+				return true;
+			}
+			// Normal Escape belongs to Source's main menu. Shift+Escape is
+			// the built-in free-camera exit shortcut (independent of aliases).
+			if (KS_DOWN == keyState && (GetKeyState(VK_SHIFT) & 0x8000))
+			{
+				m_ShiftEscapeHeld = true;
+				return true;
+			}
+			if (KS_UP == keyState && m_ShiftEscapeHeld)
+			{
+				m_ShiftEscapeHeld = false;
+				SetCameraControlMode(false);
+				return true;
+			}
+			return false;
+		case VK_CONTROL:
+			if(KS_UP == keyState) m_IgnoreNextKey = true;
+			return true;
+		case VK_HOME:
+		case VK_NUMPAD5:
+			if(KS_DOWN == keyState)
+			{
+				m_CamResetView = true;
+				m_CamSpeed = 1.0;
+			}
+			return true;
+		case 0x57: // W key
+		case VK_NUMPAD8:
+			m_CamForward = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardForwardSpeed : 0.0;
+			return true;
+		case 0x53: // S key
+		case VK_NUMPAD2:
+			m_CamForwardI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardBackwardSpeed : 0.0;
+			return true;
+		case 0x41: // A key
+		case VK_NUMPAD4:
+			m_CamLeft = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardLeftSpeed : 0.0;
+			return true;
+		case 0x44: // D key
+		case VK_NUMPAD6:
+			m_CamLeftI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardRightSpeed : 0.0;
+			return true;
+		case 0x52: // R key
+		case VK_NUMPAD9:
+			m_CamUp = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardUpSpeed : 0.0;
+			return true;
+		case 0x46: // F key
+		case VK_NUMPAD3:
+			m_CamUpI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardDownSpeed : 0.0;
+			return true;
+		case VK_NUMPAD1:
+		case VK_NEXT:
+			m_CamFov = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardFovPositiveSpeed : 0.0;
+			return true;
+		case VK_NUMPAD7:
+		case VK_PRIOR:
+			m_CamFovI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardFovNegativeSpeed : 0.0;
+			return true;
+		case 0x58: // X key
+		case VK_DECIMAL:
+			m_CamRoll = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardRollPositiveSpeed : 0.0;
+			return true;
+		case 0x5A: // Z key
+		case VK_NUMPAD0:
+			m_CamRollI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardRollNegativeSpeed : 0.0;
+			return true;
+		case VK_DOWN:
+			m_CamPitch = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardPitchPositiveSpeed : 0.0;
+			return true;
+		case VK_UP:
+			m_CamPitchI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardPitchNegativeSpeed : 0.0;
+			return true;
+		case VK_LEFT:
+			m_CamYaw = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardYawPositiveSpeed : 0.0;
+			return true;
+		case VK_RIGHT:
+			m_CamYawI = KS_DOWN == keyState ? m_KeyboardSens * m_KeyboardYawNegativeSpeed : 0.0;
+			return true;
+		}
+	}
 
-	if (m_CameraControlMode && CameraKeyEvent(keyState, wParam, lParam, true))
-		return true;
-
-	return captureKey;
+	return false;
 }
 
 bool  MirvInput::Supply_MouseEvent(DWORD uMsg, WPARAM & wParam, LPARAM & lParam)
@@ -984,17 +876,6 @@ bool  MirvInput::Supply_MouseEvent(DWORD uMsg, WPARAM & wParam, LPARAM & lParam)
 }
 
 void MirvInput::ProcessRawInputData(PRAWINPUT pData) {
-	if (m_Dependencies->GetSuspendMirvInput())
-	{
-		// Observe menu-owned presses/releases without changing their packets.
-		if (pData->header.dwType == RIM_TYPEKEYBOARD && pData->data.keyboard.VKey < 256)
-		{
-			unsigned int key = pData->data.keyboard.VKey;
-			m_CapturedRawKeys[key] = false;
-			m_ObservedRawKeys[key] = !(pData->data.keyboard.Flags & RI_KEY_BREAK);
-		}
-		return;
-	}
 	switch (pData->header.dwType) {
 	case RIM_TYPEMOUSE: {
 		RAWMOUSE* rawmouse = &(pData->data.mouse);
@@ -1078,36 +959,7 @@ void MirvInput::ProcessRawInputData(PRAWINPUT pData) {
 		}
 	} break;
 	case RIM_TYPEKEYBOARD: {
-		RAWKEYBOARD * key = &pData->data.keyboard;
-		bool release = (key->Flags & RI_KEY_BREAK) != 0;
-		unsigned int code = key->VKey;
-		bool suppress = false;
-		if (code < 256)
-		{
-			bool wasDown = m_ObservedRawKeys[code];
-			m_ObservedRawKeys[code] = !release;
-			if (release && m_CapturedRawKeys[code])
-			{
-				m_CapturedRawKeys[code] = false;
-				suppress = true;
-			}
-			else if ((CapturesKey(code) || m_CapturedRawKeys[code]) && !release)
-			{
-				if (!wasDown)
-					m_CapturedRawKeys[code] = true;
-				suppress = true;
-			}
-			else if (CapturesKey(code) && release)
-				break;
-		}
-		if (suppress)
-		{
-			key->MakeCode = key->VKey = 0;
-			key->Message = key->ExtraInformation = 0;
-			break;
-		}
-		if (m_CameraControlMode && !m_KeyboardCapture)
-		{
+		if (m_CameraControlMode) {
 			RAWKEYBOARD* rawkeyboard = &(pData->data.keyboard);
 			if(!(m_IgnoreNextKey || m_IgnoreKeyUp && (rawkeyboard->Flags & RI_KEY_BREAK))) {
 				// Let normal Escape reach Source so it can open its menu.
@@ -1163,6 +1015,9 @@ UINT MirvInput::Supply_RawInputBuffer(UINT result, _Out_writes_bytes_opt_(*pcbSi
 	if(!m_Focus)
 		return result;
 
+	if(m_Dependencies->GetSuspendMirvInput())
+		return result;
+
 	if(0 < result && nullptr != pData && sizeof(RAWINPUTHEADER) == cbSizeHeader && pData && pcbSize && sizeof(RAWINPUT)*result <= *pcbSize) {
 		for(UINT i = 0; i < result; i++) {
 			ProcessRawInputData(pData);
@@ -1176,6 +1031,9 @@ UINT MirvInput::Supply_RawInputBuffer(UINT result, _Out_writes_bytes_opt_(*pcbSi
 UINT MirvInput::Supply_RawInputData(UINT result, _In_ HRAWINPUT hRawInput, _In_ UINT uiCommand, _Out_writes_bytes_to_opt_(*pcbSize, return) LPVOID pData, _Inout_ PUINT pcbSize, _In_ UINT cbSizeHeader)
 {
 	if(!m_Focus)
+		return result;
+
+	if(m_Dependencies->GetSuspendMirvInput())
 		return result;
 
 	if(-1 != result && nullptr != hRawInput && uiCommand == RID_INPUT && sizeof(RAWINPUTHEADER) <= cbSizeHeader && pData && pcbSize && sizeof(RAWINPUT) <= *pcbSize) {
@@ -1284,16 +1142,6 @@ void MirvInput::Supply_MouseFrameEnd(void)
 
 void MirvInput::Supply_Focus(bool hasFocus)
 {
-	if (!hasFocus)
-	{
-		for (bool & key : m_CapturedKeys)
-			key = false;
-		for (bool & key : m_CapturedRawKeys)
-			key = false;
-		for (bool & key : m_ObservedRawKeys)
-			key = false;
-	}
-
 	m_Focus = hasFocus;
 }
 
@@ -1481,8 +1329,7 @@ bool MirvInput::Override(float deltaT, float & Tx, float &Ty, float & Tz, float 
 				}
 			}
 
-			Afx::Math::Vector3 eigenAxis;
-			double targetAngle = m_LastOutQuat.GetAng(targetQuat, eigenAxis) * 180.0 / M_PI;
+			double targetAngle = m_LastOutQuat.GetAng(targetQuat, Afx::Math::Vector3()) * 180.0 / M_PI;
 			double angle = CalcDeltaExpSmooth(t, targetAngle);
 
 			if (abs(angle) > AFX_MATH_EPS)

@@ -62,18 +62,7 @@ public:
 
 	bool GetCameraControlMode(void);
 	void SetCameraControlMode(bool enable);
-	// Release held controls without changing camera/keyboard modes.
-	void ClearMovementInput(bool yieldKeyboard = false);
-
-	// Optional exclusive keyboard ownership for an editor. Ordinary freecam and
-	// other engines keep their existing behavior unless this is enabled.
-	typedef bool (*KeyboardPassThroughFn)(unsigned int key, void * context);
-	void SetKeyboardCapture(bool enabled, KeyboardPassThroughFn passThrough = nullptr, void * context = nullptr);
-	bool IsCameraKey(unsigned int key);
-	bool GetKeyboardCapture() const
-	{
-		return m_KeyboardCapture;
-	}
+	void ClearMovementInput();
 
 	void MenuAwareEscape_set(bool value) { m_MenuAwareEscape = value; }
 
@@ -218,7 +207,6 @@ public:
 	void ConCommand(advancedfx::ICommandArgs * args);
 
 private:
-	bool CameraKeyEvent(KeyState state, WPARAM key, LPARAM flags, bool apply);
 	class Mem
 	{
 	public:
@@ -394,13 +382,6 @@ private:
 	bool m_MMove = false;
 	bool m_ResetCursorDelta = false;
 	bool m_ShiftEscapeHeld = false;
-	bool m_KeyboardCapture = false;
-	KeyboardPassThroughFn m_KeyboardPassThrough = nullptr;
-	void * m_KeyboardContext = nullptr;
-	bool m_CapturedKeys[256] = {};
-	bool m_CapturedRawKeys[256] = {};
-	bool m_ObservedRawKeys[256] = {};
-	bool CapturesKey(unsigned int key) const;
 	bool m_MenuAwareEscape = false; // Source only; GoldSrc keeps its existing Escape behavior.
 	bool m_IgnoreTimescale = true;
 	bool m_CameraControlMode;

@@ -6985,22 +6985,14 @@ void CAfxStreams::Console_Record_Start2()
 		{
 			(*it)->StartCapture(m_TakeDir, frameTime);
 		}
-#endif // #ifndef _WIN64
+#endif //#ifndef _WIN64
 
-		if (m_CampathAutoSave)
+		if(m_CampathAutoSave && 0 < g_Hook_VClient_RenderView.m_CamPath.GetSize())
 		{
-			auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
-			bool hasKeys = false;
-			for (std::size_t i = 0; i < paths.Size(); ++i)
-				hasKeys = hasKeys || paths.At(i).GetSize() > 0;
-			if (hasKeys)
-			{
-				std::wstring file(m_TakeDir);
-				file.append(L"\\campath.xml");
-				bool ok = paths.Size() > 1 ? paths.SaveAll(file.c_str()) : paths.Active().Save(file.c_str());
-				if (!ok)
-					advancedfx::Warning("Error: Failed saving campath.xml to take folder.\n");
-			}
+			std::wstring campathFileName(m_TakeDir);
+			campathFileName.append(L"\\campath.xml");
+			if(!g_Hook_VClient_RenderView.m_CamPath.Save(campathFileName.c_str()))
+				advancedfx::Warning("Error: Failed saving campath.xml to take folder.\n");
 		}
 
 		if (m_CamExport)
@@ -10277,3 +10269,30 @@ void CAfxStreams::CDrawingRecordScreenOutput::ProcessingThreadFunc() {
 	if (m_OutVideoStream) m_OutVideoStream->Release();
 	m_OutVideoStreamCreator->Release();
 }
+
+// Lightweight overlay readbacks keep graphics/stream internals out of the editor.
+namespace AfxHookSource
+{
+namespace CameraOverlay
+{
+namespace Recording
+{
+const char *GetName()
+{
+	return g_AfxStreams.Console_RecordName_get();
+}
+void SetName(const char *value)
+{
+	g_AfxStreams.Console_RecordName_set(value);
+}
+bool ScreenEnabled()
+{
+	return g_AfxStreams.GetRecordScreenEnabled();
+}
+bool IsActive()
+{
+	return g_AfxStreams.IsRecording();
+}
+} // namespace Recording
+} // namespace CameraOverlay
+} // namespace AfxHookSource

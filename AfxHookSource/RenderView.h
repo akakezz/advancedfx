@@ -35,11 +35,7 @@ public:
 		Override_Interop = 10
 	};
 
-	CamPathCollection m_CamPaths;
-	CamPath & GetActiveCamPath()
-	{
-		return m_CamPaths.Active();
-	}
+	CamPath m_CamPath;
 
 	bool ViewOverrideReset = true;
 	bool ForceViewOverride = true;
@@ -101,20 +97,11 @@ public:
 	void Console_Overrides(IWrpCommandArgs * args);
 
     // Console, Source main menu, or (when enabled) VGUI cursor owns input.
-	bool IsMenuActive()
-	{
-		return GetSuspendMirvInput();
-	}
+    bool IsMenuActive() { return GetSuspendMirvInput(); }
+    bool UiCursorSuspend_get() const { return m_UiCursorSuspend; }
+    void UiCursorSuspend_set(bool value) { m_UiCursorSuspend = value; }
 	bool IsSourceUiActive() const;
-	bool UiCursorSuspend_get() const
-	{
-		return m_UiCursorSuspend;
-	}
-	void UiCursorSuspend_set(bool value)
-	{
-		m_UiCursorSuspend = value;
-	}
-	bool UiCursorStatus(bool & available, bool & visible) const;
+	bool UiCursorStatus(bool &available, bool &visible) const;
 
 	void Console_MirvInput(IWrpCommandArgs * args) {
 		m_MirvInput->ConCommand(args);
@@ -157,17 +144,3 @@ private:
 
 	bool OverrideFromString(const char * value, Override & outOverride);
 };
-
-// Source 1 campath command/editor integration (implemented in MirvCommands.cpp).
-bool MirvCampathEditor_Command(IWrpCommandArgs * args);
-bool MirvCampathEditor_IsEditing();
-bool MirvCampathEditor_ShowHud();
-bool MirvCampathEditor_IsUiPassThrough(unsigned key);
-// Allow the graph toggle to close its focused GUI window using the same binding.
-bool MirvCampathEditor_IsGraphKey(unsigned key);
-bool MirvCampathEditor_IsHandleKey(unsigned key);
-bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags);
-void MirvCampathEditor_ReleaseKeys(bool yieldKeyboard = false);
-
-void MirvCampathEditor_OnPreview(bool active);
-bool GetDemoTickFromClientTime(double curTime, double targetTime, int & outTick);

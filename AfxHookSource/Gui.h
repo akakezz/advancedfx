@@ -14,18 +14,14 @@ void DllProcessDetach(void);
 bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam);
 // Expose existing GUI ownership so camera/editor input can yield between events.
 bool WantsKeyboardInput();
-bool SetCampathGraphOpen(bool value);
-bool GetCampathGraphOpen();
-void FinishCampathGraphEdit();
-bool SetCampathHandlesOpen(bool value);
-bool GetCampathHandlesOpen();
+bool SetOverlayOpen(bool value);
 bool OnSetCursorPos(__in int X, __in int Y);
 bool OnGetCursorPos(__out LPPOINT lpPoint);
 bool OnSetCursor(__in_opt HCURSOR hCursor, HCURSOR & result);
 bool OnSetCapture(HWND hWnd, HWND & result);
 bool OnReleaseCapture();
-bool OnClipCursor(const RECT * rect);
-bool OnShowCursor(BOOL show, int & result);
+bool OnClipCursor(const RECT *rect);
+bool OnShowCursor(BOOL show, int &result);
 bool OnGameFrameRenderEnd();
 
 bool On_Direct3DDevice9_Init(void* hwnd, IDirect3DDevice9* device);

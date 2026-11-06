@@ -474,3 +474,10 @@ Thanks to our donors:
 ## Additonal Credits
 
 Additional credits are included with e.g. the main download in the readme.txt file [(or see version on github.com)](https://github.com/advancedfx/advancedfx/blob/master/misc/readme_head.txt).
+
+TF2 camera overlay port:
+- Paper's HLAE overlay: https://github.com/papesgit/advancedfx (user-supplied source archive).
+- Neo Sequencer: supplied widget sources retain their Matty attribution.
+- ImGuizmo: Cedric Guillemet, MIT license retained in the bundled sources.
+- ImGui File Browser: Zhuang Guan, MIT license retained alongside the header.
+- Dear ImGui: Omar Cornut and contributors, pinned docking release and installed MIT notice.

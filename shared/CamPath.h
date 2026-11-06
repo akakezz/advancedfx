@@ -2,65 +2,10 @@
 
 #include "AfxMath.h"
 
-#include <array>
 #include <list>
-#include <memory>
-#include <optional>
-#include <string>
-#include <vector>
 
 using namespace Afx;
 using namespace Afx::Math;
-
-// Timing along an existing camera segment; this does not move its endpoints.
-struct CamPathEase
-{
-	enum Function
-	{
-		Inherit,
-		Linear,
-		Sine,
-		Quad,
-		Cubic,
-		Quart,
-		Quint,
-		Expo,
-		Circ,
-		Back,
-		Bounce,
-		Elastic,
-		Bezier,
-		Count
-	};
-	enum Channel
-	{
-		All,
-		Position,
-		Angles,
-		Fov,
-		ChannelCount
-	};
-	static const char * ChannelToString(Channel value);
-	static bool ChannelFromString(const char * text, Channel & value);
-	enum Direction
-	{
-		In,
-		Out,
-		InOut
-	};
-	Function Type = Inherit;
-	Direction Mode = InOut;
-	double X1 = 1.0 / 3, Y1 = 1.0 / 3, X2 = 2.0 / 3, Y2 = 2.0 / 3;
-	double Overshoot = 1.70158, Amplitude = 1, Period = 0.3;
-	double BounceStrength = 1, BounceCount = 3;
-	bool Valid() const;
-	bool operator==(const CamPathEase & other) const;
-	double Eval(double progress) const;
-	static const char * ToString(Function value);
-	static bool FromString(const char * text, Function & value);
-	static const char * ToString(Direction value);
-	static bool FromString(const char * text, Direction & value);
-};
 
 struct CamPathValue
 {
@@ -74,17 +19,34 @@ struct CamPathValue
 
 	bool Selected;
 
-	// World-space offsets from this keyframe. Unset handles follow the native
-	// position interpolator until explicitly edited.
-	Vector3 InHandle{0, 0, 0}, OutHandle{0, 0, 0};
-	bool HasInHandle = false, HasOutHandle = false;
-	bool HandlesAligned = true; // Opposite directions, independent lengths.
+	// Per-key tangents and modes (for Hermite interpolation)
+	double TxIn, TxOut;
+	unsigned char TxModeIn, TxModeOut;
+	double TyIn, TyOut;
+	unsigned char TyModeIn, TyModeOut;
+	double TzIn, TzOut;
+	unsigned char TzModeIn, TzModeOut;
+	double TfovIn, TfovOut;
+	unsigned char TfovModeIn, TfovModeOut;
+	// weights
+	double TxWIn, TxWOut;
+	double TyWIn, TyWOut;
+	double TzWIn, TzWOut;
+	double TfovWIn, TfovWOut;
 
-	double HoldDuration = 0; // arrival + duration is the release time in path coordinates
-	std::array<std::optional<CamPathEase>, 3> ChannelEase;
-	CamPathEase Ease; // outgoing segment; Inherit uses the path setting
-	bool operator==(const CamPathValue & other) const;
+	// Rotation (Euler) per-key tangents, modes and weights for custom rotation backend
+	// Order/semantics follow Quake convention: Pitch=Y axis, Yaw=Z axis, Roll=X axis
+	double TRxIn, TRxOut;
+	unsigned char TRxModeIn, TRxModeOut; // Roll (X)
+	double TRyIn, TRyOut;
+	unsigned char TRyModeIn, TRyModeOut; // Pitch (Y)
+	double TRzIn, TRzOut;
+	unsigned char TRzModeIn, TRzModeOut; // Yaw (Z)
+	double TRxWIn, TRxWOut;				 // weights for Free mode handles
+	double TRyWIn, TRyWOut;
+	double TRzWIn, TRzWOut;
 
+	bool operator==(const CamPathValue &other) const;
 	CamPathValue();
 
 	CamPathValue(double x, double y, double z, double pitch, double yaw, double roll, double fov);
@@ -98,7 +60,7 @@ struct CamPathIterator
 public:
 	CInterpolationMap<CamPathValue>::const_iterator wrapped;
 
-	CamPathIterator(CInterpolationMap<CamPathValue>::const_iterator const & it);
+	CamPathIterator(CInterpolationMap<CamPathValue>::const_iterator it);
 
 	double GetTime() const;
 
@@ -117,91 +79,40 @@ typedef void (*CamPathChanged)(void * pUserData);
 class CamPath
 {
 public:
-	enum DoubleInterp {
+  enum DoubleInterp
+  {
 		DI_DEFAULT = 0,
 		DI_LINEAR = 1,
 		DI_CUBIC = 2,
-		DI_SMOOTH = 3,
-		DI_MONOTONE = 4,
-		DI_STEP = 5,
-		_DI_COUNT = 6
+	  DI_CUSTOM = 3,
+	  _DI_COUNT = 4
 	};
 
 	enum QuaternionInterp {
 		QI_DEFAULT = 0,
 		QI_SLINEAR = 1,
 		QI_SCUBIC = 2,
-		QI_SMOOTH = 3,
-		QI_STEP = 4,
-		_QI_COUNT = 5,
+		QI_CUSTOM = 3,
+		_QI_COUNT = 4,
 	};
 
 	static bool DoubleInterp_FromString(char const * value, DoubleInterp & outValue);
 	static char const * DoubleInterp_ToString(DoubleInterp value);
 
-	static bool QuaternionInterp_FromString(char const * value, QuaternionInterp & outValue);
-	static char const * QuaternionInterp_ToString(QuaternionInterp value);
+	static bool QuaternionInterp_FromString(char const *value, QuaternionInterp &outValue);
+	static char const *QuaternionInterp_ToString(QuaternionInterp value);
 
-	struct State
+	// Tangent editing support (for custom Hermite interpolation)
+	enum TangentMode : unsigned char
 	{
-		CInterpolationMap<CamPathValue> Keys;
-		DoubleInterp Position = DI_DEFAULT, Fov = DI_DEFAULT;
-		QuaternionInterp Rotation = QI_DEFAULT;
-		double Offset = 0;
-		bool Enabled = false, Hold = false, Bezier = false, CurveEditing = false, ContinuousSpeed = false;
-		std::string Name;
-		CamPathEase Ease;
-		std::array<std::optional<CamPathEase>, 3> ChannelEase;
-		double BlendStrength = 1;
-		bool JoinedEase = false;
-		bool operator==(const State & other) const;
+		TM_AUTO = 0,
+		TM_FLAT = 1,
+		TM_LINEAR = 2,
+		TM_FREE = 3
 	};
-	State CaptureState() const;
-	void RestoreState(const State & state);
-	const std::string & GetName() const
-	{
-		return m_Name;
-	}
-	void SetName(const std::string & name);
-	bool SetKeyHold(double time, double releaseTime);
-	const CamPathEase & GetEase(CamPathEase::Channel channel = CamPathEase::All) const;
-	void SetEase(const CamPathEase & value, bool clearOverrides = true,
-				 CamPathEase::Channel channel = CamPathEase::All);
-	bool SetKeyEase(double time, const CamPathEase & value, CamPathEase::Channel channel = CamPathEase::All);
-	CamPathEase GetKeyEase(double time, bool forPlayback = false,
-						   CamPathEase::Channel channel = CamPathEase::All) const;
-	// Editing a key affects its incoming and outgoing timing curves together.
-	bool SetKeyEaseJoined(double time, const CamPathEase & value, CamPathEase::Channel channel);
-	bool SetEaseHandle(double segmentTime, bool outgoing, double x, double y, CamPathEase::Channel channel);
-	double GetEaseSpan(double time, CamPathEase::Channel channel) const;
-	void JoinedEase_set(bool value)
-	{
-		m_JoinedEase = value;
-		if (value)
-			m_ContinuousSpeed = false;
-		Changed();
-	}
-	bool JoinedEase_get() const
-	{
-		return m_JoinedEase;
-	}
-	bool SmoothHolds() const;
-	double GetSegmentProgress(double keyTime, double time, bool applySpeed = true,
-							  CamPathEase::Channel channel = CamPathEase::All) const;
-	void BlendStrength_set(double value);
-	double BlendStrength_get() const
-	{
-		return m_BlendStrength;
-	}
-	bool GetSegmentMidpoint(double time, Vector3 & position) const;
-	void SpeedContinuous_set(bool enabled);
-	bool SpeedContinuous_get() const
-	{
-		return m_ContinuousSpeed;
-	}
-	void Validate() const;
-	std::string ToXml();
-	bool LoadXml(const std::string & xml);
+
+	static bool TangentMode_FromString(char const *value, unsigned char &outValue);
+	static char const *TangentMode_ToString(unsigned char value);
 
 	CamPath();
 	
@@ -222,22 +133,18 @@ public:
 	void FovInterpMethod_set(DoubleInterp value);
 	DoubleInterp FovInterpMethod_get(void) const;
 
+	struct State
+	{
+		CInterpolationMap<CamPathValue> Keys;
+		DoubleInterp Position, Fov;
+		QuaternionInterp Rotation;
+		bool Enabled, Hold;
+		double Offset;
+		bool operator==(const State &other) const;
+	};
+	State CaptureState() const;
+	void RestoreState(const State &state);
 	void Add(double time, const CamPathValue & value);
-
-	void CurveEditing_set(bool enabled);
-	bool CurveEditing_get() const
-	{
-		return m_CurveEditing;
-	}
-	void Bezier_set(bool enabled);
-	bool Bezier_get() const
-	{
-		return m_Bezier;
-	}
-	bool GetHandle(double time, bool outgoing, Vector3 & offset) const;
-	bool SetHandle(double time, bool outgoing, const Vector3 & offset);
-	bool SetHandleMode(double time, bool aligned);
-	bool ResetHandles(double time);
 
 	void Remove(double time);
 	void Clear();
@@ -277,6 +184,21 @@ public:
 
 	void SetFov(double fov);
 
+	// Custom tangent editing APIs (apply to selected keys if any, otherwise all)
+	enum Channel
+	{
+		CH_X = 0,
+		CH_Y = 1,
+		CH_Z = 2,
+		CH_FOV = 3,
+		CH_RPITCH = 4, // Euler pitch (Y)
+		CH_RYAW = 5,   // Euler yaw (Z)
+		CH_RROLL = 6   // Euler roll (X)
+	};
+	void SetTangent(Channel ch, bool setIn, bool setOut, double slopeIn, double slopeOut);
+	void SetTangentMode(Channel ch, bool setIn, bool setOut, unsigned char mode);
+	void SetTangentWeight(Channel ch, bool setIn, bool setOut, double wIn, double wOut);
+
 	void Rotate(double yPitch, double zYaw, double xRoll);
 
 	void AnchorTransform(double anchorX, double anchorY, double anchorZ, double anchorYPitch, double anchorZYaw, double anchorXRoll, double destX, double destY, double destZ, double destYPitch, double destZYaw, double destXRoll);
@@ -314,22 +236,23 @@ public:
 	double GetOffset() const;
 
 private:
-	CamPathEase m_Ease;
-	CamPathValue EvalBase(double time);
-	struct CamPathChangedData {
+  bool LoadInternal(wchar_t const *fileName);
+  struct CamPathChangedData
+  {
 		CamPathChanged pFn;
-		void * pUserData;
+	  void *pUserData;
 
-		CamPathChangedData(CamPathChanged pFn, void * pUserData)
-		: pFn(pFn), pUserData(pUserData) {
-
+	  CamPathChangedData(CamPathChanged pFn, void *pUserData) : pFn(pFn), pUserData(pUserData)
+	  {
 		}
 
-		void Notify() {
+	  void Notify()
+	  {
 			pFn(pUserData);
 		}
 
-		bool operator==(const CamPathChangedData& other) const {
+	  bool operator==(const CamPathChangedData &other) const
+	  {
 			return this->pFn == other.pFn && this->pUserData == other.pUserData;
 		}
 	};
@@ -362,44 +285,190 @@ private:
 		return value.Fov;
 	}
 
-	static bool SelectedSelector(CamPathValue const & value)
+	static bool SelectedSelector(CamPathValue const &value)
 	{
 		return value.Selected;
 	}
 
-	struct MotionSegment
+	// Tangent selectors for Hermite interpolation (double channels)
+	static double XTanInSelector(CamPathValue const &v)
 	{
-		double Time, End, Length;
-		std::array<Vector3, 4> Points;
-		std::array<double, 65> Distances;
-		std::vector<double> ProfileDistance, ProfileSpeed;
-		Vector3 Point(double u) const;
-		double DistanceProgress(double parameter) const;
-		double ProfileProgress(double u) const;
-		Vector3 Derivative(double u) const;
-		double ArcLength(double from, double to) const;
-		double Parameter(double distance) const;
-	};
-	void BuildMotionCache() const;
-	Vector3 EvalPosition(double time) const;
-	bool IsStepSegment(double time) const;
-	std::pair<double, double> TravelSlopes(std::size_t index) const;
-	void BuildBlendProfile(std::size_t index) const;
-	double BlendedTravelProgress(double time, double u) const;
-	Vector3 EvalTravelPosition(double time, double progress) const;
-	double TravelDistanceProgress(double time, double progress) const;
-	double TravelParameter(double time, double progress) const;
-	bool UseContinuousSpeed(double time) const;
-	CamPathValue EvalTimed(double time, CamPathEase::Channel channel);
-	CamPathValue EvalChannelBase(double time, CamPathEase::Channel channel);
-	std::array<std::optional<CamPathEase>, 3> m_ChannelEase;
-	double m_BlendStrength = 1;
-	bool m_JoinedEase = false;
-	bool m_ContinuousSpeed = false;
-	mutable bool m_MotionCacheValid = false;
-	mutable std::vector<MotionSegment> m_MotionSegments;
-	std::string m_Name;
-	bool m_CurveEditing = false, m_Bezier = false;
+		return v.TxIn;
+	}
+	static double XTanOutSelector(CamPathValue const &v)
+	{
+		return v.TxOut;
+	}
+	static unsigned char XTanModeInSelector(CamPathValue const &v)
+	{
+		return v.TxModeIn;
+	}
+	static unsigned char XTanModeOutSelector(CamPathValue const &v)
+	{
+		return v.TxModeOut;
+	}
+
+	static double YTanInSelector(CamPathValue const &v)
+	{
+		return v.TyIn;
+	}
+	static double YTanOutSelector(CamPathValue const &v)
+	{
+		return v.TyOut;
+	}
+	static unsigned char YTanModeInSelector(CamPathValue const &v)
+	{
+		return v.TyModeIn;
+	}
+	static unsigned char YTanModeOutSelector(CamPathValue const &v)
+	{
+		return v.TyModeOut;
+	}
+
+	static double ZTanInSelector(CamPathValue const &v)
+	{
+		return v.TzIn;
+	}
+	static double ZTanOutSelector(CamPathValue const &v)
+	{
+		return v.TzOut;
+	}
+	static unsigned char ZTanModeInSelector(CamPathValue const &v)
+	{
+		return v.TzModeIn;
+	}
+	static unsigned char ZTanModeOutSelector(CamPathValue const &v)
+	{
+		return v.TzModeOut;
+	}
+
+	static double FovTanInSelector(CamPathValue const &v)
+	{
+		return v.TfovIn;
+	}
+	static double FovTanOutSelector(CamPathValue const &v)
+	{
+		return v.TfovOut;
+	}
+	static unsigned char FovTanModeInSelector(CamPathValue const &v)
+	{
+		return v.TfovModeIn;
+	}
+	static unsigned char FovTanModeOutSelector(CamPathValue const &v)
+	{
+		return v.TfovModeOut;
+	}
+
+	// Weight selectors (used by interpolation / UI)
+	static double XTanWInSelector(CamPathValue const &v)
+	{
+		return v.TxWIn;
+	}
+	static double XTanWOutSelector(CamPathValue const &v)
+	{
+		return v.TxWOut;
+	}
+	static double YTanWInSelector(CamPathValue const &v)
+	{
+		return v.TyWIn;
+	}
+	static double YTanWOutSelector(CamPathValue const &v)
+	{
+		return v.TyWOut;
+	}
+	static double ZTanWInSelector(CamPathValue const &v)
+	{
+		return v.TzWIn;
+	}
+	static double ZTanWOutSelector(CamPathValue const &v)
+	{
+		return v.TzWOut;
+	}
+	static double FovTanWInSelector(CamPathValue const &v)
+	{
+		return v.TfovWIn;
+	}
+	static double FovTanWOutSelector(CamPathValue const &v)
+	{
+		return v.TfovWOut;
+	}
+
+	// Rotation (Euler) tangent and mode selectors for custom rotation interpolation
+	static double RTanIn_Roll_Selector(CamPathValue const &v)
+	{
+		return v.TRxIn;
+	}
+	static double RTanOut_Roll_Selector(CamPathValue const &v)
+	{
+		return v.TRxOut;
+	}
+	static unsigned char RTanModeIn_Roll_Selector(CamPathValue const &v)
+	{
+		return v.TRxModeIn;
+	}
+	static unsigned char RTanModeOut_Roll_Selector(CamPathValue const &v)
+	{
+		return v.TRxModeOut;
+	}
+	static double RTanWIn_Roll_Selector(CamPathValue const &v)
+	{
+		return v.TRxWIn;
+	}
+	static double RTanWOut_Roll_Selector(CamPathValue const &v)
+	{
+		return v.TRxWOut;
+	}
+
+	static double RTanIn_Pitch_Selector(CamPathValue const &v)
+	{
+		return v.TRyIn;
+	}
+	static double RTanOut_Pitch_Selector(CamPathValue const &v)
+	{
+		return v.TRyOut;
+	}
+	static unsigned char RTanModeIn_Pitch_Selector(CamPathValue const &v)
+	{
+		return v.TRyModeIn;
+	}
+	static unsigned char RTanModeOut_Pitch_Selector(CamPathValue const &v)
+	{
+		return v.TRyModeOut;
+	}
+	static double RTanWIn_Pitch_Selector(CamPathValue const &v)
+	{
+		return v.TRyWIn;
+	}
+	static double RTanWOut_Pitch_Selector(CamPathValue const &v)
+	{
+		return v.TRyWOut;
+	}
+
+	static double RTanIn_Yaw_Selector(CamPathValue const &v)
+	{
+		return v.TRzIn;
+	}
+	static double RTanOut_Yaw_Selector(CamPathValue const &v)
+	{
+		return v.TRzOut;
+	}
+	static unsigned char RTanModeIn_Yaw_Selector(CamPathValue const &v)
+	{
+		return v.TRzModeIn;
+	}
+	static unsigned char RTanModeOut_Yaw_Selector(CamPathValue const &v)
+	{
+		return v.TRzModeOut;
+	}
+	static double RTanWIn_Yaw_Selector(CamPathValue const &v)
+	{
+		return v.TRzWIn;
+	}
+	static double RTanWOut_Yaw_Selector(CamPathValue const &v)
+	{
+		return v.TRzWOut;
+	}
+
 	bool m_Enabled;
 	bool m_Hold = false;
 	DoubleInterp m_PositionInterpMethod;
@@ -427,70 +496,4 @@ private:
 	void CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<CamPathValue> & src);
 
 	void DoInterpolationMapChangedAll(void);
-};
-
-// A small owner/history for ordinary CamPath instances. No second evaluator or
-// timing model is introduced; each entry keeps native timestamped keyframes.
-class CamPathCollection
-{
-public:
-	struct Snapshot
-	{
-		std::vector<CamPath::State> Paths;
-		std::size_t Active = 0;
-		bool operator==(const Snapshot & other) const
-		{
-			return Active == other.Active && Paths == other.Paths;
-		}
-	};
-	CamPathCollection();
-	std::size_t Size() const
-	{
-		return m_Paths.size();
-	}
-	std::size_t ActiveIndex() const
-	{
-		return m_Active;
-	}
-	CamPath & Active()
-	{
-		return *m_Paths.at(m_Active);
-	}
-	CamPath & At(std::size_t index)
-	{
-		return *m_Paths.at(index);
-	}
-	void Use(std::size_t index);
-	void New(std::string name = "");
-	void Rename(const std::string & name);
-	void Remove(std::size_t index);
-	Snapshot Capture() const;
-	void Restore(const Snapshot & state);
-	void Record(const Snapshot & before);
-	bool Undo();
-	bool Redo();
-	bool Enabled_get() const
-	{
-		return m_Enabled;
-	}
-	void Enabled_set(bool value)
-	{
-		m_Enabled = value;
-		Notify();
-	}
-	bool Eval(double time, CamPathValue & value);
-	bool SaveAll(const wchar_t * file);
-	bool Load(const wchar_t * file);
-	void OnChangedAdd(CamPathChanged callback, void * context);
-	void OnChangedRemove(CamPathChanged callback, void * context);
-
-private:
-	std::vector<std::unique_ptr<CamPath>> m_Paths;
-	std::size_t m_Active = 0;
-	bool m_Enabled = false;
-	std::vector<Snapshot> m_Undo, m_Redo;
-	std::vector<std::pair<CamPathChanged, void *>> m_Listeners;
-	std::unique_ptr<CamPath> MakePath();
-	void Notify();
-	static void Changed(void * self);
 };

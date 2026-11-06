@@ -6,17 +6,7 @@
 
 #include <SourceInterfaces.h>
 
-#include <algorithm>
-#include <chrono>
-#include <cmath>
-#include <filesystem>
-#include <fstream>
-#include <locale>
-#include <limits>
-#include <stdexcept>
-#include <utility>
 #include "RenderView.h"
-#include "Gui.h"
 #include "MirvTime.h"
 
 #include "WrpVEngineClient.h"
@@ -27,10 +17,12 @@
 #include "csgo_SndMixTimeScalePatch.h"
 #endif //#ifndef _WIN64
 
-#include <shared/hooks/gameOverlayRenderer.h>
 #include "AfxStreams.h"
-#include "addresses.h"
+#include "CameraOverlay.h"
 #include "CampathDrawer.h"
+#include "Gui.h"
+#include "addresses.h"
+#include <shared/hooks/gameOverlayRenderer.h>
 
 #ifndef _WIN64
 #include "csgo_S_StartSound.h"
@@ -1452,14 +1444,8 @@ public:
 		g_CampathDrawer.SetDrawKeyframeCam(value);
 	}
 
-	virtual float GetDrawKeyframeIndex()
-	{
-		return g_CampathDrawer.GetDrawKeyframeIndex();
-	}
-	virtual void SetDrawKeyframeIndex(float value)
-	{
-		g_CampathDrawer.SetDrawKeyframeIndex(value);
-	}
+	virtual float GetDrawKeyframeIndex() { return g_CampathDrawer.GetDrawKeyframeIndex(); }
+	virtual void SetDrawKeyframeIndex(float value) { g_CampathDrawer.SetDrawKeyframeIndex(value); }
 
 } g_MirvCampath_Drawer;
  
@@ -1474,93 +1460,15 @@ static DWORD g_CampathPreviewLastMs = 0;
 static UINT g_CampathPreviewToggleKey = 0;
 static bool g_CampathPreviewToggleHeld = false;
 
-enum class CampathSeekMode
-{
-	Play,
-	Pause,
-	Timescale
-};
-static CampathSeekMode g_CampathSeekMode = CampathSeekMode::Timescale;
-static double g_CampathSeekScale = 0;
-static bool g_CampathPreviewHud = true;
-struct CampathPendingSeek
-{
-	int Tick = -1, Initial = 0, Frame = 0, Total = 0;
-	DWORD Started = 0;
-	CampathSeekMode Mode = CampathSeekMode::Timescale;
-	double Scale = 0, PreviousScale = 1;
-	bool PreviousPaused = false;
-} g_CampathPendingSeek;
-
-static void CampathPreview_SeekTick(int tick)
-{
-	auto * demo = g_VEngineClient ? g_VEngineClient->GetDemoInfoEx() : nullptr;
-	if (!demo || !g_VEngineClient->IsPlayingDemo() || tick < 0 || tick > demo->GetDemoPlaybackTotalTicks())
-	{
-		Tier0_Warning("Campath preview: invalid demo seek target.\n");
-		return;
-	}
-	if (g_CampathPendingSeek.Tick < 0 || g_CampathPendingSeek.Total != demo->GetDemoPlaybackTotalTicks())
-	{
-		g_CampathPendingSeek.PreviousScale = demo->GetDemoPlaybackTimeScale();
-		g_CampathPendingSeek.PreviousPaused = g_VEngineClient->IsPaused();
-	}
-	g_CampathPendingSeek.Tick = tick;
-	g_CampathPendingSeek.Initial = demo->GetDemoPlaybackTick();
-	g_CampathPendingSeek.Total = demo->GetDemoPlaybackTotalTicks();
-	g_CampathPendingSeek.Frame = g_MirvTime.GetFrameCount();
-	g_CampathPendingSeek.Started = GetTickCount();
-	g_CampathPendingSeek.Mode = g_CampathSeekMode;
-	g_CampathPendingSeek.Scale = g_CampathSeekScale;
-	// Let Source perform the seek at normal speed and pause exactly at its
-	// destination. Apply the requested state only after that seek has arrived.
-	std::string command = "demo_timescale 1; demo_resume; demo_gototick " + std::to_string(tick) + " 0 1";
-	g_VEngineClient->ExecuteClientCmd(command.c_str());
-}
-
-static void CampathPreview_UpdateSeek()
-{
-	auto & seek = g_CampathPendingSeek;
-	if (seek.Tick < 0)
-		return;
-	auto * demo = g_VEngineClient ? g_VEngineClient->GetDemoInfoEx() : nullptr;
-	if (!demo || !g_VEngineClient->IsPlayingDemo() || demo->GetDemoPlaybackTotalTicks() != seek.Total)
-	{
-		seek.Tick = -1;
-		return;
-	}
-	int current = demo->GetDemoPlaybackTick();
-	bool arrived = g_MirvTime.GetFrameCount() != seek.Frame && current >= seek.Tick &&
-				   (seek.Tick >= seek.Initial || current < seek.Initial) && g_VEngineClient->IsPaused();
-	bool timeout = DWORD(GetTickCount() - seek.Started) > 60000;
-	if (!arrived && !timeout)
-		return;
-	std::ostringstream command;
-	command.imbue(std::locale::classic());
-	if (timeout && !arrived)
-	{
-		command << "demo_timescale " << seek.PreviousScale << (seek.PreviousPaused ? "; demo_pause" : "; demo_resume");
-		Tier0_Warning("Campath preview: seek did not reach its target; restoring playback state.\n");
-	}
-	else if (seek.Mode == CampathSeekMode::Pause)
-		command << "demo_timescale 1; demo_pause";
-	else
-		command << "demo_timescale " << (seek.Mode == CampathSeekMode::Play ? 1 : seek.Scale) << "; demo_resume";
-	seek.Tick = -1;
-	g_VEngineClient->ExecuteClientCmd(command.str().c_str());
-}
-
-static void CampathPreview_SetTravel(bool forward, bool backward)
-{
-	if (forward != g_CampathPreviewForward || backward != g_CampathPreviewBackward)
-		if (auto * input = g_Hook_VClient_RenderView.m_MirvInput)
-			input->ClearMovementInput();
-	g_CampathPreviewForward = forward;
-	g_CampathPreviewBackward = backward;
-}
 static void CampathPreview_StopTravel()
 {
-	CampathPreview_SetTravel(false, false);
+	g_CampathPreviewForward = false;
+	g_CampathPreviewBackward = false;
+}
+
+static bool CampathPreview_IsRepeatKey(LPARAM lParam)
+{
+	return 0 != (lParam & (1LL << 30));
 }
 
 static UINT CampathPreview_ParseToggleKey(const char * name)
@@ -1587,47 +1495,7 @@ static UINT CampathPreview_ParseToggleKey(const char * name)
 			return VK_F1 + (UINT)(f - 1);
 	}
 
-	if (!_strnicmp(name, "vk", 2))
-	{
-		char * end = nullptr;
-		long value = strtol(name + 2, &end, 10);
-		if (end != name + 2 && !*end && value > 0 && value < 256)
-			return (UINT)value;
-	}
-	if (!_stricmp(name, "shift"))
-		return VK_SHIFT;
-	if (!_stricmp(name, "lshift"))
-		return VK_LSHIFT;
-	if (!_stricmp(name, "rshift"))
-		return VK_RSHIFT;
-	if (!_stricmp(name, "rctrl") || !_stricmp(name, "rightctrl"))
-		return VK_RCONTROL;
-	if (!_stricmp(name, "lctrl") || !_stricmp(name, "leftctrl"))
-		return VK_LCONTROL;
-	if (!_stricmp(name, "enter"))
-		return VK_RETURN;
-	if (!_stricmp(name, "delete"))
-		return VK_DELETE;
-	if (!_stricmp(name, "tab"))
-		return VK_TAB;
-	if (!_stricmp(name, "escape"))
-		return VK_ESCAPE;
-	if (!_stricmp(name, "console") || !_stricmp(name, "grave"))
-		return VK_OEM_3;
-	if (!_stricmp(name, "["))
-		return VK_OEM_4;
-	if (!_stricmp(name, "]"))
-		return VK_OEM_6;
-	if (!_stricmp(name, "left"))
-		return VK_LEFT;
-	if (!_stricmp(name, "right"))
-		return VK_RIGHT;
-	if (!_stricmp(name, "up"))
-		return VK_UP;
-	if (!_stricmp(name, "down"))
-		return VK_DOWN;
-	if (0 == _stricmp(name, "insert"))
-		return VK_INSERT;
+	if (0 == _stricmp(name, "insert")) return VK_INSERT;
 	if (0 == _stricmp(name, "home")) return VK_HOME;
 	if (0 == _stricmp(name, "end")) return VK_END;
 	if (0 == _stricmp(name, "pageup")) return VK_PRIOR;
@@ -1661,7 +1529,7 @@ static CamPathIterator CampathPreview_FindNearestKeyframe(CamPath & path, double
 
 static bool CampathPreview_SetCamera()
 {
-	CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
+	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 	MirvInput * input = g_Hook_VClient_RenderView.m_MirvInput;
 	if (!input || !CampathPreview_CanShow(path))
 		return false;
@@ -1698,8 +1566,8 @@ static bool CampathPreview_SetCamera()
 
 static bool CampathPreview_Enter()
 {
-	CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
-	if (!g_Hook_VClient_RenderView.IsInstalled() || !g_Hook_VClient_RenderView.m_MirvInput)
+	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	if (!g_Hook_VClient_RenderView.IsInstalled() || !CampathPreview_CanShow(path) || !g_Hook_VClient_RenderView.m_MirvInput)
 	{
 		Tier0_Warning("Campath preview: no usable keyframes or free camera is unavailable.\n");
 		return false;
@@ -1707,12 +1575,11 @@ static bool CampathPreview_Enter()
 
 	if (!g_CampathPreviewActive)
 	{
-		double t = g_MirvTime.GetTime() - path.GetOffset();
-		g_CampathPreviewTime = path.GetSize() ? std::clamp(t, path.GetLowerBound(), path.GetUpperBound()) : t;
+		const double t = (double)g_MirvTime.GetTime() - path.GetOffset();
+		g_CampathPreviewTime = t < path.GetLowerBound() ? path.GetLowerBound() : (t > path.GetUpperBound() ? path.GetUpperBound() : t);
 	}
 
 	g_CampathPreviewActive = true;
-	MirvCampathEditor_OnPreview(true);
 	g_CampathPreviewFrame = -1;
 	g_CampathPreviewLastMs = GetTickCount();
 	CampathPreview_StopTravel();
@@ -1721,17 +1588,10 @@ static bool CampathPreview_Enter()
 	return true;
 }
 
-void MirvCampathPreview_Stop()
-{
-	MirvCampathEditor_OnPreview(false);
-	g_CampathPreviewActive = false;
-	CampathPreview_StopTravel();
-	g_CampathPreviewLastMs = 0;
-}
-
 static void CampathPreview_Exit()
 {
-	MirvCampathEditor_OnPreview(false);
+	if (g_CampathPreviewActive)
+		CampathPreview_SetCamera();
 	g_CampathPreviewActive = false;
 	CampathPreview_StopTravel();
 	g_CampathPreviewLastMs = 0;
@@ -1741,8 +1601,6 @@ static void CampathPreview_Exit()
 // Called before the mirv_input view override is evaluated.
 void MirvCampathPreview_Update()
 {
-	CampathPreview_UpdateSeek();
-
 	if (!g_CampathPreviewActive)
 		return;
 
@@ -1750,7 +1608,7 @@ void MirvCampathPreview_Update()
 	if (!g_Hook_VClient_RenderView.m_MirvInput ||
 		!g_Hook_VClient_RenderView.m_MirvInput->GetCameraControlMode())
 	{
-		MirvCampathPreview_Stop();
+		g_CampathPreviewActive = false;
 		CampathPreview_StopTravel();
 		g_CampathPreviewLastMs = 0;
 		return;
@@ -1759,14 +1617,15 @@ void MirvCampathPreview_Update()
 	// Ignore held navigation keys while the console or menu owns input.
 	if (g_Hook_VClient_RenderView.IsMenuActive())
 	{
-		MirvCampathEditor_ReleaseKeys(true);
+		CampathPreview_StopTravel();
 		g_CampathPreviewLastMs = GetTickCount();
 		return;
 	}
 
-	CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
+	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 	if (!CampathPreview_CanShow(path))
 	{
+		g_CampathPreviewActive = false;
 		CampathPreview_StopTravel();
 		return;
 	}
@@ -1797,18 +1656,12 @@ void MirvCampathPreview_Update()
 		}
 	}
 
-	if (g_CampathPreviewForward || g_CampathPreviewBackward)
-	{
-		// Keep keyboard and mouse deltas out of the free-camera override which
-		// follows this update. Preview retains its input ownership and pose.
-		g_Hook_VClient_RenderView.m_MirvInput->ClearMovementInput();
-		CampathPreview_SetCamera();
-	}
+	CampathPreview_SetCamera();
 }
 
 static bool CampathPreview_GotoIndex(int index)
 {
-	CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
+	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 	if (index < 0 || (size_t)index >= path.GetSize())
 		return false;
 
@@ -1826,1259 +1679,59 @@ static bool CampathPreview_GotoIndex(int index)
 	return true;
 }
 
-void MirvCampathPreview_ReleaseKeys()
-{
-	CampathPreview_StopTravel();
-	g_CampathPreviewToggleHeld = false;
-}
-
-static void CampathPreview_PrintHelp()
-{
-	Tier0_Msg(
-		"mirv_campath preview allowSource 0|1 - Forward unused keys to Source.\nmirv_campath graph - Easing editor (F7 "
-		"in preview).\nmirv_campath preview undo|redo - Undo/redo a data edit.\nmirv_campath preview bind - Keyboard "
-		"actions.\nH toggles mouse handles (drag; wheel depth; Esc cancels/exits).\nE captures pose/time; Shift+E "
-		"replaces; [ and ] capture handles; Ctrl+Z / Ctrl+Shift+Z "
-		"undo/redo.\nY captures hold "
-		"release; Shift+Y clears it; PageUp/Down selects paths.\n");
-	Tier0_Msg("mirv_campath preview enter - Begin preview mode and keyboard editing.\n"
-			  "mirv_campath preview toggle - Toggle Preview Mode on/off.\n"
-			  "mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, "
-			  "home, end, pageup, pagedown).\n"
-			  "mirv_campath preview <index> - Select a keyframe (0-based).\n"
-			  "mirv_campath preview interp <0..1> - Position between nearest keyframe and the following one.\n"
-			  "mirv_campath preview seek - Seek using the configured playback behavior (RCtrl).\n"
-			  "mirv_campath preview seekMode play|pause|timescale [value] - Default: timescale 0.\n"
-			  "mirv_campath preview hud 0|1 - Preview indicator. Ctrl+A selects all; Ctrl+Shift+A anchors.\n"
-			  "mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
-			  "Preview keys (console closed): UP/DOWN select previous/next; HOME/END select first/last.\n"
-			  "LEFT/RIGHT scrub interpolated paths; use UP/DOWN to visit individual keyframes.\n"
-			  "HOME/END jump without seeking the demo (unless assigned as toggleKey); use preview seek to seek.\n");
-}
-
-// Curve editing extends the classic timestamped campath command and input flow.
-namespace
-{
-using Afx::Math::Vector3;
-using Vec = Vector3;
-bool ownsPreviewInput = false, previousUiCursor = false;
-bool uiPassThrough[256] = {}, uiPassThroughInitialized = false;
-bool swallowed[256] = {};
-void need(bool value, const char * message)
-{
-	if (!value)
-		throw std::runtime_error(message);
-}
-CamPath & activePath()
-{
-	return g_Hook_VClient_RenderView.GetActiveCamPath();
-}
-void initPassThrough()
-{
-	if (uiPassThroughInitialized)
-		return;
-	uiPassThroughInitialized = true;
-	uiPassThrough[VK_ESCAPE] = uiPassThrough[VK_OEM_3] = uiPassThrough[VK_F2] = true;
-	// Source needs the modifier press as well as F2 for its native demo UI.
-	// Preview chords still read Shift from GetKeyState and own their main key.
-	uiPassThrough[VK_SHIFT] = uiPassThrough[VK_LSHIFT] = uiPassThrough[VK_RSHIFT] = true;
-}
-bool allowSourceCommands = false;
-bool previewUsesKey(unsigned key);
-bool passThroughKey(unsigned key, void *)
-{
-	initPassThrough();
-	if (key == VK_MENU || ((GetKeyState(VK_MENU) & 0x8000) && (key == VK_TAB || key == VK_F4)) ||
-		(key < 256 && uiPassThrough[key]))
-		return true;
-	if (!allowSourceCommands)
-		return false;
-	auto * input = g_Hook_VClient_RenderView.m_MirvInput;
-	return !(input && input->IsCameraKey(key)) && !previewUsesKey(key);
-}
-
-struct Args
-{
-	IWrpCommandArgs * a;
-	int offset;
-	int count() const
-	{
-		return a->ArgC() - offset;
-	}
-	std::string at(int i) const
-	{
-		need(i >= 0 && i < count(), "Missing argument.");
-		return a->ArgV(offset + i);
-	}
-	bool is(int i, const char * s) const
-	{
-		return i < count() && 0 == _stricmp(a->ArgV(offset + i), s);
-	}
-	double num(int i) const
-	{
-		auto s = at(i);
-		std::istringstream in(s);
-		in.imbue(std::locale::classic());
-		double v;
-		in >> std::noskipws >> v;
-		need(bool(in) && in.peek() == std::char_traits<char>::eof() && std::isfinite(v), "Expected a finite number");
-		return v;
-	}
-	int index(int i) const
-	{
-		double v = num(i);
-		need(v >= 0 && v <= 100000 && v == std::floor(v), "Expected a nonnegative integer");
-		return int(v);
-	}
-	bool flag(int i) const
-	{
-		double v = num(i);
-		need(v == 0 || v == 1, "Expected 0 or 1");
-		return v != 0;
-	}
-	Vec vec(int i) const
-	{
-		return {num(i), num(i + 1), num(i + 2)};
-	}
-	void size(int n) const
-	{
-		need(count() == n, "Invalid argument count.");
-	}
-};
-
-enum EditorAction
-{
-	EA_Add,
-	EA_Replace,
-	EA_Delete,
-	EA_Visit,
-	EA_Previous,
-	EA_Next,
-	EA_First,
-	EA_Last,
-	EA_Left,
-	EA_Right,
-	EA_Seek,
-	EA_In,
-	EA_Out,
-	EA_Reset,
-	EA_Curve,
-	EA_Draw,
-	EA_Enabled,
-	EA_SelectAll,
-	EA_AnchorPath,
-	EA_MouseHandles,
-	EA_Graph,
-	EA_Undo,
-	EA_Redo,
-	EA_HoldCapture,
-	EA_HoldClear,
-	EA_PrevPath,
-	EA_NextPath,
-	EA_NewPath,
-	EA_Count
-};
-struct EditorBinding
-{
-	const char * Name;
-	UINT Key;
-	unsigned Modifiers;
-};
-const EditorBinding defaultBindings[EA_Count] = {
-	{"add", 'E', 0},
-	{"replace", 'E', 1},
-	{"delete", VK_DELETE, 0},
-	{"visit", VK_TAB, 0},
-	{"previousPoint", VK_UP, 0},
-	{"nextPoint", VK_DOWN, 0},
-	{"firstPoint", VK_HOME, 0},
-	{"lastPoint", VK_END, 0},
-	{"scrubLeft", VK_LEFT, 0},
-	{"scrubRight", VK_RIGHT, 0},
-	{"seek", VK_RCONTROL, 0},
-	{"handleIn", VK_OEM_4, 0},
-	{"handleOut", VK_OEM_6, 0},
-	{"resetHandles", 'B', 3},
-	{"curveType", 'B', 2},
-	{"draw", VK_F4, 0},
-	{"enabled", 'P', 2},
-	{"selectAll", 'A', 2},
-	{"anchorPath", 'A', 3},
-	{"mouseHandles", 'H', 0},
-	{"graph", VK_F7, 0},
-	{"undo", 'Z', 2},
-	{"redo", 'Z', 3},
-	{"holdCapture", 'Y', 0},
-	{"holdClear", 'Y', 1},
-	{"previousPath", VK_PRIOR, 0},
-	{"nextPath", VK_NEXT, 0},
-	{"newPath", 'N', 2},
-};
-struct EditorCommandBinding
-{
-	EditorBinding Binding;
-	std::string Command;
-};
-std::vector<EditorCommandBinding> editorCommands;
-EditorBinding editorBindings[EA_Count];
-bool bindingsInitialized = false, actionHeld[EA_Count] = {};
-int pressedAction[256] = {};
-std::string keyName(UINT key)
-{
-	if (!key)
-		return "none";
-	if (key >= VK_F1 && key <= VK_F12)
-		return "F" + std::to_string(key - VK_F1 + 1);
-	if ((key >= 'A' && key <= 'Z') || (key >= '0' && key <= '9'))
-		return std::string(1, (char)key);
-	switch (key)
-	{
-	case VK_SHIFT:
-		return "shift";
-	case VK_LSHIFT:
-		return "lshift";
-	case VK_RSHIFT:
-		return "rshift";
-	case VK_RCONTROL:
-		return "rctrl";
-	case VK_LCONTROL:
-		return "lctrl";
-	case VK_RETURN:
-		return "enter";
-	case VK_INSERT:
-		return "insert";
-	case VK_DELETE:
-		return "delete";
-	case VK_TAB:
-		return "tab";
-	case VK_HOME:
-		return "home";
-	case VK_END:
-		return "end";
-	case VK_PRIOR:
-		return "pageup";
-	case VK_NEXT:
-		return "pagedown";
-	case VK_LEFT:
-		return "left";
-	case VK_RIGHT:
-		return "right";
-	case VK_UP:
-		return "up";
-	case VK_DOWN:
-		return "down";
-	case VK_OEM_4:
-		return "[";
-	case VK_OEM_6:
-		return "]";
-	case VK_OEM_3:
-		return "console";
-	case VK_ESCAPE:
-		return "escape";
-	}
-	return "vk" + std::to_string(key);
-}
-void initBindings()
-{
-	if (bindingsInitialized)
-		return;
-	std::copy(std::begin(defaultBindings), std::end(defaultBindings), editorBindings);
-	std::fill(std::begin(pressedAction), std::end(pressedAction), -1);
-	bindingsInitialized = true;
-}
-std::string bindingName(const EditorBinding & binding)
-{
-	if (!binding.Key)
-		return "none";
-	return std::string(binding.Modifiers & 2 ? "ctrl+" : "") + (binding.Modifiers & 1 ? "shift+" : "") +
-		   (binding.Modifiers & 4 ? "alt+" : "") + keyName(binding.Key);
-}
-EditorBinding parseBinding(std::string text, EditorBinding binding)
-{
-	binding.Modifiers = 0;
-	while (true)
-	{
-		auto split = text.find('+');
-		if (split == std::string::npos)
-			break;
-		std::string modifier = text.substr(0, split);
-		unsigned flag = !_stricmp(modifier.c_str(), "shift")  ? 1
-						: !_stricmp(modifier.c_str(), "ctrl") ? 2
-						: !_stricmp(modifier.c_str(), "alt")  ? 4
-															  : 0;
-		need(flag && !(binding.Modifiers & flag), "Modifiers must be shift, ctrl or alt, without duplicates");
-		binding.Modifiers |= flag;
-		text.erase(0, split + 1);
-	}
-	binding.Key = CampathPreview_ParseToggleKey(text.c_str());
-	need(binding.Key || !_stricmp(text.c_str(), "none") || !_stricmp(text.c_str(), "off"), "Unknown key name");
-	initPassThrough();
-	need(!binding.Key || (!uiPassThrough[binding.Key] && binding.Key != VK_SHIFT && binding.Key != VK_CONTROL &&
-						  binding.Key != VK_MENU),
-		 "This key belongs to menus/UI or is a modifier");
-	need(!(binding.Modifiers & 4) || (binding.Key != VK_TAB && binding.Key != VK_F4),
-		 "Alt+Tab and Alt+F4 belong to the operating system");
-	return binding;
-}
-bool previewUsesKey(unsigned key)
-{
-	initBindings();
-	unsigned modifiers = (GetKeyState(VK_SHIFT) & 0x8000 ? 1 : 0) | (GetKeyState(VK_CONTROL) & 0x8000 ? 2 : 0) |
-						 (GetKeyState(VK_MENU) & 0x8000 ? 4 : 0);
-	if (key == g_CampathPreviewToggleKey || key == VK_SHIFT || key == VK_CONTROL || key == VK_LCONTROL ||
-		key == VK_RCONTROL)
-		return true;
-	for (auto & binding : editorBindings)
-		if (binding.Key == key && binding.Modifiers == modifiers)
-			return true;
-	for (auto & custom : editorCommands)
-		if (custom.Binding.Key == key && custom.Binding.Modifiers == modifiers)
-			return true;
-	return false;
-}
-
-bool editSettings(const Args & a)
-{
-	if (!a.is(0, "preview"))
-		return false;
-	if (a.is(1, "handles"))
-	{
-		if (a.count() == 2)
-		{
-			Tier0_Msg(
-				"mirv_campath preview handles 0|1 - Pointer for dragging 3D curve handles (H).\nCurrent value: %i\n",
-				AfxHookSource::Gui::GetCampathHandlesOpen());
-			return true;
-		}
-		a.size(3);
-		need(AfxHookSource::Gui::SetCampathHandlesOpen(a.flag(2)), "Enter preview first; GUI backend required");
-		return true;
-	}
-	if (a.is(1, "hud"))
-	{
-		if (a.count() == 2)
-		{
-			Tier0_Msg("mirv_campath preview hud 0|1 - Compact preview indicator.\nCurrent value: %i\n",
-					  g_CampathPreviewHud);
-			return true;
-		}
-		a.size(3);
-		g_CampathPreviewHud = a.flag(2);
-		return true;
-	}
-	if (a.is(1, "seekMode"))
-	{
-		if (a.count() == 2)
-		{
-			const char * mode = g_CampathSeekMode == CampathSeekMode::Play	  ? "play"
-								: g_CampathSeekMode == CampathSeekMode::Pause ? "pause"
-																			  : "timescale";
-			Tier0_Msg("mirv_campath preview seekMode play|pause|timescale [value]\nCurrent value: %s", mode);
-			if (g_CampathSeekMode == CampathSeekMode::Timescale)
-				Tier0_Msg(" %g", g_CampathSeekScale);
-			Tier0_Msg("\n");
-			return true;
-		}
-		need(a.count() == 3 || a.count() == 4, "Use preview seekMode play|pause|timescale [value]");
-		if (a.is(2, "timescale"))
-		{
-			double value = a.count() == 4 ? a.num(3) : 0;
-			need(value >= 0 && value <= 1000, "Timescale must be in 0..1000");
-			g_CampathSeekScale = value;
-			g_CampathSeekMode = CampathSeekMode::Timescale;
-		}
-		else
-		{
-			a.size(3);
-			need(a.is(2, "play") || a.is(2, "pause"), "Choose play, pause or timescale");
-			g_CampathSeekMode = a.is(2, "play") ? CampathSeekMode::Play : CampathSeekMode::Pause;
-		}
-		return true;
-	}
-	if (a.is(1, "allowSource"))
-	{
-		if (a.count() == 2)
-		{
-			Tier0_Msg(
-				"mirv_campath preview allowSource 0|1 - Forward keys unused by preview/freecam.\nCurrent value: %i\n",
-				allowSourceCommands);
-			return true;
-		}
-		a.size(3);
-		allowSourceCommands = a.flag(2);
-		return true;
-	}
-
-	if (a.is(1, "command"))
-	{
-		initBindings();
-		if (a.count() == 2)
-		{
-			Tier0_Msg("mirv_campath preview command <chord> <quoted console command|none>\n");
-			for (const auto & binding : editorCommands)
-				Tier0_Msg("  %s: %s\n", bindingName(binding.Binding).c_str(), binding.Command.c_str());
-			return true;
-		}
-		need(a.count() == 4, "Use preview command <chord> <quoted console command|none>");
-		auto binding = parseBinding(a.at(2), {"command", 0, 0});
-		need(binding.Key != 0, "Choose a key");
-		auto it = std::find_if(editorCommands.begin(), editorCommands.end(), [&](const EditorCommandBinding & v) {
-			return v.Binding.Key == binding.Key && v.Binding.Modifiers == binding.Modifiers;
-		});
-		if (a.is(3, "none"))
-		{
-			if (it != editorCommands.end())
-				editorCommands.erase(it);
-			return true;
-		}
-		for (const auto & existing : editorBindings)
-			need(existing.Key != binding.Key || existing.Modifiers != binding.Modifiers,
-				 "Unbind the built-in action on this chord first");
-		std::string command = a.at(3);
-		need(!command.empty() && command.size() <= 4096, "Command must contain 1..4096 characters");
-		if (it == editorCommands.end())
-		{
-			need(editorCommands.size() < 64, "Maximum 64 custom editor commands");
-			editorCommands.push_back({binding, command});
-		}
-		else
-			it->Command = command;
-		MirvCampathEditor_ReleaseKeys();
-		return true;
-	}
-
-	if (a.is(1, "bind"))
-	{
-		initBindings();
-		if (a.count() == 3 && a.is(2, "reset"))
-		{
-			initPassThrough();
-			for (const auto & custom : editorCommands)
-				for (const auto & binding : defaultBindings)
-					need(custom.Binding.Key != binding.Key || custom.Binding.Modifiers != binding.Modifiers,
-						 "Remove custom commands conflicting with default bindings first");
-			for (const auto & binding : defaultBindings)
-				need(!uiPassThrough[binding.Key],
-					 "Disable passthrough for default editor keys before resetting bindings");
-			std::copy(std::begin(defaultBindings), std::end(defaultBindings), editorBindings);
-			MirvCampathEditor_ReleaseKeys();
-			return true;
-		}
-		if (a.count() == 2)
-		{
-			for (const auto & binding : editorBindings)
-				Tier0_Msg("mirv_campath preview bind %s <key|none> - Current: %s\n", binding.Name,
-						  bindingName(binding).c_str());
-			return true;
-		}
-		need(a.count() == 3 || a.count() == 4, "Use preview bind [action] [key|none]");
-		int selected = -1;
-		for (int i = 0; i < EA_Count; ++i)
-			if (a.is(2, editorBindings[i].Name))
-				selected = i;
-		need(selected >= 0, "Unknown preview action; use preview bind to list actions");
-		if (a.count() == 3)
-		{
-			Tier0_Msg("mirv_campath preview bind %s <key|none>\nCurrent value: %s\n", editorBindings[selected].Name,
-					  bindingName(editorBindings[selected]).c_str());
-			return true;
-		}
-		auto binding = parseBinding(a.at(3), editorBindings[selected]);
-		for (int i = 0; i < EA_Count; ++i)
-			need(i == selected || !binding.Key || binding.Key != editorBindings[i].Key ||
-					 binding.Modifiers != editorBindings[i].Modifiers,
-				 "Another editor action already uses this shortcut");
-		for (const auto & custom : editorCommands)
-			need(!binding.Key || custom.Binding.Key != binding.Key || custom.Binding.Modifiers != binding.Modifiers,
-				 "Remove the custom command on this chord first");
-		editorBindings[selected] = binding;
-		MirvCampathEditor_ReleaseKeys();
-		return true;
-	}
-	if (a.is(1, "passthrough"))
-	{
-		initPassThrough();
-		if (a.count() == 2)
-		{
-			Tier0_Msg("mirv_campath preview passthrough <key> 0|1 - Keys allowed to reach Source.\n");
-			for (UINT i = 1; i < 256; ++i)
-				if (uiPassThrough[i])
-					Tier0_Msg("  %s\n", keyName(i).c_str());
-			return true;
-		}
-		UINT key = CampathPreview_ParseToggleKey(a.at(2).c_str());
-		need(key > 0, "Unknown key name");
-		if (a.count() == 3)
-		{
-			Tier0_Msg("Current value for %s: %i\n", keyName(key).c_str(), uiPassThrough[key]);
-			return true;
-		}
-		a.size(4);
-		bool enabled = a.flag(3);
-		need(key != VK_ESCAPE || enabled, "Escape remains available for menus");
-		initBindings();
-		if (enabled)
-			for (const auto & binding : editorBindings)
-				need(binding.Key != key, "Unbind the editor action using this key first");
-		if (enabled)
-			for (const auto & custom : editorCommands)
-				need(custom.Binding.Key != key, "Remove custom commands using this key first");
-		uiPassThrough[key] = enabled;
-		MirvCampathEditor_ReleaseKeys();
-		return true;
-	}
-	return false;
-}
-
-CamPathIterator selectedKey()
-{
-	auto & path = activePath();
-	auto selected = path.GetEnd();
-	for (auto it = path.GetBegin(); it != path.GetEnd(); ++it)
-		if (it.GetValue().Selected)
-		{
-			need(selected == path.GetEnd(), "Select exactly one keyframe");
-			selected = it;
-		}
-	need(selected != path.GetEnd(), "Select a keyframe first (Up/Down in preview or select #<index> #<index>)");
-	return selected;
-}
-void seekCursor()
-{
-	need(activePath().GetSize() > 0, "No camera points");
-	need(g_VEngineClient && g_VEngineClient->IsPlayingDemo() && g_VEngineClient->GetDemoInfoEx() &&
-			 g_Hook_VClient_RenderView.GetGlobals(),
-		 "A running demo is required for seeking");
-	g_CampathPreviewTime = std::clamp(g_CampathPreviewTime, activePath().GetLowerBound(), activePath().GetUpperBound());
-	int tick = 0;
-	need(GetDemoTickFromClientTime(g_MirvTime.GetTime(), g_CampathPreviewTime + activePath().GetOffset(), tick),
-		 "Unable to calculate the demo tick");
-	need(tick >= 0, "Seek precedes demo start");
-	CampathPreview_SeekTick(tick);
-}
-void captureHandle(bool outgoing)
-{
-	auto key = selectedKey();
-	auto pose = g_MirvCampath_Camera.GetCamera();
-	auto value = key.GetValue();
-	need(activePath().SetHandle(key.GetTime(), outgoing, Vector3(pose.X - value.X, pose.Y - value.Y, pose.Z - value.Z)),
-		 "Invalid curve handle");
-}
-void curveHelp()
-{
-	Tier0_Msg(
-		"mirv_campath curve type default|linear|smooth|monotone|step|cubic|bezier - Choose position interpolation.\n"
-		"mirv_campath curve handle in|out capture - Capture the selected keyframe handle at the camera.\n"
-		"mirv_campath curve handle in|out <x> <y> <z> - Set a world-space offset.\n"
-		"mirv_campath curve handle mode aligned|free - Link selected handles (new keys: aligned).\n"
-		"mirv_campath curve reset - Reset selected keyframe handles to native interpolation.\n");
-	Tier0_Msg("Current curve: %s\n", activePath().Bezier_get()
-										 ? "bezier"
-										 : CamPath::DoubleInterp_ToString(activePath().PositionInterpMethod_get()));
-}
-void nativeCommand(std::initializer_list<const char *> values)
-{
-	CFakeWrpCommandArgs args("mirv_campath");
-	for (auto value : values)
-		args.AddArg(value);
-	MirvCampath_ConCommand(&args, Tier0_Msg, Tier0_Warning, &activePath(), &g_MirvCampath_Time, &g_MirvCampath_Camera,
-						   &g_MirvCampath_Drawer);
-}
-void executeEditorAction(EditorAction action)
-{
-	auto & path = activePath();
-	switch (action)
-	{
-	case EA_Undo:
-	case EA_Redo: {
-		auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
-		bool ok = action == EA_Undo ? paths.Undo() : paths.Redo();
-		if (!ok)
-			Tier0_Msg("Nothing to %s.\n", action == EA_Undo ? "undo" : "redo");
-		if (activePath().GetSize())
-			g_CampathPreviewTime =
-				std::clamp(g_CampathPreviewTime, activePath().GetLowerBound(), activePath().GetUpperBound());
-		MirvCampathEditor_ReleaseKeys();
-		break;
-	}
-	case EA_HoldCapture:
-	case EA_HoldClear: {
-		CFakeWrpCommandArgs args("mirv_campath");
-		args.AddArg("edit");
-		args.AddArg("hold");
-		args.AddArg(action == EA_HoldCapture ? "capture" : "off");
-		MirvCampathEditor_Command(&args);
-		break;
-	}
-	case EA_NewPath:
-		g_Hook_VClient_RenderView.m_CamPaths.New();
-		break;
-	case EA_PrevPath:
-	case EA_NextPath: {
-		auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
-		std::size_t next = (paths.ActiveIndex() + (action == EA_NextPath ? 1 : paths.Size() - 1)) % paths.Size();
-		paths.Use(next);
-		if (activePath().GetSize())
-			CampathPreview_GotoIndex(0);
-		break;
-	}
-
-	case EA_Add: {
-		nativeCommand({"add"});
-		int i = 0;
-		double time = g_MirvTime.GetTime() - path.GetOffset();
-		for (auto it = path.GetBegin(); it != path.GetEnd(); ++it, ++i)
-			if (it.GetTime() == time)
-			{
-				CampathPreview_GotoIndex(i);
-				break;
-			}
-		break;
-	}
-	case EA_Replace: {
-		auto key = selectedKey();
-		auto previous = key.GetValue();
-		auto pose = g_MirvCampath_Camera.GetCamera();
-		CamPathValue value(pose.X, pose.Y, pose.Z, pose.Pitch, pose.Yaw, pose.Roll, pose.Fov);
-		value.Selected = previous.Selected;
-		value.InHandle = previous.InHandle;
-		value.OutHandle = previous.OutHandle;
-		value.HasInHandle = previous.HasInHandle;
-		value.HasOutHandle = previous.HasOutHandle;
-		value.HandlesAligned = previous.HandlesAligned;
-		value.HoldDuration = previous.HoldDuration;
-		value.Ease = previous.Ease;
-		value.ChannelEase = previous.ChannelEase;
-		path.Add(key.GetTime(), value);
-		break;
-	}
-	case EA_Delete: {
-		auto key = selectedKey();
-		path.Remove(key.GetTime());
-		break;
-	}
-	case EA_Visit:
-		need(CampathPreview_SetCamera(), "No usable camera points");
-		break;
-	case EA_Previous:
-	case EA_Next: {
-		need(path.GetSize() > 0, "No camera points");
-		int i = 0, chosen = -1;
-		for (auto it = path.GetBegin(); it != path.GetEnd(); ++it, ++i)
-		{
-			if (action == EA_Next && it.GetTime() > g_CampathPreviewTime + 1e-5)
-			{
-				chosen = i;
-				break;
-			}
-			if (action == EA_Previous && it.GetTime() < g_CampathPreviewTime - 1e-5)
-				chosen = i;
-		}
-		if (chosen >= 0)
-			CampathPreview_GotoIndex(chosen);
-		break;
-	}
-	case EA_First:
-	case EA_Last:
-		need(path.GetSize() > 0, "No camera points");
-		CampathPreview_GotoIndex(action == EA_First ? 0 : int(path.GetSize() - 1));
-		break;
-	case EA_Seek:
-		seekCursor();
-		break;
-	case EA_In:
-	case EA_Out:
-		captureHandle(action == EA_Out);
-		break;
-	case EA_Reset: {
-		auto key = selectedKey();
-		path.ResetHandles(key.GetTime());
-		break;
-	}
-	case EA_Curve: {
-		const char * mode = "bezier";
-		if (path.Bezier_get())
-			mode = "linear";
-		else if (path.PositionInterpMethod_get() == CamPath::DI_LINEAR)
-			mode = "smooth";
-		else if (path.PositionInterpMethod_get() == CamPath::DI_SMOOTH)
-			mode = "monotone";
-		else if (path.PositionInterpMethod_get() == CamPath::DI_MONOTONE)
-			mode = "step";
-		CFakeWrpCommandArgs args("mirv_campath");
-		for (auto text : {"edit", "interp", "all", mode})
-			args.AddArg(text);
-		MirvCampathEditor_Command(&args);
-		Tier0_Msg("Campath interpolation: %s.\n", mode);
-		break;
-	}
-	case EA_Draw:
-		g_CampathDrawer.Draw_set(!g_CampathDrawer.Draw_get());
-		break;
-	case EA_Enabled:
-		g_Hook_VClient_RenderView.m_CamPaths.Enabled_set(!g_Hook_VClient_RenderView.m_CamPaths.Enabled_get());
-		break;
-	case EA_MouseHandles:
-		need(AfxHookSource::Gui::SetCampathHandlesOpen(!AfxHookSource::Gui::GetCampathHandlesOpen()),
-			 "Mouse handle editing requires preview and the GUI backend");
-		break;
-	case EA_Graph:
-		need(AfxHookSource::Gui::SetCampathGraphOpen(!AfxHookSource::Gui::GetCampathGraphOpen()),
-			 "Graph editor is unavailable in this build");
-		break;
-	case EA_SelectAll:
-		nativeCommand({"select", "all"});
-		break;
-	case EA_AnchorPath: {
-		auto anchor = selectedKey();
-		int index = 0;
-		std::vector<std::size_t> selected;
-		int anchorIndex = 0;
-		for (auto it = path.GetBegin(); it != path.GetEnd(); ++it, ++index)
-		{
-			if (it.GetValue().Selected)
-				selected.push_back(index);
-			if (it.GetTime() == anchor.GetTime())
-				anchorIndex = index;
-		}
-		std::string name = "#" + std::to_string(anchorIndex);
-		nativeCommand({"select", "all"});
-		nativeCommand({"edit", "anchor", name.c_str(), "current"});
-		path.SelectNone();
-		for (auto point : selected)
-			path.SelectAdd(point, point);
-		break;
-	}
-	case EA_Left:
-	case EA_Right:
-		break;
-	default:
-		break;
-	}
-}
-} // namespace
-bool MirvCampathEditor_Command(IWrpCommandArgs * args)
-{
-	AfxHookSource::Gui::FinishCampathGraphEdit();
-	auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
-	auto before = paths.Capture();
-	try
-	{
-		Args a{args, 1};
-		auto changed = [&]() {
-			paths.Record(before);
-			return true;
-		};
-		if (editSettings(a))
-			return true;
-		if (a.is(0, "system") || a.is(0, "cinematic"))
-			throw std::runtime_error("There is one campath system; use the ordinary mirv_campath commands");
-		if (a.is(0, "enabled") || a.is(0, "enable"))
-		{
-			if (a.count() == 1)
-			{
-				Tier0_Msg("mirv_campath enabled 0|1\nCurrent value: %i\n", paths.Enabled_get());
-				return true;
-			}
-			a.size(2);
-			paths.Enabled_set(a.flag(1));
-			return true;
-		}
-		if (a.is(0, "graph"))
-		{
-			need(a.count() == 1 || a.count() == 2, "Use graph [0|1]");
-			need(AfxHookSource::Gui::SetCampathGraphOpen(a.count() == 1 ? !AfxHookSource::Gui::GetCampathGraphOpen()
-																		: a.flag(1)),
-				 "Graph editor is unavailable in this build");
-			return true;
-		}
-		if (a.is(0, "edit") && a.is(1, "ease"))
-		{
-			CamPathEase::Channel channel = CamPathEase::All;
-			Args e = a;
-			if (a.count() > 2 && !a.is(2, "all") && !a.is(2, "selected"))
-			{
-				need(CamPathEase::ChannelFromString(a.at(2).c_str(), channel),
-					 "Choose position, angles, fov, all or selected");
-				++e.offset;
-			}
-			if (e.count() < 4)
-			{
-				Tier0_Msg("mirv_campath edit ease [position|angles|fov] all|selected <function> "
-						  "[in|out|inout]\nFunctions: inherit, linear, "
-						  "sine, quad, cubic, quart, quint, expo, circ, back, bounce, elastic, bezier.\nBezier: ... "
-						  "bezier <x1> <y1> <x2> <y2>\nBack: ... back <direction> [overshoot]\nElastic: ... elastic "
-						  "<direction> [amplitude period]\nBounce: ... bounce <direction> [strength count]\nCurrent "
-						  "path easing: %s %s\n",
-						  CamPathEase::ToString(activePath().GetEase(channel).Type),
-						  CamPathEase::ToString(activePath().GetEase(channel).Mode));
-				return true;
-			}
-			need(e.is(2, "all") || e.is(2, "selected"), "Choose all or selected keyframes");
-			CamPathEase ease;
-			need(CamPathEase::FromString(e.at(3).c_str(), ease.Type), "Unknown easing function");
-			if (ease.Type == CamPathEase::Bezier)
-			{
-				e.size(8);
-				ease.X1 = e.num(4);
-				ease.Y1 = e.num(5);
-				ease.X2 = e.num(6);
-				ease.Y2 = e.num(7);
-			}
-			else
-			{
-				if (e.count() >= 5)
-					need(CamPathEase::FromString(e.at(4).c_str(), ease.Mode), "Choose in, out or inout");
-				if (ease.Type == CamPathEase::Back && e.count() == 6)
-					ease.Overshoot = e.num(5);
-				else if (ease.Type == CamPathEase::Bounce && e.count() == 7)
-				{
-					ease.BounceStrength = e.num(5);
-					ease.BounceCount = e.num(6);
-				}
-				else if (ease.Type == CamPathEase::Elastic && e.count() == 7)
-				{
-					ease.Amplitude = e.num(5);
-					ease.Period = e.num(6);
-				}
-				else
-					need(e.count() == 4 || e.count() == 5, "Unexpected easing parameters");
-			}
-			need(ease.Valid(),
-				 "Invalid easing parameters; Bezier time handles must stay ordered in 0..1 and values in -5..5");
-			if (e.is(2, "all"))
-			{
-				activePath().JoinedEase_set(true);
-				activePath().SetEase(ease, true, channel);
-				if (ease.Type == CamPathEase::Bezier)
-					for (auto it = activePath().GetBegin(); it != activePath().GetEnd(); ++it)
-						activePath().SetEaseHandle(it.GetTime(), true, ease.X1, ease.Y1, channel);
-			}
-			else
-			{
-				std::vector<double> times;
-				for (auto it = activePath().GetBegin(); it != activePath().GetEnd(); ++it)
-					if (it.GetValue().Selected)
-						times.push_back(it.GetTime());
-				need(!times.empty(), "Select a keyframe first");
-				for (double time : times)
-					activePath().SetKeyEaseJoined(time, ease, channel);
-			}
-			return changed();
-		}
-
-		if (a.is(0, "path"))
-		{
-			auto find = [&](int arg) {
-				auto text = a.at(arg);
-				for (std::size_t i = 0; i < paths.Size(); ++i)
-					if (paths.At(i).GetName() == text)
-						return i;
-				int i = a.index(arg);
-				need(std::size_t(i) < paths.Size(), "Unknown path name/index");
-				return std::size_t(i);
-			};
-			if (a.count() == 1)
-			{
-				Tier0_Msg("mirv_campath path new [name]\nmirv_campath path list\nmirv_campath path use "
-						  "<name|index>\nmirv_campath path rename <name>\nmirv_campath path remove "
-						  "[name|index]\nmirv_campath path enabled 0|1\n");
-				return true;
-			}
-			if (a.is(1, "list"))
-			{
-				a.size(2);
-				for (std::size_t i = 0; i < paths.Size(); ++i)
-				{
-					auto & p = paths.At(i);
-					Tier0_Msg("%s%u: %s - %u keys, enabled %i\n", i == paths.ActiveIndex() ? "* " : "  ", unsigned(i),
-							  p.GetName().c_str(), unsigned(p.GetSize()), p.Enabled_get());
-				}
-				return true;
-			}
-			if (a.is(1, "use"))
-			{
-				a.size(3);
-				paths.Use(find(2));
-				if (g_CampathPreviewActive && activePath().GetSize())
-					CampathPreview_GotoIndex(0);
-				return true;
-			}
-			if (a.is(1, "new"))
-			{
-				need(a.count() == 2 || a.count() == 3, "Use path new [name]");
-				paths.New(a.count() == 3 ? a.at(2) : "");
-				return changed();
-			}
-			if (a.is(1, "rename"))
-			{
-				a.size(3);
-				paths.Rename(a.at(2));
-				return changed();
-			}
-			if (a.is(1, "remove"))
-			{
-				need(a.count() == 2 || a.count() == 3, "Use path remove [name|index]");
-				paths.Remove(a.count() == 3 ? find(2) : paths.ActiveIndex());
-				return changed();
-			}
-			if (a.is(1, "enabled"))
-			{
-				if (a.count() == 2)
-				{
-					Tier0_Msg("mirv_campath path enabled 0|1\nCurrent value: %i\n", activePath().Enabled_get());
-					return true;
-				}
-				a.size(3);
-				activePath().Enabled_set(a.flag(2));
-				return changed();
-			}
-			throw std::runtime_error("Unknown path command; use mirv_campath path");
-		}
-		if (a.is(0, "saveAll") || a.is(0, "load"))
-		{
-			a.size(2);
-			auto file = std::filesystem::u8path(a.at(1)).wstring();
-			bool ok = a.is(0, "saveAll") ? paths.SaveAll(file.c_str()) : paths.Load(file.c_str());
-			need(ok, "Unable to save/load campath XML");
-			return changed();
-		}
-		if (a.is(0, "preview") && (a.is(1, "undo") || a.is(1, "redo")))
-		{
-			a.size(2);
-			bool ok = a.is(1, "undo") ? paths.Undo() : paths.Redo();
-			if (!ok)
-				Tier0_Msg("Nothing to %s.\n", a.at(1).c_str());
-			MirvCampathEditor_ReleaseKeys();
-			if (activePath().GetSize())
-				g_CampathPreviewTime =
-					std::clamp(g_CampathPreviewTime, activePath().GetLowerBound(), activePath().GetUpperBound());
-			return true;
-		}
-		if (a.is(0, "edit") && (a.is(1, "on") || a.is(1, "off")))
-			throw std::runtime_error("Use mirv_campath preview enter or preview exit; there is no second edit mode");
-		if (a.is(0, "edit") && a.is(1, "hold"))
-		{
-			if (a.count() == 2)
-			{
-				Tier0_Msg("mirv_campath edit hold capture - Capture the release tick.\nmirv_campath edit hold tick "
-						  "<tick>\nmirv_campath edit hold off\n");
-				return true;
-			}
-			auto key = selectedKey();
-			double release = key.GetTime();
-			if (!a.is(2, "off"))
-			{
-				need(g_VEngineClient && g_VEngineClient->IsPlayingDemo() && g_VEngineClient->GetDemoInfoEx() &&
-						 g_Hook_VClient_RenderView.GetGlobals(),
-					 "A running demo is required for a release tick");
-				int tick = 0;
-				if (a.is(2, "capture"))
-				{
-					a.size(3);
-					need(GetCurrentDemoTick(tick), "Demo tick unavailable");
-				}
-				else
-				{
-					need(a.is(2, "tick"), "Use capture, tick <tick>, or off");
-					a.size(4);
-					double number = a.num(3);
-					need(number >= 0 && number <= (std::numeric_limits<int>::max)() && number == std::floor(number),
-						 "Expected a nonnegative demo tick");
-					tick = int(number);
-				}
-				double demo = 0;
-				need(GetDemoTimeFromClientTime(g_MirvTime.GetTime(), g_MirvTime.GetTime(), demo),
-					 "Demo time unavailable");
-				double interval = g_Hook_VClient_RenderView.GetGlobals()->interval_per_tick_get();
-				need(interval > 0, "Demo tick interval unavailable");
-				release = g_MirvTime.GetTime() - activePath().GetOffset() + tick * interval - demo;
-			}
-			else
-				a.size(3);
-			need(activePath().SetKeyHold(key.GetTime(), release),
-				 "Release must be at/after arrival and before the next keyframe");
-			return changed();
-		}
-		if (a.is(0, "edit") && a.is(1, "interp") && a.is(2, "all"))
-		{
-			if (a.count() == 3)
-			{
-				Tier0_Msg("mirv_campath edit interp all linear|smooth|monotone|step|cubic|bezier\n");
-				return true;
-			}
-			a.size(4);
-			CamPath::DoubleInterp mode;
-			bool bezier = a.is(3, "bezier");
-			need(bezier || CamPath::DoubleInterp_FromString(a.at(3).c_str(), mode), "Unknown interpolation mode");
-			if (bezier)
-				mode = CamPath::DI_SMOOTH;
-			activePath().PositionInterpMethod_set(mode);
-			activePath().Bezier_set(bezier);
-			CamPath::QuaternionInterp rotation = CamPath::QI_SMOOTH;
-			if (mode == CamPath::DI_STEP)
-				rotation = CamPath::QI_STEP;
-			else if (mode == CamPath::DI_CUBIC || mode == CamPath::DI_DEFAULT)
-				rotation = CamPath::QI_SCUBIC;
-			else if (mode == CamPath::DI_LINEAR || bezier)
-				rotation = CamPath::QI_SLINEAR;
-			activePath().RotationInterpMethod_set(rotation);
-			activePath().FovInterpMethod_set(mode == CamPath::DI_SMOOTH ? CamPath::DI_MONOTONE : mode);
-			return changed();
-		}
-		if (a.is(0, "curve"))
-		{
-			if (a.count() == 1)
-			{
-				curveHelp();
-				return true;
-			}
-			if (a.is(1, "type"))
-			{
-				if (a.count() == 2)
-				{
-					curveHelp();
-					return true;
-				}
-				a.size(3);
-				if (a.is(2, "bezier"))
-					activePath().Bezier_set(true);
-				else
-				{
-					CamPath::DoubleInterp mode;
-					need(CamPath::DoubleInterp_FromString(a.at(2).c_str(), mode),
-						 "Choose default, linear, smooth, monotone, step, cubic or bezier");
-					activePath().Bezier_set(false);
-					activePath().PositionInterpMethod_set(mode);
-				}
-				return changed();
-			}
-			if (a.is(1, "reset"))
-			{
-				a.size(2);
-				activePath().ResetHandles(selectedKey().GetTime());
-				return changed();
-			}
-			if (a.is(1, "handle") && a.is(2, "mode"))
-			{
-				if (a.count() == 3)
-				{
-					Tier0_Msg("mirv_campath curve handle mode aligned|free - Selected keyframes.\n");
-					return true;
-				}
-				a.size(4);
-				need(a.is(3, "aligned") || a.is(3, "free"), "Choose aligned or free");
-				bool selected = false;
-				for (auto it = activePath().GetBegin(); it != activePath().GetEnd(); ++it)
-					if (it.GetValue().Selected)
-					{
-						need(activePath().SetHandleMode(it.GetTime(), a.is(3, "aligned")), "Invalid curve handles");
-						selected = true;
-					}
-				need(selected, "Select keyframes first");
-				return changed();
-			}
-			if (a.is(1, "handle"))
-			{
-				need(a.count() == 4 || a.count() == 6, "Use curve handle in|out capture|<x y z>");
-				need(a.is(2, "in") || a.is(2, "out"), "Choose in or out");
-				if (a.count() == 4)
-				{
-					need(a.is(3, "capture"), "Choose capture or an offset");
-					captureHandle(a.is(2, "out"));
-				}
-				else
-					need(activePath().SetHandle(selectedKey().GetTime(), a.is(2, "out"), a.vec(3)),
-						 "Invalid curve handle");
-				return changed();
-			}
-			curveHelp();
-			return true;
-		}
-		if (a.is(0, "draw") && (a.is(1, "stackLabels") || a.is(1, "stackWorldDistance")))
-		{
-			if (a.count() == 2)
-			{
-				Tier0_Msg("mirv_campath draw stackLabels 0|1 (current %i)\nmirv_campath draw stackWorldDistance "
-						  "<units> (current %g)\n",
-						  g_CampathDrawer.GetStackLabels(), g_CampathDrawer.GetStackWorldDistance());
-				return true;
-			}
-			a.size(3);
-			if (a.is(1, "stackLabels"))
-				g_CampathDrawer.SetStackLabels(a.flag(2));
-			else
-			{
-				double value = a.num(2);
-				need(value >= 0 && value <= 1e6, "Stack distance must be 0..1000000");
-				g_CampathDrawer.SetStackWorldDistance(float(value));
-			}
-			return true;
-		}
-
-		if (a.is(0, "draw") && a.is(1, "segments"))
-		{
-			if (a.count() == 2)
-			{
-				Tier0_Msg("mirv_campath draw segments 0|1 - Segment duration labels.\nCurrent value: %i\n",
-						  g_CampathDrawer.GetDrawSegments());
-				return true;
-			}
-			a.size(3);
-			g_CampathDrawer.SetDrawSegments(a.flag(2));
-			return true;
-		}
-		if (a.is(0, "draw") && a.is(1, "handles"))
-		{
-			if (a.count() == 2)
-			{
-				Tier0_Msg("mirv_campath draw handles 0|1\nCurrent value: %i\n", g_CampathDrawer.GetDrawHandles());
-				return true;
-			}
-			a.size(3);
-			g_CampathDrawer.SetDrawHandles(a.flag(2));
-			return true;
-		}
-		if (a.is(0, "draw") && a.is(1, "textSize"))
-		{
-			if (a.count() == 2)
-			{
-				Tier0_Msg("mirv_campath draw textSize <world height> - Names and hold labels.\nCurrent value: %g\n",
-						  g_CampathDrawer.GetLabelHeight());
-				return true;
-			}
-			a.size(3);
-			double height = a.num(2);
-			need(height >= 0 && height <= 200, "Text height must be 0..200 world units");
-			g_CampathDrawer.SetLabelHeight(float(height));
-			return true;
-		}
-		if (!a.count())
-			Tier0_Msg("mirv_campath path - Named paths.\nmirv_campath saveAll <file.xml>\nmirv_campath curve - Curve "
-					  "handles.\nmirv_campath graph - Toggle the easing editor.\n");
-		if (a.is(0, "draw") && a.count() == 1)
-			Tier0_Msg("mirv_campath draw textSize <world height> - Path/hold/segment labels.\n"
-					  "mirv_campath draw handles 0|1 - Curve handles.\nmirv_campath draw segments 0|1 - Segment "
-					  "duration labels.\n"
-					  "mirv_campath draw stackLabels 0|1 - Stack nearby overlapping indices.\n"
-					  "mirv_campath draw stackWorldDistance <units> - Nearby threshold (default 32).\n");
-		if (a.is(0, "edit") && a.count() == 1)
-			Tier0_Msg("mirv_campath edit hold - Keyframe "
-					  "holds.\nmirv_campath edit ease - Segment "
-					  "timing/easing.\nmirv_campath edit interp all - Set interpolation in "
-					  "one command.\n");
-		return false;
-	}
-	catch (const std::exception & error)
-	{
-		if (!(before == paths.Capture()))
-			paths.Restore(before);
-		Tier0_Warning("Campath: %s\n", error.what());
-		return true;
-	}
-}
-bool MirvCampathEditor_IsUiPassThrough(unsigned key)
-{
-	initPassThrough();
-	return key < 256 && uiPassThrough[key];
-}
-bool MirvCampathEditor_ShowHud()
-{
-	return g_CampathPreviewActive && g_CampathPreviewHud;
-}
-
-bool MirvCampathEditor_IsGraphKey(unsigned key)
+static void CampathPreview_StepKeyframe(int direction)
 {
 	if (!g_CampathPreviewActive)
-		return false;
-	initBindings();
-	unsigned modifiers = (GetKeyState(VK_SHIFT) & 0x8000 ? 1 : 0) | (GetKeyState(VK_CONTROL) & 0x8000 ? 2 : 0) |
-						 (GetKeyState(VK_MENU) & 0x8000 ? 4 : 0);
-	return editorBindings[EA_Graph].Key == key && editorBindings[EA_Graph].Modifiers == modifiers;
-}
+		return;
 
-bool MirvCampathEditor_IsHandleKey(unsigned key)
-{
-	if (!g_CampathPreviewActive)
-		return false;
-	initBindings();
-	unsigned modifiers = (GetKeyState(VK_SHIFT) & 0x8000 ? 1 : 0) | (GetKeyState(VK_CONTROL) & 0x8000 ? 2 : 0) |
-						 (GetKeyState(VK_MENU) & 0x8000 ? 4 : 0);
-	return editorBindings[EA_MouseHandles].Key == key && editorBindings[EA_MouseHandles].Modifiers == modifiers;
-}
-bool MirvCampathEditor_IsEditing()
-{
-	return g_CampathPreviewActive;
-}
-void MirvCampathEditor_OnPreview(bool active)
-{
-	if (!active)
-		AfxHookSource::Gui::SetCampathHandlesOpen(false);
-	auto & view = g_Hook_VClient_RenderView;
-	auto * input = view.m_MirvInput;
-	if (active)
+	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+	int index = 0;
+	if (direction > 0)
 	{
-		if (!ownsPreviewInput)
-			previousUiCursor = view.UiCursorSuspend_get();
-		ownsPreviewInput = true;
-		view.UiCursorSuspend_set(true);
-		if (input)
+		for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it, ++index)
 		{
-			input->SetCameraControlMode(true);
-			input->SetKeyboardCapture(true, passThroughKey);
+			if (it.GetTime() > g_CampathPreviewTime + 0.00001)
+			{
+				CampathPreview_GotoIndex(index);
+				return;
+			}
 		}
-		g_CampathDrawer.Draw_set(true);
 	}
 	else
 	{
-		if (ownsPreviewInput)
-			view.UiCursorSuspend_set(previousUiCursor);
-		ownsPreviewInput = false;
-		if (input)
-			input->SetKeyboardCapture(false);
+		int previous = -1;
+		for (CamPathIterator it = path.GetBegin(); it != path.GetEnd(); ++it, ++index)
+		{
+			if (it.GetTime() >= g_CampathPreviewTime - 0.00001)
+				break;
+			previous = index;
+		}
+		if (previous >= 0)
+			CampathPreview_GotoIndex(previous);
 	}
-	MirvCampathEditor_ReleaseKeys();
 }
-void MirvCampathEditor_ReleaseKeys(bool yieldKeyboard)
+
+// The HLAE window procedure handles preview keys before regular mirv_input controls.
+bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 {
-	initBindings();
-	if (yieldKeyboard)
-		std::fill(std::begin(swallowed), std::end(swallowed), false);
-	std::fill(std::begin(actionHeld), std::end(actionHeld), false);
-	std::fill(std::begin(pressedAction), std::end(pressedAction), -1);
-	CampathPreview_StopTravel();
-	g_CampathPreviewLastMs = GetTickCount();
-}
-bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags)
-{
-	bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN, up = message == WM_KEYUP || message == WM_SYSKEYUP;
-	if ((!down && !up) || key >= 256)
+	const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+	const bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
+	if (!down && !up)
 		return false;
-	if (key == VK_CONTROL)
-		key = (flags & (1LL << 24)) ? VK_RCONTROL : VK_LCONTROL;
-	initBindings();
+
 	if (g_Hook_VClient_RenderView.IsMenuActive())
 	{
-		MirvCampathEditor_ReleaseKeys(true);
+		CampathPreview_StopTravel();
+		g_CampathPreviewToggleHeld = false;
 		return false;
 	}
-	if (up && swallowed[key])
-	{
-		swallowed[key] = false;
-		int i = pressedAction[key];
-		pressedAction[key] = -1;
-		if (i >= 0)
-			actionHeld[i] = false;
-		CampathPreview_SetTravel(actionHeld[EA_Right], actionHeld[EA_Left]);
-		return true;
-	}
-	if (down && swallowed[key])
-		return true;
+
+	// Handle the toggle even when preview is inactive, before mirv_input sees it.
 	if (g_CampathPreviewToggleKey && key == g_CampathPreviewToggleKey)
 	{
 		if (up)
 			g_CampathPreviewToggleHeld = false;
-		else if (!g_CampathPreviewToggleHeld && !(flags & (1LL << 30)))
+		else if (!g_CampathPreviewToggleHeld && !CampathPreview_IsRepeatKey(lParam))
 		{
 			g_CampathPreviewToggleHeld = true;
 			if (g_CampathPreviewActive)
@@ -3089,65 +1742,70 @@ bool MirvCampathEditor_KeyEvent(UINT message, WPARAM key, LPARAM flags)
 		return true;
 	}
 
-	if (!MirvCampathEditor_IsEditing() || passThroughKey(unsigned(key), nullptr))
+	if (!g_CampathPreviewActive)
 		return false;
-	unsigned modifiers = (GetKeyState(VK_SHIFT) & 0x8000 ? 1 : 0) | (GetKeyState(VK_CONTROL) & 0x8000 ? 2 : 0) |
-						 (GetKeyState(VK_MENU) & 0x8000 ? 4 : 0);
-	if (key == VK_RCONTROL || key == VK_LCONTROL)
-		modifiers &= ~2u;
-	for (int i = 0; i < EA_Count; ++i)
-	{
-		auto binding = editorBindings[i];
-		if (binding.Key != key || binding.Modifiers != modifiers)
-			continue;
-		if (!down)
-			return false;
-		if (flags & (1LL << 30))
-			return true;
-		swallowed[key] = true;
-		pressedAction[key] = i;
-		actionHeld[i] = true;
-		CampathPreview_SetTravel(actionHeld[EA_Right], actionHeld[EA_Left]);
-		auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
-		AfxHookSource::Gui::FinishCampathGraphEdit();
-		auto before = paths.Capture();
-		try
-		{
-			executeEditorAction(EditorAction(i));
-			if (i == EA_Add || i == EA_Replace || i == EA_Delete || i == EA_In || i == EA_Out || i == EA_Reset ||
-				i == EA_NewPath || i == EA_AnchorPath)
-				paths.Record(before);
-		}
-		catch (const std::exception & error)
-		{
-			if (!(before == paths.Capture()))
-				paths.Restore(before);
-			Tier0_Warning("Campath preview: %s\n", error.what());
-		}
+	if (key != VK_LEFT && key != VK_RIGHT && key != VK_UP && key != VK_DOWN
+		&& key != VK_HOME && key != VK_END)
+		return false;
 
-		return true;
-	}
-	for (const auto & binding : editorCommands)
-		if (binding.Binding.Key == key && binding.Binding.Modifiers == modifiers)
+	if (key == VK_LEFT || key == VK_RIGHT)
+	{
+		CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+		if (path.CanEval())
 		{
-			if (!down)
-				return false;
-			if (flags & (1LL << 30))
-				return true;
-			swallowed[key] = true;
-			pressedAction[key] = -1;
-			std::string command = binding.Command;
-			if (g_VEngineClient)
-				g_VEngineClient->ClientCmd_Unrestricted(command.c_str());
-			return true;
+			if (key == VK_LEFT)
+				g_CampathPreviewBackward = down;
+			else
+				g_CampathPreviewForward = down;
 		}
-	return false;
+		else if (down && !CampathPreview_IsRepeatKey(lParam))
+		{
+			// Without interpolation, move between actual keyframes.
+			CampathPreview_StepKeyframe(key == VK_RIGHT ? 1 : -1);
+		}
+	}
+	else if (down && !CampathPreview_IsRepeatKey(lParam))
+	{
+		if (key == VK_HOME || key == VK_END)
+		{
+			CampathPreview_StopTravel();
+			g_CampathPreviewLastMs = GetTickCount();
+			CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
+			if (path.GetSize() != 0)
+				CampathPreview_GotoIndex(key == VK_HOME ? 0 : (int)path.GetSize() - 1);
+		}
+		else
+		{
+			CampathPreview_StepKeyframe(key == VK_UP ? 1 : -1);
+		}
+	}
+	return true;
+}
+
+void MirvCampathPreview_ReleaseKeys()
+{
+	CampathPreview_StopTravel();
+	g_CampathPreviewToggleHeld = false;
+}
+
+static void CampathPreview_PrintHelp()
+{
+	Tier0_Msg(
+		"mirv_campath preview enter - Begin preview mode (one or more keyframes).\n"
+		"mirv_campath preview toggle - Toggle Preview Mode on/off.\n"
+		"mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, home, end, pageup, pagedown).\n"
+		"mirv_campath preview <index> - Select a keyframe (0-based).\n"
+		"mirv_campath preview interp <0..1> - Position between nearest keyframe and the following one.\n"
+		"mirv_campath preview seek - Seek the demo to the current preview time.\n"
+		"mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
+		"Preview keys (console closed): UP/DOWN select next/previous; HOME/END select first/last.\n"
+		"LEFT/RIGHT scrub interpolated paths, or step through keyframes if interpolation is unavailable.\n"
+		"HOME/END jump without seeking the demo (unless assigned as toggleKey); use preview seek to seek.\n"
+	);
 }
 
 CON_COMMAND(mirv_campath, "camera paths")
 {
-	if (MirvCampathEditor_Command(args))
-		return;
 	if (!g_Hook_VClient_RenderView.IsInstalled())
 	{
 		Tier0_Warning("Error: Hook not installed.\n");
@@ -3156,7 +1814,7 @@ CON_COMMAND(mirv_campath, "camera paths")
 
 	if (2 <= args->ArgC() && 0 == _stricmp("preview", args->ArgV(1)))
 	{
-		CamPath & path = g_Hook_VClient_RenderView.GetActiveCamPath();
+		CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 		if (args->ArgC() == 2) { CampathPreview_PrintHelp(); return; }
 		const char * cmd = args->ArgV(2);
 		if (0 == _stricmp(cmd, "toggleKey")) {
@@ -3229,17 +1887,21 @@ CON_COMMAND(mirv_campath, "camera paths")
 			return;
 		}
 		if (0 == _stricmp(cmd, "seek") && args->ArgC() == 3) {
-			try
-			{
-				seekCursor();
+			const double curtime = g_MirvCampath_Time.GetTime();
+			int tick = -1;
+			if (!g_MirvCampath_Time.GetDemoTickFromClientTime(curtime, g_CampathPreviewTime + path.GetOffset(), tick) || tick < 0) {
+				Tier0_Warning("Campath preview: unable to calculate demo tick.\n");
+				return;
 			}
-			catch (const std::exception & error)
-			{
-				Tier0_Warning("Campath preview: %s\n", error.what());
-			}
+			std::ostringstream seekCommand;
+			seekCommand << "demo_gototick " << tick;
+            int currentTick = -1;
+            g_MirvCampath_Time.GetCurrentDemoTick(currentTick);
+            Tier0_Msg("Campath preview: time %.6f (client %.6f), current demo tick %i, requested tick %i.\n",
+                g_CampathPreviewTime, g_CampathPreviewTime + path.GetOffset(), currentTick, tick);
+			g_VEngineClient->ExecuteClientCmd(seekCommand.str().c_str());
 			return;
 		}
-
 		if (args->ArgC() == 3) {
 			char * end = nullptr;
 			const long value = strtol(cmd, &end, 10);
@@ -3253,30 +1915,8 @@ CON_COMMAND(mirv_campath, "camera paths")
 		return;
 	}
 
-	auto & paths = g_Hook_VClient_RenderView.m_CamPaths;
-	auto before = paths.Capture();
-	try
-	{
-		MirvCampath_ConCommand(args, Tier0_Msg, Tier0_Warning, &paths.Active(), &g_MirvCampath_Time,
-							   &g_MirvCampath_Camera, &g_MirvCampath_Drawer);
-		if (args->ArgC() == 5 && !_stricmp(args->ArgV(1), "edit") && !_stricmp(args->ArgV(2), "interp") &&
-			!_stricmp(args->ArgV(3), "position"))
-		{
-			CamPath::DoubleInterp mode;
-			if (CamPath::DoubleInterp_FromString(args->ArgV(4), mode))
-				paths.Active().Bezier_set(false);
-		}
-		paths.Active().Validate();
-		if (args->ArgC() < 2 || _stricmp(args->ArgV(1), "select"))
-			paths.Record(before);
-	}
-	catch (const std::exception & error)
-	{
-		paths.Restore(before);
-		Tier0_Warning("Campath: %s\n", error.what());
-	}
-	if (args->ArgC() == 1)
-		Tier0_Msg("mirv_campath preview - Preview, keyboard controls and undo/redo.\n");
+	MirvCampath_ConCommand(args, Tier0_Msg, Tier0_Warning, &g_Hook_VClient_RenderView.m_CamPath, &g_MirvCampath_Time, &g_MirvCampath_Camera, &g_MirvCampath_Drawer);
+	if (args->ArgC() == 1) Tier0_Msg("mirv_campath preview [...] - Navigate campath with free camera; use mirv_campath preview for help.\n");
 }
 
 CON_COMMAND(mirv_camexport, "controls camera motion data export") {
@@ -6035,3 +4675,20 @@ CON_COMMAND(mirv_spec_player_key, "Spectate player by spectatorslot index") {
 }
 
 #endif //#ifndef _WIN64
+
+CON_COMMAND(mirv_overlay, "TF2 camera workspace (F8).")
+{
+	if (args->ArgC() == 2 && (!_stricmp(args->ArgV(1), "0") || !_stricmp(args->ArgV(1), "1")))
+	{
+		if (!AfxHookSource::Gui::SetOverlayOpen(atoi(args->ArgV(1)) != 0))
+			Tier0_Warning("TF2 overlay is unavailable.\n");
+		return;
+	}
+	if (args->ArgC() == 1)
+	{
+		if (!AfxHookSource::Gui::SetOverlayOpen(!AfxHookSource::CameraOverlay::IsOpen()))
+			Tier0_Warning("TF2 overlay is unavailable.\n");
+		return;
+	}
+	Tier0_Msg("mirv_overlay [0|1] - Toggle or set the TF2 camera overlay.\n");
+}

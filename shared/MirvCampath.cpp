@@ -1,12 +1,13 @@
 #include "stdafx.h"
 
-#include "MirvCamPath.h"
+#include "MirvCampath.h"
 
 #include "StringTools.h"
 
 #include <sstream>
 #include <iomanip>
-#include <stdexcept>
+#include <cstdlib>
+#include <cmath>
 
 void MirvCampath_PrintTimeFormated(double time, advancedfx::Con_Printf_t conMessage)
 {
@@ -35,7 +36,6 @@ void MirvCampath_PrintTimeFormated(double time, advancedfx::Con_Printf_t conMess
 }
 
 void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Printf_t conMessage, advancedfx::Con_Printf_t conWarning, CamPath* camPath, IMirvCampath_Time* mirvTime, IMirvCampath_Camera* mirvCamera, IMirvCampath_Drawer* mirvDrawer)
-try
 {
 	int argc = args->ArgC();
 
@@ -47,24 +47,10 @@ try
 		{
 			SMirvCameraValue camera = mirvCamera->GetCamera();
 
-			double time = mirvTime->GetTime() - camPath->GetOffset();
-			CamPathValue value(camera.X, camera.Y, camera.Z, camera.Pitch, camera.Yaw, camera.Roll, camera.Fov);
-			// Recapturing a pose keeps its optional curve and hold metadata.
-			for (auto it = camPath->GetBegin(); it != camPath->GetEnd(); ++it)
-				if (it.GetTime() == time)
-				{
-					auto old = it.GetValue();
-					value.InHandle = old.InHandle;
-					value.OutHandle = old.OutHandle;
-					value.HasInHandle = old.HasInHandle;
-					value.HasOutHandle = old.HasOutHandle;
-					value.HandlesAligned = old.HandlesAligned;
-					value.HoldDuration = old.HoldDuration;
-					value.Ease = old.Ease;
-					value.ChannelEase = old.ChannelEase;
-					break;
-				}
-			camPath->Add(time, value);
+			camPath->Add(
+				mirvTime->GetTime() - camPath->GetOffset(),
+				CamPathValue(camera.X, camera.Y, camera.Z, camera.Pitch, camera.Yaw, camera.Roll, camera.Fov)
+			);
 
 			return;
 		}
@@ -366,6 +352,163 @@ try
 			if (3 <= argc)
 			{
 				const char* arg2 = args->ArgV(2);
+
+				const bool tangentCommand = !_stricmp("tangent",arg2) || !_stricmp("tangentmode",arg2) || !_stricmp("tangentweight",arg2);
+				if (tangentCommand && argc == 6) {
+					const char * axis=args->ArgV(3), * side=args->ArgV(4);
+					if ((_stricmp(axis,"x") && _stricmp(axis,"y") && _stricmp(axis,"z") && _stricmp(axis,"fov") && _stricmp(axis,"pitch") && _stricmp(axis,"yaw") && _stricmp(axis,"roll")) || (_stricmp(side,"in") && _stricmp(side,"out") && _stricmp(side,"both"))) {
+						conMessage("Invalid tangent channel or side.\n"); return;
+					}
+					if (_stricmp("tangentmode",arg2)) {
+						char * end=nullptr; const char * input=args->ArgV(5); double value=std::strtod(input,&end);
+						if (end==input || *end || !std::isfinite(value)) { conMessage("A finite tangent value is required.\n"); return; }
+					}
+				}
+				// Handle tangent commands early and explicitly to avoid nesting issues.
+				if (!_stricmp("tangent", arg2))
+				{
+					// mirv_campath edit tangent <x|y|z|fov> <in|out|both> <value>
+					if (6 == argc)
+					{
+						const char *axis = args->ArgV(3);
+						const char *side = args->ArgV(4);
+						double val = argc >= 6 ? atof(args->ArgV(5)) : 0.0;
+						CamPath::Channel ch;
+						if (!_stricmp(axis, "x"))
+							ch = CamPath::CH_X;
+						else if (!_stricmp(axis, "y"))
+							ch = CamPath::CH_Y;
+						else if (!_stricmp(axis, "z"))
+							ch = CamPath::CH_Z;
+						else if (!_stricmp(axis, "fov"))
+							ch = CamPath::CH_FOV;
+						else if (!_stricmp(axis, "pitch"))
+							ch = CamPath::CH_RPITCH;
+						else if (!_stricmp(axis, "yaw"))
+							ch = CamPath::CH_RYAW;
+						else if (!_stricmp(axis, "roll"))
+							ch = CamPath::CH_RROLL;
+						else
+							ch = CamPath::CH_X;
+						bool setIn = false, setOut = false;
+						if (!_stricmp(side, "in"))
+							setIn = true;
+						else if (!_stricmp(side, "out"))
+							setOut = true;
+						else if (!_stricmp(side, "both"))
+						{
+							setIn = setOut = true;
+						}
+
+						camPath->SetTangent(ch, setIn, setOut, val, val);
+						camPath->SetTangentMode(ch, setIn, setOut, (unsigned char)CamPath::TM_FREE);
+						return;
+					}
+
+					conMessage("%s edit tangent <x|y|z|fov|pitch|yaw|roll> <in|out|both> <value> - Set "
+							   "per-key tangent(s) for selected keys (or all).\n",
+							   args->ArgV(0));
+					return;
+				}
+				else if (!_stricmp("tangentmode", arg2))
+				{
+					// mirv_campath edit tangentmode <x|y|z|fov> <in|out|both> <auto|flat|linear|free>
+					if (6 == argc)
+					{
+						const char *axis = args->ArgV(3);
+						const char *side = args->ArgV(4);
+						const char *modeStr = args->ArgV(5);
+						CamPath::Channel ch;
+						if (!_stricmp(axis, "x"))
+							ch = CamPath::CH_X;
+						else if (!_stricmp(axis, "y"))
+							ch = CamPath::CH_Y;
+						else if (!_stricmp(axis, "z"))
+							ch = CamPath::CH_Z;
+						else if (!_stricmp(axis, "fov"))
+							ch = CamPath::CH_FOV;
+						else if (!_stricmp(axis, "pitch"))
+							ch = CamPath::CH_RPITCH;
+						else if (!_stricmp(axis, "yaw"))
+							ch = CamPath::CH_RYAW;
+						else if (!_stricmp(axis, "roll"))
+							ch = CamPath::CH_RROLL;
+						else
+							ch = CamPath::CH_X;
+						bool setIn = false, setOut = false;
+						if (!_stricmp(side, "in"))
+							setIn = true;
+						else if (!_stricmp(side, "out"))
+							setOut = true;
+						else if (!_stricmp(side, "both"))
+						{
+							setIn = setOut = true;
+						}
+						unsigned char mode;
+						if (CamPath::TangentMode_FromString(modeStr, mode))
+						{
+							camPath->SetTangentMode(ch, setIn, setOut, mode);
+							return;
+						}
+					}
+
+					conMessage("%s edit tangentmode <x|y|z|fov|pitch|yaw|roll> <in|out|both> "
+							   "<auto|flat|linear|free> - Set tangent mode(s) for selected keys (or all).\n",
+							   args->ArgV(0));
+					return;
+				}
+				else if (!_stricmp("tangentweight", arg2))
+				{
+					// mirv_campath edit tangentweight <x|y|z|fov> <in|out|both> <value>
+					if (6 == argc)
+					{
+						const char *axis = args->ArgV(3);
+						const char *side = args->ArgV(4);
+						double val = atof(args->ArgV(5));
+						CamPath::Channel ch;
+						if (!_stricmp(axis, "x"))
+							ch = CamPath::CH_X;
+						else if (!_stricmp(axis, "y"))
+							ch = CamPath::CH_Y;
+						else if (!_stricmp(axis, "z"))
+							ch = CamPath::CH_Z;
+						else if (!_stricmp(axis, "fov"))
+							ch = CamPath::CH_FOV;
+						else if (!_stricmp(axis, "pitch"))
+							ch = CamPath::CH_RPITCH;
+						else if (!_stricmp(axis, "yaw"))
+							ch = CamPath::CH_RYAW;
+						else if (!_stricmp(axis, "roll"))
+							ch = CamPath::CH_RROLL;
+						else
+							ch = CamPath::CH_X;
+
+						bool setIn = false, setOut = false;
+						if (!_stricmp(side, "in"))
+							setIn = true;
+						else if (!_stricmp(side, "out"))
+							setOut = true;
+						else if (!_stricmp(side, "both"))
+						{
+							setIn = true;
+							setOut = true;
+						}
+
+						if (val < 0.01)
+							val = 0.01;
+						if (val > 5.0)
+							val = 5.0;
+
+						camPath->SetTangentWeight(ch, setIn, setOut, val, val);
+						camPath->SetTangentMode(ch, setIn, setOut, (unsigned char)CamPath::TM_FREE);
+						return;
+					}
+
+					conMessage("%s edit tangentweight <x|y|z|fov|pitch|yaw|roll> <in|out|both> <value> - Set "
+							   "tangent weight(s) for selected keys (or all). Default 1.0\n",
+							   args->ArgV(0));
+					return;
+				}
 
 				if (!_stricmp("start", arg2))
 				{
@@ -750,14 +893,18 @@ try
 														}
 											}
 
-											conMessage(
-												"%s edit interp position [...]\n"
-												"%s edit interp rotation [...]\n"
-												"%s edit interp fov [...]\n"
-												, args->ArgV(0)
-												, args->ArgV(0)
-												, args->ArgV(0)
-											);
+											// tangent handled earlier
+											else
+											{
+												// Interp usage when no further args
+												conMessage("%s edit interp position [...]\n", args->ArgV(0));
+												conMessage("%s edit interp rotation [...]\n", args->ArgV(0));
+												conMessage("%s edit interp fov [...]\n", args->ArgV(0));
+												return;
+											}
+											// tangentmode handled earlier
+
+											// no sub-command matched in interp branch; return to outer help
 											return;
 										}
 			}
@@ -772,6 +919,12 @@ try
 			conMessage("%s edit rotate <dPitchY> <dYawZ> <dRollX> - Rotate path [or selected keyframes] around the middle of their bounding box by the given angles in degrees.\n", args->ArgV(0));
 			conMessage("%s edit anchor #<anchorId>|(<anchorX > <anchorY> <anchorZ> <anchorPitchY> <anchorYawZ> <anchorRollX>) current|(<destX > <destY> <destZ> <destPitchY> <destYawZ> <destRollX>) - This translates and rotates a path using a given anchor (either a keyframe ID or actual values) and a destination for the anchor (use current for current camera view).\n", args->ArgV(0));
 			conMessage("%s edit interp [...] - Edit interpolation properties.\n", args->ArgV(0));
+			conMessage("%s edit tangent <x|y|z|fov> <in|out|both> <value> - Set per-key tangent(s) for "
+					   "selected keys (or all).\n",
+					   args->ArgV(0));
+			conMessage("%s edit tangentmode <x|y|z|fov> <in|out|both> <auto|flat|linear|free> - Set tangent "
+					   "mode(s) for selected keys (or all).\n",
+					   args->ArgV(0));
 			return;
 		}
 		else if (!_stricmp("select", subcmd))
@@ -1065,9 +1218,7 @@ try
 	}
 
 	conMessage("%s add - Adds current demotime and view as keyframe.\n", args->ArgV(0));
-	conMessage("%s enabled 0|1 - Set whether the camera path is active or not. Interpolation must be evaluable (cubic: "
-			   "4 keys; linear/smooth/monotone: 2).\n",
-			   args->ArgV(0));
+	conMessage("%s enabled 0|1 - Set whether the camera path is active or not. Please note that at least 4 keyframes are required to activate it successfully!\n", args->ArgV(0));
 	if(mirvDrawer) conMessage("%s draw [...] - Controls drawing of the camera path.\n", args->ArgV(0));
 	conMessage("%s clear - Removes all [or all selected] keyframes.\n", args->ArgV(0));
 	conMessage("%s print - Prints detailed information.\n", args->ArgV(0));
@@ -1079,8 +1230,4 @@ try
 	conMessage("%s offset [...] - Offset campath.\n", args->ArgV(0));
 	conMessage("%s hold [...]\n", args->ArgV(0));
 	return;
-}
-catch (const std::invalid_argument & error)
-{
-	conWarning("Campath: %s\n", error.what());
 }

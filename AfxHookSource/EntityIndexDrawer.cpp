@@ -12,7 +12,6 @@
 #include "hlaeFolder.h"
 
 #include <algorithm>
-#include <cmath>
 #include <math.h>
 #include <stdio.h>
 #include <string>
@@ -295,38 +294,6 @@ void CEntityIndexDrawer::OnPostRenderAllTools_EngineThread(void)
 	MaterialSystem_ExecuteOnRenderThread(new CEntityIndexDrawerFunctor(std::move(data)));
 }
 
-void CEntityIndexDrawer::StackLabelBounds(std::vector<LabelStackRect> & labels, float worldDistance)
-{
-	for (std::size_t i = 0; i < labels.size(); ++i)
-	{
-		auto & candidate = labels[i];
-		for (std::size_t attempt = 0; attempt <= i; ++attempt)
-		{
-			float shift = 0;
-			for (std::size_t j = 0; j < i; ++j)
-			{
-				const auto & other = labels[j];
-				double dx = candidate.X - other.X, dy = candidate.Y - other.Y, dz = candidate.Z - other.Z;
-				if (dx * dx + dy * dy + dz * dz <= double(worldDistance) * worldDistance &&
-					candidate.Left < other.Right && other.Left < candidate.Right && candidate.Top < other.Bottom &&
-					other.Top < candidate.Bottom)
-				{
-					// Skip enough rows to clear a taller label in one step. Entity
-					// labels share a size; projected world labels can differ in height.
-					float step = (std::max)(candidate.Step, 1.0f);
-					shift = step * std::ceil((candidate.Bottom - other.Top) / step);
-					break;
-				}
-			}
-			if (shift <= 0)
-				break;
-			candidate.Top -= shift;
-			candidate.Bottom -= shift;
-			candidate.Offset -= shift;
-		}
-	}
-}
-
 void CEntityIndexDrawer::OnPostRenderAllTools_DrawingThread(const DrawData & data)
 {
 
@@ -376,17 +343,41 @@ void CEntityIndexDrawer::OnPostRenderAllTools_DrawingThread(const DrawData & dat
 	// Only shift overlapping labels if their world-space anchors are nearby.
 	if (data.stackLabels)
 	{
-		std::vector<LabelStackRect> bounds;
-		for (const auto & label : labels)
-			bounds.push_back({label.label->x, label.label->y, label.label->z, label.left, label.top, label.right,
-							  label.bottom, data.size + 5});
-		StackLabelBounds(bounds, data.stackWorldDistance);
-		for (std::size_t i = 0; i < labels.size(); ++i)
+		std::vector<ScreenLabel> placed;
+		placed.reserve(labels.size());
+		for (size_t i = 0; i < labels.size(); ++i)
 		{
-			labels[i].y += bounds[i].Offset;
-			labels[i].top = bounds[i].Top;
-			labels[i].bottom = bounds[i].Bottom;
+			ScreenLabel candidate = labels[i];
+			const float step = data.size + 5.0f;
+			for (size_t attempt = 0; attempt <= placed.size(); ++attempt)
+			{
+				bool overlap = false;
+				for (size_t j = 0; j < placed.size(); ++j)
+				{
+					const ScreenLabel & other = placed[j];
+					// Projection alone is insufficient: two entities separated by
+					// hundreds of world units can occupy the same screen pixels.
+					const float dx = candidate.label->x - other.label->x;
+					const float dy = candidate.label->y - other.label->y;
+					const float dz = candidate.label->z - other.label->z;
+					const float maxDist = data.stackWorldDistance;
+					const bool nearby = dx*dx + dy*dy + dz*dz <= maxDist*maxDist;
+					if (nearby && candidate.left < other.right && other.left < candidate.right &&
+						candidate.top < other.bottom && other.top < candidate.bottom)
+					{
+						overlap = true;
+						break;
+					}
+				}
+				if (!overlap)
+					break;
+				candidate.y -= step;
+				candidate.top -= step;
+				candidate.bottom -= step;
+			}
+			placed.push_back(candidate);
 		}
+		labels.swap(placed);
 	}
 
 	// Reuse the campath digit texture. Release it when the device is reset.

@@ -67,12 +67,12 @@ endif()
 
 add_library(AfxHookSource MODULE)
 
-# Use the existing HLAE GUI/device backend for the campath graph editor.
+# Use the existing HLAE GUI/device backend for the TF2 camera workspace.
 include(FetchContent)
 FetchContent_Declare(afx_imgui
-    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.86.tar.gz
+    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.89.9-docking.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE
-    URL_HASH SHA256=6ba6ae8425a19bc52c5e067702c48b70e4403cd339cba02073a462730a63e825
+    URL_HASH SHA256=2481489ce9091239b3cab8a330d0409ffdd9ee607ad1f3fe3a0b0b751c27a8eb
 )
 FetchContent_MakeAvailable(afx_imgui)
 target_sources(AfxHookSource PRIVATE
@@ -80,8 +80,9 @@ target_sources(AfxHookSource PRIVATE
     "${afx_imgui_SOURCE_DIR}/imgui_draw.cpp"
     "${afx_imgui_SOURCE_DIR}/imgui_widgets.cpp"
     "${afx_imgui_SOURCE_DIR}/imgui_tables.cpp"
+    "${afx_imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp"
 )
-target_include_directories(AfxHookSource PRIVATE "${afx_imgui_SOURCE_DIR}")
+target_include_directories(AfxHookSource PRIVATE "${afx_imgui_SOURCE_DIR}" "${afx_imgui_SOURCE_DIR}/backends" "${CMAKE_SOURCE_DIR}/shared/overlay/third_party/imgui_neo_sequencer" "${CMAKE_SOURCE_DIR}/shared/overlay/third_party/imguizmo")
 target_compile_definitions(AfxHookSource PRIVATE AFX_ENABLE_GUI=1)
 if(CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
     install(FILES "${afx_imgui_SOURCE_DIR}/LICENSE.txt" DESTINATION bin/licenses RENAME imgui.txt COMPONENT x64-source1)
@@ -146,6 +147,11 @@ target_sources(AfxHookSource PRIVATE
     d3d9Hooks.cpp
     d3d9Hooks.h
     D3D9ImageBuffer.h
+    CameraOverlay.cpp
+    CameraOverlay.h
+    ../shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.cpp
+    ../shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_internal.cpp
+    ../shared/overlay/third_party/imguizmo/ImGuizmo.cpp
     Gui.cpp
     Gui.h
     aiming.cpp
@@ -541,4 +547,17 @@ if(CMAKE_GENERATOR_PLATFORM STREQUAL "Win32")
     source_group("AfxHookSource/cssV34" REGULAR_EXPRESSION "/AfxHookSource/cssV34/")
     source_group("AfxHookSource/garrysmod" REGULAR_EXPRESSION "/AfxHookSource/garrysmod/")
     source_group("AfxHookSource/momentum" REGULAR_EXPRESSION "/AfxHookSource/momentum/")
+endif()
+
+target_link_libraries(AfxHookSource PRIVATE shell32 dwmapi imm32)
+
+# Preserve the notices for the adapted UI and its bundled widgets.
+if(CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
+    install(FILES "${CMAKE_SOURCE_DIR}/shared/overlay/LICENSE.paper.txt" DESTINATION bin/licenses COMPONENT x64-source1)
+    install(FILES "${CMAKE_SOURCE_DIR}/shared/overlay/third_party/imgui_filebrowser/LICENSE" DESTINATION bin/licenses RENAME imgui-filebrowser.txt COMPONENT x64-source1)
+    install(FILES "${CMAKE_SOURCE_DIR}/shared/overlay/third_party/imguizmo/LICENSE" DESTINATION bin/licenses RENAME imguizmo.txt COMPONENT x64-source1)
+else()
+    install(FILES "${CMAKE_SOURCE_DIR}/shared/overlay/LICENSE.paper.txt" DESTINATION bin/licenses)
+    install(FILES "${CMAKE_SOURCE_DIR}/shared/overlay/third_party/imgui_filebrowser/LICENSE" DESTINATION bin/licenses RENAME imgui-filebrowser.txt)
+    install(FILES "${CMAKE_SOURCE_DIR}/shared/overlay/third_party/imguizmo/LICENSE" DESTINATION bin/licenses RENAME imguizmo.txt)
 endif()

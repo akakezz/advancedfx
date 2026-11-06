@@ -6,10 +6,8 @@
 // CViewRender::SetUpView inside the client.dll
 //
 
-
-
-#include "RenderView.h"
 #include "Gui.h"
+#include "RenderView.h"
 
 // Preview controller is implemented by the mirv_campath console command.
 extern void MirvCampathPreview_Update();
@@ -229,12 +227,11 @@ bool Hook_VClient_RenderView::IsSourceUiActive() const
 }
 
 bool Hook_VClient_RenderView::GetSuspendMirvInput() {
-	if (IsSourceUiActive())
-		return true;
 	if (AfxHookSource::Gui::WantsKeyboardInput())
 		return true;
-	if (!m_MirvInput || !m_MirvInput->GetCameraControlMode())
-		return false;
+	if (g_VEngineClient && g_VEngineClient->Con_IsVisible()) return true;
+	if (!m_MirvInput || !m_MirvInput->GetCameraControlMode()) return false;
+	if (FreecamMenuVisible()) return true;
 
 	// Optionally yield freecam input while TF2's UI cursor is visible.
 	if (m_UiCursorSuspend)
@@ -461,22 +458,38 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			if (g_MirvCam.ApplySource(Tx, Ty, Tz, Rz, Rx, Ry)) originOrAnglesOverriden = true;
 			break;
 
-		case Override_Campath: {
-			CamPathValue value;
-			if (m_CamPaths.Eval(curTime, value))
+		case Override_Campath:
+			if (m_CamPath.Enabled_get() && m_CamPath.CanEval())
 			{
-				QEulerAngles angles = value.R.ToQREulerAngles().ToQEulerAngles();
-				Tx = float(value.X);
-				Ty = float(value.Y);
-				Tz = float(value.Z);
-				Rx = float(angles.Pitch);
-				Ry = float(angles.Yaw);
-				Rz = float(angles.Roll);
-				Fov = float(value.Fov);
-				originOrAnglesOverriden = true;
+				double campathCurTime = curTime - m_CamPath.GetOffset();
+				if(m_CamPath.GetHold()) {
+					if(campathCurTime > m_CamPath.GetUpperBound()) campathCurTime = m_CamPath.GetUpperBound();
+					else if(campathCurTime < m_CamPath.GetLowerBound()) campathCurTime = m_CamPath.GetLowerBound();
+				}
+				// no extrapolation:
+				if (m_CamPath.GetLowerBound() <= campathCurTime && campathCurTime <= m_CamPath.GetUpperBound())
+				{
+					CamPathValue val = m_CamPath.Eval(campathCurTime);
+					QEulerAngles ang = val.R.ToQREulerAngles().ToQEulerAngles();
+
+					//Tier0_Msg("================",curTime);
+					//Tier0_Msg("currenTime = %f",curTime);
+					//Tier0_Msg("vCp = %f %f %f\n", val.X, val.Y, val.Z);
+
+					originOrAnglesOverriden = true;
+
+					Tx = (float)val.X;
+					Ty = (float)val.Y;
+					Tz = (float)val.Z;
+
+					Rx = (float)ang.Pitch;
+					Ry = (float)ang.Yaw;
+					Rz = (float)ang.Roll;
+
+					Fov = (float)val.Fov;
+				}
 			}
 			break;
-		}
 
 		case Override_Bvh:
 			if (m_Import)
@@ -524,7 +537,6 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			break;
 
 		case Override_Input:
-
 			if (m_MirvInput->Override(m_LastFrameTime, Tx, Ty, Tz, Rx, Ry, Rz, Fov)) originOrAnglesOverriden = true;
 			break;
 
@@ -650,9 +662,7 @@ bool Hook_VClient_RenderView::ImportToCamPath(bool adjustInterp, double fov)
 	if(!m_Import)
 		return false;
 
-	AfxHookSource::Gui::FinishCampathGraphEdit();
-	auto before = m_CamPaths.Capture();
-	bool bOk = g_BvhImport.CopyToCampath(m_ImportBaseTime, fov, GetActiveCamPath());
+	bool bOk = g_BvhImport.CopyToCampath(m_ImportBaseTime, fov, m_CamPath);
 
 	if(bOk)
 	{
@@ -660,21 +670,14 @@ bool Hook_VClient_RenderView::ImportToCamPath(bool adjustInterp, double fov)
 
 		if(adjustInterp)
 		{
-			GetActiveCamPath().PositionInterpMethod_set(CamPath::DI_LINEAR);
-			GetActiveCamPath().RotationInterpMethod_set(CamPath::QI_SLINEAR);
-			GetActiveCamPath().FovInterpMethod_set(CamPath::DI_LINEAR);
+			m_CamPath.PositionInterpMethod_set(CamPath::DI_LINEAR);
+			m_CamPath.RotationInterpMethod_set(CamPath::QI_SLINEAR);
+			m_CamPath.FovInterpMethod_set(CamPath::DI_LINEAR);
 		}
 
-		GetActiveCamPath().Enabled_set(true);
+		m_CamPath.Enabled_set(true);
 	}
 
-	if (bOk)
-	{
-		m_CamPaths.Enabled_set(true);
-		m_CamPaths.Record(before);
-	}
-	else
-		m_CamPaths.Restore(before);
 	return bOk;
 }
 

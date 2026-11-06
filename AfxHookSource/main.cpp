@@ -2326,6 +2326,7 @@ FARPROC WINAPI new_Engine_GetProcAddress(HMODULE hModule, LPCSTR lpProcName)
 
 // Campath preview captures navigation keys while active and its optional toggle key at any time.
 extern void MirvCampathPreview_ReleaseKeys();
+extern bool MirvCampathPreview_KeyEvent(UINT, WPARAM, LPARAM);
 
 WNDPROC g_NextWindProc;
 static bool g_afxWindowProcSet = false;
@@ -2341,7 +2342,6 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	if (uMsg == WM_KILLFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE))
 	{
 		MirvCampathPreview_ReleaseKeys();
-		MirvCampathEditor_ReleaseKeys(true);
 	}
 
 	if (AfxHookSource::Gui::WndProcHandler(hwnd, uMsg, wParam, lParam))
@@ -2350,7 +2350,6 @@ LRESULT CALLBACK new_Afx_WindowProc(
 		if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN || uMsg == WM_KEYUP || uMsg == WM_SYSKEYUP)
 		{
 			MirvCampathPreview_ReleaseKeys();
-			MirvCampathEditor_ReleaseKeys(true);
 		}
 		if (uMsg == WM_SETCURSOR)
 			return TRUE;
@@ -2359,7 +2358,7 @@ LRESULT CALLBACK new_Afx_WindowProc(
 		return 0;
 	}
 
-	if (MirvCampathEditor_KeyEvent(uMsg, wParam, lParam))
+	if (MirvCampathPreview_KeyEvent(uMsg, wParam, lParam))
 		return 0;
 
 	switch(uMsg)
@@ -2368,22 +2367,22 @@ LRESULT CALLBACK new_Afx_WindowProc(
 		g_Hook_VClient_RenderView.m_MirvInput->Supply_Focus(LOWORD(wParam) != 0);
 		break;
 	case WM_SYSCHAR:
-		if (!MirvCampathEditor_IsEditing())
+		if (!AfxHookSource::Gui::WantsKeyboardInput())
 			break;
 	case WM_CHAR:
 		if(g_Hook_VClient_RenderView.m_MirvInput->Supply_CharEvent(wParam, lParam))
 			return 0;
 		break;
 	case WM_SYSKEYDOWN:
-		if (!MirvCampathEditor_IsEditing())
+		if (!AfxHookSource::Gui::WantsKeyboardInput())
 			break;
 	case WM_KEYDOWN:
 		if(g_Hook_VClient_RenderView.m_MirvInput->Supply_KeyEvent(MirvInput::KS_DOWN, wParam, lParam))
 			return 0;
 		break;
 	case WM_SYSKEYUP:
-		if (!MirvCampathEditor_IsEditing())
-			break;
+		if (!AfxHookSource::Gui::WantsKeyboardInput())
+		break;
 	case WM_KEYUP:
 		if(g_Hook_VClient_RenderView.m_MirvInput->Supply_KeyEvent(MirvInput::KS_UP,wParam, lParam))
 			return 0;
@@ -2602,7 +2601,7 @@ BOOL WINAPI new_ReleaseCapture()
 	return ReleaseCapture();
 }
 
-BOOL WINAPI new_ClipCursor(const RECT * rect)
+BOOL WINAPI new_ClipCursor(const RECT *rect)
 {
 	if (AfxHookSource::Gui::OnClipCursor(rect))
 		return TRUE;
@@ -2618,7 +2617,7 @@ int WINAPI new_ShowCursor(BOOL show)
 }
 
 // Other Source engines did not route engine.dll cursor polling through mirv_input.
-// Keep that behavior while allowing the graph to intercept those cursor calls.
+// Keep that behavior while allowing the overlay to intercept those cursor calls.
 BOOL WINAPI new_engine_GetCursorPos(LPPOINT point)
 {
 	if (g_SourceSdkVer == SourceSdkVer_CSSV34)
@@ -2698,11 +2697,13 @@ typedef csgo_ICommandLine_t * (*csgo_CommandLine_t)();
 
 CAfxImportFuncHook<BOOL (WINAPI *)(LPPOINT)> g_Import_Tier0_USER32_GetCursorPos("GetCursorPos", new_GetCursorPos);
 CAfxImportFuncHook<BOOL (WINAPI *)(int, int)> g_Import_Tier0_USER32_SetCursorPos("SetCursorPos", new_SetCursorPos);
-CAfxImportFuncHook<BOOL(WINAPI *)(const RECT *)> g_Import_Tier0_USER32_ClipCursor("ClipCursor", &new_ClipCursor);
+CAfxImportFuncHook<BOOL(WINAPI *)(const RECT *)> g_Import_Tier0_USER32_ClipCursor("ClipCursor",
+																				  &new_ClipCursor);
 CAfxImportFuncHook<int(WINAPI *)(BOOL)> g_Import_Tier0_USER32_ShowCursor("ShowCursor", &new_ShowCursor);
 CAfxImportDllHook g_Import_Tier0_USER32(
-	"USER32.dll", CAfxImportDllHooks({&g_Import_Tier0_USER32_ClipCursor, &g_Import_Tier0_USER32_ShowCursor,
-									  &g_Import_Tier0_USER32_GetCursorPos, &g_Import_Tier0_USER32_SetCursorPos}));
+	"USER32.dll",
+	CAfxImportDllHooks({&g_Import_Tier0_USER32_ClipCursor, &g_Import_Tier0_USER32_ShowCursor,
+						&g_Import_Tier0_USER32_GetCursorPos, &g_Import_Tier0_USER32_SetCursorPos}));
 CAfxImportsHook g_Import_Tier0(CAfxImportsHooks({
 	&g_Import_Tier0_USER32}));
 
@@ -3050,16 +3051,18 @@ CAfxImportFuncHook<BOOL(WINAPI *)(LPPOINT)> g_Import_engine_USER32_GetCursorPos(
 CAfxImportFuncHook<BOOL(WINAPI *)(int, int)> g_Import_engine_USER32_SetCursorPos("SetCursorPos",
 																				 &new_engine_SetCursorPos);
 
-CAfxImportFuncHook<BOOL(WINAPI *)(const RECT *)> g_Import_engine_USER32_ClipCursor("ClipCursor", &new_ClipCursor);
+CAfxImportFuncHook<BOOL(WINAPI *)(const RECT *)> g_Import_engine_USER32_ClipCursor("ClipCursor",
+																				   &new_ClipCursor);
 CAfxImportFuncHook<int(WINAPI *)(BOOL)> g_Import_engine_USER32_ShowCursor("ShowCursor", &new_ShowCursor);
 CAfxImportDllHook g_Import_engine_USER32(
-	"USER32.dll", CAfxImportDllHooks({&g_Import_engine_USER32_ClipCursor, &g_Import_engine_USER32_ShowCursor,
+	"USER32.dll",
+	CAfxImportDllHooks({&g_Import_engine_USER32_ClipCursor, &g_Import_engine_USER32_ShowCursor,
 #ifndef _WIN64
-									  &g_Import_engine_USER32_GetWindowLongW, &g_Import_engine_USER32_SetWindowLongW,
+						&g_Import_engine_USER32_GetWindowLongW, &g_Import_engine_USER32_SetWindowLongW,
 #endif //#ifndef _WIN64
-									  &g_Import_engine_USER32_GetCursorPos, &g_Import_engine_USER32_SetCursorPos,
-									  &g_Import_engine_USER32_SetCursor, &g_Import_engine_USER32_SetCapture,
-									  &g_Import_engine_USER32_ReleaseCapture}));
+						&g_Import_engine_USER32_GetCursorPos, &g_Import_engine_USER32_SetCursorPos,
+						&g_Import_engine_USER32_SetCursor, &g_Import_engine_USER32_SetCapture,
+						&g_Import_engine_USER32_ReleaseCapture}));
 
 CAfxImportsHook g_Import_engine(CAfxImportsHooks({
 	&g_Import_engine_KERNEL32,
@@ -3116,20 +3119,22 @@ UINT WINAPI New_GetRawInputData(
 	return result;
 }
 
-CAfxImportFuncHook<BOOL(WINAPI *)(const RECT *)> g_Import_inputsystem_USER32_ClipCursor("ClipCursor", &new_ClipCursor);
+CAfxImportFuncHook<BOOL(WINAPI *)(const RECT *)> g_Import_inputsystem_USER32_ClipCursor("ClipCursor",
+																						&new_ClipCursor);
 CAfxImportFuncHook<int(WINAPI *)(BOOL)> g_Import_inputsystem_USER32_ShowCursor("ShowCursor", &new_ShowCursor);
 CAfxImportDllHook g_Import_inputsystem_USER32(
 	"USER32.dll",
-	CAfxImportDllHooks({&g_Import_inputsystem_USER32_ClipCursor, &g_Import_inputsystem_USER32_ShowCursor,
+	CAfxImportDllHooks(
+		{&g_Import_inputsystem_USER32_ClipCursor, &g_Import_inputsystem_USER32_ShowCursor,
 #ifndef _WIN64
-						&g_Import_inputsystem_USER32_GetWindowLongA, &g_Import_inputsystem_USER32_SetWindowLongA,
-						&g_Import_inputsystem_USER32_GetWindowLongW, &g_Import_inputsystem_USER32_SetWindowLongW,
+		 &g_Import_inputsystem_USER32_GetWindowLongA, &g_Import_inputsystem_USER32_SetWindowLongA,
+		 &g_Import_inputsystem_USER32_GetWindowLongW, &g_Import_inputsystem_USER32_SetWindowLongW,
 #else
-						&g_Import_inputsystem_USER32_GetWindowLongPtrW, &g_Import_inputsystem_USER32_SetWindowLongPtrW,
+		 &g_Import_inputsystem_USER32_GetWindowLongPtrW, &g_Import_inputsystem_USER32_SetWindowLongPtrW,
 #endif //#ifndef _WIN64
-						&g_Import_inputsystem_USER32_SetCursor, &g_Import_inputsystem_USER32_SetCapture,
-						&g_Import_inputsystem_USER32_ReleaseCapture, &g_Import_inputsystem_USER32_GetCursorPos,
-						&g_Import_inputsystem_USER32_SetCursorPos, &g_Import_inputsystem_USER32_GetRawInputData}));
+		 &g_Import_inputsystem_USER32_SetCursor, &g_Import_inputsystem_USER32_SetCapture,
+		 &g_Import_inputsystem_USER32_ReleaseCapture, &g_Import_inputsystem_USER32_GetCursorPos,
+		 &g_Import_inputsystem_USER32_SetCursorPos, &g_Import_inputsystem_USER32_GetRawInputData}));
 
 FARPROC WINAPI New_inputsystem_GetProcAddress(HMODULE hModule, LPCSTR lpProcName);
 
@@ -3241,13 +3246,15 @@ CAfxImportFuncHook<BOOL(WINAPI*)()> g_Import_vgui2_USER32_ReleaseCapture("Releas
 CAfxImportFuncHook<BOOL(WINAPI*)(LPPOINT)> g_Import_vgui2_USER32_GetCursorPos("GetCursorPos", &new_GetCursorPos); // not there, but heh.
 CAfxImportFuncHook<BOOL(WINAPI*)(int, int)> g_Import_vgui2_USER32_SetCursorPos("SetCursorPos", &new_SetCursorPos);
 
-CAfxImportFuncHook<BOOL(WINAPI *)(const RECT *)> g_Import_vgui2_USER32_ClipCursor("ClipCursor", &new_ClipCursor);
+CAfxImportFuncHook<BOOL(WINAPI *)(const RECT *)> g_Import_vgui2_USER32_ClipCursor("ClipCursor",
+																				  &new_ClipCursor);
 CAfxImportFuncHook<int(WINAPI *)(BOOL)> g_Import_vgui2_USER32_ShowCursor("ShowCursor", &new_ShowCursor);
 CAfxImportDllHook g_Import_vgui2_USER32(
-	"USER32.dll", CAfxImportDllHooks({&g_Import_vgui2_USER32_ClipCursor, &g_Import_vgui2_USER32_ShowCursor,
-									  &g_Import_vgui2_USER32_SetCursor, &g_Import_vgui2_USER32_SetCapture,
-									  &g_Import_vgui2_USER32_ReleaseCapture, &g_Import_vgui2_USER32_GetCursorPos,
-									  &g_Import_vgui2_USER32_SetCursorPos}));
+	"USER32.dll",
+	CAfxImportDllHooks({&g_Import_vgui2_USER32_ClipCursor, &g_Import_vgui2_USER32_ShowCursor,
+						&g_Import_vgui2_USER32_SetCursor, &g_Import_vgui2_USER32_SetCapture,
+						&g_Import_vgui2_USER32_ReleaseCapture, &g_Import_vgui2_USER32_GetCursorPos,
+						&g_Import_vgui2_USER32_SetCursorPos}));
 
 CAfxImportsHook g_Import_vgui2(CAfxImportsHooks({
 	&g_Import_vgui2_USER32 }));
