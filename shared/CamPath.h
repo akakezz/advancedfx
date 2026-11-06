@@ -133,6 +133,9 @@ public:
 	void FovInterpMethod_set(DoubleInterp value);
 	DoubleInterp FovInterpMethod_get(void) const;
 
+	const AutoTangentSettings &GetAutoTangentSettings() const { return m_AutoTangentSettings; }
+	bool SetAutoTangentSettings(const AutoTangentSettings &settings);
+
 	struct State
 	{
 		CInterpolationMap<CamPathValue> Keys;
@@ -140,6 +143,7 @@ public:
 		QuaternionInterp Rotation;
 		bool Enabled, Hold;
 		double Offset;
+		AutoTangentSettings AutoTangents;
 		bool operator==(const State &other) const;
 	};
 	State CaptureState() const;
@@ -195,6 +199,7 @@ public:
 		CH_RYAW = 5,   // Euler yaw (Z)
 		CH_RROLL = 6   // Euler roll (X)
 	};
+	bool GetTangent(Channel ch, size_t index, bool outgoing, double &slope, double &weight);
 	void SetTangent(Channel ch, bool setIn, bool setOut, double slopeIn, double slopeOut);
 	void SetTangentMode(Channel ch, bool setIn, bool setOut, unsigned char mode);
 	void SetTangentWeight(Channel ch, bool setIn, bool setOut, double wIn, double wOut);
@@ -471,6 +476,7 @@ private:
 
 	bool m_Enabled;
 	bool m_Hold = false;
+	AutoTangentSettings m_AutoTangentSettings;
 	DoubleInterp m_PositionInterpMethod;
 	QuaternionInterp m_RotationInterpMethod;
 	DoubleInterp m_FovInterpMethod;

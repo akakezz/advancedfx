@@ -353,6 +353,55 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 			{
 				const char* arg2 = args->ArgV(2);
 
+				if (!_stricmp(arg2, "interp") && argc >= 4 &&
+				    (!_stricmp(args->ArgV(3), "auto") || !_stricmp(args->ArgV(3), "tension")))
+				{
+					const bool method = !_stricmp(args->ArgV(3), "auto");
+					auto settings = camPath->GetAutoTangentSettings();
+					if (argc == 5)
+					{
+						if (method)
+						{
+							if (!AutoTangentMethodFromString(args->ArgV(4), settings.Method))
+							{
+								conMessage("Unknown Auto interpolation. Use spline|catmullrom|monotone.\n");
+								return;
+							}
+						}
+						else
+						{
+							char *end = nullptr;
+							settings.Tension = std::strtod(args->ArgV(4), &end);
+							if (end == args->ArgV(4) || *end)
+							{
+								conMessage("Tension must be a number in 0..1.\n");
+								return;
+							}
+						}
+						if (!camPath->SetAutoTangentSettings(settings))
+						{
+							conMessage("Tension must be finite and in 0..1.\n");
+							return;
+						}
+						if (method)
+						{
+							camPath->PositionInterpMethod_set(CamPath::DI_CUSTOM);
+							camPath->RotationInterpMethod_set(CamPath::QI_CUSTOM);
+							camPath->FovInterpMethod_set(CamPath::DI_CUSTOM);
+						}
+						return;
+					}
+					conMessage("%s edit interp auto <spline|catmullrom|monotone> - Whole-path Auto interpolation; "
+					           "enables Custom on all channels.\n",
+					           args->ArgV(0));
+					conMessage("%s edit interp tension <0..1> - Whole-path Auto tangent tension; 1 deliberately stops at "
+					           "keys.\n",
+					           args->ArgV(0));
+					conMessage("Current: %s, tension %.6g. Authored Free/Flat/Linear tangents are retained.\n",
+					           AutoTangentMethodToString(settings.Method), settings.Tension);
+					return;
+				}
+
 				const bool tangentCommand = !_stricmp("tangent",arg2) || !_stricmp("tangentmode",arg2) || !_stricmp("tangentweight",arg2);
 				if (tangentCommand && argc == 6) {
 					const char * axis=args->ArgV(3), * side=args->ArgV(4);
@@ -897,6 +946,8 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 											else
 											{
 												// Interp usage when no further args
+												conMessage("%s edit interp auto <spline|catmullrom|monotone> - Whole path, enables Custom.\n", args->ArgV(0));
+												conMessage("%s edit interp tension <0..1> - Whole-path Auto tangent tension.\n", args->ArgV(0));
 												conMessage("%s edit interp position [...]\n", args->ArgV(0));
 												conMessage("%s edit interp rotation [...]\n", args->ArgV(0));
 												conMessage("%s edit interp fov [...]\n", args->ArgV(0));

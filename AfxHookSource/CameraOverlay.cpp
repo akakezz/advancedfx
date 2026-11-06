@@ -328,11 +328,55 @@ static void PathChanged(void *)
 			g_LastCampathCtx.active = false;
 	}
 }
+static void DrawInterpolationSettings(CamPath &path)
+{
+	auto settings = path.GetAutoTangentSettings();
+	int interp = path.PositionInterpMethod_get() == CamPath::DI_CUSTOM   ? (int)settings.Method
+	             : path.PositionInterpMethod_get() == CamPath::DI_LINEAR ? 4
+	                                                                     : 3;
+	const char *modes[] = {"Spline (smooth start / stop)", "Catmull-Rom (through keys)",
+	                       "Shape-preserving (Monotone)", "Classic cubic (four keys)", "Linear"};
+	if (ImGui::Combo("Interpolation", &interp, modes, 5))
+	{
+		if (interp < 3)
+		{
+			settings.Method = (AutoTangentMethod)interp;
+			path.SetAutoTangentSettings(settings);
+		}
+		path.PositionInterpMethod_set(interp < 3    ? CamPath::DI_CUSTOM
+		                              : interp == 3 ? CamPath::DI_DEFAULT
+		                                            : CamPath::DI_LINEAR);
+		path.RotationInterpMethod_set(interp < 3    ? CamPath::QI_CUSTOM
+		                              : interp == 3 ? CamPath::QI_DEFAULT
+		                                            : CamPath::QI_SLINEAR);
+		path.FovInterpMethod_set(interp < 3    ? CamPath::DI_CUSTOM
+		                         : interp == 3 ? CamPath::DI_DEFAULT
+		                                       : CamPath::DI_LINEAR);
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Whole-path interpolation for position, angles and FOV. Auto tangents join at "
+		                  "keys. Authored Free/Flat/Linear tangents are preserved.");
+	const bool custom = path.PositionInterpMethod_get() == CamPath::DI_CUSTOM ||
+	                    path.RotationInterpMethod_get() == CamPath::QI_CUSTOM ||
+	                    path.FovInterpMethod_get() == CamPath::DI_CUSTOM;
+	ImGui::BeginDisabled(!custom);
+	float tension = (float)(settings.Tension * 100.0);
+	if (ImGui::SliderFloat("Tension", &tension, 0, 100, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
+	{
+		settings.Tension = std::clamp((double)tension / 100.0, 0.0, 1.0);
+		path.SetAutoTangentSettings(settings);
+	}
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+		ImGui::SetTooltip("Applies to Auto tangents across the whole path. 0%% keeps full flow; 100%% "
+		                  "flattens tangents and deliberately stops at keys. Manual handles are unchanged.");
+}
+
 static void DrawObserving()
 {
 	if (!ImGui::BeginTabItem("Observing"))
 		return;
-	ImGui::TextUnformatted("TF2 player cameras and attachments");
+	ImGui::TextUnformatted("Click a player to spectate in STV. Select a bone below for attachments.");
 	if (ImGui::Button("Detach"))
 		Afx_ExecClientCmd("mirv_cam attach clear");
 	ImGui::SameLine();
@@ -374,16 +418,13 @@ static void DrawObserving()
 	if (!traceStatus.empty())
 		ImGui::TextWrapped("%s", traceStatus.c_str());
 	static float offset[3] = {0, 0, 0};
-	ImGui::InputFloat3("Forward / left / up", offset);
 	static ImGuiTextFilter filter;
 	filter.Draw("Filter players");
-	if (ImGui::BeginTable("tf2_players", 3,
+	if (ImGui::BeginTable("tf2_players", 1,
 						  ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
 						  ImVec2(500, 220)))
 	{
 		ImGui::TableSetupColumn("Player");
-		ImGui::TableSetupColumn("Spectate");
-		ImGui::TableSetupColumn("Follow camera");
 		ImGui::TableHeadersRow();
 		for (int i = 1; i <= Mirv_Tf2_GetMaxPlayers(); ++i)
 		{
@@ -402,39 +443,29 @@ static void DrawObserving()
 					bone = -1;
 				selectedEntity = i;
 				selectedUser = user;
-			}
-			ImGui::TableNextColumn();
-			if (ImGui::Button("View"))
-			{
-				char cmd[80];
-				sprintf_s(cmd, "mirv_input end; spec_player %d", i);
-				Afx_ExecClientCmd(cmd);
-			}
-			ImGui::TableNextColumn();
-			if (ImGui::Button("Attach"))
-			{
-				char cmd[256];
-				sprintf_s(cmd, "mirv_input end; mirv_cam attach %d %d %.6f %.6f %.6f", i,
-						  selectedEntity == i ? bone : -1, offset[0], offset[1], offset[2]);
-				Afx_ExecClientCmd(cmd);
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Bones"))
-			{
-				selectedEntity = i;
-				selectedUser = user;
-				bone = -1;
+				if (g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV())
+					traceStatus = "Native spectating requires an STV demo. This player remains selected for bone attachments.";
+				else if (user > 0)
+				{
+					g_PreviewFollow = false;
+					g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
+					char cmd[192];
+					sprintf_s(cmd, "mirv_campath preview exit; mirv_cam attach clear; mirv_input end; spec_autodirector 0; spec_mode 4; spec_player \"#%d\"", user);
+					Afx_ExecClientCmd(cmd);
+					traceStatus = "Requested spectating " + std::string(name) + ".";
+				}
+				else
+					traceStatus = "Player has no current user ID; select them again after the demo has loaded.";
 			}
 			ImGui::PopID();
 		}
 		ImGui::EndTable();
 	}
-	if (ImGui::Button("List players in console"))
-		Afx_ExecClientCmd("mirv_listplayers");
 	if (selectedEntity > 0)
 	{
 		ImGui::Separator();
 		ImGui::Text("Selected entity: %d", selectedEntity);
+		ImGui::InputFloat3("Forward / left / up", offset);
 		MirvTf2BoneName_t names[MIRV_TF2_MAX_BONES] = {};
 		const int count = Mirv_Tf2_GetBoneNames(selectedEntity, names);
 		if (bone >= count)
@@ -636,22 +667,7 @@ void Draw()
 			}
 
 			auto &path = g_Hook_VClient_RenderView.m_CamPath;
-			int interp = path.PositionInterpMethod_get() == CamPath::DI_CUSTOM	 ? 0
-						 : path.PositionInterpMethod_get() == CamPath::DI_LINEAR ? 2
-																				 : 1;
-			const char *modes[] = {"Custom (whole-path tangents)", "Classic cubic (four keys)", "Linear"};
-			if (ImGui::Combo("Interpolation", &interp, modes, 3))
-			{
-				path.PositionInterpMethod_set(interp == 0	? CamPath::DI_CUSTOM
-											  : interp == 1 ? CamPath::DI_DEFAULT
-															: CamPath::DI_LINEAR);
-				path.RotationInterpMethod_set(interp == 0	? CamPath::QI_CUSTOM
-											  : interp == 1 ? CamPath::QI_DEFAULT
-															: CamPath::QI_SLINEAR);
-				path.FovInterpMethod_set(interp == 0   ? CamPath::DI_CUSTOM
-										 : interp == 1 ? CamPath::DI_DEFAULT
-													   : CamPath::DI_LINEAR);
-			}
+			DrawInterpolationSettings(path);
 			// Open/Save campath
 			ImGui::Separator();
 			if (ImGui::Button("Open campath"))
@@ -1589,6 +1605,7 @@ void Draw()
 			{
 				ImGui::Separator();
 				ImGui::SeparatorText("Curve Editor");
+				DrawInterpolationSettings(g_Hook_VClient_RenderView.m_CamPath);
 				// Removed channel selector; editing is driven by visibility checkboxes and optional focus
 				if (ImGui::Button("Enable"))
 				{
@@ -1938,8 +1955,6 @@ void Draw()
 						double h = (t1 - t0);
 						double eps = (std::max)(1e-6, (std::min)(h * 0.01, 0.05));
 
-						CamPathValue vLeft = getValueAt(i);
-						CamPathValue vRight = getValueAt(i + 1);
 
 						// Per-channel draw
 						for (int ch = 0; ch < 7; ++ch)
@@ -1981,121 +1996,19 @@ void Draw()
 											   : (g_Hook_VClient_RenderView.m_CamPath
 													  .RotationInterpMethod_get() == CamPath::QI_CUSTOM));
 
-							// Effective OUT slope at left key
-							double mOut;
+							double mOut = 0, mIn = 0, wOut = 1, wIn = 1;
 							if (isCustom)
 							{
-								unsigned char modeOut = (ch == 0   ? vLeft.TxModeOut
-														 : ch == 1 ? vLeft.TyModeOut
-														 : ch == 2 ? vLeft.TzModeOut
-														 : ch == 3 ? vLeft.TfovModeOut
-																   : (ch == 4	? vLeft.TRyModeOut
-																	  : ch == 5 ? vLeft.TRzModeOut
-																				: vLeft.TRxModeOut));
-								if (modeOut == (unsigned char)CamPath::TM_FREE)
-									mOut = (ch == 0	  ? vLeft.TxOut
-											: ch == 1 ? vLeft.TyOut
-											: ch == 2 ? vLeft.TzOut
-											: ch == 3 ? vLeft.TfovOut
-													  : (ch == 4   ? vLeft.TRyOut
-														 : ch == 5 ? vLeft.TRzOut
-																   : vLeft.TRxOut));
-								else if (modeOut == (unsigned char)CamPath::TM_FLAT)
-									mOut = 0.0;
-								else if (modeOut == (unsigned char)CamPath::TM_LINEAR)
-									mOut = (y1 - y0) / h;
-								else /* AUTO */
-								{
-									double v = compEval(ch, t0 + eps);
-									if (ch >= 4)
-										v = unwrapNear(v, y0);
-									mOut = (v - y0) / eps;
-								}
+								auto &path = g_Hook_VClient_RenderView.m_CamPath;
+								path.GetTangent((CamPath::Channel)ch, i, true, mOut, wOut);
+								path.GetTangent((CamPath::Channel)ch, i + 1, false, mIn, wIn);
 							}
 							else
 							{
-								double v = compEval(ch, t0 + eps);
-								if (ch >= 4)
-									v = unwrapNear(v, y0);
-								mOut = (v - y0) / eps;
-							}
-
-							// Effective IN slope at right key
-							double mIn;
-							if (isCustom)
-							{
-								unsigned char modeIn = (ch == 0	  ? vRight.TxModeIn
-														: ch == 1 ? vRight.TyModeIn
-														: ch == 2 ? vRight.TzModeIn
-														: ch == 3 ? vRight.TfovModeIn
-																  : (ch == 4   ? vRight.TRyModeIn
-																	 : ch == 5 ? vRight.TRzModeIn
-																			   : vRight.TRxModeIn));
-								if (modeIn == (unsigned char)CamPath::TM_FREE)
-									mIn = (ch == 0	 ? vRight.TxIn
-										   : ch == 1 ? vRight.TyIn
-										   : ch == 2 ? vRight.TzIn
-										   : ch == 3 ? vRight.TfovIn
-													 : (ch == 4	  ? vRight.TRyIn
-														: ch == 5 ? vRight.TRzIn
-																  : vRight.TRxIn));
-								else if (modeIn == (unsigned char)CamPath::TM_FLAT)
-									mIn = 0.0;
-								else if (modeIn == (unsigned char)CamPath::TM_LINEAR)
-									mIn = (y1 - y0) / h;
-								else /* AUTO */
-								{
-									double v = compEval(ch, t1 - eps);
-									if (ch >= 4)
-										v = unwrapNear(v, y1);
-									mIn = (y1 - v) / eps;
-								}
-							}
-							else
-							{
-								double v = compEval(ch, t1 - eps);
-								if (ch >= 4)
-									v = unwrapNear(v, y1);
-								mIn = (y1 - v) / eps;
-							}
-
-							// Per-side weights
-							double wOut = 1.0, wIn = 1.0;
-							{
-								unsigned char modeOut = (ch == 0   ? vLeft.TxModeOut
-														 : ch == 1 ? vLeft.TyModeOut
-														 : ch == 2 ? vLeft.TzModeOut
-														 : ch == 3 ? vLeft.TfovModeOut
-																   : (ch == 4	? vLeft.TRyModeOut
-																	  : ch == 5 ? vLeft.TRzModeOut
-																				: vLeft.TRxModeOut));
-								unsigned char modeIn = (ch == 0	  ? vRight.TxModeIn
-														: ch == 1 ? vRight.TyModeIn
-														: ch == 2 ? vRight.TzModeIn
-														: ch == 3 ? vRight.TfovModeIn
-																  : (ch == 4   ? vRight.TRyModeIn
-																	 : ch == 5 ? vRight.TRzModeIn
-																			   : vRight.TRxModeIn));
-								if (modeOut == CamPath::TM_FREE)
-									wOut = (ch == 0	  ? vLeft.TxWOut
-											: ch == 1 ? vLeft.TyWOut
-											: ch == 2 ? vLeft.TzWOut
-											: ch == 3 ? vLeft.TfovWOut
-													  : (ch == 4   ? vLeft.TRyWOut
-														 : ch == 5 ? vLeft.TRzWOut
-																   : vLeft.TRxWOut));
-								if (modeIn == CamPath::TM_FREE)
-									wIn = (ch == 0	 ? vRight.TxWIn
-										   : ch == 1 ? vRight.TyWIn
-										   : ch == 2 ? vRight.TzWIn
-										   : ch == 3 ? vRight.TfovWIn
-													 : (ch == 4	  ? vRight.TRyWIn
-														: ch == 5 ? vRight.TRzWIn
-																  : vRight.TRxWIn));
-								if (wOut < 0.0)
-									wOut = 0.0;
-								if (wIn < 0.0)
-									wIn = 0.0;
+								double left = compEval(ch, t0 + eps), right = compEval(ch, t1 - eps);
+								if (ch >= 4) { left = unwrapNear(left, y0); right = unwrapNear(right, y1); }
+								mOut = (left - y0) / eps;
+								mIn = (y1 - right) / eps;
 							}
 
 							Afx::Math::ResolveHermiteWeights(wOut, wIn);

@@ -28,18 +28,33 @@ movement. Panels can be moved and docked inside the game window.
 
 1. Move the camera and advance the demo to the desired time.
 2. Click **Add point** in Campath. This captures position, angles, FOV and time.
-3. Repeat. A new overlay-created path uses **Custom**, which works with two keys.
+3. Repeat. A new overlay-created path uses **Spline**, which works with two keys.
 4. Enable **Campath enabled** and release the free camera to let native playback
    follow demo time. Use `mirv_input end` when necessary.
 
-Custom curves use tangents across the complete path, rather than restarting an
-easing function at every key. Ordinary keys therefore do not force a stop.
-Positions, timestamps, Flat tangents and deliberate direction changes still affect
-speed. It does not promise constant speed between arbitrarily timed positions.
+Choose **Interpolation** in the Campath tab or curve editor:
 
-The interpolation selector also exposes native Linear and Classic cubic. Classic
-cubic keeps its four-key requirement. Loading an existing file retains that file's
-interpolation. Classic console capture with `mirv_campath add` remains available.
+| Option | Behavior |
+| --- | --- |
+| Spline | Original whole-path spline with a smooth start and stop |
+| Catmull-Rom | Shared tangents based on neighboring keys and their time spacing; travels through keys and uses nonzero endpoint slopes |
+| Shape-preserving (Monotone) | PCHIP interpolation limits overshoot in each automatic channel; peaks, reversals and plateaus can flatten a channel |
+| Classic cubic | Original HLAE interpolation with its four-key requirement |
+| Linear | Straight interpolation with two keys; corners can change velocity abruptly |
+
+Spline, Catmull-Rom and Monotone share one automatic derivative at each key
+between its incoming and outgoing intervals. They are whole-path settings for
+position, angles and FOV. **Tension** adjusts Auto tangents across the entire path:
+0% preserves their full slopes; 100% flattens them and deliberately stops at keys.
+Intermediate values reduce the slopes. Existing Free, Flat and Linear tangent
+edits are retained. Return those tangents to Auto to apply the chosen profile.
+
+For flowing travel, start with Catmull-Rom at 0% tension. Authored positions and
+timestamps still determine speed; these profiles do not promise constant speed
+between arbitrarily timed positions. Classic console capture with
+`mirv_campath add` remains available. Existing files keep their interpolation.
+Profile and tension settings save in the same XML and participate in undo/redo;
+older XML files use the original defaults.
 
 ## Sequencer and curve editor
 
@@ -75,14 +90,17 @@ incoming side, outgoing side or both.
   one edit. History retains 64 entries. Console equivalents are
   `mirv_campath undo|redo` and `mirv_campath preview undo|redo`.
 
-Weighted curves solve their time coordinate during playback, so the graph and the
-camera use the same curve. Euler channels unwrap adjacent angles to avoid ordinary
+The graph reads effective tangents directly from the path evaluator, including
+automatic and tension-modified tangents. Weighted curves solve their time
+coordinate during playback, so the graph and camera use the same curve. Euler channels unwrap adjacent angles to avoid ordinary
 360-degree discontinuities. Holds at the path's boundaries use native
 `mirv_campath hold`; the previous experimental per-key hold system is not included.
 
 Console equivalents remain under the native command tree, for example:
 
 ```text
+mirv_campath edit interp auto catmullrom
+mirv_campath edit interp tension 0.2
 mirv_campath edit interp position custom
 mirv_campath edit interp rotation custom
 mirv_campath edit interp fov custom
@@ -91,6 +109,10 @@ mirv_campath edit tangentmode x both auto
 mirv_campath edit tangent x both 20
 mirv_campath edit tangentweight x both 1
 ```
+
+`edit interp auto spline|catmullrom|monotone` chooses the profile and enables
+Custom interpolation on all channels with one command. `edit interp tension`
+accepts 0..1. The existing per-channel interpolation commands remain available.
 
 Tangent commands accept `x|y|z|fov|pitch|yaw|roll` and `in|out|both`, applying to the
 selection or to all keys when none is selected.
@@ -102,12 +124,19 @@ translation and **R** rotation when a text field is not active. Local/world mode
 and Ctrl snapping are available. **C** toggles free-camera control. Camera Control
 also provides FOV, roll and keyboard speed sliders.
 
-The **Observing** tab lists TF2 players with a text filter. **View** spectates a
-player; **Attach** uses the existing TF2 attachment system. Click a player name
-or **Bones** to select that player, then choose a named model bone from the
-**Bone** dropdown (or **Entity origin**). **Attach selected** applies that target,
-bone and forward/left/up offsets. Fly to a composition and use **Capture relative
-framing** to follow the target from that composition. **Detach** clears the attachment.
+The **Observing** tab is a player list with a text filter. Click a player name to
+select and spectate them in an STV demo. The command uses the player's explicit
+`#userid`, which is different from their entity slot. Selecting a player clears
+path preview, free-camera and attachment overrides, disables automatic directing,
+and switches to TF2's in-eye spectator camera. There are no buttons inside the
+player rows. Native spectator targeting follows living players; POV demos cannot
+switch their recorded spectator target, and the panel reports that restriction.
+
+The selected player still exposes named bones and forward/left/up offsets below
+the list. Choose a **Bone** (or **Entity origin**) and use **Attach selected** for
+the existing TF2 attachment system, including in POV demos. Fly to a composition
+and use **Capture relative framing** to follow the target from that composition.
+**Detach** clears the attachment.
 
 **Trace entity** selects the entity under the camera crosshair, including non-player
 entities. Aim the camera before opening the menu. Walls and static map geometry

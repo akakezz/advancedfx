@@ -17,7 +17,7 @@ required. Earlier experimental per-segment easing is replaced in this branch.
 | --- | --- |
 | Camera panel, capture, load/save | Paper's DX9 UI, native `CamPath` and XML; wide file paths and XML filters |
 | Sequencer, tick navigation, selection and retiming | Paper's DX9 sequencer and bundled Neo Sequencer; TF2 tick interval and existing demo-time conversion |
-| Seven-channel curve editor | Paper's custom Hermite interpolation for X/Y/Z, pitch/yaw/roll and FOV, plus Auto/Flat/Linear/Free tangents |
+| Seven-channel curve editor | Paper's custom Hermite interpolation for X/Y/Z, pitch/yaw/roll and FOV, plus Auto/Flat/Linear/Free tangents; shared Spline/Catmull-Rom/PCHIP automatic policies and path-wide tension |
 | Weighted, linked curve handles | Paper's controls, with Bezier time-coordinate solving so graph and playback agree; normal drag links slopes, Alt permits independent sides |
 | Translation/rotation gizmos | Paper's Source-to-ImGuizmo coordinate conversion and bundled ImGuizmo; existing TF2 view data and native commands |
 | Camera FOV, roll and speed | Paper's camera panel using the existing `MirvInput` setters |
@@ -36,7 +36,12 @@ No second ImGui context or rendering backend is added.
 The overlay automatically closes when recording starts, and stale draw caches are
 not rendered after closing. Other Source engines do not activate this TF2 UI.
 
-The custom interpolator derives Auto tangents from the whole path. Adjacent
+The custom interpolator derives Auto tangents from the whole path. Scalar and
+Euler channels share one automatic-tangent implementation with Spline,
+nonuniform Catmull-Rom and shape-preserving PCHIP policies. A path-wide tension
+modifier scales automatic derivatives, while authored manual tangents are kept.
+The graph reads the evaluator's cached slopes and weights directly. Policy and
+tension are included in XML and native undo snapshots. Adjacent
 intervals share derivatives at ordinary keys, including unequally spaced keys.
 Authored positions and timestamps still determine speed; this is not a constant
 speed retime. Flat tangents and deliberate reversals can still stop movement.
@@ -71,3 +76,13 @@ capture, not CS:GO material/matte/depth streams.
 - ImGui File Browser: supplied header and upstream Zhuang Guan MIT notice.
 
 Build and runtime instructions are in [the TF2 guide](../../doc/CINEMATIC_CAMERA.md).
+
+## TF2 spectator targeting reference
+
+The player list passes explicit `#userid` arguments, not entity indices. Valve's
+public Source SDK 2013 documents this resolution in
+[`UTIL_PlayerByCommandArg`](https://github.com/ValveSoftware/source-sdk-2013/blob/master/src/game/shared/util_shared.cpp).
+The same parser is used by
+[`C_HLTVCamera::SpecPlayerByPredicate`](https://github.com/ValveSoftware/source-sdk-2013/blob/master/src/game/client/hltvcamera.cpp)
+and the server's `spec_player` handler. Native commands and the original project
+base are retained; no SDK source is imported into the project.

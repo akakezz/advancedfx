@@ -1,6 +1,8 @@
 #include "stdafx.h"
 
 #include "AfxMath.h"
+#include <cmath>
+#include <cstring>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -8,6 +10,96 @@
 
 namespace Afx {
 namespace Math {
+
+const char *AutoTangentMethodToString(AutoTangentMethod method)
+{
+	switch (method)
+	{
+	case AutoTangentMethod::Spline:
+		return "spline";
+	case AutoTangentMethod::CatmullRom:
+		return "catmullrom";
+	case AutoTangentMethod::Monotone:
+		return "monotone";
+	default:
+		return "unknown";
+	}
+}
+bool AutoTangentMethodFromString(const char *text, AutoTangentMethod &method)
+{
+	for (int i = 0; i < (int)AutoTangentMethod::Count; ++i)
+	{
+		const auto candidate = (AutoTangentMethod)i;
+		if (!_stricmp(text, AutoTangentMethodToString(candidate)))
+		{
+			method = candidate;
+			return true;
+		}
+	}
+	return false;
+}
+void ComputeAutoTangents(double *times, double *values, int count, const AutoTangentSettings &settings,
+                         std::vector<double> &slopes)
+{
+	slopes.assign(count, 0.0);
+	if (count < 2)
+		return;
+	if (settings.Method == AutoTangentMethod::Spline)
+	{
+		// Keep the original smooth start/stop boundary conditions. Each key has
+		// one derivative shared by the intervals on both sides.
+		std::vector<double> second(count);
+		spline(times, values, count, false, 0.0, false, 0.0, second.data());
+		for (int i = 0; i < count - 1; ++i)
+		{
+			const double h = times[i + 1] - times[i];
+			slopes[i] = (values[i + 1] - values[i]) / h - h * (2 * second[i] + second[i + 1]) / 6;
+		}
+		const double h = times[count - 1] - times[count - 2];
+		slopes.back() =
+		    (values[count - 1] - values[count - 2]) / h + h * (2 * second.back() + second[count - 2]) / 6;
+	}
+	else
+	{
+		std::vector<double> widths(count - 1), secants(count - 1);
+		for (int i = 0; i < count - 1; ++i)
+		{
+			widths[i] = times[i + 1] - times[i];
+			secants[i] = (values[i + 1] - values[i]) / widths[i];
+		}
+		slopes.front() = secants.front();
+		slopes.back() = secants.back();
+		for (int i = 1; i < count - 1; ++i)
+		{
+			const double before = secants[i - 1], after = secants[i];
+			const double h0 = widths[i - 1], h1 = widths[i];
+			if (settings.Method == AutoTangentMethod::CatmullRom)
+				slopes[i] = (h1 * before + h0 * after) / (h0 + h1);
+			else if (before != 0 && after != 0 && std::signbit(before) == std::signbit(after))
+			{
+				// PCHIP weighted harmonic mean: preserve each channel's shape.
+				const double w0 = 2 * h1 + h0, w1 = h1 + 2 * h0;
+				slopes[i] = (w0 + w1) / (w0 / before + w1 / after);
+			}
+		}
+		if (settings.Method == AutoTangentMethod::Monotone && count > 2)
+		{
+			auto endpoint = [](double h0, double h1, double d0, double d1) {
+				double result = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+				if (d0 == 0 || std::signbit(result) != std::signbit(d0))
+					return 0.0;
+				if (std::signbit(d0) != std::signbit(d1) && std::abs(result) > 3 * std::abs(d0))
+					return 3 * d0;
+				return result;
+			};
+			slopes.front() = endpoint(widths[0], widths[1], secants[0], secants[1]);
+			slopes.back() =
+			    endpoint(widths[count - 2], widths[count - 3], secants[count - 2], secants[count - 3]);
+		}
+	}
+	for (double &slope : slopes)
+		slope *= 1.0 - settings.Tension;
+}
 
 void MakeVectors(
 	double rForward, double rLeft, double rUp,

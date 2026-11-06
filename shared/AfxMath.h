@@ -410,6 +410,28 @@ inline double EvalWeightedHermite(double progress, double duration, double left,
 		   3 * v * t * t * (right - inWeight * duration * inSlope / 3) + t * t * t * right;
 }
 
+// Whole-path automatic tangent policy, shared by scalar and Euler channels.
+enum class AutoTangentMethod
+{
+	Spline,
+	CatmullRom,
+	Monotone,
+	Count
+};
+struct AutoTangentSettings
+{
+	AutoTangentMethod Method = AutoTangentMethod::Spline;
+	double Tension = 0.0;
+	bool operator==(const AutoTangentSettings &other) const
+	{
+		return Method == other.Method && Tension == other.Tension;
+	}
+};
+const char *AutoTangentMethodToString(AutoTangentMethod method);
+bool AutoTangentMethodFromString(const char *text, AutoTangentMethod &method);
+void ComputeAutoTangents(double *times, double *values, int count, const AutoTangentSettings &settings,
+                         std::vector<double> &slopes);
+
 // Hermite (per-key slope) interpolation for doubles.
 // Uses per-key in/out slopes and modes resolved via provided selectors.
 // Selectors are free functions retrieving values from the TMap (e.g. CamPathValue).
@@ -436,11 +458,12 @@ template <class TMap> class CHermiteDoubleInterpolation : public CInterpolation<
 								double (*tanInSelector)(const TMap &), double (*tanOutSelector)(const TMap &),
 								unsigned char (*modeInSelector)(const TMap &),
 								unsigned char (*modeOutSelector)(const TMap &),
-								double (*wInSelector)(const TMap &), double (*wOutSelector)(const TMap &))
+								double (*wInSelector)(const TMap &), double (*wOutSelector)(const TMap &),
+		const AutoTangentSettings *autoSettings = nullptr)
 		: m_Map(map), m_ValueSelector(valueSelector), m_TanInSelector(tanInSelector),
 		  m_TanOutSelector(tanOutSelector), m_ModeInSelector(modeInSelector),
 		  m_ModeOutSelector(modeOutSelector), m_WInSelector(wInSelector ? wInSelector : &DefaultWeight),
-		  m_WOutSelector(wOutSelector ? wOutSelector : &DefaultWeight)
+		  m_WOutSelector(wOutSelector ? wOutSelector : &DefaultWeight), m_AutoSettings(autoSettings)
 	{
 		InterpolationMapChanged();
 	}
@@ -513,25 +536,9 @@ template <class TMap> class CHermiteDoubleInterpolation : public CInterpolation<
 					m_Build.WOut[k] = 0.0;
 			}
 
-			// Compute natural cubic-spline (clamped with endpoint derivatives 0.0) second derivatives
-			// to match CCubicDoubleInterpolation's default behavior for Auto mode.
-			double *y2 = new double[n];
-			spline(m_Build.T, m_Build.V, (int)n, false, 0.0, false, 0.0, y2);
-
-			// Precompute auto in/out slopes per key from y2
-			std::vector<double> autoIn(n, 0.0), autoOut(n, 0.0);
-			for (size_t i = 0; i + 1 < n; ++i)
-			{
-				double h = m_Build.T[i + 1] - m_Build.T[i];
-				if (h <= 0.0)
-					continue;
-				double sec = (m_Build.V[i + 1] - m_Build.V[i]) / h;
-				double d_i_right = sec - h * (2.0 * y2[i] + y2[i + 1]) / 6.0; // derivative at x_i (segment i)
-				double d_ip1_left =
-					sec + h * (2.0 * y2[i + 1] + y2[i]) / 6.0; // derivative at x_{i+1} (segment i)
-				autoOut[i] = d_i_right;
-				autoIn[i + 1] = d_ip1_left;
-			}
+			std::vector<double> autoSlopes;
+			ComputeAutoTangents(m_Build.T, m_Build.V, (int)n,
+				m_AutoSettings ? *m_AutoSettings : AutoTangentSettings{}, autoSlopes);
 
 			// Resolve modes to effective slopes.
 			for (size_t k = 0; k < n; ++k)
@@ -566,7 +573,7 @@ template <class TMap> class CHermiteDoubleInterpolation : public CInterpolation<
 				}
 				else if (modeIn == 0 /*Auto*/)
 				{
-					m_Build.MIn[k] = autoIn[k];
+					m_Build.MIn[k] = autoSlopes[k];
 				}
 				// else Free already set from raw
 
@@ -586,12 +593,11 @@ template <class TMap> class CHermiteDoubleInterpolation : public CInterpolation<
 				}
 				else if (modeOut == 0 /*Auto*/)
 				{
-					m_Build.MOut[k] = autoOut[k];
+					m_Build.MOut[k] = autoSlopes[k];
 				}
 				// else Free already set from raw
 			}
 
-			delete[] y2;
 		}
 
 		// Clamp for no extrapolation
@@ -634,6 +640,17 @@ template <class TMap> class CHermiteDoubleInterpolation : public CInterpolation<
 		return EvalWeightedHermite(u, h, v0, v1, m0, m1, w0, w1);
 	}
 
+	bool GetTangent(size_t index, bool outgoing, double &slope, double &weight)
+	{
+		if (index >= m_Map->size() || !CanEval()) return false;
+		Eval(m_Map->begin()->first);
+		std::lock_guard<std::mutex> lock(m_Lock);
+		if (index >= (size_t)m_Build.n) return false;
+		slope = outgoing ? m_Build.MOut[index] : m_Build.MIn[index];
+		weight = outgoing ? m_Build.WOut[index] : m_Build.WIn[index];
+		return true;
+	}
+
   private:
 	CInterpolationMap<TMap> *m_Map;
 	double (*m_ValueSelector)(const TMap &);
@@ -647,6 +664,7 @@ template <class TMap> class CHermiteDoubleInterpolation : public CInterpolation<
 	}
 	double (*m_WInSelector)(const TMap &) = &DefaultWeight;
 	double (*m_WOutSelector)(const TMap &) = &DefaultWeight;
+	const AutoTangentSettings *m_AutoSettings = nullptr;
 
 	struct Build_s
 	{
@@ -701,12 +719,14 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 		// Yaw (Z)
 		double (*tanInYaw)(const TMap &), double (*tanOutYaw)(const TMap &),
 		unsigned char (*modeInYaw)(const TMap &), unsigned char (*modeOutYaw)(const TMap &),
-		double (*wInYaw)(const TMap &), double (*wOutYaw)(const TMap &))
+		double (*wInYaw)(const TMap &), double (*wOutYaw)(const TMap &),
+		const AutoTangentSettings *autoSettings = nullptr)
 		: m_Map(map), m_TanInRoll(tanInRoll), m_TanOutRoll(tanOutRoll), m_ModeInRoll(modeInRoll),
 		  m_ModeOutRoll(modeOutRoll), m_WInRoll(wInRoll), m_WOutRoll(wOutRoll), m_TanInPitch(tanInPitch),
 		  m_TanOutPitch(tanOutPitch), m_ModeInPitch(modeInPitch), m_ModeOutPitch(modeOutPitch),
 		  m_WInPitch(wInPitch), m_WOutPitch(wOutPitch), m_TanInYaw(tanInYaw), m_TanOutYaw(tanOutYaw),
-		  m_ModeInYaw(modeInYaw), m_ModeOutYaw(modeOutYaw), m_WInYaw(wInYaw), m_WOutYaw(wOutYaw)
+		  m_ModeInYaw(modeInYaw), m_ModeOutYaw(modeOutYaw), m_WInYaw(wInYaw), m_WOutYaw(wOutYaw),
+		  m_AutoSettings(autoSettings)
 	{
 		InterpolationMapChanged();
 	}
@@ -789,6 +809,21 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 		return Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(pitch, yaw, roll)));
 	}
 
+	bool GetTangent(size_t index, int channel, bool outgoing, double &slope, double &weight)
+	{
+		if (index >= m_Map->size() || !CanEval() || channel < 0 || channel > 2) return false;
+		Eval(m_Map->begin()->first);
+		std::lock_guard<std::mutex> lock(m_Lock);
+		if (index >= (size_t)m_n) return false;
+		const double *slopes = channel == 0 ? (outgoing ? m_PitchOut : m_PitchIn)
+			: channel == 1 ? (outgoing ? m_YawOut : m_YawIn) : (outgoing ? m_RollOut : m_RollIn);
+		const double *weights = channel == 0 ? (outgoing ? m_PitchWOut : m_PitchWIn)
+			: channel == 1 ? (outgoing ? m_YawWOut : m_YawWIn) : (outgoing ? m_RollWOut : m_RollWIn);
+		slope = slopes[index];
+		weight = weights[index];
+		return true;
+	}
+
   private:
 	// Source data
 	CInterpolationMap<TMap> *m_Map;
@@ -814,6 +849,7 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 	unsigned char (*m_ModeOutYaw)(const TMap &);
 	double (*m_WInYaw)(const TMap &);
 	double (*m_WOutYaw)(const TMap &);
+	const AutoTangentSettings *m_AutoSettings = nullptr;
 
 	// Cached arrays
 	int m_n = 0;
@@ -934,30 +970,11 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 				m_RollWOut[i] = 0.0;
 		}
 
-		// Compute natural cubic second derivatives for AUTO slopes
-		auto computeAuto = [&](double *V, std::vector<double> &autoIn, std::vector<double> &autoOut) {
-			double *y2 = new double[m_n];
-			spline(m_T, V, m_n, false, 0.0, false, 0.0, y2);
-			autoIn.assign(m_n, 0.0);
-			autoOut.assign(m_n, 0.0);
-			for (int k = 0; k + 1 < m_n; ++k)
-			{
-				double h = m_T[k + 1] - m_T[k];
-				if (h <= 0.0)
-					continue;
-				double sec = (V[k + 1] - V[k]) / h;
-				double d_i_right = sec - h * (2.0 * y2[k] + y2[k + 1]) / 6.0;
-				double d_ip1_left = sec + h * (2.0 * y2[k + 1] + y2[k]) / 6.0;
-				autoOut[k] = d_i_right;
-				autoIn[k + 1] = d_ip1_left;
-			}
-			delete[] y2;
-		};
-
-		std::vector<double> autoInP, autoOutP, autoInY, autoOutY, autoInR, autoOutR;
-		computeAuto(m_Pitch, autoInP, autoOutP);
-		computeAuto(m_Yaw, autoInY, autoOutY);
-		computeAuto(m_Roll, autoInR, autoOutR);
+		std::vector<double> autoPitch, autoYaw, autoRoll;
+		const auto settings = m_AutoSettings ? *m_AutoSettings : AutoTangentSettings{};
+		ComputeAutoTangents(m_T, m_Pitch, m_n, settings, autoPitch);
+		ComputeAutoTangents(m_T, m_Yaw, m_n, settings, autoYaw);
+		ComputeAutoTangents(m_T, m_Roll, m_n, settings, autoRoll);
 
 		// Resolve modes per key
 		for (int k = 0; k < m_n; ++k)
@@ -988,7 +1005,7 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 					m_PitchIn[k] =
 						hasPrev ? (vPi - vPim1) / (ti - tim1) : (hasNext ? (vPip1 - vPi) / (tip1 - ti) : 0.0);
 				else if (mi == 0)
-					m_PitchIn[k] = autoInP[k]; // Auto
+					m_PitchIn[k] = autoPitch[k]; // Auto
 				// else Free already set
 				if (mo == 1)
 					m_PitchOut[k] = 0.0;
@@ -996,7 +1013,7 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 					m_PitchOut[k] =
 						hasNext ? (vPip1 - vPi) / (tip1 - ti) : (hasPrev ? (vPi - vPim1) / (ti - tim1) : 0.0);
 				else if (mo == 0)
-					m_PitchOut[k] = autoOutP[k];
+					m_PitchOut[k] = autoPitch[k];
 			}
 			// Yaw
 			{
@@ -1007,14 +1024,14 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 					m_YawIn[k] =
 						hasPrev ? (vYi - vYim1) / (ti - tim1) : (hasNext ? (vYip1 - vYi) / (tip1 - ti) : 0.0);
 				else if (mi == 0)
-					m_YawIn[k] = autoInY[k];
+					m_YawIn[k] = autoYaw[k];
 				if (mo == 1)
 					m_YawOut[k] = 0.0;
 				else if (mo == 2)
 					m_YawOut[k] =
 						hasNext ? (vYip1 - vYi) / (tip1 - ti) : (hasPrev ? (vYi - vYim1) / (ti - tim1) : 0.0);
 				else if (mo == 0)
-					m_YawOut[k] = autoOutY[k];
+					m_YawOut[k] = autoYaw[k];
 			}
 			// Roll
 			{
@@ -1025,14 +1042,14 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 					m_RollIn[k] =
 						hasPrev ? (vRi - vRim1) / (ti - tim1) : (hasNext ? (vRip1 - vRi) / (tip1 - ti) : 0.0);
 				else if (mi == 0)
-					m_RollIn[k] = autoInR[k];
+					m_RollIn[k] = autoRoll[k];
 				if (mo == 1)
 					m_RollOut[k] = 0.0;
 				else if (mo == 2)
 					m_RollOut[k] =
 						hasNext ? (vRip1 - vRi) / (tip1 - ti) : (hasPrev ? (vRi - vRim1) / (ti - tim1) : 0.0);
 				else if (mo == 0)
-					m_RollOut[k] = autoOutR[k];
+					m_RollOut[k] = autoRoll[k];
 			}
 		}
 	}

@@ -314,6 +314,19 @@ void CamPath::SetHold(bool value)
 	m_Hold = value;
 }
 
+bool CamPath::SetAutoTangentSettings(const AutoTangentSettings &settings)
+{
+	if (settings.Method < AutoTangentMethod::Spline || settings.Method >= AutoTangentMethod::Count ||
+	    !std::isfinite(settings.Tension) || settings.Tension < 0 || settings.Tension > 1)
+		return false;
+	if (m_AutoTangentSettings == settings)
+		return true;
+	m_AutoTangentSettings = settings;
+	DoInterpolationMapChangedAll();
+	Changed();
+	return true;
+}
+
 void CamPath::PositionInterpMethod_set(DoubleInterp value)
 {
 	delete m_XInterp;
@@ -332,15 +345,15 @@ void CamPath::PositionInterpMethod_set(DoubleInterp value)
 	case DI_CUSTOM:
 		m_XInterp = new CHermiteDoubleInterpolation<CamPathValue>(
 			&m_Map, XSelector, XTanInSelector, XTanOutSelector, XTanModeInSelector, XTanModeOutSelector,
-			XTanWInSelector, XTanWOutSelector);
+			XTanWInSelector, XTanWOutSelector, &m_AutoTangentSettings);
 
 		m_YInterp = new CHermiteDoubleInterpolation<CamPathValue>(
 			&m_Map, YSelector, YTanInSelector, YTanOutSelector, YTanModeInSelector, YTanModeOutSelector,
-			YTanWInSelector, YTanWOutSelector);
+			YTanWInSelector, YTanWOutSelector, &m_AutoTangentSettings);
 
 		m_ZInterp = new CHermiteDoubleInterpolation<CamPathValue>(
 			&m_Map, ZSelector, ZTanInSelector, ZTanOutSelector, ZTanModeInSelector, ZTanModeOutSelector,
-			ZTanWInSelector, ZTanWOutSelector);
+			ZTanWInSelector, ZTanWOutSelector, &m_AutoTangentSettings);
 
 		break;
 	default:
@@ -381,7 +394,7 @@ void CamPath::RotationInterpMethod_set(QuaternionInterp value)
 			RTanModeOut_Pitch_Selector, RTanWIn_Pitch_Selector, RTanWOut_Pitch_Selector,
 			// Yaw (Z)
 			RTanIn_Yaw_Selector, RTanOut_Yaw_Selector, RTanModeIn_Yaw_Selector, RTanModeOut_Yaw_Selector,
-			RTanWIn_Yaw_Selector, RTanWOut_Yaw_Selector);
+			RTanWIn_Yaw_Selector, RTanWOut_Yaw_Selector, &m_AutoTangentSettings);
 		break;
 	default:
 		m_RInterp = new CSCubicQuaternionInterpolation<CamPathValue>(&m_RView);
@@ -410,7 +423,7 @@ void CamPath::FovInterpMethod_set(DoubleInterp value)
 	case DI_CUSTOM:
 		m_FovInterp = new CHermiteDoubleInterpolation<CamPathValue>(
 			&m_Map, FovSelector, FovTanInSelector, FovTanOutSelector, FovTanModeInSelector,
-			FovTanModeOutSelector, FovTanWInSelector, FovTanWOutSelector);
+			FovTanModeOutSelector, FovTanWInSelector, FovTanWOutSelector, &m_AutoTangentSettings);
 
 		break;
 	default:
@@ -449,12 +462,12 @@ bool CamPath::State::operator==(const State &other) const
 {
 	return Keys == other.Keys && Position == other.Position && Fov == other.Fov &&
 		   Rotation == other.Rotation && Enabled == other.Enabled && Hold == other.Hold &&
-		   Offset == other.Offset;
+		   Offset == other.Offset && AutoTangents == other.AutoTangents;
 }
 CamPath::State CamPath::CaptureState() const
 {
 	return {m_Map,	 m_PositionInterpMethod, m_FovInterpMethod, m_RotationInterpMethod, m_Enabled, m_Hold,
-			m_Offset};
+			m_Offset, m_AutoTangentSettings};
 }
 void CamPath::RestoreState(const State &state)
 {
@@ -462,6 +475,7 @@ void CamPath::RestoreState(const State &state)
 	m_Offset = state.Offset;
 	m_Enabled = state.Enabled;
 	m_Hold = state.Hold;
+	m_AutoTangentSettings = state.AutoTangents;
 	PositionInterpMethod_set(state.Position);
 	RotationInterpMethod_set(state.Rotation);
 	FovInterpMethod_set(state.Fov);
@@ -593,6 +607,10 @@ bool CamPath::Save(wchar_t const * fileName)
 		cam->append_attribute(doc.allocate_attribute("rotationInterp", QuaternionInterp_ToString(m_RotationInterpMethod)));
 	if(DI_DEFAULT != m_FovInterpMethod)
 		cam->append_attribute(doc.allocate_attribute("fovInterp", DoubleInterp_ToString(m_FovInterpMethod)));
+	if (m_AutoTangentSettings.Method != AutoTangentMethod::Spline)
+		cam->append_attribute(doc.allocate_attribute("autoInterp", AutoTangentMethodToString(m_AutoTangentSettings.Method)));
+	if (m_AutoTangentSettings.Tension != 0)
+		cam->append_attribute(doc.allocate_attribute("autoTension", double2xml(doc, m_AutoTangentSettings.Tension)));
 	if (m_Offset)
 		cam->append_attribute(doc.allocate_attribute("offset", double2xml(doc, m_Offset)));
 	if (m_Hold)
@@ -735,6 +753,7 @@ bool CamPath::Save(wchar_t const * fileName)
 bool CamPath::Load(wchar_t const * fileName)
 {
 	auto backup = m_Map;
+	const auto autoBackup = m_AutoTangentSettings;
 	auto position = m_PositionInterpMethod;
 	auto rotation = m_RotationInterpMethod;
 	auto fov = m_FovInterpMethod;
@@ -757,6 +776,7 @@ bool CamPath::Load(wchar_t const * fileName)
 	if (!ok)
 	{
 		m_Map = std::move(backup);
+		m_AutoTangentSettings = autoBackup;
 		m_Offset = offset;
 		m_Hold = hold;
 		PositionInterpMethod_set(position);
@@ -809,6 +829,20 @@ bool CamPath::LoadInternal(wchar_t const *fileName)
 					bOk = false;
 					break;
 				}
+
+				AutoTangentSettings autoSettings;
+				if (auto *method = cur_node->first_attribute("autoInterp"))
+					if (!AutoTangentMethodFromString(method->value(), autoSettings.Method))
+					{ bOk = false; break; }
+				if (auto *tension = cur_node->first_attribute("autoTension"))
+				{
+					char *end = nullptr;
+					autoSettings.Tension = std::strtod(tension->value(), &end);
+					if (end == tension->value() || *end || !std::isfinite(autoSettings.Tension) ||
+						autoSettings.Tension < 0 || autoSettings.Tension > 1)
+					{ bOk = false; break; }
+				}
+				SetAutoTangentSettings(autoSettings);
 
 				// Clear current Campath:
 				SelectNone();
@@ -1470,6 +1504,24 @@ void CamPath::SetFov(double fov)
 	m_FovInterp->InterpolationMapChanged();
 
 	Changed();
+}
+
+bool CamPath::GetTangent(Channel ch, size_t index, bool outgoing, double &slope, double &weight)
+{
+	if (ch >= CH_X && ch <= CH_FOV)
+	{
+		const bool custom =
+		    ch == CH_FOV ? m_FovInterpMethod == DI_CUSTOM : m_PositionInterpMethod == DI_CUSTOM;
+		if (!custom)
+			return false;
+		auto *interp = ch == CH_X ? m_XInterp : ch == CH_Y ? m_YInterp : ch == CH_Z ? m_ZInterp : m_FovInterp;
+		return static_cast<CHermiteDoubleInterpolation<CamPathValue> *>(interp)->GetTangent(index, outgoing,
+		                                                                                    slope, weight);
+	}
+	if (ch >= CH_RPITCH && ch <= CH_RROLL && m_RotationInterpMethod == QI_CUSTOM)
+		return static_cast<CEulerHermiteQuaternionInterpolation<CamPathValue> *>(m_RInterp)->GetTangent(
+		    index, ch - CH_RPITCH, outgoing, slope, weight);
+	return false;
 }
 
 void CamPath::SetTangent(Channel ch, bool setIn, bool setOut, double slopeIn, double slopeOut)
