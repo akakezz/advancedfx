@@ -680,12 +680,13 @@ void CamPathValue::SetOrientation(const Quaternion &orientation)
 		return;
 	}
 	const auto previous = GetEulerAngles(), base = result.ToQREulerAngles().ToQEulerAngles();
-	auto near = [](double angle, double reference)
+	auto nearestEquivalent = [](double angle, double reference)
 	{ return reference + std::remainder(angle - reference, 360.0); };
 	auto candidate = [&](QEulerAngles a)
 	{
-		return QEulerAngles(near(a.Pitch, previous.Pitch), near(a.Yaw, previous.Yaw),
-							near(a.Roll, previous.Roll));
+		return QEulerAngles(nearestEquivalent(a.Pitch, previous.Pitch),
+							nearestEquivalent(a.Yaw, previous.Yaw),
+							nearestEquivalent(a.Roll, previous.Roll));
 	};
 	auto first = candidate(base),
 		 second = candidate(QEulerAngles(180 - base.Pitch, base.Yaw + 180, base.Roll + 180));
