@@ -70,16 +70,38 @@ The sequencer supports selecting and dragging keys and exposes a right-click men
 - **Edit** selects the key for the viewport gizmo.
 
 Use the pause/speed buttons or scrub the timeline to navigate the demo. The preview
-slider evaluates the path without seeking; Follow Preview keeps the resulting
-camera pose. **Add keyframe at preview** inserts an evaluated camera pose.
+slider evaluates the path without seeking. **Preview path** in either panel and
+`mirv_campath preview` operate the same cursor and camera. Opening or closing the
+overlay retains that cursor; right-mouse flying explicitly exits preview.
+Free-camera movement and smoothing do not alter the evaluated pose. **Seek to
+preview** seeks the demo to that cursor.
+
+**Insert keyframe at preview** subdivides an existing Custom/Linear path without
+changing its curve, including weighted handles and Euler winding. It requires an
+unoccupied time inside the path. To preserve all existing intervals, automatic
+tangents are frozen to their effective Free tangents; use **Reset selected tangents
+to Auto** when you want them recalculated. Classic quaternion/cubic interpolation
+cannot be split exactly by this editor and insertion is rejected there. **Add
+point** remains normal pose-and-demo-time capture.
 
 Enable **Show Curve Editor** to display X/Y/Z, FOV, pitch/yaw/roll individually or
 in combination; X is visible initially. Normalization makes channels with different
 units readable. Wheel zooms time around the pointer; Ctrl+wheel zooms values.
 Middle-drag pans both axes. **Fit graph** resets the view. The sequencer window
 can be resized vertically; zoom and pan no longer require sliders.
+Click a graph key to select it, Ctrl-click to extend/toggle selection, or drag a
+box on empty canvas. Right-click a channel checkbox to focus editing when
+normalized channels overlap. Drag keys to change time and that channel's value;
+Shift locks the dominant axis, and Alt snaps time displacement to demo ticks.
+Selected keys move together. Colliding times and overlapping holds are rejected
+without deleting keys. The **Selected key inspector** provides exact path time,
+demo tick, position, angles, FOV and hold duration. Numeric changes apply as an
+offset to all selected keys (hold duration applies the same duration).
+
 Right-click a key for Auto, Flat, Linear or Free tangent modes, applied to the
-incoming side, outgoing side or both.
+incoming side, outgoing side or both. Clicking a selected key preserves the
+selection for batch tangent changes. **Reset selected tangents to Auto** resets
+visible/focused channels, including their handle weights.
 
 - Drag a curve handle to edit the shared slope through that key.
 - Hold **Shift** while dragging to change its weight/influence.
@@ -87,14 +109,24 @@ incoming side, outgoing side or both.
 - **Undo / Redo** or **Ctrl+Z / Ctrl+Shift+Z** restore data edits while the overlay
   owns input, and in native `mirv_campath preview` mode with the overlay closed.
   Console edits enter the same history, starting with the first edit. A drag is
-  one edit. History retains 64 entries. Console equivalents are
+  one edit. History retains up to 64 entries within a 64 MiB budget. Preview,
+  selection, panel navigation and playback enable changes do not consume history. Console equivalents are
   `mirv_campath undo|redo` and `mirv_campath preview undo|redo`.
 
 The graph reads effective tangents directly from the path evaluator, including
 automatic and tension-modified tangents. Weighted curves solve their time
 coordinate during playback, so the graph and camera use the same curve. Euler channels unwrap adjacent angles to avoid ordinary
-360-degree discontinuities. Holds at the path's boundaries use native
-`mirv_campath hold`; the previous experimental per-key hold system is not included.
+360-degree discontinuities. Authored Euler values retain winding after insertion.
+
+**Travel speed / distance timing** plots the evaluated positional speed. **Retime
+by distance** preserves the spatial curve, distributes travel duration by arc
+length, and retains hold durations and stationary intervals. Custom/Linear
+channels are required; the total duration must leave time for travel. This enables
+**Distance timing**, which maps each travel interval by distance and smoothly
+ramps into and out of explicit holds. Ordinary keys share the overall travel
+speed after retiming; geometric corners can still change direction abruptly.
+Changing positions, tangents or holds afterward can require another retime.
+Turning Distance timing off restores ordinary interpolation in the new time layout.
 
 Console equivalents remain under the native command tree, for example:
 
@@ -116,6 +148,52 @@ accepts 0..1. The existing per-channel interpolation commands remain available.
 
 Tangent commands accept `x|y|z|fov|pitch|yaw|roll` and `in|out|both`, applying to the
 selection or to all keys when none is selected.
+
+## Named paths and holds
+
+The Campath tab selects one named path for editing, with New, Duplicate, Rename
+and Remove controls. Native keyframe indices remain zero based within that path.
+**Campath enabled** is the shared playback switch. Playback automatically chooses
+the evaluable path with the latest start at the current demo time; ties go to the
+later path in the list. Selecting another path changes the editing target, not
+playback priority. All paths use ordinary native keys and the classic drawer.
+Names, hold releases and interval durations are drawn with the classic text
+projection and depth test, using the existing GUI font atlas for full text.
+**Key label size** also scales these labels; zero hides text.
+
+In the inspector, set **Hold (seconds)**, **Capture hold release** at the current
+demo time, or **Clear hold**. A held key keeps its complete pose from arrival until
+release, then travels to the next key by its arrival time. Release cannot pass the
+next arrival; sharing it is allowed only for an identical pose. Smooth custom
+interpolation arrives and departs with zero velocity. Linear remains linear.
+Adding a hold converts Classic cubic/quaternion channels to Custom, which supports
+endpoint derivatives. This is separate from classic `mirv_campath hold`, which
+continues to hold a whole path outside its bounds. A single key with a hold is a
+playable stationary shot.
+
+```text
+mirv_campath path list
+mirv_campath path new "Second shot"
+mirv_campath path duplicate "Alternate shot"
+mirv_campath path use 0
+mirv_campath path rename "Opening"
+mirv_campath path remove "Alternate shot"
+mirv_campath insert
+mirv_campath insert 12.5
+mirv_campath keyHold 1
+mirv_campath keyHold 1 14.0
+mirv_campath keyHold 1 clear
+mirv_campath retime 10
+mirv_campath distanceTiming 0
+mirv_campath save "opening.xml"
+mirv_campath save "sequence.xml" all
+mirv_campath load "sequence.xml" all
+```
+
+`insert` without a time uses the active preview cursor. `keyHold` without a release
+captures the current demo time; an explicit release uses path seconds. Path
+selection/removal accepts a zero-based path index or a quoted name. Undo restores
+path creation, removal, renaming and camera edits across the document.
 
 ## Gizmos and observing
 
@@ -152,11 +230,21 @@ ProRes and x264/x265 profiles are available. Start Recording closes the overlay;
 reopen it with F8 to stop. Recording uses the chosen screen profile directly.
 FFmpeg profiles require HLAE's normal FFmpeg installation.
 
-Open/save dialogs use native `.xml` camera paths. Save appends `.xml` when no
-extension is provided. Custom channel tangents and weights round-trip in the same
-XML. Failed loads preserve the current path. Earlier experimental multi-path
-collections and segment-easing extensions are not part of this fresh implementation;
-keep those source files separately when reviewing this version.
+**Save path** / **Save path as** write ordinary native XML for the selected path;
+**Save all** / **Save all as** write a named-path collection. Open the corresponding
+format with **Open path** or **Open collection**. Files retain custom tangents,
+weights, holds, Euler winding and distance timing. Old classic files still load.
+Save appends `.xml` when needed. Failed loads preserve current work and saves use
+an adjacent temporary file before replacing the target. Collection XML requires
+this branch; older HLAE versions do not understand its additional features.
+
+An asterisk marks unsaved edits. Recovery backups are written every 30 seconds by
+default under `%LOCALAPPDATA%/advancedfx/camera-recovery` (or HLAE's folder when
+that variable is unavailable), and when closing the overlay or loading another
+file. Settings controls the periodic backup and interval. Backups do not overwrite
+source files or mark changes saved. The Campath tab offers **Recover latest
+backup** and **Discard latest backup** when older backups exist. Recovery forces
+Save As; older backups remain until discarded. Undo history itself is not persisted.
 
 Settings include a demo browser, UI scale, fonts and docking. Availability of the
 extra fonts depends on Windows. UI preferences, panel layout and last-used

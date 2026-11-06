@@ -43,15 +43,15 @@ modifier scales automatic derivatives, while authored manual tangents are kept.
 The graph reads the evaluator's cached slopes and weights directly. Policy and
 tension are included in XML and native undo snapshots. Adjacent
 intervals share derivatives at ordinary keys, including unequally spaced keys.
-Authored positions and timestamps still determine speed; this is not a constant
-speed retime. Flat tangents and deliberate reversals can still stop movement.
+Authored positions and timestamps still determine speed; optional distance retiming distributes travel time by arc length and preserves
+spatial shape. Flat tangents and deliberate reversals can still stop movement.
 Classic interpolation settings and native console commands remain available.
 
 The sequencer reads total demo ticks through the existing engine wrapper. Both
 editors support pointer-centered wheel zoom, middle-drag panning and Fit controls.
 Neo Sequencer retains its overview scrollbar, and its ruler visits only visible
-tick marks rather than iterating over the entire demo each frame. Native preview
-and console edits share the overlay's bounded undo history. Observing reuses TF2
+tick marks rather than iterating over the entire demo each frame. Native preview and the GUI use one controller and cursor. Console and GUI edits
+share document history over native CamPath states; navigation is excluded. Observing reuses TF2
 player/model queries for selection and named bones. Its trace picker uses a small
 Source SDK 2013 `EngineTraceClient003` adapter with 32/64-bit layout checks; it
 does not call the CS:GO-only `mirv_traceentity` command.
@@ -86,3 +86,20 @@ The same parser is used by
 [`C_HLTVCamera::SpecPlayerByPredicate`](https://github.com/ValveSoftware/source-sdk-2013/blob/master/src/game/client/hltvcamera.cpp)
 and the server's `spec_player` handler. Native commands and the original project
 base are retained; no SDK source is imported into the project.
+
+## Native path document extensions
+
+The existing `CamPath` now supports exact subdivision of Custom/Linear curves,
+per-key full-pose holds, optional distance timing, and raw authored Euler winding.
+A `CamPathCollection` in the same shared files manages named shots, savepoints and
+bounded authoring history. Playback selects the latest-starting eligible shot.
+The editor adds key dragging/box selection, exact numeric inspection, speed display,
+and recovery autosaves. Single paths retain native XML; collections wrap those
+paths with names and identifiers. No parallel path evaluator was introduced.
+
+Multiple shots, names, hold releases and interval lengths are queued as immutable
+properties into the existing Source 1 `CCampathDrawer`. Full text uses the existing
+GUI font atlas because the classic hex texture contains only digits; projection,
+depth testing, shader and device resources remain in the classic drawer. No second
+world renderer or ImGui context is added. With GUI disabled, legacy numeric labels
+remain available, but full-text labels need the GUI atlas.

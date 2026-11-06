@@ -21,6 +21,9 @@
 
 #include <stdio.h>
 #include <string>
+#include <algorithm>
+extern bool GetDemoTickFromClientTime(double, double, int &);
+extern bool GetCurrentDemoTime(double &);
 
 /// <remarks>Must be at least 4.</remarks>
 const UINT c_VertexBufferVertexCount = 200;
@@ -71,7 +74,11 @@ CCampathDrawer::~CCampathDrawer()
 	if (m_DrawTextureShader) m_DrawTextureShader->Release();
 	if(m_PixelShader) m_PixelShader->Release();
 	if(m_VertexShader) m_VertexShader->Release();
-	if(m_LessDynamicProperties) m_LessDynamicProperties->Release();
+	if (m_LessDynamicProperties)
+		m_LessDynamicProperties->Release();
+	for (auto &entry : m_OtherPaths)
+		if (entry.Properties)
+			entry.Properties->Release();
 }
 
 void CCampathDrawer::AutoPolyLineStart()
@@ -261,12 +268,13 @@ void CCampathDrawer::End() {
 
 #define ValToUCCondInv(value,invert) ((invert) ? 0xFF -(unsigned char)(value) : (unsigned char)(value) )
 
-CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer * drawer) {
-	m_CurTime = g_MirvTime.GetTime() - g_Hook_VClient_RenderView.m_CamPath.GetOffset();
-	m_InCampath = 1 <= g_Hook_VClient_RenderView.m_CamPath.GetSize()
-		&&	g_Hook_VClient_RenderView.m_CamPath.GetLowerBound() <= m_CurTime
-		&& m_CurTime <= g_Hook_VClient_RenderView.m_CamPath.GetUpperBound();
-	m_CampathEnabled = g_Hook_VClient_RenderView.m_CamPath.Enabled_get();
+CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, CamPath *path,
+													   const std::string &name)
+{
+	m_CurTime = g_MirvTime.GetTime() - path->GetOffset();
+	m_InCampath =
+		1 <= path->GetSize() && path->GetLowerBound() <= m_CurTime && m_CurTime <= path->GetUpperBound();
+	m_CampathEnabled = path->Enabled_get();
 
 	g_VEngineClient->GetScreenSize(m_ScreenWidth, m_ScreenHeight);
 
@@ -362,20 +370,83 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer * drawer) 
 		m_PlaneUp.Normalize();		
 	}
 
+	// Capture glyph metrics and text on the engine thread. Queued render work retains
+	// only immutable values, never a pointer to an editable or deleted camera path.
+	auto label = [&](const CamPathValue &anchor, float height, const std::string &text)
+	{
+		Text result;
+		result.Anchor = anchor;
+		result.Height = height;
+		for (size_t i = 0; i < text.size();)
+		{
+			unsigned int code = (unsigned char)text[i++];
+			if (code >= 0xc0)
+			{
+				int extra = code < 0xe0 ? 1 : code < 0xf0 ? 2 : 3;
+				code &= (1u << (6 - extra)) - 1;
+				while (extra-- && i < text.size())
+					code = (code << 6) | ((unsigned char)text[i++] & 63);
+			}
+			AfxHookSource::Gui::WorldGlyph glyph;
+			if (AfxHookSource::Gui::GetWorldGlyph(code, glyph))
+				result.Glyphs.push_back(glyph);
+		}
+		Labels.push_back(std::move(result));
+	};
+	if (path->GetSize())
+	{
+		label(path->GetBegin().GetValue(), 3.2f, name);
+		for (auto it = path->GetBegin(); it != path->GetEnd(); ++it)
+			if (it.GetValue().HoldDuration > 0)
+			{
+				const double release = it.GetTime() + it.GetValue().HoldDuration + path->GetOffset();
+				int tick = 0;
+				char text[128];
+				double demoTime = release;
+				if (GetCurrentDemoTime(demoTime))
+					demoTime += release - g_MirvTime.GetTime();
+				if (GetDemoTickFromClientTime(g_MirvTime.GetTime(), release, tick))
+					snprintf(text, sizeof(text), "Hold -> tick %d (%.3f s)", tick, demoTime);
+				else
+					snprintf(text, sizeof(text), "Hold -> %.3f s", release);
+				label(it.GetValue(), 1.8f, text);
+			}
+		if (path->CanEval())
+		{
+			auto left = path->GetBegin(), right = left;
+			++right;
+			for (; right != path->GetEnd(); ++left, ++right)
+			{
+				const double duration = right.GetTime() - left.GetTime();
+				int a = 0, b = 0;
+				char text[96];
+				if (GetDemoTickFromClientTime(g_MirvTime.GetTime(), left.GetTime() + path->GetOffset(), a) &&
+					GetDemoTickFromClientTime(g_MirvTime.GetTime(), right.GetTime() + path->GetOffset(), b))
+					snprintf(text, sizeof(text), "%d ticks / %.3f s", b - a, duration);
+				else
+					snprintf(text, sizeof(text), "%.3f s", duration);
+				const double middle = (left.GetTime() + left.GetValue().HoldDuration + right.GetTime()) * 0.5;
+				label(path->Eval(middle), 1.8f, text);
+			}
+		}
+	}
+
 	m_DrawKeyFrameIndex = drawer->m_DrawKeyframIndex;
 	m_DrawKeyframeAxis = drawer->m_DrawKeyframeAxis;
 	m_DrawKeyframeCam = drawer->m_DrawKeyframeCam;
 
-	if(g_Hook_VClient_RenderView.m_CamPath.CanEval() && 2 <= g_Hook_VClient_RenderView.m_CamPath.GetSize()) {
-		m_CurrentValue = g_Hook_VClient_RenderView.m_CamPath.Eval(m_CurTime);
+	if (path->CanEval() && 2 <= path->GetSize())
+	{
+		m_CurrentValue = path->Eval(m_CurTime);
 	}
 }
 
-CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer * drawer) {
+CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer *drawer, CamPath *path)
+{
 
-	m_CampathCanEval = g_Hook_VClient_RenderView.m_CamPath.CanEval();
+	m_CampathCanEval = path->CanEval();
 
-	for (CamPathIterator it = g_Hook_VClient_RenderView.m_CamPath.GetBegin(); it != g_Hook_VClient_RenderView.m_CamPath.GetEnd(); ++it)
+	for (CamPathIterator it = path->GetBegin(); it != path->GetEnd(); ++it)
 	{
 		m_Keyframes.emplace_back(it.GetTime(), it.GetValue());
 	}
@@ -386,12 +457,12 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer * 
 		// so it should be done only when s.th.
 		// changed (which is what we do here).
 
-		auto last = g_Hook_VClient_RenderView.m_CamPath.GetBegin();
+		auto last = path->GetBegin();
 		auto it = last;
 
 		TempPoint * pts = new TempPoint[c_CameraTrajectoryMaxPointsPerInterval];
 
-		for(++it; it != g_Hook_VClient_RenderView.m_CamPath.GetEnd(); ++it)
+		for (++it; it != path->GetEnd(); ++it)
 		{
 			double delta = it.GetTime() - last.GetTime();
 
@@ -399,7 +470,7 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer * 
 			{
 				double t = last.GetTime() + delta*((double)i/(c_CameraTrajectoryMaxPointsPerInterval-1));
 
-				CamPathValue cpv = g_Hook_VClient_RenderView.m_CamPath.Eval(t);
+				CamPathValue cpv = path->Eval(t);
 
 				pts[i].t = t;
 				pts[i].y = Vector3(cpv.X, cpv.Y, cpv.Z);
@@ -411,18 +482,15 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer * 
 			// add all points except the last one (to avoid duplicates):
 			for(TempPoint * pt = &(pts[0]); pt && pt->nextPt; pt = pt->nextPt)
 			{
-				m_TrajectoryPoints.emplace_back(
-					pt->t,
-					g_Hook_VClient_RenderView.m_CamPath.Eval(pt->t));
+				m_TrajectoryPoints.emplace_back(pt->t, path->Eval(pt->t));
 			}
 
 			last = it;
 		}
 
 		// add last point:
-		m_TrajectoryPoints.emplace_back(
-			pts[c_CameraTrajectoryMaxPointsPerInterval-1].t,
-			g_Hook_VClient_RenderView.m_CamPath.Eval(pts[c_CameraTrajectoryMaxPointsPerInterval-1].t));
+		m_TrajectoryPoints.emplace_back(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t,
+										path->Eval(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t));
 
 		delete[] pts;
 	}
@@ -440,11 +508,53 @@ void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
 		return;
 
 	if(nullptr == m_LessDynamicProperties) {
-		m_LessDynamicProperties = new CLessDynamicProperties(this); // CPU expensive.
+		m_LessDynamicProperties =
+			new CLessDynamicProperties(this, &g_Hook_VClient_RenderView.m_CamPath); // CPU expensive.
 		m_LessDynamicProperties->AddRef();
 	}
 
-	MaterialSystem_ExecuteOnRenderThread(new CCampathDrawerFunctor(this));
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	MaterialSystem_ExecuteOnRenderThread(new CCampathDrawerFunctor(this, &g_Hook_VClient_RenderView.m_CamPath,
+																   paths.GetName(paths.GetActive()),
+																   m_LessDynamicProperties));
+	const auto state = paths.CaptureState();
+	for (size_t i = 0; i < paths.GetCount(); ++i)
+		if (i != paths.GetActive())
+		{
+			auto *path = paths.GetPath(i);
+			const auto id = state.Paths[i].Id;
+			auto found = std::find_if(m_OtherPaths.begin(), m_OtherPaths.end(),
+									  [=](const CachedPath &entry) { return entry.Id == id; });
+			if (found == m_OtherPaths.end())
+			{
+				m_OtherPaths.push_back({id, {}, nullptr});
+				found = std::prev(m_OtherPaths.end());
+			}
+			if (!found->Properties || found->State != state.Paths[i].Data)
+			{
+				if (found->Properties)
+					found->Properties->Release();
+				found->Properties = new CLessDynamicProperties(this, path);
+				found->Properties->AddRef();
+				found->State = state.Paths[i].Data;
+			}
+			MaterialSystem_ExecuteOnRenderThread(
+				new CCampathDrawerFunctor(this, path, paths.GetName(i), found->Properties));
+		}
+	for (auto it = m_OtherPaths.begin(); it != m_OtherPaths.end();)
+	{
+		bool exists = false;
+		for (const auto &entry : state.Paths)
+			if (entry.Id == it->Id)
+				exists = true;
+		if (!exists)
+		{
+			it->Properties->Release();
+			it = m_OtherPaths.erase(it);
+		}
+		else
+			++it;
+	}
 }
 
 void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dynamicPorperties, CLessDynamicProperties * lessDynamicProperties)
@@ -669,6 +779,41 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 						// cameraMightBeSelected = cameraMightBeSelected || lpSelected && cpv.Selected && lpTime <= curTime && curTime <= cpT;
 
 						++index;
+					}
+
+					if (auto *font = AfxHookSource::Gui::GetWorldFontTexture())
+					{
+						m_Device->SetTexture(0, font);
+						m_Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+						for (const auto &text : dynamicPorperties->Labels)
+						{
+							float width = 0;
+							for (const auto &glyph : text.Glyphs)
+								width += glyph.Advance;
+							float pen = -width * 0.5f;
+							const float height = drawKeyFrameIndex;
+							for (const auto &glyph : text.Glyphs)
+							{
+								const float xs[] = {(pen + glyph.X0) * height, (pen + glyph.X1) * height};
+								const float ys[] = {(text.Height + 0.5f - glyph.Y0) * height,
+													(text.Height + 0.5f - glyph.Y1) * height};
+								AFXDRAWTEXTUREVERTEX quad[4];
+								for (int v = 0; v < 4; ++v)
+								{
+									const int x = v / 2, y = v % 2;
+									quad[v] = {{(float)text.Anchor.X + xs[x] * (float)vvRight.X +
+													ys[y] * (float)vvUp.X,
+												(float)text.Anchor.Y + xs[x] * (float)vvRight.Y +
+													ys[y] * (float)vvUp.Y,
+												(float)text.Anchor.Z + xs[x] * (float)vvRight.Z +
+													ys[y] * (float)vvUp.Z},
+											   {x ? glyph.U1 : glyph.U0, y ? glyph.V1 : glyph.V0}};
+								}
+								m_Device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad,
+														  sizeof(AFXDRAWTEXTUREVERTEX));
+								pen += glyph.Advance;
+							}
+						}
 					}
 				}
 			}

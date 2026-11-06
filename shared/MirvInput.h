@@ -63,6 +63,11 @@ public:
 	bool GetCameraControlMode(void);
 	void SetCameraControlMode(bool enable);
 	void ClearMovementInput();
+	// Restart from an explicitly positioned camera, without changing smoothing settings.
+	void ResetCameraSmoothing()
+	{
+		m_SmoothWasEnabled = false;
+	}
 
 	void MenuAwareEscape_set(bool value) { m_MenuAwareEscape = value; }
 

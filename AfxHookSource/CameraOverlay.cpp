@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -35,6 +36,14 @@ namespace CameraOverlay
 {
 static std::atomic_bool g_Open{false}, g_MouseLook{false};
 static bool g_Docking = true;
+static bool g_CurveKeyDrag = false;
+static bool g_Autosave = true;
+static double g_AutosaveSeconds = 30;
+static std::filesystem::path g_RecoveryFile;
+static std::vector<std::filesystem::path> g_RecoveryCandidates;
+static std::string g_DocumentStatus;
+static void UpdateRecovery(bool force);
+
 bool IsOpen()
 {
 	return g_Open;
@@ -42,10 +51,15 @@ bool IsOpen()
 void SetOpen(bool value)
 {
 	if (!value)
+	{
+		g_CurveKeyDrag = false;
 		FinishEdit();
+	}
 	g_Open = value;
 	if (!value)
 		g_MouseLook = false;
+	if (!value)
+		UpdateRecovery(true);
 }
 bool IsMouseLook()
 {
@@ -55,49 +69,18 @@ void SetMouseLook(bool value)
 {
 	g_MouseLook = value;
 }
-static std::vector<CamPath::State> g_Undo, g_Redo;
-static CamPath::State g_LastState, g_EditBefore;
-static bool g_HistoryReady = false, g_Editing = false;
-static bool SameContent(CamPath::State a, CamPath::State b)
-{
-	for (auto &key : a.Keys)
-		key.second.Selected = false;
-	for (auto &key : b.Keys)
-		key.second.Selected = false;
-	return a == b;
-}
 static void HistoryObserve()
 {
-	auto state = g_Hook_VClient_RenderView.m_CamPath.CaptureState();
-	if (!g_HistoryReady)
-	{
-		g_LastState = state;
-		g_HistoryReady = true;
-	}
-	if (!SameContent(state, g_LastState) && !g_Editing)
-	{
-		g_EditBefore = g_LastState;
-		g_Editing = true;
-	}
-	g_LastState = std::move(state);
-}
-void FinishEdit()
-{
-	HistoryObserve();
-	if (!g_Editing)
-		return;
-	if (!SameContent(g_EditBefore, g_LastState))
-	{
-		g_Undo.push_back(g_EditBefore);
-		if (g_Undo.size() > 64)
-			g_Undo.erase(g_Undo.begin());
-		g_Redo.clear();
-	}
-	g_Editing = false;
+	g_Hook_VClient_RenderView.m_CamPaths.Observe();
 }
 void BeginEdit()
 {
-	HistoryObserve();
+	g_Hook_VClient_RenderView.m_CamPaths.BeginEdit();
+}
+void FinishEdit()
+{
+	g_Hook_VClient_RenderView.m_CamPaths.FinishEdit();
+	UpdateRecovery(false);
 }
 void UpdateHistory()
 {
@@ -107,16 +90,104 @@ void UpdateHistory()
 }
 void HistoryUndo(bool redo)
 {
-	FinishEdit();
-	auto &from = redo ? g_Redo : g_Undo;
-	auto &to = redo ? g_Undo : g_Redo;
-	if (from.empty())
+	g_CurveKeyDrag = false;
+	g_Hook_VClient_RenderView.m_CamPaths.Undo(redo);
+}
+static std::filesystem::path RecoveryDirectory()
+{
+#ifdef _WIN32
+	const wchar_t *local = _wgetenv(L"LOCALAPPDATA");
+	if (local && *local) return std::filesystem::path(local) / L"advancedfx" / L"camera-recovery";
+#else
+	const char *local = std::getenv("LOCALAPPDATA");
+	if (local && *local) return std::filesystem::u8path(local) / "advancedfx" / "camera-recovery";
+#endif
+	return std::filesystem::path(GetHlaeFolder()) / "camera-recovery";
+}
+static void ScanRecovery()
+{
+	g_RecoveryCandidates.clear();
+	std::error_code error;
+	const auto directory = RecoveryDirectory();
+	if (!std::filesystem::is_directory(directory, error))
 		return;
-	to.push_back(g_Hook_VClient_RenderView.m_CamPath.CaptureState());
-	auto state = from.back();
-	from.pop_back();
-	g_Hook_VClient_RenderView.m_CamPath.RestoreState(state);
-	g_LastState = std::move(state);
+	for (std::filesystem::directory_iterator it(directory, error), end; !error && it != end;
+		 it.increment(error))
+		if (it->is_regular_file(error) && it->path().extension() == ".xml" && it->path() != g_RecoveryFile)
+			g_RecoveryCandidates.push_back(it->path());
+	std::sort(g_RecoveryCandidates.begin(), g_RecoveryCandidates.end(),
+			  [](const auto &a, const auto &b)
+			  {
+				  std::error_code ea, eb;
+				  return std::filesystem::last_write_time(a, ea) > std::filesystem::last_write_time(b, eb);
+			  });
+}
+static void NewRecoverySession()
+{
+	g_RecoveryFile = RecoveryDirectory() /
+					 ("campath-recovery-" +
+					  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".xml");
+	ScanRecovery();
+}
+static void UpdateRecovery(bool force)
+{
+	static double nextSave = 0;
+	if (g_RecoveryFile.empty())
+		NewRecoverySession();
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	std::error_code error;
+	if (!paths.IsDirty())
+	{
+		std::filesystem::remove(g_RecoveryFile, error);
+		return;
+	}
+	if (!g_Autosave && !force)
+		return;
+	const double now =
+		std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	if (!force && now < nextSave)
+		return;
+	nextSave = now + g_AutosaveSeconds;
+	std::filesystem::create_directories(RecoveryDirectory(), error);
+	if (error || !paths.SaveAll(g_RecoveryFile.wstring().c_str(), true))
+		g_DocumentStatus = "Recovery autosave could not be written. Save your work to a writable folder.";
+}
+void FlushRecovery()
+{
+	UpdateRecovery(true);
+}
+bool SaveDocument(const wchar_t *fileName, bool all)
+{
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	const bool success = all ? paths.SaveAll(fileName) : paths.SaveOne(fileName);
+	g_DocumentStatus =
+		success ? "Saved camera paths." : "Could not save camera paths; the existing file was retained.";
+	if (success)
+		UpdateRecovery(false);
+	return success;
+}
+bool LoadDocument(const wchar_t *fileName, bool all)
+{
+	UpdateRecovery(true);
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	const bool success = all ? paths.LoadAll(fileName) : paths.LoadOne(fileName);
+	if (success)
+		NewRecoverySession();
+	g_DocumentStatus = success ? "Opened camera paths. Previous unsaved work remains recoverable."
+							   : "Could not open camera paths; the current document was retained.";
+	return success;
+}
+static double TickInterval()
+{
+	auto *globals = g_Hook_VClient_RenderView.GetGlobals();
+	return globals ? globals->interval_per_tick_get() : 0;
+}
+static double UnwrapAngleNear(double value, double reference)
+{
+	double delta = std::fmod(value-reference, 360.0);
+	if (delta > 180) delta -= 360;
+	if (delta < -180) delta += 360;
+	return reference+delta;
 }
 static inline void Afx_GetLastCameraData(double &x, double &y, double &z, double &rX, double &rY, double &rZ,
 										 float &fov)
@@ -189,6 +260,8 @@ static float g_CurveValueOffset = 0.0f;
 static double g_CurveTimeZoom = 1.0, g_CurveTimeCenter = 0.5;
 static std::vector<int> g_CurveSelection;
 static bool g_CurveShow[7] = {true, false, false, false, false, false, false};
+static double g_DragFirst = 0, g_DragLast = 1;
+static double g_DragCenters[7], g_DragHalves[7];
 static int g_CurveFocusChannel = -1; // -1 = none
 struct CurveCache
 {
@@ -198,8 +271,6 @@ struct CurveCache
 } g_CurveCache;
 static int g_CurveCtxKeyIndex = -1;
 static int g_CurveCtxChannel = -1;
-static bool g_PreviewFollow = false;
-static float g_PreviewNorm = 0.0f;
 static bool g_CurveNormalize = true; // normalize each channel to its own range
 
 // UI SCALE
@@ -261,6 +332,7 @@ static ImGui::FileBrowser s_campathSaveDialog(ImGuiFileBrowserFlags_EnterNewFile
 											  ImGuiFileBrowserFlags_EditPathString |
 											  ImGuiFileBrowserFlags_CreateNewDir);
 static bool s_campathDialogsInit = false;
+static bool g_OpenAll = false, g_SaveAll = false;
 
 // Persisted overlay paths in imgui.ini
 struct OverlayPathsSettings
@@ -294,6 +366,14 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 	}
 	else if (key == "Font")
 		g_FontChoice = std::clamp(atoi(val.c_str()), 0, 3);
+	else if (key == "Autosave")
+		g_Autosave = atoi(val.c_str()) != 0;
+	else if (key == "AutosaveSeconds")
+	{
+		double v = std::strtod(val.c_str(), nullptr);
+		if (std::isfinite(v))
+			g_AutosaveSeconds = std::clamp(v, 5.0, 3600.0);
+	}
 	else if (key == "Docking")
 		g_Docking = atoi(val.c_str()) != 0;
 }
@@ -306,6 +386,7 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 		out_buf->appendf("RecordBrowseDir=%s\n", g_OverlayPaths.recordBrowseDir.c_str());
 	if (!g_OverlayPaths.demoDir.empty())
 		out_buf->appendf("DemoDir=%s\n", g_OverlayPaths.demoDir.c_str());
+	out_buf->appendf("Autosave=%d\nAutosaveSeconds=%.3f\n", g_Autosave ? 1 : 0, g_AutosaveSeconds);
 	out_buf->appendf("UiScale=%.3f\nFont=%d\nDocking=%d\n\n", g_UiScale, g_FontChoice, g_Docking ? 1 : 0);
 }
 
@@ -326,6 +407,197 @@ static void PathChanged(void *)
 			}
 		if (!found)
 			g_LastCampathCtx.active = false;
+	}
+}
+static void DrawDocumentControls()
+{
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	ImGui::TextUnformatted(paths.IsDirty() ? "Unsaved changes *" : "All changes saved");
+	if (ImGui::BeginCombo("Path", paths.GetName(paths.GetActive()).c_str()))
+	{
+		for (size_t i = 0; i < paths.GetCount(); ++i)
+		{
+			ImGui::PushID((int)i);
+			const auto label = paths.GetName(i) + (paths.IsDirty(i) ? " *" : "");
+			if (ImGui::Selectable(label.c_str(), i == paths.GetActive()))
+			{
+				const double clientTime =
+					MirvCampathPreview_GetTime() + g_Hook_VClient_RenderView.m_CamPath.GetOffset();
+				g_CurveKeyDrag = false;
+				paths.Select(i);
+				if (MirvCampathPreview_IsActive())
+					MirvCampathPreview_SetTime(clientTime - g_Hook_VClient_RenderView.m_CamPath.GetOffset());
+			}
+			ImGui::PopID();
+		}
+		ImGui::EndCombo();
+	}
+	if (ImGui::Button("New path"))
+		paths.NewPath();
+	ImGui::SameLine();
+	if (ImGui::Button("Duplicate path"))
+		paths.NewPath({}, true);
+	ImGui::SameLine();
+	if (ImGui::Button("Remove path"))
+		paths.Remove(paths.GetActive());
+	static char rename[129] = {};
+	static unsigned long long lastId = 0;
+	const auto state = paths.CaptureState();
+	if (lastId != state.Paths[state.Active].Id || !ImGui::IsAnyItemActive())
+	{
+		lastId = state.Paths[state.Active].Id;
+		snprintf(rename, sizeof(rename), "%s", paths.GetName(paths.GetActive()).c_str());
+	}
+	if (ImGui::InputText("Path name", rename, sizeof(rename), ImGuiInputTextFlags_EnterReturnsTrue))
+		if (!paths.Rename(rename))
+			g_DocumentStatus = "Use a nonempty, unique path name (up to 128 bytes).";
+	ImGui::TextDisabled("Selecting a path edits it. Playback uses the latest starting path in demo time.");
+	if (!g_DocumentStatus.empty())
+		ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
+	if (!g_RecoveryCandidates.empty())
+	{
+		ImGui::Separator();
+		ImGui::Text("%u recovery backup(s) available", (unsigned)g_RecoveryCandidates.size());
+		if (ImGui::Button("Recover latest backup"))
+		{
+			const auto backup = g_RecoveryCandidates.front();
+			UpdateRecovery(true);
+			if (paths.LoadAll(backup.wstring().c_str(), true))
+			{
+				NewRecoverySession();
+				g_DocumentStatus = "Recovered unsaved work. Save it with Save As or Save all.";
+			}
+			else
+				g_DocumentStatus = "The recovery backup could not be read; current work was retained.";
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Discard latest backup"))
+		{
+			std::error_code error;
+			std::filesystem::remove(g_RecoveryCandidates.front(), error);
+			ScanRecovery();
+		}
+	}
+}
+static void DrawKeyInspector()
+{
+	auto &path = g_Hook_VClient_RenderView.m_CamPath;
+	auto keys = path.CaptureState().Keys;
+	std::vector<double> selected;
+	for (const auto &key : keys)
+		if (key.second.Selected)
+			selected.push_back(key.first);
+	if (selected.empty())
+	{
+		ImGui::TextDisabled("Click a graph key or box select to inspect. Ctrl adds to selection.");
+		return;
+	}
+	ImGui::Text("%u selected key(s) | edits apply as an offset to all selected keys",
+				(unsigned)selected.size());
+	auto first = keys.find(selected.front());
+	double time = first->first;
+	const double ipt = TickInterval();
+	int tick = 0;
+	const bool haveTick = GetDemoTickFromClientTime(g_MirvTime.GetTime(), time + path.GetOffset(), tick);
+	double newTime = time;
+	bool changed = ImGui::InputDouble("Arrival (path seconds)", &newTime, 0, 0, "%.6f",
+									  ImGuiInputTextFlags_EnterReturnsTrue);
+	if (haveTick &&
+		ImGui::InputInt("Arrival (demo tick)", &tick, 1, 10, ImGuiInputTextFlags_EnterReturnsTrue))
+	{
+		int oldTick = 0;
+		GetDemoTickFromClientTime(g_MirvTime.GetTime(), time + path.GetOffset(), oldTick);
+		newTime = time + (tick - (double)oldTick) * ipt;
+		changed = true;
+	}
+	if (changed && std::isfinite(newTime))
+	{
+		CInterpolationMap<CamPathValue> moved;
+		bool unique = true;
+		for (auto key : keys)
+			unique &=
+				moved.emplace(key.first + (key.second.Selected ? newTime - time : 0), key.second).second;
+		if (unique && path.ReplaceKeys(moved))
+		{
+			keys = moved;
+			first = keys.find(newTime);
+			time = newTime;
+		}
+		else
+			g_DocumentStatus = "Arrival conflicts with another key or hold release; edit rejected.";
+	}
+	const char *labels[] = {"X (units)",	   "Y (units)",		"Z (units)",	 "FOV (degrees)",
+							"Pitch (degrees)", "Yaw (degrees)", "Roll (degrees)"};
+	for (int ch = 0; ch < 7; ++ch)
+	{
+		double value = CamPath::GetChannelValue(first->second, (CamPath::Channel)ch), newValue = value;
+		if (ImGui::InputDouble(labels[ch], &newValue, 0, 0, "%.6f", ImGuiInputTextFlags_EnterReturnsTrue) &&
+			std::isfinite(newValue))
+		{
+			for (auto &key : keys)
+				if (key.second.Selected)
+					CamPath::SetChannelValue(key.second, (CamPath::Channel)ch,
+											 CamPath::GetChannelValue(key.second, (CamPath::Channel)ch) +
+												 newValue - value);
+			if (!path.ReplaceKeys(keys))
+				g_DocumentStatus = "Pose edit conflicts with a neighbouring hold.";
+		}
+	}
+	double duration = first->second.HoldDuration;
+	bool setHold =
+		ImGui::InputDouble("Hold (seconds)", &duration, 0, 0, "%.6f", ImGuiInputTextFlags_EnterReturnsTrue);
+	if (ImGui::Button("Capture hold release"))
+	{
+		duration = g_MirvTime.GetTime() - path.GetOffset() - time;
+		setHold = true;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Clear hold"))
+	{
+		duration = 0;
+		setHold = true;
+	}
+	if (setHold)
+	{
+		for (auto &key : keys)
+			if (key.second.Selected)
+				key.second.HoldDuration = duration;
+		if (!path.ReplaceKeys(keys))
+			g_DocumentStatus = "Hold must end after arrival and before the next different pose.";
+	}
+	if (ImGui::Button("Reset selected tangents to Auto"))
+		for (int ch = 0; ch < 7; ++ch)
+			if (g_CurveShow[ch] && (g_CurveFocusChannel < 0 || g_CurveFocusChannel == ch))
+			{
+				path.SetTangentMode((CamPath::Channel)ch, true, true, CamPath::TM_AUTO);
+				path.SetTangentWeight((CamPath::Channel)ch, true, true, 1, 1);
+			}
+	ImGui::TextDisabled("Graph: right-click a channel checkbox to focus; drag keys; Shift locks an axis; Alt "
+						"snaps time to ticks. Handles: Shift changes weight; Alt breaks alignment.");
+}
+static void DrawSpeedControls()
+{
+	auto &path = g_Hook_VClient_RenderView.m_CamPath;
+	if (!path.CanEval() || path.GetSize() < 2)
+		return;
+	if (ImGui::CollapsingHeader("Travel speed / distance timing"))
+	{
+		float speed[192];
+		for (int i = 0; i < 192; ++i)
+			speed[i] = (float)path.GetSpeed(path.GetLowerBound() + path.GetDuration() * i / 191);
+		ImGui::PlotLines("Speed (units/s)", speed, 192, 0, nullptr, 0, FLT_MAX, ImVec2(0, 70));
+		bool enabled = path.GetDistanceTiming();
+		if (ImGui::Checkbox("Distance timing", &enabled))
+			path.SetDistanceTiming(enabled);
+		static double duration = 10;
+		ImGui::InputDouble("Total duration (seconds)", &duration, 0, 0, "%.3f");
+		if (ImGui::Button("Retime by distance"))
+			if (!path.RetimeByDistance(duration))
+				g_DocumentStatus = "Retime requires Custom/Linear channels, nonzero travel and enough "
+								   "duration for all holds.";
+		ImGui::TextWrapped(
+			"Retime distributes travel time by distance and keeps holds and stationary intervals. It "
+			"preserves the spatial curve. Reset Auto or changing geometry may require retiming again.");
 	}
 }
 static void DrawInterpolationSettings(CamPath &path)
@@ -447,7 +719,7 @@ static void DrawObserving()
 					traceStatus = "Native spectating requires an STV demo. This player remains selected for bone attachments.";
 				else if (user > 0)
 				{
-					g_PreviewFollow = false;
+					MirvCampathPreview_SetActive(false);
 					g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
 					char cmd[192];
 					sprintf_s(cmd, "mirv_campath preview exit; mirv_cam attach clear; mirv_input end; spec_autodirector 0; spec_mode 4; spec_player \"#%d\"", user);
@@ -572,6 +844,7 @@ void Draw()
 
 	ImGuizmo::BeginFrame();
 	ImGui::SetNextWindowPos(ImVec2(20, 30), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSizeConstraints(ImVec2(540, 200), ImVec2(900, ImGui::GetIO().DisplaySize.y - 50));
 	ImGui::Begin("TF2 Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 	if (ImGui::Button("Undo"))
 		HistoryUndo(false);
@@ -583,19 +856,14 @@ void Draw()
 		// Campath tab
 		if (ImGui::BeginTabItem("Campath"))
 		{
-			// Preview toggle
-			static bool preview = false;
-			static bool previewInit = false;
-			if (!previewInit)
-			{
-				preview = g_CampathDrawer.Draw_get();
-				previewInit = true;
-			}
-			if (ImGui::Checkbox("Enable camera path preview", &preview))
-			{
-				g_CampathDrawer.Draw_set(preview);
-				advancedfx::Message("Overlay: mirv_campath draw enabled %d\n", preview ? 1 : 0);
-			}
+			DrawDocumentControls();
+			ImGui::Separator();
+			bool showPath = g_CampathDrawer.Draw_get();
+			if (ImGui::Checkbox("Show path", &showPath))
+				g_CampathDrawer.Draw_set(showPath);
+			bool preview = MirvCampathPreview_IsActive();
+			if (ImGui::Checkbox("Preview path", &preview))
+				MirvCampathPreview_SetActive(preview);
 
 			float labelHeight = g_CampathDrawer.GetDrawKeyframeIndex();
 			if (ImGui::SliderFloat("Key label size", &labelHeight, 0, 100, "%.0f",
@@ -605,7 +873,7 @@ void Draw()
 			size_t cpCount = g_Hook_VClient_RenderView.m_CamPath.GetSize();
 			if (cpCount > 0)
 			{
-				double seconds = (cpCount >= 2) ? g_Hook_VClient_RenderView.m_CamPath.GetDuration() : 0.0;
+				double seconds = g_Hook_VClient_RenderView.m_CamPath.GetDuration();
 				int ticks = 0;
 				double demoNow = 0.0;
 				if (GetCurrentDemoTime(demoNow) && seconds > 0.0)
@@ -668,54 +936,76 @@ void Draw()
 
 			auto &path = g_Hook_VClient_RenderView.m_CamPath;
 			DrawInterpolationSettings(path);
-			// Open/Save campath
 			ImGui::Separator();
-			if (ImGui::Button("Open campath"))
+			if (ImGui::Button("Open path"))
 			{
-				if (!g_OverlayPaths.campathDir.empty())
-					s_campathOpenDialog.SetDirectory(g_OverlayPaths.campathDir);
+				g_OpenAll = false;
+				s_campathOpenDialog.SetTitle("Open path");
 				s_campathOpenDialog.Open();
 			}
 			ImGui::SameLine();
-			if (ImGui::Button("Save campath"))
+			if (ImGui::Button("Open collection"))
 			{
-				if (!g_OverlayPaths.campathDir.empty())
-					s_campathSaveDialog.SetDirectory(g_OverlayPaths.campathDir);
+				g_OpenAll = true;
+				s_campathOpenDialog.SetTitle("Open collection");
+				s_campathOpenDialog.Open();
+			}
+			if (ImGui::Button("Save path"))
+			{
+				const auto &file = g_Hook_VClient_RenderView.m_CamPaths.GetFileName();
+				if (file.empty())
+				{
+					g_SaveAll = false;
+					s_campathSaveDialog.Open();
+				}
+				else
+					SaveDocument(file.c_str(), false);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Save path as"))
+			{
+				g_SaveAll = false;
+				s_campathSaveDialog.SetTitle("Save path as");
+				s_campathSaveDialog.Open();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Save all"))
+			{
+				const auto &file = g_Hook_VClient_RenderView.m_CamPaths.GetCollectionFileName();
+				if (file.empty())
+				{
+					g_SaveAll = true;
+					s_campathSaveDialog.SetTitle("Save collection");
+					s_campathSaveDialog.Open();
+				}
+				else
+					SaveDocument(file.c_str(), true);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Save all as"))
+			{
+				g_SaveAll = true;
+				s_campathSaveDialog.SetTitle("Save collection as");
 				s_campathSaveDialog.Open();
 			}
 			s_campathOpenDialog.Display();
 			s_campathSaveDialog.Display();
 			if (s_campathOpenDialog.HasSelected())
 			{
-				const std::string path = s_campathOpenDialog.GetSelected().string();
-				if (!g_Hook_VClient_RenderView.m_CamPath.Load(
-						s_campathOpenDialog.GetSelected().wstring().c_str()))
-					advancedfx::Warning("Overlay: could not load campath.\n");
-				try
-				{
-					g_OverlayPaths.campathDir = std::filesystem::path(path).parent_path().string();
-				}
-				catch (...)
-				{
-				}
+				LoadDocument(s_campathOpenDialog.GetSelected().wstring().c_str(), g_OpenAll);
+				g_OverlayPaths.campathDir = s_campathOpenDialog.GetSelected().parent_path().string();
+				s_campathSaveDialog.SetDirectory(s_campathOpenDialog.GetSelected().parent_path());
 				ImGui::MarkIniSettingsDirty();
 				s_campathOpenDialog.ClearSelected();
 			}
 			if (s_campathSaveDialog.HasSelected())
 			{
-				const std::string path = s_campathSaveDialog.GetSelected().string();
 				auto file = s_campathSaveDialog.GetSelected();
 				if (!file.has_extension())
 					file += ".xml";
-				if (!g_Hook_VClient_RenderView.m_CamPath.Save(file.wstring().c_str()))
-					advancedfx::Warning("Overlay: could not save campath.\n");
-				try
-				{
-					g_OverlayPaths.campathDir = std::filesystem::path(path).parent_path().string();
-				}
-				catch (...)
-				{
-				}
+				SaveDocument(file.wstring().c_str(), g_SaveAll);
+				g_OverlayPaths.campathDir = file.parent_path().string();
+				s_campathOpenDialog.SetDirectory(file.parent_path());
 				ImGui::MarkIniSettingsDirty();
 				s_campathSaveDialog.ClearSelected();
 			}
@@ -943,6 +1233,16 @@ void Draw()
 		// Settings
 		if (ImGui::BeginTabItem("Settings"))
 		{
+			if (ImGui::Checkbox("Periodic recovery autosave", &g_Autosave))
+				ImGui::MarkIniSettingsDirty();
+			ImGui::TextDisabled(
+				"Unsaved work is also backed up on closing the overlay or loading another file.");
+			if (ImGui::InputDouble("Autosave interval (seconds)", &g_AutosaveSeconds))
+				ImGui::MarkIniSettingsDirty();
+			g_AutosaveSeconds =
+				std::isfinite(g_AutosaveSeconds) ? std::clamp(g_AutosaveSeconds, 5.0, 3600.0) : 30;
+			if (ImGui::Button("Refresh recovery backups"))
+				ScanRecovery();
 			ImGuiIO &io = ImGui::GetIO();
 			if (ImGui::Checkbox("Docking workspace", &g_Docking))
 				ImGui::MarkIniSettingsDirty();
@@ -1345,7 +1645,7 @@ void Draw()
 										pMirv->SetTy((float)v.Y);
 										pMirv->SetTz((float)v.Z);
 										using namespace Afx::Math;
-										QEulerAngles angles = v.R.ToQREulerAngles().ToQEulerAngles();
+										QEulerAngles angles = v.GetEulerAngles();
 										pMirv->SetRx((float)angles.Pitch);
 										pMirv->SetRy((float)angles.Yaw);
 										pMirv->SetRz((float)angles.Roll);
@@ -1363,11 +1663,12 @@ void Draw()
 									newVal.Y = cy;
 									newVal.Z = cz;
 									newVal.Fov = cfov;
-									newVal.R = Quaternion::FromQREulerAngles(
-										QREulerAngles::FromQEulerAngles(QEulerAngles(rX, rY, rZ)));
+									newVal.SetEulerAngles(QEulerAngles(rX, rY, rZ));
 									g_CampathDrawer.Draw_set(false);
-									g_Hook_VClient_RenderView.m_CamPath.Remove(s_ctxMenuPending.time);
-									g_Hook_VClient_RenderView.m_CamPath.Add(s_ctxMenuPending.time, newVal);
+									if (!g_Hook_VClient_RenderView.m_CamPath.UpdateKey(
+											s_ctxMenuPending.time, s_ctxMenuPending.time, newVal))
+										g_DocumentStatus =
+											"Cannot change a pose that shares an adjacent hold release.";
 									g_CampathDrawer.Draw_set(prevDraw);
 									s_ctxMenuPending.active = false;
 									g_SequencerNeedsRefresh = true;
@@ -1421,24 +1722,21 @@ void Draw()
 								CamPathValue v = (i < liveValues.size()) ? liveValues[i] : s_cache.values[i];
 								newKeys.push_back({newRelTime, v, (int)i});
 							}
-							// Sort + nudge identicals
+							// Validate all arrivals before replacing the native map.
 							std::sort(newKeys.begin(), newKeys.end(),
 									  [](const TmpKey &a, const TmpKey &b) { return a.t < b.t; });
-							const double eps = 1e-6;
-							for (size_t i = 1; i < newKeys.size(); ++i)
-								if (fabs(newKeys[i].t - newKeys[i - 1].t) < eps)
-									newKeys[i].t = newKeys[i - 1].t + eps;
-							double savedOffset = g_Hook_VClient_RenderView.m_CamPath.GetOffset();
-							// Rebuild atomically with draw disabled and selection restored
-							bool prevDraw = g_CampathDrawer.Draw_get();
-							g_CampathDrawer.Draw_set(false);
-							bool prevEnabled = g_Hook_VClient_RenderView.m_CamPath.Enabled_get();
-							g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
-							g_Hook_VClient_RenderView.m_CamPath.SelectNone();
-							g_Hook_VClient_RenderView.m_CamPath.Clear();
-							g_Hook_VClient_RenderView.m_CamPath.SetOffset(savedOffset);
+
+							CInterpolationMap<CamPathValue> replacements;
+							bool unique = true;
 							for (const auto &k : newKeys)
-								g_Hook_VClient_RenderView.m_CamPath.Add(k.t, k.v);
+								unique &= replacements.emplace(k.t, k.v).second;
+							if (!unique || !g_Hook_VClient_RenderView.m_CamPath.ReplaceKeys(replacements))
+							{
+								g_DocumentStatus = "Keys cannot share an arrival time or cross a hold release.";
+								g_SequencerNeedsRefresh = true;
+								newKeys.clear();
+							}
+
 							if (!prevSelectedIdx.empty())
 							{
 								std::vector<int> newSelected;
@@ -1487,8 +1785,7 @@ void Draw()
 								}
 								Afx_ExecClientCmd(cmd.c_str());
 							}
-							g_Hook_VClient_RenderView.m_CamPath.Enabled_set(prevEnabled);
-							g_CampathDrawer.Draw_set(prevDraw);
+
 							for (size_t i = 0; i < newKeys.size(); ++i)
 								s_cache.times[i] = newKeys[i].t;
 							s_cache.valid = false;
@@ -1565,38 +1862,16 @@ void Draw()
 			}
 			ImGui::SameLine();
 			ImGui::Text("Start: %d  End: %d  Current: %d", (int)s_seqStart, (int)s_seqEnd, (int)s_seqFrame);
+			if (ImGui::SmallButton("Seek to preview"))
+				MirvCampathPreview_Seek();
 			ImGui::SameLine();
-			if (ImGui::SmallButton(g_PreviewFollow ? "Detach Preview" : "Follow Preview"))
+			if (ImGui::SmallButton("Insert keyframe at preview"))
 			{
-				g_PreviewFollow = !g_PreviewFollow;
+				if (!g_Hook_VClient_RenderView.m_CamPath.Insert(MirvCampathPreview_GetTime()))
+					g_DocumentStatus = "Insert requires an unoccupied interior time and Custom or Linear "
+									   "channels. The path was retained.";
 			}
-			ImGui::SameLine();
-			if (ImGui::SmallButton("Add keyframe at preview"))
-			{
-				if (g_Hook_VClient_RenderView.m_CamPath.GetSize() >= 2 &&
-					g_Hook_VClient_RenderView.m_CamPath.CanEval())
-				{
-					double tMin = g_Hook_VClient_RenderView.m_CamPath.GetLowerBound();
-					double tMax = g_Hook_VClient_RenderView.m_CamPath.GetUpperBound();
-					if (tMax <= tMin)
-						tMax = tMin + 1.0;
-					double tEval = tMin + (double)g_PreviewNorm * (tMax - tMin);
-					double cx, cy, cz, rX, rY, rZ;
-					float cfov;
-					Afx_GetLastCameraData(cx, cy, cz, rX, rY, rZ, cfov);
-					CamPathValue nv(cx, cy, cz, rX, rY, rZ, cfov);
-					bool prevDraw = g_CampathDrawer.Draw_get();
-					g_CampathDrawer.Draw_set(false);
-					g_Hook_VClient_RenderView.m_CamPath.Add(tEval, nv);
-					g_CampathDrawer.Draw_set(prevDraw);
-					g_SequencerNeedsRefresh = true;
-					advancedfx::Message("Overlay: mirv_campath add at preview (t=%.3f)\n", tEval);
-				}
-				else
-				{
-					advancedfx::Warning("Overlay: Not enough campath keyframes to add at preview.\n");
-				}
-			}
+
 			ImGui::SameLine();
 			if (ImGui::SmallButton(g_ShowCurveEditor ? "Hide Curve Editor" : "Show Curve Editor"))
 				g_ShowCurveEditor = !g_ShowCurveEditor;
@@ -1606,13 +1881,10 @@ void Draw()
 				ImGui::Separator();
 				ImGui::SeparatorText("Curve Editor");
 				DrawInterpolationSettings(g_Hook_VClient_RenderView.m_CamPath);
+				DrawSpeedControls();
+				if (ImGui::CollapsingHeader("Selected key inspector"))
+					DrawKeyInspector();
 				// Removed channel selector; editing is driven by visibility checkboxes and optional focus
-				if (ImGui::Button("Enable"))
-				{
-					Afx_ExecClientCmd("mirv_campath edit interp position custom; mirv_campath edit interp "
-									  "rotation custom; mirv_campath edit interp fov custom");
-				}
-				ImGui::SameLine();
 				ImGui::Checkbox("Normalized", &g_CurveNormalize);
 				ImGui::SameLine();
 				ImGui::TextDisabled("|");
@@ -1755,18 +2027,22 @@ void Draw()
 					dl->AddRect(p0, p1, IM_COL32(60, 70, 80, 255));
 
 					// Screen-space helpers
-					auto toX = [&](double t) {
-						double duration = g_CurveCache.times.back() - g_CurveCache.times.front();
-						double tMin = g_CurveCache.times.front() +
-									  duration * (g_CurveTimeCenter - 0.5 / g_CurveTimeZoom);
+					auto toX = [&](double t)
+					{
+						double firstTime = g_CurveKeyDrag ? g_DragFirst : g_CurveCache.times.front();
+						double duration =
+							(g_CurveKeyDrag ? g_DragLast : g_CurveCache.times.back()) - firstTime;
+						double tMin = firstTime + duration * (g_CurveTimeCenter - 0.5 / g_CurveTimeZoom);
 						double tMax = tMin + duration / g_CurveTimeZoom;
 						double u = (t - tMin) / (tMax - tMin + 1e-12);
 						return p0.x + (float)u * (canvasSize.x - 2 * g_CurvePadding) + g_CurvePadding;
 					};
-					auto fromX = [&](float px) -> double {
-						double duration = g_CurveCache.times.back() - g_CurveCache.times.front();
-						double tMin = g_CurveCache.times.front() +
-									  duration * (g_CurveTimeCenter - 0.5 / g_CurveTimeZoom);
+					auto fromX = [&](float px) -> double
+					{
+						double firstTime = g_CurveKeyDrag ? g_DragFirst : g_CurveCache.times.front();
+						double duration =
+							(g_CurveKeyDrag ? g_DragLast : g_CurveCache.times.back()) - firstTime;
+						double tMin = firstTime + duration * (g_CurveTimeCenter - 0.5 / g_CurveTimeZoom);
 						double tMax = tMin + duration / g_CurveTimeZoom;
 						double u = (px - (p0.x + g_CurvePadding)) / (canvasSize.x - 2 * g_CurvePadding);
 						if (u < 0.0)
@@ -1854,14 +2130,11 @@ void Draw()
 							}
 							else
 							{
-								QEulerAngles e = v.R.ToQREulerAngles().ToQEulerAngles();
+								QEulerAngles e = v.GetEulerAngles();
 								val = (ch == 4 ? e.Pitch : ch == 5 ? e.Yaw : e.Roll);
-								if (havePrev)
+								if (havePrev && !v.HasEuler)
 								{
-									while (val - prev > 180.0)
-										val -= 360.0;
-									while (val - prev < -180.0)
-										val += 360.0;
+									val = UnwrapAngleNear(val, prev);
 								}
 								prev = val;
 								havePrev = true;
@@ -1887,6 +2160,13 @@ void Draw()
 						vCenter[ch] = 0.5 * (vMin + vMax);
 						vHalf[ch] = 0.5 * (vMax - vMin);
 					}
+
+					if (g_CurveKeyDrag)
+						for (int ch = 0; ch < 7; ++ch)
+						{
+							vCenter[ch] = g_DragCenters[ch];
+							vHalf[ch] = g_DragHalves[ch];
+						}
 
 					// Map value -> screen Y for a specific channel
 					auto toY_ch = [&](int ch, double v) -> float {
@@ -1930,29 +2210,25 @@ void Draw()
 						CamPathValue vv = g_Hook_VClient_RenderView.m_CamPath.Eval(t);
 						if (ch <= 3)
 							return (ch == 0 ? vv.X : ch == 1 ? vv.Y : ch == 2 ? vv.Z : vv.Fov);
-						QEulerAngles e = vv.R.ToQREulerAngles().ToQEulerAngles();
+						QEulerAngles e = vv.GetEulerAngles();
 						return (ch == 4 ? e.Pitch : ch == 5 ? e.Yaw : e.Roll);
 					};
 
 					// Draw segments
 					// Keep per-channel running continuity for Euler channels so adjacent segments align
 					// visually
-					auto unwrapNear = [](double v, double ref) -> double {
-						while (v - ref > 180.0)
-							v -= 360.0;
-						while (v - ref < -180.0)
-							v += 360.0;
-						return v;
-					};
+					auto unwrapNear = UnwrapAngleNear;
 					bool prevValid[7] = {false, false, false, false, false, false, false};
 					double prevYEnd[7] = {0, 0, 0, 0, 0, 0, 0};
 					for (size_t i = 0; i + 1 < g_CurveCache.times.size(); ++i)
 					{
-						double t0 = g_CurveCache.times[i];
+						double t0 = g_CurveCache.times[i] + g_CurveCache.values[i].HoldDuration;
 						double t1 = g_CurveCache.times[i + 1];
 						const CamPathValue &cv0 = g_CurveCache.values[i];
 						const CamPathValue &cv1 = g_CurveCache.values[i + 1];
 						double h = (t1 - t0);
+						if (h <= 0)
+							continue;
 						double eps = (std::max)(1e-6, (std::min)(h * 0.01, 0.05));
 
 
@@ -1970,12 +2246,12 @@ void Draw()
 							}
 							else
 							{
-								QEulerAngles e0 = cv0.R.ToQREulerAngles().ToQEulerAngles();
-								QEulerAngles e1 = cv1.R.ToQREulerAngles().ToQEulerAngles();
+								QEulerAngles e0 = cv0.GetEulerAngles();
+								QEulerAngles e1 = cv1.GetEulerAngles();
 								double y0raw = (ch == 4 ? e0.Pitch : ch == 5 ? e0.Yaw : e0.Roll);
 								double y1raw = (ch == 4 ? e1.Pitch : ch == 5 ? e1.Yaw : e1.Roll);
 								// Ensure continuity across segments relative to previous segment end
-								if (prevValid[ch])
+								if (prevValid[ch] && !cv0.HasEuler)
 								{
 									y0 = unwrapNear(y0raw, prevYEnd[ch]);
 								}
@@ -1983,7 +2259,7 @@ void Draw()
 								{
 									y0 = y0raw;
 								}
-								y1 = unwrapNear(y1raw, y0);
+								y1 = cv1.HasEuler ? y1raw : unwrapNear(y1raw, y0);
 							}
 
 							// Which interpolation is active for this channel?
@@ -2020,7 +2296,21 @@ void Draw()
 
 							// Curve
 							ImU32 c = chColor(ch);
-							dl->AddBezierCubic(P0, P1, P2, P3, c, 2.0f);
+							if (g_Hook_VClient_RenderView.m_CamPath.GetDistanceTiming())
+							{
+								ImVec2 last = P0;
+								for (int sample = 1; sample <= 96; ++sample)
+								{
+									double t = t0 + h * sample / 96;
+									ImVec2 next(toX(t), toY_ch(ch, compEval(ch, t)));
+									dl->AddLine(last, next, c, 2);
+									last = next;
+								}
+							}
+							else
+								dl->AddBezierCubic(P0, P1, P2, P3, c, 2.0f);
+							if (cv0.HoldDuration > 0)
+								dl->AddLine(ImVec2(toX(g_CurveCache.times[i]), P0.y), P0, c, 3);
 
 							// Remember continuity for next segment (Euler channels)
 							if (ch >= 4)
@@ -2041,32 +2331,6 @@ void Draw()
 								dl->AddCircleFilled(P1, r, chHandleColor(ch));
 								dl->AddCircleFilled(P2, r, chHandleColor(ch));
 
-								// Right-click P0/P3 to open context menu (IDs include channel to avoid
-								// conflicts)
-								{
-									float hitR = 6.0f;
-									ImGui::SetCursorScreenPos(ImVec2(P0.x - hitR, P0.y - hitR));
-									char idK0[48];
-									snprintf(idK0, sizeof(idK0), "##curve_key_p0_%zu_ch%d", i, ch);
-									ImGui::InvisibleButton(idK0, ImVec2(2 * hitR, 2 * hitR));
-									if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-									{
-										g_CurveCtxKeyIndex = (int)i;
-										g_CurveCtxChannel = ch;
-										ImGui::OpenPopup("campath_curve_kf_ctx");
-									}
-
-									ImGui::SetCursorScreenPos(ImVec2(P3.x - hitR, P3.y - hitR));
-									char idK3[48];
-									snprintf(idK3, sizeof(idK3), "##curve_key_p3_%zu_ch%d", i, ch);
-									ImGui::InvisibleButton(idK3, ImVec2(2 * hitR, 2 * hitR));
-									if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-									{
-										g_CurveCtxKeyIndex = (int)(i + 1);
-										g_CurveCtxChannel = ch;
-										ImGui::OpenPopup("campath_curve_kf_ctx");
-									}
-								}
 
 								// Drag handles (vertical only) – your existing logic, but use channel `ch`
 								// Left handle
@@ -2098,7 +2362,7 @@ void Draw()
 									auto compOf = [&](const CamPathValue &v, int chX) -> double {
 										if (chX <= 3)
 											return chX == 0 ? v.X : chX == 1 ? v.Y : chX == 2 ? v.Z : v.Fov;
-										QEulerAngles e = v.R.ToQREulerAngles().ToQEulerAngles();
+										QEulerAngles e = v.GetEulerAngles();
 										return chX == 4 ? e.Pitch : chX == 5 ? e.Yaw : e.Roll;
 									};
 
@@ -2142,10 +2406,7 @@ void Draw()
 										double newV = fromYToValue(ch);
 										if (ch >= 4)
 										{
-											while (newV - baseY0 > 180.0)
-												newV -= 360.0;
-											while (newV - baseY0 < -180.0)
-												newV += 360.0;
+											newV = UnwrapAngleNear(newV, baseY0);
 										}
 										double newSlope = (newV - baseY0) / (wOut * h / 3.0);
 										if (altHeld)
@@ -2193,7 +2454,7 @@ void Draw()
 									auto compOf = [&](const CamPathValue &v, int chX) -> double {
 										if (chX <= 3)
 											return chX == 0 ? v.X : chX == 1 ? v.Y : chX == 2 ? v.Z : v.Fov;
-										QEulerAngles e = v.R.ToQREulerAngles().ToQEulerAngles();
+										QEulerAngles e = v.GetEulerAngles();
 										return chX == 4 ? e.Pitch : chX == 5 ? e.Yaw : e.Roll;
 									};
 									auto mapChToEnum = [&](int chX) -> CamPath::Channel {
@@ -2237,10 +2498,7 @@ void Draw()
 										double newV = fromYToValue(ch);
 										if (ch >= 4)
 										{
-											while (baseY1 - newV > 180.0)
-												newV += 360.0;
-											while (baseY1 - newV < -180.0)
-												newV -= 360.0;
+											newV = UnwrapAngleNear(newV, baseY1);
 										}
 										double newSlope = (baseY1 - newV) / (wIn * h / 3.0);
 										if (altHeld2)
@@ -2265,6 +2523,127 @@ void Draw()
 						} // channels
 					} // segments
 
+					// One hit target per key/channel. Drag from a frozen transform so changing the
+					// first/last key or the value range cannot move the coordinate system under the mouse.
+					bool &keyDrag = g_CurveKeyDrag;
+					static bool boxDrag = false;
+					static CamPath::State dragStart;
+					static ImVec2 dragMouse, boxStart;
+					static double secondsPerPixel, valuePerPixel;
+					static int dragChannel = 0;
+					std::vector<std::pair<int, ImVec2>> points;
+					for (size_t index = 0; index < g_CurveCache.times.size(); ++index)
+						for (int ch = 0; ch < 7; ++ch)
+							if (drawMask[ch] && (g_CurveFocusChannel < 0 || g_CurveFocusChannel == ch))
+							{
+								const auto &v = g_CurveCache.values[index];
+								double component = CamPath::GetChannelValue(v, (CamPath::Channel)ch);
+								if (ch >= 4 &&
+									g_Hook_VClient_RenderView.m_CamPath.RotationInterpMethod_get() ==
+										CamPath::QI_CUSTOM)
+									component = compEval(ch, g_CurveCache.times[index]);
+								ImVec2 point(toX(g_CurveCache.times[index]), toY_ch(ch, component));
+								points.emplace_back((int)index, point);
+								dl->AddCircleFilled(point, v.Selected ? 5.5f : 4,
+													v.Selected ? IM_COL32(255, 225, 90, 255) : chColor(ch));
+								ImGui::SetCursorScreenPos(ImVec2(point.x - 6, point.y - 6));
+								char id[64];
+								snprintf(id, sizeof(id), "##curve_key_%zu_ch%d", index, ch);
+								ImGui::InvisibleButton(id, ImVec2(12, 12));
+								if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+								{
+									g_CurveCtxKeyIndex = (int)index;
+									g_CurveCtxChannel = ch;
+									ImGui::OpenPopup("campath_curve_kf_ctx");
+								}
+								if (ImGui::IsItemClicked())
+								{
+									auto &path = g_Hook_VClient_RenderView.m_CamPath;
+									auto selected = path.CaptureState().Keys;
+									if (!io.KeyCtrl && !v.Selected)
+										for (auto &key : selected)
+											key.second.Selected = false;
+									selected[g_CurveCache.times[index]].Selected =
+										io.KeyCtrl ? !v.Selected : true;
+									path.ReplaceKeys(selected);
+									BeginEdit();
+									dragStart = path.CaptureState();
+									dragMouse = io.MousePos;
+									dragChannel = ch;
+									secondsPerPixel =
+										(g_CurveCache.times.back() - g_CurveCache.times.front()) /
+										(g_CurveTimeZoom * plotWidth);
+									valuePerPixel = 2 * vHalf[g_CurveNormalize ? ch : anchorCh] /
+													(g_CurveValueScale * plotHeight);
+									g_DragFirst = g_CurveCache.times.front();
+									g_DragLast = g_CurveCache.times.back();
+									for (int c = 0; c < 7; ++c)
+									{
+										g_DragCenters[c] = vCenter[c];
+										g_DragHalves[c] = vHalf[c];
+									}
+									keyDrag = true;
+								}
+							}
+					if (keyDrag && ImGui::IsMouseDragging(0))
+					{
+						double dt = (io.MousePos.x - dragMouse.x) * secondsPerPixel;
+						double dv = -(io.MousePos.y - dragMouse.y) * valuePerPixel;
+						if (io.KeyShift)
+						{
+							if (std::abs(io.MousePos.x - dragMouse.x) > std::abs(io.MousePos.y - dragMouse.y))
+								dv = 0;
+							else
+								dt = 0;
+						}
+						if (io.KeyAlt &&
+							TickInterval() > 0)
+							dt = std::round(
+									 dt /
+									 TickInterval()) *
+								 TickInterval();
+						CInterpolationMap<CamPathValue> keys;
+						bool unique = true;
+						for (auto key : dragStart.Keys)
+						{
+							if (key.second.Selected)
+								CamPath::SetChannelValue(
+									key.second, (CamPath::Channel)dragChannel,
+									CamPath::GetChannelValue(key.second, (CamPath::Channel)dragChannel) + dv);
+							unique &=
+								keys.emplace(key.first + (key.second.Selected ? dt : 0), key.second).second;
+						}
+						if (!unique || !g_Hook_VClient_RenderView.m_CamPath.ReplaceKeys(keys))
+							g_DocumentStatus = "Keys cannot share an arrival time or cross a hold release.";
+					}
+					if (!ImGui::IsMouseDown(0))
+						keyDrag = false;
+					if (hovered && ImGui::IsMouseClicked(0) && !ImGui::IsAnyItemActive() && !keyDrag)
+					{
+						boxDrag = true;
+						boxStart = io.MousePos;
+					}
+					if (boxDrag)
+					{
+						ImVec2 lo((std::min)(boxStart.x, io.MousePos.x),
+								  (std::min)(boxStart.y, io.MousePos.y));
+						ImVec2 hi((std::max)(boxStart.x, io.MousePos.x),
+								  (std::max)(boxStart.y, io.MousePos.y));
+						dl->AddRectFilled(lo, hi, IM_COL32(100, 170, 230, 40));
+						dl->AddRect(lo, hi, IM_COL32(100, 170, 230, 220));
+						if (!ImGui::IsMouseDown(0))
+						{
+							auto &path = g_Hook_VClient_RenderView.m_CamPath;
+							if (!io.KeyCtrl)
+								path.SelectNone();
+							for (const auto &pt : points)
+								if (pt.second.x >= lo.x && pt.second.x <= hi.x && pt.second.y >= lo.y &&
+									pt.second.y <= hi.y)
+									path.SelectAdd((size_t)pt.first, (size_t)pt.first);
+							boxDrag = false;
+						}
+					}
+
 					// Draw the curve-editor popup ONCE per frame (outside loops)
 					dl->PopClipRect();
 					if (ImGui::BeginPopup("campath_curve_kf_ctx"))
@@ -2284,9 +2663,12 @@ void Draw()
 							auto ApplyMode = [&](bool setIn, bool setOut, unsigned char mode) {
 								bool prevDraw = g_CampathDrawer.Draw_get();
 								g_CampathDrawer.Draw_set(false);
-								g_Hook_VClient_RenderView.m_CamPath.SelectNone();
-								g_Hook_VClient_RenderView.m_CamPath.SelectAdd((size_t)g_CurveCtxKeyIndex,
-																			  (size_t)g_CurveCtxKeyIndex);
+								if (!g_CurveCache.values[g_CurveCtxKeyIndex].Selected)
+								{
+									g_Hook_VClient_RenderView.m_CamPath.SelectNone();
+									g_Hook_VClient_RenderView.m_CamPath.SelectAdd((size_t)g_CurveCtxKeyIndex,
+																				  (size_t)g_CurveCtxKeyIndex);
+								}
 								g_Hook_VClient_RenderView.m_CamPath.SetTangentMode(
 									mapChToEnum(g_CurveCtxChannel), setIn, setOut, mode);
 								g_CampathDrawer.Draw_set(prevDraw);
@@ -2352,79 +2734,25 @@ void Draw()
 					ImGui::TextDisabled("Add at least 2 keys in Custom or Linear mode (Classic Cubic needs 4).");
 				}
 			}
-			// Preview slider driving Mirv camera (Source1 input)
-			if (g_Hook_VClient_RenderView.m_CamPath.GetSize() >= 2 &&
-				g_Hook_VClient_RenderView.m_CamPath.CanEval())
+			// A view onto the native preview cursor; the controller owns the camera.
+			if (g_Hook_VClient_RenderView.m_CamPath.GetSize())
 			{
+				auto &path = g_Hook_VClient_RenderView.m_CamPath;
 				ImGui::Separator();
-				ImGui::TextUnformatted("Preview");
-				double tMin = g_Hook_VClient_RenderView.m_CamPath.GetLowerBound();
-				double tMax = g_Hook_VClient_RenderView.m_CamPath.GetUpperBound();
-				if (tMax <= tMin)
-					tMax = tMin + 1.0;
-				static bool s_previewActive = false;
-				static bool s_prevCamEnabled = false;
-				static bool s_havePrevCamPose = false;
-				static double s_prevX = 0, s_prevY = 0, s_prevZ = 0, s_prevRx = 0, s_prevRy = 0, s_prevRz = 0;
-				static float s_prevFov = 90.0f;
+				bool active = MirvCampathPreview_IsActive();
+				if (ImGui::Checkbox("Preview path", &active))
+					MirvCampathPreview_SetActive(active);
+				const double begin = path.GetLowerBound(), end = path.GetUpperBound();
+				float position =
+					end > begin ? (float)((MirvCampathPreview_GetTime() - begin) / (end - begin)) : 0;
+				position = std::clamp(position, 0.0f, 1.0f);
 				ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-				if (ImGui::SliderFloat("##previewcampath", &g_PreviewNorm, 0.0f, 1.0f, "%.3f"))
-				{ /* live update below while active */
-				}
-				bool activeNow = ImGui::IsItemActive();
-				bool activated = ImGui::IsItemActivated();
-				bool deactivated = ImGui::IsItemDeactivated();
-				if (activated)
-				{
-					s_previewActive = true;
-					if (g_Hook_VClient_RenderView.m_MirvInput)
-					{
-						s_prevCamEnabled = g_Hook_VClient_RenderView.m_MirvInput->GetCameraControlMode();
-						s_havePrevCamPose = false;
-						if (s_prevCamEnabled)
-						{
-							Afx_GetLastCameraData(s_prevX, s_prevY, s_prevZ, s_prevRx, s_prevRy, s_prevRz,
-												  s_prevFov);
-							s_havePrevCamPose = true;
-						}
-						g_Hook_VClient_RenderView.m_MirvInput->SetCameraControlMode(true);
-					}
-				}
-				if (activeNow)
-				{
-					double tEval = tMin + (double)g_PreviewNorm * (tMax - tMin);
-					CamPathValue v = g_Hook_VClient_RenderView.m_CamPath.Eval(tEval);
-					if (g_Hook_VClient_RenderView.m_MirvInput)
-					{
-						g_Hook_VClient_RenderView.m_MirvInput->SetTx((float)v.X);
-						g_Hook_VClient_RenderView.m_MirvInput->SetTy((float)v.Y);
-						g_Hook_VClient_RenderView.m_MirvInput->SetTz((float)v.Z);
-						using namespace Afx::Math;
-						QEulerAngles ea = v.R.ToQREulerAngles().ToQEulerAngles();
-						g_Hook_VClient_RenderView.m_MirvInput->SetRx((float)ea.Pitch);
-						g_Hook_VClient_RenderView.m_MirvInput->SetRy((float)ea.Yaw);
-						g_Hook_VClient_RenderView.m_MirvInput->SetRz((float)ea.Roll);
-						g_Hook_VClient_RenderView.m_MirvInput->SetFov((float)v.Fov);
-					}
-				}
-				if (deactivated && s_previewActive)
-				{
-					if (g_Hook_VClient_RenderView.m_MirvInput)
-					{
-						if (!g_PreviewFollow && s_prevCamEnabled && s_havePrevCamPose)
-						{
-							g_Hook_VClient_RenderView.m_MirvInput->SetTx((float)s_prevX);
-							g_Hook_VClient_RenderView.m_MirvInput->SetTy((float)s_prevY);
-							g_Hook_VClient_RenderView.m_MirvInput->SetTz((float)s_prevZ);
-							g_Hook_VClient_RenderView.m_MirvInput->SetRx((float)s_prevRx);
-							g_Hook_VClient_RenderView.m_MirvInput->SetRy((float)s_prevRy);
-							g_Hook_VClient_RenderView.m_MirvInput->SetRz((float)s_prevRz);
-							g_Hook_VClient_RenderView.m_MirvInput->SetFov((float)s_prevFov);
-						}
-						g_Hook_VClient_RenderView.m_MirvInput->SetCameraControlMode(s_prevCamEnabled);
-					}
-					s_previewActive = false;
-				}
+				ImGui::BeginDisabled(!path.CanEval() || end <= begin);
+				if (ImGui::SliderFloat("##previewcampath", &position, 0, 1, "%.3f"))
+					MirvCampathPreview_SetTime(begin + position * (end - begin));
+				ImGui::EndDisabled();
+				ImGui::TextDisabled("Camera preview: %.3f s | Demo time stays independent",
+									MirvCampathPreview_GetTime());
 			}
 
 			// Frame pointer dragging -> demo_gototick
@@ -2766,7 +3094,7 @@ void Draw()
 			{
 				const CamPathValue &v = g_LastCampathCtx.value;
 				using namespace Afx::Math;
-				QEulerAngles ea = v.R.ToQREulerAngles().ToQEulerAngles();
+				QEulerAngles ea = v.GetEulerAngles();
 				BuildModel((float)v.X, (float)v.Y, (float)v.Z, (float)ea.Pitch, (float)ea.Yaw, (float)ea.Roll,
 						   model);
 			}
@@ -2880,7 +3208,7 @@ void Draw()
 					sprintf_s(buf, "mirv_campath edit position %.*f %.*f %.*f", 6, (float)newVal.X, 6,
 							  (float)newVal.Y, 6, (float)newVal.Z);
 					Afx_ExecClientCmd(buf);
-					auto e = newVal.R.ToQREulerAngles().ToQEulerAngles();
+					auto e = newVal.GetEulerAngles();
 					sprintf_s(buf, "mirv_campath edit angles %.*f %.*f %.*f", 6, (float)e.Pitch, 6,
 							  (float)e.Yaw, 6, (float)e.Roll);
 					Afx_ExecClientCmd(buf);

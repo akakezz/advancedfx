@@ -40,6 +40,7 @@ u x v = (u_1 X + u_2 Y + u_3 Z) x (v_1 X + v_2 Y + v_3 Z)
 
 */
 
+#include <cmath>
 #include <atomic>
 #include <map>
 #include <algorithm>
@@ -720,13 +721,16 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 		double (*tanInYaw)(const TMap &), double (*tanOutYaw)(const TMap &),
 		unsigned char (*modeInYaw)(const TMap &), unsigned char (*modeOutYaw)(const TMap &),
 		double (*wInYaw)(const TMap &), double (*wOutYaw)(const TMap &),
-		const AutoTangentSettings *autoSettings = nullptr)
+		const AutoTangentSettings *autoSettings = nullptr,
+		QEulerAngles (*eulerSelector)(const TMap &) = nullptr,
+		bool (*exactEulerSelector)(const TMap &) = nullptr)
 		: m_Map(map), m_TanInRoll(tanInRoll), m_TanOutRoll(tanOutRoll), m_ModeInRoll(modeInRoll),
 		  m_ModeOutRoll(modeOutRoll), m_WInRoll(wInRoll), m_WOutRoll(wOutRoll), m_TanInPitch(tanInPitch),
 		  m_TanOutPitch(tanOutPitch), m_ModeInPitch(modeInPitch), m_ModeOutPitch(modeOutPitch),
 		  m_WInPitch(wInPitch), m_WOutPitch(wOutPitch), m_TanInYaw(tanInYaw), m_TanOutYaw(tanOutYaw),
 		  m_ModeInYaw(modeInYaw), m_ModeOutYaw(modeOutYaw), m_WInYaw(wInYaw), m_WOutYaw(wOutYaw),
-		  m_AutoSettings(autoSettings)
+		  m_AutoSettings(autoSettings), m_EulerSelector(eulerSelector),
+		  m_ExactEulerSelector(exactEulerSelector)
 	{
 		InterpolationMapChanged();
 	}
@@ -748,6 +752,10 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 
 	virtual Quaternion Eval(double t)
 	{
+		return Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(EvalAngles(t)));
+	}
+	QEulerAngles EvalAngles(double t)
+	{
 		std::lock_guard<std::mutex> _lock(m_Lock);
 		size_t n = m_Map->size();
 		if (n < 2)
@@ -762,13 +770,11 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 		// Clamp for no extrapolation
 		if (t <= m_T[0])
 		{
-			return Quaternion::FromQREulerAngles(
-				QREulerAngles::FromQEulerAngles(QEulerAngles(m_Pitch[0], m_Yaw[0], m_Roll[0])));
+			return QEulerAngles(m_Pitch[0], m_Yaw[0], m_Roll[0]);
 		}
 		if (t >= m_T[m_n - 1])
 		{
-			return Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(
-				QEulerAngles(m_Pitch[m_n - 1], m_Yaw[m_n - 1], m_Roll[m_n - 1])));
+			return QEulerAngles(m_Pitch[m_n - 1], m_Yaw[m_n - 1], m_Roll[m_n - 1]);
 		}
 
 		// Binary search
@@ -806,7 +812,7 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 		double roll =
 			hermite(m_Roll[klo], m_Roll[khi], m_RollOut[klo], m_RollIn[khi], m_RollWOut[klo], m_RollWIn[khi]);
 
-		return Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(QEulerAngles(pitch, yaw, roll)));
+		return QEulerAngles(pitch, yaw, roll);
 	}
 
 	bool GetTangent(size_t index, int channel, bool outgoing, double &slope, double &weight)
@@ -850,6 +856,8 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 	double (*m_WInYaw)(const TMap &);
 	double (*m_WOutYaw)(const TMap &);
 	const AutoTangentSettings *m_AutoSettings = nullptr;
+	QEulerAngles (*m_EulerSelector)(const TMap &) = nullptr;
+	bool (*m_ExactEulerSelector)(const TMap &) = nullptr;
 
 	// Cached arrays
 	int m_n = 0;
@@ -919,15 +927,27 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 		{
 			m_T[i] = it->first;
 			const TMap &v = it->second;
-			QEulerAngles a = v.R.ToQREulerAngles().ToQEulerAngles();
+			QEulerAngles a = m_EulerSelector ? m_EulerSelector(v) : v.R.ToQREulerAngles().ToQEulerAngles();
+			if (i && !(m_ExactEulerSelector && m_ExactEulerSelector(v)))
+			{
+				auto unwrap = [](double value, double previous)
+				{
+					double delta = std::fmod(value - previous, 360.0);
+					if (delta > 180)
+						delta -= 360;
+					if (delta < -180)
+						delta += 360;
+					return previous + delta;
+				};
+				a.Pitch = unwrap(a.Pitch, m_Pitch[i - 1]);
+				a.Yaw = unwrap(a.Yaw, m_Yaw[i - 1]);
+				a.Roll = unwrap(a.Roll, m_Roll[i - 1]);
+			}
 			m_Pitch[i] = a.Pitch;
 			m_Yaw[i] = a.Yaw;
 			m_Roll[i] = a.Roll;
 		}
 		// unwrap each channel to avoid jumps
-		UnwrapAngles(m_Pitch, m_n);
-		UnwrapAngles(m_Yaw, m_n);
-		UnwrapAngles(m_Roll, m_n);
 
 		// Fill modes, raw/free slopes and weights
 		i = 0;

@@ -220,6 +220,244 @@ void profiles()
 		}
 	}
 }
+void editing()
+{
+	CamPath path;
+	custom(path);
+	path.Add(0, CamPathValue(0, 0, 0, 20, 170, 0, 60));
+	path.Add(2, CamPathValue(30, 10, 5, 30, -170, 10, 80));
+	path.Add(5, CamPathValue(50, 0, 10, 10, -120, 30, 90));
+	path.SelectAll();
+	for (int ch = 0; ch < 7; ++ch)
+	{
+		path.SetTangentMode((CamPath::Channel)ch, true, true, CamPath::TM_FREE);
+		path.SetTangent((CamPath::Channel)ch, true, true, ch == 4 ? -180 : 3 + ch, ch == 4 ? 300 : 11 + ch);
+		path.SetTangentWeight((CamPath::Channel)ch, true, true, 0.4, 1.8);
+	}
+	auto original = path.CaptureState();
+	std::vector<CamPathValue> samples;
+	for (int i = 0; i <= 300; ++i)
+		samples.push_back(path.Eval(i / 60.0));
+	check(path.Insert(1.25), "Insert subdivides edited seven-channel curves");
+	for (int i = 0; i <= 300; ++i)
+	{
+		auto value = path.Eval(i / 60.0), expected = samples[i];
+		near(value.X, expected.X, 1e-7);
+		near(value.Y, expected.Y, 1e-7);
+		near(value.Z, expected.Z, 1e-7);
+		near(value.Fov, expected.Fov, 1e-7);
+		near(std::abs(DotProduct(value.R, expected.R)), 1, 1e-8);
+		for (int ch = 4; ch < 7; ++ch)
+			near(CamPath::GetChannelValue(value, (CamPath::Channel)ch),
+				 CamPath::GetChannelValue(expected, (CamPath::Channel)ch), 1e-7);
+	}
+	auto inserted = path.CaptureState();
+	check(!path.Insert(1.25) && path.CaptureState() == inserted,
+		  "Duplicate insertion leaves all data unchanged");
+	path.RestoreState(original);
+	check(path.CaptureState() == original, "Subdivision is a single reversible data edit");
+	CamPath held;
+	custom(held);
+	held.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 60));
+	held.Add(1, CamPathValue(10, 5, 0, 20, 30, 10, 80));
+	held.Add(4, CamPathValue(40, 10, 0, 30, 60, 20, 90));
+	check(held.SetKeyHold(1, 2), "Hold stores arrival and independent release");
+	for (int i = 0; i <= 20; ++i)
+	{
+		auto value = held.Eval(1 + i / 20.0), arrival = held.Eval(1);
+		near(value.X, arrival.X);
+		near(value.Fov, arrival.Fov);
+		near(std::abs(DotProduct(value.R, arrival.R)), 1);
+	}
+	check(held.GetSpeed(1 - 1e-5) < 0.01 && held.GetSpeed(2 + 1e-5) < 0.01,
+		  "Smooth holds arrive and depart without velocity jumps");
+	auto beforeBadHold = held.CaptureState();
+	check(!held.SetKeyHold(1, 4) && held.CaptureState() == beforeBadHold,
+		  "Hold cannot consume travel to a different next pose");
+	check(held.Insert(1.5), "Insert can subdivide a held pose");
+	near(held.Eval(1.9).X, 10);
+	CamPath single;
+	single.Add(10, CamPathValue(3, 4, 5, 0, 0, 0, 70));
+	check(single.SetKeyHold(0, 12) && single.CanEval(), "A single held key forms a playable stationary shot");
+	near(single.GetDuration(), 2);
+	near(single.Eval(11).Y, 4);
+	CamPath travel;
+	travel.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	travel.FovInterpMethod_set(CamPath::DI_LINEAR);
+	travel.RotationInterpMethod_set(CamPath::QI_SLINEAR);
+	travel.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	travel.Add(1, CamPathValue(10, 0, 0, 0, 1, 0, 90));
+	travel.Add(4, CamPathValue(110, 0, 0, 0, 11, 0, 90));
+	check(travel.RetimeByDistance(10), "Distance retiming adjusts existing arrival times");
+	near(travel.GetDuration(), 10);
+	for (int i = 1; i < 100; ++i)
+	{
+		near(travel.Eval(i / 10.0).X, i * 1.1, 0.002);
+		near(travel.GetSpeed(i / 10.0), 11, 0.02);
+	}
+	const auto travelState = travel.CaptureState();
+	check(!travel.RetimeByDistance(-1) && travel.CaptureState() == travelState,
+		  "Invalid retiming preserves the shot");
+	auto file = std::filesystem::temp_directory_path() / "hlae-editing-roundtrip.xml";
+	check(path.Save(file.wstring().c_str()), "Edited Euler winding saves");
+	CamPath loaded;
+	check(loaded.Load(file.wstring().c_str()), "Edited Euler winding loads");
+	check(loaded.CaptureState() == path.CaptureState(), "Euler subdivision metadata round-trips");
+	check(held.Save(file.wstring().c_str()) && loaded.Load(file.wstring().c_str()),
+		  "Keyframe holds round-trip");
+	check(loaded.CaptureState() == held.CaptureState(), "Arrival/release and held pose persist");
+	check(travel.Save(file.wstring().c_str()) && loaded.Load(file.wstring().c_str()),
+		  "Distance timing round-trips");
+	near(loaded.GetSpeed(5), 11, 0.02);
+	std::filesystem::remove(file);
+}
+void distanceAndHoldEdits()
+{
+	CamPath path;
+	populate(path);
+	path.SelectNone();
+	path.SetTangentMode(CamPath::CH_Y, true, true, CamPath::TM_FREE);
+	path.SetTangent(CamPath::CH_Y, true, true, -7, -7);
+	path.SetTangentWeight(CamPath::CH_Y, true, true, 0.6, 1.4);
+	path.SelectNone();
+	auto source = path.CaptureState();
+	check(path.RetimeByDistance(12), "Weighted nonlinear path supports distance retiming");
+	auto target = path.CaptureState();
+	CamPath raw;
+	target.DistanceTiming = false;
+	raw.RestoreState(target);
+	auto a = source.Keys.begin(), b = target.Keys.begin();
+	for (size_t segment = 1; segment < source.Keys.size(); ++segment)
+	{
+		auto nextA = std::next(a), nextB = std::next(b);
+		CamPath original;
+		original.RestoreState(source);
+		for (int i = 0; i <= 100; ++i)
+		{
+			const double u = i / 100.0;
+			auto before = original.Eval(a->first + (nextA->first - a->first) * u);
+			auto after = raw.Eval(b->first + (nextB->first - b->first) * u);
+			near(before.X, after.X, 1e-6);
+			near(before.Y, after.Y, 1e-6);
+			near(before.Z, after.Z, 1e-6);
+			near(before.Fov, after.Fov, 1e-6);
+			near(std::abs(DotProduct(before.R, after.R)), 1, 1e-6);
+		}
+		a = nextA;
+		b = nextB;
+	}
+	double minSpeed = 1e30, maxSpeed = 0;
+	for (int i = 1; i < 240; ++i)
+	{
+		double speed = path.GetSpeed(12 * i / 240.0);
+		minSpeed = (std::min)(minSpeed, speed);
+		maxSpeed = (std::max)(maxSpeed, speed);
+	}
+	check(minSpeed > 0 && maxSpeed / minSpeed < 1.03,
+		  "Distance timing flows through weighted nonlinear intervals at consistent speed");
+	CamPath held;
+	custom(held);
+	held.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	held.Add(2, CamPathValue(20, 0, 0, 0, 10, 0, 90));
+	held.Add(6, CamPathValue(60, 0, 0, 0, 20, 0, 90));
+	check(held.SetKeyHold(1, 3), "Hold added before duration edits");
+	held.SetDuration(12);
+	near(held.GetDuration(), 12);
+	auto state = held.CaptureState();
+	auto mid = std::next(state.Keys.begin());
+	near(mid->first, 4);
+	near(mid->second.HoldDuration, 2);
+	held.SelectNone();
+	held.SelectAdd(size_t(1), size_t(1));
+	auto before = held.CaptureState();
+	held.SetStart(11);
+	check(held.CaptureState() == before, "Moving a held key through the next arrival is atomic and rejected");
+	check(held.RetimeByDistance(14), "Distance timing supports held intervals");
+	auto heldState = held.CaptureState();
+	auto heldKey = std::next(heldState.Keys.begin());
+	near(held.Eval(heldKey->first + 1).X, 20);
+	check(held.GetSpeed(heldKey->first - 1e-5) < 0.05 &&
+			  held.GetSpeed(heldKey->first + heldKey->second.HoldDuration + 1e-5) < 0.05,
+		  "Distance-timed travel smoothly arrives at and leaves a hold");
+	for (const char *bad : {"garbage", "nan", "-1", "2junk"})
+	{
+		const auto previous = held.CaptureState();
+		std::string xml =
+			"<campath><points><p t=\"0\" holdDuration=\"" + std::string(bad) + "\"/></points></campath>";
+		check(!held.LoadFromString(xml) && held.CaptureState() == previous,
+			  "Invalid hold data cannot replace the document");
+	}
+}
+void collections()
+{
+	CamPath active;
+	custom(active);
+	active.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	active.Add(4, CamPathValue(40, 0, 0, 0, 0, 0, 90));
+	CamPathCollection paths(active);
+	check(!paths.IsDirty(), "Initial document is clean");
+	paths.BeginEdit();
+	check(paths.Rename("Opening & dolly"), "Named path accepts XML-sensitive text");
+	paths.FinishEdit();
+	check(paths.IsDirty() && paths.CanUndo(), "Path rename enters authoring history");
+	check(paths.Undo() && paths.GetName(0) == "Path 1", "Rename undoes");
+	check(paths.Undo(true) && paths.GetName(0) == "Opening & dolly", "Rename redoes");
+	paths.BeginEdit();
+	check(paths.NewPath("Close-up", true), "Duplicate copies an ordinary native path");
+	paths.FinishEdit();
+	check(paths.GetCount() == 2 && paths.GetActive() == 1, "Duplicate becomes the editable shot");
+	auto data = active.CaptureState();
+	data.Keys.clear();
+	data.Keys.emplace(2, CamPathValue(100, 0, 0, 0, 0, 0, 70));
+	data.Keys.emplace(3, CamPathValue(110, 0, 0, 0, 0, 0, 70));
+	paths.BeginEdit();
+	active.RestoreState(data);
+	paths.FinishEdit();
+	active.Enabled_set(true);
+	auto *playback = paths.GetPlaybackPath(2.5);
+	check(playback && playback->Eval(2.5).Fov == 70, "Latest starting path wins overlaps");
+	check(paths.Select(0), "Editing can select a different shot");
+	playback = paths.GetPlaybackPath(2.5);
+	check(playback && playback->Eval(2.5).Fov == 70, "Playback is independent of editing selection");
+	playback = paths.GetPlaybackPath(1);
+	check(playback && playback->Eval(1).Fov == 90, "Earlier shot plays in its own range");
+	check(!paths.GetPlaybackPath(9), "Outside all shots returns control to the game");
+	paths.FinishEdit();
+	check(paths.Undo(), "Undo crosses shot selection without adding navigation steps");
+	check(active.Enabled_get(), "Undo does not change playback ownership");
+	check(paths.Undo(true), "Cross-path edit redoes");
+	auto file = std::filesystem::temp_directory_path() / "hlae-path-collection.xml";
+	check(paths.SaveAll(file.wstring().c_str()), "All named paths save together");
+	check(!paths.IsDirty(), "Saving all records the document save point");
+	const auto saved = paths.CaptureState();
+	CamPath other;
+	CamPathCollection loaded(other);
+	check(loaded.LoadAll(file.wstring().c_str()), "Collection loads atomically");
+	check(CamPathCollection::SameContent(saved, loaded.CaptureState()),
+		  "Names and every native shot round-trip");
+	check(!loaded.IsDirty(), "Loaded collection is clean");
+	check(loaded.LoadAll(file.wstring().c_str(), true) && loaded.IsDirty(),
+		  "Recovery requires saving the recovered work");
+	check(loaded.GetCollectionFileName().empty(),
+		  "Recovery never writes over an original project implicitly");
+	check(paths.SaveOne(file.wstring().c_str()), "Selected shot saves as classic-compatible XML");
+	CamPath one;
+	check(one.Load(file.wstring().c_str()), "Save-one is an ordinary campath file");
+	check(one.GetSize() == active.GetSize(), "Save-one contains the selected shot only");
+	const auto beforeBad = paths.CaptureState();
+	{
+		std::ofstream out(file);
+		out << "<campaths active=\"5\"><campath name=\"bad\"><points/></campath></campaths>";
+	}
+	check(!paths.LoadAll(file.wstring().c_str()) &&
+			  CamPathCollection::SameContent(beforeBad, paths.CaptureState()),
+		  "Malformed collection leaves every shot intact");
+	paths.BeginEdit();
+	check(paths.Remove(paths.GetActive()), "Named path can be removed");
+	paths.FinishEdit();
+	check(paths.GetCount() == 1 && paths.Undo() && paths.GetCount() == 2, "Removing a shot is reversible");
+	std::filesystem::remove(file);
+}
 void IgnoreConsole(const char *, ...) {}
 void consoleProfiles()
 {
@@ -316,6 +554,9 @@ int main()
 		continuity();
 		tangents();
 		profiles();
+		editing();
+		distanceAndHoldEdits();
+		collections();
 		consoleProfiles();
 		files();
 		std::cout << checks << " TF2 camera checks passed\n";

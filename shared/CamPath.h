@@ -3,6 +3,8 @@
 #include "AfxMath.h"
 
 #include <list>
+#include <string>
+#include <memory>
 
 using namespace Afx;
 using namespace Afx::Math;
@@ -18,6 +20,13 @@ struct CamPathValue
 	double Fov;
 
 	bool Selected;
+	// Existing keys retain their original quaternion representation. Authored Euler
+	// values preserve winding when subdividing or editing Euler curves.
+	bool HasEuler = false;
+	double EulerPitch = 0, EulerYaw = 0, EulerRoll = 0;
+	double HoldDuration = 0;
+	QEulerAngles GetEulerAngles() const;
+	void SetEulerAngles(const QEulerAngles &angles);
 
 	// Per-key tangents and modes (for Hermite interpolation)
 	double TxIn, TxOut;
@@ -144,9 +153,14 @@ public:
 		bool Enabled, Hold;
 		double Offset;
 		AutoTangentSettings AutoTangents;
+		bool DistanceTiming = false;
 		bool operator==(const State &other) const;
 	};
 	State CaptureState() const;
+	unsigned long long GetRevision() const
+	{
+		return m_Revision;
+	}
 	void RestoreState(const State &state);
 	void Add(double time, const CamPathValue & value);
 
@@ -172,8 +186,10 @@ public:
 	CamPathValue Eval(double t);
 
 	bool Save(wchar_t const * fileName);
-	bool Load(wchar_t const * fileName);
-	
+	bool Load(wchar_t const *fileName);
+	bool SaveToString(std::string &xml);
+	bool LoadFromString(const std::string &xml);
+
 	/// <remarks>In the current implementation if points happen to fall on the same time value, then the last point's value will be used (no interpolation).</remarks>
 	/// <param name="relative">If t is an relative offset (true), or absolute value (false).</param>
 	void SetStart(double t, bool relative = false);
@@ -199,6 +215,21 @@ public:
 		CH_RYAW = 5,   // Euler yaw (Z)
 		CH_RROLL = 6   // Euler roll (X)
 	};
+	bool ReplaceKeys(const CInterpolationMap<CamPathValue> &keys);
+	bool UpdateKey(double oldTime, double newTime, const CamPathValue &value);
+	bool SetKeyHold(size_t index, double releaseTime);
+	bool HasKeyHolds() const;
+	bool Insert(double time);
+	bool BakeTangents();
+	double GetSpeed(double time);
+	bool RetimeByDistance(double duration);
+	bool GetDistanceTiming() const
+	{
+		return m_DistanceTiming;
+	}
+	void SetDistanceTiming(bool enabled);
+	static double GetChannelValue(const CamPathValue &value, Channel channel);
+	static void SetChannelValue(CamPathValue &value, Channel channel, double component);
 	bool GetTangent(Channel ch, size_t index, bool outgoing, double &slope, double &weight);
 	void SetTangent(Channel ch, bool setIn, bool setOut, double slopeIn, double slopeOut);
 	void SetTangentMode(Channel ch, bool setIn, bool setOut, unsigned char mode);
@@ -241,7 +272,8 @@ public:
 	double GetOffset() const;
 
 private:
-  bool LoadInternal(wchar_t const *fileName);
+  friend class CamPathCollection;
+  bool LoadInternal(std::string xml);
   struct CamPathChangedData
   {
 		CamPathChanged pFn;
@@ -481,8 +513,28 @@ private:
 	QuaternionInterp m_RotationInterpMethod;
 	DoubleInterp m_FovInterpMethod;
 	double m_Offset;
-	
+
 	CInterpolationMap<CamPathValue> m_Map;
+	CInterpolationMap<CamPathValue> m_EvalMap;
+	CamPathValue EvalRaw(double time);
+	bool m_DistanceTiming = false, m_ArcDirty = true;
+	struct ArcSegment
+	{
+		double Begin, End, Length = 0;
+		bool StopBefore = false, StopAfter = false;
+		std::vector<double> Times, Distances;
+	};
+	std::vector<ArcSegment> m_Arcs;
+	void BuildArcs();
+	double MapDistanceTime(double time);
+	static QEulerAngles EulerSelector(const CamPathValue &value)
+	{
+		return value.GetEulerAngles();
+	}
+	static bool ExactEulerSelector(const CamPathValue &value)
+	{
+		return value.HasEuler;
+	}
 
 	CInterpolationMapView<CamPathValue, double> m_XView;
 	CInterpolationMapView<CamPathValue, double> m_YView;
@@ -498,8 +550,89 @@ private:
 	CInterpolation<double> * m_FovInterp;
 	CInterpolation<bool> * m_SelectedInterp;
 
+	unsigned long long m_Revision = 0;
 	void Changed();
 	void CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<CamPathValue> & src);
 
 	void DoInterpolationMapChangedAll(void);
+};
+
+// A document keeps ordinary CamPath shots and one native editable path. The
+// editor exposes only names; playback automatically chooses the latest start.
+class CamPathCollection
+{
+  public:
+	struct Entry
+	{
+		unsigned long long Id = 0;
+		std::string Name;
+		std::shared_ptr<const CamPath::State> Data;
+		std::wstring FileName;
+	};
+	struct State
+	{
+		size_t Active = 0;
+		std::vector<Entry> Paths;
+	};
+	explicit CamPathCollection(CamPath &active);
+	State CaptureState() const;
+	void RestoreState(const State &state);
+	size_t GetCount() const
+	{
+		return m_Paths.size();
+	}
+	size_t GetActive() const
+	{
+		return m_ActiveIndex;
+	}
+	const std::string &GetName(size_t index) const
+	{
+		return m_Paths.at(index).Name;
+	}
+	const std::wstring &GetFileName() const
+	{
+		return m_Paths.at(m_ActiveIndex).FileName;
+	}
+	const std::wstring &GetCollectionFileName() const
+	{
+		return m_FileName;
+	}
+	bool Select(size_t index);
+	bool NewPath(const std::string &name = std::string(), bool duplicate = false);
+	bool Rename(const std::string &name);
+	bool Remove(size_t index);
+	CamPath *GetPath(size_t index);
+	CamPath *GetPlaybackPath(double clientTime);
+	bool SaveOne(const wchar_t *fileName);
+	bool LoadOne(const wchar_t *fileName);
+	bool SaveAll(const wchar_t *fileName, bool recovery = false);
+	bool LoadAll(const wchar_t *fileName, bool recovery = false);
+	bool IsDirty() const;
+	bool IsDirty(size_t index) const;
+	void BeginEdit();
+	void Observe();
+	void FinishEdit();
+	bool Undo(bool redo = false);
+	bool CanUndo(bool redo = false) const;
+	static bool SameContent(const State &a, const State &b);
+
+  private:
+	CamPath &m_ActivePath;
+	std::vector<Entry> m_Paths;
+	size_t m_ActiveIndex = 0;
+	unsigned long long m_NextId = 1;
+	std::wstring m_FileName;
+	State m_Saved, m_Last, m_Before;
+	bool m_HistoryReady = false, m_Editing = false;
+	std::vector<State> m_Undo, m_Redo;
+	std::vector<std::unique_ptr<CamPath>> m_Caches;
+	std::vector<std::shared_ptr<const CamPath::State>> m_CacheStates;
+	mutable unsigned long long m_LastActiveRevision = ~0ull;
+	mutable std::shared_ptr<const CamPath::State> m_CurrentState;
+	const std::shared_ptr<const CamPath::State> &CurrentState() const;
+	bool NameAvailable(const std::string &name, size_t except) const;
+	void Sync();
+	void Notify();
+	void MarkSaved(bool all);
+	static void PushHistory(std::vector<State> &history, const State &state);
 };

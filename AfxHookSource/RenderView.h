@@ -13,6 +13,13 @@ class Hook_VClient_RenderView;
 // global singelton instance:
 extern Hook_VClient_RenderView g_Hook_VClient_RenderView;
 
+// Shared campath preview controls (keyboard, console and overlay).
+bool MirvCampathPreview_IsActive();
+bool MirvCampathPreview_GetCamera(CamPathValue &value);
+bool MirvCampathPreview_SetActive(bool active);
+double MirvCampathPreview_GetTime();
+bool MirvCampathPreview_SetTime(double time);
+bool MirvCampathPreview_Seek();
 
 // Hook_VClient_RenderView /////////////////////////////////////////////////////
 
@@ -36,6 +43,7 @@ public:
 	};
 
 	CamPath m_CamPath;
+	CamPathCollection m_CamPaths{m_CamPath};
 
 	bool ViewOverrideReset = true;
 	bool ForceViewOverride = true;

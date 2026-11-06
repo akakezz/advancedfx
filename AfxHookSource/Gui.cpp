@@ -658,6 +658,7 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 		!ImGui::GetIO().WantCaptureMouse && g_Hook_VClient_RenderView.m_MirvInput &&
 		g_Hook_VClient_RenderView.m_MirvInput->GetCameraControlMode())
 	{
+		MirvCampathPreview_SetActive(false);
 		CameraOverlay::SetMouseLook(true);
 		UpdateGraphInputOwnership();
 		return false;
@@ -786,6 +787,27 @@ bool OnShowCursor(BOOL show, int &result)
 	return true;
 }
 
+bool GetWorldGlyph(unsigned int codepoint, WorldGlyph &out)
+{
+	if (!ImGui::GetCurrentContext())
+		return false;
+	auto *atlas = ImGui::GetIO().Fonts;
+	if (!atlas || !atlas->IsBuilt() || atlas->Fonts.empty())
+		return false;
+	auto *font = atlas->Fonts[0];
+	const ImFontGlyph *glyph = font->FindGlyph((ImWchar)codepoint);
+	if (!glyph || font->FontSize <= 0)
+		return false;
+	const float scale = 1.0f / font->FontSize;
+	out = {glyph->X0 * scale, glyph->Y0 * scale, glyph->X1 * scale, glyph->Y1 * scale,		glyph->U0,
+		   glyph->V0,		  glyph->U1,		 glyph->V1,			glyph->AdvanceX * scale};
+	return true;
+}
+IDirect3DTexture9 *GetWorldFontTexture()
+{
+	return g_FontTexture;
+}
+
 bool DX9_CreateFontsTexture()
 {
 	// Build texture atlas
@@ -829,6 +851,7 @@ void DllProcessAttach(void)
 
 void DllProcessDetach(void)
 {
+	CameraOverlay::FlushRecovery();
 	SetOverlayOpen(false);
 	if (ImGui::GetIO().BackendPlatformUserData)
 		ImGui_ImplWin32_Shutdown();
@@ -1022,6 +1045,15 @@ bool OnGameFrameRenderEnd()
 
 namespace AfxHookSource {
 namespace Gui {
+
+bool GetWorldGlyph(unsigned int, WorldGlyph &)
+{
+	return false;
+}
+IDirect3DTexture9 *GetWorldFontTexture()
+{
+	return nullptr;
+}
 
 void DllProcessAttach(void)
 {

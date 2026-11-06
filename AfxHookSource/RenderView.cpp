@@ -459,17 +459,21 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			break;
 
 		case Override_Campath:
-			if (m_CamPath.Enabled_get() && m_CamPath.CanEval())
+			if (auto *playbackPath = m_CamPaths.GetPlaybackPath(curTime))
 			{
-				double campathCurTime = curTime - m_CamPath.GetOffset();
-				if(m_CamPath.GetHold()) {
-					if(campathCurTime > m_CamPath.GetUpperBound()) campathCurTime = m_CamPath.GetUpperBound();
-					else if(campathCurTime < m_CamPath.GetLowerBound()) campathCurTime = m_CamPath.GetLowerBound();
+				double campathCurTime = curTime - playbackPath->GetOffset();
+				if (playbackPath->GetHold())
+				{
+					if (campathCurTime > playbackPath->GetUpperBound())
+						campathCurTime = playbackPath->GetUpperBound();
+					else if (campathCurTime < playbackPath->GetLowerBound())
+						campathCurTime = playbackPath->GetLowerBound();
 				}
 				// no extrapolation:
-				if (m_CamPath.GetLowerBound() <= campathCurTime && campathCurTime <= m_CamPath.GetUpperBound())
+				if (playbackPath->GetLowerBound() <= campathCurTime &&
+					campathCurTime <= playbackPath->GetUpperBound())
 				{
-					CamPathValue val = m_CamPath.Eval(campathCurTime);
+					CamPathValue val = playbackPath->Eval(campathCurTime);
 					QEulerAngles ang = val.R.ToQREulerAngles().ToQEulerAngles();
 
 					//Tier0_Msg("================",curTime);
@@ -537,8 +541,30 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			break;
 
 		case Override_Input:
-			if (m_MirvInput->Override(m_LastFrameTime, Tx, Ty, Tz, Rx, Ry, Rz, Fov)) originOrAnglesOverriden = true;
+		{
+			if (MirvCampathPreview_IsActive())
+			{
+				m_MirvInput->ClearMovementInput();
+				m_MirvInput->ResetCameraSmoothing();
+			}
+			if (m_MirvInput->Override(m_LastFrameTime, Tx, Ty, Tz, Rx, Ry, Rz, Fov))
+				originOrAnglesOverriden = true;
+			// Camera smoothing and free-camera movement must not alter an evaluated preview.
+			CamPathValue preview;
+			if (MirvCampathPreview_GetCamera(preview))
+			{
+				const auto angles = preview.GetEulerAngles();
+				Tx = (float)preview.X;
+				Ty = (float)preview.Y;
+				Tz = (float)preview.Z;
+				Rx = (float)angles.Pitch;
+				Ry = (float)angles.Yaw;
+				Rz = (float)angles.Roll;
+				Fov = (float)preview.Fov;
+				originOrAnglesOverriden = true;
+			}
 			break;
+		}
 
 		case Override_Aim:
 			if (m_Globals)

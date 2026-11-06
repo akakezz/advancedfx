@@ -5,6 +5,14 @@
 namespace AfxHookSource {
 namespace Gui {
 
+// Read-only access to the existing font atlas for world text in the classic campath drawer.
+struct WorldGlyph
+{
+	float X0, Y0, X1, Y1, U0, V0, U1, V1, Advance;
+};
+bool GetWorldGlyph(unsigned int codepoint, WorldGlyph &glyph);
+IDirect3DTexture9 *GetWorldFontTexture();
+
 //bool SetActive(bool value);
 
 void DllProcessAttach(void);

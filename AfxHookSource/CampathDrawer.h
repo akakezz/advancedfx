@@ -8,6 +8,9 @@
 #include <d3d9.h>
 #include <list>
 #include <atomic>
+#include "Gui.h"
+#include <vector>
+#include <string>
 
 #define CCampathDrawer_VertexFVF D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX0 | D3DFVF_TEXCOORDSIZE3(0) | D3DFVF_TEX1 | D3DFVF_TEXCOORDSIZE3(1) | D3DFVF_TEX2 | D3DFVF_TEXCOORDSIZE3(2)
 
@@ -59,11 +62,19 @@ private:
 
 	class CDynamicProperties {
 	public:
-		CDynamicProperties(CCampathDrawer * drawer);
+	  CDynamicProperties(CCampathDrawer *drawer, CamPath *path, const std::string &name);
+	  struct Text
+	  {
+		  CamPathValue Anchor;
+		  float Height;
+		  std::vector<AfxHookSource::Gui::WorldGlyph> Glyphs;
+	  };
+	  std::vector<Text> Labels;
 
-		double GetCurTime() const {
-			return m_CurTime;
-		}
+	  double GetCurTime() const
+	  {
+		  return m_CurTime;
+	  }
 
 		bool GetInCampath() const {
 			return m_InCampath;
@@ -170,7 +181,7 @@ private:
 			CamPathValue m_Value;
 		};
 
-		CLessDynamicProperties(CCampathDrawer * drawer);
+		CLessDynamicProperties(CCampathDrawer *drawer, CamPath *path);
 
 		bool GetCampathCanEval() const {
 			return m_CampathCanEval;
@@ -205,11 +216,13 @@ private:
 
 	class CCampathDrawerFunctor : public CMaterialSystemFunctor {
 	public:
-		CCampathDrawerFunctor(CCampathDrawer * drawer) {
-			m_DynamicProperties = new CDynamicProperties(drawer);
-			m_LessDynamicProperties = drawer->m_LessDynamicProperties;
-			m_LessDynamicProperties->AddRef();
-		}
+	  CCampathDrawerFunctor(CCampathDrawer *drawer, CamPath *path, const std::string &name,
+							CLessDynamicProperties *properties)
+	  {
+		  m_DynamicProperties = new CDynamicProperties(drawer, path, name);
+		  m_LessDynamicProperties = properties;
+		  m_LessDynamicProperties->AddRef();
+	  }
 
 		virtual ~CCampathDrawerFunctor() {
 			m_LessDynamicProperties->Release();
@@ -223,6 +236,13 @@ private:
 		CLessDynamicProperties * m_LessDynamicProperties;
 	};
 
+	struct CachedPath
+	{
+		unsigned long long Id = 0;
+		std::shared_ptr<const CamPath::State> State;
+		CLessDynamicProperties *Properties = nullptr;
+	};
+	std::vector<CachedPath> m_OtherPaths;
 	bool m_DrawKeyframeAxis = false;
 	bool m_DrawKeyframeCam = true;
 

@@ -1454,6 +1454,7 @@ static bool g_CampathPreviewActive = false;
 static bool g_CampathPreviewForward = false;
 static bool g_CampathPreviewBackward = false;
 static double g_CampathPreviewTime = 0.0;
+static CamPathValue g_CampathPreviewValue;
 static int g_CampathPreviewFrame = -1;
 static DWORD g_CampathPreviewLastMs = 0;
 // 0 disables the dedicated toggle key.
@@ -1562,6 +1563,7 @@ static bool CampathPreview_SetCamera()
 	input->SetRy((float)angles.Yaw);
 	input->SetRz((float)angles.Roll);
 	input->SetFov((float)value.Fov);
+	g_CampathPreviewValue = value;
 	return true;
 }
 
@@ -1599,6 +1601,53 @@ static void CampathPreview_Exit()
 	Tier0_Msg("Campath preview exited; free camera retained.\n");
 }
 
+bool MirvCampathPreview_IsActive()
+{
+	return g_CampathPreviewActive;
+}
+bool MirvCampathPreview_GetCamera(CamPathValue &value)
+{
+	if (!g_CampathPreviewActive || !g_Hook_VClient_RenderView.m_CamPath.GetSize())
+		return false;
+	value = g_CampathPreviewValue;
+	return true;
+}
+bool MirvCampathPreview_SetActive(bool active)
+{
+	if (active)
+		return CampathPreview_Enter();
+	CampathPreview_Exit();
+	return true;
+}
+double MirvCampathPreview_GetTime()
+{
+	return g_CampathPreviewTime;
+}
+bool MirvCampathPreview_SetTime(double time)
+{
+	if (!std::isfinite(time))
+		return false;
+	if (!g_CampathPreviewActive && !CampathPreview_Enter())
+		return false;
+	g_CampathPreviewTime = time;
+	CampathPreview_StopTravel();
+	return CampathPreview_SetCamera();
+}
+bool MirvCampathPreview_Seek()
+{
+	auto &path = g_Hook_VClient_RenderView.m_CamPath;
+	int tick = -1;
+	if (!g_VEngineClient || !g_CampathPreviewActive || !path.GetSize() ||
+		!g_MirvCampath_Time.GetDemoTickFromClientTime(g_MirvTime.GetTime(),
+													  g_CampathPreviewTime + path.GetOffset(), tick) ||
+		tick < 0)
+		return false;
+	std::ostringstream command;
+	command << "demo_gototick " << tick;
+	g_VEngineClient->ClientCmd_Unrestricted(command.str().c_str());
+	return true;
+}
+
 // Called before the mirv_input view override is evaluated.
 void MirvCampathPreview_Update()
 {
@@ -1626,7 +1675,10 @@ void MirvCampathPreview_Update()
 	{
 		CampathPreview_StopTravel();
 		g_CampathPreviewLastMs = GetTickCount();
-		return;
+		// Editor ownership suppresses navigation, while keeping the evaluated
+		// camera live. Only Source's own menus suspend preview evaluation.
+		if (g_Hook_VClient_RenderView.IsSourceUiActive())
+			return;
 	}
 
 	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
@@ -1844,6 +1896,135 @@ CON_COMMAND(mirv_campath, "camera paths")
 		EditScope() { AfxHookSource::CameraOverlay::BeginEdit(); }
 		~EditScope() { AfxHookSource::CameraOverlay::FinishEdit(); }
 	} editScope;
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	auto &path = g_Hook_VClient_RenderView.m_CamPath;
+	if (args->ArgC() >= 2 && (!_stricmp(args->ArgV(1), "save") || !_stricmp(args->ArgV(1), "load")))
+	{
+		const bool save = !_stricmp(args->ArgV(1), "save");
+		if ((args->ArgC() == 3 || (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "all"))))
+		{
+			std::wstring file;
+			bool success =
+				UTF8StringToWideString(args->ArgV(2), file) &&
+				(save ? AfxHookSource::CameraOverlay::SaveDocument(file.c_str(), args->ArgC() == 4)
+					  : AfxHookSource::CameraOverlay::LoadDocument(file.c_str(), args->ArgC() == 4));
+			if (!success)
+				Tier0_Warning(
+					"Camera path file operation failed; current work / existing file was retained.\n");
+		}
+		else
+			Tier0_Msg("mirv_campath %s <file.xml> [all] - Save / load the selected path, or a collection.\n",
+					  args->ArgV(1));
+		return;
+	}
+	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "path"))
+	{
+		const char *action = args->ArgC() > 2 ? args->ArgV(2) : "list";
+		bool ok = false;
+		if (!_stricmp(action, "list") && args->ArgC() <= 3)
+		{
+			for (size_t i = 0; i < paths.GetCount(); ++i)
+				Tier0_Msg("%s%u: %s%s\n", i == paths.GetActive() ? "* " : "  ", (unsigned)i,
+						  paths.GetName(i).c_str(), paths.IsDirty(i) ? " *" : "");
+			return;
+		}
+		if ((!_stricmp(action, "new") || !_stricmp(action, "duplicate")) && args->ArgC() <= 4)
+			ok = paths.NewPath(args->ArgC() == 4 ? args->ArgV(3) : "", !_stricmp(action, "duplicate"));
+		else if (!_stricmp(action, "rename") && args->ArgC() == 4)
+			ok = paths.Rename(args->ArgV(3));
+		else if ((!_stricmp(action, "use") || !_stricmp(action, "remove")) && args->ArgC() == 4)
+		{
+			char *end = nullptr;
+			unsigned long index = strtoul(args->ArgV(3), &end, 10);
+			if (end == args->ArgV(3) || *end)
+			{
+				index = (unsigned long)paths.GetCount();
+				for (size_t i = 0; i < paths.GetCount(); ++i)
+					if (!_stricmp(paths.GetName(i).c_str(), args->ArgV(3)))
+					{
+						index = (unsigned long)i;
+						break;
+					}
+			}
+			ok = !_stricmp(action, "use") ? paths.Select(index) : paths.Remove(index);
+		}
+		if (!ok)
+			Tier0_Msg("mirv_campath path list\nmirv_campath path new|duplicate [name]\nmirv_campath path "
+					  "use|remove <0-based index|name>\nmirv_campath path rename <name>\nNames must be "
+					  "nonempty and unique. Quote names containing spaces.\n");
+		return;
+	}
+	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "insert"))
+	{
+		double time = MirvCampathPreview_GetTime();
+		char *end = nullptr;
+		bool valid = args->ArgC() == 2 ? MirvCampathPreview_IsActive() : args->ArgC() == 3;
+		if (args->ArgC() == 3)
+		{
+			time = strtod(args->ArgV(2), &end);
+			valid = end != args->ArgV(2) && !*end;
+		}
+		if (!valid || !path.Insert(time))
+			Tier0_Warning("mirv_campath insert [path seconds] - Split a Custom/Linear curve at the preview "
+						  "cursor or supplied interior time.\n");
+		return;
+	}
+	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "keyHold"))
+	{
+		bool ok = false;
+		if (args->ArgC() >= 3)
+		{
+			char *end = nullptr;
+			auto index = strtoul(args->ArgV(2), &end, 10);
+			if (end != args->ArgV(2) && !*end && index < path.GetSize())
+			{
+				auto it = path.GetBegin();
+				for (size_t i = 0; i < index; ++i)
+					++it;
+				double release = g_MirvTime.GetTime() - path.GetOffset();
+				bool valid = args->ArgC() == 3;
+				if (args->ArgC() == 4)
+				{
+					if (!_stricmp(args->ArgV(3), "clear"))
+					{
+						release = it.GetTime();
+						valid = true;
+					}
+					else
+					{
+						release = strtod(args->ArgV(3), &end);
+						valid = end != args->ArgV(3) && !*end;
+					}
+				}
+				ok = valid && path.SetKeyHold(index, release);
+			}
+		}
+		if (!ok)
+			Tier0_Warning("mirv_campath keyHold <index> [release path seconds|clear] - Omit release to "
+						  "capture current demo time. Release must precede the next different pose.\n");
+		return;
+	}
+	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "retime"))
+	{
+		char *end = nullptr;
+		double duration = args->ArgC() == 3 ? strtod(args->ArgV(2), &end) : 0;
+		if (!end || end == args->ArgV(2) || *end || !path.RetimeByDistance(duration))
+			Tier0_Warning(
+				"mirv_campath retime <total seconds> - Preserve the curve and holds, distributing travel "
+				"time by distance. Requires Custom/Linear interpolation and nonzero travel.\n");
+		return;
+	}
+	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "distanceTiming"))
+	{
+		if (args->ArgC() == 3 && (!_stricmp(args->ArgV(2), "0") || !_stricmp(args->ArgV(2), "1")))
+			path.SetDistanceTiming(atoi(args->ArgV(2)) != 0);
+		else
+			Tier0_Msg("mirv_campath distanceTiming <0|1> (currently %d) - Map existing intervals by "
+					  "distance. Retime also aligns their travel speeds.\n",
+					  path.GetDistanceTiming() ? 1 : 0);
+		return;
+	}
+
 	if (args->ArgC() == 2 && (! _stricmp("undo", args->ArgV(1)) || ! _stricmp("redo", args->ArgV(1))))
 	{
 		AfxHookSource::CameraOverlay::HistoryUndo(! _stricmp("redo", args->ArgV(1)));
@@ -1929,20 +2110,10 @@ CON_COMMAND(mirv_campath, "camera paths")
 			CampathPreview_SetCamera();
 			return;
 		}
-		if (0 == _stricmp(cmd, "seek") && args->ArgC() == 3) {
-			const double curtime = g_MirvCampath_Time.GetTime();
-			int tick = -1;
-			if (!g_MirvCampath_Time.GetDemoTickFromClientTime(curtime, g_CampathPreviewTime + path.GetOffset(), tick) || tick < 0) {
+		if (0 == _stricmp(cmd, "seek") && args->ArgC() == 3)
+		{
+			if (!MirvCampathPreview_Seek())
 				Tier0_Warning("Campath preview: unable to calculate demo tick.\n");
-				return;
-			}
-			std::ostringstream seekCommand;
-			seekCommand << "demo_gototick " << tick;
-            int currentTick = -1;
-            g_MirvCampath_Time.GetCurrentDemoTick(currentTick);
-            Tier0_Msg("Campath preview: time %.6f (client %.6f), current demo tick %i, requested tick %i.\n",
-                g_CampathPreviewTime, g_CampathPreviewTime + path.GetOffset(), currentTick, tick);
-			g_VEngineClient->ExecuteClientCmd(seekCommand.str().c_str());
 			return;
 		}
 		if (args->ArgC() == 3) {
@@ -1959,9 +2130,14 @@ CON_COMMAND(mirv_campath, "camera paths")
 	}
 
 	MirvCampath_ConCommand(args, Tier0_Msg, Tier0_Warning, &g_Hook_VClient_RenderView.m_CamPath, &g_MirvCampath_Time, &g_MirvCampath_Camera, &g_MirvCampath_Drawer);
-	if (args->ArgC() == 1) Tier0_Msg(
-		"mirv_campath preview [...] - Navigate campath with free camera; use mirv_campath preview for help.\n"
-		"mirv_campath undo|redo - Undo / redo camera path edits (also CTRL+Z / CTRL+SHIFT+Z in preview).\n");
+	if (args->ArgC() == 1)
+		Tier0_Msg("mirv_campath preview [...] - Navigate campath with free camera; use mirv_campath preview "
+				  "for help.\n"
+				  "mirv_campath path [...] | insert [seconds] | keyHold <index> [release|clear] | retime "
+				  "<seconds> | distanceTiming <0|1>\n"
+				  "mirv_campath save|load <file.xml> [all] - Selected path or collection.\n"
+				  "mirv_campath undo|redo - Undo / redo camera path edits (also CTRL+Z / CTRL+SHIFT+Z in "
+				  "preview).\n");
 }
 
 CON_COMMAND(mirv_camexport, "controls camera motion data export") {
