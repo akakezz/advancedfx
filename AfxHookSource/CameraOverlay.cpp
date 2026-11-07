@@ -90,6 +90,9 @@ static bool g_GraphRightCtrlHeld = false, g_GraphRightCtrlChord = false;
 static bool g_Autosave = true;
 static double g_AutosaveSeconds = 30;
 static std::filesystem::path g_RecoveryFile;
+static CamPathCollection::State g_RecoverySnapshot;
+static bool g_RecoveryWritten = false;
+static double g_RecoveryNextSave = 0;
 static std::vector<std::filesystem::path> g_RecoveryCandidates;
 static std::string g_DocumentStatus;
 static void UpdateRecovery(bool force);
@@ -183,6 +186,8 @@ static void ScanRecovery()
 }
 static void NewRecoverySession()
 {
+	g_RecoverySnapshot = {};
+	g_RecoveryWritten = false;
 	g_RecoveryFile = RecoveryDirectory() /
 					 ("campath-recovery-" +
 					  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".xml");
@@ -190,26 +195,42 @@ static void NewRecoverySession()
 }
 static void UpdateRecovery(bool force)
 {
-	static double nextSave = 0;
-	if (g_RecoveryFile.empty())
-		NewRecoverySession();
-	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
-	std::error_code error;
-	if (!paths.IsDirty())
-	{
-		std::filesystem::remove(g_RecoveryFile, error);
-		return;
-	}
 	if (!g_Autosave && !force)
 		return;
 	const double now =
 		std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-	if (!force && now < nextSave)
+	// Idle frames must not touch the filesystem or traverse unchanged camera data.
+	if (!force && (now < g_RecoveryNextSave || (ImGui::GetCurrentContext() && ImGui::IsMouseDown(0))))
 		return;
-	nextSave = now + g_AutosaveSeconds;
+	g_RecoveryNextSave = now + g_AutosaveSeconds;
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	std::error_code error;
+	if (!paths.IsDirty())
+	{
+		if (g_RecoveryWritten)
+		{
+			std::filesystem::remove(g_RecoveryFile, error);
+			if (!error)
+			{
+				g_RecoveryWritten = false;
+				g_RecoverySnapshot = {};
+			}
+		}
+		return;
+	}
+	auto snapshot = paths.CaptureState();
+	if (g_RecoveryWritten && CamPathCollection::SameContent(snapshot, g_RecoverySnapshot))
+		return;
+	if (g_RecoveryFile.empty())
+		NewRecoverySession();
 	std::filesystem::create_directories(RecoveryDirectory(), error);
 	if (error || !paths.SaveAll(g_RecoveryFile.wstring().c_str(), true))
 		g_DocumentStatus = "Recovery autosave could not be written. Save your work to a writable folder.";
+	else
+	{
+		g_RecoveryWritten = true;
+		g_RecoverySnapshot = std::move(snapshot);
+	}
 }
 void FlushRecovery()
 {
@@ -222,7 +243,7 @@ bool SaveDocument(const wchar_t *fileName, bool all)
 	g_DocumentStatus =
 		success ? "Saved camera paths." : "Could not save camera paths; the existing file was retained.";
 	if (success)
-		UpdateRecovery(false);
+		UpdateRecovery(true);
 	return success;
 }
 bool LoadDocument(const wchar_t *fileName, bool all)
@@ -1124,6 +1145,54 @@ static bool DrawModifierEnvelope(CamPath::NoiseModifier &modifier)
 	return changed;
 }
 
+// UI selection only: authored values continue through CamPath::SetModifiers validation/history.
+struct ModifierFieldSelection
+{
+	unsigned long long PathId = 0;
+	int Index = -1, Type = -1;
+	bool Selected[15] = {};
+	double Percent = 10;
+};
+static ModifierFieldSelection g_ModifierFields;
+static ImU32 ModifierColor(size_t index, bool enabled = true)
+{
+	const ImU32 colors[] = {IM_COL32(150, 130, 240, 255), IM_COL32(80, 190, 220, 255),
+							IM_COL32(220, 155, 80, 255),  IM_COL32(100, 195, 130, 255),
+							IM_COL32(220, 120, 170, 255), IM_COL32(180, 190, 90, 255)};
+	return enabled ? colors[index % 6] : IM_COL32(135, 135, 135, 255);
+}
+static void SelectModifierField(int index)
+{
+	const auto id = "##adjust_field_" + std::to_string(index);
+	ImGui::Checkbox(id.c_str(), &g_ModifierFields.Selected[index]);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Include this field in the percentage adjustment below.");
+	ImGui::SameLine();
+}
+static bool ModifierField(int index, const char *label, double *value)
+{
+	SelectModifierField(index);
+	return ImGui::InputDouble(label, value, 0, 0, "%.4f");
+}
+static bool ScaleModifierFields(CamPath::Modifier &modifier, const bool *selected, double percent)
+{
+	if (!std::isfinite(percent) || percent < -100)
+		return false;
+	auto candidate = modifier;
+	double *fields[] = {&candidate.Strength,	 &candidate.FadeIn,		  &candidate.FadeOut,
+						&candidate.Frequency,	 &candidate.Roughness,	  &candidate.Phase,
+						&candidate.Window,		 &candidate.Damping,	  &candidate.Amplitude[0],
+						&candidate.Amplitude[1], &candidate.Amplitude[2], &candidate.Amplitude[3],
+						&candidate.Amplitude[4], &candidate.Amplitude[5], &candidate.Amplitude[6]};
+	for (int i = 0; i < 15; ++i)
+		if (selected[i])
+			*fields[i] *= 1 + percent / 100;
+	// Validate the complete candidate before touching any field. Stack limits are checked on commit.
+	if (!CamPath::ValidModifiers({candidate}))
+		return false;
+	modifier = std::move(candidate);
+	return true;
+}
 static void DrawModifierControls(CamPath &path)
 {
 	if (!ImGui::CollapsingHeader("Range modifiers"))
@@ -1181,23 +1250,31 @@ static void DrawModifierControls(CamPath &path)
 		if (path.SetModifiers(modifiers))
 			g_ModifierSelection = (int)modifiers.size() - 1;
 		else
+		{
+			modifiers = path.GetModifiers();
 			g_DocumentStatus =
 				"Choose a finite range with begin before end (maximum 64 modifiers, eight active filters).";
+		}
 	}
 	if (!modifiers.empty())
 	{
 		g_ModifierSelection = std::clamp(g_ModifierSelection, 0, (int)modifiers.size() - 1);
-		const auto label = std::string(CamPath::ModifierTypeName(modifiers[g_ModifierSelection].Type)) + " " +
-						   std::to_string(g_ModifierSelection + 1);
-		if (ImGui::BeginCombo("Modifier", label.c_str()))
+		ImGui::TextUnformatted("Modifier stack: top is applied first, bottom last (indices start at 0).");
+		if (ImGui::BeginListBox(
+				"##modifier_stack",
+				ImVec2(-FLT_MIN,
+					   ImGui::GetTextLineHeightWithSpacing() * (std::min)(4, (int)modifiers.size()) + 8)))
 		{
 			for (size_t i = 0; i < modifiers.size(); ++i)
-				if (ImGui::Selectable((std::string(CamPath::ModifierTypeName(modifiers[i].Type)) + " " +
-									   std::to_string(i + 1))
-										  .c_str(),
-									  (int)i == g_ModifierSelection))
+			{
+				const auto label = std::to_string(i) + ": " + CamPath::ModifierTypeName(modifiers[i].Type) +
+								   (modifiers[i].Enabled ? "" : " (disabled)");
+				ImGui::PushStyleColor(ImGuiCol_Text, ModifierColor(i, modifiers[i].Enabled));
+				if (ImGui::Selectable(label.c_str(), (int)i == g_ModifierSelection))
 					g_ModifierSelection = (int)i;
-			ImGui::EndCombo();
+				ImGui::PopStyleColor();
+			}
+			ImGui::EndListBox();
 		}
 		auto &m = modifiers[g_ModifierSelection];
 		int type = (int)m.Type;
@@ -1217,15 +1294,27 @@ static void DrawModifierControls(CamPath &path)
 		ImGui::BeginDisabled(type >= 2);
 		changed |= ImGui::Checkbox("Camera-space position", &m.CameraSpace);
 		ImGui::EndDisabled();
+		const auto pathId =
+			g_Hook_VClient_RenderView.m_CamPaths.GetId(g_Hook_VClient_RenderView.m_CamPaths.GetActive());
+		if (g_ModifierFields.PathId != pathId || g_ModifierFields.Index != g_ModifierSelection ||
+			g_ModifierFields.Type != type)
+		{
+			g_ModifierFields = {};
+			g_ModifierFields.PathId = pathId;
+			g_ModifierFields.Index = g_ModifierSelection;
+			g_ModifierFields.Type = type;
+		}
+		ImGui::TextDisabled("Check numeric fields to adjust them together.");
 		const double strengthMin = 0, strengthMax = 1;
+		SelectModifierField(0);
 		changed |= ImGui::SliderScalar("Modifier strength", ImGuiDataType_Double, &m.Strength, &strengthMin,
 									   &strengthMax, "%.3f");
 		changed |= ImGui::InputDouble("Begin##noise", &m.Begin, 0, 0, "%.4f");
 		changed |= ImGui::InputDouble("End##noise", &m.End, 0, 0, "%.4f");
-		changed |= ImGui::InputDouble("Fade in (s)", &m.FadeIn, 0, 0, "%.4f");
-		changed |= ImGui::InputDouble("Fade out (s)", &m.FadeOut, 0, 0, "%.4f");
+		changed |= ModifierField(1, "Fade in (s)", &m.FadeIn);
+		changed |= ModifierField(2, "Fade out (s)", &m.FadeOut);
 		if (type != 2)
-			changed |= ImGui::InputDouble("Frequency (Hz)", &m.Frequency, 0, 0, "%.3f");
+			changed |= ModifierField(3, "Frequency (Hz)", &m.Frequency);
 		if (type == 0)
 		{
 			int octaves = (int)m.Octaves;
@@ -1234,19 +1323,22 @@ static void DrawModifierControls(CamPath &path)
 				m.Octaves = (unsigned)octaves;
 				changed = true;
 			}
-			changed |= ImGui::InputDouble("Noise roughness", &m.Roughness, 0, 0, "%.3f");
+			changed |= ModifierField(4, "Noise roughness", &m.Roughness);
 		}
 		if (type == 1)
-			changed |= ImGui::InputDouble("Phase (cycles)", &m.Phase, 0, 0, "%.3f");
+			changed |= ModifierField(5, "Phase (cycles)", &m.Phase);
 		if (type == 2)
-			changed |= ImGui::InputDouble("Smoothing window (s)", &m.Window, 0, 0, "%.3f");
+			changed |= ModifierField(6, "Smoothing window (s)", &m.Window);
 		if (type == 3)
-			changed |= ImGui::InputDouble("Spring damping", &m.Damping, 0, 0, "%.3f");
-		int seed = (int)m.Seed;
-		if (ImGui::InputInt("Seed", &seed) && seed >= 0)
+			changed |= ModifierField(7, "Spring damping", &m.Damping);
+		if (type == 0)
 		{
-			m.Seed = (unsigned)seed;
-			changed = true;
+			int seed = (int)m.Seed;
+			if (ImGui::InputInt("Seed", &seed) && seed >= 0)
+			{
+				m.Seed = (unsigned)seed;
+				changed = true;
+			}
 		}
 		const char *names[] = {"X amplitude (units)", "Y amplitude (units)",   "Z amplitude (units)",
 							   "FOV amplitude (deg)", "Pitch amplitude (deg)", "Yaw amplitude (deg)",
@@ -1254,12 +1346,31 @@ static void DrawModifierControls(CamPath &path)
 		const char *filterNames[] = {"X strength",	   "Y strength",   "Z strength",   "FOV strength",
 									 "Pitch strength", "Yaw strength", "Roll strength"};
 		for (int ch = 0; ch < 7; ++ch)
-			changed |=
-				ImGui::InputDouble(type >= 2 ? filterNames[ch] : names[ch], &m.Amplitude[ch], 0, 0, "%.3f");
+			changed |= ModifierField(8 + ch, type >= 2 ? filterNames[ch] : names[ch], &m.Amplitude[ch]);
+		ImGui::InputDouble("Adjustment (%)", &g_ModifierFields.Percent, 0, 0, "%.2f");
+		bool anyField = false;
+		for (bool selected : g_ModifierFields.Selected)
+			anyField |= selected;
+		ImGui::BeginDisabled(!anyField);
+		if (ImGui::Button("Adjust selected fields"))
+		{
+			if (ScaleModifierFields(m, g_ModifierFields.Selected, g_ModifierFields.Percent))
+				changed = true;
+			else
+				g_DocumentStatus = "Adjustment rejected; all fields were retained. Check parameter limits.";
+		}
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		if (ImGui::Button("Clear field selection"))
+			for (auto &selected : g_ModifierFields.Selected)
+				selected = false;
+		ImGui::TextDisabled(
+			"+10%% multiplies checked fields by 1.1; zero stays zero. Range/seed/octaves edit separately.");
 		changed |= DrawModifierEnvelope(m);
 		if (ImGui::Button("Remove modifier"))
 		{
 			modifiers.erase(modifiers.begin() + g_ModifierSelection);
+			g_ModifierFields = {};
 			changed = true;
 		}
 		else
@@ -1858,28 +1969,55 @@ static void DrawCurveEditor()
 				dl->AddRectFilled(ImVec2(toX(g_ModifierBegin), p0.y), ImVec2(toX(g_ModifierEnd), p1.y),
 								  IM_COL32(120, 150, 220, 35));
 			}
-			for (size_t i = 0; i < g_Hook_VClient_RenderView.m_CamPath.GetModifiers().size(); ++i)
+			// Keep the range strip bounded. Selecting a stack row reveals its group of lanes.
+			const int laneCount = std::clamp((int)(canvasSize.y / 4 / 15), 1, 4);
+			const size_t firstModifier = (std::max)(0, g_ModifierSelection) / laneCount * laneCount;
+			const auto &graphModifiers = g_Hook_VClient_RenderView.m_CamPath.GetModifiers();
+			const size_t lastModifier = (std::min)(graphModifiers.size(), firstModifier + laneCount);
+			for (size_t i = firstModifier; i < lastModifier; ++i)
 			{
-				const auto m = g_Hook_VClient_RenderView.m_CamPath.GetModifiers()[i];
-				const float y = p0.y + 4 + (float)i * 15;
-				dl->AddRectFilled(ImVec2(toX(m.Begin), y), ImVec2(toX(m.End), y + 12),
-								  m.Enabled ? IM_COL32(120, 100, 210, 120) : IM_COL32(100, 100, 100, 80));
-				dl->AddLine(ImVec2(toX(m.Begin), y + 12), ImVec2(toX(m.Begin + m.FadeIn), y),
+				// Only copy fields used by the range handles; no per-frame envelope allocations.
+				const auto &source = graphModifiers[i];
+				const double begin = source.Begin, end = source.End, fadeIn = source.FadeIn,
+							 fadeOut = source.FadeOut;
+				const auto color = ModifierColor(i, source.Enabled);
+				const float x0 = toX(begin), x1 = toX(end);
+				const float y = p0.y + 4 + (float)(i - firstModifier) * 15;
+				auto clipX = [&](double time) { return std::clamp(toX(time), p0.x, p1.x); };
+				if (x1 < p0.x || x0 > p1.x)
+					continue;
+				dl->AddRectFilled(ImVec2(clipX(begin), y), ImVec2(clipX(end), y + 12),
+								  (color & 0x00ffffff) | 0x70000000);
+				dl->AddLine(ImVec2(clipX(begin), y + 12), ImVec2(clipX(begin + fadeIn), y),
 							IM_COL32(230, 210, 255, 220), 1);
-				dl->AddLine(ImVec2(toX(m.End - m.FadeOut), y), ImVec2(toX(m.End), y + 12),
+				dl->AddLine(ImVec2(clipX(end - fadeOut), y), ImVec2(clipX(end), y + 12),
 							IM_COL32(230, 210, 255, 220), 1);
-				if (hovered && ImGui::IsMouseClicked(0) &&
-					ImGui::IsMouseHoveringRect(ImVec2(toX(m.Begin), y), ImVec2(toX(m.End), y + 12)))
+				if (!g_ModifierRangeTool && hovered && ImGui::IsMouseClicked(0) &&
+					ImGui::IsMouseHoveringRect(ImVec2(clipX(begin), y), ImVec2(clipX(end), y + 12)))
 					g_ModifierSelection = (int)i;
-				const double handles[] = {m.Begin, m.End, m.Begin + m.FadeIn, m.End - m.FadeOut};
+				if ((int)i == g_ModifierSelection)
+					dl->AddRect(ImVec2((std::max)(p0.x, x0), y), ImVec2((std::min)(p1.x, x1), y + 12),
+								IM_COL32(255, 225, 90, 255));
+				const auto caption = std::to_string(i) + ": " + CamPath::ModifierTypeName(source.Type);
+				dl->AddText(ImVec2((std::max)(p0.x + 3, x0 + 5), y - 1), color, caption.c_str());
+				if (g_ModifierRangeTool)
+					continue;
+				const double handles[] = {begin, end, begin + fadeIn, end - fadeOut};
 				for (int edge = 0; edge < 4; ++edge)
 				{
 					const float x = toX(handles[edge]);
-					dl->AddLine(ImVec2(x, y), ImVec2(x, y + 12), IM_COL32(230, 210, 255, 255), 2);
+					const auto edgeId = "##modifier_edge_" + std::to_string(i) + "_" + std::to_string(edge);
 					ImGui::PushID((int)i);
 					ImGui::PushID(edge);
-					ImGui::SetCursorScreenPos(ImVec2(x - 4, y));
-					const auto edgeId = "##modifier_edge_" + std::to_string(i) + "_" + std::to_string(edge);
+					const bool active = ImGui::GetActiveID() == ImGui::GetID(edgeId.c_str());
+					if (!active && (x < p0.x - 4 || x > p1.x + 4))
+					{
+						ImGui::PopID();
+						ImGui::PopID();
+						continue;
+					}
+					dl->AddLine(ImVec2(x, y), ImVec2(x, y + 12), IM_COL32(230, 210, 255, 255), 2);
+					ImGui::SetCursorScreenPos(ImVec2(std::clamp(x, p0.x, p1.x) - 4, y));
 					ImGui::InvisibleButton(edgeId.c_str(), ImVec2(8, 12));
 					if (ImGui::IsItemActivated())
 						EnsureEditGesture();
@@ -2366,6 +2504,9 @@ static void DrawCurveEditor()
 				for (int ch = 0; ch < 7; ++ch)
 					if (drawMask[ch] && (g_CurveFocusChannel < 0 || g_CurveFocusChannel == ch))
 					{
+						const float keyX = toX(g_CurveCache.times[index]);
+						if (!keyDrag && (keyX < p0.x - 6 || keyX > p1.x + 6))
+							continue;
 						const auto &v = g_CurveCache.values[index];
 						double component = CamPath::GetChannelValue(v, (CamPath::Channel)ch);
 						if (ch >= 4 && g_Hook_VClient_RenderView.m_CamPath.RotationInterpMethod_get() ==
@@ -2373,7 +2514,9 @@ static void DrawCurveEditor()
 							component = CamPath::GetChannelValue(
 								g_Hook_VClient_RenderView.m_CamPath.EvalUnmodified(g_CurveCache.times[index]),
 								(CamPath::Channel)ch);
-						ImVec2 point(toX(g_CurveCache.times[index]), toY_ch(ch, component));
+						ImVec2 point(keyX, toY_ch(ch, component));
+						if (!keyDrag && (point.y < p0.y - 6 || point.y > p1.y + 6))
+							continue;
 						points.emplace_back((int)index, point);
 						const unsigned char inModes[] = {v.TxModeIn,  v.TyModeIn,  v.TzModeIn, v.TfovModeIn,
 														 v.TRyModeIn, v.TRzModeIn, v.TRxModeIn};

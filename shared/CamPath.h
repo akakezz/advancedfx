@@ -282,6 +282,7 @@ public:
 	{
 		return m_Modifiers;
 	}
+	static bool ValidModifiers(const std::vector<NoiseModifier> &modifiers);
 	bool SetModifiers(const std::vector<NoiseModifier> &modifiers);
 	static double ModifierInfluence(const NoiseModifier &modifier, double time);
 	static const char *ModifierTypeName(ModifierType type);
@@ -683,7 +684,6 @@ private:
 	std::vector<double> m_KeyTimes;
 	std::vector<size_t> m_KeyArrival, m_KeyRelease;
 	bool HasPositionModifiers() const;
-	static bool ValidModifiers(const std::vector<NoiseModifier> &modifiers);
 	void Changed(bool geometry = true, bool invalidateArcs = true, bool position = true);
 	void CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<CamPathValue> & src);
 
@@ -781,6 +781,13 @@ class CamPathCollection
 	std::vector<std::shared_ptr<const CamPath::State>> m_CacheStates;
 	mutable unsigned long long m_LastActiveRevision = ~0ull;
 	mutable std::shared_ptr<const CamPath::State> m_CurrentState;
+	// Snapshots are immutable; selection-only changes need one comparison, not one per frame.
+	struct DirtyCache
+	{
+		std::weak_ptr<const CamPath::State> Current, Saved;
+		bool Dirty = false;
+	};
+	mutable std::vector<DirtyCache> m_DirtyCaches;
 	const std::shared_ptr<const CamPath::State> &CurrentState() const;
 	bool NameAvailable(const std::string &name, size_t except) const;
 	void Sync();

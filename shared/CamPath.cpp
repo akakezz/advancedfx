@@ -3990,17 +3990,34 @@ bool CamPathCollection::IsDirty(size_t index) const
 {
 	if (index >= m_Paths.size())
 		return false;
-	const auto &current = index == m_ActiveIndex ? *CurrentState() : *m_Paths[index].Data;
+	const auto &entry = m_Paths[index];
+	const auto &current = index == m_ActiveIndex ? CurrentState() : entry.Data;
 	for (const auto &saved : m_Saved.Paths)
-		if (saved.Id == m_Paths[index].Id)
-			return saved.Name != m_Paths[index].Name || saved.Muted != m_Paths[index].Muted ||
-				   saved.Solo != m_Paths[index].Solo || saved.Visible != m_Paths[index].Visible ||
-				   !SamePathContent(*saved.Data, current);
+		if (saved.Id == entry.Id)
+		{
+			if (saved.Name != entry.Name || saved.Muted != entry.Muted || saved.Solo != entry.Solo ||
+				saved.Visible != entry.Visible)
+				return true;
+			m_DirtyCaches.resize(m_Paths.size());
+			auto &cache = m_DirtyCaches[index];
+			if (cache.Current.lock() != current || cache.Saved.lock() != saved.Data)
+			{
+				cache.Current = current;
+				cache.Saved = saved.Data;
+				cache.Dirty = current != saved.Data && !SamePathContent(*saved.Data, *current);
+			}
+			return cache.Dirty;
+		}
 	return true;
 }
 bool CamPathCollection::IsDirty() const
 {
-	return !SameContent(CaptureState(), m_Saved);
+	if (m_Paths.size() != m_Saved.Paths.size())
+		return true;
+	for (size_t i = 0; i < m_Paths.size(); ++i)
+		if (m_Paths[i].Id != m_Saved.Paths[i].Id || IsDirty(i))
+			return true;
+	return false;
 }
 void CamPathCollection::MarkSaved(bool all)
 {

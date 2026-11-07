@@ -223,6 +223,21 @@ keys**. The range can cover part of an interval or a hold; it is not restricted 
 camera key boundaries. **Add noise to range** initially affects visible/focused
 channels. Per-channel amplitudes can then be edited independently.
 
+The **Modifier stack** lists every modifier in processing order, starting at index
+0: the top entry is applied first, the bottom last. Click a row to edit it; **Move
+up / Move down** changes the actual order. Disabled entries are gray. Matching
+numbers/colors identify graph ranges; the selected range has a yellow border.
+The graph shows at most four range lanes around the selected entry so a large
+stack cannot cover the curve. Select another stack row to reveal its lanes.
+
+Check the boxes beside numeric settings to adjust several fields in that modifier
+at once. Enter **Adjustment (%)**, then click **Adjust selected fields**: +10%
+multiplies each checked value by 1.1, preserving their proportions. Zero stays
+zero. Strength, fade lengths, frequency, roughness, phase, window, damping and
+channel amplitudes/strengths can be included. Range endpoints, seed and octaves
+remain separate. An invalid result rejects the whole adjustment; Undo/Redo
+restores it as one edit. **Clear field selection** clears the checked fields.
+
 Choose **New modifier type**, then add it to the selected range. Existing modifiers
 can change type through **Modifier type**. Noise and Oscillation amplitudes use
 world units or degrees; Smooth and Spring amplitudes are channel strengths from
@@ -542,10 +557,17 @@ Native and collection saves reject invalid path data, including nonfinite offset
 Loading an invalid offset leaves the current path intact; console offset changes
 also reject malformed or nonfinite numbers.
 
-An asterisk marks unsaved edits. Recovery backups are written every 30 seconds by
-default under `%LOCALAPPDATA%/advancedfx/camera-recovery` (or HLAE's folder when
-that variable is unavailable), and when closing the overlay or loading another
-file. Settings controls the periodic backup and interval. Backups do not overwrite
+An asterisk marks unsaved edits. Idle dirty checks reuse immutable snapshot
+comparisons; selection and playback enable do not count as authored changes.
+Unchanged documents do not repeatedly rewrite recovery backups, and clean idle
+frames do not touch the recovery filesystem. Periodic recovery waits until a
+mouse drag finishes. Actual changed-document saves still serialize synchronously;
+very large documents or slow storage can delay a save.
+
+Periodic recovery checks run every 30 seconds by default. Changed work is written
+under `%LOCALAPPDATA%/advancedfx/camera-recovery` (or HLAE's folder when that
+variable is unavailable). Closing the overlay or loading another file also flushes
+changed work. Settings controls the periodic backup and interval. Backups do not overwrite
 source files or mark changes saved. The Campath tab offers **Recover latest
 backup** and **Discard latest backup** when older backups exist. Recovery forces
 Save As; older backups remain until discarded. Undo history itself is not persisted.

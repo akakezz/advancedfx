@@ -434,6 +434,32 @@ void collections()
 	check(paths.SaveAll(file.wstring().c_str()), "All named paths save together");
 	check(!paths.IsDirty(), "Saving all records the document save point");
 	const auto saved = paths.CaptureState();
+	for (int i = 0; i < 10; ++i)
+	{
+		active.SelectNone();
+		check(!paths.IsDirty() && !paths.IsDirty(paths.GetActive()), "Selection-only changes stay clean");
+		active.SelectAll();
+		check(!paths.IsDirty(), "Repeated selection does not change the saved document");
+	}
+	const bool wasEnabled = active.Enabled_get();
+	active.Enabled_set(!wasEnabled);
+	check(!paths.IsDirty(), "Playback enable is excluded from saved-content comparisons");
+	active.Enabled_set(wasEnabled);
+	active.SetFov(55);
+	check(paths.IsDirty() && paths.IsDirty(paths.GetActive()), "Pose edits invalidate a clean dirty cache");
+	paths.RestoreState(saved);
+	check(!paths.IsDirty(), "Restoring saved content invalidates a dirty cache");
+	paths.Rename("Temporary name");
+	check(paths.IsDirty(paths.GetActive()), "Metadata edits remain dirty with cached native content");
+	paths.RestoreState(saved);
+	check(!paths.IsDirty(), "Restoring metadata clears dirty state");
+	paths.SetFlags(0, !paths.IsMuted(0), paths.IsSolo(0), paths.IsVisible(0));
+	check(paths.IsDirty() && paths.IsDirty(0), "Inactive path flags participate in dirty state");
+	paths.RestoreState(saved);
+	paths.Remove(0);
+	check(paths.IsDirty(), "Removed saved paths remain dirty");
+	paths.RestoreState(saved);
+	check(!paths.IsDirty(), "Restoring a removed path cannot reuse a stale comparison");
 	CamPath other;
 	CamPathCollection loaded(other);
 	check(loaded.LoadAll(file.wstring().c_str()), "Collection loads atomically");

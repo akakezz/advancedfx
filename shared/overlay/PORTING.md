@@ -261,3 +261,24 @@ The classic drawer's trajectory-evaluation workload (distance timing plus one
 noise modifier) fell from about 426 ms to 13 ms with adaptive sampling. These
 measurements exclude D3D9 drawing and the final simplification pass; they are not
 in-game frame-time measurements.
+
+
+## Idle overlay work and modifier controls
+
+Dirty-state comparisons cache immutable snapshot identities, including selection-only
+changes, without retaining obsolete snapshots. Recovery skips unchanged documents,
+removes clean backups once, and defers periodic saves during mouse drags. Saving
+changed content still uses the existing synchronous XML writer; background threads
+were not introduced into the DLL lifecycle.
+
+The graph culls offscreen key hit targets and bounds modifier range lanes. A visible
+stack reflects native processing order, with matching graph numbers/colors. Batch
+field adjustments use the same native modifier validation and authoring history;
+a rejected field rejects the complete batch.
+
+An optimized headless idle test against eb598ba7 (seven channels, 20x time zoom,
+selection changed after save, 30 frames) measured median CPU frame times of about
+0.53 -> 0.13 ms at 100 keys, 5.21 -> 1.05 ms at 1,000 keys, and 32.43 -> 4.88 ms
+at 5,000 keys. At 5,000 keys the graph/UI vertex count fell from about 1.05 million
+to 253,000. These measurements exclude D3D9 submission, TF2 and filesystem costs;
+they are not evidence that an in-game freeze is fully resolved.
