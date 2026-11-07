@@ -323,8 +323,9 @@ import hooks in engine/inputsystem/vgui2 (also used for TF2's material surface),
 game cursor checks see their latest requested shape while the overlay owns it.
 Source menus, mouse-look and focus changes restore native cursor behavior.
 
-Shift-drag edits matching handles in the clicked channel on selected keyframes;
-Ctrl constrains edits to length, and Alt keeps the opposite slope independent.
+Shift-drag edits matching selected key/channel handles, including cross-channel
+box selections. Ctrl constrains edits to length, and Alt keeps the opposite slope
+independent.
 The gesture captures effective tangents and a frozen graph transform once. One
 native EditTangents transaction validates and applies the complete group per
 update, keeping selection and existing hold/time-weight rules. Undo, Escape,
@@ -335,3 +336,32 @@ repeated cursor callbacks, real ImGui text hover and menu/focus/freecam handoffs
 Graph tests cover group movement, length constraints, selection, undo/redo,
 Escape and interrupted input. Native tests reject an invalid batch atomically.
 Windows/TF2 runtime behavior still needs an in-game retest.
+
+## Selection, retiming references and spatial labels
+
+Sequencer numbering advances for every submitted key, including keys left of the
+visible range. A test-only instrumented copy of the actual widget verifies labels
+after zoom/pan without changing production APIs.
+
+The graph keeps transient channel-selection masks keyed by native key time and
+owning path. Box/Ctrl selection publishes the union to the existing whole-pose
+selection, while graph edits and Shift handle drags respect the individual channel
+masks, visibility and locks. A box drag owns its ImGui active ID. Group transforms
+use each channel's frozen scale and a single native tangent transaction.
+
+GetSpeedKeyProgress reuses native arc travel prefixes for the ramp's key markers,
+excluding holds and zero-distance intervals. It does not introduce another timing
+evaluator. Full-pose replacement preserves the current equivalent Euler branch;
+inspector/graph edits start from evaluated unwrapped values rather than canonical
+quaternion angles.
+
+World labels now reserve slots by 3D anchor neighborhoods, with bounded bitsets
+and world-Z offsets. Placement is independent of camera projection; offscreen
+anchors still reserve their stable slot before visibility culling. Glyphs and
+indices retain the classic depth-tested renderer. This trades screen decluttering
+of unrelated world points for stable association with their actual locations.
+
+The existing renderer consumes the newest queued snapshot and recycles stale ones,
+removing extra queue latency without restoring OS I-beam updates. The software
+cursor still follows display/render cadence. Real TF2 input, spatial appearance
+and recording remain runtime checks.

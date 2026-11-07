@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <shared/AfxConsole.h>
@@ -61,16 +62,50 @@ struct TangentDrag
 	struct Handle
 	{
 		size_t Index;
-		double Duration, Slope, Weight;
+		CamPath::Channel Component;
+		double Duration, Slope, Weight, ValuePerPixel;
 	};
 	std::vector<Handle> Handles;
-	CamPath::Channel Component = CamPath::CH_X;
 	bool Outgoing = false, Group = false, MoveHandle = false, LengthOnly = false, Linked = true,
 		 EditWeight = false;
 	ImVec2 Mouse, LastMouse;
-	double SecondsPerPixel = 0, ValuePerPixel = 0;
+	double SecondsPerPixel = 0;
 };
 static TangentDrag g_TangentDrag;
+static std::map<double, unsigned int> g_GraphChannels;
+static unsigned long long g_GraphSelectionOwner = 0, g_GraphSelectionRevision = ~0ull;
+static bool GraphChannelSelected(double time, int channel)
+{
+	const auto found = g_GraphChannels.find(time);
+	return found != g_GraphChannels.end() && (found->second & (1u << channel));
+}
+static void SyncGraphSelection(CamPath &path)
+{
+	auto &document = g_Hook_VClient_RenderView.m_CamPaths;
+	const auto owner = document.GetId(document.GetActive());
+	if (owner == g_GraphSelectionOwner && g_GraphSelectionRevision == path.GetRevision())
+		return;
+	if (owner != g_GraphSelectionOwner)
+		g_GraphChannels.clear();
+	std::map<double, unsigned int> next;
+	for (auto it = path.GetBegin(); it != path.GetEnd(); ++it)
+		if (it.GetValue().Selected)
+		{
+			const auto found = g_GraphChannels.find(it.GetTime());
+			next[it.GetTime()] = found == g_GraphChannels.end() ? 0x7f : found->second;
+		}
+	g_GraphChannels = std::move(next);
+	g_GraphSelectionOwner = owner;
+	g_GraphSelectionRevision = path.GetRevision();
+}
+static void PublishGraphSelection(CamPath &path)
+{
+	auto keys = path.CaptureState().Keys;
+	for (auto &key : keys)
+		key.second.Selected = g_GraphChannels.count(key.first) && g_GraphChannels.at(key.first) != 0;
+	path.ReplaceKeys(keys);
+	g_GraphSelectionRevision = path.GetRevision();
+}
 
 static void ResetSpeedDrag()
 {
@@ -660,6 +695,8 @@ bool PreviewHold(bool clear)
 }
 void PreviewSelectAll()
 {
+	g_GraphChannels.clear();
+	g_GraphSelectionRevision = ~0ull;
 	CancelEditGesture();
 	g_Hook_VClient_RenderView.m_CamPath.SelectAll();
 }
@@ -707,6 +744,8 @@ static void SetKeySelection(const std::vector<int> &indices)
 {
 	auto &path = g_Hook_VClient_RenderView.m_CamPath;
 	auto keys = path.CaptureState().Keys;
+	g_GraphChannels.clear();
+	g_GraphSelectionRevision = ~0ull;
 	size_t index = 0;
 	bool changed = false;
 	for (auto &key : keys)
@@ -812,6 +851,10 @@ static void DrawKeyInspector()
 {
 	auto &path = g_Hook_VClient_RenderView.m_CamPath;
 	auto keys = path.CaptureState().Keys;
+	if (path.RotationInterpMethod_get() == CamPath::QI_CUSTOM && path.CanEval())
+		for (auto &key : keys)
+			if (key.second.Selected && !key.second.HasEuler)
+				key.second.SetEulerAngles(path.EvalUnmodified(key.first).GetEulerAngles());
 	std::vector<double> selected;
 	for (const auto &key : keys)
 		if (key.second.Selected)
@@ -969,6 +1012,38 @@ static void DrawSpeedProfile(CamPath &path)
 	};
 	draw->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
 	draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(18, 22, 26, 255));
+	const auto keyProgress = path.GetSpeedKeyProgress();
+	size_t keyIndex = 0;
+	float lastLabelRight = -FLT_MAX;
+	int lastPixel = -1;
+	for (auto key = path.GetBegin(); key != path.GetEnd(); ++key, ++keyIndex)
+	{
+		const float x = point({keyProgress[keyIndex], 0}).x;
+		if ((int)x != lastPixel || key.GetValue().Selected)
+			draw->AddLine(ImVec2(x, origin.y + 2), ImVec2(x, origin.y + size.y - 2),
+						  key.GetValue().Selected ? IM_COL32(255, 210, 90, 180)
+												  : IM_COL32(160, 180, 200, 100));
+		lastPixel = (int)x;
+		const auto label = std::to_string(keyIndex);
+		const float width = ImGui::CalcTextSize(label.c_str()).x;
+		const float left = std::clamp(x - width * .5f, origin.x + 2,
+									  (std::max)(origin.x + 2, origin.x + size.x - width - 2));
+		if (left > lastLabelRight + 4)
+		{
+			draw->AddText(ImVec2(left, origin.y + 2), IM_COL32(210, 220, 235, 255), label.c_str());
+			lastLabelRight = left + width;
+		}
+		if (ImGui::IsItemHovered() && std::abs(io.MousePos.x - x) < 5)
+		{
+			int tick = 0;
+			if (GetDemoTickFromClientTime(g_MirvTime.GetTime(), key.GetTime() + path.GetOffset(), tick))
+				ImGui::SetTooltip("Key %u | tick %d | path %.3f s | moving time %.2f%%", (unsigned)keyIndex,
+								  tick, key.GetTime(), keyProgress[keyIndex] * 100);
+			else
+				ImGui::SetTooltip("Key %u | path %.3f s | moving time %.2f%%", (unsigned)keyIndex,
+								  key.GetTime(), keyProgress[keyIndex] * 100);
+		}
+	}
 	ImVec2 last = point({0, path.GetProfileSpeed(0)});
 	for (int i = 1; i <= 128; ++i)
 	{
@@ -1049,7 +1124,8 @@ static void DrawSpeedProfile(CamPath &path)
 	}
 	ImGui::EndDisabled();
 	ImGui::TextWrapped("Drag speed points; double-click to add; right-click an interior point to remove. X "
-					   "is moving time (0-100%%), Y is relative speed. Retiming moves arrivals and hold "
+					   "is moving time (0-100%%), Y is relative speed. Vertical lines mark camera keys; "
+					   "hover for index/tick. Retiming moves arrivals and hold "
 					   "releases, retaining hold durations. Camera keys do not restart this ramp.");
 	if (g_LockKeyTimes)
 		ImGui::TextDisabled("Unlock key times to edit the speed profile or retime this path.");
@@ -1905,6 +1981,7 @@ static void DrawCurveEditor()
 							"handles | Esc: cancel drag");
 		ImGui::TextDisabled("Time axis: demo tick / path seconds. Circles: Auto. Squares: Manual / baked.");
 
+		SyncGraphSelection(g_Hook_VClient_RenderView.m_CamPath);
 		// Keep cache fresh (standalone)
 		if (!g_CurveCache.valid || g_CurveCache.times.size() != g_Hook_VClient_RenderView.m_CamPath.GetSize())
 			CurveCache_Rebuild();
@@ -2456,8 +2533,14 @@ static void DrawCurveEditor()
 						dl->AddCircleFilled(P3, r, IM_COL32(220, 220, 220, 255));
 						dl->AddLine(P0, P1, IM_COL32(180, 128, 64, 200));
 						dl->AddLine(P3, P2, IM_COL32(180, 128, 64, 200));
-						dl->AddCircleFilled(P1, r, chHandleColor(ch));
-						dl->AddCircleFilled(P2, r, chHandleColor(ch));
+						dl->AddCircleFilled(P1, r,
+											GraphChannelSelected(g_CurveCache.times[i], ch)
+												? IM_COL32(255, 225, 90, 255)
+												: chHandleColor(ch));
+						dl->AddCircleFilled(P2, r,
+											GraphChannelSelected(g_CurveCache.times[i + 1], ch)
+												? IM_COL32(255, 225, 90, 255)
+												: chHandleColor(ch));
 
 						for (int side = 0; side < 2; ++side)
 						{
@@ -2468,7 +2551,7 @@ static void DrawCurveEditor()
 							snprintf(id, sizeof(id), outgoing ? "##h1b_%zu_ch%d" : "##h2b_%zu_ch%d", i, ch);
 							ImGui::InvisibleButton(id, ImVec2(12, 12));
 							if (ImGui::IsItemHovered())
-								ImGui::SetTooltip("Drag: slope | Shift+drag: move matching selected handles "
+								ImGui::SetTooltip("Drag: slope | Shift+drag: move selected channel handles "
 												  "| Ctrl: length only | Alt: unlink");
 							if (ImGui::IsItemActivated())
 							{
@@ -2476,9 +2559,9 @@ static void DrawCurveEditor()
 								auto &drag = g_TangentDrag;
 								drag = {};
 								const size_t clicked = outgoing ? i : i + 1;
-								drag.Component = (CamPath::Channel)ch;
 								drag.Outgoing = outgoing;
-								drag.Group = io.KeyShift && g_CurveCache.values[clicked].Selected;
+								drag.Group =
+									io.KeyShift && GraphChannelSelected(g_CurveCache.times[clicked], ch);
 								drag.MoveHandle = io.KeyShift;
 								drag.LengthOnly = io.KeyCtrl;
 								drag.Linked = !io.KeyAlt;
@@ -2488,12 +2571,31 @@ static void DrawCurveEditor()
 								drag.Mouse = drag.LastMouse = io.MousePos;
 								drag.SecondsPerPixel =
 									curvePath.GetDuration() / (g_CurveTimeZoom * plotWidth);
-								drag.ValuePerPixel = 2 * vHalf[g_CurveNormalize ? ch : anchorCh] /
-													 (g_CurveValueScale * plotHeight);
+								if (!drag.Group)
+								{
+									g_GraphChannels.clear();
+									g_GraphChannels[g_CurveCache.times[clicked]] = 1u << ch;
+									PublishGraphSelection(curvePath);
+								}
 								for (size_t index = 0; index < g_CurveCache.times.size(); ++index)
-									if (index == clicked ||
-										(drag.Group && g_CurveCache.values[index].Selected))
+									for (int component = 0; component < 7; ++component)
 									{
+										const bool selected =
+											drag.Group
+												? GraphChannelSelected(g_CurveCache.times[index], component)
+												: index == clicked && component == ch;
+										const bool custom =
+											component < 3
+												? curvePath.PositionInterpMethod_get() == CamPath::DI_CUSTOM
+											: component == 3
+												? curvePath.FovInterpMethod_get() == CamPath::DI_CUSTOM
+												: curvePath.RotationInterpMethod_get() == CamPath::QI_CUSTOM;
+										if (!selected || !drawMask[component] || g_CurveLocked[component] ||
+											!custom ||
+											(g_CurveFocusChannel >= 0 && g_CurveFocusChannel != component) ||
+											(curvePath.GetDistanceTiming() &&
+											 (component < 3 || curvePath.GetDistanceTimingPose())))
+											continue;
 										if (outgoing ? index + 1 == g_CurveCache.times.size() : index == 0)
 											continue;
 										const size_t interval = outgoing ? index : index - 1;
@@ -2501,15 +2603,18 @@ static void DrawCurveEditor()
 																g_CurveCache.times[interval] -
 																g_CurveCache.values[interval].HoldDuration;
 										double slope, weight, otherSlope, otherWeight;
+										const auto channel = (CamPath::Channel)component;
 										if (duration <= 0 ||
-											!curvePath.GetTangent(drag.Component, index, outgoing, slope,
-																  weight) ||
-											!curvePath.GetTangent(drag.Component,
-																  outgoing ? index + 1 : index - 1, !outgoing,
-																  otherSlope, otherWeight))
+											!curvePath.GetTangent(channel, index, outgoing, slope, weight) ||
+											!curvePath.GetTangent(channel, outgoing ? index + 1 : index - 1,
+																  !outgoing, otherSlope, otherWeight))
 											continue;
 										Afx::Math::ResolveHermiteWeights(weight, otherWeight);
-										drag.Handles.push_back({index, duration, slope, weight});
+										const double scale = 2 *
+															 vHalf[g_CurveNormalize ? component : anchorCh] /
+															 (g_CurveValueScale * plotHeight);
+										drag.Handles.push_back(
+											{index, channel, duration, slope, weight, scale});
 									}
 								g_DragFirst = curvePath.GetLowerBound();
 								g_DragLast = curvePath.GetUpperBound();
@@ -2530,10 +2635,10 @@ static void DrawCurveEditor()
 				g_TangentDrag.LastMouse = io.MousePos;
 				const auto &drag = g_TangentDrag;
 				const double dt = (io.MousePos.x - drag.Mouse.x) * drag.SecondsPerPixel;
-				const double dv = -(io.MousePos.y - drag.Mouse.y) * drag.ValuePerPixel;
 				std::vector<CamPath::TangentEdit> edits;
 				for (const auto &handle : drag.Handles)
 				{
+					const double dv = -(io.MousePos.y - drag.Mouse.y) * handle.ValuePerPixel;
 					const double direction = drag.Outgoing ? 1.0 : -1.0;
 					const double offset = direction * handle.Weight * handle.Duration / 3;
 					const double weight =
@@ -2544,7 +2649,7 @@ static void DrawCurveEditor()
 						drag.LengthOnly ? handle.Slope
 										: (offset * handle.Slope + dv) /
 											  (direction * (std::max)(1e-6, weight) * handle.Duration / 3);
-					edits.push_back({handle.Index, drag.Component, drag.Outgoing, slope, weight});
+					edits.push_back({handle.Index, handle.Component, drag.Outgoing, slope, weight});
 				}
 				if (!(drag.LengthOnly && (!drag.EditWeight || dt == 0)) &&
 					!curvePath.EditTangents(edits, drag.Linked, drag.EditWeight, !drag.Group))
@@ -2595,9 +2700,15 @@ static void DrawCurveEditor()
 			static bool boxDrag = false;
 			static CamPath::State dragStart;
 			static ImVec2 dragMouse, boxStart;
-			static double secondsPerPixel, valuePerPixel;
-			static int dragChannel = 0;
-			std::vector<std::pair<int, ImVec2>> points;
+			static double secondsPerPixel, valuePerPixel[7];
+			static std::map<double, unsigned int> dragChannels;
+			struct ChannelPoint
+			{
+				size_t Index;
+				int Channel;
+				ImVec2 Position;
+			};
+			std::vector<ChannelPoint> points;
 			for (size_t index = 0; index < g_CurveCache.times.size(); ++index)
 				for (int ch = 0; ch < 7; ++ch)
 					if (drawMask[ch] && (g_CurveFocusChannel < 0 || g_CurveFocusChannel == ch))
@@ -2615,7 +2726,7 @@ static void DrawCurveEditor()
 						ImVec2 point(keyX, toY_ch(ch, component));
 						if (!keyDrag && (point.y < p0.y - 6 || point.y > p1.y + 6))
 							continue;
-						points.emplace_back((int)index, point);
+						points.push_back({index, ch, point});
 						const unsigned char inModes[] = {v.TxModeIn,  v.TyModeIn,  v.TzModeIn, v.TfovModeIn,
 														 v.TRyModeIn, v.TRzModeIn, v.TRxModeIn};
 						const unsigned char outModes[] = {v.TxModeOut,	 v.TyModeOut,  v.TzModeOut,
@@ -2623,9 +2734,10 @@ static void DrawCurveEditor()
 														  v.TRxModeOut};
 						const bool automatic =
 							inModes[ch] == CamPath::TM_AUTO && outModes[ch] == CamPath::TM_AUTO;
-						const ImU32 color = v.Selected ? IM_COL32(255, 225, 90, 255) : chColor(ch);
+						const bool channelSelected = GraphChannelSelected(g_CurveCache.times[index], ch);
+						const ImU32 color = channelSelected ? IM_COL32(255, 225, 90, 255) : chColor(ch);
 						if (automatic)
-							dl->AddCircleFilled(point, v.Selected ? 5.5f : 4, color);
+							dl->AddCircleFilled(point, channelSelected ? 5.5f : 4, color);
 						else
 							dl->AddRectFilled(ImVec2(point.x - 4, point.y - 4),
 											  ImVec2(point.x + 4, point.y + 4), color);
@@ -2648,21 +2760,31 @@ static void DrawCurveEditor()
 						{
 							EnsureEditGesture();
 							auto &path = g_Hook_VClient_RenderView.m_CamPath;
-							auto selected = path.CaptureState().Keys;
-							if (!io.KeyCtrl && !v.Selected)
-								for (auto &key : selected)
-									key.second.Selected = false;
-							selected[g_CurveCache.times[index]].Selected = io.KeyCtrl ? !v.Selected : true;
-							path.ReplaceKeys(selected);
+							if (!io.KeyCtrl && !channelSelected)
+								g_GraphChannels.clear();
+							auto &mask = g_GraphChannels[g_CurveCache.times[index]];
+							if (io.KeyCtrl)
+								mask ^= 1u << ch;
+							else
+								mask |= 1u << ch;
+							if (!mask)
+								g_GraphChannels.erase(g_CurveCache.times[index]);
+							PublishGraphSelection(path);
 							BeginEdit();
 							dragStart = path.CaptureState();
+							dragChannels = g_GraphChannels;
+							for (auto &key : dragStart.Keys)
+								if (key.second.Selected && (dragChannels[key.first] & 0x70) &&
+									path.RotationInterpMethod_get() == CamPath::QI_CUSTOM)
+									key.second.SetEulerAngles(
+										path.EvalUnmodified(key.first).GetEulerAngles());
 							dragMouse = io.MousePos;
-							dragChannel = ch;
 							secondsPerPixel = (g_Hook_VClient_RenderView.m_CamPath.GetUpperBound() -
 											   g_CurveCache.times.front()) /
 											  (g_CurveTimeZoom * plotWidth);
-							valuePerPixel = 2 * vHalf[g_CurveNormalize ? ch : anchorCh] /
-											(g_CurveValueScale * plotHeight);
+							for (int c = 0; c < 7; ++c)
+								valuePerPixel[c] = 2 * vHalf[g_CurveNormalize ? c : anchorCh] /
+												   (g_CurveValueScale * plotHeight);
 							g_DragFirst = g_CurveCache.times.front();
 							g_DragLast = g_Hook_VClient_RenderView.m_CamPath.GetUpperBound();
 							for (int c = 0; c < 7; ++c)
@@ -2676,15 +2798,14 @@ static void DrawCurveEditor()
 			if (!g_CancelGesture && keyDrag && ImGui::IsMouseDragging(0))
 			{
 				double dt = (io.MousePos.x - dragMouse.x) * secondsPerPixel;
-				double dv = -(io.MousePos.y - dragMouse.y) * valuePerPixel;
+				double pixels = -(io.MousePos.y - dragMouse.y);
 				if (g_LockKeyTimes)
 					dt = 0;
-				if (g_CurveLocked[dragChannel])
-					dv = 0;
+
 				if (io.KeyShift)
 				{
 					if (std::abs(io.MousePos.x - dragMouse.x) > std::abs(io.MousePos.y - dragMouse.y))
-						dv = 0;
+						pixels = 0;
 					else
 						dt = 0;
 				}
@@ -2692,16 +2813,33 @@ static void DrawCurveEditor()
 					dt = std::round(dt / TickInterval()) * TickInterval();
 				CInterpolationMap<CamPathValue> keys;
 				bool unique = true;
+				unsigned int visibleMask = 0;
+				for (int c = 0; c < 7; ++c)
+					if (drawMask[c] && (g_CurveFocusChannel < 0 || g_CurveFocusChannel == c))
+						visibleMask |= 1u << c;
 				for (auto key : dragStart.Keys)
 				{
-					if (key.second.Selected)
-						CamPath::SetChannelValue(
-							key.second, (CamPath::Channel)dragChannel,
-							CamPath::GetChannelValue(key.second, (CamPath::Channel)dragChannel) + dv);
-					unique &= keys.emplace(key.first + (key.second.Selected ? dt : 0), key.second).second;
+					const auto mask =
+						dragChannels.count(key.first) ? dragChannels.at(key.first) & visibleMask : 0;
+					if (pixels != 0)
+						for (int c = 0; c < 7; ++c)
+							if ((mask & (1u << c)) && !g_CurveLocked[c])
+								CamPath::SetChannelValue(
+									key.second, (CamPath::Channel)c,
+									CamPath::GetChannelValue(key.second, (CamPath::Channel)c) +
+										pixels * valuePerPixel[c]);
+					unique &= keys.emplace(key.first + (mask ? dt : 0), key.second).second;
 				}
 				if (!unique || !g_Hook_VClient_RenderView.m_CamPath.ReplaceKeys(keys))
 					g_DocumentStatus = "Keys cannot share an arrival time or cross a hold release.";
+				else
+				{
+					g_GraphChannels.clear();
+					for (const auto &entry : dragChannels)
+						g_GraphChannels[entry.first + ((entry.second & visibleMask) ? dt : 0)] |=
+							entry.second;
+					g_GraphSelectionRevision = g_Hook_VClient_RenderView.m_CamPath.GetRevision();
+				}
 			}
 			if (!ImGui::IsMouseDown(0))
 				keyDrag = false;
@@ -2710,11 +2848,14 @@ static void DrawCurveEditor()
 			{
 				boxDrag = true;
 				boxStart = io.MousePos;
+				ImGui::SetActiveID(ImGui::GetID("##curve_box_select"), ImGui::GetCurrentWindow());
+				ImGui::FocusWindow(ImGui::GetCurrentWindow());
 			}
 			if (g_CancelGesture)
 				boxDrag = false;
 			if (boxDrag)
 			{
+				ImGui::KeepAliveID(ImGui::GetID("##curve_box_select"));
 				ImVec2 lo((std::min)(boxStart.x, io.MousePos.x), (std::min)(boxStart.y, io.MousePos.y));
 				ImVec2 hi((std::max)(boxStart.x, io.MousePos.x), (std::max)(boxStart.y, io.MousePos.y));
 				dl->AddRectFilled(lo, hi, IM_COL32(100, 170, 230, 40));
@@ -2723,11 +2864,13 @@ static void DrawCurveEditor()
 				{
 					auto &path = g_Hook_VClient_RenderView.m_CamPath;
 					if (!io.KeyCtrl)
-						path.SelectNone();
+						g_GraphChannels.clear();
 					for (const auto &pt : points)
-						if (pt.second.x >= lo.x && pt.second.x <= hi.x && pt.second.y >= lo.y &&
-							pt.second.y <= hi.y)
-							path.SelectAdd((size_t)pt.first, (size_t)pt.first);
+						if (pt.Position.x >= lo.x && pt.Position.x <= hi.x && pt.Position.y >= lo.y &&
+							pt.Position.y <= hi.y)
+							g_GraphChannels[g_CurveCache.times[pt.Index]] |= 1u << pt.Channel;
+					PublishGraphSelection(path);
+					ImGui::ClearActiveID();
 					boxDrag = false;
 				}
 			}

@@ -169,17 +169,25 @@ bool CamPath::ReplacePose(double time, const CamPathValue &pose, unsigned int ch
 	if (found == m_Map.end())
 		return false;
 	auto value = found->second;
-	for (int ch = 0; ch < 7; ++ch)
+	if ((channels & 0x70) && m_RotationInterpMethod == QI_CUSTOM && CanEval() && !value.HasEuler)
+		value.SetEulerAngles(EvalUnmodified(time).GetEulerAngles());
+	// Camera poses are physical orientations. Keep the existing Euler branch/winding
+	// instead of treating a wrapped capture as an intentional full revolution.
+	auto aligned = value;
+	if (channels & 0x70)
+	{
+		aligned.SetEulerAngles(value.GetEulerAngles());
+		aligned.SetOrientation(pose.R);
+	}
+	for (int ch = 0; ch < 4; ++ch)
 		if (channels & (1u << ch))
 			SetChannelValue(value, (Channel)ch, GetChannelValue(pose, (Channel)ch));
 	if ((channels & 0x70) == 0x70)
-	{
-		value.R = pose.R;
-		value.HasEuler = pose.HasEuler;
-		value.EulerPitch = pose.EulerPitch;
-		value.EulerYaw = pose.EulerYaw;
-		value.EulerRoll = pose.EulerRoll;
-	}
+		value.SetOrientation(pose.R);
+	else
+		for (int ch = 4; ch < 7; ++ch)
+			if (channels & (1u << ch))
+				SetChannelValue(value, (Channel)ch, GetChannelValue(aligned, (Channel)ch));
 	return UpdateKey(time, time, value);
 }
 bool CamPath::DeleteSelected()
@@ -2032,6 +2040,24 @@ double CamPath::ProfileTime(double distance)
 	}
 	return (low + high) * 0.5;
 }
+std::vector<double> CamPath::GetSpeedKeyProgress()
+{
+	BuildArcs();
+	std::vector<double> result;
+	result.reserve(m_Map.size());
+	size_t index = 0;
+	for (const auto &key : m_Map)
+	{
+		const double progress =
+			m_TravelDuration > 0
+				? (index < m_Arcs.size() ? m_Arcs[index].TravelBegin / m_TravelDuration : 1.0)
+				: (GetDuration() > 0 ? (key.first - GetLowerBound()) / GetDuration() : 0.0);
+		result.push_back(std::clamp(progress, 0.0, 1.0));
+		++index;
+	}
+	return result;
+}
+
 bool CamPath::ApplySpeedProfile(const std::vector<SpeedKey> &keys, double duration)
 {
 	if (keys.size() > 128 ||

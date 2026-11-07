@@ -276,6 +276,7 @@ public:
 	{
 		return m_SpeedProfile;
 	}
+	std::vector<double> GetSpeedKeyProgress();
 	bool ApplySpeedProfile(const std::vector<SpeedKey> &keys, double duration);
 	double GetProfileSpeed(double time);
 	const std::vector<NoiseModifier> &GetModifiers() const

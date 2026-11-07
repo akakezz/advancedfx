@@ -490,7 +490,8 @@ namespace ImGui
 
         context.IsLastKeyframeSelected = inSelection;
 
-        if (timelineOffset >= 0.0f)
+        const int labelIndex = keyLabelCounter++;
+        if (timelineOffset >= 0.0f && bb.Overlaps(GetCurrentWindow()->ClipRect))
         {
 
             ImColor color = getKeyframeColor(context, hovered, inSelection);
@@ -502,11 +503,10 @@ namespace ImGui
 
             // Draw numeric label centered on the keyframe (no extra vertical space needed)
             char lbl[16];
-            snprintf(lbl, sizeof(lbl), "%d", keyLabelCounter);
+            snprintf(lbl, sizeof(lbl), "%d", labelIndex);
             const ImVec2 textSize = CalcTextSize(lbl);
             ImVec2 textPos = ImVec2(center.x - textSize.x * 0.5f, center.y - textSize.y * 0.5f);
             drawList->AddText(textPos, IM_COL32_WHITE, lbl);
-            keyLabelCounter++;
         }
 
         context.IsLastKeyframeHovered = hovered;

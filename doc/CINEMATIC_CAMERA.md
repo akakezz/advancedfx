@@ -113,10 +113,20 @@ to Auto** when you want them recalculated. Classic quaternion/cubic interpolatio
 cannot be split exactly by this editor and insertion is rejected there. **Add
 point** remains normal pose-and-demo-time capture.
 
+Replacing an existing key from the free camera keeps the equivalent Euler branch
+nearest that key's current evaluated angles. This prevents a wrapped capture near
+±180° from inserting an unintended revolution, including after subdivision.
+Explicit numeric winding and authored multi-turn paths remain available.
+
+The sequencer keeps classic zero-based key indices when zooming or panning past
+hidden keys. Zoom changes visibility, not numbering.
+
 The overlay uses ImGui's own drawn cursor, including the I-beam over text fields.
 Windows cursor changes and Source UI queries are avoided in the busy cursor hooks.
 Menus, focus loss and free-camera mouse-look restore the game's cursor; they also
-end an active editing gesture.
+end an active editing gesture. The renderer consumes the newest queued UI frame
+to avoid an additional stale-frame delay; the software cursor remains bound to
+the game's rendering frame rate.
 
 Enable **Show graph**, or **Show Curve Editor** in the sequencer, to open the
 dockable **Campath Graph** window. It displays X/Y/Z, FOV, pitch/yaw/roll individually or
@@ -162,10 +172,14 @@ handles. Distance-timed channels are also drawn from playback; disable distance
 timing to edit their underlying handles directly.
 
 - Drag a curve handle to edit the shared slope through that key.
-- Hold **Shift** while dragging a handle on a selected key to move the matching
-  incoming or outgoing handles of all selected keys in that channel. Both time
-  length and value position follow the same graph-space displacement. Keys with
-  no matching handle stay unchanged; other channels are unaffected.
+- Box-select key points in one or several channels. Hold **Shift** while dragging
+  a selected handle to move the matching incoming/outgoing handles across those
+  selected key/channel pairs. Both time length and value position follow the same
+  screen displacement, using each channel's scale. Unselected, hidden and locked
+  channels stay unchanged; keys without a matching handle are skipped.
+- **Ctrl-click** toggles a key/channel pair; **Ctrl+box-select** adds pairs. Native
+  keyframe selection and the inspector still identify the associated full poses.
+  Selection from the sequencer or Select All includes their visible channels.
 - Hold **Ctrl** to change length/influence without changing slopes; **Ctrl+Shift**
   applies that to the selected group. Minimum-jerk handles have fixed time weights,
   so only their slopes can be moved.
@@ -228,6 +242,18 @@ The graph shares cached evaluated samples across its visible channels and uses a
 screen-sized sampling grid plus key/hold boundaries. Zooming or changing camera
 data refreshes the samples; idle frames reuse them. These are display samples;
 playback and export continue to use the native evaluator.
+
+The speed-point graph also draws camera-key markers at their normalized moving
+times, excluding holds and stationary spans just like native retiming. Labels use
+classic indices; hover a marker for its index, demo tick, path time and ramp
+percentage. Markers update after retiming, so their positions match the current
+arrival times.
+
+World-space key indices, path names, hold releases and segment durations use
+world-position-based stacking. Only nearby 3D anchors share slots. Offsets stay
+along world Z as the view rotates or moves; unrelated projected overlaps cannot
+push a label into an empty area. All text continues through the classic depth-tested
+renderer.
 
 ## Range modifiers
 

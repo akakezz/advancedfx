@@ -115,17 +115,21 @@ public:
 
 	void Dx9_Render()
 	{
-		CImGuiRenderCache * cache = 0;
-
+		CImGuiRenderCache *cache = nullptr;
+		std::list<CImGuiRenderCache *> stale;
 		{
 			std::unique_lock<std::mutex> queuedLock(m_QueuedCachesMutex);
-
-			if (0 < m_QueuedCaches.size())
+			if (!m_QueuedCaches.empty())
 			{
-				cache = m_QueuedCaches.front();
-
-				m_QueuedCaches.pop_front();
+				cache = m_QueuedCaches.back();
+				m_QueuedCaches.pop_back();
+				stale.splice(stale.end(), m_QueuedCaches);
 			}
+		}
+		if (!stale.empty())
+		{
+			std::unique_lock<std::mutex> freeLock(m_FreeCachesMutex);
+			m_FreeCaches.splice(m_FreeCaches.end(), stale);
 		}
 
 		if (cache)

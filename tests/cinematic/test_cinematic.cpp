@@ -1431,6 +1431,75 @@ void modifierPersistenceAndExport()
 	std::filesystem::remove(classic);
 }
 
+void insertedEulerPoseAndSpeedMarkers()
+{
+	CamPath path;
+	custom(path);
+	path.Add(0, CamPathValue(0, 0, 0, 0, 170, 0, 90));
+	path.Add(2, CamPathValue(20, 0, 0, 0, -170, 0, 90));
+	check(path.Insert(1), "Insert an Euler key across the wrap boundary");
+	CamPathValue captured(10, 0, 0, 0, -179, 0, 90);
+	captured.SetEulerAngles(QEulerAngles(0, -179, 0));
+	check(path.ReplacePose(1, captured), "Replace inserted pose with a wrapped camera orientation");
+	near(path.CaptureState().Keys.at(1).GetEulerAngles().Yaw, 181, 1e-6);
+	for (int i = 0; i <= 200; ++i)
+	{
+		const double yaw = path.Eval(i * .01).GetEulerAngles().Yaw;
+		check(yaw > 160 && yaw < 200, "Edited inserted Euler key does not create a full revolution");
+	}
+	auto pose = path.CaptureState().Keys.at(1);
+	pose.SetEulerAngles(QEulerAngles(35, -178, 25));
+	check(path.ReplacePose(1, pose, 1u << CamPath::CH_RYAW),
+		  "Partial physical pose replacement works on the same Euler branch");
+	const auto partial = path.CaptureState().Keys.at(1).GetEulerAngles();
+	near(partial.Yaw, 182);
+	near(partial.Pitch, 0);
+	near(partial.Roll, 0);
+	CamPath endpoint;
+	custom(endpoint);
+	endpoint.Add(0, CamPathValue(0, 0, 0, 0, 170, 0, 90));
+	endpoint.Add(2, CamPathValue(20, 0, 0, 0, 190, 0, 90));
+	check(endpoint.ReplacePose(0, CamPathValue(0, 0, 0, 0, -179, 0, 90)),
+		  "Physical endpoint edits align with the evaluated Euler branch");
+	near(endpoint.GetBegin().GetValue().GetEulerAngles().Yaw, 181);
+	CamPath turns;
+	custom(turns);
+	turns.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	turns.Add(2, CamPathValue(20, 0, 0, 0, 720, 0, 90));
+	check(turns.Insert(1) && turns.ReplacePose(1, CamPathValue(10, 0, 0, 0, 10, 0, 90)),
+		  "Captured rotations preserve authored winding around an inserted key");
+	near(turns.CaptureState().Keys.at(1).GetEulerAngles().Yaw, 370);
+	CamPath speed;
+	custom(speed);
+	speed.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	speed.Add(10, CamPathValue(10, 0, 0, 0, 0, 0, 90));
+	speed.Add(20, CamPathValue(30, 0, 0, 0, 0, 0, 90));
+	speed.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	check(speed.SetKeyHold(1, 12), "Create a held key for moving-time markers");
+	auto progress = speed.GetSpeedKeyProgress();
+	check(progress.size() == 3, "Speed graph provides one progress marker per classic key index");
+	near(progress[0], 0);
+	near(progress[1], 10.0 / 18);
+	near(progress[2], 1);
+	check(speed.ApplySpeedProfile({}, 12), "Retime the held path for markers");
+	progress = speed.GetSpeedKeyProgress();
+	near(progress[1], 1.0 / 3, 1e-5);
+	check(speed.ApplySpeedProfile({{0, 0}, {.3, 1}, {1, 1}}, 12), "Markers follow a nonconstant speed ramp");
+	progress = speed.GetSpeedKeyProgress();
+	check(progress[0] == 0 && progress[2] == 1 && progress[1] > 1.0 / 3,
+		  "Moving-time markers account for ramped arrival times");
+	CamPath still;
+	custom(still);
+	still.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	still.Add(5, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	still.Add(10, CamPathValue(10, 0, 0, 0, 0, 0, 90));
+	still.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	progress = still.GetSpeedKeyProgress();
+	near(progress[0], 0);
+	near(progress[1], 0);
+	near(progress[2], 1);
+}
+
 void tangentBatchEdits()
 {
 	CamPath path;
@@ -1609,6 +1678,7 @@ int main()
 {
 	try
 	{
+		insertedEulerPoseAndSpeedMarkers();
 		tangentBatchEdits();
 		modifierCacheEdits();
 		continuity();

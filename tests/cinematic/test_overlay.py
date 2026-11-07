@@ -40,6 +40,8 @@ preamble=r'''
 #include <limits>
 #include <filesystem>
 #include <map>
+#include <bitset>
+#include <tuple>
 #include <sstream>
 #include <iostream>
 #include <string>
@@ -90,6 +92,8 @@ bool trackCheckbox(const char*l,bool*v){bool b=ImGui::Checkbox(l,v);widgets[l]={
 bool trackButton(const char*l,const ImVec2&s=ImVec2(0,0)){bool b=ImGui::Button(l,s);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackTab(const char*l,bool*p=nullptr,ImGuiTabItemFlags f=0){bool b=ImGui::BeginTabItem(l,p,f);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackInvisible(const char*l,const ImVec2&s,ImGuiButtonFlags f=0){bool b=ImGui::InvisibleButton(l,s,f);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
+std::map<int,int> sequencerLabels;void TestRecordNeoLabel(int tick,int index){sequencerLabels[tick]=index;}
+namespace ImGui{void TestSetNeoView(float zoom,int offset);}
 int seqEnd=0,viewStart=0,viewEnd=0,timelineSelected=0;Rect seqRect,graphRect;
 struct Span{int Begin,End;ImU32 Color;std::string Caption;};std::vector<Span> spans;
 bool trackSpan(int begin,int end,ImU32 color,const char*caption=nullptr){spans.push_back({begin,end,color,caption?caption:""});return ImGui::NeoTimelineSpan(begin,end,color,caption);}
@@ -113,9 +117,10 @@ s=s.replace('struct CurveSamples\n{', 'static size_t curveSampleBuilds=0;\nstruc
 s=s.replace('static bool g_Autosave = true;', 'static size_t recoveryWrites=0, recoveryRemoves=0;\nstatic bool g_Autosave = true;')
 s=s.replace('std::filesystem::remove(g_RecoveryFile, error);', '++recoveryRemoves; std::filesystem::remove(g_RecoveryFile, error);')
 s=s.replace('!paths.SaveAll(g_RecoveryFile.wstring().c_str(), true)', '!(++recoveryWrites, paths.SaveAll(g_RecoveryFile.wstring().c_str(), true))')
+s=s.replace('static void DrawSpeedProfile(', 'static std::vector<double> drawnSpeedKeyProgress;\nstatic void DrawSpeedProfile(').replace('const auto keyProgress = path.GetSpeedKeyProgress();', 'const auto keyProgress = path.GetSpeedKeyProgress(); drawnSpeedKeyProgress=keyProgress;')
 s=s.replace('// Background + border', 'graphRect = {p0,p1};\n// Background + border')
 drawer=(root/'AfxHookSource/CampathDrawer.cpp').read_text()
-layout=drawer[drawer.index('struct WorldLabelRect'):drawer.index('// CCampathDrawer //////////////////')]
+layout=drawer[drawer.index('// World-position-aware label slots'):drawer.index('// CCampathDrawer //////////////////')]
 # Exercise the actual CPU/render queue with a fake D3D device that rejects producer-thread calls.
 renderer=(root/'AfxHookSource/Gui.cpp').read_text()
 renderer=renderer[renderer.index('class CImGuiRenderCacheManager'):renderer.index('} m_ImGuiRernderCacheManager;')+1]+';'
@@ -185,7 +190,7 @@ bool SetCursorPos(int x,int y){++OsCalls;Physical={x,y};return true;}bool Screen
 cursor_code=cursor_preamble+owner+hooks+'bool CursorMessage(UINT msg, LPARAM lParam){'+message+'return false;}\n}\n'
 test=r'''
 int checks=0;void check(bool b,const char*m){++checks;if(!b)throw std::runtime_error(m);}
-void frame(ImVec2 mouse=ImVec2(-100,-100),bool down=false,float wheel=0,bool middle=false,bool right=false){auto&io=ImGui::GetIO();io.DeltaTime=1.0f/60;io.MousePos=mouse;io.MouseDown[0]=down;io.MouseDown[2]=middle;io.MouseDown[1]=right;io.MouseWheel=wheel;widgets.clear();spans.clear();timelineSelected=0;ImGui::NewFrame();AfxHookSource::CameraOverlay::Draw();ImGui::Render();check(ImGui::GetDrawData()!=nullptr,"UI produces draw data");}
+void frame(ImVec2 mouse=ImVec2(-100,-100),bool down=false,float wheel=0,bool middle=false,bool right=false){auto&io=ImGui::GetIO();io.DeltaTime=1.0f/60;io.MousePos=mouse;io.MouseDown[0]=down;io.MouseDown[2]=middle;io.MouseDown[1]=right;io.MouseWheel=wheel;widgets.clear();spans.clear();sequencerLabels.clear();timelineSelected=0;ImGui::NewFrame();AfxHookSource::CameraOverlay::Draw();ImGui::Render();check(ImGui::GetDrawData()!=nullptr,"UI produces draw data");}
 void button(const char*l){auto r=widgets.at(l);ImVec2 p((r.Min.x+r.Max.x)/2,(r.Min.y+r.Max.y)/2);frame(p,false);frame(p,true);frame(p,false);frame();}
 int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=nullptr;io.DisplaySize=ImVec2(1600,1000);unsigned char*pixels;int w,h;io.Fonts->AddFontDefault();io.Fonts->GetTexDataAsRGBA32(&pixels,&w,&h);
  using namespace AfxHookSource::CameraOverlay;g_Autosave=false;
@@ -234,7 +239,7 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  manager.CacheRender(data);check(calls==beforeUpload,"UI producer never allocates, locks or releases a D3D resource");
  data->CmdLists[0]->VtxBuffer[0].pos.x=originalX+100;render([&]{manager.Dx9_Render();});check(device.Draws>0&&device.FirstX==originalX,"Render thread uploads an owned CPU snapshot, not live ImGui buffers");data->CmdLists[0]->VtxBuffer[0].pos.x=originalX;
  auto draws=device.Draws;manager.CacheRender(data);device.FailIndex=true;render([&]{manager.Dx9_Render();});check(device.Draws==draws&&!device.VB->Locked,"Index lock failure unlocks the vertex buffer and skips the frame");
- for(int i=0;i<12;++i)manager.CacheRender(data);auto frames=device.Frames;render([&]{for(int i=0;i<12;++i)manager.Dx9_Render();});check(device.Frames-frames==2,"Queue drops stale frames rather than building an unbounded GPU backlog");
+ for(int i=0;i<12;++i){data->CmdLists[0]->VtxBuffer[0].pos.x=originalX+i;manager.CacheRender(data);}data->CmdLists[0]->VtxBuffer[0].pos.x=originalX;auto frames=device.Frames;render([&]{for(int i=0;i<12;++i)manager.Dx9_Render();});check(device.Frames-frames==1,"Renderer consumes the newest queued frame and drops the extra cursor delay");check(device.FirstX==originalX+11,"The newest pointer/UI snapshot is the one uploaded");
  render([&]{manager.Dx9_Destroy();manager.Dx9_Create(&device);});manager.CacheRender(data);frames=device.Frames;render([&]{manager.Dx9_Render();manager.Dx9_Destroy();});check(device.Frames==frames+1,"Queued drawing resumes after device recreation");std::atomic<bool> stop{false};std::thread consumer([&]{renderThread=std::this_thread::get_id();manager.Dx9_Create(&device);while(!stop.load()){manager.Dx9_Render();std::this_thread::yield();}manager.Dx9_Render();manager.Dx9_Render();manager.Dx9_Destroy();});for(int i=0;i<200;++i)manager.CacheRender(data);stop=true;consumer.join();
  check(wrongThread==0,"Concurrent production and consumption keep every D3D call on the consumer thread");
  }
@@ -248,7 +253,7 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  check(motionSpans==1,"Single path has one finite playback span");
  path.SetHold(true);frame();int extensions=0;motionSpans=0;for(const auto&span:spans){if(span.Caption==pathName){++motionSpans;check(span.Begin>=660&&span.End<=792,"Endpoint hold does not lengthen the motion span");}if(span.Caption==pathName+" (endpoint hold)"){++extensions;check((span.Color>>24)==80,"Endpoint extension is drawn dimly");}}
  check(extensions==2&&motionSpans==1,"Before/after endpoint holds are distinct from actual travel");path.SetHold(false);frame();
- check(seqEnd==12000&&viewStart==0&&viewEnd==12000,"Timeline uses full demo length instead of current tick");auto beforeNav=path.CaptureState();
+ check(seqEnd==12000&&viewStart==0&&viewEnd==12000,"Timeline uses full demo length instead of current tick");check(sequencerLabels[792]==1,"Initial sequencer label uses classic index");ImGui::TestSetNeoView(100,700);frame();frame();check(!sequencerLabels.count(660)&&sequencerLabels.count(792)&&sequencerLabels[792]==1,"Panning/zooming past the first key never renumbers a visible key");button("Fit demo");auto beforeNav=path.CaptureState();
  ImVec2 seqMouse(seqRect.Min.x+(seqRect.Max.x-seqRect.Min.x)*0.5f,seqRect.Min.y+35);frame(seqMouse);frame(seqMouse,false,4);check(viewEnd-viewStart<12000,"Wheel zooms timeline");int previousStart=viewStart;frame(seqMouse,false,0,true);frame(ImVec2(seqMouse.x-100,seqMouse.y),false,0,true);frame(seqMouse);check(viewStart>previousStart,"Middle drag pans timeline");button("Fit demo");check(viewStart==0&&viewEnd==12000,"Fit restores complete demo view");frame(seqMouse);frame(seqMouse,false,100);check(viewEnd>=viewStart&&viewEnd-viewStart<=1,"Timeline extreme zoom remains a valid single-tick view");frame(seqMouse,false,-200);check(viewStart==0&&viewEnd==12000,"Timeline zoom-out clamps to full demo");demo.TotalTicks=600;frame();check(seqEnd==600&&viewStart==0&&viewEnd==600,"Loading shorter demo resets timeline range and view");demo.TotalTicks=12000;frame();
  ImVec2 graphMouse((graphRect.Min.x+graphRect.Max.x)/2,(graphRect.Min.y+graphRect.Max.y)/2);frame(graphMouse);frame(graphMouse,false,3);check(g_CurveTimeZoom>1,"Wheel zooms graph time");io.AddKeyEvent(ImGuiMod_Ctrl,true);frame(graphMouse,false,2);io.AddKeyEvent(ImGuiMod_Ctrl,false);check(g_CurveValueScale>1,"Ctrl wheel zooms graph values");frame(graphMouse,false,0,true);frame(ImVec2(graphMouse.x-40,graphMouse.y+20),false,0,true);frame();check(g_CurveTimeCenter>0.5&&g_CurveValueOffset>0,"Middle drag pans graph on both axes");check(path.CaptureState()==beforeNav,"Editor navigation leaves camera data untouched");button("Fit graph");check(g_CurveTimeZoom==1&&g_CurveValueScale==1&&g_CurveValueOffset==0,"Fit graph restores all view transforms");
  g_CurveNormalize=false;frame();auto hr=widgets.at("##h1b_0_ch3");ImVec2 handle((hr.Min.x+hr.Max.x)/2,(hr.Min.y+hr.Max.y)/2);frame(handle);frame(handle,true);frame(ImVec2(handle.x,handle.y-20),true);frame(ImVec2(handle.x,handle.y-20),false);frame();auto movedHandle=widgets.at("##h1b_0_ch3");check(std::abs((movedHandle.Min.y+movedHandle.Max.y)/2-(handle.y-20))<1,"Dragging a channel handle follows the pointer on shared value axes");g_CurveNormalize=true;
@@ -278,7 +283,8 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
 
  MirvCampathPreview_SetTime(11);size_t beforeCtrl=commands.size();io.AddKeyEvent(ImGuiMod_Ctrl,true);io.AddKeyEvent(ImGuiKey_RightCtrl,true);frame();check(commands.size()==beforeCtrl,"Right Ctrl waits for release before seeking");io.AddKeyEvent(ImGuiKey_RightCtrl,false);io.AddKeyEvent(ImGuiMod_Ctrl,false);frame();check(commands.size()==beforeCtrl+1&&commands.back().find("demo_gototick")!=std::string::npos,"Right Ctrl alone seeks despite ImGui's mirrored modifier event");g_MirvTime.Time=11;MirvCampathPreview_Update();g_MirvTime.Time=previousTime;MirvCampathPreview_SetActive(false);
  // Numeric indices and full text share the same layout policy.
- g_WorldLabelCells.clear();WorldLabelRect rectangle{100,100,150,120};check(PlaceWorldLabel(rectangle,25,1600,1000)==0,"First world label keeps its anchor");check(PlaceWorldLabel(rectangle,25,1600,1000)==1,"Coincident labels stack above one another");check(PlaceWorldLabel(rectangle,25,1600,1000)==2,"Third coincident label uses a new slot");check(PlaceWorldLabel({250,100,300,120},25,1600,1000)==0,"Distant labels do not influence placement");check(PlaceWorldLabel({-500,100,-400,120},25,1600,1000)==-1,"Off-screen labels do not reserve layout cells");check(PlaceWorldLabel(rectangle,0,1600,1000)==-1,"Invalid layout scale is rejected");
+ g_WorldLabelCells.clear();check(PlaceWorldLabel(100,100,0,0,18)==0,"First world label keeps its anchor");check(std::abs(PlaceWorldLabel(100,100,0,0,18)-1.35f)<1e-6,"Coincident anchors share a fixed world stack");check(std::abs(PlaceWorldLabel(100,100,0,0,18)-2.7f)<1e-6,"Third coincident anchor occupies the next world row");check(PlaceWorldLabel(100,200,0,0,18)==0,"Unrelated world positions cannot displace one another");check(PlaceWorldLabel(100,100,100,0,18)==0,"A different depth does not reserve a stack slot at this anchor");check(PlaceWorldLabel(0,0,0,0,0)==-1,"Invalid world-label scale is rejected");
+
  auto&document=g_Hook_VClient_RenderView.m_CamPaths;auto oldCount=document.GetCount();g_ShowSequencer=g_ShowGizmo=g_ShowCameraControl=false;frame();frame();button("Duplicate path");check(document.GetCount()==oldCount+1&&document.GetActive()==oldCount&&path.GetSize()==2,"Duplicate button creates a named ordinary native path");check(document.IsMuted(oldCount),"UI duplicates start muted");g_ShowSequencer=true;frame();frame();check(widgets.count("Playback / cuts")&&widgets.count((document.GetName(oldCount)+" (editing)").c_str())&&widgets.count(document.GetName(0).c_str()),"Collection timeline shows named editing/reference tracks and playback cuts");g_ShowSequencer=false;button("Undo");check(document.GetCount()==oldCount,"Creating a path undoes across the document");button("Redo");check(document.GetCount()==oldCount+1,"Named path creation redoes");button("Undo");check(document.IsDirty(),"Unsaved camera edits are marked dirty");SetOpen(false);check(std::filesystem::exists(g_RecoveryFile),"Closing overlay writes recoverable work without marking it saved");SetOpen(true);auto save=RecoveryDirectory()/"test-collection.xml";check(SaveDocument(save.wstring().c_str(),true)&&!document.IsDirty(),"Saving all updates the document savepoint");auto saved=path.CaptureState();
  g_Autosave=true;size_t cleanWrites=recoveryWrites,cleanRemoves=recoveryRemoves;
  for(int i=0;i<50;++i){g_RecoveryNextSave=0;UpdateRecovery(false);}
@@ -301,6 +307,17 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  path.Clear();path.PositionInterpMethod_set(CamPath::DI_CUSTOM);path.RotationInterpMethod_set(CamPath::QI_CUSTOM);path.FovInterpMethod_set(CamPath::DI_CUSTOM);
  path.Add(10,CamPathValue(0,0,0,0,0,0,90));path.Add(11,CamPathValue(50,0,0,0,20,0,90));path.Add(12,CamPathValue(100,0,0,0,40,0,90));FinishEdit();frame();frame();
  check(widgets.count("Frame selected")&&widgets.count("Delete selected keys")&&widgets.count("Rotation"),"Graph exposes framing, deletion and explicit rotation mode");
+
+ // Box selection retains distinct channels, not just whole-pose selected flags.
+ auto crossScene=path.CaptureState();auto crossKeys=crossScene.Keys;crossKeys.at(10).Fov=20;crossKeys.at(11).Fov=80;crossKeys.at(12).Fov=20;for(auto&key:crossKeys)key.second.Selected=false;path.ReplaceKeys(crossKeys);g_GraphChannels.clear();g_GraphSelectionRevision=~0ull;FinishEdit();
+ g_CurveFocusChannel=-1;g_CurveNormalize=false;for(auto&show:g_CurveShow)show=false;g_CurveShow[0]=g_CurveShow[3]=true;frame();frame();button("Fit graph");frame();
+ auto x1=widgets.at("##curve_key_1_ch0"),x2=widgets.at("##curve_key_2_ch0");ImVec2 boxA(x1.Min.x-10,x2.Min.y-10),boxB(x2.Max.x+10,x1.Max.y+10);
+ frame(boxA);frame(boxA,true);frame(boxB,true);frame(boxB,false);frame();if(!(GraphChannelSelected(11,0)&&GraphChannelSelected(11,3)&&GraphChannelSelected(12,0)&&!GraphChannelSelected(12,3)&&!GraphChannelSelected(10,0))){std::cerr<<"box "<<boxA.x<<","<<boxA.y<<" -> "<<boxB.x<<","<<boxB.y<<" graph "<<graphRect.Min.x<<","<<graphRect.Min.y<<" - "<<graphRect.Max.x<<","<<graphRect.Max.y<<"\n";for(auto&e:g_GraphChannels)std::cerr<<e.first<<":"<<e.second<<" ";std::cerr<<"\n";}
+ check(GraphChannelSelected(11,0)&&GraphChannelSelected(11,3)&&GraphChannelSelected(12,0)&&!GraphChannelSelected(12,3)&&!GraphChannelSelected(10,0),"One box selects different key/channel pairs without selecting unrelated curves");
+ auto crossBefore=path.CaptureState();auto crossHandle=widgets.at("##h2b_0_ch0");ImVec2 crossPoint((crossHandle.Min.x+crossHandle.Max.x)/2,(crossHandle.Min.y+crossHandle.Max.y)/2);
+ io.AddKeyEvent(ImGuiMod_Shift,true);frame(crossPoint);frame(crossPoint,true);check(g_TangentDrag.Handles.size()==3,"Shift-drag captures selected handles across multiple channels");frame({crossPoint.x-15,crossPoint.y-12},true);frame({crossPoint.x-15,crossPoint.y-12},false);io.AddKeyEvent(ImGuiMod_Shift,false);frame();
+ auto crossAfter=path.CaptureState();check(crossAfter.Keys.at(11).TxWIn>1&&crossAfter.Keys.at(11).TfovWIn>1&&crossAfter.Keys.at(12).TxWIn>1,"All selected channel handles move together");check(crossAfter.Keys.at(12).TfovWIn==crossBefore.Keys.at(12).TfovWIn&&crossAfter.Keys.at(12).TfovModeIn==crossBefore.Keys.at(12).TfovModeIn&&crossAfter.Keys.at(10)==crossBefore.Keys.at(10),"Unselected channels and keys retain their handles");HistoryUndo(false);check(path.CaptureState()==crossBefore,"A multi-channel box-selected handle drag undoes in one step");HistoryUndo(true);check(path.CaptureState()==crossAfter,"Multi-channel handle edits redo atomically");
+ path.RestoreState(crossScene);g_GraphChannels.clear();g_GraphSelectionRevision=~0ull;g_CurveFocusChannel=0;g_CurveNormalize=true;g_CurveShow[3]=false;FinishEdit();frame();frame();
  // Group handles use a frozen transform and preserve the selection.
  path.SelectAll();FinishEdit();frame();frame();auto beforeGroup=path.CaptureState();auto groupRect=widgets.at("##h1b_0_ch0");ImVec2 groupPoint((groupRect.Min.x+groupRect.Max.x)/2,(groupRect.Min.y+groupRect.Max.y)/2);
  io.AddKeyEvent(ImGuiMod_Shift,true);frame(groupPoint);frame(groupPoint,true);const auto groupRevision=path.GetRevision();frame({groupPoint.x+15,groupPoint.y-20},true);
@@ -336,7 +353,7 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  path.Add(10,CamPathValue(0,0,0,0,0,0,90));path.Add(11,CamPathValue(10,0,0,0,20,0,90));path.Add(12,CamPathValue(100,0,0,0,40,0,90));FinishEdit();
  g_ShowCurveEditor=true;g_ShowSequencer=false;g_ShowGizmo=false;g_ShowCameraControl=false;g_ModifierRangeTool=false;
  ImGui::SetWindowSize("Campath Graph",ImVec2(1000,1200));ImGui::SetWindowFocus("Campath Graph");auto *speedWindow=ImGui::FindWindowByName("Campath Graph");speedWindow->StateStorage.SetInt(speedWindow->GetID("Travel speed / distance timing"),1);frame();frame();
- auto speedRect=widgets.at("##speed_profile");ImVec2 speedPoint(speedRect.Max.x-8,speedRect.Min.y+102-94/1.15f);auto beforeClick=path.CaptureState();
+ auto speedRect=widgets.at("##speed_profile");check(drawnSpeedKeyProgress==path.GetSpeedKeyProgress()&&drawnSpeedKeyProgress.size()==path.GetSize(),"Speed plot draws one native moving-time marker per keyframe");ImVec2 speedPoint(speedRect.Max.x-8,speedRect.Min.y+102-94/1.15f);auto beforeClick=path.CaptureState();
  frame(speedPoint);frame(speedPoint,true);frame(speedPoint,false);frame();check(path.CaptureState()==beforeClick,"Speed-point click alone does not retime or bake keys");
  g_LockKeyTimes=true;frame(speedPoint);frame(speedPoint,true);frame(ImVec2(speedPoint.x,speedPoint.y-20),true);frame(speedPoint,false);button("Ease start / end");button("Retime by distance");check(path.CaptureState()==beforeClick,"Time lock protects speed drags, presets and duration retiming");g_LockKeyTimes=false;
  check(path.ApplySpeedProfile({{0,1},{.5,1},{1,1}},2),"Prepare interactive speed points");FinishEdit();frame();frame();speedRect=widgets.at("##speed_profile");speedPoint=ImVec2((speedRect.Min.x+speedRect.Max.x)/2,speedRect.Min.y+102-94/1.15f);auto beforeSpeedDrag=path.CaptureState();
@@ -399,8 +416,12 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''
+neo=(root/'shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.cpp').read_text()
+neo='extern void TestRecordNeoLabel(int,int);\n'+neo.replace('snprintf(lbl, sizeof(lbl), "%d", labelIndex);','snprintf(lbl, sizeof(lbl), "%d", labelIndex); TestRecordNeoLabel(*frame,labelIndex);')
+neo+='\nnamespace ImGui{void TestSetNeoView(float zoom,int offset){for(auto &entry:sequencerData){entry.second.Zoom=zoom;entry.second.OffsetFrame=offset;}}}\n'
+neo_file=out/'neo_labels_test.cpp';neo_file.write_text(neo)
 source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+demo_time+fix_api+fix_command+s+native+view+layout+test)
-cmd=['g++','-std=c++17','-O0','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),'-I'+str(imgui),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp')]+[str(imgui/f) for f in ['imgui.cpp','imgui_draw.cpp','imgui_widgets.cpp','imgui_tables.cpp']]+[str(root/'shared/overlay/third_party/imgui_neo_sequencer'/f) for f in ['imgui_neo_sequencer.cpp','imgui_neo_internal.cpp']]+[str(root/'shared/overlay/third_party/imguizmo/ImGuizmo.cpp'),'-o',str(out/'overlay_test')]
+cmd=['g++','-std=c++17','-O0','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),'-I'+str(imgui),'-I'+str(root/'shared/overlay/third_party/imgui_neo_sequencer'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp')]+[str(imgui/f) for f in ['imgui.cpp','imgui_draw.cpp','imgui_widgets.cpp','imgui_tables.cpp']]+[(str(neo_file) if f=='imgui_neo_sequencer.cpp' else str(root/'shared/overlay/third_party/imgui_neo_sequencer'/f)) for f in ['imgui_neo_sequencer.cpp','imgui_neo_internal.cpp']]+[str(root/'shared/overlay/third_party/imguizmo/ImGuizmo.cpp'),'-o',str(out/'overlay_test')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 p=subprocess.run(cmd,capture_output=True,text=True);(out/'build.log').write_text(p.stdout+p.stderr)
 if p.returncode:print(p.stderr[-6500:]);raise SystemExit(p.returncode)

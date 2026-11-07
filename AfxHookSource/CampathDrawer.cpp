@@ -1,4 +1,6 @@
 #include "stdafx.h"
+#include <bitset>
+#include <tuple>
 
 #include "CampathDrawer.h"
 
@@ -57,46 +59,38 @@ struct AFXDRAWTEXTUREVERTEX
 };
 #define D3DFVF_AFXDRAWTEXTUREVERTEX (D3DFVF_XYZ|D3DFVF_TEX1|D3DFVF_TEXCOORDSIZE1(1))
 
-// Screen-space overlap tests choose world-space billboard offsets. All glyphs still
-// use the classic depth-tested projection; no screen overlay renderer is involved.
-struct WorldLabelRect
+// World-position-aware label slots. Camera projection never determines stack order.
+// Three slots reserve one glyph row; a cluster can show up to 64 rows.
+static std::map<std::tuple<double, double, double>, std::bitset<192>> g_WorldLabelCells;
+static float PlaceWorldLabel(double x, double y, double z, float base, float size)
 {
-	float L, T, R, B;
-};
-static std::map<std::pair<int, int>, std::vector<WorldLabelRect>> g_WorldLabelCells;
-static int PlaceWorldLabel(WorldLabelRect bounds, float step, int width, int height)
-{
-	if (!std::isfinite(bounds.L) || !std::isfinite(bounds.R) || !std::isfinite(bounds.T) ||
-		!std::isfinite(bounds.B) || !std::isfinite(step) || step <= 0 || width <= 0 || height <= 0)
+	if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(base) ||
+		!std::isfinite(size) || size <= 0 || base < 0)
 		return -1;
-	for (int row = 0; row < 64; ++row)
-	{
-		WorldLabelRect b{bounds.L, bounds.T - step * row, bounds.R, bounds.B - step * row};
-		if (b.R < 0 || b.L > width || b.B < 0 || b.T > height)
-			continue;
-		int x0 = (int)(std::max)(0.0f, b.L) / 64, x1 = (int)(std::min)((float)width, b.R) / 64;
-		int y0 = (int)(std::max)(0.0f, b.T) / 64, y1 = (int)(std::min)((float)height, b.B) / 64;
-		bool overlap = false;
-		for (int y = y0; y <= y1 && !overlap; ++y)
-			for (int x = x0; x <= x1 && !overlap; ++x)
+	const double cellSize = (std::max)(.01, double(size) * .1);
+	const double cx = std::floor(x / cellSize), cy = std::floor(y / cellSize), cz = std::floor(z / cellSize);
+	if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(cz))
+		return -1;
+	std::bitset<192> occupied;
+	for (int dx = -1; dx <= 1; ++dx)
+		for (int dy = -1; dy <= 1; ++dy)
+			for (int dz = -1; dz <= 1; ++dz)
 			{
-				auto cell = g_WorldLabelCells.find({x, y});
-				if (cell == g_WorldLabelCells.end())
-					continue;
-				for (const auto &a : cell->second)
-					if (b.L < a.R + 2 && b.R > a.L - 2 && b.T < a.B + 2 && b.B > a.T - 2)
-					{
-						overlap = true;
-						break;
-					}
+				const auto found = g_WorldLabelCells.find({cx + dx, cy + dy, cz + dz});
+				if (found != g_WorldLabelCells.end())
+					occupied |= found->second;
 			}
-		if (overlap)
-			continue;
-		for (int y = y0; y <= y1; ++y)
-			for (int x = x0; x <= x1; ++x)
-				g_WorldLabelCells[{x, y}].push_back(b);
-		return row;
-	}
+	if (base > 80)
+		return -1;
+	for (size_t row = (size_t)std::ceil(base / .45f); row + 2 < occupied.size(); ++row)
+		if (!occupied[row] && !occupied[row + 1] && !occupied[row + 2])
+		{
+			auto &slots = g_WorldLabelCells[{cx, cy, cz}];
+			slots.set(row);
+			slots.set(row + 1);
+			slots.set(row + 2);
+			return float(row) * .45f;
+		}
 	return -1;
 }
 
@@ -416,52 +410,27 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 		const float size = drawer->m_DrawKeyframIndex;
 		if (!(size > 0) || width <= 0)
 			return -1;
-		auto project = [&](double x, double y, double z, float &sx, float &sy)
-		{
-			const auto &m = m_WorldToScreenMatrix.m;
-			double w = m[3][0] * x + m[3][1] * y + m[3][2] * z + m[3][3];
-			if (w <= 1e-5 || !std::isfinite(w))
-				return false;
-			sx = (float)((m[0][0] * x + m[0][1] * y + m[0][2] * z + m[0][3]) / w * 0.5 + 0.5) * m_ScreenWidth;
-			sy =
-				(float)(0.5 - (m[1][0] * x + m[1][1] * y + m[1][2] * z + m[1][3]) / w * 0.5) * m_ScreenHeight;
-			return std::isfinite(sx) && std::isfinite(sy);
-		};
-		WorldLabelRect rect{(std::numeric_limits<float>::max)(), (std::numeric_limits<float>::max)(),
-							-(std::numeric_limits<float>::max)(), -(std::numeric_limits<float>::max)()};
-		for (int corner = 0; corner < 4; ++corner)
-		{
-			double x = (corner & 1 ? 0.5 : -0.5) * width * size,
-				   y = (base + (corner & 2 ? 0.5 : -0.5)) * size;
-			float sx, sy;
-			if (!project(anchor.X + x * m_PlaneRight.X + y * m_PlaneUp.X,
-						 anchor.Y + x * m_PlaneRight.Y + y * m_PlaneUp.Y,
-						 anchor.Z + x * m_PlaneRight.Z + y * m_PlaneUp.Z, sx, sy))
-				return -1;
-			rect.L = (std::min)(rect.L, sx);
-			rect.R = (std::max)(rect.R, sx);
-			rect.T = (std::min)(rect.T, sy);
-			rect.B = (std::max)(rect.B, sy);
-		}
-		float x0, y0, x1, y1;
-		if (!project(anchor.X, anchor.Y, anchor.Z, x0, y0) ||
-			!project(anchor.X + m_PlaneUp.X * size * 1.35, anchor.Y + m_PlaneUp.Y * size * 1.35,
-					 anchor.Z + m_PlaneUp.Z * size * 1.35, x1, y1))
+		const float height = PlaceWorldLabel(anchor.X, anchor.Y, anchor.Z, base, size);
+		const auto &m = m_WorldToScreenMatrix.m;
+		const double w = m[3][0] * anchor.X + m[3][1] * anchor.Y + m[3][2] * anchor.Z + m[3][3];
+		if (w <= 1e-5 || !std::isfinite(w))
 			return -1;
-		const int row =
-			PlaceWorldLabel(rect, (std::max)(1.0f, std::abs(y1 - y0)), m_ScreenWidth, m_ScreenHeight);
-		return row < 0 ? -1 : base + row * 1.35f;
+		const double sx =
+			((m[0][0] * anchor.X + m[0][1] * anchor.Y + m[0][2] * anchor.Z + m[0][3]) / w * .5 + .5) *
+			m_ScreenWidth;
+		const double sy =
+			(.5 - (m[1][0] * anchor.X + m[1][1] * anchor.Y + m[1][2] * anchor.Z + m[1][3]) / w * .5) *
+			m_ScreenHeight;
+		return std::isfinite(sx) && std::isfinite(sy) && sx >= 0 && sx <= m_ScreenWidth && sy >= 0 &&
+					   sy <= m_ScreenHeight
+				   ? height
+				   : -1;
 	};
 	size_t keyIndex = 0;
 	for (auto it = path->GetBegin(); it != path->GetEnd(); ++it, ++keyIndex)
 	{
 		size_t digits = std::to_string(keyIndex).size();
-		auto anchor = it.GetValue();
-		// Numeric quads extend to the left of their anchor in the legacy renderer.
-		anchor.X -= m_PlaneRight.X * drawer->m_DrawKeyframIndex * digits * 0.25;
-		anchor.Y -= m_PlaneRight.Y * drawer->m_DrawKeyframIndex * digits * 0.25;
-		anchor.Z -= m_PlaneRight.Z * drawer->m_DrawKeyframIndex * digits * 0.25;
-		IndexRows.push_back(place(anchor, 0, (float)digits * 0.5f));
+		IndexRows.push_back(place(it.GetValue(), 0, (float)digits * 0.5f));
 	}
 	// Capture glyph metrics and text on the engine thread. Queued render work retains
 	// only immutable values, never a pointer to an editable or deleted camera path.
@@ -490,7 +459,8 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 		const float placed = place(anchor, height, width);
 		if (placed >= 0)
 		{
-			result.Height = placed;
+			result.Anchor.Z += placed * drawer->m_DrawKeyframIndex;
+			result.Height = 0;
 			Labels.push_back(std::move(result));
 		}
 	};
@@ -870,6 +840,7 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 
 						double cpT = it->GetTime();
 						CamPathValue cpv = it->GetValue();
+						cpv.Z += indexRow * drawKeyFrameIndex;
 
 						int val = index;
 
@@ -879,8 +850,8 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 							val = val / 10;
 
 							float left = -0.5f * drawKeyFrameIndex * (i + 1);
-							float top = (indexRow + 0.5f) * drawKeyFrameIndex;
-							float bottom = (indexRow - 0.5f) * drawKeyFrameIndex;
+							float top = 0.5f * drawKeyFrameIndex;
+							float bottom = -0.5f * drawKeyFrameIndex;
 							float right = left + 0.5f * drawKeyFrameIndex;
 
 							float tx = (32 * (cval % 8)) / 256.0f;
