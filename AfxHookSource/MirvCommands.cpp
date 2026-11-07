@@ -2010,6 +2010,7 @@ static void CampathPreview_PrintHelp()
 		"CTRL+Z undoes; CTRL+SHIFT+Z redoes in preview, including edits made with the overlay closed.\n"
 		"mirv_campath preview seek - Seek the demo to the current preview time.\n"
 		"mirv_campath preview seekTrace start <file.csv>|stop|status - Opt-in TF2 native seek diagnostics.\n"
+		"mirv_campath preview checkpoint begin|capture <file.xml>|status|end - Experimental TF2 capture (no restoration).\n"
 		"mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
 		"mirv_campath preview afterSeek timescale <0..100>|pause|continue - Default: timescale 0.\n"
 		"E captures; Shift+E replaces; Y captures hold release; Shift+Y clears it; RCtrl seeks.\n"
@@ -2212,6 +2213,34 @@ CON_COMMAND(mirv_campath, "camera paths")
 		CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 		if (args->ArgC() == 2) { CampathPreview_PrintHelp(); return; }
 		const char * cmd = args->ArgV(2);
+		if (!_stricmp(cmd, "checkpoint"))
+		{
+			if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "begin"))
+			{
+				if (!AfxHookSource::Tf2Demo::BeginCheckpointCapture())
+					Tier0_Warning("Could not arm checkpoint capture: requires the verified Windows x64 TF2 engine, "
+						"an idle playing demo, and no active capture.\n");
+			}
+			else if (args->ArgC() == 5 && !_stricmp(args->ArgV(3), "capture"))
+			{
+				std::wstring file;
+				if (!UTF8StringToWideString(args->ArgV(4), file)
+					|| !AfxHookSource::Tf2Demo::SaveCheckpointCapture(file.c_str()))
+				{
+					Tier0_Warning("Checkpoint capture failed. Finish the seek, check capture status, and use a new writable filename.\n");
+					AfxHookSource::Tf2Demo::PrintCheckpointStatus();
+				}
+			}
+			else if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "status"))
+				AfxHookSource::Tf2Demo::PrintCheckpointStatus();
+			else if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "end"))
+			{
+				AfxHookSource::Tf2Demo::EndCheckpointCapture();
+				AfxHookSource::Tf2Demo::PrintCheckpointStatus();
+			}
+			else Tier0_Msg("mirv_campath preview checkpoint begin|capture <file.xml>|status|end\n");
+			return;
+		}
 		if (!_stricmp(cmd, "seekTrace"))
 		{
 			if (args->ArgC() == 5 && !_stricmp(args->ArgV(3), "start"))

@@ -1804,10 +1804,51 @@ void demoSeekLifecycle()
 		"Missing playback tick cannot dispatch a seek with an invented origin");
 }
 } // namespace
+void checkpointOwnership()
+{
+	using namespace AfxHookSource::Tf2Demo;
+	EncodedEntities states;
+	unsigned char input[] = {0xff, 0xff};
+	int changed[] = {0, 2};
+	check(states.Put(3, 0x1003, 7, 4, input, 9, changed, 2, 1200), "Initial owned entity encoding");
+	input[0] = 0;
+	const auto first = states.Get(3);
+	check(first && first->Data[0] == 0xff && first->Data[1] == 1, "Capture owns bits and clears unused tail bits");
+	for (size_t i = 2; i < first->Data.size(); ++i) check(first->Data[i] == 0, "Native reader padding is zero");
+	check(first->PropertyTicks == std::vector<int>({1200, EncodedEntities::UnseenTick, 1200, EncodedEntities::UnseenTick}),
+		"Per-property decode times retain unobserved fields explicitly");
+	const auto bytes = states.Bytes();
+	changed[0] = 1;
+	check(states.Put(3, 0x1003, 7, 4, input, 9, changed, 1, 1400), "Delta replaces encoding");
+	check(states.Get(3)->PropertyTicks == std::vector<int>({1200, 1400, 1200, EncodedEntities::UnseenTick})
+		&& states.Bytes() == bytes, "Unchanged properties retain original receive-proxy ticks");
+	check(states.Put(3, 0x2003, 7, 4, input, 9, changed, 1, 1600), "Entity slot reused");
+	check(states.Get(3)->PropertyTicks[0] == EncodedEntities::UnseenTick && states.Get(3)->PropertyTicks[1] == 1600,
+		"A new handle cannot inherit the previous entity's field times");
+	check(states.Put(3, 0x2003, 8, 4, input, 9, nullptr, 0, 1800), "Class replacement");
+	check(states.Get(3)->PropertyTicks[1] == EncodedEntities::UnseenTick, "Class changes clear receive timing history");
+	const int invalid[] = {2, 1};
+	check(!states.Put(3, 0x2003, 8, 4, input, 9, invalid, 2, 2000), "Unsorted changed properties rejected");
+	check(states.Get(3)->ClassId == 8 && states.Bytes() == bytes, "Invalid updates preserve existing capture");
+	check(!states.Put(3, 0xffffffffu, 8, 4, input, 9, nullptr, 0, 0), "Invalid entity handle rejected");
+	check(!states.Put(3, 1, 8, 4, input, EncodedEntities::MaxBytes * 8 + 1, nullptr, 0, 0), "Oversized entity encoding rejected");
+	check(!states.Put(-1, 1, 8, 4, input, 9, nullptr, 0, 0)
+		&& !states.Put(EncodedEntities::MaxEntities, 1, 8, 4, input, 9, nullptr, 0, 0), "Entity indices bounded");
+	check(!states.Get(-1) && !states.Get(EncodedEntities::MaxEntities), "Invalid lookup is empty");
+	EncodedEntities bounded(bytes);
+	check(bounded.Put(0, 1, 1, 4, input, 9, nullptr, 0, 0), "Capture fits exact payload budget");
+	check(!bounded.Put(1, 2, 1, 4, input, 9, nullptr, 0, 0) && !bounded.Get(1), "Capture refuses excess payload atomically");
+	check(!bounded.Put(0, 1, 1, 5, input, 9, nullptr, 0, 0)
+		&& bounded.Get(0)->PropertyTicks.size() == 4, "Over-budget replacement preserves previous state");
+	states.Clear();
+	check(!states.Get(3) && states.Bytes() == 0, "Restart frees owned entity capture");
+}
+
 int main()
 {
 	try
 	{
+		checkpointOwnership();
 		demoSeekLifecycle();
 		insertedEulerPoseAndSpeedMarkers();
 		tangentBatchEdits();
