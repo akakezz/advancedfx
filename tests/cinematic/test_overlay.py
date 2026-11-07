@@ -104,6 +104,10 @@ bool trackCombo(const char*l,const char*p,ImGuiComboFlags f=0){bool b=ImGui::Beg
 '''
 s=s.replace('ImGui::InputDouble(', 'trackDouble(').replace('ImGui::Checkbox(', 'trackCheckbox(').replace('ImGui::Button(', 'trackButton(').replace('ImGui::SmallButton(', 'trackButton(').replace('ImGui::BeginTabItem(', 'trackTab(').replace('ImGui::BeginNeoSequencer(', 'trackSequencer(').replace('ImGui::Selectable(', 'trackSelectable(').replace('ImGui::BeginCombo(', 'trackCombo(').replace('ImGui::InvisibleButton(', 'trackInvisible(').replace('ImGui::Combo(', 'trackArrayCombo(').replace('ImGui::SliderFloat(', 'trackSlider(').replace('ImGui::BeginNeoTimelineEx(', 'trackTimeline(').replace('ImGui::NeoKeyframe(', 'trackKeyframe(')
 s=s.replace('ImGui::NeoTimelineSpan(', 'trackSpan(')
+# Keep Windows' min/max macros active around the field editor, even on non-Windows hosts.
+s=s.replace('static bool ModifierField(', '#define min(a,b) (((a)<(b))?(a):(b))\n#define max(a,b) (((a)>(b))?(a):(b))\nstatic bool ModifierField(')
+s=s.replace('static void ApplyModifierFields(', '#undef min\n#undef max\nstatic void ApplyModifierFields(')
+
 s=s.replace('struct CurveSamples\n{', 'static size_t curveSampleBuilds=0;\nstruct CurveSamples\n{').replace('\t\tRevision = path.GetGeometryRevision();', '\t\t++curveSampleBuilds; Revision = path.GetGeometryRevision();',1)
 # Count actual recovery I/O in the real editor source, without production instrumentation.
 s=s.replace('static bool g_Autosave = true;', 'static size_t recoveryWrites=0, recoveryRemoves=0;\nstatic bool g_Autosave = true;')

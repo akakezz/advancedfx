@@ -1175,9 +1175,9 @@ static bool ModifierField(int index, const char *label, double *value)
 {
 	auto &selection = g_ModifierFields;
 	auto &io = ImGui::GetIO();
-	const ImVec2 min = ImGui::GetCursorScreenPos();
-	const ImVec2 max(min.x + ImGui::CalcItemWidth(), min.y + ImGui::GetFrameHeight());
-	if (io.KeyShift && ImGui::IsMouseClicked(0) && ImGui::IsMouseHoveringRect(min, max))
+	const ImVec2 rectMin = ImGui::GetCursorScreenPos();
+	const ImVec2 rectMax(rectMin.x + ImGui::CalcItemWidth(), rectMin.y + ImGui::GetFrameHeight());
+	if (io.KeyShift && ImGui::IsMouseClicked(0) && ImGui::IsMouseHoveringRect(rectMin, rectMax))
 	{
 		std::fill(std::begin(selection.Selected), std::end(selection.Selected), false);
 		selection.Dragging = true;
@@ -1191,7 +1191,7 @@ static bool ModifierField(int index, const char *label, double *value)
 		const float end = io.MousePos.y + ImGui::GetScrollY();
 		const float top = (std::min)(selection.StartY, end), bottom = (std::max)(selection.StartY, end);
 		selection.Selected[index] =
-			min.y + ImGui::GetScrollY() <= bottom && max.y + ImGui::GetScrollY() >= top;
+			rectMin.y + ImGui::GetScrollY() <= bottom && rectMax.y + ImGui::GetScrollY() >= top;
 	}
 	ImGui::BeginDisabled(selection.Dragging);
 	// Commit on Enter, so typing an intermediate value never rebuilds a modifier stack.
@@ -1205,7 +1205,7 @@ static bool ModifierField(int index, const char *label, double *value)
 		selection.Input = ImGui::GetActiveID();
 	ImGui::EndDisabled();
 	if (selection.Selected[index])
-		ImGui::GetWindowDrawList()->AddRect(min, max, IM_COL32(255, 225, 90, 255), 2, 0, 2);
+		ImGui::GetWindowDrawList()->AddRect(rectMin, rectMax, IM_COL32(255, 225, 90, 255), 2, 0, 2);
 	if (changed)
 		selection.Edited = index;
 	return changed;
