@@ -93,6 +93,12 @@ public:
 		std::unique_lock<std::mutex> freeLock(m_FreeCachesMutex);
 		std::unique_lock<std::mutex> queuedLock(m_QueuedCachesMutex);
 
+		if (m_CurrentCache)
+		{
+			m_FreeCaches.push_back(m_CurrentCache);
+			m_CurrentCache = nullptr;
+		}
+
 		while (!m_QueuedCaches.empty())
 		{
 			m_FreeCaches.push_back(m_QueuedCaches.front());
@@ -126,22 +132,21 @@ public:
 				stale.splice(stale.end(), m_QueuedCaches);
 			}
 		}
+		// Keep the last immutable snapshot when rendering gets ahead of the UI producer.
+		// A missing update must not turn the overlay off for one presented frame.
+		if (cache)
+		{
+			if (m_CurrentCache)
+				stale.push_back(m_CurrentCache);
+			m_CurrentCache = cache;
+		}
 		if (!stale.empty())
 		{
 			std::unique_lock<std::mutex> freeLock(m_FreeCachesMutex);
 			m_FreeCaches.splice(m_FreeCaches.end(), stale);
 		}
-
-		if (cache)
-		{
-			cache->Render(*this);
-
-			{
-				std::unique_lock<std::mutex> freeLock(m_FreeCachesMutex);
-
-				m_FreeCaches.push_back(cache);
-			}
-		}
+		if (m_CurrentCache)
+			m_CurrentCache->Render(*this);
 	}
 
 	void CacheRender(ImDrawData* draw_data)
@@ -450,6 +455,8 @@ private:
 
 	};
 
+	// Owned exclusively by the render thread; never returned to the producer while displayed.
+	CImGuiRenderCache *m_CurrentCache = nullptr;
 	std::mutex m_FreeCachesMutex;
 	std::list<CImGuiRenderCache *> m_FreeCaches;
 	std::mutex m_QueuedCachesMutex;

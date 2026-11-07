@@ -125,8 +125,10 @@ The overlay uses ImGui's own drawn cursor, including the I-beam over text fields
 Windows cursor changes and Source UI queries are avoided in the busy cursor hooks.
 Menus, focus loss and free-camera mouse-look restore the game's cursor; they also
 end an active editing gesture. The renderer consumes the newest queued UI frame
-to avoid an additional stale-frame delay; the software cursor remains bound to
-the game's rendering frame rate.
+to avoid an additional stale-frame delay. It retains that snapshot if rendering
+gets ahead of UI updates, avoiding blank overlay frames; an explicit empty update
+or device reset clears it. The software cursor remains bound to the game's
+rendering frame rate.
 
 Enable **Show graph**, or **Show Curve Editor** in the sequencer, to open the
 dockable **Campath Graph** window. It displays X/Y/Z, FOV, pitch/yaw/roll individually or
@@ -395,8 +397,10 @@ undo/redo.
 Names, hold releases and interval durations are drawn with the classic text
 projection and depth test, using the existing GUI font atlas for full text.
 **Key label size** also scales these labels; zero hides text. Indices and extended
-labels share an overlap layout and stack upward when projected areas collide.
-**Path names**, **Hold labels** and **Segment durations** can be hidden separately.
+labels share world-position-based stacking, with offsets along world Z.
+**Path names**, **Hold labels** and **Segment durations** can be hidden separately
+in the overlay's **Campath** tab. Turning off **Segment durations** hides only the
+interval tick/second labels; it keeps the path and other labels visible.
 World projection and depth testing remain in the classic drawer; no second
 world renderer is used.
 
