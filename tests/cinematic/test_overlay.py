@@ -21,6 +21,7 @@ preview_api='// Shared campath preview controls'+preview_api
 preamble=r'''
 #include "shared/CamPath.h"
 #include "AfxHookSource/CameraOverlay.h"
+#include "AfxHookSource/tf2/DemoPlayer.h"
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -56,6 +57,10 @@ void* ShellExecuteW(void*,const wchar_t*,const wchar_t*,void*,void*,int){return 
 template<size_t N,class... Args>int sprintf_s(char(&b)[N],const char*f,Args...a){return snprintf(b,N,f,a...);}
 template<size_t N>void strncpy_s(char(&b)[N],const char*s,size_t){snprintf(b,N,"%s",s);}
 namespace advancedfx {void Message(const char*,...){}void Warning(const char*,...){} }
+namespace AfxHookSource { namespace Tf2Demo {
+bool GetStatus(Status &status){status={};return false;}
+void UpdateTrace(){}
+} }
 struct MirvInput{int MovementClears=0;void ClearMovementInput(){++MovementClears;}void ResetCameraSmoothing(){}bool Override(float,float&x,float&y,float&z,float&a,float&b,float&c,float&f){x=y=z=a=b=c=f=-999;return true;}bool Camera=false;float Pose[7]={};double Sens=1;bool GetCameraControlMode(){return Camera;}void SetCameraControlMode(bool b){Camera=b;}void SetTx(float x){Pose[0]=x;}void SetTy(float x){Pose[1]=x;}void SetTz(float x){Pose[2]=x;}void SetRx(float x){Pose[3]=x;}void SetRy(float x){Pose[4]=x;}void SetRz(float x){Pose[5]=x;}void SetFov(float x){Pose[6]=x;}double GetKeyboardSensitivty(){return Sens;}void SetKeyboardSensitivity(double x){Sens=x;}} input;
 struct WrpGlobals{double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
 struct FakeView{CamPath m_CamPath;CamPathCollection m_CamPaths{m_CamPath};MirvInput*m_MirvInput=&input;double LastCameraOrigin[3]={100,-100,50},LastCameraAngles[3]={0,135,0},LastCameraFov=130;int LastWidth=1600,LastHeight=1000;bool Menu=false,GlobalsAvailable=true;bool IsInstalled(){return true;}bool IsMenuActive(){return Menu;}bool IsSourceUiActive(){return Menu;}WrpGlobals*GetGlobals(){return GlobalsAvailable?&globals:nullptr;}}g_Hook_VClient_RenderView;
@@ -64,7 +69,7 @@ struct Clock{double Time=10;double GetTime(){return Time;}int GetFrameCount(){re
 std::vector<std::string> commands;
 struct DemoInfo{int TotalTicks=12000;int GetDemoPlaybackTick(){return int(g_MirvTime.Time*66);}int GetDemoPlaybackTotalTicks(){return TotalTicks;}float GetDemoPlaybackTimeScale(){return 1;}}demo;
 using WrpVEngineClientDemoInfoEx=DemoInfo;
-struct Engine{bool Playing=true,Hltv=true,HaveInfo=true;bool IsPlayingDemo(){return Playing;}bool IsHLTV(){return Hltv;}DemoInfo*GetDemoInfoEx(){return HaveInfo?&demo:nullptr;}void ClientCmd_Unrestricted(const char*c){commands.emplace_back(c);}}engine;Engine*g_VEngineClient=&engine;
+struct Engine{bool Playing=true,Hltv=true,HaveInfo=true;bool IsPlayingDemo(){return Playing;}bool IsDrawingLoadingImage(){return false;}bool IsHLTV(){return Hltv;}DemoInfo*GetDemoInfoEx(){return HaveInfo?&demo:nullptr;}void ClientCmd_Unrestricted(const char*c){commands.emplace_back(c);}}engine;Engine*g_VEngineClient=&engine;
 bool GetCurrentDemoTick(int&n){n=int(g_MirvTime.Time*66);return true;}bool GetCurrentDemoTime(double&t){t=g_MirvTime.Time;return true;}bool GetDemoTickFromClientTime(double,double t,int&n){n=int(t*66);return true;}
 int Mirv_Tf2_GetMaxPlayers(){return 1;}bool Mirv_Tf2_GetPlayerInfo(int i,char*b,int n,int*u){snprintf(b,n,"Scout");*u=42;return i==1;}
 constexpr int MIRV_TF2_MAX_BONES=256;
@@ -78,6 +83,7 @@ constexpr UINT VK_DELETE=0x2E,VK_F1=0x70,VK_INSERT=0x2D,VK_HOME=0x24,VK_END=0x23
 bool controlHeld=false,shiftHeld=false;
 short GetKeyState(UINT key){return ((key==VK_CONTROL&&controlHeld)||(key==VK_SHIFT&&shiftHeld))?short(0x8000):0;}
 DWORD GetTickCount(){static DWORD tick=0;return tick+=16;}
+std::uint64_t GetTickCount64(){return GetTickCount();}
 struct PreviewClock{bool GetDemoTickFromClientTime(double,double t,int&tick){return ::GetDemoTickFromClientTime(0,t,tick);}}g_MirvCampath_Time;
 #define _stricmp strcasecmp
 void Tier0_Msg(const char*,...){}void Tier0_Warning(const char*,...){}

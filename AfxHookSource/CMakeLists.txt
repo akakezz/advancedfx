@@ -131,6 +131,9 @@ target_sources(AfxHookSource PRIVATE
     tf2/ClientToolsTf2.cpp
     tf2/ClientToolsTf2.h
 
+    tf2/DemoPlayer.cpp
+    tf2/DemoPlayer.h
+
     addresses.cpp
     addresses.h
 

@@ -477,6 +477,14 @@ the chosen behavior after arrival. Setting timescale before resuming at the targ
 keeps zero-timescale models and particles frozen. Seeking does not move the
 independent preview cursor.
 
+Seek requests are queued while another editor seek is running; only the newest
+queued destination is kept. The final destination applies its after-seek setting.
+With its opt-in native probe enabled, the verified Windows x64 TF2 build also
+uses native loading/skipping state to determine completion. This does not yet
+eliminate backward reloads.
+See [native seeking diagnostics](TF2_DEMO_SEEKING.md) for the opt-in trace and
+the checkpoint investigation's current limits.
+
 ```text
 mirv_campath preview afterSeek timescale 0
 mirv_campath preview afterSeek timescale 0.25
