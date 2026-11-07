@@ -11,6 +11,7 @@
 
 #include "WrpVEngineClient.h"
 #include "WrpConsole.h"
+#include <css/sdk_src/public/tier1/convar.h>
 
 #ifndef _WIN64
 #include "csgo_CHudDeathNotice.h"
@@ -4068,6 +4069,108 @@ void New_HostError(const char * fmt, ...) {
 	va_end(args);
 }
 
+// TF2 demo interpolation controls. Reuse the registered engine cvar interfaces;
+// WrpConVarRef currently wraps only CS:GO's encoded ConVar representation.
+namespace
+{
+bool Tf2InterpolationValues(float values[3], bool write)
+{
+	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
+		return false;
+	auto access = [&](auto *iface)
+	{
+		if (!iface)
+			return false;
+		const char *names[] = {"cl_interpolate", "cl_interp", "cl_interp_ratio"};
+		decltype(iface->FindVar(names[0])) vars[3];
+		for (int i = 0; i < 3; ++i)
+			if (!(vars[i] = iface->FindVar(names[i])))
+				return false;
+		for (int i = 0; i < 3; ++i)
+		{
+			if (write)
+				vars[i]->SetValue(values[i]);
+			else
+				values[i] = vars[i]->GetFloat();
+		}
+		return true;
+	};
+	if (SOURCESDK::L4D2::g_pCVar)
+		return access(SOURCESDK::L4D2::g_pCVar);
+	return access(SOURCESDK::CSS::g_pCVar);
+}
+bool g_Tf2InterpolationActive = false;
+float g_Tf2InterpolationOriginal[3] = {}, g_Tf2InterpolationApplied[3] = {};
+bool InterpolationMatches(float a, float b)
+{
+	return std::isfinite(a) && std::isfinite(b) && std::abs(a - b) < 1e-5f;
+}
+} // namespace
+bool MirvFix_PlayerInterpolationAvailable()
+{
+	float values[3];
+	return g_VEngineClient && g_VEngineClient->IsPlayingDemo() && Tf2InterpolationValues(values, false) &&
+		   std::isfinite(values[0]) && std::isfinite(values[1]) && std::isfinite(values[2]);
+}
+double MirvFix_GetPlayerInterpolation()
+{
+	return g_Tf2InterpolationActive ? g_Tf2InterpolationApplied[1] : -1;
+}
+bool MirvFix_SetPlayerInterpolation(double seconds)
+{
+	if (seconds == -1)
+	{
+		if (!g_Tf2InterpolationActive)
+			return true;
+		float current[3];
+		if (!Tf2InterpolationValues(current, false))
+			return false;
+		// Preserve any settings the user explicitly changed while the fix was active.
+		for (int i = 0; i < 3; ++i)
+			if (InterpolationMatches(current[i], g_Tf2InterpolationApplied[i]))
+				current[i] = g_Tf2InterpolationOriginal[i];
+		if (!Tf2InterpolationValues(current, true))
+			return false;
+		g_Tf2InterpolationActive = false;
+		return true;
+	}
+	if (!std::isfinite(seconds) || seconds < .001 || seconds > 1 || !MirvFix_PlayerInterpolationAvailable())
+		return false;
+	float before[3];
+	if (!Tf2InterpolationValues(before, false))
+		return false;
+	float target[3] = {1, (float)seconds, 2}, applied[3];
+	if (!Tf2InterpolationValues(target, true) || !Tf2InterpolationValues(applied, false))
+	{
+		Tf2InterpolationValues(before, true);
+		return false;
+	}
+	for (int i = 0; i < 3; ++i)
+		if (!InterpolationMatches(applied[i], target[i]))
+		{
+			Tf2InterpolationValues(before, true);
+			return false;
+		}
+	if (!g_Tf2InterpolationActive)
+		std::copy(before, before + 3, g_Tf2InterpolationOriginal);
+	std::copy(applied, applied + 3, g_Tf2InterpolationApplied);
+	g_Tf2InterpolationActive = true;
+	return true;
+}
+void MirvFix_Update()
+{
+	if (!g_Tf2InterpolationActive)
+		return;
+	float current[3];
+	bool changed = !g_VEngineClient || !g_VEngineClient->IsPlayingDemo();
+	if (Tf2InterpolationValues(current, false))
+		for (int i = 0; i < 3; ++i)
+			changed |= !InterpolationMatches(current[i], g_Tf2InterpolationApplied[i]);
+	if (changed)
+		MirvFix_SetPlayerInterpolation(-1);
+}
+// End TF2 demo interpolation controls.
+
 CON_COMMAND(mirv_fix, "Various fixes")
 {
 	int argc = args->ArgC();
@@ -4075,6 +4178,35 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	if (2 <= argc)
 	{
 		char const * cmd1 = args->ArgV(1);
+
+		// TF2 interpolation command.
+		if (!_stricmp(cmd1, "playerInterpolation"))
+		{
+			if (argc == 3 && !_stricmp(args->ArgV(2), "default"))
+			{
+				if (!MirvFix_SetPlayerInterpolation(-1))
+					Tier0_Warning("Could not restore interpolation settings.\n");
+				return;
+			}
+			if (argc == 3)
+			{
+				char *end = nullptr;
+				double seconds = std::strtod(args->ArgV(2), &end);
+				if (end == args->ArgV(2) || *end || !MirvFix_SetPlayerInterpolation(seconds))
+					Tier0_Warning("Interpolation edit rejected. Requires a TF2 demo, writable interpolation "
+								  "cvars and 0.001..1 seconds. Existing settings retained.\n");
+				return;
+			}
+			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default\nUses TF2 interpolation for "
+					  "uneven player movement; 0.1 seconds is a starting point. Adds presentation delay; "
+					  "cannot reconstruct missing snapshots.\nCurrent: %s, window %.3f seconds. "
+					  "Automatically restores settings when the demo ends.\n",
+					  MirvFix_GetPlayerInterpolation() < 0 ? "default" : "enabled",
+					  MirvFix_GetPlayerInterpolation() < 0 ? 0 : MirvFix_GetPlayerInterpolation());
+			return;
+		}
+
+		// End TF2 interpolation command.
 
 #ifndef _WIN64
 		if (!_stricmp("physicsMaxFps", cmd1))
@@ -4409,10 +4541,9 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		"mirv_fix forceDoAnimationEvents 0|1 - Only useful in combination with replacing old models with new ones for forcing animation events to be played, defaut is 0 (off).\n"
 		"mirv_fix suppressFileCRCCheck 0|1 - This is only useful with HLAE special builds and it's on by default.\n"
 	);
-#endif //#ifndef _WIN64	
-	Tier0_Msg(
-		"mirv_fix panoramaTiming [...]\n"
-	);
+#endif // #ifndef _WIN64
+	Tier0_Msg("mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
+			  "mirv_fix panoramaTiming [...]\n");
 	if(AFXADDR_GET(engine_HostError)) Tier0_Msg(
 		"mirv_fix suppressHostError 0|1"
 	);

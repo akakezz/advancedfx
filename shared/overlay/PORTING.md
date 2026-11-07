@@ -205,3 +205,59 @@ and all seven channels visible (handles locked) reduced idle UI CPU time from
 about 126 ms/frame to 1.1 ms/frame, and modifier-edit frames from 129 ms to 2.5 ms.
 This excludes D3D9 rendering, world-path drawing and TF2 audio; in-game validation
 is still needed for the reported audio interruptions.
+
+## Editing consolidation, range effects and TF2 repair controls
+
+Graph keys, speed points, handles, modifier envelopes and the gizmo share gesture
+ownership/cancellation. A shortcut edit ends an older gesture before changing
+camera data. The key-drag/capture data-loss case has a regression test, including
+Escape and external edits with unchanged key counts. Incoming/outgoing handle
+code now calls one native validated operation; the legacy tangent setters reuse
+the same member tables and validated replacement. Arrival/release indices are
+built with the expanded hold map, avoiding repeated linear map walks.
+
+CamPath distinguishes positional trajectory changes from other pose changes.
+The classic drawer keeps its existing rendering and Ramer–Douglas–Peucker
+simplifier; a bounded adaptive native sampler replaces fixed 1,024-point
+interval evaluation. Geometry edits still refresh samples, while selection,
+offset and FOV changes can reuse them. Pose-clock changes invalidate evaluated
+graph caches without rebuilding base spatial-distance tables.
+
+The existing modifier structure now supports Noise, Oscillation, Smooth and
+Spring. NoiseModifier remains an API alias, and old noise XML loads unchanged.
+Optional parameters and normalized strength-envelope points round-trip in native
+paths, collections, history and recovery; classic export bakes the evaluator.
+Smooth uses forward/backward exponential passes; Spring integrates the damped
+response across the whole cached input, with no camera-segment restart. Both
+reuse AfxMath's monotone tangent solve and Hermite evaluation for continuous
+cached output. Equivalent Euler representations reuse CamPathValue's orientation
+handling. Filters use a bounded sampling grid, skip inactive scalar channels,
+and allow at most eight enabled filter stages. Playback, UI graphs, world drawing
+and export use the same native evaluator.
+
+The TF2 movement control under mirv_fix playerInterpolation uses the already
+registered L4D2/CSS cvar interfaces, which TF2 can expose in this HLAE base. It does
+not use CS:GO's encoded ConVar layout. The console and overlay share a reversible
+operation, normal engine setters, rollback on rejection and frame-stage cleanup.
+It restores owned settings when playback ends and preserves subsequent manual
+edits. Tests use both supported interface shapes and cover invalid inputs,
+engine clamping, restoration, manual edits and another-game rejection. This is a
+native interpolation control; effectiveness against a particular TF2 demo must be
+checked in-game. No animation-state binary patch is claimed.
+
+## Remaining TF2 demo investigations
+
+- HUD player-model animation clock: [Valve issue 3685](https://github.com/ValveSoftware/Source-1-Games/issues/3685). Needs the current TF2 HUD model-panel call site and a recording fixture; the CS:GO Panorama hook does not supply that implementation.
+- Persistent particles after seeking: the published TF2 Medigun code has effect-update/rebuild routes. A failing before/after-seek fixture is needed to identify the correct entities and state; clearing all particles is not a reconstruction fix.
+- Missing taunt props: [Valve issue 6107](https://github.com/ValveSoftware/Source-1-Games/issues/6107) describes inventory-dependent behavior. Availability of recorded item/model data needs investigation.
+- Ragdolls after seeks: the published TF2 client explicitly suppresses ragdolls created while skipping. Reconstructing their physics needs a separate runtime test; no seek behavior was changed here.
+- Spectator switching: the observing action already uses spec_autodirector 0. A TF2 blockObserverTarget hook needs a reproduction that remains after that setting.
+- High-framerate physics and limb-animation glitches: existing CS:GO fixes are not assumed to support TF2. Current-build signatures and TF2 fixtures are required before adding equivalent hooks.
+- Fast backward scrubbing, checkpoint restoration and reverse playback remain deferred until last, as requested.
+
+Optimized native CPU measurements against bbfb3679 at 1,000 keys reduced a full
+seven-channel incoming/outgoing tangent lookup pass from about 82 ms to 0.5 ms.
+The classic drawer's trajectory-evaluation workload (distance timing plus one
+noise modifier) fell from about 426 ms to 13 ms with adaptive sampling. These
+measurements exclude D3D9 drawing and the final simplification pass; they are not
+in-game frame-time measurements.

@@ -60,9 +60,13 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 				for (size_t i = 0; i < modifiers.size(); ++i)
 				{
 					const auto &m = modifiers[i];
-					conMessage("%u: noise %.6f..%.6f s, fades %.3f/%.3f s, %.3f Hz, seed %u, enabled %d\n",
-							   (unsigned)i, m.Begin, m.End, m.FadeIn, m.FadeOut, m.Frequency, m.Seed,
-							   m.Enabled);
+					conMessage("%u: %s %.6f..%.6f s, fades %.3f/%.3f s, %.3f Hz, seed %u, enabled %d\n",
+							   (unsigned)i, CamPath::ModifierTypeName(m.Type), m.Begin, m.End, m.FadeIn,
+							   m.FadeOut, m.Frequency, m.Seed, m.Enabled);
+					conMessage("    strength %.3f, phase %.3f, octaves %u, roughness %.3f, window %.3f s, "
+							   "damping %.3f, envelope %u points\n",
+							   m.Strength, m.Phase, m.Octaves, m.Roughness, m.Window, m.Damping,
+							   (unsigned)m.Envelope.size());
 				}
 				return;
 			}
@@ -81,13 +85,16 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 				if (valid)
 					modifiers.erase(modifiers.begin() + (size_t)index);
 			}
-			if ((argc == 7 || argc == 8) && !_stricmp(args->ArgV(2), "noise"))
+			CamPath::ModifierType modifierType;
+			if ((argc == 7 || argc == 8) && CamPath::ModifierTypeFromString(args->ArgV(2), modifierType))
 			{
 				handled = true;
 				CamPath::NoiseModifier m;
+				m.Type = modifierType;
 				double amplitude = 0;
 				valid = number(3, m.Begin) && number(4, m.End) && number(6, amplitude) &&
-						(argc == 7 || number(7, m.Frequency));
+						(argc == 7 ||
+						 number(7, m.Type == CamPath::ModifierType::Smooth ? m.Window : m.Frequency));
 				m.FadeIn = m.FadeOut = (std::max)(0.0, (m.End - m.Begin) * 0.15);
 				const char *names[] = {"x", "y", "z", "fov", "pitch", "yaw", "roll"};
 				bool channel = false;
@@ -103,17 +110,85 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 				if (valid)
 					modifiers.push_back(m);
 			}
+			if (argc >= 5 && !_stricmp(args->ArgV(2), "envelope"))
+			{
+				handled = true;
+				valid =
+					number(3, index) && index >= 0 && index < modifiers.size() && index == std::floor(index);
+				if (valid)
+				{
+					auto &keys = modifiers[(size_t)index].Envelope;
+					const char *op = args->ArgV(4);
+					valid = false;
+					if (argc == 5 && !_stricmp(op, "clear"))
+					{
+						keys.clear();
+						valid = true;
+					}
+					double time = 0, value = 1;
+					if (argc == 7 && !_stricmp(op, "point") && number(5, time) && number(6, value) &&
+						time >= 0 && time <= 1 && value >= 0 && value <= 1)
+					{
+						if (keys.empty())
+							keys = {{0, 1}, {1, 1}};
+						auto at = std::lower_bound(keys.begin(), keys.end(), time,
+												   [](const CamPath::ModifierKey &key, double t)
+												   { return key.Time < t; });
+						if (at != keys.end() && at->Time == time)
+							at->Value = value;
+						else
+							keys.insert(at, {time, value});
+						valid = true;
+					}
+					if (argc == 6 && !_stricmp(op, "remove") && number(5, time) && time > 0 && time < 1)
+					{
+						auto at = std::find_if(keys.begin(), keys.end(), [&](const CamPath::ModifierKey &key)
+											   { return key.Time == time; });
+						if (at != keys.end())
+						{
+							keys.erase(at);
+							valid = true;
+						}
+					}
+				}
+			}
 			if (argc == 6 && !_stricmp(args->ArgV(2), "set"))
 			{
 				handled = true;
 				double value = 0;
 				valid = number(3, index) && index >= 0 && index < modifiers.size() &&
-						index == std::floor(index) && number(5, value);
+						index == std::floor(index) && (!_stricmp(args->ArgV(4), "type") || number(5, value));
 				if (valid)
 				{
 					auto &m = modifiers[(size_t)index];
 					const char *field = args->ArgV(4);
-					if (!_stricmp(field, "begin"))
+					if (!_stricmp(field, "type"))
+					{
+						valid = CamPath::ModifierTypeFromString(args->ArgV(5), m.Type);
+						if (valid && int(m.Type) >= 2)
+						{
+							m.CameraSpace = false;
+							for (auto &amplitude : m.Amplitude)
+								amplitude = std::clamp(std::abs(amplitude), 0.0, 1.0);
+						}
+					}
+					else if (!_stricmp(field, "strength"))
+						m.Strength = value;
+					else if (!_stricmp(field, "phase"))
+						m.Phase = value;
+					else if (!_stricmp(field, "roughness"))
+						m.Roughness = value;
+					else if (!_stricmp(field, "window"))
+						m.Window = value;
+					else if (!_stricmp(field, "damping"))
+						m.Damping = value;
+					else if (!_stricmp(field, "octaves"))
+					{
+						valid = value >= 1 && value <= 8 && value == std::floor(value);
+						if (valid)
+							m.Octaves = (unsigned)value;
+					}
+					else if (!_stricmp(field, "begin"))
 						m.Begin = value;
 					else if (!_stricmp(field, "end"))
 						m.End = value;
@@ -160,12 +235,20 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 							   "amplitude and frequency.\n");
 				return;
 			}
-			conMessage("%s modifier list|clear|remove <index>\n%s modifier noise <begin seconds> <end "
-					   "seconds> <position|angles|x|y|z|fov|pitch|yaw|roll> <amplitude> [frequency=1]\n%s "
-					   "modifier set <index> "
-					   "<begin|end|fadeIn|fadeOut|frequency|seed|enabled|cameraSpace|x|y|z|fov|pitch|yaw|"
-					   "roll> <value>\n",
-					   args->ArgV(0), args->ArgV(0), args->ArgV(0));
+			conMessage(
+				"%s modifier list|clear|remove <index>\n%s modifier <noise|oscillation|smooth|spring> "
+				"<begin seconds> <end "
+				"seconds> <position|angles|x|y|z|fov|pitch|yaw|roll> <amplitude> [frequency Hz=1 / smooth "
+				"window seconds=0.25]\n%s "
+				"modifier set <index> "
+				"<type|strength|phase|octaves|roughness|window|damping|begin|end|fadeIn|fadeOut|frequency|"
+				"seed|enabled|cameraSpace|x|y|z|fov|pitch|yaw|"
+				"roll> <value>\n",
+				args->ArgV(0), args->ArgV(0), args->ArgV(0));
+			conMessage("%s modifier envelope <index> point <0..1 time> <0..1 weight>|remove "
+					   "<time>|clear\nFilter amplitudes are channel strengths (0..1); smooth window is in "
+					   "seconds; spring frequency is Hz.\n",
+					   args->ArgV(0));
 			return;
 		}
 		if (!_stricmp("speedProfile", subcmd))

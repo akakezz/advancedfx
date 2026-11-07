@@ -514,6 +514,29 @@ void consoleProfiles()
 	check(path.CaptureState() == validModifier, "Invalid console modifier retains data");
 	call({"mirv_campath", "modifier", "clear"});
 	check(path.GetModifiers().empty(), "Console clears modifiers");
+	call({"mirv_campath", "modifier", "oscillation", "0", "2", "fov", "5", "2"});
+	check(path.GetModifiers().size() == 1 &&
+			  path.GetModifiers()[0].Type == CamPath::ModifierType::Oscillation,
+		  "Console creates oscillation");
+	call({"mirv_campath", "modifier", "envelope", "0", "point", "0.5", "0.25"});
+	check(path.GetModifiers()[0].Envelope.size() == 3, "Console authors modifier strength keys");
+	call({"mirv_campath", "modifier", "set", "0", "phase", "0.25"});
+	near(path.GetModifiers()[0].Phase, .25);
+	call({"mirv_campath", "modifier", "envelope", "0", "remove", "0.5"});
+	check(path.GetModifiers()[0].Envelope.size() == 2, "Console removes interior envelope points");
+	call({"mirv_campath", "modifier", "smooth", "0", "2", "position", "0.5"});
+	check(path.GetModifiers().size() == 2 && path.GetModifiers()[1].Type == CamPath::ModifierType::Smooth,
+		  "Console creates smoothing");
+	call({"mirv_campath", "modifier", "set", "1", "window", "0.4"});
+	near(path.GetModifiers()[1].Window, .4);
+	call({"mirv_campath", "modifier", "set", "0", "type", "smooth"});
+	check(path.GetModifiers()[0].Type == CamPath::ModifierType::Smooth &&
+			  path.GetModifiers()[0].Amplitude[3] == 1,
+		  "Console switches modifier type with validated filter strengths");
+	call({"mirv_campath", "modifier", "spring", "0", "2", "angles", "0.5", "3"});
+	check(path.GetModifiers().size() == 3 && path.GetModifiers()[2].Type == CamPath::ModifierType::Spring,
+		  "Console creates spring response");
+	call({"mirv_campath", "modifier", "clear"});
 	call({"mirv_campath", "speedProfile", "point", "0", "0"});
 	check(path.GetDistanceTiming() && path.GetSpeedProfile().front().Speed == 0,
 		  "Console edits whole-path speed profile");
@@ -1093,6 +1116,294 @@ void transformedCurves()
 		  "Unevaluable captured pose remains transformable");
 	near(single.GetBegin().GetValue().X, 10);
 }
+void nextEditingRegressions()
+{
+	CamPath p;
+	populate(p);
+	const auto position = p.GetPositionRevision(), geometry = p.GetGeometryRevision();
+	p.SetFov(100);
+	check(p.GetPositionRevision() == position && p.GetGeometryRevision() > geometry,
+		  "FOV edits retain positional trajectory caches");
+	p.FovInterpMethod_set(CamPath::DI_LINEAR);
+	check(p.GetPositionRevision() == position,
+		  "FOV interpolation changes retain positional trajectory samples");
+	p.SetOffset(5);
+	check(p.GetPositionRevision() == position, "Offset changes retain path-relative positional samples");
+	p.SelectNone();
+	p.SelectAdd(size_t(1), size_t(1));
+	p.SetTangentWeight(CamPath::CH_X, true, true, .75, 1.25);
+	const auto before = p.GetRevision();
+	check(p.EditTangent(1, CamPath::CH_X, true, 12, 1.5, true, true), "Atomic linked handle edit succeeds");
+	check(p.GetRevision() == before + 1, "One handle edit emits one change notification");
+	double in, wi, out, wo;
+	p.GetTangent(CamPath::CH_X, 1, false, in, wi);
+	p.GetTangent(CamPath::CH_X, 1, true, out, wo);
+	near(in, 12);
+	near(out, 12);
+	near(wi, .75);
+	near(wo, 1.5);
+	const auto valid = p.CaptureState();
+	check(!p.EditTangent(1, CamPath::CH_X, true, std::numeric_limits<double>::quiet_NaN(), 1, true, false) &&
+			  p.CaptureState() == valid,
+		  "Invalid handle edit leaves the entire path intact");
+	check(!p.GetTangent((CamPath::Channel)-1, 0, true, out, wo) &&
+			  !p.GetAcceleration((CamPath::Channel)7, 0, true, out),
+		  "Invalid tangent channels reject safely");
+	check(p.SetKeyHold(2, 3.5), "Hold expands the tangent index map");
+	for (size_t i = 0; i < p.GetSize(); ++i)
+		check(p.GetTangent(CamPath::CH_X, i, false, in, wi) && p.GetTangent(CamPath::CH_X, i, true, out, wo),
+			  "Indexed tangents remain available across synthetic hold keys");
+	check(p.DeleteSelected(), "Removing an indexed key succeeds");
+	for (size_t i = 0; i < p.GetSize(); ++i)
+		check(p.GetTangent(CamPath::CH_X, i, true, out, wo), "Tangent lookup updates after deletion");
+	p.SetDistanceTiming(true);
+	const auto poseRevision = p.GetGeometryRevision(), spatialRevision = p.GetPositionRevision();
+	p.SetDistanceTimingPose(true);
+	check(p.GetGeometryRevision() > poseRevision && p.GetPositionRevision() == spatialRevision,
+		  "Pose-clock changes refresh graph evaluation without invalidating spatial geometry");
+	CamPath line;
+	custom(line);
+	line.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	line.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	line.Add(2, CamPathValue(100, 0, 0, 0, 0, 0, 90));
+	const auto samples = line.SampleInterval(0, 2, .01, 1024);
+	check(samples.size() >= 2 && samples.size() < 32,
+		  "Straight trajectory sampling avoids 1024 evaluations per interval");
+	near(samples.front().first, 0);
+	near(samples.back().first, 2);
+	CamPath::NoiseModifier noise;
+	noise.Begin = 0;
+	noise.End = 2;
+	noise.Amplitude[1] = 5;
+	line.SetModifiers({noise});
+	const auto curved = line.SampleInterval(0, 2, .02, 512);
+	check(curved.size() <= 512 && curved.size() > samples.size(),
+		  "Trajectory sampling adapts to visible noise within its budget");
+	for (int i = 1; i < 400; ++i)
+	{
+		const double t = i * .005;
+		auto right = std::lower_bound(curved.begin(), curved.end(), t,
+									  [](const auto &sample, double time) { return sample.first < time; });
+		if (right == curved.begin() || right == curved.end())
+			continue;
+		const auto left = std::prev(right);
+		const double u = (t - left->first) / (right->first - left->first);
+		near(line.Eval(t).Y, left->second.Y + (right->second.Y - left->second.Y) * u, .05);
+	}
+}
+void moreModifiers()
+{
+	CamPath p;
+	custom(p);
+	p.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	p.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	p.Add(4, CamPathValue(0, 0, 0, 0, 720, 0, 110));
+	const auto authored = p.CaptureState().Keys;
+	CamPath::NoiseModifier wave;
+	wave.Type = CamPath::ModifierType::Oscillation;
+	wave.Begin = 0;
+	wave.End = 4;
+	wave.Phase = .25;
+	wave.Frequency = 1;
+	wave.Amplitude[0] = 10;
+	check(p.SetModifiers({wave}), "Oscillation is accepted");
+	near(p.Eval(1).X, 10);
+	near(p.Eval(1.5).X, -10);
+	near(p.Eval(0).X, 0);
+	near(p.Eval(4).X, 0);
+	wave.Envelope = {{0, 0}, {.25, 1}, {.5, 0}, {1, 1}};
+	check(p.SetModifiers({wave}), "Modifier strength keys accepted");
+	near(p.Eval(1).X, 10);
+	near(p.Eval(2).X, 0);
+	wave.Strength = .5;
+	check(p.SetModifiers({wave}), "Global modifier strength accepted");
+	near(p.Eval(1).X, 5);
+	CamPath::NoiseModifier noise;
+	noise.Begin = 0;
+	noise.End = 4;
+	noise.Frequency = 3;
+	noise.Amplitude[0] = 4;
+	noise.Octaves = 4;
+	noise.Roughness = .65;
+	check(p.SetModifiers({noise}), "Layered noise accepted");
+	const auto noisy = p.Eval(1.37);
+	p.Eval(3.8);
+	check(p.Eval(1.37) == noisy, "Layered noise is independent of evaluation order");
+	for (int i = 0; i <= 400; ++i)
+		check(std::abs(p.Eval(i * .01).X) <= 4 + 1e-9, "Layered noise is normalized to its amplitude");
+	CamPath::NoiseModifier smooth;
+	smooth.Type = CamPath::ModifierType::Smooth;
+	smooth.Begin = 0;
+	smooth.End = 4;
+	smooth.Window = .3;
+	smooth.Amplitude[0] = 1;
+	smooth.Amplitude[5] = 1;
+	check(p.SetModifiers({noise, smooth}), "Whole-path smoothing accepted");
+	double filteredEnergy = 0, noiseEnergy = 0;
+	const auto sample = p.Eval(1.37);
+	p.Eval(2.8);
+	check(p.Eval(1.37) == sample, "Smoothing is deterministic during backward scrubbing");
+	for (int i = 31; i < 370; ++i)
+	{
+		double t = i * .01;
+		filteredEnergy += std::pow(p.Eval(t).X - p.Eval(t - .01).X, 2);
+	}
+	p.SetModifiers({noise});
+	for (int i = 31; i < 370; ++i)
+	{
+		double t = i * .01;
+		noiseEnergy += std::pow(p.Eval(t).X - p.Eval(t - .01).X, 2);
+	}
+	check(filteredEnergy < noiseEnergy * .5, "Smoothing reduces high-frequency movement");
+	p.SetModifiers({noise, smooth});
+	const double noiseThenSmooth = p.Eval(1.37).X;
+	p.SetModifiers({smooth, noise});
+	check(std::abs(p.Eval(1.37).X - noiseThenSmooth) > .01, "Modifier ordering changes the result");
+	CamPath springPath;
+	custom(springPath);
+	springPath.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	for (const auto &key : std::vector<std::pair<double, double>>{{0, 0}, {1, 0}, {1.1, 100}, {4, 100}})
+		springPath.Add(key.first, CamPathValue(key.second, 0, 0, 0, 0, 0, 90));
+	CamPath::NoiseModifier spring;
+	spring.Type = CamPath::ModifierType::Spring;
+	spring.Begin = 0;
+	spring.End = 4;
+	spring.Frequency = 1;
+	spring.Damping = .3;
+	spring.Amplitude[0] = 1;
+	check(springPath.SetModifiers({spring}), "Spring response accepted");
+	double peak = 0;
+	for (int i = 110; i < 300; ++i)
+		peak = (std::max)(peak, springPath.Eval(i * .01).X);
+	check(peak > 110, "Underdamped spring has controlled overshoot");
+	near(springPath.Eval(3.5).X, 100, 2);
+	const auto springSample = springPath.Eval(1.5);
+	springPath.Eval(3);
+	check(springPath.Eval(1.5) == springSample, "Spring results do not depend on playback direction");
+	for (double damping : {.05, 1.0, 2.0})
+	{
+		spring.Damping = damping;
+		springPath.SetModifiers({spring});
+		for (int i = 0; i <= 100; ++i)
+			check(std::isfinite(springPath.Eval(i * .04).X),
+				  "Spring remains finite across supported damping modes");
+	}
+	p.SetModifiers({wave, noise, smooth, spring});
+	std::string xml;
+	check(p.SaveToString(xml), "Every modifier type serializes");
+	CamPath loaded;
+	check(loaded.LoadFromString(xml), "Every modifier type reloads");
+	check(loaded.GetModifiers() == p.GetModifiers(), "Modifier parameters and envelopes round-trip exactly");
+	for (int i = 0; i <= 200; ++i)
+	{
+		near(loaded.Eval(i * .02).X, p.Eval(i * .02).X, 1e-7);
+		near(loaded.Eval(i * .02).GetEulerAngles().Yaw, p.Eval(i * .02).GetEulerAngles().Yaw, 1e-7);
+	}
+	check(p.CaptureState().Keys == authored, "All modifiers preserve authored camera keys");
+	CamPath pole;
+	for (int i = 0; i < 5; ++i)
+		pole.Add(i, CamPathValue(0, 0, 0, 80 + i * 5, 10, 20, 90));
+	CamPath::Modifier poleFilter = smooth;
+	poleFilter.Amplitude[0] = poleFilter.Amplitude[5] = 0;
+	poleFilter.Amplitude[4] = .5;
+	check(pole.SetModifiers({poleFilter}),
+		  "Classic quaternion orientations accept a selected Euler filter channel");
+	auto previousPole = pole.Eval(.3).R;
+	for (int i = 31; i < 370; ++i)
+	{
+		auto next = pole.Eval(i * .01).R;
+		check(std::abs(DotProduct(previousPole, next)) > .999998,
+			  "Filtering near a pitch pole preserves equivalent Euler continuity");
+		previousPole = next;
+	}
+	std::vector<CamPath::Modifier> tooManyFilters(9, smooth);
+	check(!p.SetModifiers(tooManyFilters), "Active filter stages have a bounded memory budget");
+
+	const auto valid = p.CaptureState();
+	auto invalid = wave;
+	invalid.Envelope = {{0, 1}, {.5, 1}, {.5, 0}, {1, 1}};
+	check(!p.SetModifiers({invalid}) && p.CaptureState() == valid,
+		  "Colliding envelope points reject atomically");
+	invalid = noise;
+	invalid.Octaves = 9;
+	check(!p.SetModifiers({invalid}), "Invalid octave count rejected");
+	invalid = smooth;
+	invalid.CameraSpace = true;
+	check(!p.SetModifiers({invalid}), "Unsupported filter coordinate mode rejected");
+	invalid = spring;
+	invalid.Damping = 0;
+	check(!p.SetModifiers({invalid}), "Zero spring damping rejected");
+	invalid = wave;
+	invalid.Strength = std::numeric_limits<double>::quiet_NaN();
+	auto state = valid;
+	state.Modifiers = {invalid};
+	p.RestoreState(state);
+	check(!p.SaveToString(xml), "Invalid restored modifier data cannot be saved");
+	p.RestoreState(valid);
+	p.SaveToString(xml);
+	auto badXml = xml;
+	const auto tag = badXml.find("<oscillation");
+	badXml.replace(tag + 1, 11, "badModifier");
+	check(!loaded.LoadFromString(badXml), "Unknown modifier nodes reject instead of silently losing effects");
+}
+
+void modifierPersistenceAndExport()
+{
+	CamPath path;
+	custom(path);
+	path.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	path.Add(4, CamPathValue(100, 0, 0, 0, 60, 0, 100));
+	CamPath::Modifier noise;
+	noise.Begin = 0;
+	noise.End = 4;
+	noise.Amplitude[0] = 3;
+	noise.Octaves = 3;
+	CamPath::Modifier wave = noise;
+	wave.Type = CamPath::ModifierType::Oscillation;
+	wave.Amplitude[0] = 0;
+	wave.Amplitude[3] = 2;
+	wave.Phase = .25;
+	wave.Envelope = {{0, 0}, {.5, 1}, {1, 0}};
+	CamPath::Modifier smooth = noise;
+	smooth.Type = CamPath::ModifierType::Smooth;
+	smooth.Amplitude[0] = .8;
+	CamPath::Modifier spring = smooth;
+	spring.Type = CamPath::ModifierType::Spring;
+	spring.Amplitude[0] = .4;
+	check(path.SetModifiers({noise, wave, smooth, spring}), "Mixed modifier stack accepted for persistence");
+	CamPathCollection collection(path);
+	const auto original = path.GetModifiers();
+	collection.BeginEdit();
+	auto edited = original;
+	edited[1].Envelope[1].Value = .2;
+	path.SetModifiers(edited);
+	collection.FinishEdit();
+	check(collection.Undo() && path.GetModifiers() == original,
+		  "Undo restores modifier envelopes and settings");
+	check(collection.Undo(true) && path.GetModifiers() == edited, "Redo restores modifier envelope edits");
+	const auto file = std::filesystem::temp_directory_path() / "hlae-range-collection.xml";
+	check(collection.NewPath("Alternate with modifiers", true) && collection.SaveAll(file.wstring().c_str()),
+		  "Named collections save all modifier types");
+	CamPath restored;
+	CamPathCollection loaded(restored);
+	check(loaded.LoadAll(file.wstring().c_str()) && restored.GetModifiers() == edited,
+		  "Collection reload retains active modifier data");
+	check(loaded.GetPath(0)->GetModifiers() == edited, "Inactive collection paths retain modifier data");
+	std::filesystem::remove(file);
+	const auto classic = std::filesystem::temp_directory_path() / "hlae-range-classic.xml";
+	check(path.ExportClassic(classic.wstring().c_str(), 1.0 / 120),
+		  "All modifier types bake through classic export");
+	CamPath baked;
+	check(baked.Load(classic.wstring().c_str()), "Baked modifiers reload in classic format");
+	check(baked.GetModifiers().empty(), "Classic export requires no modifier runtime");
+	for (int i = 0; i <= 200; ++i)
+	{
+		const double time = i * .02;
+		near(baked.Eval(time).X, path.Eval(time).X, .05);
+		near(baked.Eval(time).Fov, path.Eval(time).Fov, .02);
+	}
+	std::filesystem::remove(classic);
+}
 } // namespace
 int main()
 {
@@ -1113,6 +1424,9 @@ int main()
 		speedRamps();
 		reviewBoundaryRegressions();
 		transformedCurves();
+		nextEditingRegressions();
+		moreModifiers();
+		modifierPersistenceAndExport();
 		std::cout << checks << " TF2 camera checks passed\n";
 	}
 	catch (const std::exception &e)

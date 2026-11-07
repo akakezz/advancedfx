@@ -215,7 +215,7 @@ screen-sized sampling grid plus key/hold boundaries. Zooming or changing camera
 data refreshes the samples; idle frames reuse them. These are display samples;
 playback and export continue to use the native evaluator.
 
-## Selective noise modifiers
+## Range modifiers
 
 Open **Range modifiers** in the graph. Use **Draw modifier range** and drag across
 the graph, enter exact path seconds or demo ticks, or use **Range from selected
@@ -223,8 +223,37 @@ keys**. The range can cover part of an interval or a hold; it is not restricted 
 camera key boundaries. **Add noise to range** initially affects visible/focused
 channels. Per-channel amplitudes can then be edited independently.
 
-Each modifier has begin/end, fade-in/out durations, frequency, seed, enable and
-camera-space controls. Drag the boundaries and fade markers in the shaded strip
+Choose **New modifier type**, then add it to the selected range. Existing modifiers
+can change type through **Modifier type**. Noise and Oscillation amplitudes use
+world units or degrees; Smooth and Spring amplitudes are channel strengths from
+0 to 1. The global **Modifier strength** multiplies every enabled channel.
+
+| Type | Controls and behavior |
+| --- | --- |
+| Noise | Deterministic smooth noise; 1–8 octaves and roughness add smaller, faster layers. The weighted result is normalized to the chosen amplitude. One octave retains the earlier noise behavior. |
+| Oscillation | Sine-wave position, angle or FOV offsets. Frequency is Hz; phase is in cycles. |
+| Smooth / stabilize | A bidirectional exponential filter across the complete input curve, controlled by **Smoothing window (s)**. |
+| Spring | A damped spring following the complete input curve. Frequency is Hz; damping below 1 oscillates, 1 is critically damped, and values above 1 settle without oscillation. |
+
+Each modifier has begin/end, fade-in/out durations and an enable control. Noise
+has a seed. Noise and Oscillation can apply positional offsets in camera space.
+Filters act on the chosen world-position and Euler-angle channels. They evaluate
+the whole path before applying their range envelope, so they do not restart at
+each camera key. They can change the evaluated pose at camera keys and during
+holds when the range covers them; the authored keys remain intact.
+
+Open **Strength envelope** to draw the influence curve. Its X axis is normalized
+range time (0–1) and its Y axis is strength (0–1). Drag points, double-click empty
+space to add, right-click an interior point to remove, or reset the envelope.
+Points stay inside the graph; Escape cancels the drag. Moving/resizing the
+modifier range keeps the envelope normalized to that range. These control points
+do not change camera-key indices.
+
+Filters cache deterministic samples, interpolate them with shared Hermite
+slopes, and reuse the result when seeking or rendering frames out of order.
+Their sampling grid is bounded; very long paths and very rapid effects have a
+finite filtering resolution. A path supports 64 modifiers, including up to eight
+enabled Smooth/Spring stages. Modifier order determines each filter's input. Drag the boundaries and fade markers in the shaded strip
 above the graph, or use exact numeric values. Envelope edges use smooth fades.
 The dim curve is the unmodified evaluated path; the bright curve includes the
 modifier, including movement during an explicitly covered hold. A stationary
@@ -251,7 +280,17 @@ mirv_campath modifier list
 mirv_campath modifier set 0 yaw 1.5
 mirv_campath modifier set 0 fadeIn 0.4
 mirv_campath modifier set 0 cameraSpace 1
+mirv_campath modifier set 0 octaves 3
+mirv_campath modifier set 0 roughness 0.5
 mirv_campath modifier remove 0
+mirv_campath modifier oscillation 10 12 roll 2 1.5
+mirv_campath modifier smooth 10 12 position 0.8 0.3
+mirv_campath modifier spring 10 12 angles 0.6 2
+mirv_campath modifier set 0 type oscillation
+mirv_campath modifier set 0 phase 0.25
+mirv_campath modifier envelope 0 point 0.5 0.2
+mirv_campath modifier envelope 0 remove 0.5
+mirv_campath modifier envelope 0 clear
 ```
 
 Speed-point times use 0..1 and speeds use relative nonnegative values. Modifier
@@ -387,6 +426,31 @@ mirv_campath preview afterSeek continue
 The mode and timescale persist in the existing ImGui settings file. Source's
 console and menus retain input priority.
 
+## TF2 player movement interpolation
+
+Open **Demo fixes** in the Campath tab and enable **Smooth player movement**.
+The suggested window is 0.1 seconds; increase or decrease it while comparing the
+same portion of the demo. Console equivalents are:
+
+```text
+mirv_fix playerInterpolation 0.1
+mirv_fix playerInterpolation 0.15
+mirv_fix playerInterpolation default
+```
+
+This controls TF2's existing `cl_interpolate`, `cl_interp` and `cl_interp_ratio`
+settings. It targets uneven movement caused by disabled or insufficient
+interpolation. It adds presentation delay and cannot reconstruct missing demo
+snapshots, remove genuine teleports, or repair limb-animation state.
+
+The first enable captures the original settings. Changing the window keeps those
+restore values. **default**, disabling the checkbox, or ending demo playback
+restores settings still owned by the control; later manual cvar edits are kept.
+Rejected/clamped engine settings roll back. The control is available only for a
+TF2 demo with the required engine variables; it does not bypass engine restrictions.
+It is off by default and does not alter seeking or set a persistent config preset.
+Its visual effect still needs validation against the user's stuttering demo.
+
 ## Rotation authoring and classic export
 
 Ordinary wrapped captures still unwrap across +180/-180 using the short route.
@@ -507,6 +571,13 @@ the headless GUI integration test also runs the actual editor and bundled widget
 ```text
 python tests/cinematic/test_overlay.py --imgui-dir <path-to-imgui-v1.89.9-docking>
 ```
+
+Mouse editing records its owning path and revision. Capture, hold, selection,
+undo, path switching and external edits invalidate an older drag, so a subsequent
+mouse update or Escape cannot restore stale camera data. Incoming/outgoing
+handles use one validated native edit, and tangent lookups use cached key indices.
+World-path drawing still uses the classic renderer and simplifier, with adaptive
+sampling; FOV-only and offset-only changes can reuse positional samples.
 
 These checks support review; the complete MSVC build, in-game input handoffs,
 gizmo axes/projection, device resets and recorded output still require testing in TF2.

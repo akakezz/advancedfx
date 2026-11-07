@@ -254,7 +254,7 @@ private:
 		bool m_CampathCanEval;
 		std::list<CKeyframe> m_Keyframes;
 		std::shared_ptr<const std::list<CKeyframe>> m_TrajectoryPoints;
-		unsigned long long m_GeometryRevision = 0;
+		unsigned long long m_PositionRevision = 0;
 		const CamPath *m_Source = nullptr;
 		std::map<double, bool> m_Selection;
 	};

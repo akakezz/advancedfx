@@ -157,3 +157,9 @@ private:
 
 	bool OverrideFromString(const char * value, Override & outOverride);
 };
+
+// TF2 demo interpolation repair, shared by the console and overlay.
+bool MirvFix_PlayerInterpolationAvailable();
+double MirvFix_GetPlayerInterpolation();
+bool MirvFix_SetPlayerInterpolation(double seconds);
+void MirvFix_Update();

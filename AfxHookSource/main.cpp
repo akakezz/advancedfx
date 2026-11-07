@@ -914,6 +914,8 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 #endif //#ifndef _WIN64
 	 SOURCESDK::TF2::ClientFrameStage_t curStage)
 {
+	if (curStage == SOURCESDK::TF2::FRAME_START)
+		MirvFix_Update();
 	switch (curStage)
 	{
 	case SOURCESDK::TF2::FRAME_RENDER_START:

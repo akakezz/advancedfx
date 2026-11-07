@@ -157,14 +157,34 @@ public:
 			return Time == b.Time && Speed == b.Speed;
 		}
 	};
-	struct NoiseModifier
+	enum class ModifierType
 	{
+		Noise,
+		Oscillation,
+		Smooth,
+		Spring
+	};
+	struct ModifierKey
+	{
+		double Time = 0, Value = 1;
+		bool operator==(const ModifierKey &b) const
+		{
+			return Time == b.Time && Value == b.Value;
+		}
+	};
+	struct Modifier
+	{
+		ModifierType Type = ModifierType::Noise;
+		double Strength = 1, Phase = 0, Roughness = .5, Window = .25, Damping = .7;
+		unsigned int Octaves = 1;
+		std::vector<ModifierKey> Envelope;
 		double Begin = 0, End = 1, FadeIn = 0.2, FadeOut = 0.2, Frequency = 1;
 		double Amplitude[7] = {};
 		unsigned int Seed = 1;
 		bool Enabled = true, CameraSpace = false;
-		bool operator==(const NoiseModifier &b) const;
+		bool operator==(const Modifier &b) const;
 	};
+	using NoiseModifier = Modifier; // Preserve the existing branch API for noise callers.
 	struct State
 	{
 		CInterpolationMap<CamPathValue> Keys;
@@ -249,6 +269,8 @@ public:
 	bool BakeTangents();
 	bool MakeScalarCurvesEditable();
 	double GetSpeed(double time);
+	std::vector<std::pair<double, CamPathValue>> SampleInterval(double begin, double end, double tolerance,
+																size_t maxPoints);
 	bool RetimeByDistance(double duration);
 	const std::vector<SpeedKey> &GetSpeedProfile() const
 	{
@@ -262,6 +284,9 @@ public:
 	}
 	bool SetModifiers(const std::vector<NoiseModifier> &modifiers);
 	static double ModifierInfluence(const NoiseModifier &modifier, double time);
+	static const char *ModifierTypeName(ModifierType type);
+	static bool ModifierTypeFromString(const char *name, ModifierType &type);
+	static double ModifierSampleRate(const NoiseModifier &modifier);
 
 	bool GetDistanceTiming() const
 	{
@@ -274,6 +299,10 @@ public:
 	}
 	void SetDistanceTimingPose(bool enabled);
 	bool ExportClassic(const wchar_t *fileName, double sampleInterval);
+	unsigned long long GetPositionRevision() const
+	{
+		return m_PositionRevision;
+	}
 	unsigned long long GetGeometryRevision() const
 	{
 		return m_GeometryRevision;
@@ -282,6 +311,8 @@ public:
 	static void SetChannelValue(CamPathValue &value, Channel channel, double component);
 	bool GetTangent(Channel ch, size_t index, bool outgoing, double &slope, double &weight);
 	bool GetAcceleration(Channel ch, size_t index, bool outgoing, double &acceleration);
+	bool EditTangent(size_t index, Channel channel, bool outgoing, double slope, double weight, bool linked,
+					 bool editWeight);
 	void SetTangent(Channel ch, bool setIn, bool setOut, double slopeIn, double slopeOut);
 	void SetTangentMode(Channel ch, bool setIn, bool setOut, unsigned char mode);
 	void SetTangentWeight(Channel ch, bool setIn, bool setOut, double wIn, double wOut);
@@ -599,6 +630,14 @@ private:
 	CamPathValue EvalRaw(double time);
 	std::vector<SpeedKey> m_SpeedProfile;
 	std::vector<NoiseModifier> m_Modifiers;
+	struct ModifierCurve
+	{
+		std::vector<double> Values[7], Slopes[7];
+	};
+	std::vector<double> m_ModifierTimes;
+	std::vector<ModifierCurve> m_ModifierCurves;
+	unsigned long long m_ModifierRevision = ~0ull;
+	void BuildModifierCurves();
 	std::vector<double> m_SpeedArea;
 	double m_SpeedIntegral = 1;
 	bool m_SpeedDirty = true;
@@ -640,11 +679,15 @@ private:
 	CInterpolation<bool> * m_SelectedInterp;
 
 	unsigned long long m_Revision = 0;
-	unsigned long long m_GeometryRevision = 0;
-	void Changed(bool geometry = true, bool invalidateArcs = true);
+	unsigned long long m_GeometryRevision = 0, m_PositionRevision = 0;
+	std::vector<double> m_KeyTimes;
+	std::vector<size_t> m_KeyArrival, m_KeyRelease;
+	bool HasPositionModifiers() const;
+	static bool ValidModifiers(const std::vector<NoiseModifier> &modifiers);
+	void Changed(bool geometry = true, bool invalidateArcs = true, bool position = true);
 	void CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<CamPathValue> & src);
 
-	void DoInterpolationMapChangedAll(void);
+	void DoInterpolationMapChangedAll(bool invalidateArcs = true);
 };
 
 // A document keeps ordinary CamPath shots and one native editable path. The

@@ -555,9 +555,10 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer *d
 		m_Selection[it.GetTime()] = it.GetValue().Selected;
 	}
 
-	m_GeometryRevision = path->GetGeometryRevision();
+	m_PositionRevision = path->GetPositionRevision();
 	m_Source = path;
-	if (previous && previous->m_Source == path && previous->m_GeometryRevision == m_GeometryRevision)
+	if (previous && previous->m_Source == path && previous->m_PositionRevision == m_PositionRevision &&
+		previous->m_CampathCanEval == m_CampathCanEval)
 	{
 		m_TrajectoryPoints = previous->m_TrajectoryPoints;
 		return;
@@ -565,48 +566,37 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer *d
 	auto trajectory = std::make_shared<std::list<CKeyframe>>();
 	m_TrajectoryPoints = trajectory;
 
-	if(m_CampathCanEval && 2 <= m_Keyframes.size()) {
-		// Build trajectory points.
-		// This operation can be quite expensive (up to O(N^2)),
-		// so it should be done only when s.th.
-		// changed (which is what we do here).
-
-		auto last = path->GetBegin();
-		auto it = last;
-
-		TempPoint * pts = new TempPoint[c_CameraTrajectoryMaxPointsPerInterval];
-
+	if (m_CampathCanEval && 2 <= m_Keyframes.size())
+	{
+		auto last = path->GetBegin(), it = last;
+		const size_t budget = (std::min)(c_CameraTrajectoryMaxPointsPerInterval,
+										 (std::max)(size_t(16), size_t(8192) / (m_Keyframes.size() - 1)));
 		for (++it; it != path->GetEnd(); ++it)
 		{
-			double delta = it.GetTime() - last.GetTime();
-
-			for(size_t i = 0; i<c_CameraTrajectoryMaxPointsPerInterval; i++)
+			const auto samples =
+				path->SampleInterval(last.GetTime(), it.GetTime(), c_CameraTrajectoryEpsilon * .5, budget);
+			if (samples.size() < 2)
 			{
-				double t = last.GetTime() + delta*((double)i/(c_CameraTrajectoryMaxPointsPerInterval-1));
-
-				CamPathValue cpv = path->Eval(t);
-
-				pts[i].t = t;
-				pts[i].y = Vector3(cpv.X, cpv.Y, cpv.Z);
-				pts[i].nextPt = i+1 <c_CameraTrajectoryMaxPointsPerInterval ? &(pts[i+1]) : 0;
+				last = it;
+				continue;
 			}
-
-			RamerDouglasPeucker(&(pts[0]), &(pts[c_CameraTrajectoryMaxPointsPerInterval-1]), c_CameraTrajectoryEpsilon);
-
-			// add all points except the last one (to avoid duplicates):
-			for(TempPoint * pt = &(pts[0]); pt && pt->nextPt; pt = pt->nextPt)
+			std::vector<TempPoint> points(samples.size());
+			for (size_t i = 0; i < samples.size(); ++i)
 			{
-				trajectory->emplace_back(pt->t, path->Eval(pt->t));
+				points[i].t = samples[i].first;
+				const auto &pose = samples[i].second;
+				points[i].y = Vector3(pose.X, pose.Y, pose.Z);
+				points[i].nextPt = i + 1 < points.size() ? &points[i + 1] : nullptr;
 			}
-
+			RamerDouglasPeucker(&points.front(), &points.back(), c_CameraTrajectoryEpsilon);
+			for (auto *point = &points.front(); point && point->nextPt; point = point->nextPt)
+				trajectory->emplace_back(point->t, samples[size_t(point - points.data())].second);
 			last = it;
+			auto next = it;
+			++next;
+			if (next == path->GetEnd())
+				trajectory->emplace_back(samples.back().first, samples.back().second);
 		}
-
-		// add last point:
-		trajectory->emplace_back(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t,
-								 path->Eval(pts[c_CameraTrajectoryMaxPointsPerInterval - 1].t));
-
-		delete[] pts;
 	}
 }
 

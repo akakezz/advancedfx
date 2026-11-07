@@ -38,6 +38,8 @@ static std::atomic_bool g_Open{false}, g_MouseLook{false};
 static bool g_Docking = true;
 static bool g_CurveKeyDrag = false, g_CancelGesture = false;
 static std::unique_ptr<CamPathCollection::State> g_GestureStart;
+static unsigned long long g_GestureOwner = 0, g_GestureRevision = 0;
+static bool CancelEditGesture();
 struct SpeedDrag
 {
 	int Index = -1;
@@ -47,11 +49,43 @@ struct SpeedDrag
 	float Maximum = 1;
 };
 static SpeedDrag g_SpeedDrag;
+struct GizmoDrag
+{
+	bool HasModel = false, WasUsing = false, Changed = false;
+	double KeyTime = 0;
+	float Model[16] = {};
+};
+static GizmoDrag g_GizmoDrag;
+
 static void ResetSpeedDrag()
 {
 	g_SpeedDrag = SpeedDrag{};
 }
 
+static void EnsureEditGesture()
+{
+	if (g_GestureStart || !ImGui::IsMouseDown(0))
+		return;
+	auto &document = g_Hook_VClient_RenderView.m_CamPaths;
+	g_GestureStart = std::make_unique<CamPathCollection::State>(document.CaptureState());
+	g_GestureOwner = document.GetId(document.GetActive());
+	g_GestureRevision = g_Hook_VClient_RenderView.m_CamPath.GetRevision();
+}
+static bool CancelEditGesture()
+{
+	if (!g_GestureStart && !g_CurveKeyDrag && g_SpeedDrag.Index < 0 && !g_GizmoDrag.HasModel &&
+		!g_GizmoDrag.WasUsing)
+		return false;
+	g_GestureStart.reset();
+	g_CurveKeyDrag = false;
+	g_GizmoDrag = GizmoDrag{};
+	ResetSpeedDrag();
+	g_CancelGesture = true;
+	if (ImGui::GetCurrentContext())
+		ImGui::ClearActiveID();
+	g_Hook_VClient_RenderView.m_CamPaths.FinishEdit();
+	return true;
+}
 static bool g_GraphRightCtrlHeld = false, g_GraphRightCtrlChord = false;
 static bool g_Autosave = true;
 static double g_AutosaveSeconds = 30;
@@ -68,11 +102,10 @@ void SetOpen(bool value)
 {
 	if (!value)
 	{
+		FinishEdit();
 		g_CurveKeyDrag = false;
 		g_GestureStart.reset();
-		g_CancelGesture = false;
 		g_GraphRightCtrlHeld = false;
-		FinishEdit();
 	}
 	g_Open = value;
 	if (!value)
@@ -86,6 +119,8 @@ bool IsMouseLook()
 }
 void SetMouseLook(bool value)
 {
+	if (value && !g_MouseLook)
+		CancelEditGesture();
 	g_MouseLook = value;
 }
 static void HistoryObserve()
@@ -98,8 +133,8 @@ void BeginEdit()
 }
 void FinishEdit()
 {
-	ResetSpeedDrag();
-	g_Hook_VClient_RenderView.m_CamPaths.FinishEdit();
+	if (!CancelEditGesture())
+		g_Hook_VClient_RenderView.m_CamPaths.FinishEdit();
 	UpdateRecovery(false);
 }
 void UpdateHistory()
@@ -110,6 +145,7 @@ void UpdateHistory()
 }
 void HistoryUndo(bool redo)
 {
+	CancelEditGesture();
 	ResetSpeedDrag();
 	g_CurveKeyDrag = false;
 	g_GestureStart.reset();
@@ -387,6 +423,8 @@ struct CurveSamples
 			add(modifier.End);
 			add(modifier.Begin + modifier.FadeIn);
 			add(modifier.End - modifier.FadeOut);
+			for (const auto &key : modifier.Envelope)
+				add(modifier.Begin + (modifier.End - modifier.Begin) * key.Time);
 		}
 		std::sort(Times.begin(), Times.end());
 		Times.erase(std::unique(Times.begin(), Times.end()), Times.end());
@@ -504,6 +542,7 @@ static void PathChanged(void *)
 }
 bool PreviewCapture(bool replace)
 {
+	CancelEditGesture();
 	BeginEdit();
 	auto &path = g_Hook_VClient_RenderView.m_CamPath;
 	double x, y, z, p, yaw, roll;
@@ -556,6 +595,7 @@ bool PreviewCapture(bool replace)
 }
 bool PreviewHold(bool clear)
 {
+	CancelEditGesture();
 	if (g_LockKeyTimes)
 	{
 		g_DocumentStatus = "Key times are locked; unlock them to edit holds.";
@@ -583,10 +623,12 @@ bool PreviewHold(bool clear)
 }
 void PreviewSelectAll()
 {
+	CancelEditGesture();
 	g_Hook_VClient_RenderView.m_CamPath.SelectAll();
 }
 bool PreviewAnchor()
 {
+	CancelEditGesture();
 	for (bool locked : g_CurveLocked)
 		if (locked)
 		{
@@ -908,6 +950,7 @@ static void DrawSpeedProfile(CamPath &path)
 			hitPoint = true;
 			if (ImGui::IsMouseClicked(0) && !g_LockKeyTimes)
 			{
+				EnsureEditGesture();
 				g_SpeedDrag.Index = (int)i;
 				g_SpeedDrag.PathId = owner;
 				g_SpeedDrag.Revision = path.GetRevision();
@@ -974,11 +1017,118 @@ static void DrawSpeedProfile(CamPath &path)
 	if (g_LockKeyTimes)
 		ImGui::TextDisabled("Unlock key times to edit the speed profile or retime this path.");
 }
+static bool DrawModifierEnvelope(CamPath::NoiseModifier &modifier)
+{
+	if (!ImGui::TreeNode("Strength envelope"))
+		return false;
+	static int dragged = -1, ownerModifier = -1;
+	static unsigned long long owner = 0;
+	const auto pathId =
+		g_Hook_VClient_RenderView.m_CamPaths.GetId(g_Hook_VClient_RenderView.m_CamPaths.GetActive());
+	if (!g_GestureStart || owner != pathId || ownerModifier != g_ModifierSelection || g_CancelGesture)
+		dragged = -1;
+	auto keys = modifier.Envelope;
+	if (keys.empty())
+		keys = {{0, 1}, {1, 1}};
+	bool changed = false, reset = false;
+	if (ImGui::Button("Reset envelope"))
+	{
+		modifier.Envelope.clear();
+		keys = {{0, 1}, {1, 1}};
+		dragged = -1;
+		changed = true;
+		reset = true;
+	}
+	const auto origin = ImGui::GetCursorScreenPos();
+	const ImVec2 size((std::max)(32.0f, ImGui::GetContentRegionAvail().x), 90);
+	ImGui::InvisibleButton("##modifier_envelope", size);
+	auto &io = ImGui::GetIO();
+	auto *draw = ImGui::GetWindowDrawList();
+	auto point = [&](const CamPath::ModifierKey &key)
+	{
+		return ImVec2(origin.x + 8 + (size.x - 16) * (float)key.Time,
+					  origin.y + size.y - 8 - (size.y - 16) * (float)key.Value);
+	};
+	draw->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
+	draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(18, 22, 26, 255));
+	for (size_t i = 1; i < keys.size(); ++i)
+	{
+		const auto a = point(keys[i - 1]), b = point(keys[i]);
+		ImVec2 last = a;
+		for (int sample = 1; sample <= 32; ++sample)
+		{
+			const double u = sample / 32.0, weight = u * u * u * (10 + u * (-15 + 6 * u));
+			const ImVec2 next(a.x + (b.x - a.x) * (float)u, a.y + (b.y - a.y) * (float)weight);
+			draw->AddLine(last, next, IM_COL32(160, 120, 240, 255), 2);
+			last = next;
+		}
+	}
+	bool hit = false;
+	for (size_t i = 0; i < keys.size(); ++i)
+	{
+		const auto p = point(keys[i]);
+		draw->AddCircleFilled(p, 4, IM_COL32(255, 210, 90, 255));
+		if (ImGui::IsItemHovered() && std::abs(io.MousePos.x - p.x) < 8 && std::abs(io.MousePos.y - p.y) < 8)
+		{
+			hit = true;
+			if (ImGui::IsMouseClicked(0))
+			{
+				EnsureEditGesture();
+				dragged = (int)i;
+				owner = pathId;
+				ownerModifier = g_ModifierSelection;
+			}
+			if (ImGui::IsMouseClicked(1) && i && i + 1 < keys.size())
+			{
+				keys.erase(keys.begin() + i);
+				changed = true;
+				dragged = -1;
+				break;
+			}
+		}
+	}
+	draw->PopClipRect();
+	if (dragged >= 0 && ImGui::IsMouseDragging(0) && !g_CancelGesture && (size_t)dragged < keys.size())
+	{
+		auto &key = keys[dragged];
+		key.Value = std::clamp(double(origin.y + size.y - 8 - io.MousePos.y) / (size.y - 16), 0.0, 1.0);
+		if (dragged && (size_t)dragged + 1 < keys.size())
+		{
+			const double margin = (std::min)(.001, (keys[dragged + 1].Time - keys[dragged - 1].Time) * .25);
+			key.Time = std::clamp(double(io.MousePos.x - origin.x - 8) / (size.x - 16),
+								  keys[dragged - 1].Time + margin, keys[dragged + 1].Time - margin);
+		}
+		changed = true;
+	}
+	if (!hit && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) && keys.size() < 128)
+	{
+		CamPath::ModifierKey key{
+			std::clamp(double(io.MousePos.x - origin.x - 8) / (size.x - 16), .001, .999),
+			std::clamp(double(origin.y + size.y - 8 - io.MousePos.y) / (size.y - 16), 0.0, 1.0)};
+		auto at = std::lower_bound(keys.begin(), keys.end(), key.Time,
+								   [](const CamPath::ModifierKey &a, double t) { return a.Time < t; });
+		if (at != keys.end() && at->Time - key.Time > .001 &&
+			(at == keys.begin() || key.Time - std::prev(at)->Time > .001))
+		{
+			keys.insert(at, key);
+			changed = true;
+		}
+	}
+	if (!ImGui::IsMouseDown(0))
+		dragged = -1;
+	if (changed && !reset)
+		modifier.Envelope = keys;
+	ImGui::TextDisabled(
+		"X: normalized range time | Y: strength. Drag, double-click to add, right-click to remove.");
+	ImGui::TreePop();
+	return changed;
+}
+
 static void DrawModifierControls(CamPath &path)
 {
 	if (!ImGui::CollapsingHeader("Range modifiers"))
 		return;
-	ImGui::BeginChild("Modifier controls", ImVec2(0, 215), true);
+	ImGui::BeginChild("Modifier controls", ImVec2(0, 300), true);
 	if (ImGui::Button(g_ModifierRangeTool ? "Finish range tool" : "Draw modifier range"))
 		g_ModifierRangeTool = !g_ModifierRangeTool;
 	ImGui::SameLine();
@@ -1012,52 +1162,101 @@ static void DrawModifierControls(CamPath &path)
 	}
 
 	auto modifiers = path.GetModifiers();
-	if (ImGui::Button("Add noise to range"))
+	static int newType = 0;
+	const char *types[] = {"Noise", "Oscillation", "Smooth / stabilize", "Spring"};
+	ImGui::Combo("New modifier type", &newType, types, 4);
+	const std::string addLabel =
+		std::string("Add ") + CamPath::ModifierTypeName((CamPath::ModifierType)newType) + " to range";
+	if (ImGui::Button(addLabel.c_str()))
 	{
 		CamPath::NoiseModifier m;
+		m.Type = (CamPath::ModifierType)newType;
 		m.Begin = g_ModifierBegin;
 		m.End = g_ModifierEnd;
 		m.FadeIn = m.FadeOut = (std::max)(0.0, (m.End - m.Begin) * 0.15);
 		for (int ch = 0; ch < 7; ++ch)
 			if (g_CurveShow[ch] && (g_CurveFocusChannel < 0 || g_CurveFocusChannel == ch))
-				m.Amplitude[ch] = ch < 3 ? 3 : 1;
+				m.Amplitude[ch] = newType >= 2 ? .75 : ch < 3 ? 3 : 1;
 		modifiers.push_back(m);
 		if (path.SetModifiers(modifiers))
 			g_ModifierSelection = (int)modifiers.size() - 1;
 		else
-			g_DocumentStatus = "Choose a finite range with begin before end (maximum 64 modifiers).";
+			g_DocumentStatus =
+				"Choose a finite range with begin before end (maximum 64 modifiers, eight active filters).";
 	}
 	if (!modifiers.empty())
 	{
 		g_ModifierSelection = std::clamp(g_ModifierSelection, 0, (int)modifiers.size() - 1);
-		const auto label = "Noise " + std::to_string(g_ModifierSelection + 1);
+		const auto label = std::string(CamPath::ModifierTypeName(modifiers[g_ModifierSelection].Type)) + " " +
+						   std::to_string(g_ModifierSelection + 1);
 		if (ImGui::BeginCombo("Modifier", label.c_str()))
 		{
 			for (size_t i = 0; i < modifiers.size(); ++i)
-				if (ImGui::Selectable(("Noise " + std::to_string(i + 1)).c_str(),
+				if (ImGui::Selectable((std::string(CamPath::ModifierTypeName(modifiers[i].Type)) + " " +
+									   std::to_string(i + 1))
+										  .c_str(),
 									  (int)i == g_ModifierSelection))
 					g_ModifierSelection = (int)i;
 			ImGui::EndCombo();
 		}
 		auto &m = modifiers[g_ModifierSelection];
-		bool changed = ImGui::Checkbox("Enabled##noise", &m.Enabled);
+		int type = (int)m.Type;
+		bool changed = ImGui::Combo("Modifier type", &type, types, 4);
+		if (changed)
+		{
+			m.Type = (CamPath::ModifierType)type;
+			if (type >= 2)
+			{
+				m.CameraSpace = false;
+				for (auto &amplitude : m.Amplitude)
+					amplitude = std::clamp(std::abs(amplitude), 0.0, 1.0);
+			}
+		}
+		changed |= ImGui::Checkbox("Enabled##noise", &m.Enabled);
 		ImGui::SameLine();
+		ImGui::BeginDisabled(type >= 2);
 		changed |= ImGui::Checkbox("Camera-space position", &m.CameraSpace);
+		ImGui::EndDisabled();
+		const double strengthMin = 0, strengthMax = 1;
+		changed |= ImGui::SliderScalar("Modifier strength", ImGuiDataType_Double, &m.Strength, &strengthMin,
+									   &strengthMax, "%.3f");
 		changed |= ImGui::InputDouble("Begin##noise", &m.Begin, 0, 0, "%.4f");
 		changed |= ImGui::InputDouble("End##noise", &m.End, 0, 0, "%.4f");
 		changed |= ImGui::InputDouble("Fade in (s)", &m.FadeIn, 0, 0, "%.4f");
 		changed |= ImGui::InputDouble("Fade out (s)", &m.FadeOut, 0, 0, "%.4f");
-		changed |= ImGui::InputDouble("Frequency (Hz)", &m.Frequency, 0, 0, "%.3f");
+		if (type != 2)
+			changed |= ImGui::InputDouble("Frequency (Hz)", &m.Frequency, 0, 0, "%.3f");
+		if (type == 0)
+		{
+			int octaves = (int)m.Octaves;
+			if (ImGui::SliderInt("Noise octaves", &octaves, 1, 8))
+			{
+				m.Octaves = (unsigned)octaves;
+				changed = true;
+			}
+			changed |= ImGui::InputDouble("Noise roughness", &m.Roughness, 0, 0, "%.3f");
+		}
+		if (type == 1)
+			changed |= ImGui::InputDouble("Phase (cycles)", &m.Phase, 0, 0, "%.3f");
+		if (type == 2)
+			changed |= ImGui::InputDouble("Smoothing window (s)", &m.Window, 0, 0, "%.3f");
+		if (type == 3)
+			changed |= ImGui::InputDouble("Spring damping", &m.Damping, 0, 0, "%.3f");
 		int seed = (int)m.Seed;
 		if (ImGui::InputInt("Seed", &seed) && seed >= 0)
 		{
 			m.Seed = (unsigned)seed;
 			changed = true;
 		}
-		const char *names[] = {"X noise (units)",	"Y noise (units)", "Z noise (units)", "FOV noise (deg)",
-							   "Pitch noise (deg)", "Yaw noise (deg)", "Roll noise (deg)"};
+		const char *names[] = {"X amplitude (units)", "Y amplitude (units)",   "Z amplitude (units)",
+							   "FOV amplitude (deg)", "Pitch amplitude (deg)", "Yaw amplitude (deg)",
+							   "Roll amplitude (deg)"};
+		const char *filterNames[] = {"X strength",	   "Y strength",   "Z strength",   "FOV strength",
+									 "Pitch strength", "Yaw strength", "Roll strength"};
 		for (int ch = 0; ch < 7; ++ch)
-			changed |= ImGui::InputDouble(names[ch], &m.Amplitude[ch], 0, 0, "%.3f");
+			changed |=
+				ImGui::InputDouble(type >= 2 ? filterNames[ch] : names[ch], &m.Amplitude[ch], 0, 0, "%.3f");
+		changed |= DrawModifierEnvelope(m);
 		if (ImGui::Button("Remove modifier"))
 		{
 			modifiers.erase(modifiers.begin() + g_ModifierSelection);
@@ -1083,9 +1282,11 @@ static void DrawModifierControls(CamPath &path)
 		if (changed && !path.SetModifiers(modifiers))
 			g_DocumentStatus = "Modifier edit rejected: check range, fade lengths, frequency and amplitude.";
 	}
-	ImGui::TextWrapped("Noise affects only its shaded range, including holds when explicitly covered. The "
+	ImGui::TextWrapped("Modifiers affect only their shaded range, including holds when covered. "
+					   "Smooth/spring channel strengths use 0..1. The "
 					   "dim graph is the authored curve; the bright graph includes modifiers. Seeds give "
-					   "identical results when scrubbing or recording.");
+					   "identical results when scrubbing or recording. Oscillation phase is in cycles; "
+					   "spring damping 1 is critical damping.");
 	ImGui::EndChild();
 }
 static void DrawSpeedControls()
@@ -1680,6 +1881,8 @@ static void DrawCurveEditor()
 					ImGui::SetCursorScreenPos(ImVec2(x - 4, y));
 					const auto edgeId = "##modifier_edge_" + std::to_string(i) + "_" + std::to_string(edge);
 					ImGui::InvisibleButton(edgeId.c_str(), ImVec2(8, 12));
+					if (ImGui::IsItemActivated())
+						EnsureEditGesture();
 					if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0) && !g_CancelGesture)
 					{
 						auto modifiers = g_Hook_VClient_RenderView.m_CamPath.GetModifiers();
@@ -2070,189 +2273,43 @@ static void DrawCurveEditor()
 						dl->AddCircleFilled(P1, r, chHandleColor(ch));
 						dl->AddCircleFilled(P2, r, chHandleColor(ch));
 
-						// Drag handles (vertical only) – your existing logic, but use channel `ch`
-						// Left handle
-						ImGui::SetCursorScreenPos(ImVec2(P1.x - 6, P1.y - 6));
-						char id1[48];
-						snprintf(id1, sizeof(id1), "##h1b_%zu_ch%d", i, ch);
-						ImGui::InvisibleButton(id1, ImVec2(12, 12));
-						if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0))
+						for (int side = 0; side < 2; ++side)
 						{
-							ImVec2 mp = ImGui::GetIO().MousePos;
-							float newY =
-								(std::max)(p0.y + g_CurvePadding, (std::min)(mp.y, p1.y - g_CurvePadding));
-
-							// invert mapping helper (per-channel or active mapping)
-							auto fromYToValue = [&](int chX) -> double
+							const bool outgoing = side == 0;
+							const ImVec2 handle = outgoing ? P1 : P2;
+							ImGui::SetCursorScreenPos(ImVec2(handle.x - 6, handle.y - 6));
+							char id[48];
+							snprintf(id, sizeof(id), outgoing ? "##h1b_%zu_ch%d" : "##h2b_%zu_ch%d", i, ch);
+							ImGui::InvisibleButton(id, ImVec2(12, 12));
+							if (ImGui::IsItemActivated())
+								EnsureEditGesture();
+							if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0) && !g_CancelGesture)
 							{
-								double yNorm =
-									(p1.y - newY - g_CurvePadding) / (canvasSize.y - 2 * g_CurvePadding);
-								double norm = 2.0 * ((yNorm - 0.5) / g_CurveValueScale + g_CurveValueOffset);
-								if (norm < -10.0)
-									norm = -10.0;
-								if (norm > 10.0)
-									norm = 10.0;
-								const bool perChannel = g_CurveNormalize;
-								int ach2 = anchorCh;
-								return perChannel ? (vCenter[chX] + norm * vHalf[chX])
-												  : (vCenter[ach2] + norm * vHalf[ach2]);
-							};
-
-							auto mapChToEnum = [&](int chX) -> CamPath::Channel
-							{
-								return (chX == 0   ? CamPath::CH_X
-										: chX == 1 ? CamPath::CH_Y
-										: chX == 2 ? CamPath::CH_Z
-										: chX == 3 ? CamPath::CH_FOV
-												   : (chX == 4	 ? CamPath::CH_RPITCH
-													  : chX == 5 ? CamPath::CH_RYAW
-																 : CamPath::CH_RROLL));
-							};
-
-							bool prevDraw = g_CampathDrawer.Draw_get();
-							g_CampathDrawer.Draw_set(false);
-							g_Hook_VClient_RenderView.m_CamPath.SelectNone();
-							g_Hook_VClient_RenderView.m_CamPath.SelectAdd((size_t)i, (size_t)i);
-
-							ImGuiIO &io = ImGui::GetIO();
-							bool altHeld = io.KeyAlt || ((io.KeyMods & ImGuiMod_Alt) != 0);
-							bool shiftHeld =
-								(io.KeyShift || ((io.KeyMods & ImGuiMod_Shift) != 0)) &&
-								g_Hook_VClient_RenderView.m_CamPath.GetAutoTangentSettings().Method !=
-									AutoTangentMethod::MinimumJerk;
-
-							CamPath::Channel cch2 = mapChToEnum(ch);
-							if (shiftHeld)
-							{
-								double tMouse = fromX(ImGui::GetIO().MousePos.x);
-								double newW = (tMouse - t0) / (h / 3.0);
-								newW = (std::max)(0.01, (std::min)(newW, 5.0));
-								g_Hook_VClient_RenderView.m_CamPath.SetTangentMode(
-									cch2, false, true, (unsigned char)CamPath::TM_FREE);
-								g_Hook_VClient_RenderView.m_CamPath.SetTangentMode(
-									cch2, !altHeld, true, (unsigned char)CamPath::TM_FREE);
-								g_Hook_VClient_RenderView.m_CamPath.SetTangent(cch2, !altHeld, true, mOut,
-																			   mOut);
-								g_Hook_VClient_RenderView.m_CamPath.SetTangentWeight(cch2, false, true, 1.0,
-																					 newW);
-							}
-							else
-							{
-								double baseY0 = y0;
-								double newV = fromYToValue(ch);
-								if (ch >= 4)
-								{
-									newV = UnwrapAngleNear(newV, baseY0);
-								}
-								double newSlope = (newV - baseY0) / (wOut * h / 3.0);
-								if (altHeld)
-								{
-									g_Hook_VClient_RenderView.m_CamPath.SetTangentMode(
-										cch2, false, true, (unsigned char)CamPath::TM_FREE);
-									g_Hook_VClient_RenderView.m_CamPath.SetTangent(cch2, false, true, 0.0,
-																				   newSlope);
-								}
+								const bool linked = !io.KeyAlt;
+								const bool editWeight =
+									io.KeyShift && curvePath.GetAutoTangentSettings().Method !=
+													   AutoTangentMethod::MinimumJerk;
+								double weight = outgoing ? wOut : wIn, slope = outgoing ? mOut : mIn;
+								if (editWeight)
+									weight = std::clamp(
+										(outgoing ? fromX(io.MousePos.x) - t0 : t1 - fromX(io.MousePos.x)) /
+											(h / 3),
+										0.01, 5.0);
 								else
 								{
-									g_Hook_VClient_RenderView.m_CamPath.SetTangentMode(
-										cch2, true, true, (unsigned char)CamPath::TM_FREE);
-									g_Hook_VClient_RenderView.m_CamPath.SetTangent(cch2, true, true, newSlope,
-																				   newSlope);
+									const float y = std::clamp(io.MousePos.y, p0.y + g_CurvePadding,
+															   p1.y - g_CurvePadding);
+									double value = fromYValue(ch, y);
+									const double base = outgoing ? y0 : y1;
+									if (ch >= 4)
+										value = UnwrapAngleNear(value, base);
+									slope = (outgoing ? value - base : base - value) /
+											((std::max)(1e-6, weight) * h / 3);
 								}
+								if (!curvePath.EditTangent(outgoing ? i : i + 1, (CamPath::Channel)ch,
+														   outgoing, slope, weight, linked, editWeight))
+									g_DocumentStatus = "Handle edit rejected; original key retained.";
 							}
-							g_CampathDrawer.Draw_set(prevDraw);
-							g_SequencerNeedsRefresh = true;
-						}
-
-						// Right handle
-						ImGui::SetCursorScreenPos(ImVec2(P2.x - 6, P2.y - 6));
-						char id2[48];
-						snprintf(id2, sizeof(id2), "##h2b_%zu_ch%d", i, ch);
-						ImGui::InvisibleButton(id2, ImVec2(12, 12));
-						if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0))
-						{
-							ImVec2 mp = ImGui::GetIO().MousePos;
-							float newY =
-								(std::max)(p0.y + g_CurvePadding, (std::min)(mp.y, p1.y - g_CurvePadding));
-							auto fromYToValue = [&](int chX) -> double
-							{
-								double yNorm =
-									(p1.y - newY - g_CurvePadding) / (canvasSize.y - 2 * g_CurvePadding);
-								double norm = 2.0 * ((yNorm - 0.5) / g_CurveValueScale + g_CurveValueOffset);
-								if (norm < -10.0)
-									norm = -10.0;
-								if (norm > 10.0)
-									norm = 10.0;
-								const bool perChannel = g_CurveNormalize;
-								int ach2 = anchorCh;
-								return perChannel ? (vCenter[chX] + norm * vHalf[chX])
-												  : (vCenter[ach2] + norm * vHalf[ach2]);
-							};
-
-							auto mapChToEnum = [&](int chX) -> CamPath::Channel
-							{
-								return (chX == 0   ? CamPath::CH_X
-										: chX == 1 ? CamPath::CH_Y
-										: chX == 2 ? CamPath::CH_Z
-										: chX == 3 ? CamPath::CH_FOV
-												   : (chX == 4	 ? CamPath::CH_RPITCH
-													  : chX == 5 ? CamPath::CH_RYAW
-																 : CamPath::CH_RROLL));
-							};
-
-							bool prevDraw = g_CampathDrawer.Draw_get();
-							g_CampathDrawer.Draw_set(false);
-							g_Hook_VClient_RenderView.m_CamPath.SelectNone();
-							g_Hook_VClient_RenderView.m_CamPath.SelectAdd((size_t)(i + 1), (size_t)(i + 1));
-
-							ImGuiIO &io2 = ImGui::GetIO();
-							bool altHeld2 = io2.KeyAlt || ((io2.KeyMods & ImGuiMod_Alt) != 0);
-							bool shiftHeld2 =
-								(io2.KeyShift || ((io2.KeyMods & ImGuiMod_Shift) != 0)) &&
-								g_Hook_VClient_RenderView.m_CamPath.GetAutoTangentSettings().Method !=
-									AutoTangentMethod::MinimumJerk;
-
-							CamPath::Channel cch2 = mapChToEnum(ch);
-							if (shiftHeld2)
-							{
-								double tMouse = fromX(ImGui::GetIO().MousePos.x);
-								double newW = (t1 - tMouse) / (h / 3.0);
-								newW = (std::max)(0.01, (std::min)(newW, 5.0));
-								g_Hook_VClient_RenderView.m_CamPath.SetTangentMode(
-									cch2, true, false, (unsigned char)CamPath::TM_FREE);
-								g_Hook_VClient_RenderView.m_CamPath.SetTangentMode(
-									cch2, true, !altHeld2, (unsigned char)CamPath::TM_FREE);
-								g_Hook_VClient_RenderView.m_CamPath.SetTangent(cch2, true, !altHeld2, mIn,
-																			   mIn);
-								g_Hook_VClient_RenderView.m_CamPath.SetTangentWeight(cch2, true, false, newW,
-																					 1.0);
-							}
-							else
-							{
-								double baseY1 = y1;
-								double newV = fromYToValue(ch);
-								if (ch >= 4)
-								{
-									newV = UnwrapAngleNear(newV, baseY1);
-								}
-								double newSlope = (baseY1 - newV) / (wIn * h / 3.0);
-								if (altHeld2)
-								{
-									g_Hook_VClient_RenderView.m_CamPath.SetTangentMode(
-										cch2, true, false, (unsigned char)CamPath::TM_FREE);
-									g_Hook_VClient_RenderView.m_CamPath.SetTangent(cch2, true, false,
-																				   newSlope, 0.0);
-								}
-								else
-								{
-									g_Hook_VClient_RenderView.m_CamPath.SetTangentMode(
-										cch2, true, true, (unsigned char)CamPath::TM_FREE);
-									g_Hook_VClient_RenderView.m_CamPath.SetTangent(cch2, true, true, newSlope,
-																				   newSlope);
-								}
-							}
-							g_CampathDrawer.Draw_set(prevDraw);
-							g_SequencerNeedsRefresh = true;
 						}
 					} // active-channel handles
 				} // channels
@@ -2348,6 +2405,7 @@ static void DrawCurveEditor()
 						}
 						if (!g_ModifierRangeTool && ImGui::IsItemClicked())
 						{
+							EnsureEditGesture();
 							auto &path = g_Hook_VClient_RenderView.m_CamPath;
 							auto selected = path.CaptureState().Keys;
 							if (!io.KeyCtrl && !v.Selected)
@@ -2552,10 +2610,17 @@ void Draw()
 		subscribed = true;
 	}
 	HistoryObserve();
+	auto &document = g_Hook_VClient_RenderView.m_CamPaths;
+	if (g_GestureStart &&
+		(g_GestureOwner != document.GetId(document.GetActive()) ||
+		 g_GestureRevision != g_Hook_VClient_RenderView.m_CamPath.GetRevision() || IsMouseLook()))
+		CancelEditGesture();
 	if (ImGui::IsMouseClicked(0) && !ImGui::GetIO().WantTextInput)
 	{
 		g_GestureStart =
 			std::make_unique<CamPathCollection::State>(g_Hook_VClient_RenderView.m_CamPaths.CaptureState());
+		g_GestureOwner = document.GetId(document.GetActive());
+		g_GestureRevision = g_Hook_VClient_RenderView.m_CamPath.GetRevision();
 		g_CancelGesture = false;
 	}
 	if (g_GestureStart && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && ImGui::IsMouseDown(0))
@@ -2591,7 +2656,10 @@ void Draw()
 		if (ImGui::IsKeyPressed(ImGuiKey_E, false))
 			PreviewCapture(ImGui::GetIO().KeyShift);
 		if (ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+		{
+			CancelEditGesture();
 			g_Hook_VClient_RenderView.m_CamPath.DeleteSelected();
+		}
 		if (ImGui::IsKeyPressed(ImGuiKey_Y, false))
 			PreviewHold(ImGui::GetIO().KeyShift);
 
@@ -2730,6 +2798,25 @@ void Draw()
 			if (ImGui::Button("Anchor selection here"))
 				PreviewAnchor();
 			DrawSeekSettings();
+			if (ImGui::CollapsingHeader("Demo fixes"))
+			{
+				static double interpolation = .1;
+				bool active = MirvFix_GetPlayerInterpolation() >= 0;
+				if (active)
+					interpolation = MirvFix_GetPlayerInterpolation();
+				ImGui::BeginDisabled(!active && !MirvFix_PlayerInterpolationAvailable());
+				if (ImGui::Checkbox("Smooth player movement", &active) &&
+					!MirvFix_SetPlayerInterpolation(active ? interpolation : -1))
+					g_DocumentStatus =
+						"Player interpolation is unavailable or the engine rejected its settings.";
+				if (ImGui::InputDouble("Player interpolation (seconds)", &interpolation, 0, 0, "%.3f") &&
+					active && !MirvFix_SetPlayerInterpolation(interpolation))
+					g_DocumentStatus = "Use 0.001..1 seconds; existing interpolation settings retained.";
+				ImGui::EndDisabled();
+				ImGui::TextWrapped("Uses TF2's existing movement interpolation. Adds presentation delay; it "
+								   "cannot add missing snapshots or fix limb-animation glitches. Restores "
+								   "settings when the demo ends. Default suggestion: 0.1 seconds.");
+			}
 
 			auto &path = g_Hook_VClient_RenderView.m_CamPath;
 			DrawInterpolationSettings(path);
@@ -4170,14 +4257,11 @@ void Draw()
 			bool snap = ImGui::GetIO().KeyCtrl;
 			float snapTranslate[3] = {1, 1, 1};
 			float snapRotate = 5.0f;
-			static bool s_hasModelOverride = false;
-			static double s_overrideKeyTime = 0.0;
-			static float s_modelOverride[16];
-			if (s_hasModelOverride && fabs(s_overrideKeyTime - g_LastCampathCtx.time) < 1e-9)
+			if (g_GizmoDrag.HasModel && fabs(g_GizmoDrag.KeyTime - g_LastCampathCtx.time) < 1e-9)
 				for (int i = 0; i < 16; ++i)
-					model[i] = s_modelOverride[i];
+					model[i] = g_GizmoDrag.Model[i];
 			else
-				s_hasModelOverride = false;
+				g_GizmoDrag.HasModel = false;
 			ImGuizmo::Enable(!g_CancelGesture && !IsMouseLook() &&
 							 (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) || ImGuizmo::IsUsing()));
 			bool changed = ImGuizmo::Manipulate(
@@ -4185,27 +4269,28 @@ void Draw()
 				snap ? (g_GizmoOp == ImGuizmo::ROTATE ? &snapRotate : snapTranslate) : nullptr);
 			(void)changed; // suppress warn
 			bool usingNow = ImGuizmo::IsUsing();
-			static bool wasUsing = false;
-			static bool dragChanged = false;
+			if (usingNow && !g_GizmoDrag.WasUsing)
+				EnsureEditGesture();
 			if (usingNow)
 			{
 				for (int i = 0; i < 16; ++i)
-					s_modelOverride[i] = model[i];
-				s_hasModelOverride = true;
-				s_overrideKeyTime = g_LastCampathCtx.time;
+					g_GizmoDrag.Model[i] = model[i];
+				g_GizmoDrag.HasModel = true;
+				g_GizmoDrag.KeyTime = g_LastCampathCtx.time;
 				if (changed)
-					dragChanged = true;
+					g_GizmoDrag.Changed = true;
 			}
 			if (g_CancelGesture)
 			{
-				dragChanged = false;
-				s_hasModelOverride = false;
-				wasUsing = false;
+				g_GizmoDrag.Changed = false;
+				g_GizmoDrag.HasModel = false;
+				g_GizmoDrag.WasUsing = false;
 			}
-			if (!g_CancelGesture && wasUsing && !usingNow && (dragChanged || s_hasModelOverride))
+			if (!g_CancelGesture && g_GizmoDrag.WasUsing && !usingNow &&
+				(g_GizmoDrag.Changed || g_GizmoDrag.HasModel))
 			{
 				float t[3], r_dummy[3], s_dummy[3];
-				const float *finalModel = s_hasModelOverride ? s_modelOverride : model;
+				const float *finalModel = g_GizmoDrag.HasModel ? g_GizmoDrag.Model : model;
 				ImGuizmo::DecomposeMatrixToComponents(finalModel, t, r_dummy, s_dummy);
 				// Back to Source axes
 				double sx = (double)t[2];
@@ -4279,14 +4364,19 @@ void Draw()
 						}()))
 					g_DocumentStatus = "Gizmo edit conflicts with a neighbouring hold; edit rejected.";
 
-				dragChanged = false;
-				s_hasModelOverride = false;
+				g_GizmoDrag.Changed = false;
+				g_GizmoDrag.HasModel = false;
 			}
-			wasUsing = usingNow;
+			g_GizmoDrag.WasUsing = usingNow;
 		}
 	}
 
 	DrawCurveEditor();
+	if (g_GestureStart)
+	{
+		g_GestureOwner = document.GetId(document.GetActive());
+		g_GestureRevision = g_Hook_VClient_RenderView.m_CamPath.GetRevision();
+	}
 	if (!ImGui::IsMouseDown(0))
 	{
 		g_GestureStart.reset();
