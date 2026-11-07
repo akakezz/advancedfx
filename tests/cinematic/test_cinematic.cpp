@@ -1430,11 +1430,142 @@ void modifierPersistenceAndExport()
 	}
 	std::filesystem::remove(classic);
 }
+
+void modifierCacheEdits()
+{
+	CamPath path;
+	populate(path);
+	path.SetDistanceTiming(true);
+	CamPath::Modifier noise;
+	noise.Begin = 0;
+	noise.End = 8;
+	noise.Frequency = 2;
+	noise.Octaves = 2;
+	for (auto &a : noise.Amplitude)
+		a = .3;
+	auto filter = noise;
+	filter.Type = CamPath::ModifierType::Smooth;
+	filter.Window = .3;
+	auto spring = filter;
+	spring.Type = CamPath::ModifierType::Spring;
+	spring.Frequency = 2;
+	std::vector<CamPath::Modifier> stack{noise, filter, spring, filter};
+	check(path.SetModifiers(stack), "Initialize cached modifier stack");
+	auto compare = [&]
+	{
+		CamPath fresh;
+		fresh.RestoreState(path.CaptureState());
+		for (int i = 0; i <= 30; ++i)
+		{
+			double time = 8.0 * i / 30;
+			auto a = path.Eval(time), b = fresh.Eval(time);
+			for (int ch = 0; ch < 7; ++ch)
+				near(CamPath::GetChannelValue(a, (CamPath::Channel)ch),
+					 CamPath::GetChannelValue(b, (CamPath::Channel)ch), 1e-8);
+		}
+	};
+	compare();
+	for (int step = 0; step < 30; ++step)
+	{
+		stack = path.GetModifiers();
+		switch (step % 15)
+		{
+		case 0:
+			stack.back().Strength = .2 + step * .01;
+			break;
+		case 1:
+			stack.back().Amplitude[0] = stack.back().Amplitude[4] = 0;
+			break;
+		case 2:
+			stack.back().Amplitude[0] = stack.back().Amplitude[4] = .7;
+			break;
+		case 3:
+			stack.back().Window = .4 + step * .001;
+			break;
+		case 4:
+			stack[1].Damping = .7;
+			stack[1].Type = CamPath::ModifierType::Spring;
+			break;
+		case 5:
+			stack[1].Enabled = !stack[1].Enabled;
+			break;
+		case 6:
+			stack.front().Amplitude[1] += .1;
+			break;
+		case 7:
+			stack.front().Frequency += 1;
+			break;
+		case 8:
+			std::swap(stack[0], stack[1]);
+			break;
+		case 9:
+			stack.pop_back();
+			break;
+		case 10:
+			stack.push_back(filter);
+			break;
+		case 11:
+		{
+			auto keys = path.CaptureState().Keys;
+			keys.begin()->second.X += 2;
+			path.ReplaceKeys(keys);
+			break;
+		}
+		case 12:
+			path.SetDistanceTiming(!path.GetDistanceTiming());
+			break;
+		case 13:
+			stack.back().Envelope = {{0, 1}, {.5, .4}, {1, 1}};
+			break;
+		case 14:
+			stack.erase(stack.begin() + 1);
+			stack.push_back(spring);
+			break;
+		}
+		check(path.SetModifiers(stack), "Modifier edits remain valid while cache is warm");
+		compare();
+	}
+	// Truncation invalidates snapshots of an old longer prefix before later growth.
+	stack = path.GetModifiers();
+	stack.back().Strength = .5;
+	path.SetModifiers(stack);
+	path.Eval(4);
+	stack.back().Strength = .6;
+	path.SetModifiers(stack);
+	path.Eval(4);
+	stack.resize(1);
+	path.SetModifiers(stack);
+	compare();
+	stack.push_back(filter);
+	stack.push_back(spring);
+	path.SetModifiers(stack);
+	compare();
+	path.SetModifiers({});
+	compare();
+	path.SetModifiers({filter});
+	compare();
+	path.SetModifiers({noise});
+	auto revision = path.GetPositionRevision();
+	noise.Amplitude[3] += 1;
+	noise.Amplitude[4] += 1;
+	path.SetModifiers({noise});
+	check(path.GetPositionRevision() == revision,
+		  "World-space noise angle/FOV edits retain trajectory samples");
+	noise.CameraSpace = true;
+	path.SetModifiers({noise});
+	revision = path.GetPositionRevision();
+	noise.Amplitude[4] += 1;
+	path.SetModifiers({noise});
+	check(path.GetPositionRevision() != revision,
+		  "Camera-space dependencies invalidate positional samples conservatively");
+	compare();
+}
 } // namespace
 int main()
 {
 	try
 	{
+		modifierCacheEdits();
 		continuity();
 		tangents();
 		profiles();

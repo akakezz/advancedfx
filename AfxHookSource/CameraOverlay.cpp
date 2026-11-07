@@ -1148,12 +1148,22 @@ static bool DrawModifierEnvelope(CamPath::NoiseModifier &modifier)
 // UI selection only: authored values continue through CamPath::SetModifiers validation/history.
 struct ModifierFieldSelection
 {
-	unsigned long long PathId = 0;
-	int Index = -1, Type = -1;
-	bool Selected[15] = {};
-	double Percent = 10;
+	unsigned long long PathId = 0, Revision = 0;
+	int Index = -1, Type = -1, Edited = -1;
+	bool Selected[15] = {}, Dragging = false;
+	float StartY = 0;
+	ImGuiID Input = 0;
 };
 static ModifierFieldSelection g_ModifierFields;
+static double &ModifierValue(CamPath::Modifier &modifier, int index)
+{
+	double *fields[] = {&modifier.Strength,		&modifier.FadeIn,		&modifier.FadeOut,
+						&modifier.Frequency,	&modifier.Roughness,	&modifier.Phase,
+						&modifier.Window,		&modifier.Damping,		&modifier.Amplitude[0],
+						&modifier.Amplitude[1], &modifier.Amplitude[2], &modifier.Amplitude[3],
+						&modifier.Amplitude[4], &modifier.Amplitude[5], &modifier.Amplitude[6]};
+	return *fields[index];
+}
 static ImU32 ModifierColor(size_t index, bool enabled = true)
 {
 	const ImU32 colors[] = {IM_COL32(150, 130, 240, 255), IM_COL32(80, 190, 220, 255),
@@ -1161,40 +1171,59 @@ static ImU32 ModifierColor(size_t index, bool enabled = true)
 							IM_COL32(220, 120, 170, 255), IM_COL32(180, 190, 90, 255)};
 	return enabled ? colors[index % 6] : IM_COL32(135, 135, 135, 255);
 }
-static void SelectModifierField(int index)
-{
-	const auto id = "##adjust_field_" + std::to_string(index);
-	ImGui::Checkbox(id.c_str(), &g_ModifierFields.Selected[index]);
-	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Include this field in the percentage adjustment below.");
-	ImGui::SameLine();
-}
 static bool ModifierField(int index, const char *label, double *value)
 {
-	SelectModifierField(index);
-	return ImGui::InputDouble(label, value, 0, 0, "%.4f");
+	auto &selection = g_ModifierFields;
+	auto &io = ImGui::GetIO();
+	const ImVec2 min = ImGui::GetCursorScreenPos();
+	const ImVec2 max(min.x + ImGui::CalcItemWidth(), min.y + ImGui::GetFrameHeight());
+	if (io.KeyShift && ImGui::IsMouseClicked(0) && ImGui::IsMouseHoveringRect(min, max))
+	{
+		std::fill(std::begin(selection.Selected), std::end(selection.Selected), false);
+		selection.Dragging = true;
+		selection.StartY = io.MousePos.y + ImGui::GetScrollY();
+		ImGui::ClearActiveID();
+	}
+	if (!io.KeyShift || !ImGui::IsMouseDown(0))
+		selection.Dragging = false;
+	if (selection.Dragging)
+	{
+		const float end = io.MousePos.y + ImGui::GetScrollY();
+		const float top = (std::min)(selection.StartY, end), bottom = (std::max)(selection.StartY, end);
+		selection.Selected[index] =
+			min.y + ImGui::GetScrollY() <= bottom && max.y + ImGui::GetScrollY() >= top;
+	}
+	ImGui::BeginDisabled(selection.Dragging);
+	// Commit on Enter, so typing an intermediate value never rebuilds a modifier stack.
+	const bool changed = ImGui::InputDouble(label, value, 0, 0, "%.4f", ImGuiInputTextFlags_EnterReturnsTrue);
+	if (ImGui::IsItemActivated() && !selection.Selected[index])
+	{
+		std::fill(std::begin(selection.Selected), std::end(selection.Selected), false);
+		selection.Selected[index] = true;
+	}
+	if (ImGui::IsItemActive())
+		selection.Input = ImGui::GetActiveID();
+	ImGui::EndDisabled();
+	if (selection.Selected[index])
+		ImGui::GetWindowDrawList()->AddRect(min, max, IM_COL32(255, 225, 90, 255), 2, 0, 2);
+	if (changed)
+		selection.Edited = index;
+	return changed;
 }
-static bool ScaleModifierFields(CamPath::Modifier &modifier, const bool *selected, double percent)
+static void ApplyModifierFields(CamPath::Modifier &modifier)
 {
-	if (!std::isfinite(percent) || percent < -100)
-		return false;
-	auto candidate = modifier;
-	double *fields[] = {&candidate.Strength,	 &candidate.FadeIn,		  &candidate.FadeOut,
-						&candidate.Frequency,	 &candidate.Roughness,	  &candidate.Phase,
-						&candidate.Window,		 &candidate.Damping,	  &candidate.Amplitude[0],
-						&candidate.Amplitude[1], &candidate.Amplitude[2], &candidate.Amplitude[3],
-						&candidate.Amplitude[4], &candidate.Amplitude[5], &candidate.Amplitude[6]};
-	for (int i = 0; i < 15; ++i)
-		if (selected[i])
-			*fields[i] *= 1 + percent / 100;
-	// Validate the complete candidate before touching any field. Stack limits are checked on commit.
-	if (!CamPath::ValidModifiers({candidate}))
-		return false;
-	modifier = std::move(candidate);
-	return true;
+	const auto &selection = g_ModifierFields;
+	if (selection.Edited < 0 || !selection.Selected[selection.Edited])
+		return;
+	const double value = ModifierValue(modifier, selection.Edited);
+	for (int index = 0; index < 15; ++index)
+		if (selection.Selected[index])
+			ModifierValue(modifier, index) = value;
 }
 static void DrawModifierControls(CamPath &path)
 {
+	if (!ImGui::IsMouseDown(0) || !ImGui::GetIO().KeyShift)
+		g_ModifierFields.Dragging = false;
 	if (!ImGui::CollapsingHeader("Range modifiers"))
 		return;
 	ImGui::BeginChild("Modifier controls", ImVec2(0, 300), true);
@@ -1299,16 +1328,29 @@ static void DrawModifierControls(CamPath &path)
 		if (g_ModifierFields.PathId != pathId || g_ModifierFields.Index != g_ModifierSelection ||
 			g_ModifierFields.Type != type)
 		{
+			if (g_ModifierFields.Input && ImGui::GetActiveID() == g_ModifierFields.Input)
+				ImGui::ClearActiveID();
 			g_ModifierFields = {};
 			g_ModifierFields.PathId = pathId;
 			g_ModifierFields.Index = g_ModifierSelection;
 			g_ModifierFields.Type = type;
 		}
-		ImGui::TextDisabled("Check numeric fields to adjust them together.");
-		const double strengthMin = 0, strengthMax = 1;
-		SelectModifierField(0);
-		changed |= ImGui::SliderScalar("Modifier strength", ImGuiDataType_Double, &m.Strength, &strengthMin,
-									   &strengthMax, "%.3f");
+		if (g_ModifierFields.Revision != path.GetRevision() && g_ModifierFields.Input &&
+			ImGui::GetActiveID() == g_ModifierFields.Input)
+			ImGui::ClearActiveID();
+		g_ModifierFields.Revision = path.GetRevision();
+		g_ModifierFields.Edited = -1;
+		if (g_ModifierFields.Dragging && ImGui::IsMouseDown(0))
+		{
+			const auto *window = ImGui::GetCurrentWindow();
+			const float direction = ImGui::GetIO().MousePos.y < window->InnerRect.Min.y + 12   ? -1.f
+									: ImGui::GetIO().MousePos.y > window->InnerRect.Max.y - 12 ? 1.f
+																							   : 0.f;
+			ImGui::SetScrollY(ImGui::GetScrollY() + direction * ImGui::GetIO().DeltaTime * 240);
+		}
+		ImGui::TextDisabled(
+			"Shift+drag across fields to select. Type into a selected field; Enter sets them all.");
+		changed |= ModifierField(0, "Modifier strength", &m.Strength);
 		changed |= ImGui::InputDouble("Begin##noise", &m.Begin, 0, 0, "%.4f");
 		changed |= ImGui::InputDouble("End##noise", &m.End, 0, 0, "%.4f");
 		changed |= ModifierField(1, "Fade in (s)", &m.FadeIn);
@@ -1347,25 +1389,7 @@ static void DrawModifierControls(CamPath &path)
 									 "Pitch strength", "Yaw strength", "Roll strength"};
 		for (int ch = 0; ch < 7; ++ch)
 			changed |= ModifierField(8 + ch, type >= 2 ? filterNames[ch] : names[ch], &m.Amplitude[ch]);
-		ImGui::InputDouble("Adjustment (%)", &g_ModifierFields.Percent, 0, 0, "%.2f");
-		bool anyField = false;
-		for (bool selected : g_ModifierFields.Selected)
-			anyField |= selected;
-		ImGui::BeginDisabled(!anyField);
-		if (ImGui::Button("Adjust selected fields"))
-		{
-			if (ScaleModifierFields(m, g_ModifierFields.Selected, g_ModifierFields.Percent))
-				changed = true;
-			else
-				g_DocumentStatus = "Adjustment rejected; all fields were retained. Check parameter limits.";
-		}
-		ImGui::EndDisabled();
-		ImGui::SameLine();
-		if (ImGui::Button("Clear field selection"))
-			for (auto &selected : g_ModifierFields.Selected)
-				selected = false;
-		ImGui::TextDisabled(
-			"+10%% multiplies checked fields by 1.1; zero stays zero. Range/seed/octaves edit separately.");
+		ApplyModifierFields(m);
 		changed |= DrawModifierEnvelope(m);
 		if (ImGui::Button("Remove modifier"))
 		{
@@ -1392,6 +1416,7 @@ static void DrawModifierControls(CamPath &path)
 		}
 		if (changed && !path.SetModifiers(modifiers))
 			g_DocumentStatus = "Modifier edit rejected: check range, fade lengths, frequency and amplitude.";
+		g_ModifierFields.Revision = path.GetRevision();
 	}
 	ImGui::TextWrapped("Modifiers affect only their shaded range, including holds when covered. "
 					   "Smooth/spring channel strengths use 0..1. The "

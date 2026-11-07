@@ -85,6 +85,7 @@ struct FakeCvar{std::map<std::string,FakeConVar> Vars{{"cl_interpolate",{1}},{"c
 namespace SOURCESDK{namespace CSS{FakeCvar*g_pCVar=&fakeCvar;}namespace L4D2{FakeCvar*g_pCVar=nullptr;}}
 namespace AfxHookSource{namespace Gui{bool SetOverlayOpen(bool b){CameraOverlay::SetOpen(b);return true;}}namespace CameraOverlay{namespace Recording{const char*GetName(){return "test";}void SetName(const char*){}bool ScreenEnabled(){return true;}bool IsActive(){return false;}}}}
 struct Rect{ImVec2 Min,Max;};std::map<std::string,Rect>widgets;
+bool trackDouble(const char*l,double*v,double step=0,double fast=0,const char*format="%.6f",ImGuiInputTextFlags flags=0){bool b=ImGui::InputDouble(l,v,step,fast,format,flags);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackCheckbox(const char*l,bool*v){bool b=ImGui::Checkbox(l,v);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackButton(const char*l,const ImVec2&s=ImVec2(0,0)){bool b=ImGui::Button(l,s);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackTab(const char*l,bool*p=nullptr,ImGuiTabItemFlags f=0){bool b=ImGui::BeginTabItem(l,p,f);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
@@ -101,7 +102,7 @@ bool trackArrayCombo(const char*l,int*v,const char*const items[],int count,int h
 bool trackSlider(const char*l,float*v,float min,float max,const char*format,ImGuiSliderFlags flags=0){bool b=ImGui::SliderFloat(l,v,min,max,format,flags);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackCombo(const char*l,const char*p,ImGuiComboFlags f=0){bool b=ImGui::BeginCombo(l,p,f);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 '''
-s=s.replace('ImGui::Checkbox(', 'trackCheckbox(').replace('ImGui::Button(', 'trackButton(').replace('ImGui::SmallButton(', 'trackButton(').replace('ImGui::BeginTabItem(', 'trackTab(').replace('ImGui::BeginNeoSequencer(', 'trackSequencer(').replace('ImGui::Selectable(', 'trackSelectable(').replace('ImGui::BeginCombo(', 'trackCombo(').replace('ImGui::InvisibleButton(', 'trackInvisible(').replace('ImGui::Combo(', 'trackArrayCombo(').replace('ImGui::SliderFloat(', 'trackSlider(').replace('ImGui::BeginNeoTimelineEx(', 'trackTimeline(').replace('ImGui::NeoKeyframe(', 'trackKeyframe(')
+s=s.replace('ImGui::InputDouble(', 'trackDouble(').replace('ImGui::Checkbox(', 'trackCheckbox(').replace('ImGui::Button(', 'trackButton(').replace('ImGui::SmallButton(', 'trackButton(').replace('ImGui::BeginTabItem(', 'trackTab(').replace('ImGui::BeginNeoSequencer(', 'trackSequencer(').replace('ImGui::Selectable(', 'trackSelectable(').replace('ImGui::BeginCombo(', 'trackCombo(').replace('ImGui::InvisibleButton(', 'trackInvisible(').replace('ImGui::Combo(', 'trackArrayCombo(').replace('ImGui::SliderFloat(', 'trackSlider(').replace('ImGui::BeginNeoTimelineEx(', 'trackTimeline(').replace('ImGui::NeoKeyframe(', 'trackKeyframe(')
 s=s.replace('ImGui::NeoTimelineSpan(', 'trackSpan(')
 s=s.replace('struct CurveSamples\n{', 'static size_t curveSampleBuilds=0;\nstruct CurveSamples\n{').replace('\t\tRevision = path.GetGeometryRevision();', '\t\t++curveSampleBuilds; Revision = path.GetGeometryRevision();',1)
 # Count actual recovery I/O in the real editor source, without production instrumentation.
@@ -111,6 +112,40 @@ s=s.replace('!paths.SaveAll(g_RecoveryFile.wstring().c_str(), true)', '!(++recov
 s=s.replace('// Background + border', 'graphRect = {p0,p1};\n// Background + border')
 drawer=(root/'AfxHookSource/CampathDrawer.cpp').read_text()
 layout=drawer[drawer.index('struct WorldLabelRect'):drawer.index('// CCampathDrawer //////////////////')]
+# Exercise the actual CPU/render queue with a fake D3D device that rejects producer-thread calls.
+renderer=(root/'AfxHookSource/Gui.cpp').read_text()
+renderer=renderer[renderer.index('class CImGuiRenderCacheManager'):renderer.index('} m_ImGuiRernderCacheManager;')+1]+';'
+constants=sorted(set(re.findall(r'\bD3D[A-Z_0-9]+\b',renderer))-{'D3DVIEWPORT9','D3DMATRIX'})
+render_preamble=r"""
+#include <thread>
+#include <mutex>
+#include <list>
+namespace RenderCacheTest {
+using DWORD=unsigned int;using LONG=long;using D3DCOLOR=ImU32;
+struct RECT{LONG left,top,right,bottom;};struct D3DMATRIX{float m[4][4];};struct D3DVIEWPORT9{DWORD X,Y,Width,Height;float MinZ,MaxZ;};
+struct CUSTOMVERTEX{float pos[3];D3DCOLOR col;float uv[2];};
+static constexpr int TRUE=1,FALSE=0;
+std::thread::id renderThread;std::atomic<int> wrongThread{0},calls{0};
+void gpu(){++calls;if(std::this_thread::get_id()!=renderThread)++wrongThread;}
+struct Buffer{std::vector<unsigned char> Bytes;bool Locked=false;bool *Fail=nullptr;Buffer(size_t n,bool*f):Bytes(n),Fail(f){}int Lock(unsigned,unsigned,void**out,int){gpu();if(Fail&&*Fail){*Fail=false;return -1;}Locked=true;*out=Bytes.data();return 0;}void Unlock(){gpu();Locked=false;}void Release(){gpu();delete this;}};
+using IDirect3DVertexBuffer9=Buffer;using IDirect3DIndexBuffer9=Buffer;using LPDIRECT3DVERTEXBUFFER9=Buffer*;using LPDIRECT3DINDEXBUFFER9=Buffer*;
+struct IDirect3DStateBlock9{void Apply(){gpu();}void Release(){gpu();delete this;}};
+struct IDirect3DDevice9{
+ bool FailVertex=false,FailIndex=false;int Draws=0,Frames=0;float FirstX=0;Buffer*VB=nullptr,*IB=nullptr;
+ int CreateVertexBuffer(unsigned n,int,int,int,Buffer**out,void*){gpu();*out=new Buffer(n,&FailVertex);return 0;}
+ int CreateIndexBuffer(unsigned n,int,int,int,Buffer**out,void*){gpu();*out=new Buffer(n,&FailIndex);return 0;}
+ int CreateStateBlock(int,IDirect3DStateBlock9**out){gpu();++Frames;*out=new IDirect3DStateBlock9;return 0;}
+ void SetStreamSource(int,Buffer*v,int,unsigned){gpu();VB=v;}void SetIndices(Buffer*v){gpu();IB=v;}
+ void DrawIndexedPrimitive(int,int,int,unsigned,int,unsigned){gpu();++Draws;FirstX=reinterpret_cast<CUSTOMVERTEX*>(VB->Bytes.data())->pos[0];}
+ template<class...T>void SetFVF(T...){gpu();}template<class...T>void SetViewport(T...){gpu();}
+ template<class...T>void SetRenderState(T...){gpu();}template<class...T>void SetPixelShader(T...){gpu();}
+ template<class...T>void SetVertexShader(T...){gpu();}template<class...T>void SetTextureStageState(T...){gpu();}
+ template<class...T>void SetSamplerState(T...){gpu();}template<class...T>void SetTransform(T...){gpu();}
+ template<class...T>void SetTexture(T...){gpu();}template<class...T>void SetScissorRect(T...){gpu();}
+};
+static void*g_FontTexture=nullptr;
+"""
+render_code=render_preamble+'\n'.join('constexpr int '+name+'='+str(i+1)+';' for i,name in enumerate(constants))+'\n'+renderer+'\n}\n'
 test=r'''
 int checks=0;void check(bool b,const char*m){++checks;if(!b)throw std::runtime_error(m);}
 void frame(ImVec2 mouse=ImVec2(-100,-100),bool down=false,float wheel=0,bool middle=false,bool right=false){auto&io=ImGui::GetIO();io.DeltaTime=1.0f/60;io.MousePos=mouse;io.MouseDown[0]=down;io.MouseDown[2]=middle;io.MouseDown[1]=right;io.MouseWheel=wheel;widgets.clear();spans.clear();timelineSelected=0;ImGui::NewFrame();AfxHookSource::CameraOverlay::Draw();ImGui::Render();check(ImGui::GetDrawData()!=nullptr,"UI produces draw data");}
@@ -131,7 +166,19 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  g_SourceSdkVer=0;check(!MirvFix_SetPlayerInterpolation(.1),"Interpolation repair does not affect another game");g_SourceSdkVer=SourceSdkVer_TF2;
  double demoTime=-1;engine.HaveInfo=false;check(!ActualGetCurrentDemoTime(demoTime)&&demoTime==-1,"Demo time rejects absent demo information without dereferencing it");engine.HaveInfo=true;g_Hook_VClient_RenderView.GlobalsAvailable=false;check(!ActualGetCurrentDemoTime(demoTime),"Demo time rejects absent globals");g_Hook_VClient_RenderView.GlobalsAvailable=true;check(ActualGetCurrentDemoTime(demoTime),"Demo time works with valid engine services");
  auto&closedPath=g_Hook_VClient_RenderView.m_CamPath;BeginEdit();closedPath.Add(1,CamPathValue(0,0,0,0,0,0,90));FinishEdit();check(CampathPreview_Enter(),"Native preview enters with overlay closed");controlHeld=true;check(MirvCampathPreview_KeyEvent(WM_KEYDOWN,'Z',0),"Preview owns undo chord");check(closedPath.GetSize()==0,"History records first console edit before overlay opens");MirvCampathPreview_Update();check(g_CampathPreviewActive,"Preview stays active on empty path so the first capture can be redone");check(MirvCampathPreview_KeyEvent(WM_KEYDOWN,'Z',1LL<<30)&&closedPath.GetSize()==0,"Held undo does not repeat");controlHeld=false;check(MirvCampathPreview_KeyEvent(WM_KEYUP,'Z',0),"Undo consumes matching release after Ctrl is released");controlHeld=shiftHeld=true;check(MirvCampathPreview_KeyEvent(WM_KEYDOWN,'Z',0),"Preview owns redo chord");check(closedPath.GetSize()==1,"Closed-overlay edit redoes");controlHeld=shiftHeld=false;MirvCampathPreview_KeyEvent(WM_KEYUP,'Z',0);CampathPreview_Exit();check(!MirvCampathPreview_KeyEvent(WM_KEYDOWN,'Z',0),"Z passes through outside preview");closedPath.Clear();UpdateHistory();
- SetOpen(true);g_Docking=false;frame();frame();check(widgets.count("Add point"),"Campath is the default tab");button("Add point");check(g_Hook_VClient_RenderView.m_CamPath.GetSize()==1,"Overlay captures a full camera key");
+ SetOpen(true);g_Docking=false;frame();frame();check(widgets.count("Add point"),"Campath is the default tab");{
+ using namespace RenderCacheTest;CImGuiRenderCacheManager manager;IDirect3DDevice9 device;
+ auto render=[&](auto work){std::thread worker([&]{renderThread=std::this_thread::get_id();work();});worker.join();};
+ render([&]{manager.Dx9_Create(&device);});auto*data=ImGui::GetDrawData();check(data->TotalVtxCount>0,"Queue regression uses actual ImGui geometry");
+ const float originalX=data->CmdLists[0]->VtxBuffer[0].pos.x;const int beforeUpload=calls;
+ manager.CacheRender(data);check(calls==beforeUpload,"UI producer never allocates, locks or releases a D3D resource");
+ data->CmdLists[0]->VtxBuffer[0].pos.x=originalX+100;render([&]{manager.Dx9_Render();});check(device.Draws>0&&device.FirstX==originalX,"Render thread uploads an owned CPU snapshot, not live ImGui buffers");data->CmdLists[0]->VtxBuffer[0].pos.x=originalX;
+ auto draws=device.Draws;manager.CacheRender(data);device.FailIndex=true;render([&]{manager.Dx9_Render();});check(device.Draws==draws&&!device.VB->Locked,"Index lock failure unlocks the vertex buffer and skips the frame");
+ for(int i=0;i<12;++i)manager.CacheRender(data);auto frames=device.Frames;render([&]{for(int i=0;i<12;++i)manager.Dx9_Render();});check(device.Frames-frames==2,"Queue drops stale frames rather than building an unbounded GPU backlog");
+ render([&]{manager.Dx9_Destroy();manager.Dx9_Create(&device);});manager.CacheRender(data);frames=device.Frames;render([&]{manager.Dx9_Render();manager.Dx9_Destroy();});check(device.Frames==frames+1,"Queued drawing resumes after device recreation");std::atomic<bool> stop{false};std::thread consumer([&]{renderThread=std::this_thread::get_id();manager.Dx9_Create(&device);while(!stop.load()){manager.Dx9_Render();std::this_thread::yield();}manager.Dx9_Render();manager.Dx9_Render();manager.Dx9_Destroy();});for(int i=0;i<200;++i)manager.CacheRender(data);stop=true;consumer.join();
+ check(wrongThread==0,"Concurrent production and consumption keep every D3D call on the consumer thread");
+ }
+ button("Add point");check(g_Hook_VClient_RenderView.m_CamPath.GetSize()==1,"Overlay captures a full camera key");
  g_MirvTime.Time=12;g_Hook_VClient_RenderView.LastCameraOrigin[0]=200;g_Hook_VClient_RenderView.LastCameraFov=170;button("Add point");auto&path=g_Hook_VClient_RenderView.m_CamPath;check(path.GetSize()==2&&path.CanEval(),"Overlay uses custom interpolation with two keys");
  auto captured=path.CaptureState();button("Undo");check(path.GetSize()==1,"Overlay undo reverses capture");button("Redo");check(path.CaptureState()==captured,"Overlay redo restores pose and tangent metadata");
  auto beforeProfile=path.CaptureState();button("Interpolation");auto*popup=ImGui::FindWindowByName("##Combo_00");check(popup&&popup->Active,"Interpolation chooser opens native ImGui popup");ImVec2 choice(popup->DC.CursorStartPos.x+50,popup->DC.CursorStartPos.y+ImGui::GetTextLineHeightWithSpacing()+ImGui::GetTextLineHeight()/2);frame(choice);frame(choice,true);frame(choice,false);frame();check(path.GetAutoTangentSettings().Method==AutoTangentMethod::CatmullRom,"UI selects whole-path Catmull-Rom");auto profileState=path.CaptureState();button("Undo");check(path.CaptureState()==beforeProfile,"UI profile change undoes atomically");button("Redo");check(path.CaptureState()==profileState,"UI profile change redoes atomically");button("Tension");check(path.GetAutoTangentSettings().Tension>0&&path.GetAutoTangentSettings().Tension<1,"UI tension slider updates live");auto tensionState=path.CaptureState();button("Undo");check(path.CaptureState()==profileState,"Tension drag is one undo step");button("Redo");check(path.CaptureState()==tensionState,"Tension redoes with all channel settings");button("Undo");
@@ -251,16 +298,17 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  // The visible list follows actual evaluator order; selected parameter edits are atomic and undoable.
  check(widgets.count("0: noise")&&widgets.count("1: oscillation"),"Modifier stack shows both entries in evaluation order");
  auto revealModifierWidget=[&](const char*name){frame();auto r=widgets.at(name);ImGui::SetScrollY(modifierChild,modifierChild->Scroll.y+r.Min.y-modifierChild->InnerRect.Min.y-35);frame();frame();};
- revealModifierWidget("##adjust_field_8");button("##adjust_field_8");revealModifierWidget("##adjust_field_9");button("##adjust_field_9");
- check(g_ModifierFields.Selected[8]&&g_ModifierFields.Selected[9],"Checkboxes select several fields in the same modifier");
- auto selectedMods=path.GetModifiers();selectedMods[1].Amplitude[0]=2;selectedMods[1].Amplitude[1]=4;selectedMods[1].Amplitude[2]=7;check(path.SetModifiers(selectedMods),"Prepare different channel amplitudes");FinishEdit();frame();
- g_ModifierFields.Percent=50;revealModifierWidget("Adjust selected fields");auto beforeBatch=path.CaptureState();button("Adjust selected fields");
- check(path.GetModifiers()[1].Amplitude[0]==3&&path.GetModifiers()[1].Amplitude[1]==6&&path.GetModifiers()[1].Amplitude[2]==7,"One action scales only checked fields and preserves their ratio");
- HistoryUndo(false);check(path.CaptureState()==beforeBatch,"Undo restores a complete multi-field edit in one step");HistoryUndo(true);check(path.GetModifiers()[1].Amplitude[0]==3,"Redo restores the whole multi-field edit");
- auto invalidBatch=path.CaptureState();g_ModifierFields.Selected[0]=true;g_ModifierFields.Percent=100;revealModifierWidget("Adjust selected fields");button("Adjust selected fields");check(path.CaptureState()==invalidBatch,"An out-of-range field rejects the whole batch without partial changes");
- CamPath::Modifier bulk=path.GetModifiers()[1],bulkBefore=bulk;bool allFields[15];std::fill(std::begin(allFields),std::end(allFields),true);
- check(!ScaleModifierFields(bulk,allFields,std::numeric_limits<double>::infinity())&&bulk==bulkBefore,"Nonfinite batch percentages retain every field");
- check(!ScaleModifierFields(bulk,allFields,-101)&&bulk==bulkBefore,"Batch scaling rejects negative scale factors");
+ revealModifierWidget("X amplitude (units)");auto xr=widgets.at("X amplitude (units)"),yr=widgets.at("Y amplitude (units)");
+ ImVec2 xp(xr.Min.x+30,(xr.Min.y+xr.Max.y)/2),yp(yr.Min.x+30,(yr.Min.y+yr.Max.y)/2);
+ auto beforeFieldSelection=path.CaptureState();io.AddKeyEvent(ImGuiMod_Shift,true);frame(xp);frame(xp,true);frame(yp,true);frame(yp,false);io.AddKeyEvent(ImGuiMod_Shift,false);frame();
+ check(g_ModifierFields.Selected[8]&&g_ModifierFields.Selected[9]&&!g_ModifierFields.Selected[10],"Shift-drag selects numeric fields crossed by the pointer");check(path.CaptureState()==beforeFieldSelection,"Field selection does not change camera data");
+ auto typeField=[&](const char*label,const char*text,bool commit){revealModifierWidget(label);auto r=widgets.at(label);ImVec2 p(r.Min.x+30,(r.Min.y+r.Max.y)/2);frame(p);frame(p,true);frame(p,false);io.AddKeyEvent(ImGuiMod_Ctrl,true);io.AddKeyEvent(ImGuiKey_A,true);frame();io.AddKeyEvent(ImGuiKey_A,false);io.AddKeyEvent(ImGuiMod_Ctrl,false);io.AddInputCharactersUTF8(text);frame();if(commit){io.AddKeyEvent(ImGuiKey_Enter,true);frame();io.AddKeyEvent(ImGuiKey_Enter,false);frame();frame();}};
+ auto beforeBatch=path.CaptureState();typeField("X amplitude (units)","6.5",false);check(path.CaptureState()==beforeBatch,"Typing does not rebuild modifier playback before Enter");
+ io.AddKeyEvent(ImGuiKey_Enter,true);frame();io.AddKeyEvent(ImGuiKey_Enter,false);frame();frame();check(path.GetModifiers()[1].Amplitude[0]==6.5&&path.GetModifiers()[1].Amplitude[1]==6.5&&path.GetModifiers()[1].Amplitude[2]==0,"Enter sets all selected fields to the typed absolute value");
+ HistoryUndo(false);check(path.CaptureState()==beforeBatch,"Undo restores a complete typed multi-field edit in one step");HistoryUndo(true);check(path.GetModifiers()[1].Amplitude[1]==6.5,"Redo restores all typed field values");
+ auto beforeCancelType=path.CaptureState();typeField("X amplitude (units)","3",false);io.AddKeyEvent(ImGuiKey_Escape,true);frame();io.AddKeyEvent(ImGuiKey_Escape,false);frame();check(path.CaptureState()==beforeCancelType,"Escape cancels uncommitted numeric text");
+ g_ModifierFields.Selected[0]=true;auto invalidBatch=path.CaptureState();typeField("X amplitude (units)","2",true);check(path.CaptureState()==invalidBatch,"One invalid selected field rejects the complete typed batch");
+ g_ModifierFields.Selected[0]=false;typeField("X amplitude (units)","3",false);auto externalMods=path.GetModifiers();externalMods[1].Amplitude[2]=7;path.SetModifiers(externalMods);frame();io.AddKeyEvent(ImGuiKey_Enter,true);frame();io.AddKeyEvent(ImGuiKey_Enter,false);frame();check(path.GetModifiers()[1].Amplitude[0]==6.5&&path.GetModifiers()[1].Amplitude[2]==7,"An external edit cancels stale numeric input");
  revealModifierWidget("Move up");button("Move up");check(path.GetModifiers()[0].Type==CamPath::ModifierType::Oscillation&&g_ModifierSelection==0,"Moving a stack entry changes native evaluation order and selection together");
  HistoryUndo(false);check(path.GetModifiers()[0].Type==CamPath::ModifierType::Noise,"Stack ordering has ordinary undo");
  // Rejected additions do not leave a ghost entry in the settings draft.
@@ -280,7 +328,7 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''
-source=out/'overlay_test.cpp';source.write_text(preamble+preview_api+demo_time+fix_api+fix_command+s+native+view+layout+test)
+source=out/'overlay_test.cpp';source.write_text(preamble+render_code+preview_api+demo_time+fix_api+fix_command+s+native+view+layout+test)
 cmd=['g++','-std=c++17','-O0','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),'-I'+str(imgui),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp')]+[str(imgui/f) for f in ['imgui.cpp','imgui_draw.cpp','imgui_widgets.cpp','imgui_tables.cpp']]+[str(root/'shared/overlay/third_party/imgui_neo_sequencer'/f) for f in ['imgui_neo_sequencer.cpp','imgui_neo_internal.cpp']]+[str(root/'shared/overlay/third_party/imguizmo/ImGuizmo.cpp'),'-o',str(out/'overlay_test')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 p=subprocess.run(cmd,capture_output=True,text=True);(out/'build.log').write_text(p.stdout+p.stderr)

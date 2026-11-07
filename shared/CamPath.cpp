@@ -1309,12 +1309,14 @@ void CamPath::Add(double time, const CamPathValue &value)
 	ReplaceKeys(keys);
 }
 
-void CamPath::Changed(bool geometry, bool invalidateArcs, bool position)
+void CamPath::Changed(bool geometry, bool invalidateArcs, bool position, bool baseCurves)
 {
 	++m_Revision;
 	if (geometry)
 	{
 		++m_GeometryRevision;
+		if (baseCurves)
+			++m_BaseRevision;
 		if (position)
 			++m_PositionRevision;
 		if (invalidateArcs)
@@ -1496,10 +1498,40 @@ bool CamPath::SetModifiers(const std::vector<NoiseModifier> &modifiers)
 		return false;
 	if (modifiers == m_Modifiers)
 		return true;
-	const bool positionBefore = HasPositionModifiers();
+	auto dependentPosition = [](const auto &stack)
+	{
+		return std::any_of(stack.begin(), stack.end(),
+						   [](const auto &m)
+						   {
+							   return m.Enabled && (m.CameraSpace || int(m.Type) >= 2) &&
+									  (m.Amplitude[0] != 0 || m.Amplitude[1] != 0 || m.Amplitude[2] != 0);
+						   });
+	};
+	auto positionOnly = [](const auto &stack)
+	{
+		std::vector<Modifier> result;
+		for (auto m : stack)
+			if (m.Enabled && (m.Amplitude[0] != 0 || m.Amplitude[1] != 0 || m.Amplitude[2] != 0))
+			{
+				for (int ch = 3; ch < 7; ++ch)
+					m.Amplitude[ch] = 0;
+				result.push_back(std::move(m));
+			}
+		return result;
+	};
+	// Camera-space translation depends on earlier angles; spatial filters share the sampling grid.
+	const bool positionChanged = dependentPosition(m_Modifiers) || dependentPosition(modifiers) ||
+								 positionOnly(m_Modifiers) != positionOnly(modifiers);
 	m_Modifiers = modifiers;
-	// Noise is applied after distance mapping; the base spatial arcs are unchanged.
-	Changed(true, false, positionBefore || HasPositionModifiers());
+	// Modifiers follow distance mapping; base spatial arcs remain unchanged.
+	Changed(true, false, positionChanged, false);
+	if (std::none_of(m_Modifiers.begin(), m_Modifiers.end(),
+					 [](const auto &m) { return m.Enabled && int(m.Type) >= 2; }))
+	{
+		m_ModifierCurves.clear();
+		std::vector<CamPathValue>().swap(m_ModifierInputValues);
+		m_ModifierInputs.clear();
+	}
 	return true;
 }
 namespace
@@ -1705,7 +1737,8 @@ void CamPath::BuildModifierCurves()
 {
 	if (m_ModifierRevision == m_GeometryRevision)
 		return;
-	m_ModifierCurves.clear();
+	auto previousCurves = std::move(m_ModifierCurves);
+	const auto previousTimes = std::move(m_ModifierTimes);
 	m_ModifierCurves.resize(m_Modifiers.size());
 	m_ModifierTimes.clear();
 	const double begin = GetLowerBound(), end = GetUpperBound(), duration = end - begin;
@@ -1740,13 +1773,38 @@ void CamPath::BuildModifierCurves()
 	}
 	std::sort(m_ModifierTimes.begin(), m_ModifierTimes.end());
 	m_ModifierTimes.erase(std::unique(m_ModifierTimes.begin(), m_ModifierTimes.end()), m_ModifierTimes.end());
+	const bool sameInput = m_ModifierInputRevision == m_BaseRevision && previousTimes == m_ModifierTimes;
+	size_t firstChanged = 0;
+	if (sameInput)
+		while (firstChanged < m_ModifierInputs.size() && firstChanged < m_Modifiers.size() &&
+			   m_ModifierInputs[firstChanged] == m_Modifiers[firstChanged])
+			++firstChanged;
 	std::vector<CamPathValue> values;
-	values.reserve(m_ModifierTimes.size());
-	for (double time : m_ModifierTimes)
-		values.push_back(EvalUnmodified(time));
-	const size_t n = values.size();
-	for (size_t index = 0; index < m_Modifiers.size(); ++index)
+	size_t start = 0;
+	if (sameInput && m_ModifierPrefix <= firstChanged &&
+		m_ModifierInputValues.size() == m_ModifierTimes.size())
 	{
+		values = m_ModifierInputValues;
+		start = m_ModifierPrefix;
+	}
+	else
+	{
+		m_ModifierInputValues.clear();
+		m_ModifierPrefix = 0;
+		values.reserve(m_ModifierTimes.size());
+		for (double time : m_ModifierTimes)
+			values.push_back(EvalUnmodified(time));
+	}
+	for (size_t index = 0; index < start; ++index)
+		m_ModifierCurves[index] = std::move(previousCurves[index]);
+	const size_t n = values.size();
+	for (size_t index = start; index < m_Modifiers.size(); ++index)
+	{
+		if (index == firstChanged && n * sizeof(CamPathValue) <= 16 * 1024 * 1024)
+		{
+			m_ModifierInputValues = values;
+			m_ModifierPrefix = index;
+		}
 		const auto &m = m_Modifiers[index];
 		if (!m.Enabled)
 			continue;
@@ -1757,58 +1815,86 @@ void CamPath::BuildModifierCurves()
 			continue;
 		}
 		auto &curve = m_ModifierCurves[index];
-		std::vector<QEulerAngles> angles;
-		angles.reserve(n);
-		for (size_t i = 0; i < n; ++i)
+		bool reuse = sameInput && index <= firstChanged && index < previousCurves.size() &&
+					 index < m_ModifierInputs.size();
+		if (reuse)
 		{
-			auto sample = values[i];
-			if (i && !sample.HasEuler)
+			const auto &old = m_ModifierInputs[index];
+			reuse =
+				old.Enabled && old.Type == m.Type &&
+				(m.Type == ModifierType::Smooth ? old.Window == m.Window
+												: old.Frequency == m.Frequency && old.Damping == m.Damping);
+			for (int ch = 0; ch < 7; ++ch)
 			{
-				sample.SetEulerAngles(angles.back());
-				sample.SetOrientation(values[i].R);
+				if ((ch >= 4 || m.Amplitude[ch] != 0) && previousCurves[index].Values[ch].size() != n)
+					reuse = false;
+				// Zero-strength angle channels retain an unfiltered Euler branch guide.
+				if (ch >= 4 && (old.Amplitude[ch] == 0) != (m.Amplitude[ch] == 0))
+					reuse = false;
 			}
-			angles.push_back(sample.GetEulerAngles());
 		}
-		for (int ch = 0; ch < 7; ++ch)
+		if (reuse)
+			curve = std::move(previousCurves[index]);
+		else
 		{
-			if (ch < 4 && m.Amplitude[ch] == 0)
-				continue;
-			auto &v = curve.Values[ch];
-			v.resize(n);
+			std::vector<QEulerAngles> angles;
+			angles.reserve(n);
 			for (size_t i = 0; i < n; ++i)
 			{
-				v[i] = ch < 4	 ? GetChannelValue(values[i], (Channel)ch)
-					   : ch == 4 ? angles[i].Pitch
-					   : ch == 5 ? angles[i].Yaw
-								 : angles[i].Roll;
+				auto sample = values[i];
+				if (i && !sample.HasEuler)
+				{
+					sample.SetEulerAngles(angles.back());
+					sample.SetOrientation(values[i].R);
+				}
+				angles.push_back(sample.GetEulerAngles());
 			}
-			if (m.Type == ModifierType::Smooth && m.Amplitude[ch] != 0)
+			for (int ch = 0; ch < 7; ++ch)
 			{
-				for (size_t i = 1; i < n; ++i)
+				if (ch < 4 && m.Amplitude[ch] == 0)
+					continue;
+				auto &v = curve.Values[ch];
+				v.resize(n);
+				for (size_t i = 0; i < n; ++i)
 				{
-					const double a = -std::expm1(-(m_ModifierTimes[i] - m_ModifierTimes[i - 1]) / m.Window);
-					v[i] = v[i - 1] + a * (v[i] - v[i - 1]);
+					v[i] = ch < 4	 ? GetChannelValue(values[i], (Channel)ch)
+						   : ch == 4 ? angles[i].Pitch
+						   : ch == 5 ? angles[i].Yaw
+									 : angles[i].Roll;
 				}
-				for (size_t i = n - 1; i > 0; --i)
+				if (m.Type == ModifierType::Smooth && m.Amplitude[ch] != 0)
 				{
-					const double a = -std::expm1(-(m_ModifierTimes[i] - m_ModifierTimes[i - 1]) / m.Window);
-					v[i - 1] = v[i] + a * (v[i - 1] - v[i]);
+					for (size_t i = 1; i < n; ++i)
+					{
+						const double a =
+							-std::expm1(-(m_ModifierTimes[i] - m_ModifierTimes[i - 1]) / m.Window);
+						v[i] = v[i - 1] + a * (v[i] - v[i - 1]);
+					}
+					for (size_t i = n - 1; i > 0; --i)
+					{
+						const double a =
+							-std::expm1(-(m_ModifierTimes[i] - m_ModifierTimes[i - 1]) / m.Window);
+						v[i - 1] = v[i] + a * (v[i - 1] - v[i]);
+					}
 				}
+				else if (m.Type == ModifierType::Spring && m.Amplitude[ch] != 0)
+				{
+					double position = v[0], velocity = 0;
+					for (size_t i = 1; i < n; ++i)
+					{
+						SpringStep(position, velocity, v[i], m_ModifierTimes[i] - m_ModifierTimes[i - 1],
+								   m.Frequency, m.Damping);
+						v[i] = position;
+					}
+				}
+				AutoTangentSettings settings;
+				settings.Method = AutoTangentMethod::Monotone;
+				ComputeAutoTangents(m_ModifierTimes.data(), v.data(), (int)n, settings, curve.Slopes[ch]);
 			}
-			else if (m.Type == ModifierType::Spring && m.Amplitude[ch] != 0)
-			{
-				double position = v[0], velocity = 0;
-				for (size_t i = 1; i < n; ++i)
-				{
-					SpringStep(position, velocity, v[i], m_ModifierTimes[i] - m_ModifierTimes[i - 1],
-							   m.Frequency, m.Damping);
-					v[i] = position;
-				}
-			}
-			AutoTangentSettings settings;
-			settings.Method = AutoTangentMethod::Monotone;
-			ComputeAutoTangents(m_ModifierTimes.data(), v.data(), (int)n, settings, curve.Slopes[ch]);
 		}
+		// The final target is sampled by Eval; its output is only needed by later modifiers.
+		if (index + 1 == m_Modifiers.size())
+			continue;
 		for (size_t i = 0; i < n; ++i)
 		{
 			double target[7];
@@ -1817,6 +1903,8 @@ void CamPath::BuildModifierCurves()
 			ApplyFilterModifier(values[i], m, m_ModifierTimes[i], target);
 		}
 	}
+	m_ModifierInputRevision = m_BaseRevision;
+	m_ModifierInputs = m_Modifiers;
 	m_ModifierRevision = m_GeometryRevision;
 }
 CamPathValue CamPath::Eval(double time)

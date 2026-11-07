@@ -282,7 +282,6 @@ public:
 	{
 		return m_Modifiers;
 	}
-	static bool ValidModifiers(const std::vector<NoiseModifier> &modifiers);
 	bool SetModifiers(const std::vector<NoiseModifier> &modifiers);
 	static double ModifierInfluence(const NoiseModifier &modifier, double time);
 	static const char *ModifierTypeName(ModifierType type);
@@ -638,6 +637,11 @@ private:
 	std::vector<double> m_ModifierTimes;
 	std::vector<ModifierCurve> m_ModifierCurves;
 	unsigned long long m_ModifierRevision = ~0ull;
+	// One bounded input snapshot reuses the unchanged prefix while editing a stack.
+	unsigned long long m_BaseRevision = 0, m_ModifierInputRevision = ~0ull;
+	size_t m_ModifierPrefix = 0;
+	std::vector<Modifier> m_ModifierInputs;
+	std::vector<CamPathValue> m_ModifierInputValues;
 	void BuildModifierCurves();
 	std::vector<double> m_SpeedArea;
 	double m_SpeedIntegral = 1;
@@ -684,7 +688,9 @@ private:
 	std::vector<double> m_KeyTimes;
 	std::vector<size_t> m_KeyArrival, m_KeyRelease;
 	bool HasPositionModifiers() const;
-	void Changed(bool geometry = true, bool invalidateArcs = true, bool position = true);
+	static bool ValidModifiers(const std::vector<NoiseModifier> &modifiers);
+	void Changed(bool geometry = true, bool invalidateArcs = true, bool position = true,
+				 bool baseCurves = true);
 	void CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<CamPathValue> & src);
 
 	void DoInterpolationMapChangedAll(bool invalidateArcs = true);

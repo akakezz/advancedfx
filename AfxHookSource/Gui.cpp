@@ -129,11 +129,6 @@ public:
 		m_Device = device;
 
 		std::unique_lock<std::mutex> freeLock(m_FreeCachesMutex);
-
-		for (std::list<CImGuiRenderCache *>::iterator it = m_FreeCaches.begin(); it != m_FreeCaches.end(); ++it)
-		{
-			(*it)->Dx9_Create(device);
-		}
 	}
 
 	void Dx9_Destroy()
@@ -147,9 +142,15 @@ public:
 			m_QueuedCaches.pop_front();
 		}
 
-		for (std::list<CImGuiRenderCache *>::iterator it = m_FreeCaches.begin(); it != m_FreeCaches.end(); ++it)
+		if (m_pIB)
 		{
-			(*it)->Dx9_Destroy();
+			m_pIB->Release();
+			m_pIB = nullptr;
+		}
+		if (m_pVB)
+		{
+			m_pVB->Release();
+			m_pVB = nullptr;
 		}
 
 		m_Device = 0;
@@ -172,7 +173,7 @@ public:
 
 		if (cache)
 		{
-			cache->Render();
+			cache->Render(*this);
 
 			{
 				std::unique_lock<std::mutex> freeLock(m_FreeCachesMutex);
@@ -199,7 +200,6 @@ public:
 		if (!cache)
 		{
 			cache = new CImGuiRenderCache();
-			if (m_Device) cache->Dx9_Create(m_Device);
 		}
 
 		cache->CacheRender(draw_data);
@@ -225,38 +225,11 @@ private:
 	class CImGuiRenderCache
 	{
 	public:
-		void Dx9_Create(IDirect3DDevice9 * device)
-		{
-			Dx9_Destroy();
-
-			m_Device = device;
-		}
-
-		void Dx9_Destroy()
-		{
-			if (m_pIB)
-			{
-				m_pIB->Release();
-				m_pIB = 0;
-			}
-
-			if (m_pVB)
-			{
-				m_pVB->Release();
-				m_pVB = 0;
-			}
-
-			if (m_Device)
-			{
-				m_Device = 0;
-			}
-		}
-
 		void CacheRender(ImDrawData* draw_data)
 		{
 			m_DrawListCount = 0;
 
-			if (!m_Device || !draw_data || draw_data->TotalVtxCount == 0)
+			if (!draw_data || draw_data->TotalVtxCount == 0)
 				return;
 
 			ImGuiIO& io = ImGui::GetIO();
@@ -274,34 +247,11 @@ private:
 				m_DrawListSize = draw_data->CmdListsCount;
 			}
 
-			// Create and grow buffers if needed
-			if (!m_pVB || m_VertexBufferSize < draw_data->TotalVtxCount)
-			{
-				if (m_pVB) { m_pVB->Release(); m_pVB = NULL; }
-				m_VertexBufferSize = draw_data->TotalVtxCount + 5000;
-				if (m_Device->CreateVertexBuffer(m_VertexBufferSize * sizeof(CUSTOMVERTEX), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFVF_CUSTOMVERTEX, D3DPOOL_DEFAULT, &m_pVB, NULL) < 0)
-					return;
-			}
-			if (!m_pIB || m_IndexBufferSize < draw_data->TotalIdxCount)
-			{
-				if (m_pIB) { m_pIB->Release(); m_pIB = NULL; }
-				m_IndexBufferSize = draw_data->TotalIdxCount + 10000;
-				if (m_Device->CreateIndexBuffer(m_IndexBufferSize * sizeof(ImDrawIdx), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, sizeof(ImDrawIdx) == 2 ? D3DFMT_INDEX16 : D3DFMT_INDEX32, D3DPOOL_DEFAULT, &m_pIB, NULL) < 0)
-					return;
-			}
-
-			// Copy and convert all vertices into a single contiguous buffer
-			CUSTOMVERTEX* vtx_dst;
-			ImDrawIdx* idx_dst;
-
-			if (m_pVB->Lock(0, (UINT)(draw_data->TotalVtxCount * sizeof(CUSTOMVERTEX)), (void**)&vtx_dst, D3DLOCK_DISCARD) < 0)
-				return;
-			if (m_pIB->Lock(0, (UINT)(draw_data->TotalIdxCount * sizeof(ImDrawIdx)), (void **)&idx_dst,
-							D3DLOCK_DISCARD) < 0)
-			{
-				m_pVB->Unlock();
-				return;
-			}
+			// Only CPU memory is touched on the game thread. The queued cache owns its data.
+			m_Vertices.resize(draw_data->TotalVtxCount);
+			m_Indices.resize(draw_data->TotalIdxCount);
+			CUSTOMVERTEX *vtx_dst = m_Vertices.data();
+			ImDrawIdx *idx_dst = m_Indices.data();
 
 			for (int n = 0; n < draw_data->CmdListsCount; n++)
 			{
@@ -321,9 +271,6 @@ private:
 				memcpy(idx_dst, cmd_list->IdxBuffer.Data, cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx));
 				idx_dst += cmd_list->IdxBuffer.Size;
 			}
-			m_pVB->Unlock();
-			m_pIB->Unlock();
-
 			// Copy command list:
 			//
 
@@ -354,13 +301,63 @@ private:
 
 		}
 
-		void Render(void)
+		void Render(CImGuiRenderCacheManager &owner)
 		{
+			// CPU snapshots share one renderer-owned buffer pair, including across device resets.
+			auto *m_Device = owner.m_Device;
+			auto &m_pVB = owner.m_pVB;
+			auto &m_pIB = owner.m_pIB;
+			auto &m_VertexBufferSize = owner.m_VertexBufferSize;
+			auto &m_IndexBufferSize = owner.m_IndexBufferSize;
 			if (!m_Device)
 				return;
 
 			if (0 == m_DrawListCount)
 				return;
+
+			// D3D9 allocation and locks belong to the consuming render thread.
+			const int vertexCount = (int)m_Vertices.size(), indexCount = (int)m_Indices.size();
+			// Create and grow buffers if needed
+			if (!m_pVB || m_VertexBufferSize < vertexCount)
+			{
+				if (m_pVB)
+				{
+					m_pVB->Release();
+					m_pVB = NULL;
+				}
+				m_VertexBufferSize = vertexCount + 5000;
+				if (m_Device->CreateVertexBuffer(m_VertexBufferSize * sizeof(CUSTOMVERTEX),
+												 D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFVF_CUSTOMVERTEX,
+												 D3DPOOL_DEFAULT, &m_pVB, NULL) < 0)
+					return;
+			}
+			if (!m_pIB || m_IndexBufferSize < indexCount)
+			{
+				if (m_pIB)
+				{
+					m_pIB->Release();
+					m_pIB = NULL;
+				}
+				m_IndexBufferSize = indexCount + 10000;
+				if (m_Device->CreateIndexBuffer(m_IndexBufferSize * sizeof(ImDrawIdx),
+												D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+												sizeof(ImDrawIdx) == 2 ? D3DFMT_INDEX16 : D3DFMT_INDEX32,
+												D3DPOOL_DEFAULT, &m_pIB, NULL) < 0)
+					return;
+			}
+
+			void *vertices = nullptr, *indices = nullptr;
+			if (m_pVB->Lock(0, (UINT)(vertexCount * sizeof(CUSTOMVERTEX)), &vertices, D3DLOCK_DISCARD) < 0)
+				return;
+			if (m_pIB->Lock(0, (UINT)(indexCount * sizeof(ImDrawIdx)), &indices, D3DLOCK_DISCARD) < 0)
+			{
+				m_pVB->Unlock();
+				return;
+			}
+			memcpy(vertices, m_Vertices.data(), vertexCount * sizeof(CUSTOMVERTEX));
+			memcpy(indices, m_Indices.data(), indexCount * sizeof(ImDrawIdx));
+			m_pIB->Unlock();
+			m_pVB->Unlock();
 
 			// Backup the DX9 state
 			IDirect3DStateBlock9* d3d9_state_block = NULL;
@@ -472,11 +469,6 @@ private:
 		}
 
 	private:
-		IDirect3DDevice9 * m_Device = 0;
-		LPDIRECT3DVERTEXBUFFER9 m_pVB = 0;
-		LPDIRECT3DINDEXBUFFER9 m_pIB = 0;
-		int m_VertexBufferSize = 5000;
-		int m_IndexBufferSize = 10000;
 
 		struct CDrawList
 		{
@@ -487,8 +479,10 @@ private:
 			int m_IdxBuffer_Size;
 		};
 
-		int m_DrawListCount;
+		int m_DrawListCount = 0;
 		int m_DrawListSize = 0;
+		std::vector<CUSTOMVERTEX> m_Vertices;
+		std::vector<ImDrawIdx> m_Indices;
 		std::vector<CDrawList> m_DrawLists;
 		float m_Width;
 		float m_Height;
@@ -499,6 +493,9 @@ private:
 	std::list<CImGuiRenderCache *> m_FreeCaches;
 	std::mutex m_QueuedCachesMutex;
 	std::list<CImGuiRenderCache *> m_QueuedCaches;
+	LPDIRECT3DVERTEXBUFFER9 m_pVB = nullptr;
+	LPDIRECT3DINDEXBUFFER9 m_pIB = nullptr;
+	int m_VertexBufferSize = 5000, m_IndexBufferSize = 10000;
 	IDirect3DDevice9 * m_Device = 0;
 } m_ImGuiRernderCacheManager;
 

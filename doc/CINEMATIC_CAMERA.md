@@ -230,13 +230,15 @@ numbers/colors identify graph ranges; the selected range has a yellow border.
 The graph shows at most four range lanes around the selected entry so a large
 stack cannot cover the curve. Select another stack row to reveal its lanes.
 
-Check the boxes beside numeric settings to adjust several fields in that modifier
-at once. Enter **Adjustment (%)**, then click **Adjust selected fields**: +10%
-multiplies each checked value by 1.1, preserving their proportions. Zero stays
-zero. Strength, fade lengths, frequency, roughness, phase, window, damping and
-channel amplitudes/strengths can be included. Range endpoints, seed and octaves
-remain separate. An invalid result rejects the whole adjustment; Undo/Redo
-restores it as one edit. **Clear field selection** clears the checked fields.
+To edit several numeric settings together, hold **Shift** and drag vertically
+across their input fields. Selected fields have a yellow outline; the list scrolls
+when the pointer reaches its top or bottom. Click one selected field, type a
+value, and press **Enter** to set every selected field to that same value. Clicking
+an unselected field replaces the selection. **Escape** cancels unfinished typing.
+Selection stays within one modifier; range endpoints, seed and octave count
+remain separate. Invalid values reject the whole edit, and Undo/Redo restores it
+as one action. Numeric field edits commit on Enter, avoiding a calculation for
+each intermediate digit. Ordinary modifier toggles and envelope drags remain live.
 
 Choose **New modifier type**, then add it to the selected range. Existing modifiers
 can change type through **Modifier type**. Noise and Oscillation amplitudes use

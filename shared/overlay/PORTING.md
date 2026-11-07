@@ -282,3 +282,31 @@ selection changed after save, 30 frames) measured median CPU frame times of abou
 at 5,000 keys. At 5,000 keys the graph/UI vertex count fell from about 1.05 million
 to 253,000. These measurements exclude D3D9 submission, TF2 and filesystem costs;
 they are not evidence that an in-game freeze is fully resolved.
+
+
+## Modifier edit stalls and renderer handoff
+
+The UI producer now copies vertices, indices and commands into owned CPU buffers.
+D3D9 buffer allocation, locks and upload run in the consuming render thread,
+using the existing bounded queue and device lifecycle. Headless tests exercise
+actual cache code with a fake D3D device, checking producer isolation, snapshot
+ownership, lock failure cleanup, dropped stale frames and device recreation.
+Actual driver behavior still requires TF2 testing.
+
+Filter edits reuse an unchanged prefix and compatible filter targets. One input
+snapshot per path is limited to 16 MiB; removing/disabling all filters releases it.
+Base curve, distance timing, sample grid, ordering and active-channel changes
+invalidate affected results. World-space additive angle/FOV-only edits can reuse
+positional drawing samples; camera-space and spatial-filter dependencies remain
+conservative. Fresh-vs-warm evaluation tests cover pose, timing, type, ordering,
+range envelope, channel activation and truncated/regrown stacks.
+
+An optimized CPU test against 7f2bc8a6 with 10/100 keys, distance timing, five-octave
+noise and 1/4/8 smooth filters measured repeated last-filter strength edits at about
+1 ms and window edits at 4–5 ms after warm-up. Cold builds and changes to earlier
+inputs still do more work. These exclude UI geometry, D3D and TF2 and do not
+establish an in-game frame-time guarantee.
+
+Multi-field selection now uses Shift-drag and an absolute typed value committed
+on Enter; the checkbox/percentage controls were removed. Edits retain atomic
+native validation and undo, and an external edit cancels stale numeric input.
