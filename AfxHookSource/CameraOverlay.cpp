@@ -56,6 +56,21 @@ struct GizmoDrag
 	float Model[16] = {};
 };
 static GizmoDrag g_GizmoDrag;
+struct TangentDrag
+{
+	struct Handle
+	{
+		size_t Index;
+		double Duration, Slope, Weight;
+	};
+	std::vector<Handle> Handles;
+	CamPath::Channel Component = CamPath::CH_X;
+	bool Outgoing = false, Group = false, MoveHandle = false, LengthOnly = false, Linked = true,
+		 EditWeight = false;
+	ImVec2 Mouse, LastMouse;
+	double SecondsPerPixel = 0, ValuePerPixel = 0;
+};
+static TangentDrag g_TangentDrag;
 
 static void ResetSpeedDrag()
 {
@@ -74,11 +89,12 @@ static void EnsureEditGesture()
 static bool CancelEditGesture()
 {
 	if (!g_GestureStart && !g_CurveKeyDrag && g_SpeedDrag.Index < 0 && !g_GizmoDrag.HasModel &&
-		!g_GizmoDrag.WasUsing)
+		!g_GizmoDrag.WasUsing && g_TangentDrag.Handles.empty())
 		return false;
 	g_GestureStart.reset();
 	g_CurveKeyDrag = false;
 	g_GizmoDrag = GizmoDrag{};
+	g_TangentDrag = {};
 	ResetSpeedDrag();
 	g_CancelGesture = true;
 	if (ImGui::GetCurrentContext())
@@ -1885,7 +1901,8 @@ static void DrawCurveEditor()
 		ImGui::SameLine();
 		if (ImGui::Button("Delete selected keys"))
 			g_Hook_VClient_RenderView.m_CamPath.DeleteSelected();
-		ImGui::TextDisabled("Wheel: zoom time | Ctrl+wheel: zoom values | MMB: pan | Esc: cancel drag");
+		ImGui::TextDisabled("Wheel: zoom time | Ctrl+wheel: zoom values | MMB: pan | Shift+handle: selected "
+							"handles | Esc: cancel drag");
 		ImGui::TextDisabled("Time axis: demo tick / path seconds. Circles: Auto. Squares: Manual / baked.");
 
 		// Keep cache fresh (standalone)
@@ -1949,10 +1966,13 @@ static void DrawCurveEditor()
 			// Screen-space helpers
 			auto toX = [&](double t)
 			{
-				double firstTime = g_CurveKeyDrag ? g_DragFirst : g_CurveCache.times.front();
-				double duration =
-					(g_CurveKeyDrag ? g_DragLast : g_Hook_VClient_RenderView.m_CamPath.GetUpperBound()) -
-					firstTime;
+				double firstTime = (g_CurveKeyDrag || !g_TangentDrag.Handles.empty())
+									   ? g_DragFirst
+									   : g_CurveCache.times.front();
+				double duration = ((g_CurveKeyDrag || !g_TangentDrag.Handles.empty())
+									   ? g_DragLast
+									   : g_Hook_VClient_RenderView.m_CamPath.GetUpperBound()) -
+								  firstTime;
 				double tMin = firstTime + duration * (g_CurveTimeCenter - 0.5 / g_CurveTimeZoom);
 				double tMax = tMin + duration / g_CurveTimeZoom;
 				double u = (t - tMin) / (tMax - tMin + 1e-12);
@@ -1960,10 +1980,13 @@ static void DrawCurveEditor()
 			};
 			auto fromX = [&](float px) -> double
 			{
-				double firstTime = g_CurveKeyDrag ? g_DragFirst : g_CurveCache.times.front();
-				double duration =
-					(g_CurveKeyDrag ? g_DragLast : g_Hook_VClient_RenderView.m_CamPath.GetUpperBound()) -
-					firstTime;
+				double firstTime = (g_CurveKeyDrag || !g_TangentDrag.Handles.empty())
+									   ? g_DragFirst
+									   : g_CurveCache.times.front();
+				double duration = ((g_CurveKeyDrag || !g_TangentDrag.Handles.empty())
+									   ? g_DragLast
+									   : g_Hook_VClient_RenderView.m_CamPath.GetUpperBound()) -
+								  firstTime;
 				double tMin = firstTime + duration * (g_CurveTimeCenter - 0.5 / g_CurveTimeZoom);
 				double tMax = tMin + duration / g_CurveTimeZoom;
 				double u = (px - (p0.x + g_CurvePadding)) / (canvasSize.x - 2 * g_CurvePadding);
@@ -2212,7 +2235,7 @@ static void DrawCurveEditor()
 				g_FrameSelectedValues = false;
 			}
 
-			if (g_CurveKeyDrag)
+			if (g_CurveKeyDrag || !g_TangentDrag.Handles.empty())
 				for (int ch = 0; ch < 7; ++ch)
 				{
 					vCenter[ch] = g_DragCenters[ch];
@@ -2444,39 +2467,89 @@ static void DrawCurveEditor()
 							char id[48];
 							snprintf(id, sizeof(id), outgoing ? "##h1b_%zu_ch%d" : "##h2b_%zu_ch%d", i, ch);
 							ImGui::InvisibleButton(id, ImVec2(12, 12));
+							if (ImGui::IsItemHovered())
+								ImGui::SetTooltip("Drag: slope | Shift+drag: move matching selected handles "
+												  "| Ctrl: length only | Alt: unlink");
 							if (ImGui::IsItemActivated())
-								EnsureEditGesture();
-							if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0) && !g_CancelGesture)
 							{
-								const bool linked = !io.KeyAlt;
-								const bool editWeight =
-									io.KeyShift && curvePath.GetAutoTangentSettings().Method !=
-													   AutoTangentMethod::MinimumJerk;
-								double weight = outgoing ? wOut : wIn, slope = outgoing ? mOut : mIn;
-								if (editWeight)
-									weight = std::clamp(
-										(outgoing ? fromX(io.MousePos.x) - t0 : t1 - fromX(io.MousePos.x)) /
-											(h / 3),
-										0.01, 5.0);
-								else
+								EnsureEditGesture();
+								auto &drag = g_TangentDrag;
+								drag = {};
+								const size_t clicked = outgoing ? i : i + 1;
+								drag.Component = (CamPath::Channel)ch;
+								drag.Outgoing = outgoing;
+								drag.Group = io.KeyShift && g_CurveCache.values[clicked].Selected;
+								drag.MoveHandle = io.KeyShift;
+								drag.LengthOnly = io.KeyCtrl;
+								drag.Linked = !io.KeyAlt;
+								drag.EditWeight = (drag.MoveHandle || drag.LengthOnly) &&
+												  curvePath.GetAutoTangentSettings().Method !=
+													  AutoTangentMethod::MinimumJerk;
+								drag.Mouse = drag.LastMouse = io.MousePos;
+								drag.SecondsPerPixel =
+									curvePath.GetDuration() / (g_CurveTimeZoom * plotWidth);
+								drag.ValuePerPixel = 2 * vHalf[g_CurveNormalize ? ch : anchorCh] /
+													 (g_CurveValueScale * plotHeight);
+								for (size_t index = 0; index < g_CurveCache.times.size(); ++index)
+									if (index == clicked ||
+										(drag.Group && g_CurveCache.values[index].Selected))
+									{
+										if (outgoing ? index + 1 == g_CurveCache.times.size() : index == 0)
+											continue;
+										const size_t interval = outgoing ? index : index - 1;
+										const double duration = g_CurveCache.times[interval + 1] -
+																g_CurveCache.times[interval] -
+																g_CurveCache.values[interval].HoldDuration;
+										double slope, weight, otherSlope, otherWeight;
+										if (duration <= 0 ||
+											!curvePath.GetTangent(drag.Component, index, outgoing, slope,
+																  weight) ||
+											!curvePath.GetTangent(drag.Component,
+																  outgoing ? index + 1 : index - 1, !outgoing,
+																  otherSlope, otherWeight))
+											continue;
+										Afx::Math::ResolveHermiteWeights(weight, otherWeight);
+										drag.Handles.push_back({index, duration, slope, weight});
+									}
+								g_DragFirst = curvePath.GetLowerBound();
+								g_DragLast = curvePath.GetUpperBound();
+								for (int c = 0; c < 7; ++c)
 								{
-									const float y = std::clamp(io.MousePos.y, p0.y + g_CurvePadding,
-															   p1.y - g_CurvePadding);
-									double value = fromYValue(ch, y);
-									const double base = outgoing ? y0 : y1;
-									if (ch >= 4)
-										value = UnwrapAngleNear(value, base);
-									slope = (outgoing ? value - base : base - value) /
-											((std::max)(1e-6, weight) * h / 3);
+									g_DragCenters[c] = vCenter[c];
+									g_DragHalves[c] = vHalf[c];
 								}
-								if (!curvePath.EditTangent(outgoing ? i : i + 1, (CamPath::Channel)ch,
-														   outgoing, slope, weight, linked, editWeight))
-									g_DocumentStatus = "Handle edit rejected; original key retained.";
 							}
 						}
 					} // active-channel handles
 				} // channels
 			} // segments
+
+			if (!g_TangentDrag.Handles.empty() && ImGui::IsMouseDragging(0) && !g_CancelGesture &&
+				(io.MousePos.x != g_TangentDrag.LastMouse.x || io.MousePos.y != g_TangentDrag.LastMouse.y))
+			{
+				g_TangentDrag.LastMouse = io.MousePos;
+				const auto &drag = g_TangentDrag;
+				const double dt = (io.MousePos.x - drag.Mouse.x) * drag.SecondsPerPixel;
+				const double dv = -(io.MousePos.y - drag.Mouse.y) * drag.ValuePerPixel;
+				std::vector<CamPath::TangentEdit> edits;
+				for (const auto &handle : drag.Handles)
+				{
+					const double direction = drag.Outgoing ? 1.0 : -1.0;
+					const double offset = direction * handle.Weight * handle.Duration / 3;
+					const double weight =
+						drag.EditWeight
+							? std::clamp((offset + dt) * direction * 3 / handle.Duration, .01, 5.0)
+							: handle.Weight;
+					const double slope =
+						drag.LengthOnly ? handle.Slope
+										: (offset * handle.Slope + dv) /
+											  (direction * (std::max)(1e-6, weight) * handle.Duration / 3);
+					edits.push_back({handle.Index, drag.Component, drag.Outgoing, slope, weight});
+				}
+				if (!(drag.LengthOnly && (!drag.EditWeight || dt == 0)) &&
+					!curvePath.EditTangents(edits, drag.Linked, drag.EditWeight, !drag.Group))
+					g_DocumentStatus = "Handle edit rejected; original keyframes retained.";
+			}
 
 			for (size_t index = 0; index < g_CurveCache.times.size(); ++index)
 				if (g_CurveCache.values[index].HoldDuration > 0)
@@ -4548,6 +4621,7 @@ void Draw()
 	if (!ImGui::IsMouseDown(0))
 	{
 		g_GestureStart.reset();
+		g_TangentDrag = {};
 		g_CancelGesture = false;
 	}
 	HistoryObserve();

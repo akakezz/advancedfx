@@ -311,6 +311,15 @@ public:
 	static void SetChannelValue(CamPathValue &value, Channel channel, double component);
 	bool GetTangent(Channel ch, size_t index, bool outgoing, double &slope, double &weight);
 	bool GetAcceleration(Channel ch, size_t index, bool outgoing, double &acceleration);
+	struct TangentEdit
+	{
+		size_t Index;
+		Channel Component;
+		bool Outgoing;
+		double Slope, Weight;
+	};
+	bool EditTangents(const std::vector<TangentEdit> &edits, bool linked, bool editWeight,
+					  bool selectEdited = false);
 	bool EditTangent(size_t index, Channel channel, bool outgoing, double slope, double weight, bool linked,
 					 bool editWeight);
 	void SetTangent(Channel ch, bool setIn, bool setOut, double slopeIn, double slopeOut);

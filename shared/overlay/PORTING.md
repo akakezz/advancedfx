@@ -30,7 +30,7 @@ required. Earlier experimental per-segment easing is replaced in this branch.
 The existing HLAE GUI supplies the engine-thread UI, immutable draw-data cache,
 Direct3D9 rendering and device-reset handling. Its cursor hooks also cover capture,
 confinement and visibility. The Win32 backend's duplicate cursor-shape updates are
-disabled so the existing ownership hooks are the sole cursor controller. TF2's
+disabled. ImGui draws overlay cursor shapes; the existing hooks own the OS handoff. TF2's
 `vguimatsurface.dll` also uses these hooks, covering direct surface cursor changes.
 No second ImGui context or rendering backend is added.
 The overlay automatically closes when recording starts, and stale draw caches are
@@ -310,3 +310,28 @@ establish an in-game frame-time guarantee.
 Multi-field selection now uses Shift-drag and an absolute typed value committed
 on Enter; the checkbox/percentage controls were removed. Edits retain atomic
 native validation and undo, and an external edit cancels stale numeric input.
+
+
+## Cursor hover path and selected-handle dragging
+
+The overlay uses the font atlas / ImGui software cursor rather than setting a
+Windows I-beam during field hover. Cursor API hooks use cached ownership and
+virtual game cursor state without re-entering Source UI queries or calling Windows.
+The WM_SETCURSOR fast path hides the hardware cursor only if needed; ordinary
+window events and frames refresh ownership. GetCursor joins the existing SetCursor
+import hooks in engine/inputsystem/vgui2 (also used for TF2's material surface), so
+game cursor checks see their latest requested shape while the overlay owns it.
+Source menus, mouse-look and focus changes restore native cursor behavior.
+
+Shift-drag edits matching handles in the clicked channel on selected keyframes;
+Ctrl constrains edits to length, and Alt keeps the opposite slope independent.
+The gesture captures effective tangents and a frozen graph transform once. One
+native EditTangents transaction validates and applies the complete group per
+update, keeping selection and existing hold/time-weight rules. Undo, Escape,
+external edits and ownership changes use the existing gesture lifecycle.
+
+Headless coverage exercises real ownership/hook code with fake Win32 calls,
+repeated cursor callbacks, real ImGui text hover and menu/focus/freecam handoffs.
+Graph tests cover group movement, length constraints, selection, undo/redo,
+Escape and interrupted input. Native tests reject an invalid batch atomically.
+Windows/TF2 runtime behavior still needs an in-game retest.

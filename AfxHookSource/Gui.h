@@ -25,6 +25,7 @@ bool WantsKeyboardInput();
 bool SetOverlayOpen(bool value);
 bool OnSetCursorPos(__in int X, __in int Y);
 bool OnGetCursorPos(__out LPPOINT lpPoint);
+bool OnGetCursor(HCURSOR &result);
 bool OnSetCursor(__in_opt HCURSOR hCursor, HCURSOR & result);
 bool OnSetCapture(HWND hWnd, HWND & result);
 bool OnReleaseCapture();

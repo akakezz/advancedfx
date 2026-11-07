@@ -150,12 +150,68 @@ struct IDirect3DDevice9{
 static void*g_FontTexture=nullptr;
 """
 render_code=render_preamble+'\n'.join('constexpr int '+name+'='+str(i+1)+';' for i,name in enumerate(constants))+'\n'+renderer+'\n}\n'
+# Real ownership/cursor hooks, with fake Win32 state. Hot callbacks must not query Source.
+gui_source=(root/'AfxHookSource/Gui.cpp').read_text()
+a=gui_source.index('bool g_OverlayWindowFocused')
+owner=gui_source[a:gui_source.index('} // namespace',a)]
+a=gui_source.index('bool OnSetCursorPos(')
+hooks=gui_source[a:gui_source.index('bool GetWorldGlyph',a)]
+hooks=re.sub(r'\b__(?:in_opt|in|out)\b','',hooks)
+a=gui_source.index('// WM_SETCURSOR is a hot/reentrant')
+message=gui_source[a:gui_source.index('if (msg == WM_KILLFOCUS',a)]
+cursor_preamble=r"""
+namespace CursorInputTest {
+using HCURSOR=void*;using HWND=void*;using BOOL=bool;
+struct POINT{int x=0,y=0;};using LPPOINT=POINT*;struct RECT{int left=0,top=0,right=1600,bottom=1000;};
+constexpr bool TRUE=true,FALSE=false;constexpr UINT WM_SETCURSOR=0x20,HTCLIENT=1;
+unsigned LOWORD(LPARAM v){return unsigned(v)&65535;}
+bool Supported=true;bool IsSupported(){return Supported;}
+namespace CameraOverlay{bool Open=true,Look=false;int Finishes=0;bool IsOpen(){return Open;}bool IsMouseLook(){return Look;}void FinishEdit(){++Finishes;}}
+struct Input{int Clears=0;void ClearMovementInput(){++Clears;}}cursorInput;
+struct View{bool Menu=false,Visible=false;int Queries=0;Input*m_MirvInput=&cursorInput;void UiCursorStatus(bool&a,bool&v){++Queries;a=true;v=Visible;}bool IsSourceUiActive(){++Queries;return Menu;}}g_Hook_VClient_RenderView;
+int Releases=0;void MirvCampathPreview_ReleaseKeys(){++Releases;}
+HWND g_hWnd=reinterpret_cast<HWND>(1);void*g_FontTexture=reinterpret_cast<void*>(1);
+HCURSOR Hardware=reinterpret_cast<HCURSOR>(2),m_GameCursor=nullptr;HWND Capture=g_hWnd;
+POINT Physical{200,250},m_GameCursorPos;RECT Clip;
+int Display=-1,OsCalls=0,CursorSets=0;
+bool GetCursorPos(POINT*p){++OsCalls;*p=Physical;return true;}HCURSOR GetCursor(){++OsCalls;return Hardware;}
+HCURSOR SetCursor(HCURSOR c){++OsCalls;++CursorSets;auto old=Hardware;Hardware=c;return old;}
+HWND GetCapture(){++OsCalls;return Capture;}HWND SetCapture(HWND c){++OsCalls;auto old=Capture;Capture=c;return old;}
+bool ReleaseCapture(){++OsCalls;Capture=nullptr;return true;}
+bool GetClipCursor(RECT*r){++OsCalls;*r=Clip;return true;}bool ClipCursor(const RECT*r){++OsCalls;Clip=r?*r:RECT{};return true;}
+int ShowCursor(bool show){++OsCalls;return Display+=show?1:-1;}
+bool SetCursorPos(int x,int y){++OsCalls;Physical={x,y};return true;}bool ScreenToClient(HWND,POINT*){++OsCalls;return true;}
+"""
+cursor_code=cursor_preamble+owner+hooks+'bool CursorMessage(UINT msg, LPARAM lParam){'+message+'return false;}\n}\n'
 test=r'''
 int checks=0;void check(bool b,const char*m){++checks;if(!b)throw std::runtime_error(m);}
 void frame(ImVec2 mouse=ImVec2(-100,-100),bool down=false,float wheel=0,bool middle=false,bool right=false){auto&io=ImGui::GetIO();io.DeltaTime=1.0f/60;io.MousePos=mouse;io.MouseDown[0]=down;io.MouseDown[2]=middle;io.MouseDown[1]=right;io.MouseWheel=wheel;widgets.clear();spans.clear();timelineSelected=0;ImGui::NewFrame();AfxHookSource::CameraOverlay::Draw();ImGui::Render();check(ImGui::GetDrawData()!=nullptr,"UI produces draw data");}
 void button(const char*l){auto r=widgets.at(l);ImVec2 p((r.Min.x+r.Max.x)/2,(r.Min.y+r.Max.y)/2);frame(p,false);frame(p,true);frame(p,false);frame();}
 int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=nullptr;io.DisplaySize=ImVec2(1600,1000);unsigned char*pixels;int w,h;io.Fonts->AddFontDefault();io.Fonts->GetTexDataAsRGBA32(&pixels,&w,&h);
  using namespace AfxHookSource::CameraOverlay;g_Autosave=false;
+ {
+ using namespace CursorInputTest;
+ auto&io=ImGui::GetIO();const bool originalDraw=io.MouseDrawCursor;
+ UpdateGraphInputOwnership();check(m_GraphInputOwned&&io.MouseDrawCursor&&Hardware==nullptr,"Overlay uses ImGui's cursor and hides the OS cursor once");
+ auto os=OsCalls,sets=CursorSets,queries=CursorInputTest::g_Hook_VClient_RenderView.Queries;bool virtualCorrect=true;
+ auto arrow=reinterpret_cast<HCURSOR>(3),ibeam=reinterpret_cast<HCURSOR>(4);
+ for(int i=0;i<2000;++i){HCURSOR previous=nullptr,current=nullptr;POINT point;int count;
+  virtualCorrect&=OnSetCursor(i%2?ibeam:arrow,previous)&&OnGetCursor(current)&&current==(i%2?ibeam:arrow);
+  virtualCorrect&=OnSetCursorPos(i,i+1)&&OnGetCursorPos(&point)&&point.x==i&&point.y==i+1;
+  virtualCorrect&=OnShowCursor(true,count)&&OnShowCursor(false,count);
+ }
+ check(virtualCorrect&&OsCalls==os&&CursorInputTest::g_Hook_VClient_RenderView.Queries==queries,"Busy cursor hooks preserve game state without OS calls or re-entering Source");
+ for(int i=0;i<2000;++i)virtualCorrect&=CursorMessage(WM_SETCURSOR,HTCLIENT);
+ check(virtualCorrect&&CursorSets==sets&&CursorInputTest::g_Hook_VClient_RenderView.Queries==queries,"Repeated WM_SETCURSOR never resets an I-beam or queries Source");
+ double fieldValue=1;ImVec2 target;for(int frame=0;frame<3;++frame){io.DeltaTime=1.f/60;if(frame)io.MousePos=target;ImGui::NewFrame();ImGui::SetNextWindowPos({20,20});ImGui::Begin("Cursor hover test");ImGui::InputDouble("Value",&fieldValue);target=ImGui::GetItemRectMin()+ImVec2(25,8);if(frame==2)check(ImGui::GetMouseCursor()==ImGuiMouseCursor_TextInput,"Text fields still request the I-beam shape for the software cursor");ImGui::End();ImGui::Render();}
+ check(CursorSets==sets,"Moving over real numeric inputs does not touch the OS cursor");
+ CursorInputTest::g_Hook_VClient_RenderView.Menu=true;UpdateGraphInputOwnership();check(!m_GraphInputOwned&&io.MouseDrawCursor==originalDraw&&Hardware==ibeam&&Display==-1,"Source menu handoff restores its latest cursor and display count");
+ HCURSOR ignored=nullptr;check(!OnSetCursor(arrow,ignored)&&!OnGetCursor(ignored),"Game cursor APIs pass through after handoff");
+ CursorInputTest::g_Hook_VClient_RenderView.Menu=false;UpdateGraphInputOwnership();CameraOverlay::Look=true;UpdateGraphInputOwnership();check(!m_GraphInputOwned&&!io.MouseDrawCursor,"Freecam mouse-look disables the software cursor");
+ CameraOverlay::Look=false;UpdateGraphInputOwnership();g_OverlayWindowFocused=false;UpdateGraphInputOwnership();check(!m_GraphInputOwned&&!io.MouseDrawCursor,"Losing focus releases cursor ownership");
+ CameraOverlay::Open=false;Supported=false;check(!OnGetCursor(ignored),"Cursor hooks pass through outside supported overlay ownership");io.MousePos={-100,-100};
+ }
+
  g_GizmoDrag.HasModel=g_GizmoDrag.WasUsing=true;g_GizmoDrag.KeyTime=10;FinishEdit();check(!g_GizmoDrag.HasModel&&!g_GizmoDrag.WasUsing,"Ending an edit clears pending gizmo state even when its key is hidden");
 
 
@@ -245,6 +301,17 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  path.Clear();path.PositionInterpMethod_set(CamPath::DI_CUSTOM);path.RotationInterpMethod_set(CamPath::QI_CUSTOM);path.FovInterpMethod_set(CamPath::DI_CUSTOM);
  path.Add(10,CamPathValue(0,0,0,0,0,0,90));path.Add(11,CamPathValue(50,0,0,0,20,0,90));path.Add(12,CamPathValue(100,0,0,0,40,0,90));FinishEdit();frame();frame();
  check(widgets.count("Frame selected")&&widgets.count("Delete selected keys")&&widgets.count("Rotation"),"Graph exposes framing, deletion and explicit rotation mode");
+ // Group handles use a frozen transform and preserve the selection.
+ path.SelectAll();FinishEdit();frame();frame();auto beforeGroup=path.CaptureState();auto groupRect=widgets.at("##h1b_0_ch0");ImVec2 groupPoint((groupRect.Min.x+groupRect.Max.x)/2,(groupRect.Min.y+groupRect.Max.y)/2);
+ io.AddKeyEvent(ImGuiMod_Shift,true);frame(groupPoint);frame(groupPoint,true);const auto groupRevision=path.GetRevision();frame({groupPoint.x+15,groupPoint.y-20},true);
+ check(path.GetRevision()==groupRevision+1,"A group handle move emits one native notification per frame");
+ const auto stationaryRevision=path.GetRevision();frame({groupPoint.x+15,groupPoint.y-20},true);check(path.GetRevision()==stationaryRevision,"A stationary held group handle does not repeat edits");auto groupState=path.CaptureState();auto groupKey=groupState.Keys.begin();check(groupKey->second.Selected&&groupKey->second.TxWOut>1&&groupKey->second.TxModeOut==CamPath::TM_FREE,"Shift-drag moves the first selected outgoing handle");++groupKey;check(groupKey->second.Selected&&groupKey->second.TxWOut>1&&groupKey->second.TxModeOut==CamPath::TM_FREE,"Shift-drag moves matching handles on other selected keys");++groupKey;check(groupKey->second==beforeGroup.Keys.rbegin()->second,"A selected endpoint without that handle stays intact");
+ frame({groupPoint.x+15,groupPoint.y-20},false);io.AddKeyEvent(ImGuiMod_Shift,false);frame();auto afterGroup=path.CaptureState();HistoryUndo(false);check(path.CaptureState()==beforeGroup,"Group handle drag is one undo step");HistoryUndo(true);check(path.CaptureState()==afterGroup,"Group handle drag redoes together");HistoryUndo(false);frame();frame();
+ double slope0,weight0,slope1,weight1;path.GetTangent(CamPath::CH_X,0,true,slope0,weight0);path.GetTangent(CamPath::CH_X,1,true,slope1,weight1);groupRect=widgets.at("##h1b_0_ch0");groupPoint={(groupRect.Min.x+groupRect.Max.x)/2,(groupRect.Min.y+groupRect.Max.y)/2};
+ io.AddKeyEvent(ImGuiMod_Ctrl,true);io.AddKeyEvent(ImGuiMod_Shift,true);frame(groupPoint);frame(groupPoint,true);frame({groupPoint.x+20,groupPoint.y+25},true);double newSlope,newWeight;path.GetTangent(CamPath::CH_X,0,true,newSlope,newWeight);check(std::abs(newSlope-slope0)<1e-8&&newWeight>weight0,"Ctrl+Shift adjusts group length while retaining the first slope");path.GetTangent(CamPath::CH_X,1,true,newSlope,newWeight);check(std::abs(newSlope-slope1)<1e-8&&newWeight>weight1,"Length-only control also preserves other selected slopes");
+ io.AddKeyEvent(ImGuiKey_Escape,true);frame(groupPoint,true);check(path.CaptureState()==beforeGroup,"Escape restores every handle in a group drag");io.AddKeyEvent(ImGuiKey_Escape,false);frame(groupPoint,false);io.AddKeyEvent(ImGuiMod_Ctrl,false);io.AddKeyEvent(ImGuiMod_Shift,false);frame();
+ groupRect=widgets.at("##h1b_0_ch0");groupPoint={(groupRect.Min.x+groupRect.Max.x)/2,(groupRect.Min.y+groupRect.Max.y)/2};io.AddKeyEvent(ImGuiMod_Shift,true);frame(groupPoint);frame(groupPoint,true);frame({groupPoint.x+15,groupPoint.y-10},true);SetMouseLook(true);auto handoffState=path.CaptureState();check(g_TangentDrag.Handles.empty(),"Freecam handoff clears pending group handle input");SetMouseLook(false);frame(groupPoint,true);check(path.CaptureState()==handoffState,"Held mouse after handoff cannot replay a stale tangent drag");frame(groupPoint,false);io.AddKeyEvent(ImGuiMod_Shift,false);frame();HistoryUndo(false);frame();
+
  g_CurveLocked[0]=true;g_LockKeyTimes=true;auto lockedRect=widgets.at("##curve_key_1_ch0");ImVec2 lockedPoint((lockedRect.Min.x+lockedRect.Max.x)/2,(lockedRect.Min.y+lockedRect.Max.y)/2);
  frame(lockedPoint);frame(lockedPoint,true);frame(ImVec2(lockedPoint.x+30,lockedPoint.y-20),true);frame(ImVec2(lockedPoint.x+30,lockedPoint.y-20),false);frame();
  auto lockedKeys=path.CaptureState().Keys;check(lockedKeys.count(11)&&lockedKeys.at(11).X==50,"Channel and time locks protect graph drags");g_CurveLocked[0]=false;g_LockKeyTimes=false;
@@ -332,7 +399,7 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''
-source=out/'overlay_test.cpp';source.write_text(preamble+render_code+preview_api+demo_time+fix_api+fix_command+s+native+view+layout+test)
+source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+demo_time+fix_api+fix_command+s+native+view+layout+test)
 cmd=['g++','-std=c++17','-O0','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),'-I'+str(imgui),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp')]+[str(imgui/f) for f in ['imgui.cpp','imgui_draw.cpp','imgui_widgets.cpp','imgui_tables.cpp']]+[str(root/'shared/overlay/third_party/imgui_neo_sequencer'/f) for f in ['imgui_neo_sequencer.cpp','imgui_neo_internal.cpp']]+[str(root/'shared/overlay/third_party/imguizmo/ImGuizmo.cpp'),'-o',str(out/'overlay_test')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 p=subprocess.run(cmd,capture_output=True,text=True);(out/'build.log').write_text(p.stdout+p.stderr)

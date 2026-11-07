@@ -1431,6 +1431,50 @@ void modifierPersistenceAndExport()
 	std::filesystem::remove(classic);
 }
 
+void tangentBatchEdits()
+{
+	CamPath path;
+	populate(path);
+	path.SelectNone();
+	path.SelectAdd(size_t(0), size_t(1));
+	const auto initial = path.CaptureState();
+	CamPathCollection collection(path);
+	collection.BeginEdit();
+	const auto revision = path.GetRevision();
+	check(
+		path.EditTangents({{0, CamPath::CH_X, true, 12, 1.3}, {1, CamPath::CH_X, true, 17, 1.2}}, true, true),
+		"Multiple tangents update atomically");
+	check(path.GetRevision() == revision + 1, "A tangent batch sends one notification");
+	auto changed = path.CaptureState();
+	auto key = changed.Keys.begin();
+	check(key->second.Selected && key->second.TxIn == 12 && key->second.TxOut == 12 &&
+			  key->second.TxWOut == 1.3,
+		  "Batch links slopes while preserving key selection");
+	++key;
+	check(key->second.Selected && key->second.TxIn == 17 && key->second.TxWOut == 1.2,
+		  "Each handle retains its individual edit");
+	++key;
+	check(!key->second.Selected && key->second == std::next(initial.Keys.begin(), 2)->second,
+		  "Unselected keys stay intact");
+	collection.FinishEdit();
+	check(collection.Undo() && path.CaptureState() == initial, "A tangent batch undoes in one step");
+	check(collection.Undo(true) && path.CaptureState() == changed, "A tangent batch redoes in one step");
+	check(
+		!path.EditTangents({{0, CamPath::CH_X, true, 3, 1}, {999, CamPath::CH_X, true, 4, 1}}, false, true) &&
+			path.CaptureState() == changed,
+		"An invalid member rejects all tangent changes");
+	check(
+		!path.EditTangents({{0, CamPath::CH_X, true, 3, 1}, {1, CamPath::CH_X, true, 4, -1}}, false, true) &&
+			path.CaptureState() == changed,
+		"Invalid group weights retain the whole path");
+	check(!path.EditTangents({}, false, true) && path.CaptureState() == changed,
+		  "An empty handle group changes nothing");
+	check(path.EditTangents({{0, CamPath::CH_X, true, 23, 1}}, false, false), "Unlinked slope edits succeed");
+	check(path.GetBegin().GetValue().TxIn == 12 && path.GetBegin().GetValue().TxOut == 23 &&
+			  path.GetBegin().GetValue().TxWOut == 1.3,
+		  "Unlinked slope edits retain opposite slopes and weights");
+}
+
 void modifierCacheEdits()
 {
 	CamPath path;
@@ -1565,6 +1609,7 @@ int main()
 {
 	try
 	{
+		tangentBatchEdits();
 		modifierCacheEdits();
 		continuity();
 		tangents();

@@ -113,6 +113,11 @@ to Auto** when you want them recalculated. Classic quaternion/cubic interpolatio
 cannot be split exactly by this editor and insertion is rejected there. **Add
 point** remains normal pose-and-demo-time capture.
 
+The overlay uses ImGui's own drawn cursor, including the I-beam over text fields.
+Windows cursor changes and Source UI queries are avoided in the busy cursor hooks.
+Menus, focus loss and free-camera mouse-look restore the game's cursor; they also
+end an active editing gesture.
+
 Enable **Show graph**, or **Show Curve Editor** in the sequencer, to open the
 dockable **Campath Graph** window. It displays X/Y/Z, FOV, pitch/yaw/roll individually or
 in combination; X is visible initially. Normalization makes channels with different
@@ -157,8 +162,17 @@ handles. Distance-timed channels are also drawn from playback; disable distance
 timing to edit their underlying handles directly.
 
 - Drag a curve handle to edit the shared slope through that key.
-- Hold **Shift** while dragging to change its weight/influence.
+- Hold **Shift** while dragging a handle on a selected key to move the matching
+  incoming or outgoing handles of all selected keys in that channel. Both time
+  length and value position follow the same graph-space displacement. Keys with
+  no matching handle stay unchanged; other channels are unaffected.
+- Hold **Ctrl** to change length/influence without changing slopes; **Ctrl+Shift**
+  applies that to the selected group. Minimum-jerk handles have fixed time weights,
+  so only their slopes can be moved.
 - Hold **Alt** to edit a side independently for an intentional corner.
+  Choose modifiers when starting the drag. By default opposite slopes stay aligned
+  and the opposite handle retains its length. Group selection is preserved, each
+  drag is one undo step, and Escape cancels the complete group.
 - **Undo / Redo** or **Ctrl+Z / Ctrl+Shift+Z** restore data edits while the overlay
   owns input, and in native `mirv_campath preview` mode with the overlay closed.
   Console edits enter the same history, starting with the first edit. A drag is

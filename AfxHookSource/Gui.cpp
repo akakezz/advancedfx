@@ -43,7 +43,6 @@ bool SetOverlayOpen(bool value);
 bool m_Active = true;
 bool m_KeyDownEaten[512] = {};
 POINT m_GameCursorPos = { 0, 0 };
-HCURSOR m_OwnCursor = 0;
 HCURSOR m_GameCursor = 0;
 std::string m_IniFilename;
 std::string m_LogFileName;
@@ -55,48 +54,6 @@ static INT64                    g_Time = 0;
 static INT64                    g_TicksPerSecond = 0;
 static LPDIRECT3DDEVICE9        g_pd3dDevice = NULL;
 static LPDIRECT3DTEXTURE9       g_FontTexture = NULL;
-
-static class Cursors_s
-{
-private:
-	HCURSOR m_None = 0;
-	HCURSOR m_Arrow = LoadCursor(NULL, IDC_ARROW);
-	HCURSOR m_TextInput = LoadCursor(NULL, IDC_IBEAM);
-	HCURSOR m_ResizeAll = LoadCursor(NULL, IDC_SIZEALL);
-	HCURSOR m_ResizeNS = LoadCursor(NULL, IDC_SIZENS);
-	HCURSOR m_ResizeEW = LoadCursor(NULL, IDC_SIZEWE);
-	HCURSOR m_ResizeNESW = LoadCursor(NULL, IDC_SIZENESW);
-	HCURSOR m_ResizeNWSE = LoadCursor(NULL, IDC_SIZENWSE);
-
-	HCURSOR m_Hand = LoadCursor(NULL, IDC_HAND);
-
-public:
-	HCURSOR GetCursor(ImGuiMouseCursor imGuiMouseCursor)
-	{
-		switch (imGuiMouseCursor)
-		{
-		case ImGuiMouseCursor_None:
-			return m_None;
-		case ImGuiMouseCursor_Arrow:
-			return m_Arrow;
-		case ImGuiMouseCursor_TextInput:
-			return m_TextInput;
-		case ImGuiMouseCursor_ResizeAll:
-			return m_ResizeAll;
-		case ImGuiMouseCursor_ResizeNS:
-			return m_ResizeNS;
-		case ImGuiMouseCursor_ResizeEW:
-			return m_ResizeEW;
-		case ImGuiMouseCursor_ResizeNESW:
-			return m_ResizeNESW;
-		case ImGuiMouseCursor_ResizeNWSE:
-			return m_ResizeNWSE;
-		}
-
-		return m_Arrow;
-	}
-
-} m_Cursors;
 
 struct CUSTOMVERTEX
 {
@@ -536,6 +493,8 @@ RECT m_GameClip = {};
 bool m_GameClipEnabled = false;
 HWND m_GameCapture = nullptr;
 int m_GameCursorDisplayCount = 0;
+// ImGui renders overlay cursor shapes; the OS cursor is restored when ownership ends.
+static bool m_PreviousDrawCursor = false;
 
 void UpdateGraphInputOwnership()
 {
@@ -558,9 +517,9 @@ void UpdateGraphInputOwnership()
 		ClipCursor(nullptr);
 		if (GetCapture() == g_hWnd)
 			ReleaseCapture();
-		m_OwnCursor = m_Cursors.GetCursor(ImGuiMouseCursor_Arrow);
-		if (GetCursor() != m_OwnCursor)
-			SetCursor(m_OwnCursor);
+		m_PreviousDrawCursor = ImGui::GetIO().MouseDrawCursor;
+		ImGui::GetIO().MouseDrawCursor = true;
+		SetCursor(nullptr);
 		POINT client = m_GameCursorPos;
 		ScreenToClient(g_hWnd, &client);
 		ImGui::GetIO().MousePos = ImVec2(float(client.x), float(client.y));
@@ -568,6 +527,7 @@ void UpdateGraphInputOwnership()
 	else
 	{
 		m_GraphInputOwned = false;
+		ImGui::GetIO().MouseDrawCursor = m_PreviousDrawCursor;
 		CameraOverlay::FinishEdit();
 		if (GetCapture() == g_hWnd)
 			ReleaseCapture();
@@ -612,6 +572,15 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 {
 	if (!IsSupported())
 		return false;
+
+	// WM_SETCURSOR is a hot/reentrant Windows callback. Ownership is refreshed by
+	// normal window events and frames, never by querying Source from this callback.
+	if (msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT && m_GraphInputOwned)
+	{
+		if (GetCursor() != nullptr)
+			SetCursor(nullptr);
+		return true;
+	}
 
 	if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE))
 	{
@@ -673,12 +642,6 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 	if (!m_Active || !GraphInteractive())
 		return false;
 
-	if (msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT)
-	{
-		SetCursor(m_OwnCursor ? m_OwnCursor : m_Cursors.GetCursor(ImGuiMouseCursor_Arrow));
-			return true;
-		}
-
 	ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
 	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam < 256)
 		m_KeyDownEaten[wParam] = true;
@@ -704,7 +667,6 @@ bool OnSetCursorPos(__in int X, __in int Y)
 {
 	if (!IsSupported())
 		return false;
-	UpdateGraphInputOwnership();
 	if (!m_GraphInputOwned)
 		return false;
 	m_GameCursorPos = {X, Y};
@@ -715,24 +677,28 @@ bool OnGetCursorPos(__out LPPOINT point)
 {
 	if (!IsSupported())
 		return false;
-	UpdateGraphInputOwnership();
 	if (!m_GraphInputOwned || !point)
 		return false;
 	*point = m_GameCursorPos;
 	return true;
 }
 
+// Called from Source's cursor routines: never re-enter the engine UI or the OS here.
+bool OnGetCursor(HCURSOR &result)
+{
+	if (!IsSupported() || !m_GraphInputOwned)
+		return false;
+	result = m_GameCursor;
+	return true;
+}
 bool OnSetCursor(__in_opt HCURSOR cursor, HCURSOR &result)
 {
 	if (!IsSupported())
 		return false;
-	UpdateGraphInputOwnership();
 	if (!m_GraphInputOwned)
 		return false;
 	result = m_GameCursor;
 	m_GameCursor = cursor;
-	if (GetCursor() != m_OwnCursor)
-	SetCursor(m_OwnCursor);
 	return true;
 }
 
@@ -740,7 +706,6 @@ bool OnSetCapture(HWND window, HWND &result)
 {
 	if (!IsSupported())
 		return false;
-	UpdateGraphInputOwnership();
 	if (!m_GraphInputOwned)
 		return false;
 	result = m_GameCapture;
@@ -752,7 +717,6 @@ bool OnReleaseCapture()
 {
 	if (!IsSupported())
 		return false;
-	UpdateGraphInputOwnership();
 	if (!m_GraphInputOwned)
 		return false;
 	m_GameCapture = nullptr;
@@ -763,7 +727,6 @@ bool OnClipCursor(const RECT *rect)
 {
 	if (!IsSupported())
 		return false;
-	UpdateGraphInputOwnership();
 	if (!m_GraphInputOwned)
 		return false;
 	m_GameClipEnabled = rect != nullptr;
@@ -776,7 +739,6 @@ bool OnShowCursor(BOOL show, int &result)
 {
 	if (!IsSupported())
 		return false;
-	UpdateGraphInputOwnership();
 	if (!m_GraphInputOwned)
 		return false;
 	m_GameCursorDisplayCount += show ? 1 : -1;
@@ -1017,12 +979,6 @@ bool OnGameFrameRenderEnd()
 	ImGui::NewFrame();
 
 	DoFrame();
-	if (m_GraphInputOwned)
-	{
-		m_OwnCursor = m_Cursors.GetCursor(ImGui::GetMouseCursor());
-		if (GetCursor() != m_OwnCursor)
-			SetCursor(m_OwnCursor);
-	}
 
 	ImGui::EndFrame();
 
@@ -1080,6 +1036,11 @@ bool OnSetCursorPos(__in int X, __in int Y)
 }
 
 bool OnGetCursorPos(__out LPPOINT lpPoint)
+{
+	return false;
+}
+
+bool OnGetCursor(HCURSOR &)
 {
 	return false;
 }

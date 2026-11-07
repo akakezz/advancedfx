@@ -3457,30 +3457,45 @@ bool CamPath::GetTangent(Channel ch, size_t index, bool outgoing, double &slope,
 bool CamPath::EditTangent(size_t index, Channel channel, bool outgoing, double slope, double weight,
 						  bool linked, bool editWeight)
 {
-	if (channel < CH_X || channel > CH_RROLL || index >= m_KeyTimes.size() || !std::isfinite(slope) ||
-		!std::isfinite(weight) || weight < 0)
-		return false;
-	if (channel < CH_FOV	? m_PositionInterpMethod != DI_CUSTOM
-		: channel == CH_FOV ? m_FovInterpMethod != DI_CUSTOM
-							: m_RotationInterpMethod != QI_CUSTOM)
+	return EditTangents({{index, channel, outgoing, slope, weight}}, linked, editWeight, true);
+}
+
+bool CamPath::EditTangents(const std::vector<TangentEdit> &edits, bool linked, bool editWeight,
+						   bool selectEdited)
+{
+	if (edits.empty())
 		return false;
 	auto keys = m_Map;
-	auto &value = keys.at(m_KeyTimes[index]);
-	for (auto &key : keys)
-		key.second.Selected = key.first == m_KeyTimes[index];
-	if (!outgoing || linked)
+	if (selectEdited)
+		for (auto &key : keys)
+			key.second.Selected = false;
+	for (const auto &edit : edits)
 	{
-		value.*TangentIn[channel] = slope;
-		value.*ModeIn[channel] = TM_FREE;
+		const auto channel = edit.Component;
+		if (channel < CH_X || channel > CH_RROLL || edit.Index >= m_KeyTimes.size() ||
+			!std::isfinite(edit.Slope) || !std::isfinite(edit.Weight) || edit.Weight < 0)
+			return false;
+		if (channel < CH_FOV	? m_PositionInterpMethod != DI_CUSTOM
+			: channel == CH_FOV ? m_FovInterpMethod != DI_CUSTOM
+								: m_RotationInterpMethod != QI_CUSTOM)
+			return false;
+		auto &value = keys.at(m_KeyTimes[edit.Index]);
+		if (selectEdited)
+			value.Selected = true;
+		if (!edit.Outgoing || linked)
+		{
+			value.*TangentIn[channel] = edit.Slope;
+			value.*ModeIn[channel] = TM_FREE;
+		}
+		if (edit.Outgoing || linked)
+		{
+			value.*TangentOut[channel] = edit.Slope;
+			value.*ModeOut[channel] = TM_FREE;
+		}
+		if (editWeight)
+			value.*(edit.Outgoing ? WeightOut[channel] : WeightIn[channel]) = edit.Weight;
+		value.AccelerationMask &= ~(1u << channel);
 	}
-	if (outgoing || linked)
-	{
-		value.*TangentOut[channel] = slope;
-		value.*ModeOut[channel] = TM_FREE;
-	}
-	if (editWeight)
-		value.*(outgoing ? WeightOut[channel] : WeightIn[channel]) = weight;
-	value.AccelerationMask &= ~(1u << channel);
 	return ReplaceKeys(keys);
 }
 
