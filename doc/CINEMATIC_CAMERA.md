@@ -210,6 +210,11 @@ new duration. Noise ranges keep their explicit path-second coordinates when the
 base path is retimed. The upper speed display shows the resulting evaluated
 movement; the editable profile describes the base travel timing.
 
+The graph shares cached evaluated samples across its visible channels and uses a
+screen-sized sampling grid plus key/hold boundaries. Zooming or changing camera
+data refreshes the samples; idle frames reuse them. These are display samples;
+playback and export continue to use the native evaluator.
+
 ## Selective noise modifiers
 
 Open **Range modifiers** in the graph. Use **Draw modifier range** and drag across
@@ -283,10 +288,11 @@ and Remove controls. Native keyframe indices remain zero based within that path.
 the evaluable path with the latest start at the current demo time; ties go to the
 later path in the list. Selecting another path changes the editing target, not
 playback priority. All paths use ordinary native keys and the classic drawer.
-Each path has **Mute playback**, **Solo playback** and **Visible in world**.
-Duplicates start muted. Muting excludes a path; if any paths are soloed, only soloed
-paths are eligible. Mute wins over solo, so muting the only soloed path does not
-silently enable other takes. Visibility controls world drawing independently.
+Each path has **Disable playback**, **Play only marked paths** and **Visible in world**.
+Duplicates start disabled. Disabled paths are excluded; when any paths are marked,
+only marked paths are eligible. Disabling the only marked path does not silently
+enable other takes. Visibility controls world drawing independently. The existing
+console commands and file fields still use `mute` / `solo` for compatibility.
 These flags save with both single-path files and collections and participate in
 undo/redo.
 
@@ -305,7 +311,10 @@ next arrival; sharing it is allowed only for an identical pose. Smooth custom
 interpolation arrives and departs with zero velocity. Linear remains linear.
 Adding a hold converts Classic cubic/quaternion channels to Custom, which supports
 endpoint derivatives. This is separate from classic `mirv_campath hold`, which
-continues to hold a whole path outside its bounds. A single key with a hold is a
+continues to hold a whole path outside its bounds. The Campath tab exposes it as
+**Hold first / last pose outside path**. In **Playback / cuts**, endpoint extensions
+appear dimmed and their tooltip says **endpoint hold**; the movement span ends at
+the last key (including its explicit hold duration). A single key with a hold is a
 playable stationary shot.
 
 ```text

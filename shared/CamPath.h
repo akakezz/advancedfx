@@ -608,11 +608,12 @@ private:
 	bool m_DistanceTiming = false, m_DistanceTimingPose = false, m_ArcDirty = true;
 	struct ArcSegment
 	{
-		double Begin, End, Length = 0;
+		double Begin, End, Length = 0, TravelBegin = 0;
 		bool StopBefore = false, StopAfter = false;
 		std::vector<double> Times, Distances;
 	};
 	std::vector<ArcSegment> m_Arcs;
+	double m_TravelDuration = 0;
 	void BuildArcs();
 	double MapDistanceTime(double time);
 	static QEulerAngles EulerSelector(const CamPathValue &value)
@@ -640,7 +641,7 @@ private:
 
 	unsigned long long m_Revision = 0;
 	unsigned long long m_GeometryRevision = 0;
-	void Changed(bool geometry = true);
+	void Changed(bool geometry = true, bool invalidateArcs = true);
 	void CopyMap(CInterpolationMap<CamPathValue> & dst, CInterpolationMap<CamPathValue> & src);
 
 	void DoInterpolationMapChangedAll(void);

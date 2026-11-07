@@ -182,3 +182,26 @@ Existing FOV/rotation interpolation metadata and unselected key orientations are
 retained; Custom Euler orientation interpolation remains a key-pose transform.
 Finite offsets are validated at setter/load/save boundaries, and FOV noise keeps
 legacy out-of-range base values continuous at modifier fades.
+
+## Graph evaluation and endpoint-hold display
+
+Graph range sampling is shared across channels and cached by geometry revision;
+it no longer reevaluates a whole-path grid for every key and channel. Evaluated
+curve drawing uses one cached visible-time grid plus key, hold and modifier
+boundaries, while ordinary editable cubics retain their Bezier drawing/handles.
+Offscreen segments are skipped. Distance lookup uses binary search with cached
+moving-time prefixes, and modifier edits retain unchanged base arc-length tables.
+The native evaluator, persistence and export remain the source of camera poses.
+
+Playback/cut spans split at the last key even when classic endpoint holding is
+enabled. Held extensions are dimmed and named separately; playback semantics are
+unchanged. UI labels use Disable playback / Play only marked paths while native
+mute/solo commands and saved fields retain compatibility. A missing demo-info
+object now safely rejects demo-time queries. Headless tests exercise these cases
+and verify cache reuse, playback/sample agreement and absence of UI seek commands.
+
+An optimized headless benchmark with 100 keys, distance timing, one noise modifier
+and all seven channels visible (handles locked) reduced idle UI CPU time from
+about 126 ms/frame to 1.1 ms/frame, and modifier-edit frames from 129 ms to 2.5 ms.
+This excludes D3D9 rendering, world-path drawing and TF2 audio; in-game validation
+is still needed for the reported audio interruptions.

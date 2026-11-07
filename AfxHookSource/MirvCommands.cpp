@@ -1335,7 +1335,7 @@ bool GetCurrentDemoTime(double &outDemoTime)
 	WrpVEngineClientDemoInfoEx * di = g_VEngineClient->GetDemoInfoEx();
 	WrpGlobals * gl = g_Hook_VClient_RenderView.GetGlobals();
 
-	if(gl)
+	if (di && gl)
 	{
 		int client_current_tick = di->GetDemoPlaybackTick();
 

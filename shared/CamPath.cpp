@@ -475,6 +475,7 @@ void CamPath::BuildArcs()
 		return;
 	m_ArcDirty = false;
 	m_Arcs.clear();
+	m_TravelDuration = 0;
 	if (!CanEval() || m_Map.size() < 2)
 		return;
 	auto sample = [&](double time)
@@ -529,6 +530,9 @@ void CamPath::BuildArcs()
 				subdivide(a, sample(a), b, sample(b), 0);
 			}
 		}
+		arc.TravelBegin = m_TravelDuration;
+		if (arc.Length > 1e-9)
+			m_TravelDuration += arc.End - arc.Begin;
 		m_Arcs.push_back(std::move(arc));
 	}
 }
@@ -537,44 +541,40 @@ double CamPath::MapDistanceTime(double time)
 	if (!m_DistanceTiming)
 		return time;
 	BuildArcs();
-	double totalTravel = 0, elapsedTravel = 0;
-	for (const auto &arc : m_Arcs)
-		if (arc.Length > 1e-9)
-			totalTravel += arc.End - arc.Begin;
-	for (const auto &arc : m_Arcs)
+	auto foundArc = std::upper_bound(m_Arcs.begin(), m_Arcs.end(), time,
+									 [](double t, const ArcSegment &arc) { return t < arc.Begin; });
+	if (foundArc == m_Arcs.begin())
+		return time;
+	const auto &arc = *std::prev(foundArc);
+	if (arc.Begin < time && time < arc.End && arc.Length > 1e-9)
 	{
-		if (arc.Begin < time && time < arc.End && arc.Length > 1e-9)
+		double u = (time - arc.Begin) / (arc.End - arc.Begin);
+		if (!m_SpeedProfile.empty() && m_TravelDuration > 0)
 		{
-			double u = (time - arc.Begin) / (arc.End - arc.Begin);
-			if (!m_SpeedProfile.empty() && totalTravel > 0)
-			{
-				const double begin = ProfileDistance(elapsedTravel / totalTravel),
-							 end = ProfileDistance((elapsedTravel + arc.End - arc.Begin) / totalTravel);
-				u = end > begin
-						? (ProfileDistance((elapsedTravel + time - arc.Begin) / totalTravel) - begin) /
-							  (end - begin)
-						: u;
-			}
-			// Preserve smooth stops at holds without imposing stops at ordinary keys.
-			if (arc.StopBefore && arc.StopAfter)
-				u = u * u * (3 - 2 * u);
-			else if (arc.StopBefore)
-				u = u * u * (2 - u);
-			else if (arc.StopAfter)
-				u = u + u * u - u * u * u;
-			const double target = arc.Length * u;
-			auto found = std::lower_bound(arc.Distances.begin(), arc.Distances.end(), target);
-			const size_t index = (size_t)std::distance(arc.Distances.begin(), found);
-			if (!index)
-				return arc.Begin;
-			if (index >= arc.Times.size())
-				return arc.End;
-			const double before = arc.Distances[index - 1], after = arc.Distances[index];
-			const double factor = after > before ? (target - before) / (after - before) : 0;
-			return arc.Times[index - 1] + factor * (arc.Times[index] - arc.Times[index - 1]);
+			const double begin = ProfileDistance(arc.TravelBegin / m_TravelDuration),
+						 end = ProfileDistance((arc.TravelBegin + arc.End - arc.Begin) / m_TravelDuration);
+			u = end > begin
+					? (ProfileDistance((arc.TravelBegin + time - arc.Begin) / m_TravelDuration) - begin) /
+						  (end - begin)
+					: u;
 		}
-		if (arc.Length > 1e-9)
-			elapsedTravel += arc.End - arc.Begin;
+		// Preserve smooth stops at holds without imposing stops at ordinary keys.
+		if (arc.StopBefore && arc.StopAfter)
+			u = u * u * (3 - 2 * u);
+		else if (arc.StopBefore)
+			u = u * u * (2 - u);
+		else if (arc.StopAfter)
+			u = u + u * u - u * u * u;
+		const double target = arc.Length * u;
+		auto found = std::lower_bound(arc.Distances.begin(), arc.Distances.end(), target);
+		const size_t index = (size_t)std::distance(arc.Distances.begin(), found);
+		if (!index)
+			return arc.Begin;
+		if (index >= arc.Times.size())
+			return arc.End;
+		const double before = arc.Distances[index - 1], after = arc.Distances[index];
+		const double factor = after > before ? (target - before) / (after - before) : 0;
+		return arc.Times[index - 1] + factor * (arc.Times[index] - arc.Times[index - 1]);
 	}
 	return time;
 }
@@ -654,12 +654,16 @@ bool CamPath::RetimeByDistance(double duration)
 	if (ReplaceKeys(retimed))
 	{
 		auto key = retimed.begin();
+		m_TravelDuration = 0;
 		for (size_t i = 0; i < arcs.size(); ++i, ++key)
 		{
 			auto &arc = arcs[i];
 			const double previousBegin = arc.Begin;
 			arc.Begin = key->first + key->second.HoldDuration;
 			arc.End = std::next(key)->first;
+			arc.TravelBegin = m_TravelDuration;
+			if (arc.Length > 1e-9)
+				m_TravelDuration += arc.End - arc.Begin;
 			for (auto &time : arc.Times)
 				time = arc.Begin + (oldSpan[i] > 0 ? (time - previousBegin) * newSpan[i] / oldSpan[i] : 0);
 		}
@@ -1222,13 +1226,14 @@ void CamPath::Add(double time, const CamPathValue &value)
 	ReplaceKeys(keys);
 }
 
-void CamPath::Changed(bool geometry)
+void CamPath::Changed(bool geometry, bool invalidateArcs)
 {
 	++m_Revision;
 	if (geometry)
 	{
 		++m_GeometryRevision;
-		m_ArcDirty = true;
+		if (invalidateArcs)
+			m_ArcDirty = true;
 	}
 	for(m_OnChangedIt = m_OnChanged.begin(); m_OnChangedIt != m_OnChanged.end(); m_OnChangedIt++) {
 		m_OnChangedIt->Notify();
@@ -1370,7 +1375,8 @@ bool CamPath::SetModifiers(const std::vector<NoiseModifier> &modifiers)
 	if (modifiers == m_Modifiers)
 		return true;
 	m_Modifiers = modifiers;
-	Changed();
+	// Noise is applied after distance mapping; the base spatial arcs are unchanged.
+	Changed(true, false);
 	return true;
 }
 namespace

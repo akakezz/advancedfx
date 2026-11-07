@@ -347,6 +347,59 @@ static void CurveCache_Rebuild()
 	}
 }
 
+// Evaluated display samples are shared by all channels and rebuilt only when
+// camera data or the visible time range changes. Never resample the whole path
+// inside the per-key/per-channel drawing loops.
+struct CurveSamples
+{
+	unsigned long long Revision = ~0ull;
+	double Begin = 0, End = 0;
+	int Resolution = 0;
+	std::vector<double> Times;
+	std::vector<CamPathValue> Values, Base;
+	void Update(CamPath &path, double begin, double end, int resolution)
+	{
+		if (Revision == path.GetGeometryRevision() && Begin == begin && End == end &&
+			Resolution == resolution)
+			return;
+		Revision = path.GetGeometryRevision();
+		Begin = begin;
+		End = end;
+		Resolution = resolution;
+		Times.clear();
+		Values.clear();
+		Base.clear();
+		for (int i = 0; i <= resolution; ++i)
+			Times.push_back(begin + (end - begin) * i / resolution);
+		auto add = [&](double time)
+		{
+			if (begin <= time && time <= end)
+				Times.push_back(time);
+		};
+		for (auto key = path.GetBegin(); key != path.GetEnd(); ++key)
+		{
+			add(key.GetTime());
+			add(key.GetTime() + key.GetValue().HoldDuration);
+		}
+		for (const auto &modifier : path.GetModifiers())
+		{
+			add(modifier.Begin);
+			add(modifier.End);
+			add(modifier.Begin + modifier.FadeIn);
+			add(modifier.End - modifier.FadeOut);
+		}
+		std::sort(Times.begin(), Times.end());
+		Times.erase(std::unique(Times.begin(), Times.end()), Times.end());
+		for (double time : Times)
+		{
+			Values.push_back(path.Eval(time));
+			if (!path.GetModifiers().empty())
+				Base.push_back(path.EvalUnmodified(time));
+		}
+	}
+};
+static CurveSamples g_CurveRangeSamples, g_CurveViewSamples;
+
 // File dialogs for campath open/save
 static ImGui::FileBrowser s_campathOpenDialog(ImGuiFileBrowserFlags_CloseOnEsc |
 											  ImGuiFileBrowserFlags_EditPathString |
@@ -630,19 +683,25 @@ static void DrawDocumentControls()
 			g_DocumentStatus = "Use a nonempty, unique path name (up to 128 bytes).";
 	bool muted = paths.IsMuted(paths.GetActive()), solo = paths.IsSolo(paths.GetActive()),
 		 visible = paths.IsVisible(paths.GetActive());
-	bool flagsChanged = ImGui::Checkbox("Mute playback", &muted);
+	bool flagsChanged = ImGui::Checkbox("Disable playback", &muted);
 	ImGui::SameLine();
-	flagsChanged |= ImGui::Checkbox("Solo playback", &solo);
+	flagsChanged |= ImGui::Checkbox("Play only marked paths", &solo);
 	ImGui::SameLine();
 	flagsChanged |= ImGui::Checkbox("Visible in world", &visible);
 	if (flagsChanged)
 		paths.SetFlags(paths.GetActive(), muted, solo, visible);
+	bool hold = g_Hook_VClient_RenderView.m_CamPath.GetHold();
+	if (ImGui::Checkbox("Hold first / last pose outside path", &hold))
+		g_Hook_VClient_RenderView.m_CamPath.SetHold(hold);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Classic mirv_campath hold: keep the endpoint pose before the first key and after "
+						  "the last. Dim sequencer spans show this extension.");
 	const auto winner = paths.GetPlaybackIndex(g_MirvTime.GetTime(), false);
 	ImGui::Text("Playback: %s%s",
 				winner < paths.GetCount() ? paths.GetName(winner).c_str() : "No eligible path",
 				g_Hook_VClient_RenderView.m_CamPath.Enabled_get() ? "" : " (disabled)");
-	ImGui::TextDisabled(
-		"Latest start wins overlaps. Duplicates start muted. Visibility does not mute playback.");
+	ImGui::TextDisabled("Latest start wins overlaps. Duplicates start disabled. Marked paths exclude "
+						"unmarked paths. Visibility only affects drawing.");
 	if (!g_DocumentStatus.empty())
 		ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
 	if (!g_RecoveryCandidates.empty())
@@ -1702,6 +1761,10 @@ static void DrawCurveEditor()
 			auto chHandleColor = [&](int ch) -> ImU32
 			{ return ImGui::GetColorU32(ImGuiCol_PlotLinesHovered); };
 
+			auto &curvePath = g_Hook_VClient_RenderView.m_CamPath;
+			if (!curvePath.GetModifiers().empty())
+				g_CurveRangeSamples.Update(curvePath, curvePath.GetLowerBound(), curvePath.GetUpperBound(),
+										   256);
 			double vCenter[7] = {0, 0, 0, 0, 0, 0, 0}, vHalf[7] = {1, 1, 1, 1, 1, 1, 1};
 			for (int ch = 0; ch < 7; ++ch)
 			{
@@ -1730,24 +1793,7 @@ static void DrawCurveEditor()
 						prev = val;
 						havePrev = true;
 					}
-					if (!g_Hook_VClient_RenderView.m_CamPath.GetModifiers().empty())
-						for (int i = 0; i <= 64; ++i)
-						{
-							auto &path = g_Hook_VClient_RenderView.m_CamPath;
-							const double value = CamPath::GetChannelValue(
-								path.Eval(path.GetLowerBound() + path.GetDuration() * i / 64),
-								(CamPath::Channel)ch);
-							if (first)
-							{
-								vMin = vMax = value;
-								first = false;
-							}
-							else
-							{
-								vMin = (std::min)(vMin, value);
-								vMax = (std::max)(vMax, value);
-							}
-						}
+
 					if (first)
 					{
 						vMin = vMax = val;
@@ -1759,6 +1805,13 @@ static void DrawCurveEditor()
 						vMax = (std::max)(vMax, val);
 					}
 				}
+				if (!curvePath.GetModifiers().empty())
+					for (const auto &sample : g_CurveRangeSamples.Values)
+					{
+						const double value = CamPath::GetChannelValue(sample, (CamPath::Channel)ch);
+						vMin = (std::min)(vMin, value);
+						vMax = (std::max)(vMax, value);
+					}
 				if (first)
 				{
 					vMin = 0;
@@ -1864,14 +1917,55 @@ static void DrawCurveEditor()
 				ImGui::EndTooltip();
 			}
 
-			auto compEval = [&](int ch, double t) -> double
+			const bool sampleAll =
+				curvePath.GetDistanceTiming() || !curvePath.GetModifiers().empty() ||
+				curvePath.GetAutoTangentSettings().Method == AutoTangentMethod::MinimumJerk;
+			bool sampled[7];
+			for (int ch = 0; ch < 7; ++ch)
+				sampled[ch] =
+					sampleAll || (ch < 3	? curvePath.PositionInterpMethod_get() != CamPath::DI_CUSTOM
+								  : ch == 3 ? curvePath.FovInterpMethod_get() != CamPath::DI_CUSTOM
+											: curvePath.RotationInterpMethod_get() != CamPath::QI_CUSTOM);
+			bool needSamples = false;
+			for (int ch = 0; ch < 7; ++ch)
+				needSamples |= drawMask[ch] && sampled[ch];
+			if (needSamples)
 			{
-				CamPathValue vv = g_Hook_VClient_RenderView.m_CamPath.Eval(t);
-				if (ch <= 3)
-					return (ch == 0 ? vv.X : ch == 1 ? vv.Y : ch == 2 ? vv.Z : vv.Fov);
-				QEulerAngles e = vv.GetEulerAngles();
-				return (ch == 4 ? e.Pitch : ch == 5 ? e.Yaw : e.Roll);
-			};
+				g_CurveViewSamples.Update(curvePath, fromX(p0.x + g_CurvePadding),
+										  fromX(p1.x - g_CurvePadding),
+										  std::clamp((int)plotWidth, 256, 2048));
+				for (int ch = 0; ch < 7; ++ch)
+					if (drawMask[ch] && sampled[ch])
+					{
+						double previous = 0, previousBase = 0;
+						ImVec2 last, lastBase;
+						for (size_t i = 0; i < g_CurveViewSamples.Times.size(); ++i)
+						{
+							const auto &pose = g_CurveViewSamples.Values[i];
+							double value = CamPath::GetChannelValue(pose, (CamPath::Channel)ch);
+							if (i && ch >= 4 && !pose.HasEuler)
+								value = UnwrapAngleNear(value, previous);
+							const ImVec2 point(toX(g_CurveViewSamples.Times[i]), toY_ch(ch, value));
+							if (i)
+								dl->AddLine(last, point, chColor(ch), 2);
+							last = point;
+							previous = value;
+							if (!g_CurveViewSamples.Base.empty())
+							{
+								const auto &base = g_CurveViewSamples.Base[i];
+								double b = CamPath::GetChannelValue(base, (CamPath::Channel)ch);
+								if (i && ch >= 4 && !base.HasEuler)
+									b = UnwrapAngleNear(b, previousBase);
+								const ImVec2 pointBase(point.x, toY_ch(ch, b));
+								if (i)
+									dl->AddLine(lastBase, pointBase, (chColor(ch) & 0x00ffffff) | 0x50000000,
+												1);
+								lastBase = pointBase;
+								previousBase = b;
+							}
+						}
+					}
+			}
 
 			// Draw segments
 			// Keep per-channel running continuity for Euler channels so adjacent segments align
@@ -1886,9 +1980,8 @@ static void DrawCurveEditor()
 				const CamPathValue &cv0 = g_CurveCache.values[i];
 				const CamPathValue &cv1 = g_CurveCache.values[i + 1];
 				double h = (t1 - t0);
-				if (h <= 0)
+				if (h <= 0 || toX(t1) < p0.x || toX(g_CurveCache.times[i]) > p1.x)
 					continue;
-				double eps = (std::max)(1e-6, (std::min)(h * 0.01, 0.05));
 
 				// Per-channel draw
 				for (int ch = 0; ch < 7; ++ch)
@@ -1930,23 +2023,18 @@ static void DrawCurveEditor()
 									   : (g_Hook_VClient_RenderView.m_CamPath.RotationInterpMethod_get() ==
 										  CamPath::QI_CUSTOM));
 
+					const bool showHandles =
+						isCustom && !g_CurveLocked[ch] && !g_ModifierRangeTool &&
+						!(curvePath.GetDistanceTiming() && (ch < 3 || curvePath.GetDistanceTimingPose())) &&
+						(g_CurveFocusChannel < 0 || g_CurveFocusChannel == ch);
+					if (sampled[ch] && !showHandles)
+						continue;
 					double mOut = 0, mIn = 0, wOut = 1, wIn = 1;
 					if (isCustom)
 					{
 						auto &path = g_Hook_VClient_RenderView.m_CamPath;
 						path.GetTangent((CamPath::Channel)ch, i, true, mOut, wOut);
 						path.GetTangent((CamPath::Channel)ch, i + 1, false, mIn, wIn);
-					}
-					else
-					{
-						double left = compEval(ch, t0 + eps), right = compEval(ch, t1 - eps);
-						if (ch >= 4)
-						{
-							left = unwrapNear(left, y0);
-							right = unwrapNear(right, y1);
-						}
-						mOut = (left - y0) / eps;
-						mIn = (y1 - right) / eps;
 					}
 
 					Afx::Math::ResolveHermiteWeights(wOut, wIn);
@@ -1958,33 +2046,7 @@ static void DrawCurveEditor()
 
 					// Curve
 					ImU32 c = chColor(ch);
-					if (!isCustom || g_Hook_VClient_RenderView.m_CamPath.GetDistanceTiming() ||
-						!g_Hook_VClient_RenderView.m_CamPath.GetModifiers().empty() ||
-						g_Hook_VClient_RenderView.m_CamPath.GetAutoTangentSettings().Method ==
-							AutoTangentMethod::MinimumJerk)
-					{
-						ImVec2 last = P0;
-						for (int sample = 1; sample <= 96; ++sample)
-						{
-							double t = t0 + h * sample / 96;
-							ImVec2 next(toX(t), toY_ch(ch, compEval(ch, t)));
-							if (!g_Hook_VClient_RenderView.m_CamPath.GetModifiers().empty())
-							{
-								const auto a = g_Hook_VClient_RenderView.m_CamPath.EvalUnmodified(
-											   t0 + h * (sample - 1) / 96),
-										   b = g_Hook_VClient_RenderView.m_CamPath.EvalUnmodified(t);
-								dl->AddLine(
-									ImVec2(toX(t0 + h * (sample - 1) / 96),
-										   toY_ch(ch, CamPath::GetChannelValue(a, (CamPath::Channel)ch))),
-									ImVec2(toX(t),
-										   toY_ch(ch, CamPath::GetChannelValue(b, (CamPath::Channel)ch))),
-									(c & 0x00ffffff) | 0x50000000, 1);
-							}
-							dl->AddLine(last, next, c, 2);
-							last = next;
-						}
-					}
-					else
+					if (!sampled[ch])
 						dl->AddBezierCubic(P0, P1, P2, P3, c, 2.0f);
 					if (cv0.HoldDuration > 0)
 						dl->AddLine(ImVec2(toX(g_CurveCache.times[i]), P0.y), P0, c, 3);
@@ -1998,10 +2060,7 @@ static void DrawCurveEditor()
 
 					// Handles + hit: show handles on all visible by default, or only focused channel
 					// if focus is set
-					if (isCustom && !g_CurveLocked[ch] && !g_ModifierRangeTool &&
-						!(g_Hook_VClient_RenderView.m_CamPath.GetDistanceTiming() &&
-						  (ch < 3 || g_Hook_VClient_RenderView.m_CamPath.GetDistanceTimingPose())) &&
-						((g_CurveFocusChannel < 0 && drawMask[ch]) || (g_CurveFocusChannel == ch)))
+					if (showHandles)
 					{
 						float r = 4.0f;
 						dl->AddCircleFilled(P0, r, IM_COL32(220, 220, 220, 255));
@@ -3578,9 +3637,10 @@ void Draw()
 						if (index != document.GetActive())
 						{
 							ImGui::PushID((int)document.GetId(index));
-							std::string name = document.GetName(index) + (document.IsMuted(index) ? " [muted]"
-																		  : document.IsSolo(index) ? " [solo]"
-																								   : "");
+							std::string name =
+								document.GetName(index) + (document.IsMuted(index)	? " [disabled]"
+														   : document.IsSolo(index) ? " [marked]"
+																					: "");
 							if (ImGui::BeginNeoTimelineEx(name.c_str(), nullptr, ImGuiNeoTimelineFlags_None))
 							{
 								if (ImGui::IsItemClicked())
@@ -3627,10 +3687,9 @@ void Draw()
 							if (!entry.Data->Keys.empty())
 							{
 								boundaries.push_back(entry.Data->Keys.begin()->first + entry.Data->Offset);
-								if (!entry.Data->Hold)
-									boundaries.push_back(entry.Data->Keys.rbegin()->first +
-														 entry.Data->Keys.rbegin()->second.HoldDuration +
-														 entry.Data->Offset);
+								boundaries.push_back(entry.Data->Keys.rbegin()->first +
+													 entry.Data->Keys.rbegin()->second.HoldDuration +
+													 entry.Data->Offset);
 							}
 						std::sort(boundaries.begin(), boundaries.end());
 						boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
@@ -3644,10 +3703,18 @@ void Draw()
 							const auto winner = document.GetPlaybackIndex((begin + end) * 0.5, false);
 							if (winner < document.GetCount())
 							{
+								const auto &shot = *state.Paths[winner].Data;
+								const double first = shot.Keys.begin()->first + shot.Offset,
+											 last = shot.Keys.rbegin()->first +
+													shot.Keys.rbegin()->second.HoldDuration + shot.Offset;
+								const bool endpointHold = end <= first || begin >= last;
+								const std::string caption =
+									document.GetName(winner) + (endpointHold ? " (endpoint hold)" : "");
 								if (ImGui::NeoTimelineSpan(tick_from_client(begin), tick_from_client(end),
-														   winner % 2 ? IM_COL32(100, 170, 110, 200)
-																	  : IM_COL32(80, 130, 210, 200),
-														   document.GetName(winner).c_str()))
+														   endpointHold ? IM_COL32(120, 130, 145, 80)
+														   : winner % 2 ? IM_COL32(100, 170, 110, 200)
+																		: IM_COL32(80, 130, 210, 200),
+														   caption.c_str()))
 									choosePath = winner;
 							}
 							if (winner != previous)
