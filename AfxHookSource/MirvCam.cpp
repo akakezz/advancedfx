@@ -671,13 +671,20 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 
 				float localOffset[3];
 
-				if (!Mirv_Tf2_CaptureCamera(g_MirvCamAttachCalc, g_Hook_VClient_RenderView.LastCameraOrigin, g_Hook_VClient_RenderView.LastCameraAngles, localOffset))
+				double origin[3], angles[3];
+				std::copy(g_Hook_VClient_RenderView.LastCameraOrigin,
+				          g_Hook_VClient_RenderView.LastCameraOrigin + 3, origin);
+				std::copy(g_Hook_VClient_RenderView.LastCameraAngles,
+				          g_Hook_VClient_RenderView.LastCameraAngles + 3, angles);
+				const bool recaptured = MirvCameraAttachedCapturePose(g_MirvCamAttachCalc, origin, angles);
+				if (!Mirv_Tf2_CaptureCamera(g_MirvCamAttachCalc, origin, angles, localOffset))
 				{
 					Tier0_Warning("Could not capture the camera, the target is not available right now.\n");
 					return;
 				}
 
-				MirvCameraAttachedReset();
+				if (!recaptured)
+					MirvCameraAttachedReset();
 				// The captured pose already includes everything, so the offsets must not be applied on top of it.
 				g_MirvCam.m_OffsetForwad = 0;
 				g_MirvCam.m_OffsetLeft = 0;

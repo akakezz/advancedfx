@@ -317,6 +317,8 @@ MirvCameraCollisionSettings MirvCameraCollisionGet();
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);
 void MirvCameraCollisionReset();
 void MirvCameraAttachedReset();
+// Recover the authored pose if this is the current corrected view; retain history on success.
+bool MirvCameraAttachedCapturePose(const void *identity, double origin[3], double angles[3]);
 bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,
 	double sceneTime, double pathTime, const double seed[3], float &x, float &y, float &z);
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3],
