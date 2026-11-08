@@ -2004,33 +2004,6 @@ void ApplyFilterModifier(CamPathValue &value, const CamPath::NoiseModifier &m, d
 		value.SetEulerAngles(angles);
 }
 
-void SpringStep(double &position, double &velocity, double target, double seconds, double frequency,
-				double damping)
-{
-	const double w = 2 * M_PI * frequency, y = position - target;
-	if (damping < .999999)
-	{
-		const double wd = w * std::sqrt(1 - damping * damping), a = std::exp(-damping * w * seconds),
-					 c = std::cos(wd * seconds), s = std::sin(wd * seconds);
-		position = target + a * (y * c + (velocity + damping * w * y) / wd * s);
-		velocity = a * (velocity * c - (damping * w * velocity + w * w * y) / wd * s);
-	}
-	else if (damping > 1.000001)
-	{
-		const double root = std::sqrt(damping * damping - 1), r1 = -w * (damping - root),
-					 r2 = -w * (damping + root);
-		const double a = (velocity - r2 * y) / (r1 - r2), b = y - a, e1 = std::exp(r1 * seconds),
-					 e2 = std::exp(r2 * seconds);
-		position = target + a * e1 + b * e2;
-		velocity = r1 * a * e1 + r2 * b * e2;
-	}
-	else
-	{
-		const double v = velocity + w * y, a = std::exp(-w * seconds);
-		position = target + a * (y + v * seconds);
-		velocity = a * (velocity - w * v * seconds);
-	}
-}
 } // namespace
 void CamPath::BuildModifierCurves()
 {
@@ -2192,7 +2165,7 @@ void CamPath::BuildModifierCurves()
 					double position = v[0], velocity = 0;
 					for (size_t i = 1; i < n; ++i)
 					{
-						SpringStep(position, velocity, v[i], m_ModifierTimes[i] - m_ModifierTimes[i - 1],
+						Afx::Math::SpringStep(position, velocity, v[i], m_ModifierTimes[i] - m_ModifierTimes[i - 1],
 								   m.Frequency, m.Damping);
 						v[i] = position;
 					}

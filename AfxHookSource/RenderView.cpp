@@ -433,7 +433,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 	const CamPath *collisionPath = nullptr;
 	const void *attachedIdentity = nullptr;
 	void *attachedEntity = nullptr;
-	double attachedPivot[3] = {};
+	double attachedPivot[3] = {}, attachedRoot[3] = {};
 	double collisionTime = 0;
 	bool collisionFree = false;
 	float collisionInputX = Tx, collisionInputY = Ty, collisionInputZ = Tz;
@@ -467,7 +467,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				originOrAnglesOverriden = true;
 				collisionFree = false;
 				collisionPath = nullptr;
-				if (!MirvCam_GetAttachAnchor(attachedPivot, attachedEntity, attachedIdentity)) attachedIdentity = nullptr;
+				if (!MirvCam_GetAttachAnchor(attachedPivot, attachedEntity, attachedIdentity, attachedRoot)) attachedIdentity = nullptr;
 			}
 			break;
 
@@ -664,7 +664,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 	
 	// Attachment follow/retraction changes position only, after source offsets.
 	MirvCameraAttachedApply(attachedIdentity, attachedEntity, attachedPivot,
-		g_MirvTime.GetCurTime(), Tx, Ty, Tz);
+		g_MirvTime.GetCurTime(), Tx, Ty, Tz, attachedRoot);
 
 	// Collision correction is the last position stage, before view/export.
 	const float collisionRequestedX = Tx, collisionRequestedY = Ty, collisionRequestedZ = Tz;

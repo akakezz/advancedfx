@@ -348,32 +348,64 @@ endpoint without crossing walls. A valid framing is not always possible when
 the subject and surrounding geometry leave no space for the camera hull.
 
 ```text
-mirv_cam attach follow 0.2
+mirv_cam attach follow 0.15
+mirv_cam attach follow boneHalfLife 0.08
 mirv_cam attach follow maxDistance 128
+mirv_cam attach follow teleportDistance 1024
 mirv_cam attach follow status
 mirv_cam attach follow reset
-mirv_cam attach follow 0
 ```
 
-Position half-life 0 retains rigid attachment. Positive values lag translation of
-the attachment pivot. Current entity/bone rotation and the resulting camera offset
-are applied immediately, without angular/orbit damping. The angle values and
-existing aiming override order are unchanged. Position lag can change framing.
-Maximum lag bounds the distance behind the current pivot. The filter advances
-with demo time, freezes during pause/timescale 0,
-and resets on source/entity changes, editor seeks, backward time and large time
-gaps. It uses analytic integration between sampled target positions, including a
-matching response for linearly moving targets at different rendering FPS.
-Use the reset command to reframe while paused, or temporarily use rigid follow.
+Entity follow and bone motion damping are independent, optional critically damped
+springs. Both default to 0 (rigid). `follow <seconds>` smooths entity translation,
+including small jumps caused by missing demo snapshots. `boneHalfLife <seconds>`
+smooths the bone's offset relative to the entity, softening animation such as
+head bob without making the entity's whole movement more sluggish. A stationary
+bone offset keeps its full height; this does not shrink the skeleton or move the
+camera down to the entity origin. Larger values smooth more and introduce more
+positional lag. Both springs reuse the existing campath modifier spring math;
+they do not change `mirv_input cfg smooth` settings.
+
+For a stationary target correction starting at rest, a half-life is the time to
+close half the positional gap. The exact spring update preserves velocity across
+small corrections instead of inferring a new velocity from each positional jump.
+It does not reconstruct missing snapshots. Angles and rotated camera offsets
+remain immediate in the existing attachment modes; the aiming override order is
+unchanged. Use `world` mode below to keep orientation independent of animation.
+
+`maxDistance` bounds the total position lag from both filters. `teleportDistance`
+resets both filters when the entity moves farther than that many units between
+frames; 1024 is the default and 0 disables this distance reset. Small corrections
+are smoothed. Explicit editor seeks, backward time, attachment/entity changes,
+loading and time gaps greater than 0.25 demo seconds reset the filters. Missing
+attachment poses also invalidate the history. Filters advance with demo time and
+freeze during pause or timescale 0. Use `reset` to reframe while paused. Set both
+`follow 0` and `follow boneHalfLife 0` to disable positional smoothing entirely.
 For repeatable recording, begin from the same earlier point and allow preroll.
-Collision and follow can be enabled independently. Collision retraction takes
-priority over lag when keeping the camera outside an obstacle requires moving
-inward immediately.
+Collision remains independent and takes priority over smoothing immediately.
 
 `attachMode entity` uses entity-facing angles at the bone position; `bone` uses
 bone angles; `aligned` initially aligns with the entity and then follows bone
-rotation. Set the mode before attaching. These orientation choices remain
-independent of positional following.
+rotation. The new `world` mode follows the entity/bone position but keeps the
+camera heading it had when attached. Its offset stays in that fixed orientation
+rather than orbiting around the subject as the subject turns. Head bob and other
+bone translation still affect the camera and can be softened with `boneHalfLife`.
+A separate `mirv_aim` override can still change the final angles.
+
+Set the orientation mode before attaching; changing it does not rebuild an
+existing attachment. For example, replace the player and bone with your target:
+
+```text
+mirv_cam attachMode world
+mirv_cam attach "Player name" "head" -60 0 0
+mirv_cam attach follow 0.15
+mirv_cam attach follow boneHalfLife 0.08
+```
+
+`mirv_cam attach capture` also works in `world` mode: the captured camera heading
+and world-space offset stay fixed while the target translates. Later manual
+camera rotation/offset controls remain available. The Observing tab exposes the
+orientation choice; the Camera collision section exposes the smoothing controls.
 
 These attachment controls require `mirv_cam attach` to remain the active position
 source, with all three source-origin components enabled. A later free-camera,

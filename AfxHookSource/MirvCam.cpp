@@ -31,7 +31,9 @@ static void MirvCam_SetAttachCalc(IMirvVecAngCalc * calc)
 
 static char const * MirvCam_AttachModeName(int mode)
 {
-	return MIRV_TF2_BONEMODE_ENTITY == mode ? "entity" : (MIRV_TF2_BONEMODE_ALIGNED == mode ? "aligned" : "bone");
+	return MIRV_TF2_BONEMODE_WORLD == mode ? "world" :
+		(MIRV_TF2_BONEMODE_ENTITY == mode ? "entity" :
+		(MIRV_TF2_BONEMODE_ALIGNED == mode ? "aligned" : "bone"));
 }
 
 
@@ -165,12 +167,18 @@ void CMirvCam::RebuildCalc(void)
 
 CMirvCam g_MirvCam;
 
-bool MirvCam_GetAttachAnchor(double origin[3], void *&entity, const void *&identity)
+int MirvCam_GetAttachMode()
+{
+	return g_MirvCamAttachMode;
+}
+
+bool MirvCam_GetAttachAnchor(double origin[3], void *&entity, const void *&identity, double entityOrigin[3])
 {
 	if (!g_MirvCamAttachCalc || g_MirvCam.Source_get() != g_MirvCamAttachCalc ||
-		!g_MirvCam.m_SourceUseX || !g_MirvCam.m_SourceUseY || !g_MirvCam.m_SourceUseZ) return false;
+		!g_MirvCam.m_SourceUseX || !g_MirvCam.m_SourceUseY || !g_MirvCam.m_SourceUseZ)
+		return false;
 	identity = g_MirvCamAttachCalc;
-	return Mirv_Tf2_GetAttachAnchor(g_MirvCamAttachCalc, origin, entity);
+	return Mirv_Tf2_GetAttachAnchor(g_MirvCamAttachCalc, origin, entity, entityOrigin);
 }
 
 // Camera collision console command.
@@ -258,7 +266,8 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 		return;
 	}
 	if ((argc == 4 && _stricmp(args->ArgV(3), "status")) ||
-	    (argc == 5 && !_stricmp(args->ArgV(3), "maxDistance")))
+	    (argc == 5 && (!_stricmp(args->ArgV(3), "maxDistance") || !_stricmp(args->ArgV(3), "boneHalfLife") ||
+	                   !_stricmp(args->ArgV(3), "teleportDistance"))))
 	{
 		const char *value = args->ArgV(argc - 1);
 		char *end = nullptr;
@@ -266,6 +275,10 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 		valid = end != value && !*end;
 		if (argc == 4)
 			settings.FollowHalfLife = number;
+		else if (!_stricmp(args->ArgV(3), "boneHalfLife"))
+			settings.BoneHalfLife = number;
+		else if (!_stricmp(args->ArgV(3), "teleportDistance"))
+			settings.FollowTeleportDistance = number;
 		else
 			settings.FollowMaxDistance = number;
 		changed = valid;
@@ -273,14 +286,22 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 	else if (argc != 3 && !(argc == 4 && !_stricmp(args->ArgV(3), "status")))
 		valid = false;
 	if (!valid || (changed && !MirvCameraCollisionSet(settings)))
-		Tier0_Warning("Attachment follow edit rejected: requires TF2/TF2C, finite half-life 0..10 s and "
-		              "maxDistance 1..10000 units.\n");
+		Tier0_Warning(
+		    "Attachment follow edit rejected: requires TF2/TF2C, finite half-life 0..10 s and "
+		    "maxDistance 1..10000 units, boneHalfLife 0..10 s, teleportDistance 0..1000000 units.\n");
 	settings = MirvCameraCollisionGet();
-	Tier0_Msg("Attachment positional follow: half-life %.3f s (0 = rigid), maximum lag %.1f units.\n",
-	          settings.FollowHalfLife, settings.FollowMaxDistance);
+	Tier0_Msg("Attachment smooth follow: entity half-life %.3f s, bone half-life %.3f s (0 = rigid), "
+	          "maximum lag %.1f units, teleport reset %.1f units (0 = disabled).\n",
+	          settings.FollowHalfLife, settings.BoneHalfLife, settings.FollowMaxDistance,
+	          settings.FollowTeleportDistance);
 	if (argc == 3 || !valid)
-		Tier0_Msg("mirv_cam attach follow <half-life seconds> | maxDistance <units> | reset | "
-		          "status\nDemo-time following affects position only; seeks/cuts reset history.\n");
+		Tier0_Msg("mirv_cam attach follow <seconds> - Entity translation smoothing; 0 disables.\n"
+		          "mirv_cam attach follow boneHalfLife <seconds> - Bone motion damping; 0 disables.\n"
+		          "mirv_cam attach follow maxDistance <units> - Maximum combined position lag.\n"
+		          "mirv_cam attach follow teleportDistance <units> - Large movement reset; 0 disables.\n"
+		          "mirv_cam attach follow reset - Reset both filters.\n"
+		          "mirv_cam attach follow status - Show settings.\n"
+		          "Damping uses demo time. Angles are unchanged; seeks/cuts reset history.\n");
 }
 // End camera collision console command.
 
@@ -784,18 +805,20 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				if (0 == _stricmp("bone", modeName)) g_MirvCamAttachMode = MIRV_TF2_BONEMODE_BONE;
 				else if (0 == _stricmp("entity", modeName)) g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ENTITY;
 				else if (0 == _stricmp("aligned", modeName)) g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ALIGNED;
+				else if (0 == _stricmp("world", modeName)) g_MirvCamAttachMode = MIRV_TF2_BONEMODE_WORLD;
 				else
-					Tier0_Warning("Unknown mode \"%s\", use bone, entity or aligned.\n", modeName);
+					Tier0_Warning("Unknown mode \"%s\", use bone, entity, aligned or world.\n", modeName);
 
 				return;
 			}
 
 			Tier0_Msg(
-				"mirv_cam attachMode bone|entity|aligned - Angles for mirv_cam attach with a bone:\n"
+				"mirv_cam attachMode bone|entity|aligned|world - Angles for mirv_cam attach with a bone:\n"
 				"bone - The bone's own angles (depends on the skeleton, usually needs rotation offsets).\n"
 				"entity - The entity's facing (for players the body direction), the position is still the bone's.\n"
 				"aligned - Starts looking like the entity (facing forward) and then follows the bone's rotation.\n"
-				"Current value: %s\n"
+				"world - Keeps the camera's current heading and offset direction while following translation.\n"
+				"Set before attaching. Current value: %s\n"
 				, MirvCam_AttachModeName(g_MirvCamAttachMode)
 			);
 			return;

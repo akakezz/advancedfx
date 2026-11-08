@@ -272,6 +272,8 @@ void MirvCalcs_LevelInitPreEntity();
 #define MIRV_TF2_BONEMODE_BONE 0
 #define MIRV_TF2_BONEMODE_ENTITY 1
 #define MIRV_TF2_BONEMODE_ALIGNED 2
+// world: Follow entity/bone translation with a fixed world-space orientation.
+#define MIRV_TF2_BONEMODE_WORLD 3
 
 struct MirvTf2Bone_t
 {
@@ -309,6 +311,7 @@ struct MirvCameraCollisionSettings
 {
 	bool Free = false, Campath = false, Attached = false, Players = true, Slide = true, IgnoreLocal = true;
 	double Radius = 6, ReturnHalfLife = .2, ReturnSpeed = 300, FollowHalfLife = 0, FollowMaxDistance = 128;
+	double BoneHalfLife = 0, FollowTeleportDistance = 1024;
 };
 MirvCameraCollisionSettings MirvCameraCollisionGet();
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);
@@ -317,7 +320,7 @@ void MirvCameraAttachedReset();
 bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,
 	double sceneTime, double pathTime, const double seed[3], float &x, float &y, float &z);
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3],
-	double sceneTime, float &x, float &y, float &z);
+	double sceneTime, float &x, float &y, float &z, const double *entityOrigin = nullptr);
 // End optional TF2 camera collision.
 
 // True if tracing is available. outIndex is -1 when no networked entity was hit.
@@ -327,13 +330,15 @@ bool Mirv_Tf2_TraceEntity(const double origin[3], const double angles[3], int & 
 /// <returns>true on success.</returns>
 bool Mirv_Tf2_ParseBoneArg(int entityIndex, const char * arg, int & outBone);
 
+// Cached bone/entity pivot and entity origin from the latest attachment evaluation.
+bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3]);
+
 /// <summary>Makes the camera pose (e.g. from a free camera) the fixed pose of the camera relative to the target of a TF2 entity calc (created with NewTf2EntityIndexCalc).
 /// From now on position and angles follow the target (entity or bone) and keep this relative pose.</summary>
 /// <param name="camOrigin">World position.</param>
 /// <param name="camAngles">World angles (pitch, yaw, roll).</param>
 /// <param name="outLocalOffset">Position relative to the target in the camera's own axes (forward, left, up).</param>
 /// <returns>true on success.</returns>
-bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity);
 bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc * calc, const double camOrigin[3], const double camAngles[3], float outLocalOffset[3]);
 
 /// <returns>true on success. The entity's abs angles and render angles (pitch, yaw, roll).</returns>

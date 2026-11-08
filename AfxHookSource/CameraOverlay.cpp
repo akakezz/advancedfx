@@ -4,6 +4,7 @@
 #include "CampathDrawer.h"
 #include "Gui.h"
 #include "MirvCalcs.h"
+#include "MirvCam.h"
 #include "MirvTime.h"
 #include "RenderView.h"
 #include "WrpVEngineClient.h"
@@ -1895,6 +1896,20 @@ static void DrawObserving()
 		}
 		if (!count)
 			ImGui::TextDisabled("No model bones available for this entity.");
+		const char *attachModes[] = {"bone", "entity", "aligned", "world"};
+		int attachMode = std::clamp(MirvCam_GetAttachMode(), 0, 3);
+		if (ImGui::BeginCombo("Attach orientation", attachModes[attachMode]))
+		{
+			for (int i = 0; i < 4; ++i)
+				if (ImGui::Selectable(attachModes[i], attachMode == i))
+				{
+					char command[80];
+					std::snprintf(command, sizeof(command), "mirv_cam attachMode %s", attachModes[i]);
+					Afx_ExecClientCmd(command);
+				}
+			ImGui::EndCombo();
+		}
+		ImGui::TextDisabled("World keeps the camera heading and offset direction. Mode applies on attachment.");
 		if (ImGui::Button("Attach selected"))
 		{
 			char cmd[256];
@@ -3335,9 +3350,21 @@ void Draw()
 					char command[128];std::snprintf(command,sizeof(command),"mirv_cam collision returnSpeed %.9g",collision.ReturnSpeed);Afx_ExecClientCmd(command);
 				}
 				ImGui::TextDisabled("Campaths return gradually after blocking. Speed 0 removes the cap; half-life 0 removes damping.");
-				if (ImGui::InputDouble("Attachment position half-life (s)", &collision.FollowHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
+				if (ImGui::InputDouble("Entity follow half-life (s)", &collision.FollowHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
 				{
 					char command[128];std::snprintf(command,sizeof(command),"mirv_cam attach follow %.9g",collision.FollowHalfLife);Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Bone motion half-life (s)", &collision.BoneHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam attach follow boneHalfLife %.9g", collision.BoneHalfLife);
+					Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Attachment teleport reset (units)", &collision.FollowTeleportDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam attach follow teleportDistance %.9g", collision.FollowTeleportDistance);
+					Afx_ExecClientCmd(command);
 				}
 				if (ImGui::InputDouble("Maximum attachment lag (units)", &collision.FollowMaxDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
 				{
@@ -3345,7 +3372,7 @@ void Draw()
 				}
 				if (ImGui::Button("Reset attached follow"))
 					Afx_ExecClientCmd("mirv_cam attach follow reset");
-				ImGui::TextWrapped("Attachment follow lags pivot translation only; 0 is rigid. Rotation responds immediately. Collision retracts immediately and restores boom length gradually. The pivot sweep ignores the subject, but the camera endpoint must clear its hull.");
+				ImGui::TextWrapped("Entity follow smooths movement and small snapshot corrections; bone motion damping smooths animation separately. Both default to 0 (rigid). Teleport reset 0 disables the distance reset. Angles are unchanged; use world orientation to avoid inheriting turns. Collision retracts immediately and restores boom length gradually. The pivot sweep ignores the subject, but the camera endpoint must clear its hull.");
 				if (ImGui::Button("Reset collision history"))
 					Afx_ExecClientCmd("mirv_cam collision reset");
 				ImGui::TextWrapped("TF2/TF2C only; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");

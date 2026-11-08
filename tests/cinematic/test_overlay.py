@@ -75,6 +75,7 @@ int Mirv_Tf2_GetMaxPlayers(){return 1;}bool Mirv_Tf2_GetPlayerInfo(int i,char*b,
 constexpr int MIRV_TF2_MAX_BONES=256;
 struct MirvTf2BoneName_t{char name[64];int parent;};
 int Mirv_Tf2_GetBoneNames(int entity,MirvTf2BoneName_t*out){if(entity!=1)return 0;snprintf(out[0].name,64,"root");snprintf(out[1].name,64,"bip_head");return 2;}
+int MirvCam_GetAttachMode(){return 2;}
 int tracedEntity=1;bool traceAvailable=true;
 bool Mirv_Tf2_TraceEntity(const double*,const double*,int&out){out=tracedEntity;return traceAvailable;}
 using LONG=long;using PVOID=void*;constexpr LONG NO_ERROR=0;LONG povHookError=0;int povHookCommits=0;
@@ -568,7 +569,7 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  ImGui::SetWindowPos("Campath Graph",ImVec2(580,50));
  g_Hook_VClient_RenderView.m_CamPaths.RestoreState(documentBeforeSpeed);g_MirvTime.Time=clockBeforeSpeed;g_ShowCurveEditor=false;g_ShowSequencer=true;FinishEdit();frame();frame();
  button("Observing");check(widgets.count("1: Scout"),"TF2 player list is visible");check(!widgets.count("View")&&!widgets.count("Attach")&&!widgets.count("Bones"),"Player list has no row buttons");
- MirvCampathPreview_SetActive(true);path.Enabled_set(true);button("1: Scout");check(commands.back().find("spec_player \"#42\"")!=std::string::npos,"Player click uses explicit user ID, not entity slot or numeric name");check(commands.back().find("spec_autodirector 0")!=std::string::npos&&commands.back().find("spec_mode 4")!=std::string::npos&&commands.back().find("mirv_cam attach clear")!=std::string::npos,"Native spectating clears attachment and selects in-eye view");check(!MirvCampathPreview_IsActive()&&!path.Enabled_get(),"Spectating releases HLAE path overrides");size_t commandsBefore=commands.size();engine.Hltv=false;button("1: Scout");check(commands.size()==commandsBefore,"POV demo reports unsupported native spectating without issuing misleading commands");engine.Hltv=true;check(widgets.count("Bone"),"Selecting player exposes named bones");button("Bone");check(widgets.count("1: bip_head"),"Bone picker lists model bone names");button("1: bip_head");button("Attach selected");check(commands.back().find("mirv_cam attach 1 1")!=std::string::npos,"Named bone selection drives native attachment");button("Trace entity");check(widgets.count("Attach selected"),"Trace selects entity in observing panel");tracedEntity=-1;button("Trace entity");check(widgets.count("Attach selected"),"No-hit trace preserves existing selection");tracedEntity=7;button("Trace entity");button("Attach selected");check(commands.back().find("mirv_cam attach 7 -1")!=std::string::npos,"Trace can select and attach non-player entities");traceAvailable=false;button("Trace entity");check(widgets.count("Attach selected"),"Missing trace hook preserves selected entity");
+ MirvCampathPreview_SetActive(true);path.Enabled_set(true);button("1: Scout");check(commands.back().find("spec_player \"#42\"")!=std::string::npos,"Player click uses explicit user ID, not entity slot or numeric name");check(commands.back().find("spec_autodirector 0")!=std::string::npos&&commands.back().find("spec_mode 4")!=std::string::npos&&commands.back().find("mirv_cam attach clear")!=std::string::npos,"Native spectating clears attachment and selects in-eye view");check(!MirvCampathPreview_IsActive()&&!path.Enabled_get(),"Spectating releases HLAE path overrides");size_t commandsBefore=commands.size();engine.Hltv=false;button("1: Scout");check(commands.size()==commandsBefore,"POV demo reports unsupported native spectating without issuing misleading commands");engine.Hltv=true;check(widgets.count("Bone"),"Selecting player exposes named bones");button("Bone");check(widgets.count("1: bip_head"),"Bone picker lists model bone names");button("1: bip_head");button("Attach orientation");button("world");check(commands.back()=="mirv_cam attachMode world","World orientation selection queues the existing attachment command");button("Attach selected");check(widgets.count("Attach orientation"),"Observing exposes attachment orientation modes");check(commands.back().find("mirv_cam attach 1 1")!=std::string::npos,"Named bone selection drives native attachment");button("Trace entity");check(widgets.count("Attach selected"),"Trace selects entity in observing panel");tracedEntity=-1;button("Trace entity");check(widgets.count("Attach selected"),"No-hit trace preserves existing selection");tracedEntity=7;button("Trace entity");button("Attach selected");check(commands.back().find("mirv_cam attach 7 -1")!=std::string::npos,"Trace can select and attach non-player entities");traceAvailable=false;button("Trace entity");check(widgets.count("Attach selected"),"Missing trace hook preserves selected entity");
  button("Recording");check(widgets.count("Start Recording"),"TF2 screen recording panel is available");button("Start Recording");check(!IsOpen(),"Recording closes the overlay before capture");check(commands.back().find("mirv_streams record screen enabled 1")!=std::string::npos,"Recording uses TF2 screen capture");
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
@@ -645,7 +646,7 @@ void AttachedFollowTests(){
  collisionTrace.Boxes.clear();MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,3,x,y,z);const double movedPivot[3]={1,0,0};x=21;MirvCameraAttachedApply(&attachment,(void*)2,movedPivot,3.01,x,y,z);check(x==21,"Collision alone does not add lag to an unobstructed rigid attachment");
  cfg.Attached=false;cfg.FollowHalfLife=.2;cfg.FollowMaxDistance=128;MirvCameraCollisionSet(cfg);const int queries=collisionTrace.Queries;
  auto simulate=[&](int fps){MirvCameraAttachedReset();x=y=z=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,1,x,y,z);for(int i=1;i<=fps;++i){const double p[3]={10.0*i/fps,0,0};x=float(p[0]);MirvCameraAttachedApply(&attachment,(void*)2,p,1+double(i)/fps,x,y,z);}return double(x);};
- const double low=simulate(30),high=simulate(120);check(low>0&&low<10&&std::abs(low-high)<.0001,"Positional follow has the same moving-target response at 30 and 120 FPS");
+ const double low=simulate(30),high=simulate(120);check(low>0&&low<10&&std::abs(low-high)<.13,"Smooth follow remains consistent across 30 and 120 FPS target sampling");
  check(collisionTrace.Queries==queries,"Positional follow can run without collision traces");
  const double endPivot[3]={10,0,0};const double frozen=x;for(int i=0;i<10;++i){x=10;MirvCameraAttachedApply(&attachment,(void*)2,endPivot,2,x,y,z);}check(std::abs(x-frozen)<1e-5,"Demo-time positional follow freezes while paused");
  cfg.FollowMaxDistance=2;MirvCameraCollisionSet(cfg);const double farPivot[3]={100,0,0};x=100;MirvCameraAttachedApply(&attachment,(void*)2,farPivot,2.01,x,y,z);check(x>=98,"Maximum positional lag is bounded");
@@ -672,16 +673,77 @@ void AttachedFollowTests(){
  collisionTrace.Boxes[1].Min[2]=100;collisionTrace.Boxes[1].Max[2]=200;MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,8.01,x,y,z);check(x==20,"An open spawn door no longer leaves its invisible team barrier blocking the camera");
  collisionClasses[0].second="func_respawnroomvisualizer";MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,8.02,x,y,z);check(x==20,"Spawn barrier filtering also accepts the mapped classname");
  collisionClasses.clear();collisionTrace.Boxes.clear();
+ // A missing snapshot is a step in the target, not a request to jump the camera.
+ cfg.Attached=false;cfg.FollowHalfLife=.2;cfg.BoneHalfLife=0;cfg.FollowMaxDistance=1000;MirvCameraCollisionSet(cfg);
+ auto snapshot=[&](int fps){MirvCameraAttachedReset();x=y=z=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,10,x,y,z);double old=0;const double goal[3]={20,0,0};for(int i=1;i<=fps;++i){x=20;MirvCameraAttachedApply(&attachment,(void*)2,goal,10+double(i)/fps,x,y,z);check(x>=old&&x<20,"A snapshot correction settles smoothly without oscillation or snapping");old=x;}return double(x);};
+ const double step30=snapshot(30),step120=snapshot(120);check(std::abs(step30-step120)<1e-5,"A stationary-target correction has the same response at 30 and 120 FPS");
+ // Bone animation has its own filter and can be damped without delaying the entity root.
+ cfg.FollowHalfLife=0;cfg.BoneHalfLife=.1;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();
+ const double head[3]={0,0,72};x=0;y=0;z=72;MirvCameraAttachedApply(&attachment,(void*)2,head,20,x,y,z,seed);
+ const double movedRoot[3]={10,0,0},bobbed[3]={10,0,82};x=10;y=0;z=82;MirvCameraAttachedApply(&attachment,(void*)2,bobbed,20.01,x,y,z,movedRoot);check(x==10&&z>72&&z<73,"Bone damping softens head bob while rigid root translation remains immediate");
+ const double bonePaused=z;x=10;z=82;MirvCameraAttachedApply(&attachment,(void*)2,bobbed,20.01,x,y,z,movedRoot);check(std::abs(z-bonePaused)<1e-5,"Bone damping freezes with demo time");
+ cfg.FollowHalfLife=.15;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();x=0;z=72;MirvCameraAttachedApply(&attachment,(void*)2,head,21,x,y,z,seed);x=10;z=82;MirvCameraAttachedApply(&attachment,(void*)2,bobbed,21.01,x,y,z,movedRoot);check(x>0&&x<1&&z>72&&z<73,"Root follow and bone damping work independently in combination");
+ cfg.FollowTeleportDistance=50;MirvCameraCollisionSet(cfg);const double teleRoot[3]={100,0,0},teleHead[3]={100,0,72};x=100;z=72;MirvCameraAttachedApply(&attachment,(void*)2,teleHead,21.02,x,y,z,teleRoot);check(x==100&&z==72,"A large entity teleport resets both filters");
+ cfg.FollowTeleportDistance=0;MirvCameraCollisionSet(cfg);x=0;z=72;MirvCameraAttachedApply(&attachment,(void*)2,head,21.03,x,y,z,seed);check(x>90,"Teleport distance reset can be disabled deliberately");
+ MirvCameraAttachedReset();x=0;z=72;MirvCameraAttachedApply(&attachment,(void*)2,head,22,x,y,z,seed);cfg.Attached=true;MirvCameraCollisionSet(cfg);collisionTrace.Boxes={{{8,-100,-100},{9,100,100},nullptr}};x=10;z=82;MirvCameraAttachedApply(&attachment,(void*)2,bobbed,22.01,x,y,z,movedRoot);check(x>=9.999,"Collision takes priority when the smoothed goal is across a wall from the current pivot");
+ collisionTrace.Boxes.clear();cfg.Attached=false;cfg.FollowHalfLife=1e-300;cfg.BoneHalfLife=1e-300;MirvCameraCollisionSet(cfg);x=10;z=82;MirvCameraAttachedApply(&attachment,(void*)2,bobbed,22.02,x,y,z,movedRoot);check(std::isfinite(x)&&std::isfinite(z)&&x==10&&z==82,"Tiny positive smoothing values stay finite and behave as rigid attachment");
+ cfg.FollowHalfLife=.2;cfg.BoneHalfLife=0;cfg.FollowTeleportDistance=1024;MirvCameraCollisionSet(cfg);
  collisionCommand({"mirv_cam","collision","attached","1"});check(MirvCameraCollisionGet().Attached,"Console exposes attached-camera collision independently");
  collisionCommand({"mirv_cam","collision","ignoreLocal","0"});check(!MirvCameraCollisionGet().IgnoreLocal,"Console exposes local-player inclusion");
  collisionCommand({"mirv_cam","collision","returnHalfLife","0.4"});collisionCommand({"mirv_cam","collision","returnSpeed","50"});check(MirvCameraCollisionGet().ReturnHalfLife==.4&&MirvCameraCollisionGet().ReturnSpeed==50,"Console configures collision return damping and speed");
  collisionCommand({"mirv_cam","attach","follow","0.3"});collisionCommand({"mirv_cam","attach","follow","maxDistance","256"});check(MirvCameraCollisionGet().FollowHalfLife==.3&&MirvCameraCollisionGet().FollowMaxDistance==256,"Console configures positional follow and lag limit");
+ collisionCommand({"mirv_cam","attach","follow","boneHalfLife","0.12"});collisionCommand({"mirv_cam","attach","follow","teleportDistance","512"});check(MirvCameraCollisionGet().BoneHalfLife==.12&&MirvCameraCollisionGet().FollowTeleportDistance==512,"Console configures bone damping and teleport resets independently");
+ auto invalid=MirvCameraCollisionGet();invalid.BoneHalfLife=std::numeric_limits<double>::quiet_NaN();check(!MirvCameraCollisionSet(invalid),"Non-finite bone smoothing is rejected");invalid=MirvCameraCollisionGet();invalid.FollowTeleportDistance=-1;check(!MirvCameraCollisionSet(invalid),"Negative teleport reset is rejected");
  const auto good=MirvCameraCollisionGet();auto bad=good;bad.FollowHalfLife=-1;check(!MirvCameraCollisionSet(bad)&&MirvCameraCollisionGet().FollowHalfLife==good.FollowHalfLife,"Invalid follow preferences reject atomically");bad=good;bad.ReturnSpeed=std::numeric_limits<double>::infinity();check(!MirvCameraCollisionSet(bad),"Invalid return speed rejects");
  MirvCameraCollisionSettings off;MirvCameraCollisionSet(off);MirvCameraCollisionReset();collisionTrace.Boxes.clear();
 }
 """
 
-test=test.replace('int main(){try{',collision_tests+'\nint main(){try{CollisionTests();AttachedFollowTests();',1)
+# Exercise the actual attachment orientation/capture code with deterministic entity poses.
+mode_source=(root/'AfxHookSource/MirvCalcs.cpp').read_text()
+mode_class=mode_source[mode_source.index('class CMirvVecAngTf2EntityIndexCalc'):mode_source.index('#ifndef _WIN64\nclass CMirvVecAngHandleAttachmentCalc')]
+mode_class=mode_class[:mode_class.index('\tSOURCESDK::TF2::IClientTools * GetTools(')]+r"""
+ SOURCESDK::TF2::IClientTools*GetTools(){return &tools;}
+ bool GetBase(SOURCESDK::TF2::IClientTools*,SOURCESDK::Vector&pos,float base[3][3],SOURCESDK::QAngle&raw,SOURCESDK::QAngle&facing,bool&ok){
+  if(!poseValid)return false;pos=pose;raw=boneAngles;facing=entityAngles;ok=true;
+  Mirv_AngleMatrix3(raw.x,raw.y,raw.z,base);m_AnchorEntity=(void*)2;
+  m_AnchorRoot[0]=m_AnchorRoot[1]=m_AnchorRoot[2]=0;return true;
+ }
+};
+"""
+start=mode_class.index('bool GetAnglesInfo(');body=mode_class.index('{',start);depth=1;end=body+1
+while depth:
+ depth+=(mode_class[end]=='{')-(mode_class[end]=='}');end+=1
+mode_class=mode_class[:body]+'{ return false; }'+mode_class[end:]
+mode_math=mode_source[mode_source.index('static void Mirv_AngleMatrix3('):mode_source.index('class CMirvVecAngTf2EntityIndexCalc')]
+mode_preamble=r"""
+namespace AttachmentModeTest {
+namespace SOURCESDK {struct Vector{float x=0,y=0,z=0;};using QAngle=Vector;namespace TF2{using IClientTools=::SOURCESDK::TF2::IClientTools;}}
+struct CMirvVecAngCalc{CMirvVecAngCalc(const char*){}virtual void Console_PrintBegin(){}};
+struct View{double LastCameraAngles[3]={12,37,-8};}g_Hook_VClient_RenderView;
+SOURCESDK::TF2::IClientTools tools;
+SOURCESDK::Vector pose{0,0,72};SOURCESDK::QAngle boneAngles{80,170,20},entityAngles{0,90,0};bool poseValid=true;
+"""
+mode_constants=(root/'AfxHookSource/MirvCalcs.h').read_text();mode_constants=mode_constants[mode_constants.index('#define MIRV_TF2_BONEMODE_BONE'):mode_constants.index('struct MirvTf2Bone_t')]
+mode_tests=r"""
+void Run(){
+ SOURCESDK::Vector position;SOURCESDK::QAngle angles;float offset[3];
+ CMirvVecAngTf2EntityIndexCalc camera(nullptr,2,1,MIRV_TF2_BONEMODE_WORLD);
+ check(camera.CalcVecAng(position,angles)&&std::abs(angles.x-12)<.001&&std::abs(angles.y-37)<.001&&std::abs(angles.z+8)<.001,"World mode starts with the current camera heading instead of entity or bone angles");
+ for(int i=0;i<80;++i){pose={float(i),float(i*.5),float(72+4*sin(i))};entityAngles={float(i%30),float(i*5),0};boneAngles={float(i*3),float(i*7),float(i*4)};camera.CalcVecAng(position,angles);check(position.x==pose.x&&position.y==pose.y&&position.z==pose.z&&std::abs(angles.y-37)<.001&&std::abs(angles.x-12)<.001&&std::abs(angles.z+8)<.001,"World mode retains head bob and translation without inheriting either rotation");}
+ const double origin[3]={pose.x-50,pose.y+20,pose.z+10},heading[3]={-10,99,12};check(camera.CaptureCamera(origin,heading,offset),"World mode captures a relative camera composition");
+ for(int i=0;i<80;++i){pose={float(i),float(i*2),float(72+8*cos(i))};boneAngles={float(i*2),float(i*8),float(i*5)};entityAngles.y=float(i*9);camera.CalcVecAng(position,angles);check(std::abs(position.x-pose.x+50)<.001&&std::abs(position.y-pose.y-20)<.001&&std::abs(position.z-pose.z-10)<.001&&std::abs(angles.x+10)<.001&&std::abs(angles.y-99)<.001&&std::abs(angles.z-12)<.001,"Captured world-mode offset does not orbit when the player or bone turns");}
+ CMirvVecAngTf2EntityIndexCalc root(nullptr,2,-1,MIRV_TF2_BONEMODE_WORLD);root.CalcVecAng(position,angles);check(std::abs(angles.y-37)<.001,"World orientation also works without a bone");
+ CMirvVecAngTf2EntityIndexCalc bone(nullptr,2,1,MIRV_TF2_BONEMODE_BONE);bone.CalcVecAng(position,angles);check(angles.x==boneAngles.x&&angles.y==boneAngles.y,"Existing bone mode retains bone rotation");
+ CMirvVecAngTf2EntityIndexCalc entity(nullptr,2,1,MIRV_TF2_BONEMODE_ENTITY);entity.CalcVecAng(position,angles);check(angles.y==entityAngles.y,"Existing entity mode retains entity facing");
+ boneAngles={0,0,0};entityAngles={0,45,0};CMirvVecAngTf2EntityIndexCalc aligned(nullptr,2,1,MIRV_TF2_BONEMODE_ALIGNED);aligned.CalcVecAng(position,angles);check(std::abs(angles.y-45)<.001,"Aligned mode still initializes from entity facing");boneAngles.y=30;aligned.CalcVecAng(position,angles);check(std::abs(angles.y-75)<.001,"Aligned mode still inherits subsequent bone turns");
+ poseValid=false;double anchor[3],rootOrigin[3];void*subject=nullptr;check(!camera.CalcVecAng(position,angles)&&!camera.GetAttachAnchor(anchor,subject,rootOrigin),"Missing attachment poses invalidate the anchor rather than reusing stale data");poseValid=true;
+}
+}
+"""
+test=test.replace('void frame(',mode_preamble+mode_constants+mode_math+mode_class+mode_tests+'\nvoid frame(',1)
+
+test=test.replace('int main(){try{',collision_tests+'\nint main(){try{CollisionTests();AttachedFollowTests();AttachmentModeTest::Run();',1)
 
 neo=(root/'shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.cpp').read_text()
 neo='extern void TestRecordNeoLabel(int,int);\n'+neo.replace('snprintf(lbl, sizeof(lbl), "%d", labelIndex);','snprintf(lbl, sizeof(lbl), "%d", labelIndex); TestRecordNeoLabel(*frame,labelIndex);')

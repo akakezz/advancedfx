@@ -2125,6 +2125,12 @@ public:
 	{
 		memset(m_Fix, 0, sizeof(m_Fix));
 		memset(m_Offset, 0, sizeof(m_Offset));
+		if (m_Mode == MIRV_TF2_BONEMODE_WORLD)
+		{
+			const auto &angles = g_Hook_VClient_RenderView.LastCameraAngles;
+			Mirv_AngleMatrix3(float(angles[0]), float(angles[1]), float(angles[2]), m_Fix);
+			m_Calibrated = true;
+		}
 	}
 
 	virtual void Console_PrintBegin(void)
@@ -2134,7 +2140,9 @@ public:
 		Tier0_Msg(
 			", fn: \"tf2EntityIndex\", index: %i, boneIndex: %i, mode: %s, captured: %s"
 			, m_EntityIndex, m_BoneIndex
-			, MIRV_TF2_BONEMODE_ENTITY == m_Mode ? "entity" : (MIRV_TF2_BONEMODE_ALIGNED == m_Mode ? "aligned" : "bone")
+			, MIRV_TF2_BONEMODE_WORLD == m_Mode ? "world" :
+			  (MIRV_TF2_BONEMODE_ENTITY == m_Mode ? "entity" :
+			  (MIRV_TF2_BONEMODE_ALIGNED == m_Mode ? "aligned" : "bone"))
 			, m_Captured ? "yes" : "no"
 		);
 	}
@@ -2160,7 +2168,12 @@ public:
 		m_AnchorValid = true;
 		const bool bone = 0 <= m_BoneIndex;
 
-		if (!m_Captured)
+		if (m_Mode == MIRV_TF2_BONEMODE_WORLD)
+		{
+			Mirv_AngleMatrix3(0, 0, 0, base);
+			baseOk = true;
+		}
+		if (!m_Captured && m_Mode != MIRV_TF2_BONEMODE_WORLD)
 		{
 			if (!bone || MIRV_TF2_BONEMODE_ENTITY == m_Mode)
 			{
@@ -2208,10 +2221,14 @@ public:
 		return true;
 	}
 
-	bool GetAttachAnchor(double origin[3], void *&entity) const
+	bool GetAttachAnchor(double origin[3], void *&entity, double entityOrigin[3]) const
 	{
-		if (!m_AnchorValid || !m_AnchorEntity) return false;
-		std::copy(m_Anchor, m_Anchor + 3, origin); entity = m_AnchorEntity; return true;
+		if (!m_AnchorValid || !m_AnchorEntity)
+			return false;
+		std::copy(m_Anchor, m_Anchor + 3, origin);
+		std::copy(m_AnchorRoot, m_AnchorRoot + 3, entityOrigin);
+		entity = m_AnchorEntity;
+		return true;
 	}
 
 	// See Mirv_Tf2_CaptureCamera.
@@ -2231,6 +2248,8 @@ public:
 		if (!GetBase(iface, pos, base, rawAngles, facing, baseOk) || !baseOk)
 			return false;
 
+		if (m_Mode == MIRV_TF2_BONEMODE_WORLD)
+			Mirv_AngleMatrix3(0, 0, 0, base);
 		float cam[3][3];
 		Mirv_AngleMatrix3((float)camAngles[0], (float)camAngles[1], (float)camAngles[2], cam);
 
@@ -2290,7 +2309,7 @@ public:
 
 private:
 	bool m_AnchorValid = false;
-	double m_Anchor[3] = {};
+	double m_Anchor[3] = {}, m_AnchorRoot[3] = {};
 	void *m_AnchorEntity = nullptr;
 	int m_EntityIndex;
 	int m_BoneIndex;
@@ -2378,6 +2397,9 @@ private:
 			if (!CalcEntity(iface, absOrigin, absAngles))
 				return false;
 
+			m_AnchorRoot[0] = absOrigin.x;
+			m_AnchorRoot[1] = absOrigin.y;
+			m_AnchorRoot[2] = absOrigin.z;
 			m_AnchorEntity = ent;
 			// EntitySearchResult is a C_BaseEntity pointer, IClientUnknown is its first base.
 			CMirvTf2ClientUnknown * unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
@@ -5802,9 +5824,12 @@ bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings)
 	    settings.ReturnSpeed > 1e6 || !std::isfinite(settings.FollowHalfLife) ||
 	    settings.FollowHalfLife < 0 || settings.FollowHalfLife > 10 ||
 	    !std::isfinite(settings.FollowMaxDistance) || settings.FollowMaxDistance < 1 ||
-	    settings.FollowMaxDistance > 10000 ||
+	    settings.FollowMaxDistance > 10000 || !std::isfinite(settings.BoneHalfLife) ||
+	    settings.BoneHalfLife < 0 || settings.BoneHalfLife > 10 ||
+	    !std::isfinite(settings.FollowTeleportDistance) || settings.FollowTeleportDistance < 0 ||
+	    settings.FollowTeleportDistance > 1e6 ||
 	    ((settings.Free || settings.Campath || settings.Attached) && !CameraCollisionTraceInterface()) ||
-	    (settings.FollowHalfLife > 0 && g_SourceSdkVer != SourceSdkVer_TF2 &&
+	    ((settings.FollowHalfLife > 0 || settings.BoneHalfLife > 0) && g_SourceSdkVer != SourceSdkVer_TF2 &&
 	     g_SourceSdkVer != SourceSdkVer_TF2Classified))
 		return false;
 	{
@@ -5901,15 +5926,18 @@ struct AttachedCameraHistory
 	const void *Identity = nullptr;
 	void *Entity = nullptr;
 	unsigned long long Generation = 0;
-	double Time = 0, ArmLength = 0, Position[3] = {}, FollowPosition[3] = {}, Pivot[3] = {};
+	double Time = 0, ArmLength = 0, Position[3] = {}, FollowPosition[3] = {};
+	double Root[3] = {}, FollowVelocity[3] = {}, BonePosition[3] = {}, BoneVelocity[3] = {};
+	double FollowHalfLife = 0, BoneHalfLife = 0;
 } g_AttachedCameraHistory;
 } // namespace
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
-                             float &x, float &y, float &z)
+                             float &x, float &y, float &z, const double *entityOrigin)
 {
 	auto &history = g_AttachedCameraHistory;
 	const auto settings = MirvCameraCollisionGet();
-	if (!identity || !entity || (!settings.Attached && settings.FollowHalfLife == 0) ||
+	if (!identity || !entity ||
+	    (!settings.Attached && settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0) ||
 	    !std::isfinite(sceneTime) || !g_VEngineClient || !g_VEngineClient->IsInGame() ||
 	    g_VEngineClient->IsDrawingLoadingImage())
 	{
@@ -5917,41 +5945,58 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 		return false;
 	}
 	const double desired[3] = {x, y, z};
+	const double *root = entityOrigin ? entityOrigin : pivot;
+	double rootJump2 = 0;
 	for (int a = 0; a < 3; ++a)
-		if (!std::isfinite(desired[a]) || !std::isfinite(pivot[a]) || std::abs(desired[a]) > 1e7 ||
-		    std::abs(pivot[a]) > 1e7)
+	{
+		if (!std::isfinite(desired[a]) || !std::isfinite(pivot[a]) || !std::isfinite(root[a]) ||
+		    std::abs(desired[a]) > 1e7 || std::abs(pivot[a]) > 1e7 || std::abs(root[a]) > 1e7)
 		{
 			history.Valid = false;
 			return false;
 		}
+		rootJump2 += (root[a] - history.Root[a]) * (root[a] - history.Root[a]);
+	}
 	const auto generation = g_AttachedCameraGeneration.load();
 	const bool continuous = history.Valid && history.Identity == identity && history.Entity == entity &&
 	                        history.Generation == generation && sceneTime >= history.Time &&
-	                        sceneTime - history.Time <= .25;
+	                        sceneTime - history.Time <= .25 &&
+	                        (settings.FollowTeleportDistance == 0 ||
+	                         rootJump2 <= settings.FollowTeleportDistance * settings.FollowTeleportDistance);
 	const double dt = continuous ? sceneTime - history.Time : 0;
-	double followPivot[3] = {pivot[0], pivot[1], pivot[2]};
-	if (continuous && settings.FollowHalfLife > 0)
+	double followPivot[3], candidate[3];
+	for (int a = 0; a < 3; ++a)
 	{
-		// Follow translation only. The current rotated/captured offset must respond
-		// immediately, independently of both follow lag and collision recovery.
-		const double tau = settings.FollowHalfLife / std::log(2.0);
-		const double alpha = dt > 0 ? -std::expm1(-dt / tau) : 0;
+		const double boneOffset = pivot[a] - root[a];
+		if (!continuous || settings.FollowHalfLife <= 1e-6 || history.FollowHalfLife == 0)
+		{
+			history.FollowPosition[a] = root[a];
+			history.FollowVelocity[a] = 0;
+		}
+		else
+			Afx::Math::SpringStep(history.FollowPosition[a], history.FollowVelocity[a], root[a], dt,
+			                      1.67834699001666 / (6.283185307179586 * settings.FollowHalfLife), 1);
+		if (!continuous || settings.BoneHalfLife <= 1e-6 || history.BoneHalfLife == 0)
+		{
+			history.BonePosition[a] = boneOffset;
+			history.BoneVelocity[a] = 0;
+		}
+		else
+			Afx::Math::SpringStep(history.BonePosition[a], history.BoneVelocity[a], boneOffset, dt,
+			                      1.67834699001666 / (6.283185307179586 * settings.BoneHalfLife), 1);
+		followPivot[a] = history.FollowPosition[a] + history.BonePosition[a];
+	}
+	double lag2 = 0;
+	for (int a = 0; a < 3; ++a)
+		lag2 += (followPivot[a] - pivot[a]) * (followPivot[a] - pivot[a]);
+	if (lag2 > settings.FollowMaxDistance * settings.FollowMaxDistance)
 		for (int a = 0; a < 3; ++a)
 		{
-			const double velocity = dt > 0 ? (pivot[a] - history.Pivot[a]) / dt : 0;
-			followPivot[a] = history.FollowPosition[a] +
-			                 alpha * (history.Pivot[a] - history.FollowPosition[a]) +
-			                 velocity * (dt - alpha * tau);
+			followPivot[a] =
+			    pivot[a] + (followPivot[a] - pivot[a]) * settings.FollowMaxDistance / std::sqrt(lag2);
+			history.FollowPosition[a] = followPivot[a] - history.BonePosition[a];
+			history.FollowVelocity[a] = history.BoneVelocity[a] = 0;
 		}
-		double lag2 = 0;
-		for (int a = 0; a < 3; ++a)
-			lag2 += (followPivot[a] - pivot[a]) * (followPivot[a] - pivot[a]);
-		if (lag2 > settings.FollowMaxDistance * settings.FollowMaxDistance)
-			for (int a = 0; a < 3; ++a)
-				followPivot[a] =
-				    pivot[a] + (followPivot[a] - pivot[a]) * settings.FollowMaxDistance / std::sqrt(lag2);
-	}
-	double candidate[3];
 	for (int a = 0; a < 3; ++a)
 		candidate[a] = followPivot[a] + desired[a] - pivot[a];
 	const double followed[3] = {candidate[0], candidate[1], candidate[2]};
@@ -6051,12 +6096,13 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 	history.Generation = generation;
 	history.Time = sceneTime;
 	std::copy(candidate, candidate + 3, history.Position);
-	std::copy(followPivot, followPivot + 3, history.FollowPosition);
+	std::copy(root, root + 3, history.Root);
+	history.FollowHalfLife = settings.FollowHalfLife;
+	history.BoneHalfLife = settings.BoneHalfLife;
 	history.ArmLength = 0;
 	for (int a = 0; a < 3; ++a)
 		history.ArmLength += (candidate[a] - pivot[a]) * (candidate[a] - pivot[a]);
 	history.ArmLength = std::sqrt(history.ArmLength);
-	std::copy(pivot, pivot + 3, history.Pivot);
 	return true;
 }
 // End optional camera collision implementation.
@@ -6298,9 +6344,9 @@ bool Mirv_Tf2_ParseBoneArg(int entityIndex, const char * arg, int & outBone)
 	return true;
 }
 
-bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity)
+bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3])
 {
-	return calc && static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->GetAttachAnchor(origin, entity);
+	return calc && static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->GetAttachAnchor(origin, entity, entityOrigin);
 }
 
 bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc * calc, const double camOrigin[3], const double camAngles[3], float outLocalOffset[3])
@@ -7847,9 +7893,10 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 						if (0 == _stricmp("bone", modeName)) mode = MIRV_TF2_BONEMODE_BONE;
 						else if (0 == _stricmp("entity", modeName)) mode = MIRV_TF2_BONEMODE_ENTITY;
 						else if (0 == _stricmp("aligned", modeName)) mode = MIRV_TF2_BONEMODE_ALIGNED;
+						else if (0 == _stricmp("world", modeName)) mode = MIRV_TF2_BONEMODE_WORLD;
 						else
 						{
-							Tier0_Warning("Error: Unknown mode \"%s\", use bone, entity or aligned.\n", modeName);
+							Tier0_Warning("Error: Unknown mode \"%s\", use bone, entity, aligned or world.\n", modeName);
 							return;
 						}
 					}
@@ -8056,7 +8103,7 @@ void mirv_calcs_vecang(IWrpCommandArgs * args)
 				, arg0
 			);
 			Tier0_Msg(
-				"%s add tf2Entity <sName> <iEntityIndex> [<iBoneIndex or sBoneName> [<sMode>]] - (TF2 only) Add a calc that gets its values from the entity with index <iEntityIndex> (see mirv_listentities), or from its bone (index or part of the name, see mirv_listbones) if given. <sMode> (for bones): bone (default) - angles of the bone, entity - angles of the entity, aligned - starts like the entity and then follows the bone's rotation.\n"
+				"%s add tf2Entity <sName> <iEntityIndex> [<iBoneIndex or sBoneName> [<sMode>]] - (TF2 only) Add a calc that gets its values from the entity with index <iEntityIndex> (see mirv_listentities), or from its bone (index or part of the name, see mirv_listbones) if given. <sMode> (for bones): bone (default) - angles of the bone, entity - angles of the entity, aligned - starts like the entity and then follows the bone's rotation; world - keeps the camera's current heading while following translation.\n"
 				, arg0
 			);
 			return;
