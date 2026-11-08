@@ -3345,7 +3345,7 @@ void Draw()
 				}
 				if (ImGui::Button("Reset attached follow"))
 					Afx_ExecClientCmd("mirv_cam attach follow reset");
-				ImGui::TextWrapped("Attachment follow affects position only; 0 is rigid. It advances with demo time and resets on cuts. Attachment collision ignores its subject, retracts toward the bone/entity pivot immediately, then extends gradually.");
+				ImGui::TextWrapped("Attachment follow lags pivot translation only; 0 is rigid. Rotation responds immediately. Collision retracts immediately and restores boom length gradually. The pivot sweep ignores the subject, but the camera endpoint must clear its hull.");
 				if (ImGui::Button("Reset collision history"))
 					Afx_ExecClientCmd("mirv_cam collision reset");
 				ImGui::TextWrapped("TF2/TF2C only; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");

@@ -143,7 +143,13 @@ collision_command=(root/'AfxHookSource/MirvCam.cpp').read_text()
 collision_command=collision_command[collision_command.index('// Camera collision console command.'):collision_command.index('// End camera collision console command.')]
 collision_stub=r"""
 #include <mutex>
-namespace SOURCESDK { namespace TF2 { struct IClientTools {void*GetLocalPlayer(){return (void*)1;}bool IsPlayer(void*p){return p==(void*)1||p==(void*)2;}};}}
+std::vector<std::pair<void*,const char*>> collisionClasses;
+namespace SOURCESDK { namespace TF2 {using HTOOLHANDLE=size_t;constexpr HTOOLHANDLE HTOOLHANDLE_INVALID=0;struct IClientTools {
+ void*GetLocalPlayer(){return (void*)1;}bool IsPlayer(void*p){return p==(void*)1||p==(void*)2;}
+ int GetEntIndex(void*p){return int(size_t(p));}HTOOLHANDLE GetToolHandleForEntityByIndex(int i){return i;}
+ HTOOLHANDLE AttachToEntity(void*p){return size_t(p);}void DetachFromEntity(void*){}
+ const char*GetClassname(HTOOLHANDLE h){for(auto v:collisionClasses)if(size_t(v.first)==h)return v.second;return "prop_dynamic";}
+};}};
 bool collisionToolsAvailable=true,collisionFactoryAvailable=true;
 struct CClientToolsTf2{static CClientToolsTf2*Instance(){static CClientToolsTf2 t;return collisionToolsAvailable?&t:nullptr;}SOURCESDK::TF2::IClientTools*GetClientTools(){static SOURCESDK::TF2::IClientTools t;return &t;}};
 void*CollisionFactory(const char*,int*);
@@ -155,7 +161,12 @@ struct CollisionBox {double Min[3],Max[3];void*Entity=nullptr;};
 struct CollisionFakeTrace:CMirvTf2EngineTrace{
  std::vector<CollisionBox>Boxes;int Queries=0;unsigned Mask=0;bool IsRay=true;float Radius=0;
  void _UNUSED_GetPointContents()override{}void _UNUSED_GetPointContents_Collideable()override{}
- void _UNUSED_ClipRayToEntity()override{}void _UNUSED_ClipRayToCollideable()override{}
+ void ClipRayToEntity(const MirvTf2Ray_t&r,unsigned mask,void*entity,MirvTf2Trace_t*out)override{
+  struct Only:CMirvTf2TraceFilter{void*Entity;Only(void*p):CMirvTf2TraceFilter(nullptr),Entity(p){}bool ShouldHitEntity(void*p,int)override{return p==Entity;}}only(entity);
+  auto boxes=Boxes;Boxes.erase(std::remove_if(Boxes.begin(),Boxes.end(),[&](const CollisionBox&b){return b.Entity!=entity;}),Boxes.end());
+  TraceRay(r,mask,&only,out);Boxes=boxes;
+ }
+ void _UNUSED_ClipRayToCollideable()override{}
  void TraceRay(const MirvTf2Ray_t&r,unsigned mask,CMirvTf2TraceFilter*f,MirvTf2Trace_t*out)override{
   ++Queries;Mask=mask;IsRay=r.isRay;Radius=r.extents[0];*out={};out->fraction=1;
   for(const auto&box:Boxes){if(box.Entity&&!f->ShouldHitEntity(box.Entity,mask))continue;
@@ -630,16 +641,37 @@ void AttachedFollowTests(){
  const double contracted=x;collisionTrace.Boxes.resize(1);x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,1.02,x,y,z);check(x>contracted&&x<=contracted+.101,"Attachment extension is gradual after the wall clears");
  const double movingPivot[3]={5,0,0};const double previousOffset=x;x=25;MirvCameraAttachedApply(&attachment,(void*)2,movingPivot,1.03,x,y,z);check(x>5&&x-5<=previousOffset+.101,"Boom extension follows a moving pivot instead of imposing the return cap on subject movement");
  collisionTrace.Boxes={{{10,-100,-100},{11,100,100},(void*)1}};MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,2,x,y,z);check(x<9,"Attached collision includes a different local player when requested");
- collisionTrace.Boxes={{{-1,-1,-1},{1,1,1},(void*)1}};MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)1,seed,2,x,y,z);check(x==20,"The attached subject remains excluded when it is the local player");
+ collisionTrace.Boxes={{{-1,-1,-1},{1,1,1},(void*)1}};MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)1,seed,2,x,y,z);check(x==20,"The local subject does not block its own pivot sweep when the endpoint is clear");
  collisionTrace.Boxes.clear();MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,3,x,y,z);const double movedPivot[3]={1,0,0};x=21;MirvCameraAttachedApply(&attachment,(void*)2,movedPivot,3.01,x,y,z);check(x==21,"Collision alone does not add lag to an unobstructed rigid attachment");
  cfg.Attached=false;cfg.FollowHalfLife=.2;cfg.FollowMaxDistance=128;MirvCameraCollisionSet(cfg);const int queries=collisionTrace.Queries;
- auto simulate=[&](int fps){MirvCameraAttachedReset();x=y=z=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,1,x,y,z);for(int i=1;i<=fps;++i){x=float(10.0*i/fps);MirvCameraAttachedApply(&attachment,(void*)2,seed,1+double(i)/fps,x,y,z);}return double(x);};
+ auto simulate=[&](int fps){MirvCameraAttachedReset();x=y=z=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,1,x,y,z);for(int i=1;i<=fps;++i){const double p[3]={10.0*i/fps,0,0};x=float(p[0]);MirvCameraAttachedApply(&attachment,(void*)2,p,1+double(i)/fps,x,y,z);}return double(x);};
  const double low=simulate(30),high=simulate(120);check(low>0&&low<10&&std::abs(low-high)<.0001,"Positional follow has the same moving-target response at 30 and 120 FPS");
  check(collisionTrace.Queries==queries,"Positional follow can run without collision traces");
- const double frozen=x;for(int i=0;i<10;++i){x=10;MirvCameraAttachedApply(&attachment,(void*)2,seed,2,x,y,z);}check(std::abs(x-frozen)<1e-5,"Demo-time positional follow freezes while paused");
- cfg.FollowMaxDistance=2;MirvCameraCollisionSet(cfg);x=100;MirvCameraAttachedApply(&attachment,(void*)2,seed,2.01,x,y,z);check(x>=98,"Maximum positional lag is bounded");
+ const double endPivot[3]={10,0,0};const double frozen=x;for(int i=0;i<10;++i){x=10;MirvCameraAttachedApply(&attachment,(void*)2,endPivot,2,x,y,z);}check(std::abs(x-frozen)<1e-5,"Demo-time positional follow freezes while paused");
+ cfg.FollowMaxDistance=2;MirvCameraCollisionSet(cfg);const double farPivot[3]={100,0,0};x=100;MirvCameraAttachedApply(&attachment,(void*)2,farPivot,2.01,x,y,z);check(x>=98,"Maximum positional lag is bounded");
  x=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,1,x,y,z);check(x==0,"Backward seeking resets positional follow");
  int other=3;x=50;MirvCameraAttachedApply(&other,(void*)3,seed,1.01,x,y,z);check(x==50,"Changing the attachment resets positional follow");
+ // Rotation is never filtered, whether follow is on or the boom is recovering.
+ cfg.FollowHalfLife=.2;cfg.FollowMaxDistance=128;cfg.Attached=false;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();
+ x=20;y=z=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,4,x,y,z);
+ x=0;y=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,4.01,x,y,z);check(std::abs(x)<1e-6&&y==20,"Follow does not lag a rotating offset at a stationary pivot");
+ const double pivot2[3]={10,0,0};x=10;y=20;MirvCameraAttachedApply(&attachment,(void*)2,pivot2,4.02,x,y,z);check(x<10&&y==20,"Translation lag leaves the current rotated offset intact");
+ cfg.FollowHalfLife=0;cfg.Attached=true;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();
+ collisionTrace.Boxes={{{10,-100,-100},{11,100,100},nullptr}};x=20;y=z=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,5,x,y,z);const double arm=x;
+ collisionTrace.Boxes.clear();x=0;y=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,5.01,x,y,z);check(std::abs(x)<1e-6&&y>arm&&y<=arm+.101,"Collision recovery caps boom length but turns immediately with the entity");
+ // Include the attached subject at the endpoint even when all player exclusions are active.
+ cfg.IgnoreLocal=true;cfg.Players=false;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();
+ collisionTrace.Boxes={{{-2,-2,-2},{2,2,2},(void*)1}};x=1;y=z=0;MirvCameraAttachedApply(&attachment,(void*)1,seed,6,x,y,z);
+ MirvTf2Trace_t subject;
+ const double endpoint[3]={x,y,z};CameraCollisionTrace(endpoint,endpoint,cfg,subject,nullptr,(void*)1);check(!subject.startSolid&&!subject.allSolid&&x>3,"A close local-subject camera is pushed outside its hull");
+ collisionTrace.Boxes={{{-2,-100,-100},{2,100,100},(void*)2},{{4,-100,-100},{5,100,100},nullptr}};MirvCameraAttachedReset();x=20;y=z=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,7,x,y,z);
+ check(x<3.001,"A trapped camera cannot be pushed through a wall to escape the subject");
+ // Open physical doors and invisible player-only barriers have different rules.
+ collisionClasses={{(void*)3,"class C_FuncRespawnRoomVisualizer"},{(void*)4,"func_door"}};
+ collisionTrace.Boxes={{{8,-100,-100},{9,100,100},(void*)3},{{10,-100,-100},{11,100,100},(void*)4}};MirvCameraAttachedReset();x=20;y=z=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,8,x,y,z);check(x>8&&x<9,"Camera ignores the spawn team barrier but collides with the closed physical door");
+ collisionTrace.Boxes[1].Min[2]=100;collisionTrace.Boxes[1].Max[2]=200;MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,8.01,x,y,z);check(x==20,"An open spawn door no longer leaves its invisible team barrier blocking the camera");
+ collisionClasses[0].second="func_respawnroomvisualizer";MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,8.02,x,y,z);check(x==20,"Spawn barrier filtering also accepts the mapped classname");
+ collisionClasses.clear();collisionTrace.Boxes.clear();
  collisionCommand({"mirv_cam","collision","attached","1"});check(MirvCameraCollisionGet().Attached,"Console exposes attached-camera collision independently");
  collisionCommand({"mirv_cam","collision","ignoreLocal","0"});check(!MirvCameraCollisionGet().IgnoreLocal,"Console exposes local-player inclusion");
  collisionCommand({"mirv_cam","collision","returnHalfLife","0.4"});collisionCommand({"mirv_cam","collision","returnSpeed","50"});check(MirvCameraCollisionGet().ReturnHalfLife==.4&&MirvCameraCollisionGet().ReturnSpeed==50,"Console configures collision return damping and speed");

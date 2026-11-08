@@ -303,9 +303,12 @@ solid map geometry and props. Player collision uses current client-side solid
 hulls, not visible meshes or hitboxes. The engine's local player is ignored by default to
 allow POV cameras to leave that player's hull. Use `ignoreLocal 0` to include it.
 `players` controls other players independently: `players 0; ignoreLocal 0` still
-collides with the local player. The subject of an attached-camera boom remains
-excluded even when it is the local player, because the sweep begins inside its
-bone/entity pivot. Disable `players` to pass through other players while retaining
+collides with the local player. The subject of an attached-camera boom is excluded
+from the pivot sweep, because
+that sweep starts inside its hull. The final camera hull is checked against the
+subject independently, even when `players 0` or `ignoreLocal 1` is set. Invisible
+TF2 spawn-room team barriers are ignored; the physical moving door still collides.
+Disable `players` to pass through other players while retaining
 world/prop collision. Particles, non-solid models
 and decorative surfaces have no solid collision representation. Camera clearance
 does not guarantee that the near-plane edges cannot clip at every FOV/aspect.
@@ -335,10 +338,14 @@ editor seeks and backward/cut resets still initialize a new shot.
 `mirv_cam collision attached 1` traces from the current attachment bone/entity
 pivot toward the final offset camera position, excluding the attached subject.
 Walls shorten the offset immediately; clearing an obstacle extends it gradually
-using the return settings. Extension is measured relative to the moving pivot,
-so the extension speed cap does not cap the subject's movement. This is boom retraction, not the free/path slide
+using the return settings. Only boom length is damped: its direction responds
+immediately to entity/bone rotation. The extension speed cap does not cap the
+subject's movement. This is boom retraction, not the free/path slide
 response. If the pivot itself lies inside world geometry, the previous clear
-camera position is retained when available; a valid framing is not always possible.
+camera position is retained when available. If retraction would put the camera
+inside its subject, a bounded search of up to 64 units finds a nearby clear
+endpoint without crossing walls. A valid framing is not always possible when
+the subject and surrounding geometry leave no space for the camera hull.
 
 ```text
 mirv_cam attach follow 0.2
@@ -348,10 +355,12 @@ mirv_cam attach follow reset
 mirv_cam attach follow 0
 ```
 
-Position half-life 0 retains rigid attachment. Positive values follow the final
-world-space position after existing attachment/captured offsets, leaving angle values
-and the existing aiming override order unchanged. Position lag can change framing. Maximum lag bounds the distance behind that
-position. The filter advances with demo time, freezes during pause/timescale 0,
+Position half-life 0 retains rigid attachment. Positive values lag translation of
+the attachment pivot. Current entity/bone rotation and the resulting camera offset
+are applied immediately, without angular/orbit damping. The angle values and
+existing aiming override order are unchanged. Position lag can change framing.
+Maximum lag bounds the distance behind the current pivot. The filter advances
+with demo time, freezes during pause/timescale 0,
 and resets on source/entity changes, editor seeks, backward time and large time
 gaps. It uses analytic integration between sampled target positions, including a
 matching response for linearly moving targets at different rendering FPS.
@@ -360,6 +369,11 @@ For repeatable recording, begin from the same earlier point and allow preroll.
 Collision and follow can be enabled independently. Collision retraction takes
 priority over lag when keeping the camera outside an obstacle requires moving
 inward immediately.
+
+`attachMode entity` uses entity-facing angles at the bone position; `bone` uses
+bone angles; `aligned` initially aligns with the entity and then follows bone
+rotation. Set the mode before attaching. These orientation choices remain
+independent of positional following.
 
 These attachment controls require `mirv_cam attach` to remain the active position
 source, with all three source-origin components enabled. A later free-camera,

@@ -21,6 +21,7 @@
 #include <atomic>
 #include <mutex>
 #include <cstddef>
+#include <cstring>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -5487,23 +5488,61 @@ class CMirvTf2TraceFilter
 {
 public:
 	virtual bool ShouldHitEntity(void *entity, int)
-	{ return entity != m_Skip && entity != m_Attached &&
-		(entity == m_Local || m_Players || !m_Tools || !m_Tools->IsPlayer(entity)); }
-	virtual int GetTraceType() const { return 0; } // TRACE_EVERYTHING: walls occlude selection.
-	explicit CMirvTf2TraceFilter(void *skip, SOURCESDK::TF2::IClientTools *tools = nullptr, bool players = true, void *attached = nullptr, void *local = nullptr)
-		: m_Skip(skip), m_Tools(tools), m_Players(players), m_Attached(attached), m_Local(local) {}
+	{
+		if (entity == m_Skip || entity == m_Attached)
+			return false;
+		if (!m_Tools)
+			return true;
+		if (m_Tools->IsPlayer(entity))
+			return entity == m_Local || m_Players;
+		if (m_Camera)
+		{
+			// TF2's C_FuncRespawnRoomVisualizer::ShouldCollide rejects non-player
+			// movement. Engine TraceRay does not invoke that game-side predicate.
+			// Ignore only the team barrier, not the physical moving door.
+			auto handle = m_Tools->GetToolHandleForEntityByIndex(m_Tools->GetEntIndex(entity));
+			const bool temporary = handle == SOURCESDK::TF2::HTOOLHANDLE_INVALID;
+			if (temporary)
+				handle = m_Tools->AttachToEntity(entity);
+			bool barrier = false;
+			if (handle != SOURCESDK::TF2::HTOOLHANDLE_INVALID)
+			{
+				const char *name = m_Tools->GetClassname(handle);
+				barrier = name && (!std::strcmp(name, "func_respawnroomvisualizer") ||
+				                   std::strstr(name, "C_FuncRespawnRoomVisualizer"));
+			}
+			if (temporary && handle != SOURCESDK::TF2::HTOOLHANDLE_INVALID)
+				m_Tools->DetachFromEntity(entity);
+			if (barrier)
+				return false;
+		}
+		return true;
+	}
+	virtual int GetTraceType() const
+	{
+		return 0;
+	} // TRACE_EVERYTHING: walls occlude selection.
+	explicit CMirvTf2TraceFilter(void *skip, SOURCESDK::TF2::IClientTools *tools = nullptr,
+	                             bool players = true, void *attached = nullptr, void *local = nullptr,
+	                             bool camera = false)
+	    : m_Skip(skip), m_Tools(tools), m_Players(players), m_Attached(attached), m_Local(local),
+	      m_Camera(camera)
+	{
+	}
+
 private:
 	void *m_Skip;
 	SOURCESDK::TF2::IClientTools *m_Tools;
 	bool m_Players;
 	void *m_Attached, *m_Local;
+	bool m_Camera;
 };
 class CMirvTf2EngineTrace
 {
 public:
 	virtual void _UNUSED_GetPointContents() = 0;
 	virtual void _UNUSED_GetPointContents_Collideable() = 0;
-	virtual void _UNUSED_ClipRayToEntity() = 0;
+	virtual void ClipRayToEntity(const MirvTf2Ray_t &, unsigned int, void *, MirvTf2Trace_t *) = 0;
 	virtual void _UNUSED_ClipRayToCollideable() = 0;
 	virtual void TraceRay(const MirvTf2Ray_t &, unsigned int, CMirvTf2TraceFilter *, MirvTf2Trace_t *) = 0;
 };
@@ -5576,7 +5615,7 @@ CMirvTf2EngineTrace *CameraCollisionTraceInterface()
 
 bool CameraCollisionTrace(const double start[3], const double end[3],
                           const MirvCameraCollisionSettings &settings, MirvTf2Trace_t &hit,
-                          void *attached = nullptr)
+                          void *attached = nullptr, void *onlyEntity = nullptr)
 {
 	auto *trace = CameraCollisionTraceInterface();
 	auto *tools = CClientToolsTf2::Instance();
@@ -5602,8 +5641,11 @@ bool CameraCollisionTrace(const double start[3], const double end[3],
 	hit = {};
 	hit.fraction = 1;
 	CMirvTf2TraceFilter filter(settings.IgnoreLocal ? iface->GetLocalPlayer() : nullptr, iface,
-	                           settings.Players, attached, iface->GetLocalPlayer());
-	trace->TraceRay(ray, 0x200400B, &filter, &hit); // SDK MASK_SOLID; ignore non-solid decoration.
+	                           settings.Players, attached, iface->GetLocalPlayer(), true);
+	if (onlyEntity)
+		trace->ClipRayToEntity(ray, 0x200400B, onlyEntity, &hit);
+	else
+		trace->TraceRay(ray, 0x200400B, &filter, &hit); // SDK MASK_SOLID; ignore non-solid decoration.
 	return std::isfinite(hit.fraction) && hit.fraction >= 0 && hit.fraction <= 1;
 }
 
@@ -5859,7 +5901,7 @@ struct AttachedCameraHistory
 	const void *Identity = nullptr;
 	void *Entity = nullptr;
 	unsigned long long Generation = 0;
-	double Time = 0, Position[3] = {}, Desired[3] = {}, Pivot[3] = {};
+	double Time = 0, ArmLength = 0, Position[3] = {}, FollowPosition[3] = {}, Pivot[3] = {};
 } g_AttachedCameraHistory;
 } // namespace
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
@@ -5887,26 +5929,31 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 	                        history.Generation == generation && sceneTime >= history.Time &&
 	                        sceneTime - history.Time <= .25;
 	const double dt = continuous ? sceneTime - history.Time : 0;
-	double candidate[3] = {desired[0], desired[1], desired[2]};
+	double followPivot[3] = {pivot[0], pivot[1], pivot[2]};
 	if (continuous && settings.FollowHalfLife > 0)
 	{
-		// Exact first-order response to a linearly moving goal; independent of FPS.
+		// Follow translation only. The current rotated/captured offset must respond
+		// immediately, independently of both follow lag and collision recovery.
 		const double tau = settings.FollowHalfLife / std::log(2.0);
 		const double alpha = dt > 0 ? -std::expm1(-dt / tau) : 0;
 		for (int a = 0; a < 3; ++a)
 		{
-			const double velocity = dt > 0 ? (desired[a] - history.Desired[a]) / dt : 0;
-			candidate[a] = history.Position[a] + alpha * (history.Desired[a] - history.Position[a]) +
-			               velocity * (dt - alpha * tau);
+			const double velocity = dt > 0 ? (pivot[a] - history.Pivot[a]) / dt : 0;
+			followPivot[a] = history.FollowPosition[a] +
+			                 alpha * (history.Pivot[a] - history.FollowPosition[a]) +
+			                 velocity * (dt - alpha * tau);
 		}
 		double lag2 = 0;
 		for (int a = 0; a < 3; ++a)
-			lag2 += (candidate[a] - desired[a]) * (candidate[a] - desired[a]);
+			lag2 += (followPivot[a] - pivot[a]) * (followPivot[a] - pivot[a]);
 		if (lag2 > settings.FollowMaxDistance * settings.FollowMaxDistance)
 			for (int a = 0; a < 3; ++a)
-				candidate[a] =
-				    desired[a] + (candidate[a] - desired[a]) * settings.FollowMaxDistance / std::sqrt(lag2);
+				followPivot[a] =
+				    pivot[a] + (followPivot[a] - pivot[a]) * settings.FollowMaxDistance / std::sqrt(lag2);
 	}
+	double candidate[3];
+	for (int a = 0; a < 3; ++a)
+		candidate[a] = followPivot[a] + desired[a] - pivot[a];
 	const double followed[3] = {candidate[0], candidate[1], candidate[2]};
 	if (settings.Attached)
 	{
@@ -5928,49 +5975,69 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 			const double fraction = (std::max)(0.0, double(hit.fraction) - (hit.fraction < 1 ? .001 : 0));
 			for (int a = 0; a < 3; ++a)
 				candidate[a] = pivot[a] + (candidate[a] - pivot[a]) * fraction;
-			// Contract immediately; extend gradually after an obstacle clears.
-			if (continuous && history.Retracted)
+			// Contract immediately. Dampen only boom length, never its bearing.
+			double length2 = 0;
+			for (int a = 0; a < 3; ++a)
+				length2 += (candidate[a] - pivot[a]) * (candidate[a] - pivot[a]);
+			const double length = std::sqrt(length2);
+			if (continuous && history.Retracted && length > history.ArmLength && length > 0)
 			{
-				double oldDistance2 = 0, newDistance2 = 0;
-				double extensionFrom[3];
+				const double from[3] = {history.ArmLength, 0, 0}, to[3] = {length, 0, 0};
+				double limited[3];
+				CameraReturnTarget(from, to, dt, settings.ReturnHalfLife, settings.ReturnSpeed, limited);
 				for (int a = 0; a < 3; ++a)
-					extensionFrom[a] = pivot[a] + history.Position[a] - history.Pivot[a];
-				for (int a = 0; a < 3; ++a)
-				{
-					oldDistance2 +=
-					    (history.Position[a] - history.Pivot[a]) * (history.Position[a] - history.Pivot[a]);
-					newDistance2 += (candidate[a] - pivot[a]) * (candidate[a] - pivot[a]);
-				}
-				if (newDistance2 > oldDistance2)
-				{
-					double limited[3];
-					CameraReturnTarget(extensionFrom, candidate, dt, settings.ReturnHalfLife,
-					                   settings.ReturnSpeed, limited);
-					// Both the extension and its tether are collision checked.
-					MirvTf2Trace_t extension;
-					if (!CameraCollisionTrace(history.Position, limited, settings, extension, entity))
-					{
-						history.Valid = false;
-						return false;
-					}
-					if (!extension.startSolid && !extension.allSolid)
-						for (int a = 0; a < 3; ++a)
-							candidate[a] =
-							    history.Position[a] + (limited[a] - history.Position[a]) * extension.fraction;
-					if (!CameraCollisionTrace(pivot, candidate, settings, extension, entity))
-					{
-						history.Valid = false;
-						return false;
-					}
-					for (int a = 0; a < 3; ++a)
-						candidate[a] =
-						    pivot[a] +
-						    (candidate[a] - pivot[a]) *
-						        (extension.startSolid || extension.allSolid ? 0 : extension.fraction);
-				}
+					candidate[a] = pivot[a] + (candidate[a] - pivot[a]) * limited[0] / length;
 			}
 		}
+		// The tether starts inside the subject, but the final camera must not.
+		// Entity-only clipping includes the subject even when local/other players
+		// are excluded from ordinary camera collision.
+		auto clear = [&](const double point[3]) {
+			MirvTf2Trace_t subject;
+			return CameraCollisionClear(point, settings, entity) &&
+			       CameraCollisionTrace(point, point, settings, subject, nullptr, entity) &&
+			       !subject.startSolid && !subject.allSolid;
+		};
+		if (!clear(candidate))
+		{
+			bool found = false;
+			double direction[3], length2 = 0;
+			for (int a = 0; a < 3; ++a)
+			{
+				direction[a] = followed[a] - pivot[a];
+				length2 += direction[a] * direction[a];
+			}
+			const double length = std::sqrt(length2);
+			// Bounded local recovery, preferring the requested boom direction.
+			for (int ring = 0; ring < 7 && !found; ++ring)
+				for (int d = 0; d < 7 && !found; ++d)
+				{
+					const double step = (std::min)(64.0, (settings.Radius + 1) * (1 << ring) + .03125);
+					double trial[3] = {candidate[0], candidate[1], candidate[2]};
+					if (d == 0)
+					{
+						if (length == 0)
+							continue;
+						for (int a = 0; a < 3; ++a)
+							trial[a] += direction[a] * step / length;
+					}
+					else
+						trial[(d - 1) / 2] += d % 2 ? step : -step;
+					MirvTf2Trace_t tether;
+					if (clear(trial) && CameraCollisionTrace(pivot, trial, settings, tether, entity) &&
+					    !tether.startSolid && !tether.allSolid && tether.fraction == 1)
+					{
+						std::copy(trial, trial + 3, candidate);
+						found = true;
+					}
+				}
+			if (!found && continuous && clear(history.Position))
+				std::copy(history.Position, history.Position + 3, candidate);
+			// With no clear space in reach, no collision solution exists. Keep the
+			// bounded tether result rather than jumping through surrounding walls.
+		}
 	}
+
 	x = float(candidate[0]);
 	y = float(candidate[1]);
 	z = float(candidate[2]);
@@ -5984,7 +6051,11 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 	history.Generation = generation;
 	history.Time = sceneTime;
 	std::copy(candidate, candidate + 3, history.Position);
-	std::copy(desired, desired + 3, history.Desired);
+	std::copy(followPivot, followPivot + 3, history.FollowPosition);
+	history.ArmLength = 0;
+	for (int a = 0; a < 3; ++a)
+		history.ArmLength += (candidate[a] - pivot[a]) * (candidate[a] - pivot[a]);
+	history.ArmLength = std::sqrt(history.ArmLength);
 	std::copy(pivot, pivot + 3, history.Pivot);
 	return true;
 }
