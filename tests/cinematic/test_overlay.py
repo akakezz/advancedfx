@@ -190,6 +190,20 @@ collision_stage=(root/'AfxHookSource/RenderView.cpp').read_text()
 collision_stage=collision_stage[collision_stage.index('// Collision correction is the last position stage'):collision_stage.index('// End collision correction stage.')]
 collision_code+='void CollisionView(bool collisionFree,const CamPath*collisionPath,double curTime,double collisionTime,const double*LastCameraOrigin,float&Tx,float&Ty,float&Tz,const double*inputOrigin=nullptr){auto*m_MirvInput=&input;float collisionInputX=inputOrigin?inputOrigin[0]:Tx,collisionInputY=inputOrigin?inputOrigin[1]:Ty,collisionInputZ=inputOrigin?inputOrigin[2]:Tz;'+collision_stage+'}\n'
 
+attached_view_prefix=r"""
+void AttachedView(const void*identity,void*entity,const double*pivot,const double*root,double time,int mode,bool useAim,const double*aimFrom,const double*target,float&Tx,float&Ty,float&Tz,float outAngles[3],const float*cachedAimAngles=nullptr){
+ const void*attachedIdentity=identity;void*attachedEntity=entity;const double*attachedPivot=pivot;const double*attachedRoot=root;
+ const int MIRV_TF2_BONEMODE_WORLD=3;int attachedMode=mode;const void*aimAttachment=useAim?identity:nullptr;
+ const double*aimCameraOrigin=aimFrom;float aimCameraAngles[3];for(int i=0;i<3;++i)aimCameraAngles[i]=cachedAimAngles?cachedAimAngles[i]:outAngles[i];
+ struct Flags{bool m_SourceUseXRotation=true,m_SourceUseYRotation=true,m_SourceUseZRotation=true;}g_MirvCam;
+ struct Aim{Afx::Math::Vector3 target;const Afx::Math::Vector3&GetLastTargetOrigin()const{return target;}}g_Aiming{{target[0],target[1],target[2]}};
+ struct Time{double time;double GetCurTime(){return time;}}g_MirvTime{time};
+ float&Rx=outAngles[0];float&Ry=outAngles[1];float&Rz=outAngles[2];
+"""
+attached_stage=(root/'AfxHookSource/RenderView.cpp').read_text()
+attached_stage=attached_stage[attached_stage.index('// Attached camera follow and framing.'):attached_stage.index('// End attached camera follow and framing.')]
+collision_code+=attached_view_prefix+attached_stage+'}\n'
+
 
 renderer=(root/'AfxHookSource/Gui.cpp').read_text()
 renderer=renderer[renderer.index('class CImGuiRenderCacheManager'):renderer.index('} m_ImGuiRernderCacheManager;')+1]+';'
@@ -685,14 +699,42 @@ void AttachedFollowTests(){
  cfg.FollowHalfLife=.15;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();x=0;z=72;MirvCameraAttachedApply(&attachment,(void*)2,head,21,x,y,z,seed);x=10;z=82;MirvCameraAttachedApply(&attachment,(void*)2,bobbed,21.01,x,y,z,movedRoot);check(x>0&&x<1&&z>72&&z<73,"Root follow and bone damping work independently in combination");
  cfg.FollowTeleportDistance=50;MirvCameraCollisionSet(cfg);const double teleRoot[3]={100,0,0},teleHead[3]={100,0,72};x=100;z=72;MirvCameraAttachedApply(&attachment,(void*)2,teleHead,21.02,x,y,z,teleRoot);check(x==100&&z==72,"A large entity teleport resets both filters");
  cfg.FollowTeleportDistance=0;MirvCameraCollisionSet(cfg);x=0;z=72;MirvCameraAttachedApply(&attachment,(void*)2,head,21.03,x,y,z,seed);check(x>90,"Teleport distance reset can be disabled deliberately");
- MirvCameraAttachedReset();x=0;z=72;MirvCameraAttachedApply(&attachment,(void*)2,head,22,x,y,z,seed);cfg.Attached=true;MirvCameraCollisionSet(cfg);collisionTrace.Boxes={{{8,-100,-100},{9,100,100},nullptr}};x=10;z=82;MirvCameraAttachedApply(&attachment,(void*)2,bobbed,22.01,x,y,z,movedRoot);check(x>=9.999,"Collision takes priority when the smoothed goal is across a wall from the current pivot");
+ MirvCameraAttachedReset();x=0;z=72;MirvCameraAttachedApply(&attachment,(void*)2,head,22,x,y,z,seed);cfg.Attached=true;MirvCameraCollisionSet(cfg);collisionTrace.Boxes={{{8,-100,-100},{9,100,100},nullptr}};x=10;z=82;MirvCameraAttachedApply(&attachment,(void*)2,bobbed,22.01,x,y,z,movedRoot);check(x<=7&&std::isfinite(x),"Actual camera movement cannot teleport through a wall with a moving target");
  collisionTrace.Boxes.clear();cfg.Attached=false;cfg.FollowHalfLife=1e-300;cfg.BoneHalfLife=1e-300;MirvCameraCollisionSet(cfg);x=10;z=82;MirvCameraAttachedApply(&attachment,(void*)2,bobbed,22.02,x,y,z,movedRoot);check(std::isfinite(x)&&std::isfinite(z)&&x==10&&z==82,"Tiny positive smoothing values stay finite and behave as rigid attachment");
  cfg.FollowHalfLife=.2;cfg.BoneHalfLife=0;cfg.FollowTeleportDistance=1024;MirvCameraCollisionSet(cfg);
+ // Backstepping/strafe/turn sequences must retain the captured side and composition.
+ cfg.Attached=false;cfg.FollowHalfLife=.2;cfg.BoneHalfLife=.15;cfg.FollowMaxDistance=128;cfg.FollowTeleportDistance=1024;MirvCameraCollisionSet(cfg);collisionTrace.Boxes.clear();
+ for(int fps:{30,120}){MirvCameraAttachedReset();for(int i=0;i<=2*fps;++i){double t=double(i)/fps;const double r[3]={-300*t,80*std::sin(t*2),0},h[3]={r[0],r[1],72};x=float(r[0]-60);y=float(r[1]);z=72;float a[3]={0,0,0};MirvCameraAttachedApply(&attachment,(void*)2,h,30+t,x,y,z,r,a);const double dx=r[0]-x,dy=r[1]-y;check(dx>=44.99&&std::hypot(dx,dy)<=75.01,"Follow cannot carry a backstepping subject through the captured camera");check(std::abs(std::remainder(a[1]-std::atan2(dy,dx)*57.29577951308232,360.0))<.001&&std::abs(a[2])<.001,"Strafing follow keeps the subject framed without adding horizon roll");}}
+ MirvCameraAttachedReset();for(int i=0;i<=360;++i){double t=i/120.0,yaw=179+i/3.0,angle=yaw/57.29577951308232;const double r[3]={80*t,0,0},h[3]={r[0],0,72};x=float(r[0]-60*std::cos(angle));y=float(-60*std::sin(angle));z=72;float a[3]={0,float(std::remainder(yaw,360.0)),0};MirvCameraAttachedApply(&attachment,(void*)2,h,40+t,x,y,z,r,a);const double dx=r[0]-x,dy=-y;check(dx*std::cos(angle)+dy*std::sin(angle)>44.99,"Turning follow retains its captured side across yaw wrapping");check(std::abs(std::remainder(a[1]-std::atan2(dy,dx)*57.29577951308232,360.0))<.001&&std::abs(a[2])<.001,"Turning follow keeps its target in frame across yaw wrapping");}
+ // A real soft approach must stay continuous, without relying on sudden overlap recovery.
+ cfg.FollowHalfLife=0;cfg.BoneHalfLife=0;cfg.Attached=true;cfg.Radius=6;cfg.AttachedSoftDistance=24;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();collisionTrace.Boxes={{{-101,-1000,-1000},{-100,1000,1000},nullptr}};
+ double oldCamera=-60,oldStep=-1;bool anticipated=false;
+ for(int i=0;i<=70;++i){const double r[3]={-double(i),0,0},h[3]={r[0],0,72};x=float(r[0]-60);y=0;z=72;MirvCameraAttachedApply(&attachment,(void*)2,h,50+i*.01,x,y,z,r);if(i){double step=x-oldCamera;check(std::abs(step)<=1.01&&x>=-93.97,"A steady wall approach stays clear and does not hard-cut inward");if(i>2)check(std::abs(step-oldStep)<.1,"Soft collision contraction changes speed progressively");oldStep=step;}if(i==20)anticipated=x>-79.9;oldCamera=x;}
+ check(anticipated,"The soft zone starts contracting before the desired camera reaches the wall");
+ // Damping must survive the entire collision pipeline, not only an isolated spring.
+ cfg.BoneHalfLife=.15;cfg.Radius=1;MirvCameraCollisionSet(cfg);
+ auto bob=[&](bool collide){cfg.Attached=collide;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();collisionTrace.Boxes.clear();if(collide)collisionTrace.Boxes.push_back({{-25,-1000,-1000},{-24,1000,1000},nullptr});double lo=1e9,hi=-1e9;for(int i=0;i<=480;++i){double t=i/120.0;const double h[3]={0,0,72+2*std::sin(6.283185307179586*8*t)};x=-60;y=0;z=float(h[2]);MirvCameraAttachedApply(&attachment,(void*)2,h,60+t,x,y,z,seed);if(i>=240){lo=(std::min)(lo,double(z));hi=(std::max)(hi,double(z));}}return hi-lo;};
+ const double unblockedBob=bob(false),blockedBob=bob(true);check(unblockedBob<.25&&blockedBob<=unblockedBob*1.05+.001,"Wall retraction does not reintroduce raw bone bob into a damped camera");
+ // No arbitrary sideways search when the boom is trapped against its subject.
+ cfg.BoneHalfLife=0;cfg.Attached=true;cfg.Radius=1;cfg.AttachedSoftDistance=0;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();collisionTrace.Boxes={{{-2,-100,-100},{2,100,100},(void*)2},{{4,-100,-100},{5,100,100},nullptr}};x=20;y=z=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,70,x,y,z);check(y==0&&z==0&&x<=3,"A trapped attachment cannot teleport along another axis to find framing");
+ collisionTrace.Boxes.clear();cfg.Attached=false;cfg.FollowHalfLife=.2;MirvCameraCollisionSet(cfg);
+ // Preserve off-centre composition too, not just a camera aimed exactly at the bone.
+ const double from[3]={-60,-10,64},to[3]={-40,15,55},target[3]={0,0,72};float original[3]={10,20,15},corrected[3]={10,20,15};
+ auto localDirection=[&](const double*p,const float*a){double f[3],r[3],u[3];Afx::Math::MakeVectors(a[2],a[0],a[1],f,r,u);double d[3],l=0;for(int j=0;j<3;++j){d[j]=target[j]-p[j];l+=d[j]*d[j];}std::array<double,3>out{};for(int j=0;j<3;++j){out[0]+=f[j]*d[j]/std::sqrt(l);out[1]+=r[j]*d[j]/std::sqrt(l);out[2]+=u[j]*d[j]/std::sqrt(l);}return out;};
+ check(MirvCameraAttachedReframe(from,to,target,corrected),"Final-position framing correction succeeds");auto beforeDirection=localDirection(from,original),afterDirection=localDirection(to,corrected);for(int j=0;j<3;++j)check(std::abs(beforeDirection[j]-afterDirection[j])<1e-6,"Framing correction preserves a deliberately off-centre target");
+ check(!MirvCameraAttachedReframe(target,to,target,corrected),"A coincident aiming target cannot create invalid angles");
+ // Exercise the actual RenderView stage: world mode stays fixed; entity mode and mirv_aim retain framing.
+ const double r0[3]={0,0,0},h0[3]={0,0,72},r1[3]={0,10,0},h1[3]={0,10,72},aimFrom0[3]={-60,0,72},aimFrom1[3]={-60,10,72};
+ auto viewTest=[&](int mode,bool useAim){MirvCameraAttachedReset();x=-60;y=0;z=72;float a[3]={0,0,0};AttachedView(&attachment,(void*)2,h0,r0,80,mode,useAim,aimFrom0,h0,x,y,z,a);x=-60;y=10;z=72;a[0]=a[1]=a[2]=0;AttachedView(&attachment,(void*)2,h1,r1,80.01,mode,useAim,aimFrom1,h1,x,y,z,a);return double(a[1]);};
+ check(viewTest(3,false)==0,"World mode keeps its fixed heading even with positional follow");check(viewTest(1,false)>1,"Entity mode compensates framing for final positional follow");check(viewTest(3,true)>1,"An existing mirv_aim override uses the corrected camera position even in world mode");
+ MirvCameraAttachedReset();x=-60;y=0;z=72;float offsetAim[3]={0,15,0},cachedAim[3]={0,0,0};AttachedView(&attachment,(void*)2,h0,r0,81,1,true,h0,h0,x,y,z,offsetAim,cachedAim);check(std::abs(offsetAim[1]-15)<.001,"Coincident aim-source fallback preserves deliberate post-aim rotation offsets");
+ cfg.Attached=false;cfg.FollowHalfLife=.2;cfg.BoneHalfLife=0;cfg.AttachedSoftDistance=24;MirvCameraCollisionSet(cfg);collisionTrace.Boxes.clear();
  collisionCommand({"mirv_cam","collision","attached","1"});check(MirvCameraCollisionGet().Attached,"Console exposes attached-camera collision independently");
  collisionCommand({"mirv_cam","collision","ignoreLocal","0"});check(!MirvCameraCollisionGet().IgnoreLocal,"Console exposes local-player inclusion");
  collisionCommand({"mirv_cam","collision","returnHalfLife","0.4"});collisionCommand({"mirv_cam","collision","returnSpeed","50"});check(MirvCameraCollisionGet().ReturnHalfLife==.4&&MirvCameraCollisionGet().ReturnSpeed==50,"Console configures collision return damping and speed");
  collisionCommand({"mirv_cam","attach","follow","0.3"});collisionCommand({"mirv_cam","attach","follow","maxDistance","256"});check(MirvCameraCollisionGet().FollowHalfLife==.3&&MirvCameraCollisionGet().FollowMaxDistance==256,"Console configures positional follow and lag limit");
  collisionCommand({"mirv_cam","attach","follow","boneHalfLife","0.12"});collisionCommand({"mirv_cam","attach","follow","teleportDistance","512"});check(MirvCameraCollisionGet().BoneHalfLife==.12&&MirvCameraCollisionGet().FollowTeleportDistance==512,"Console configures bone damping and teleport resets independently");
+ collisionCommand({"mirv_cam","collision","attachedSoftDistance","32"});check(MirvCameraCollisionGet().AttachedSoftDistance==32,"Console exposes the attached collision soft zone");auto invalidSoft=MirvCameraCollisionGet();invalidSoft.AttachedSoftDistance=-1;check(!MirvCameraCollisionSet(invalidSoft),"Invalid collision soft zone is rejected");
  auto invalid=MirvCameraCollisionGet();invalid.BoneHalfLife=std::numeric_limits<double>::quiet_NaN();check(!MirvCameraCollisionSet(invalid),"Non-finite bone smoothing is rejected");invalid=MirvCameraCollisionGet();invalid.FollowTeleportDistance=-1;check(!MirvCameraCollisionSet(invalid),"Negative teleport reset is rejected");
  const auto good=MirvCameraCollisionGet();auto bad=good;bad.FollowHalfLife=-1;check(!MirvCameraCollisionSet(bad)&&MirvCameraCollisionGet().FollowHalfLife==good.FollowHalfLife,"Invalid follow preferences reject atomically");bad=good;bad.ReturnSpeed=std::numeric_limits<double>::infinity();check(!MirvCameraCollisionSet(bad),"Invalid return speed rejects");
  MirvCameraCollisionSettings off;MirvCameraCollisionSet(off);MirvCameraCollisionReset();collisionTrace.Boxes.clear();
@@ -705,7 +747,7 @@ mode_class=mode_source[mode_source.index('class CMirvVecAngTf2EntityIndexCalc'):
 mode_class=mode_class[:mode_class.index('\tSOURCESDK::TF2::IClientTools * GetTools(')]+r"""
  SOURCESDK::TF2::IClientTools*GetTools(){return &tools;}
  bool GetBase(SOURCESDK::TF2::IClientTools*,SOURCESDK::Vector&pos,float base[3][3],SOURCESDK::QAngle&raw,SOURCESDK::QAngle&facing,bool&ok){
-  if(!poseValid)return false;pos=pose;raw=boneAngles;facing=entityAngles;ok=true;
+  if(!poseValid)return false;pos=pose;raw=m_BoneIndex<0?entityAngles:boneAngles;facing=entityAngles;ok=true;
   Mirv_AngleMatrix3(raw.x,raw.y,raw.z,base);m_AnchorEntity=(void*)2;
   m_AnchorRoot[0]=m_AnchorRoot[1]=m_AnchorRoot[2]=0;return true;
  }
@@ -725,6 +767,11 @@ SOURCESDK::TF2::IClientTools tools;
 SOURCESDK::Vector pose{0,0,72};SOURCESDK::QAngle boneAngles{80,170,20},entityAngles{0,90,0};bool poseValid=true;
 """
 mode_constants=(root/'AfxHookSource/MirvCalcs.h').read_text();mode_constants=mode_constants[mode_constants.index('#define MIRV_TF2_BONEMODE_BONE'):mode_constants.index('struct MirvTf2Bone_t')]
+offset_source=(root/'AfxHookSource/MirvCam.cpp').read_text()
+start=offset_source.index('bool CMirvCam::ApplyOffset(');body=offset_source.index('{',start);depth=1;end=body+1
+while depth:
+ depth+=(offset_source[end]=='{')-(offset_source[end]=='}');end+=1
+mode_offset='struct Offset {float m_OffsetForwad=-60,m_OffsetLeft=0,m_OffsetUp=8,m_OffsetForwardRot=0,m_OffseLeftRot=0,m_OffsetUpRot=0;'+offset_source[start:end].replace('CMirvCam::ApplyOffset','ApplyOffset')+'};\n'
 mode_tests=r"""
 void Run(){
  SOURCESDK::Vector position;SOURCESDK::QAngle angles;float offset[3];
@@ -736,12 +783,40 @@ void Run(){
  CMirvVecAngTf2EntityIndexCalc root(nullptr,2,-1,MIRV_TF2_BONEMODE_WORLD);root.CalcVecAng(position,angles);check(std::abs(angles.y-37)<.001,"World orientation also works without a bone");
  CMirvVecAngTf2EntityIndexCalc bone(nullptr,2,1,MIRV_TF2_BONEMODE_BONE);bone.CalcVecAng(position,angles);check(angles.x==boneAngles.x&&angles.y==boneAngles.y,"Existing bone mode retains bone rotation");
  CMirvVecAngTf2EntityIndexCalc entity(nullptr,2,1,MIRV_TF2_BONEMODE_ENTITY);entity.CalcVecAng(position,angles);check(angles.y==entityAngles.y,"Existing entity mode retains entity facing");
+ pose={0,0,72};entityAngles={0,0,0};boneAngles={70,120,25};const double entityOrigin[3]={-60,0,80},entityHeading[3]={5,0,0};
+ CMirvVecAngTf2EntityIndexCalc capturedEntity(nullptr,2,1,MIRV_TF2_BONEMODE_ENTITY);check(capturedEntity.CaptureCamera(entityOrigin,entityHeading,offset),"Entity mode can capture a camera composition");
+ for(int i=0;i<120;++i){pose.z=float(72+2*std::sin(i));boneAngles={float(i*3),float(i*5),float(i*7)};capturedEntity.CalcVecAng(position,angles);check(std::abs(position.x+60)<.001&&std::abs(position.y)<.001&&std::abs(position.z-pose.z-8)<.001&&std::abs(angles.x-5)<.001&&std::abs(angles.y)<.001&&std::abs(angles.z)<.001,"Captured entity mode keeps bone translation but excludes bone pitch, yaw and roll");}
+ entityAngles.y=45;capturedEntity.CalcVecAng(position,angles);check(std::abs(position.x+60/std::sqrt(2.0))<.001&&std::abs(position.y+60/std::sqrt(2.0))<.001&&std::abs(angles.y-45)<.001&&std::abs(angles.z)<.001,"Captured entity mode rotates with entity facing after bone changes");
+ // Video-like integration: actual captured entity calculation -> final view controller.
+ auto cfg=MirvCameraCollisionGet();cfg.Attached=true;cfg.FollowHalfLife=.2;cfg.BoneHalfLife=.15;cfg.Radius=6;cfg.IgnoreLocal=false;cfg.Players=true;cfg.AttachedSoftDistance=24;cfg.FollowMaxDistance=128;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();
+ collisionTrace.Boxes={{{-171,-1000,-1000},{-170,1000,1000},nullptr}};pose={0,0,72};entityAngles={0,0,0};boneAngles={0,0,0};CMirvVecAngTf2EntityIndexCalc videoCamera(nullptr,2,1,MIRV_TF2_BONEMODE_ENTITY);videoCamera.CaptureCamera(entityOrigin,entityHeading,offset);
+ for(int i=0;i<=360;++i){double t=i/120.0;const double root[3]={-40*t,12*std::sin(t),8*std::floor(t*8)};pose={float(root[0]),float(root[1]),float(root[2]+72+2*std::sin(t*50))};entityAngles={0,float(60*std::sin(t*1.3)),0};boneAngles={float(70*std::sin(t*10)),float(t*200),float(90*std::sin(t*12))};videoCamera.CalcVecAng(position,angles);float x=position.x,y=position.y,z=position.z,a[3]={angles.x,angles.y,angles.z};const double pivot[3]={pose.x,pose.y,pose.z},from[3]={x,y,z};AttachedView(&videoCamera,(void*)2,pivot,root,100+t,1,false,from,pivot,x,y,z,a);double f[3],r[3],u[3];Afx::Math::MakeVectors(a[2],a[0],a[1],f,r,u);double d[3]={pivot[0]-x,pivot[1]-y,pivot[2]-z},dot=0,length=0;for(int j=0;j<3;++j){dot+=f[j]*d[j];length+=d[j]*d[j];}check(dot/std::sqrt(length)>.98&&std::abs(a[2])<1.5,"Captured entity follow retains framing and a stable horizon during backsteps, stairs, turns, head bob and wall approaches");check(x>=-163.97,"The integrated entity camera stays outside map geometry");}
+ // Repeat the full pipeline for every attach mode and both attach styles, with/without bones and aiming.
+ for(int mode=0;mode<=3;++mode)for(int boneIndex:{-1,1})for(bool captured:{false,true})for(bool useAim:{false,true})for(int fps:{30,120}){
+  MirvCameraAttachedReset();pose={0,0,boneIndex<0?0.0f:72.0f};entityAngles={0,0,0};boneAngles={0,0,0};
+  CMirvVecAngTf2EntityIndexCalc controller(nullptr,2,boneIndex,mode);Offset manual;
+  const double origin[3]={-60,0,pose.z+8};if(captured)check(controller.CaptureCamera(origin,entityHeading,offset),"Each attach mode accepts captured framing");
+  for(int i=0;i<=2*fps;++i){double t=double(i)/fps;const double body[3]={-55*t,12*std::sin(t),8*std::floor(t*8)};pose={float(body[0]),float(body[1]),float(body[2]+(boneIndex<0?0:72+2*std::sin(50*t)))};entityAngles={0,float(50*std::sin(t*1.3)),0};boneAngles={float(12*std::sin(5*t)),float(55*std::sin(t*1.7)),float(10*std::sin(6*t))};
+   collisionTrace.Boxes={{{-171,-1000,-1000},{-170,1000,1000},nullptr},{{-85-40*t,-45,0},{-65-40*t,-25,300},(void*)1}};
+   controller.CalcVecAng(position,angles);float x=position.x,y=position.y,z=position.z,a[3]={angles.x,angles.y,angles.z};const double aimFrom[3]={x,y,z},pivot[3]={pose.x,pose.y,pose.z};if(useAim){double dx=pivot[0]-x,dy=pivot[1]-y,dz=pivot[2]-z;a[0]=float(std::atan2(-dz,std::hypot(dx,dy))*57.29577951308232);a[1]=float(std::atan2(dy,dx)*57.29577951308232);a[2]=0;}const float cachedAim[3]={a[0],a[1],a[2]};if(!captured)manual.ApplyOffset(x,y,z,a[2],a[0],a[1]);
+   const double from[3]={x,y,z};float rawAngles[3]={a[0],a[1],a[2]};
+   double wantedF[3],wantedR[3],wantedU[3];Afx::Math::MakeVectors(a[2],a[0],a[1],wantedF,wantedR,wantedU);
+   double expectedLocal[3]={},rawDirection[3],rawLength=0;for(int j=0;j<3;++j){rawDirection[j]=pivot[j]-from[j];rawLength+=rawDirection[j]*rawDirection[j];}for(int j=0;j<3;++j){expectedLocal[0]+=wantedF[j]*rawDirection[j]/std::sqrt(rawLength);expectedLocal[1]+=wantedR[j]*rawDirection[j]/std::sqrt(rawLength);expectedLocal[2]+=wantedU[j]*rawDirection[j]/std::sqrt(rawLength);}
+   AttachedView(&controller,(void*)2,pivot,body,200+mode*10+t,mode,useAim,aimFrom,pivot,x,y,z,a,cachedAim);
+   const double finalCamera[3]={x,y,z};check(CameraCollisionClear(finalCamera,cfg,(void*)2),"Every attach mode stays clear of walls and moving entities during combined follow");
+   double f[3],r[3],u[3];Afx::Math::MakeVectors(a[2],a[0],a[1],f,r,u);double d[3],length=0,actualLocal[3]={};for(int j=0;j<3;++j){d[j]=pivot[j]-finalCamera[j];length+=d[j]*d[j];}for(int j=0;j<3;++j){actualLocal[0]+=f[j]*d[j]/std::sqrt(length);actualLocal[1]+=r[j]*d[j]/std::sqrt(length);actualLocal[2]+=u[j]*d[j]/std::sqrt(length);}
+   if(useAim)check(actualLocal[0]>.99999,"Existing aiming retains its target after final collision correction in every attach mode");
+   else if(mode==MIRV_TF2_BONEMODE_WORLD)check(a[0]==rawAngles[0]&&a[1]==rawAngles[1]&&a[2]==rawAngles[2],"World mode retains fixed orientation with captured or manual offsets, with or without a bone");
+   else {double error=0;for(int j=0;j<3;++j)error+=(expectedLocal[j]-actualLocal[j])*(expectedLocal[j]-actualLocal[j]);check(error<.015,"Bone, entity and aligned modes preserve their chosen composition through combined follow and collision");}
+  }
+ }
+ collisionTrace.Boxes.clear();MirvCameraCollisionSettings off;MirvCameraCollisionSet(off);MirvCameraCollisionReset();
  boneAngles={0,0,0};entityAngles={0,45,0};CMirvVecAngTf2EntityIndexCalc aligned(nullptr,2,1,MIRV_TF2_BONEMODE_ALIGNED);aligned.CalcVecAng(position,angles);check(std::abs(angles.y-45)<.001,"Aligned mode still initializes from entity facing");boneAngles.y=30;aligned.CalcVecAng(position,angles);check(std::abs(angles.y-75)<.001,"Aligned mode still inherits subsequent bone turns");
  poseValid=false;double anchor[3],rootOrigin[3];void*subject=nullptr;check(!camera.CalcVecAng(position,angles)&&!camera.GetAttachAnchor(anchor,subject,rootOrigin),"Missing attachment poses invalidate the anchor rather than reusing stale data");poseValid=true;
 }
 }
 """
-test=test.replace('void frame(',mode_preamble+mode_constants+mode_math+mode_class+mode_tests+'\nvoid frame(',1)
+test=test.replace('void frame(',mode_preamble+mode_constants+mode_math+mode_class+mode_offset+mode_tests+'\nvoid frame(',1)
 
 test=test.replace('int main(){try{',collision_tests+'\nint main(){try{CollisionTests();AttachedFollowTests();AttachmentModeTest::Run();',1)
 

@@ -172,13 +172,13 @@ int MirvCam_GetAttachMode()
 	return g_MirvCamAttachMode;
 }
 
-bool MirvCam_GetAttachAnchor(double origin[3], void *&entity, const void *&identity, double entityOrigin[3])
+bool MirvCam_GetAttachAnchor(double origin[3], void *&entity, const void *&identity, double entityOrigin[3], int *mode)
 {
 	if (!g_MirvCamAttachCalc || g_MirvCam.Source_get() != g_MirvCamAttachCalc ||
 		!g_MirvCam.m_SourceUseX || !g_MirvCam.m_SourceUseY || !g_MirvCam.m_SourceUseZ)
 		return false;
 	identity = g_MirvCamAttachCalc;
-	return Mirv_Tf2_GetAttachAnchor(g_MirvCamAttachCalc, origin, entity, entityOrigin);
+	return Mirv_Tf2_GetAttachAnchor(g_MirvCamAttachCalc, origin, entity, entityOrigin, mode);
 }
 
 // Camera collision console command.
@@ -212,7 +212,7 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 				settings.Players = !std::strcmp(value, "1");
 		}
 		else if (!_stricmp(field, "radius") || !_stricmp(field, "returnHalfLife") ||
-		         !_stricmp(field, "returnSpeed"))
+		         !_stricmp(field, "returnSpeed") || !_stricmp(field, "attachedSoftDistance"))
 		{
 			char *end = nullptr;
 			double number = std::strtod(value, &end);
@@ -220,6 +220,8 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 				settings.Radius = number;
 			else if (!_stricmp(field, "returnHalfLife"))
 				settings.ReturnHalfLife = number;
+			else if (!_stricmp(field, "attachedSoftDistance"))
+				settings.AttachedSoftDistance = number;
 			else
 				settings.ReturnSpeed = number;
 			valid = end != value && !*end;
@@ -238,17 +240,18 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 	if (!valid || (changed && !MirvCameraCollisionSet(settings)))
 		Tier0_Warning("Camera collision edit rejected. TF2/TF2C EngineTraceClient003 is required when "
 		              "enabled; radius 1..64, return half-life 0..10 s, speed 0..1000000; all values must be "
-		              "finite.\n");
+		              "finite; attachedSoftDistance 0..256 units.\n");
 	settings = MirvCameraCollisionGet();
 	Tier0_Msg("Camera collision: free %d, campath %d, radius %.2f, players %d, response %s.\n", settings.Free,
 	          settings.Campath, settings.Radius, settings.Players, settings.Slide ? "slide" : "stop");
 	Tier0_Msg(
 	    "Attachment collision %d; ignore local %d; return half-life %.3f s, maximum speed %.1f units/s.\n",
 	    settings.Attached, settings.IgnoreLocal, settings.ReturnHalfLife, settings.ReturnSpeed);
+	Tier0_Msg("Attached collision soft zone %.1f units (0 = disabled).\n", settings.AttachedSoftDistance);
 	if (argc == 2 || !valid)
 		Tier0_Msg("mirv_cam collision free|campath|attached|players|ignoreLocal 0|1\n"
 		          "mirv_cam collision radius <1..64> | response stop|slide | returnHalfLife <0..10> | "
-		          "returnSpeed <0..1000000> | reset | status\n"
+		          "returnSpeed <0..1000000> | attachedSoftDistance <0..256> | reset | status\n"
 		          "All collision switches default off. Local player is ignored by default; other "
 		          "client-solid player "
 		          "hulls are optional.\n"
@@ -291,17 +294,17 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 		    "maxDistance 1..10000 units, boneHalfLife 0..10 s, teleportDistance 0..1000000 units.\n");
 	settings = MirvCameraCollisionGet();
 	Tier0_Msg("Attachment smooth follow: entity half-life %.3f s, bone half-life %.3f s (0 = rigid), "
-	          "maximum lag %.1f units, teleport reset %.1f units (0 = disabled).\n",
+	          "maximum entity lag %.1f units, teleport reset %.1f units (0 = disabled).\n",
 	          settings.FollowHalfLife, settings.BoneHalfLife, settings.FollowMaxDistance,
 	          settings.FollowTeleportDistance);
 	if (argc == 3 || !valid)
 		Tier0_Msg("mirv_cam attach follow <seconds> - Entity translation smoothing; 0 disables.\n"
 		          "mirv_cam attach follow boneHalfLife <seconds> - Bone motion damping; 0 disables.\n"
-		          "mirv_cam attach follow maxDistance <units> - Maximum combined position lag.\n"
+		          "mirv_cam attach follow maxDistance <units> - Maximum entity translation lag; also bounded by the offset length.\n"
 		          "mirv_cam attach follow teleportDistance <units> - Large movement reset; 0 disables.\n"
 		          "mirv_cam attach follow reset - Reset both filters.\n"
 		          "mirv_cam attach follow status - Show settings.\n"
-		          "Damping uses demo time. Angles are unchanged; seeks/cuts reset history.\n");
+		          "Damping uses demo time. Framing follows the corrected position; world mode retains its heading. Seeks/cuts reset history.\n");
 }
 // End camera collision console command.
 

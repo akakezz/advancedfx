@@ -84,5 +84,5 @@ private:
 };
 
 int MirvCam_GetAttachMode();
-bool MirvCam_GetAttachAnchor(double origin[3], void *&entity, const void *&identity, double entityOrigin[3]);
+bool MirvCam_GetAttachAnchor(double origin[3], void *&entity, const void *&identity, double entityOrigin[3], int *mode = nullptr);
 extern CMirvCam g_MirvCam;

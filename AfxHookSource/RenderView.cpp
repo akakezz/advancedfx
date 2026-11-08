@@ -433,6 +433,10 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 	const CamPath *collisionPath = nullptr;
 	const void *attachedIdentity = nullptr;
 	void *attachedEntity = nullptr;
+	int attachedMode = MIRV_TF2_BONEMODE_WORLD;
+	const void *aimAttachment = nullptr;
+	double aimCameraOrigin[3] = {};
+	float aimCameraAngles[3] = {};
 	double attachedPivot[3] = {}, attachedRoot[3] = {};
 	double collisionTime = 0;
 	bool collisionFree = false;
@@ -467,7 +471,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				originOrAnglesOverriden = true;
 				collisionFree = false;
 				collisionPath = nullptr;
-				if (!MirvCam_GetAttachAnchor(attachedPivot, attachedEntity, attachedIdentity, attachedRoot)) attachedIdentity = nullptr;
+				if (!MirvCam_GetAttachAnchor(attachedPivot, attachedEntity, attachedIdentity, attachedRoot, &attachedMode)) attachedIdentity = nullptr;
 			}
 			break;
 
@@ -610,10 +614,19 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				double dRx = Rx;
 				double dRy = Ry;
 				double dRz = Rz;
+				double aimFrom[3] = {Tx, Ty, Tz};
 
 				if (g_Aiming.Aim(m_Globals->absoluteframetime_get(), Vector3(Tx, Ty, Tz), dRx, dRy, dRz))
 				{
 					originOrAnglesOverriden = true;
+					if (g_Aiming.Active)
+					{
+						aimAttachment = attachedIdentity;
+						std::copy(aimFrom, aimFrom + 3, aimCameraOrigin);
+						aimCameraAngles[0] = float(dRx);
+						aimCameraAngles[1] = float(dRy);
+						aimCameraAngles[2] = float(dRz);
+					}
 
 					Rx = (float)dRx;
 					Ry = (float)dRy;
@@ -662,9 +675,45 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 		else if (Fov > 179) Fov = 179;
 	}
 	
-	// Attachment follow/retraction changes position only, after source offsets.
-	MirvCameraAttachedApply(attachedIdentity, attachedEntity, attachedPivot,
-		g_MirvTime.GetCurTime(), Tx, Ty, Tz, attachedRoot);
+	// Attached camera follow and framing.
+	float attachedAngles[3] = {Rx, Ry, Rz};
+	const bool aimFrame = attachedIdentity && aimAttachment == attachedIdentity;
+	const bool sourceFrame = attachedMode != MIRV_TF2_BONEMODE_WORLD && g_MirvCam.m_SourceUseXRotation &&
+	                         g_MirvCam.m_SourceUseYRotation && g_MirvCam.m_SourceUseZRotation;
+	if (MirvCameraAttachedApply(attachedIdentity, attachedEntity, attachedPivot, g_MirvTime.GetCurTime(), Tx, Ty,
+	                            Tz, attachedRoot, sourceFrame && !aimFrame ? attachedAngles : nullptr))
+	{
+		if (aimFrame)
+		{
+			const double camera[3] = {Tx, Ty, Tz};
+			const double target[3] = {g_Aiming.GetLastTargetOrigin().X, g_Aiming.GetLastTargetOrigin().Y,
+			                          g_Aiming.GetLastTargetOrigin().Z};
+			double referenceCamera[3], distance2 = 0;
+			for (int a = 0; a < 3; ++a)
+			{
+				referenceCamera[a] = aimCameraOrigin[a];
+				distance2 += (target[a] - referenceCamera[a]) * (target[a] - referenceCamera[a]);
+			}
+			if (distance2 < 1e-6)
+			{
+				// Manual offsets are applied after aim. At a coincident source/target,
+				// use the already computed aim direction as the framing reference.
+				double forward[3], right[3], up[3];
+				Afx::Math::MakeVectors(aimCameraAngles[2], aimCameraAngles[0], aimCameraAngles[1], forward, right,
+				                       up);
+				for (int a = 0; a < 3; ++a)
+					referenceCamera[a] = target[a] - forward[a];
+			}
+			MirvCameraAttachedReframe(referenceCamera, camera, target, attachedAngles);
+		}
+		if (sourceFrame || aimFrame)
+		{
+			Rx = attachedAngles[0];
+			Ry = attachedAngles[1];
+			Rz = attachedAngles[2];
+		}
+	}
+	// End attached camera follow and framing.
 
 	// Collision correction is the last position stage, before view/export.
 	const float collisionRequestedX = Tx, collisionRequestedY = Ty, collisionRequestedZ = Tz;

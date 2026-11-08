@@ -13,6 +13,11 @@ public:
 
 	bool Aim(double deltaT, Vector3 const camOrigin, double & yPitch, double & zYaw, double & xRoll);
 
+	const Vector3 & GetLastTargetOrigin() const
+	{
+		return LastTargetOrigin;
+	}
+
 	void TargetPoint(Vector3 origin);
 	void TargetPointFromLast(Vector3 offset);
 

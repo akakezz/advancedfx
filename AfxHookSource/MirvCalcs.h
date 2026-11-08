@@ -311,7 +311,7 @@ struct MirvCameraCollisionSettings
 {
 	bool Free = false, Campath = false, Attached = false, Players = true, Slide = true, IgnoreLocal = true;
 	double Radius = 6, ReturnHalfLife = .2, ReturnSpeed = 300, FollowHalfLife = 0, FollowMaxDistance = 128;
-	double BoneHalfLife = 0, FollowTeleportDistance = 1024;
+	double BoneHalfLife = 0, FollowTeleportDistance = 1024, AttachedSoftDistance = 24;
 };
 MirvCameraCollisionSettings MirvCameraCollisionGet();
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);
@@ -320,7 +320,9 @@ void MirvCameraAttachedReset();
 bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,
 	double sceneTime, double pathTime, const double seed[3], float &x, float &y, float &z);
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3],
-	double sceneTime, float &x, float &y, float &z, const double *entityOrigin = nullptr);
+	double sceneTime, float &x, float &y, float &z, const double *entityOrigin = nullptr, float *angles = nullptr);
+// Preserve target framing after a position correction without advancing mirv_aim twice.
+bool MirvCameraAttachedReframe(const double from[3], const double to[3], const double target[3], float angles[3]);
 // End optional TF2 camera collision.
 
 // True if tracing is available. outIndex is -1 when no networked entity was hit.
@@ -331,7 +333,7 @@ bool Mirv_Tf2_TraceEntity(const double origin[3], const double angles[3], int & 
 bool Mirv_Tf2_ParseBoneArg(int entityIndex, const char * arg, int & outBone);
 
 // Cached bone/entity pivot and entity origin from the latest attachment evaluation.
-bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3]);
+bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode = nullptr);
 
 /// <summary>Makes the camera pose (e.g. from a free camera) the fixed pose of the camera relative to the target of a TF2 entity calc (created with NewTf2EntityIndexCalc).
 /// From now on position and angles follow the target (entity or bone) and keep this relative pose.</summary>

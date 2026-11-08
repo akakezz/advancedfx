@@ -283,6 +283,7 @@ mirv_cam collision attached 1
 mirv_cam collision ignoreLocal 0
 mirv_cam collision returnHalfLife 0.2
 mirv_cam collision returnSpeed 300
+mirv_cam collision attachedSoftDistance 24
 mirv_cam collision radius 6
 mirv_cam collision players 1
 mirv_cam collision response slide
@@ -291,10 +292,10 @@ mirv_cam collision reset
 ```
 
 Use `free 0`, `campath 0` or `attached 0` to disable each independently. Radius is the
-half-width of a swept axis-aligned camera cube, from 1 to 64 world units. Clearance and player filtering are shared. Stop/slide applies to free cameras
-and campaths; attached cameras use the boom response described below.
+half-width of a swept axis-aligned camera cube, from 1 to 64 world units. Clearance and player filtering are shared. Stop/slide applies to swept camera
+movement; attached cameras also use the boom response described below.
 `response stop` stops the requested movement at a solid; `slide` retains movement
-along obstacle surfaces. Angular and FOV animation are not changed. Free-camera
+along obstacle surfaces. Free/path angular and FOV animation are not changed. Free-camera
 corrections feed back into its input position, avoiding accumulated movement
 behind walls while retaining unobstructed camera smoothing and existing offsets.
 
@@ -335,17 +336,27 @@ editor seeks and backward/cut resets still initialize a new shot.
 
 ### Attached camera retraction and positional following
 
-`mirv_cam collision attached 1` traces from the current attachment bone/entity
-pivot toward the final offset camera position, excluding the attached subject.
-Walls shorten the offset immediately; clearing an obstacle extends it gradually
-using the return settings. Only boom length is damped: its direction responds
-immediately to entity/bone rotation. The extension speed cap does not cap the
-subject's movement. This is boom retraction, not the free/path slide
-response. If the pivot itself lies inside world geometry, the previous clear
-camera position is retained when available. If retraction would put the camera
-inside its subject, a bounded search of up to 64 units finds a nearby clear
-endpoint without crossing walls. A valid framing is not always possible when
-the subject and surrounding geometry leave no space for the camera hull.
+`mirv_cam collision attached 1` uses a boom trace from the stabilized attachment
+pivot toward the desired camera position, plus a sweep of the camera's actual
+movement through the existing stop/slide solver. Bone damping remains effective
+through this stage: retraction does not mix raw head bob back into the camera.
+
+`mirv_cam collision attachedSoftDistance 24` supplies an anticipatory soft zone
+in world units (default 24, range 0..256, capped at half the current boom length).
+Continuous approaches shorten the boom progressively before contact. Set it to
+0 for direct boom contact. Clearing an obstacle restores boom length gradually
+using `returnHalfLife` and `returnSpeed`; those controls do not cap the subject's
+translation. Rotation is still supplied by the selected attach mode.
+
+The pivot sweep ignores the attached subject because it starts inside the
+subject. Endpoint and movement checks include its solid hull independently of
+other-player exclusions. If an endpoint falls inside the subject, the solver
+looks for its exit along the chosen boom, rather than jumping along arbitrary
+axes to find another viewpoint. Tight gaps may not have a valid camera-sized
+solution. Sudden geometry overlap can still require an immediate safety move;
+blocked continuous movement may also leave the subject occluded. This does not
+plan an alternative route through a doorway or guarantee a full-body composition
+in confined space.
 
 ```text
 mirv_cam attach follow 0.15
@@ -369,25 +380,43 @@ they do not change `mirv_input cfg smooth` settings.
 For a stationary target correction starting at rest, a half-life is the time to
 close half the positional gap. The exact spring update preserves velocity across
 small corrections instead of inferring a new velocity from each positional jump.
-It does not reconstruct missing snapshots. Angles and rotated camera offsets
-remain immediate in the existing attachment modes; the aiming override order is
-unchanged. Use `world` mode below to keep orientation independent of animation.
+It does not reconstruct missing snapshots. Entity/bone rotation remains controlled
+by the chosen attach mode; there is no additional angular-delay filter. In bone,
+entity and aligned modes, the final orientation compensates for positional lag
+and collision to retain the chosen composition, including deliberately off-centre
+framing. Partial source-angle overrides are respected. `world` mode keeps its
+fixed heading instead of applying this attachment framing correction.
 
-`maxDistance` bounds the total position lag from both filters. `teleportDistance`
-resets both filters when the entity moves farther than that many units between
-frames; 1024 is the default and 0 disables this distance reset. Small corrections
+An active `mirv_aim` override retains its selected target after final position
+correction, including with manual camera offsets. The aiming controller advances
+once per frame; the correction transports its resulting composition and does not
+run the angular smoothing controller a second time.
+
+`maxDistance` bounds entity translation lag. Follow also smoothly limits lag along
+the chosen offset to a quarter of its length, and transverse lag to half its
+length. This retains the selected camera side during backstepping in clear space;
+fast movement is followed more tightly rather than letting the entity pass through
+the delayed camera. Bone-position damping is applied independently. A zero-length
+camera offset has no meaningful side constraint.
+
+`teleportDistance` resets both filters when the entity moves farther than that
+many units between frames; 1024 is the default and 0 disables this distance reset. Small corrections
 are smoothed. Explicit editor seeks, backward time, attachment/entity changes,
 loading and time gaps greater than 0.25 demo seconds reset the filters. Missing
 attachment poses also invalidate the history. Filters advance with demo time and
 freeze during pause or timescale 0. Use `reset` to reframe while paused. Set both
 `follow 0` and `follow boneHalfLife 0` to disable positional smoothing entirely.
 For repeatable recording, begin from the same earlier point and allow preroll.
-Collision remains independent and takes priority over smoothing immediately.
+Collision remains independent and takes priority whenever smoothing would put
+the camera inside a solid.
 
 `attachMode entity` uses entity-facing angles at the bone position; `bone` uses
 bone angles; `aligned` initially aligns with the entity and then follows bone
-rotation. The new `world` mode follows the entity/bone position but keeps the
-camera heading it had when attached. Its offset stays in that fixed orientation
+rotation. This distinction also applies after `mirv_cam attach capture`: entity
+mode preserves the camera relative to entity facing, without inheriting bone
+pitch, yaw or roll. Bone damping controls position, while bone/aligned modes still
+inherit their chosen bone rotation. The new `world` mode follows the entity/bone
+position but keeps the camera heading it had when attached. Its offset stays in that fixed orientation
 rather than orbiting around the subject as the subject turns. Head bob and other
 bone translation still affect the camera and can be softened with `boneHalfLife`.
 A separate `mirv_aim` override can still change the final angles.
