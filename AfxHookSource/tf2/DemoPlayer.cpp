@@ -55,7 +55,7 @@ bool CheckpointFailed(const char *reason)
 }
 void **g_PlayerTable = nullptr, **g_PlayerSlot = nullptr;
 std::uint64_t g_Identity = 0, g_SeekSerial = 0;
-unsigned int g_SeekDepth = 0;
+unsigned int g_SeekDepth = 0, g_StartDepth = 0;
 int g_LastSeekTarget = -1;
 using StartFn = bool (*)(void *, const char *, bool);
 using SeekFn = void (*)(void *, int, bool, bool);
@@ -120,7 +120,10 @@ enum Event
 	SeekEnd,
 	StartBegin,
 	StartEnd,
-	Entities
+	Entities,
+	CheckpointBegin,
+	CheckpointEnd,
+	CheckpointLost
 };
 struct Record
 {
@@ -130,6 +133,8 @@ struct Record
 	int ArgTick = -1, Relative = -1, Pause = -1, Accepted = -1;
 	int ServerTick = -1, DeltaFrom = -1, Delta = -1, UpdateBaseline = -1, Bank = -1, UpdatedEntities = -1,
 	    Frames = -1, ReferencePresent = -1, Tables = -1, BaselineStrings = -1;
+	int CaptureArmed = 0, CaptureRequested = 0, CaptureSeeded = 0;
+	std::uint64_t CaptureSession = 0;
 };
 struct Trace
 {
@@ -139,6 +144,11 @@ struct Trace
 	std::uint64_t Dropped = 0, Written = 0, Started = 0;
 	Status Last;
 	bool HasLast = false, Failed = false;
+	// Capture intent belongs to the observer lifetime, independently of the
+	// packet data cleared on restarts. Never silently re-arm lost capture data.
+	bool CheckpointRequested = false, CheckpointUnexpectedOff = false;
+	std::uint64_t Instance = GetTickCount64(), CheckpointSession = 0, CheckpointRestarts = 0,
+	              CheckpointSeeks = 0;
 	~Trace()
 	{
 		if (File != INVALID_HANDLE_VALUE)
@@ -413,6 +423,10 @@ Record Capture(Event type)
 	result.Playing = status.Playing;
 	result.Loading = status.Loading;
 	result.Skipping = status.Skipping;
+	result.CaptureArmed = g_Checkpoint.Armed;
+	result.CaptureRequested = g_Trace.CheckpointRequested;
+	result.CaptureSeeded = g_Checkpoint.Seeded;
+	result.CaptureSession = g_Trace.CheckpointSession;
 	return result;
 }
 
@@ -426,6 +440,23 @@ void Append(const Record &record)
 		return;
 	}
 	g_Trace.Records[(g_Trace.Head + g_Trace.Count++) % g_Trace.Records.size()] = record;
+}
+
+void ObserveCheckpointState(const char *where)
+{
+	if (g_Trace.CheckpointRequested && !g_Checkpoint.Armed && !g_Trace.CheckpointUnexpectedOff)
+	{
+		g_Trace.CheckpointUnexpectedOff = true;
+		Tier0_Warning(
+		    "Checkpoint session %llu unexpectedly became off at %s; no checkpoint end was observed. "
+		    "Instance %lu:%llu, restarts %llu, seeks %llu.\n",
+		    static_cast<unsigned long long>(g_Trace.CheckpointSession), where,
+		    static_cast<unsigned long>(GetCurrentProcessId()),
+		    static_cast<unsigned long long>(g_Trace.Instance),
+		    static_cast<unsigned long long>(g_Trace.CheckpointRestarts),
+		    static_cast<unsigned long long>(g_Trace.CheckpointSeeks));
+		Append(Capture(CheckpointLost));
+	}
 }
 
 bool Write(const char *text, size_t bytes)
@@ -447,7 +478,9 @@ bool Write(const char *text, size_t bytes)
 
 void Flush(size_t limit)
 {
-	static const char *names[] = {"state", "seek_begin", "seek_end", "start_begin", "start_end", "entities"};
+	static const char *names[] = {"state",          "seek_begin", "seek_end",         "start_begin",
+	                              "start_end",      "entities",   "checkpoint_begin", "checkpoint_end",
+	                              "checkpoint_lost"};
 	std::string buffer;
 	buffer.reserve(65536);
 	size_t rows = 0;
@@ -457,11 +490,13 @@ void Flush(size_t limit)
 		char line[512];
 		const int bytes = std::snprintf(
 		    line, sizeof(line),
-		    "%llu,%s,%llu,%llu,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+		    "%llu,%s,%llu,%llu,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%llu\n",
 		    static_cast<unsigned long long>(r.Ms), names[r.Type], static_cast<unsigned long long>(r.Identity),
 		    static_cast<unsigned long long>(r.SeekSerial), r.Tick, r.Target, r.Playing, r.Loading, r.Skipping,
 		    r.ArgTick, r.Relative, r.Pause, r.Accepted, r.ServerTick, r.DeltaFrom, r.Delta, r.UpdateBaseline,
-		    r.Bank, r.UpdatedEntities, r.Frames, r.ReferencePresent, r.Tables, r.BaselineStrings);
+		    r.Bank, r.UpdatedEntities, r.Frames, r.ReferencePresent, r.Tables, r.BaselineStrings,
+		    r.CaptureArmed, r.CaptureRequested, r.CaptureSeeded,
+		    static_cast<unsigned long long>(r.CaptureSession));
 		if (bytes <= 0 || bytes >= sizeof(line))
 		{
 			g_Trace.Failed = true;
@@ -478,6 +513,15 @@ void Flush(size_t limit)
 
 bool MyStart(void *player, const char *file, bool timedemo)
 {
+	if (g_Trace.CheckpointRequested)
+	{
+		++g_Trace.CheckpointRestarts;
+		Tier0_Msg("Checkpoint session %llu: playback restart %llu, armed %d (native seek depth %u).\n",
+		          static_cast<unsigned long long>(g_Trace.CheckpointSession),
+		          static_cast<unsigned long long>(g_Trace.CheckpointRestarts), g_Checkpoint.Armed ? 1 : 0,
+		          g_SeekDepth);
+	}
+	ObserveCheckpointState("playback restart entry");
 	if (g_Checkpoint.Armed)
 		g_Checkpoint.Reset();
 	// An internal backward restart belongs to the same playback identity.
@@ -485,7 +529,10 @@ bool MyStart(void *player, const char *file, bool timedemo)
 		++g_Identity;
 	if (g_Trace.File != INVALID_HANDLE_VALUE)
 		Append(Capture(StartBegin));
+	++g_StartDepth;
 	const bool accepted = g_Start(player, file, timedemo);
+	--g_StartDepth;
+	ObserveCheckpointState("playback restart return");
 	if (g_Trace.File != INVALID_HANDLE_VALUE)
 	{
 		auto record = Capture(StartEnd);
@@ -497,6 +544,15 @@ bool MyStart(void *player, const char *file, bool timedemo)
 
 void MySeek(void *player, int tick, bool relative, bool pause)
 {
+	if (g_Trace.CheckpointRequested)
+	{
+		++g_Trace.CheckpointSeeks;
+		Tier0_Msg("Checkpoint session %llu: native seek %llu to %d (relative %d), armed %d.\n",
+		          static_cast<unsigned long long>(g_Trace.CheckpointSession),
+		          static_cast<unsigned long long>(g_Trace.CheckpointSeeks), tick, relative ? 1 : 0,
+		          g_Checkpoint.Armed ? 1 : 0);
+	}
+	ObserveCheckpointState("native seek entry");
 	if (g_Checkpoint.Armed)
 		g_Checkpoint.Boundary = false;
 	Status before;
@@ -516,6 +572,7 @@ void MySeek(void *player, int tick, bool relative, bool pause)
 	++g_SeekDepth;
 	g_Seek(player, tick, relative, pause);
 	--g_SeekDepth;
+	ObserveCheckpointState("native seek return");
 	if (g_Trace.File != INVALID_HANDLE_VALUE)
 		Append(Capture(SeekEnd));
 }
@@ -1017,10 +1074,11 @@ bool StartTrace(const wchar_t *file)
 	g_Trace.Started = GetTickCount64();
 	g_Trace.HasLast = g_Trace.Failed = false;
 	const char header[] =
-	    "# TF2 native demo observation v1; timestamp=6ac41507; image_size=822000; checksum=4fb7d1\n"
+	    "# TF2 native demo observation v2; timestamp=6ac41507; image_size=822000; checksum=4fb7d1\n"
 	    "ms,event,identity,seek_serial,demo_tick,pending_tick,playing,loading,skipping,arg_tick,relative,"
 	    "pause,accepted,server_tick,delta_from,delta,update_baseline,bank,updated_entities,frames_before,"
-	    "reference_present,tables,baseline_strings\n";
+	    "reference_present,tables,baseline_strings,capture_armed,capture_requested,capture_seeded,capture_"
+		"session\n";
 	if (!Write(header, sizeof(header) - 1))
 	{
 		StopTrace();
@@ -1054,8 +1112,17 @@ bool BeginCheckpointCapture()
 		return CheckpointFailed(g_ProbeFailure);
 	g_Checkpoint.Reset();
 	g_Checkpoint.Armed = true;
+	g_Trace.CheckpointRequested = true;
+	g_Trace.CheckpointUnexpectedOff = false;
+	++g_Trace.CheckpointSession;
+	g_Trace.CheckpointRestarts = g_Trace.CheckpointSeeks = 0;
+	Append(Capture(CheckpointBegin));
 	Tier0_Msg("Checkpoint capture armed. Restart this demo normally (playdemo) to capture its initial full "
 	          "entity packet, then seek forward to the desired tick and wait for completion.\n");
+	Tier0_Msg("Checkpoint observer instance %lu:%llu; session %llu.\n",
+	          static_cast<unsigned long>(GetCurrentProcessId()),
+	          static_cast<unsigned long long>(g_Trace.Instance),
+	          static_cast<unsigned long long>(g_Trace.CheckpointSession));
 	return true;
 #else
 	Tier0_Warning("Checkpoint capture requires the verified Windows x64 TF2 engine.\n");
@@ -1067,6 +1134,7 @@ bool SaveCheckpointCapture(const wchar_t *file)
 {
 #ifdef _WIN64
 	g_CheckpointCommandError[0] = 0;
+	ObserveCheckpointState("capture command");
 	Status before;
 	if (!file || !*file)
 		return CheckpointFailed("A non-empty output filename is required.");
@@ -1137,20 +1205,34 @@ bool SaveCheckpointCapture(const wchar_t *file)
 void EndCheckpointCapture()
 {
 #ifdef _WIN64
+	if (g_Checkpoint.Armed || g_Trace.CheckpointRequested)
+		Tier0_Msg("Checkpoint session %llu ended by checkpoint end (native seek depth %u, playback start "
+		          "depth %u).\n",
+		          static_cast<unsigned long long>(g_Trace.CheckpointSession), g_SeekDepth, g_StartDepth);
 	g_CheckpointCommandError[0] = 0;
+	g_Trace.CheckpointRequested = false;
 	g_Checkpoint.Armed = false;
 	g_Checkpoint.Reset();
+	Append(Capture(CheckpointEnd));
 #endif
 }
 
 void PrintCheckpointStatus()
 {
 #ifdef _WIN64
+	ObserveCheckpointState("status command");
 	Tier0_Msg("Checkpoint capture: %s; initial full packet %s; messages %llu, decodes %llu, owned payload "
 	          "%zu bytes.\n",
 	          g_Checkpoint.Armed ? "on" : "off", g_Checkpoint.Seeded ? "seen" : "not seen",
 	          static_cast<unsigned long long>(g_Checkpoint.Messages),
 	          static_cast<unsigned long long>(g_Checkpoint.Decodes), g_Checkpoint.Entities.Bytes());
+	Tier0_Msg("Observer instance %lu:%llu; session %llu; requested %d, observer hooks %d, decoder hook %d; "
+	          "restarts %llu, seeks %llu.\n",
+	          static_cast<unsigned long>(GetCurrentProcessId()),
+	          static_cast<unsigned long long>(g_Trace.Instance),
+	          static_cast<unsigned long long>(g_Trace.CheckpointSession), g_Trace.CheckpointRequested ? 1 : 0,
+	          g_Ready ? 1 : 0, g_Decode ? 1 : 0, static_cast<unsigned long long>(g_Trace.CheckpointRestarts),
+	          static_cast<unsigned long long>(g_Trace.CheckpointSeeks));
 	if (g_Checkpoint.Error)
 		Tier0_Warning("%s\n", g_Checkpoint.Error);
 	if (g_CheckpointCommandError[0])
@@ -1166,6 +1248,7 @@ void PrintCheckpointStatus()
 void UpdateTrace()
 {
 #ifdef _WIN64
+	ObserveCheckpointState("editor update");
 	if (g_Trace.File == INVALID_HANDLE_VALUE || g_Trace.Failed)
 		return;
 	Status status;
@@ -1186,6 +1269,7 @@ void UpdateTrace()
 void OnNetUpdateEnd()
 {
 #ifdef _WIN64
+	ObserveCheckpointState("network update end");
 	if (g_Checkpoint.Armed && g_Checkpoint.Seeded && !g_Checkpoint.Error && g_Checkpoint.Client)
 		g_Checkpoint.Boundary = true;
 	// Fast-forward may skip rendering. Reuse the existing client frame-stage hook

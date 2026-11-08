@@ -54,6 +54,26 @@ data while preserving the armed state. Only a successful `begin` arms capture;
 `capture` reports separately when collection is off, unseeded, invalid, busy, or
 unable to create its output file.
 
+If capture was armed successfully but becomes off after a backward seek,
+collect the console output from `begin` through the seek and a subsequent
+`status`, before running `end`. The observer now reports:
+
+- An instance ID (process ID and observer initialization uptime), session number,
+  separate requested/armed states, installed-hook flags and restart/seek counts.
+- Native seek and playback restart entries while capture is requested.
+- Every active `checkpoint end`, including whether it ran inside a native
+  seek/playback restart callback.
+- The first callback/update where capture unexpectedly becomes off while its
+  independent requested state remains on. It reports the loss without silently
+  rearming potentially incomplete data.
+
+A changed instance ID with a reset session indicates a different observer
+instance. These diagnostics distinguish that from an observed `end` or an
+unexpected state loss; they do not establish the cause of such a loss by
+themselves. The tested native callback sequence preserves capture through
+seek, nested playback restart, full packet, and network update; a full live TF2
+reproduction is still required.
+
 The XML includes:
 
 - Latest merged property encodings for each current network entity, full entity
@@ -142,6 +162,9 @@ CSV rows contain:
   handler return value.
 - Retained frame count before the message, whether its referenced frame exists,
   string-table count, and the number of `instancebaseline` strings.
+- In version 2, capture armed/requested/seeded flags and capture session number,
+  plus `checkpoint_begin`, `checkpoint_end` and `checkpoint_lost` events. Existing
+  columns retain their positions; the four capture columns are appended.
 
 `-1` means unavailable or inapplicable. The entity message's accepted field is
 the native handler's return value, not an assertion that every presentation
@@ -232,7 +255,11 @@ compiling HLAE and collecting the native capture in a complete TF2 installation.
 `test_demo_startup.py` runs the actual startup/control functions against engine
 and OS stubs: failed-start retries, build rejection, missing decoder bindings,
 loading/seeking, preserving the armed state on reset, and specific capture/file
-errors. It is registered with the Unix test suite when Python is available.
+errors. It also executes the actual seek, playback-start, packet-entity and
+network-update callbacks with deterministic original-function stubs, covering
+repeated backward restarts, an end executed inside restart, unexpected capture
+loss, rejected native operations and version-2 CSV rows. It is registered with
+the Unix test suite when Python is available.
 It does not invoke the real live hooks.
 
 `test_cinematic.cpp` also checks capture ownership, property timing retention,
