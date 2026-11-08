@@ -163,3 +163,6 @@ bool MirvFix_PlayerInterpolationAvailable();
 double MirvFix_GetPlayerInterpolation();
 bool MirvFix_SetPlayerInterpolation(double seconds);
 void MirvFix_Update();
+void MirvFix_InitializeTf2Client(void *client);
+bool MirvFix_GetPovDeathcam();
+bool MirvFix_SetPovDeathcam(bool enabled);

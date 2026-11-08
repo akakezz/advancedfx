@@ -2200,6 +2200,8 @@ void* new_Client_CreateInterface(const char *pName, int *pReturnCode)
 					break;
 				case SourceSdkVer_TF2Classified:
 				case SourceSdkVer_TF2:
+					if (g_SourceSdkVer == SourceSdkVer_TF2)
+						MirvFix_InitializeTf2Client(!strcmp(g_Info_VClient, CLIENT_DLL_INTERFACE_VERSION_017) ? iface : nullptr);
 					AfxDetourPtr((PVOID*) & (vtable[2]), new_CVClient_Shutdown, (PVOID*)&old_CVClient_Shutdown);
 					AfxDetourPtr((PVOID*) & (vtable[35]), new_CVClient_FrameStageNotify_TF2, (PVOID*)&old_CVClient_FrameStageNotify_TF2);
 					break;

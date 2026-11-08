@@ -10,8 +10,10 @@ root=Path(__file__).resolve().parents[2];imgui=args.imgui_dir.resolve();out=args
 s=(root/'AfxHookSource/CameraOverlay.cpp').read_text();s=s[re.search(r'namespace AfxHookSource\s*\{\s*namespace CameraOverlay\s*\{',s).start():]
 native=(root/'AfxHookSource/MirvCommands.cpp').read_text()
 fix_api=native[native.index('// TF2 demo interpolation controls.'):native.index('// End TF2 demo interpolation controls.')]
+pov_api=native[native.index('// TF2 POV deathcam control.'):native.index('// End TF2 POV deathcam control.')]
+pov_command=native[native.index('// TF2 POV deathcam command.'):native.index('// End TF2 POV deathcam command.')]
 fix_command=native[native.index('// TF2 interpolation command.'):native.index('// End TF2 interpolation command.')]
-fix_command='void callFix(std::initializer_list<const char*> words){struct Args{std::vector<const char*> V;int ArgC(){return (int)V.size();}const char*ArgV(int i){return V[i];}} data;data.V=words;auto *args=&data;int argc=args->ArgC();const char *cmd1=args->ArgV(1);'+fix_command+'}\n'
+fix_command='void callFix(std::initializer_list<const char*> words){struct Args{std::vector<const char*> V;int ArgC(){return (int)V.size();}const char*ArgV(int i){return V[i];}} data;data.V=words;auto *args=&data;int argc=args->ArgC();const char *cmd1=args->ArgV(1);'+pov_command+fix_command+'}\n'
 demo_time=native[native.index('bool GetCurrentDemoTime(double &outDemoTime)'):native.index('bool GetDemoTickFromClientTime(')].replace('GetCurrentDemoTime(', 'ActualGetCurrentDemoTime(',1)
 native=native[native.index('// Campath preview uses'):native.index('CON_COMMAND(mirv_campath,')]
 view=(root/'AfxHookSource/RenderView.cpp').read_text();view=view[view.index('case Override_Input:'):view.index('case Override_Aim:')];view=view.replace('case Override_Input:','').replace('break;','')
@@ -31,6 +33,9 @@ preamble=r'''
 #include <atomic>
 #include <cfloat>
 #include <cstdarg>
+#include <set>
+#include <cstddef>
+#define __thiscall
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -64,7 +69,7 @@ struct Clock{double Time=10;double GetTime(){return Time;}int GetFrameCount(){re
 std::vector<std::string> commands;
 struct DemoInfo{int TotalTicks=12000;int GetDemoPlaybackTick(){return int(g_MirvTime.Time*66);}int GetDemoPlaybackTotalTicks(){return TotalTicks;}float GetDemoPlaybackTimeScale(){return 1;}}demo;
 using WrpVEngineClientDemoInfoEx=DemoInfo;
-struct Engine{bool Playing=true,Hltv=true,HaveInfo=true,Loading=false;bool IsPlayingDemo(){return Playing;}bool IsDrawingLoadingImage(){return Loading;}bool IsHLTV(){return Hltv;}DemoInfo*GetDemoInfoEx(){return HaveInfo?&demo:nullptr;}void ClientCmd_Unrestricted(const char*c){commands.emplace_back(c);}}engine;Engine*g_VEngineClient=&engine;
+struct Engine{bool Playing=true,Hltv=true,HaveInfo=true,Loading=false;int Local=1;int GetLocalPlayer(){return Local;}bool IsPlayingDemo(){return Playing;}bool IsDrawingLoadingImage(){return Loading;}bool IsHLTV(){return Hltv;}DemoInfo*GetDemoInfoEx(){return HaveInfo?&demo:nullptr;}void ClientCmd_Unrestricted(const char*c){commands.emplace_back(c);}}engine;Engine*g_VEngineClient=&engine;
 bool GetCurrentDemoTick(int&n){n=int(g_MirvTime.Time*66);return true;}bool GetCurrentDemoTime(double&t){t=g_MirvTime.Time;return true;}bool GetDemoTickFromClientTime(double,double t,int&n){n=int(t*66);return true;}
 int Mirv_Tf2_GetMaxPlayers(){return 1;}bool Mirv_Tf2_GetPlayerInfo(int i,char*b,int n,int*u){snprintf(b,n,"Scout");*u=42;return i==1;}
 constexpr int MIRV_TF2_MAX_BONES=256;
@@ -72,6 +77,8 @@ struct MirvTf2BoneName_t{char name[64];int parent;};
 int Mirv_Tf2_GetBoneNames(int entity,MirvTf2BoneName_t*out){if(entity!=1)return 0;snprintf(out[0].name,64,"root");snprintf(out[1].name,64,"bip_head");return 2;}
 int tracedEntity=1;bool traceAvailable=true;
 bool Mirv_Tf2_TraceEntity(const double*,const double*,int&out){out=tracedEntity;return traceAvailable;}
+using LONG=long;using PVOID=void*;constexpr LONG NO_ERROR=0;LONG povHookError=0;int povHookCommits=0;
+void*GetCurrentThread(){return nullptr;}LONG DetourTransactionBegin(){return povHookError;}LONG DetourUpdateThread(void*){return 0;}LONG DetourAttach(PVOID*,PVOID){return 0;}LONG DetourTransactionAbort(){return 0;}LONG DetourTransactionCommit(){++povHookCommits;return 0;}
 using UINT=unsigned int;using DWORD=unsigned long;using WPARAM=uintptr_t;using LPARAM=intptr_t;
 constexpr UINT WM_KEYDOWN=0x100,WM_KEYUP=0x101,WM_SYSKEYDOWN=0x104,WM_SYSKEYUP=0x105;
 constexpr UINT VK_DELETE=0x2E,VK_F1=0x70,VK_INSERT=0x2D,VK_HOME=0x24,VK_END=0x23,VK_PRIOR=0x21,VK_NEXT=0x22,VK_LEFT=0x25,VK_UP=0x26,VK_RIGHT=0x27,VK_DOWN=0x28,VK_CONTROL=0x11,VK_SHIFT=0x10,VK_RCONTROL=0xA3;
@@ -195,6 +202,10 @@ test=r'''
 int checks=0;void check(bool b,const char*m){++checks;if(!b)throw std::runtime_error(m);}
 void frame(ImVec2 mouse=ImVec2(-100,-100),bool down=false,float wheel=0,bool middle=false,bool right=false){auto&io=ImGui::GetIO();io.DeltaTime=1.0f/60;io.MousePos=mouse;io.MouseDown[0]=down;io.MouseDown[2]=middle;io.MouseDown[1]=right;io.MouseWheel=wheel;widgets.clear();spans.clear();sequencerLabels.clear();timelineSelected=0;ImGui::NewFrame();AfxHookSource::CameraOverlay::Draw();ImGui::Render();check(ImGui::GetDrawData()!=nullptr,"UI produces draw data");}
 void button(const char*l){auto r=widgets.at(l);ImVec2 p((r.Min.x+r.Max.x)/2,(r.Min.y+r.Max.y)/2);frame(p,false);frame(p,true);frame(p,false);frame();}
+Tf2FixClientClass *povClasses=nullptr;
+Tf2FixClientClass *PovGetClasses(void*){return povClasses;}
+int povProxyCalls=0,povObserved=-1;const Tf2FixProxyData*povSeenData=nullptr;void*povSeenObject=nullptr,*povSeenOut=nullptr;
+void PovOriginal(const Tf2FixProxyData*d,void*object,void*out){++povProxyCalls;povObserved=d?d->Value.Int:-1;povSeenData=d;povSeenObject=object;povSeenOut=out;}
 int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=nullptr;io.DisplaySize=ImVec2(1600,1000);unsigned char*pixels;int w,h;io.Fonts->AddFontDefault();io.Fonts->GetTexDataAsRGBA32(&pixels,&w,&h);
  using namespace AfxHookSource::CameraOverlay;g_Autosave=false;
  {
@@ -223,6 +234,30 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  g_GizmoDrag.HasModel=g_GizmoDrag.WasUsing=true;g_GizmoDrag.KeyTime=10;FinishEdit();check(!g_GizmoDrag.HasModel&&!g_GizmoDrag.WasUsing,"Ending an edit clears pending gizmo state even when its key is hidden");
 
 
+
+ { // Real receive-table discovery, proxy controller and command body; fake OS detour transaction only.
+ bool wasHltv=engine.Hltv;engine.Hltv=false;void*vf[9]{};vf[8]=(void*)PovGetClasses;void**iface=vf;
+ Tf2FixRecvProp property{};property.Name="m_iObserverMode";property.Type=0;property.Proxy=PovOriginal;
+ Tf2FixRecvTable base{};base.Name="DT_BasePlayer";base.Props=&property;base.Count=1;
+ Tf2FixRecvProp inherited{};inherited.Name="baseclass";inherited.Type=6;inherited.Table=&base;
+ Tf2FixRecvTable playerTable{};playerTable.Name="DT_TFPlayer";playerTable.Props=&inherited;playerTable.Count=1;
+ Tf2FixClientClass playerClass{};playerClass.Table=&playerTable;povClasses=&playerClass;
+ MirvFix_InitializeTf2Client(nullptr);check(!MirvFix_SetPovDeathcam(true),"POV fix rejects a missing client interface");
+ MirvFix_InitializeTf2Client(&iface);povHookError=5;check(!MirvFix_SetPovDeathcam(true)&&!MirvFix_GetPovDeathcam()&&!g_Tf2ObserverProxy,"Failed hook installation does not enable POV suppression");povHookError=0;
+ callFix({"mirv_fix","povDeathcam","1"});check(MirvFix_GetPovDeathcam()&&povHookCommits==1,"POV command resolves inherited receive table and installs once");
+ Tf2FixProxyData data{};data.Prop=&property;data.Value.Type=0;data.ObjectId=engine.Local;data.Value.Int=2;int object=7,out=9;
+ Tf2FixObserverMode(&data,&object,&out);check(povObserved==7&&data.Value.Int==2&&povProxyCalls==1&&povSeenObject==&object&&povSeenOut==&out,"Local POV freeze mode becomes roaming without changing incoming data or forwarded objects");
+ data.Value.Int=1;Tf2FixObserverMode(&data,&object,&out);check(povObserved==7&&g_Tf2DeathcamBlocked==2,"Recorder death camera is suppressed before freeze camera");
+ for(int mode:{0,3,4,5,6,7}){data.Value.Int=mode;Tf2FixObserverMode(&data,&object,&out);check(povObserved==mode&&povSeenData==&data,"Ordinary observer modes forward original data");}
+ data.Value.Int=2;data.ObjectId=engine.Local+1;Tf2FixObserverMode(&data,&object,&out);check(povObserved==2,"Remote players keep original observer modes");data.ObjectId=engine.Local;
+ engine.Hltv=true;Tf2FixObserverMode(&data,&object,&out);check(povObserved==2,"STV playback bypasses POV suppression");engine.Hltv=false;
+ engine.Playing=false;Tf2FixObserverMode(&data,&object,&out);check(povObserved==2,"Live play bypasses POV suppression");engine.Playing=true;
+ g_SourceSdkVer=0;Tf2FixObserverMode(&data,&object,&out);check(povObserved==2,"Another Source game bypasses POV suppression");g_SourceSdkVer=SourceSdkVer_TF2;
+ check(MirvFix_SetPovDeathcam(true)&&povHookCommits==1,"Repeated enable does not stack hooks");
+ callFix({"mirv_fix","povDeathcam","0"});Tf2FixObserverMode(&data,&object,&out);check(!MirvFix_GetPovDeathcam()&&povObserved==2,"Disabled POV hook forwards original freeze mode");
+ callFix({"mirv_fix","povDeathcam","2"});check(!MirvFix_GetPovDeathcam(),"Invalid POV command does not enable suppression");
+ engine.Hltv=wasHltv;MirvFix_InitializeTf2Client(nullptr);
+ }
  check(MirvFix_PlayerInterpolationAvailable(),"TF2 interpolation reports available engine variables");const float originalInterpolation=fakeCvar.Vars["cl_interp"].Value;
  callFix({"mirv_fix","playerInterpolation","0.1"});check(std::abs(MirvFix_GetPlayerInterpolation()-.1)<1e-6&&fakeCvar.Vars["cl_interp_ratio"].Value==2,"One command enables native movement interpolation");
  callFix({"mirv_fix","playerInterpolation","nan"});check(std::abs(MirvFix_GetPlayerInterpolation()-.1)<1e-6,"Invalid interpolation command retains active settings");
@@ -442,7 +477,7 @@ neo=(root/'shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.cp
 neo='extern void TestRecordNeoLabel(int,int);\n'+neo.replace('snprintf(lbl, sizeof(lbl), "%d", labelIndex);','snprintf(lbl, sizeof(lbl), "%d", labelIndex); TestRecordNeoLabel(*frame,labelIndex);')
 neo+='\nnamespace ImGui{void TestSetNeoView(float zoom,int offset){for(auto &entry:sequencerData){entry.second.Zoom=zoom;entry.second.OffsetFrame=offset;}}}\n'
 neo_file=out/'neo_labels_test.cpp';neo_file.write_text(neo)
-source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+demo_time+fix_api+fix_command+s+native+view+layout+test)
+source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+demo_time+fix_api+pov_api+fix_command+s+native+view+layout+test)
 cmd=['g++','-std=c++17','-O0','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),'-I'+str(imgui),'-I'+str(root/'shared/overlay/third_party/imgui_neo_sequencer'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp')]+[str(imgui/f) for f in ['imgui.cpp','imgui_draw.cpp','imgui_widgets.cpp','imgui_tables.cpp']]+[(str(neo_file) if f=='imgui_neo_sequencer.cpp' else str(root/'shared/overlay/third_party/imgui_neo_sequencer'/f)) for f in ['imgui_neo_sequencer.cpp','imgui_neo_internal.cpp']]+[str(root/'shared/overlay/third_party/imguizmo/ImGuizmo.cpp'),'-o',str(out/'overlay_test')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 p=subprocess.run(cmd,capture_output=True,text=True);(out/'build.log').write_text(p.stdout+p.stderr)

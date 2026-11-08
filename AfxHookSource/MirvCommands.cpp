@@ -68,6 +68,8 @@
 #include <string>
 #include <algorithm>
 #include <cmath>
+#include <set>
+#include <cstddef>
 
 extern WrpVEngineClient * g_VEngineClient;
 
@@ -4212,6 +4214,176 @@ static void MirvFix_PrintPlayerInterpolationStatus()
 }
 // End TF2 demo interpolation controls.
 
+// TF2 POV deathcam control. Public Source SDK receive-table layouts; resolve
+// the existing proxy from VClient017 metadata instead of scanning game code.
+namespace
+{
+struct Tf2FixRecvTable;
+struct Tf2FixRecvProp;
+struct Tf2FixVariant
+{
+	union {
+		float Float;
+		int Int;
+		const char *String;
+		void *Data;
+		float Vector[3];
+	};
+	int Type;
+};
+struct Tf2FixProxyData
+{
+	const Tf2FixRecvProp *Prop;
+	Tf2FixVariant Value;
+	int Element, ObjectId;
+};
+using Tf2FixProxy = void (*)(const Tf2FixProxyData *, void *, void *);
+struct Tf2FixRecvProp
+{
+	const char *Name;
+	int Type, Flags, StringSize;
+	bool InsideArray;
+	const void *Extra;
+	Tf2FixRecvProp *Array;
+	void *ArrayLengthProxy;
+	Tf2FixProxy Proxy;
+	void *TableProxy;
+	Tf2FixRecvTable *Table;
+	int Offset, Stride, Elements;
+	const char *ParentName;
+};
+struct Tf2FixRecvTable
+{
+	Tf2FixRecvProp *Props;
+	int Count;
+	void *Decoder;
+	const char *Name;
+	bool Initialized, InMainList;
+};
+struct Tf2FixClientClass
+{
+	void *Create, *CreateEvent;
+	const char *Name;
+	Tf2FixRecvTable *Table;
+	Tf2FixClientClass *Next;
+	int Id;
+};
+static_assert(sizeof(Tf2FixRecvProp) == (sizeof(void *) == 8 ? 96 : 60), "TF2 RecvProp ABI");
+static_assert(sizeof(Tf2FixProxyData) == (sizeof(void *) == 8 ? 40 : 28), "TF2 proxy data ABI");
+static_assert(offsetof(Tf2FixRecvProp, Proxy) == (sizeof(void *) == 8 ? 48 : 32), "TF2 proxy offset");
+void *g_Tf2FixClient = nullptr;
+bool g_Tf2PovDeathcam = false;
+Tf2FixProxy g_Tf2ObserverProxy = nullptr;
+unsigned int g_Tf2DeathcamBlocked = 0;
+
+void Tf2FixObserverMode(const Tf2FixProxyData *data, void *object, void *out)
+{
+	// TF2 shareddefs.h: deathcam=1, freezecam=2, POI=6, roaming=7.
+	if (g_Tf2PovDeathcam && data && data->Prop && data->Prop->Name &&
+	    !std::strcmp(data->Prop->Name, "m_iObserverMode") && g_SourceSdkVer == SourceSdkVer_TF2 &&
+	    g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV() &&
+	    data->ObjectId > 0 && data->ObjectId == g_VEngineClient->GetLocalPlayer() &&
+	    (data->Value.Int == 1 || data->Value.Int == 2))
+	{
+		auto replacement = *data;
+		replacement.Value.Int = 7;
+		++g_Tf2DeathcamBlocked;
+		g_Tf2ObserverProxy(&replacement, object, out);
+		return;
+	}
+	g_Tf2ObserverProxy(data, object, out);
+}
+
+Tf2FixRecvProp *Tf2FindObserverMode(Tf2FixRecvTable *table, std::set<Tf2FixRecvTable *> &visited,
+                                    int depth = 0)
+{
+	if (!table || depth >= 64 || visited.size() >= 4096 || !visited.insert(table).second || !table->Name ||
+	    table->Count < 0 || table->Count > 4096 || (table->Count && !table->Props))
+		return nullptr;
+	for (int i = 0; i < table->Count; ++i)
+	{
+		auto &prop = table->Props[i];
+		if (!std::strcmp(table->Name, "DT_BasePlayer") && prop.Name &&
+		    !std::strcmp(prop.Name, "m_iObserverMode") && prop.Type == 0 && prop.Proxy)
+			return &prop;
+		if (prop.Type == 6)
+			if (auto found = Tf2FindObserverMode(prop.Table, visited, depth + 1))
+				return found;
+	}
+	return nullptr;
+}
+} // namespace
+
+void MirvFix_InitializeTf2Client(void *client)
+{
+	g_Tf2FixClient = client;
+}
+bool MirvFix_GetPovDeathcam()
+{
+	return g_Tf2PovDeathcam;
+}
+bool MirvFix_SetPovDeathcam(bool enabled)
+{
+	if (!enabled)
+	{
+		g_Tf2PovDeathcam = false;
+		return true;
+	}
+	if (g_SourceSdkVer != SourceSdkVer_TF2 || !g_Tf2FixClient)
+	{
+		Tier0_Warning("POV deathcam: the TF2 VClient017 interface is unavailable.\n");
+		return false;
+	}
+	if (!g_Tf2ObserverProxy)
+	{
+#ifdef _WIN64
+		using ClassesFn = Tf2FixClientClass *(*)(void *);
+#else
+		using ClassesFn = Tf2FixClientClass *(__thiscall *)(void *);
+#endif
+		// IBaseClientDLL VClient017::GetAllClasses, from the public TF2 SDK.
+		auto classes =
+		    reinterpret_cast<ClassesFn>((*static_cast<void ***>(g_Tf2FixClient))[8])(g_Tf2FixClient);
+		std::set<Tf2FixClientClass *> seen;
+		std::set<Tf2FixRecvTable *> tables;
+		Tf2FixRecvProp *property = nullptr;
+		for (auto entry = classes; entry && seen.size() < 4096 && seen.insert(entry).second;
+		     entry = entry->Next)
+			if ((property = Tf2FindObserverMode(entry->Table, tables)))
+				break;
+		if (!property)
+		{
+			Tier0_Warning("POV deathcam: DT_BasePlayer.m_iObserverMode was not found in receive tables.\n");
+			return false;
+		}
+		g_Tf2ObserverProxy = property->Proxy;
+		LONG error = DetourTransactionBegin();
+		if (error == NO_ERROR)
+		{
+			error = DetourUpdateThread(GetCurrentThread());
+			if (error == NO_ERROR)
+				error = DetourAttach(reinterpret_cast<PVOID *>(&g_Tf2ObserverProxy),
+				                     reinterpret_cast<PVOID>(Tf2FixObserverMode));
+			if (error == NO_ERROR)
+				error = DetourTransactionCommit();
+			else
+				DetourTransactionAbort();
+		}
+		if (error != NO_ERROR)
+		{
+			g_Tf2ObserverProxy = nullptr;
+			Tier0_Warning("POV deathcam: observer proxy hook failed (Detours error %ld).\n",
+			              static_cast<long>(error));
+			return false;
+		}
+	}
+	if (!g_Tf2PovDeathcam)
+		g_Tf2DeathcamBlocked = 0;
+	g_Tf2PovDeathcam = true;
+	return true;
+}
+// End TF2 POV deathcam control.
+
 CON_COMMAND(mirv_fix, "Various fixes")
 {
 	int argc = args->ArgC();
@@ -4219,6 +4391,23 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	if (2 <= argc)
 	{
 		char const * cmd1 = args->ArgV(1);
+		// TF2 POV deathcam command.
+		if (!_stricmp(cmd1, "povDeathcam"))
+		{
+			if (argc == 3 && (!std::strcmp(args->ArgV(2), "0") || !std::strcmp(args->ArgV(2), "1")))
+			{
+				if (!MirvFix_SetPovDeathcam(!std::strcmp(args->ArgV(2), "1")))
+					Tier0_Warning("POV deathcam fix unavailable: requires TF2 VClient017 observer receive tables and a successful proxy hook.\n");
+			}
+			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
+				Tier0_Warning("Usage: mirv_fix povDeathcam 0|1|status\n");
+			Tier0_Msg("POV deathcam suppression: %s; proxy %s; blocked updates %u.\n",
+				g_Tf2PovDeathcam ? "enabled" : "disabled", g_Tf2ObserverProxy ? "installed" : "not installed", g_Tf2DeathcamBlocked);
+			Tier0_Msg("Enable before death. Local TF2 POV death/freeze modes use roaming instead, allowing HLAE camera control "
+				"without freeze-frame/mixer entry. Live play and STV pass through. If already frozen, seek before death after enabling.\n");
+			return;
+		}
+		// End TF2 POV deathcam command.
 
 		// TF2 interpolation command.
 		if (!_stricmp(cmd1, "playerInterpolation"))
@@ -4591,6 +4780,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	);
 #endif // #ifndef _WIN64
 	Tier0_Msg("mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
+			  "mirv_fix povDeathcam [...] - Suppress recorder death/freeze camera in TF2 POV demos.\n"
 			  "mirv_fix panoramaTiming [...]\n");
 	if(AFXADDR_GET(engine_HostError)) Tier0_Msg(
 		"mirv_fix suppressHostError 0|1"

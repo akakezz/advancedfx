@@ -534,6 +534,40 @@ For a visual check, replay the same section at the same timescale using default,
 Repeat with STV and POV demos. Compare movement smoothness and presentation delay;
 this control cannot replace snapshots missing from the recording.
 
+## TF2 POV death/freeze camera suppression
+
+In **Demo fixes**, enable **Suppress POV deathcam**, or use:
+
+```text
+mirv_fix povDeathcam 1
+mirv_fix povDeathcam status
+mirv_fix povDeathcam 0
+```
+
+Enable it before the recorder dies. The control resolves `DT_BasePlayer`'s
+`m_iObserverMode` receive proxy from TF2's VClient017 interface, then forwards
+local POV deathcam/freezecam updates as roaming mode through the original proxy.
+The SDK normally selects `FreezeCam_Only` on entering freezecam and subsequently
+requests a frozen render frame. Suppressing that transition avoids both entry
+effects while HLAE's free camera or campath continues overriding the view. Without
+an HLAE camera override, the native roaming camera is the fallback.
+
+Only the local recorder during non-HLTV TF2 demo playback is affected. Other
+players, live play, STV, ordinary observer modes and other Source games forward
+their original data. The demo file and audio-mixer cvars are left intact. Unsupported
+client interfaces, missing receive metadata and failed hook installation reject
+enabling. It is off by default; disabling leaves the hook forwarding normally.
+The enabled preference persists across demo seeks/reloads and remains inert
+outside POV playback.
+
+This is preventative: it affects incoming observer-mode updates. Enabling after
+the screenshot has already frozen does not immediately clear that existing
+frame; restart playback or seek before the death to test it. Disabling similarly
+takes effect on subsequent incoming observer updates. Check `status` after the
+death: its blocked-update count should increase. The hook/controller and ABI
+are tested with engine stubs and Windows cross-compilation; visual/audio behavior
+still needs validation in a complete TF2 installation.
+
 ## Rotation authoring and classic export
 
 Ordinary wrapped captures still unwrap across +180/-180 using the short route.
