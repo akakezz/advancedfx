@@ -563,6 +563,18 @@ void consoleProfiles()
 	check(path.GetModifiers().size() == 3 && path.GetModifiers()[2].Type == CamPath::ModifierType::Spring,
 		  "Console creates spring response");
 	call({"mirv_campath", "modifier", "clear"});
+	call({"mirv_campath", "modifier", "preset", "expo-in", "0", "2"});
+	check(path.GetModifiers().size() == 1 && path.GetModifiers()[0].Type == CamPath::ModifierType::Expo,
+		  "Console appends a timing preset");
+	call({"mirv_campath", "modifier", "set", "0", "direction", "out"});
+	call({"mirv_campath", "modifier", "set", "0", "power", "8"});
+	check(path.GetModifiers()[0].Direction == CamPath::EaseDirection::Out && path.GetModifiers()[0].Power == 8,
+		  "Console edits easing direction and power");
+	const auto presetState = path.CaptureState();
+	call({"mirv_campath", "modifier", "set", "0", "direction", "invalid"});
+	call({"mirv_campath", "modifier", "preset", "missing", "0", "2"});
+	check(path.CaptureState() == presetState, "Invalid preset/direction cannot change the stack");
+	call({"mirv_campath", "modifier", "clear"});
 	call({"mirv_campath", "speedProfile", "point", "0", "0"});
 	check(path.GetDistanceTiming() && path.GetSpeedProfile().front().Speed == 0,
 		  "Console edits whole-path speed profile");
@@ -1217,6 +1229,218 @@ void nextEditingRegressions()
 		near(line.Eval(t).Y, left->second.Y + (right->second.Y - left->second.Y) * u, .05);
 	}
 }
+void rangeEasingModifiers()
+{
+	using Type = CamPath::ModifierType;
+	using Direction = CamPath::EaseDirection;
+	CamPath base;
+	custom(base);
+	base.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	base.FovInterpMethod_set(CamPath::DI_LINEAR);
+	for (int i = 0; i <= 6; ++i)
+		base.Add(i, CamPathValue(10 * i, 2 * i, i, 0, 170 + 20 * i, 0, 60 + 10 * i));
+	base.SetTangentMode(CamPath::CH_RYAW, true, true, CamPath::TM_LINEAR);
+	const auto authored = base.CaptureState();
+	for (Type type : {Type::Expo, Type::Bounce, Type::Elastic})
+		for (Direction direction : {Direction::In, Direction::Out, Direction::InOut})
+		{
+			CamPath path;
+			path.RestoreState(authored);
+			CamPath::Modifier m;
+			m.Type = type;
+			m.Direction = direction;
+			m.Begin = 1;
+			m.End = 5;
+			m.Frequency = 3;
+			m.FadeIn = m.FadeOut = .6;
+			m.Amplitude[0] = m.Amplitude[1] = m.Amplitude[2] = m.Amplitude[5] = 1;
+			near(CamPath::ModifierEase(m, 0), 0);
+			near(CamPath::ModifierEase(m, 1), 1);
+			check(path.SetModifiers({m}), "Every easing type and direction validates");
+			near(path.Eval(.5).X, 5);
+			near(path.Eval(5.5).X, 55);
+			near(path.Eval(1).X, 10);
+			near(path.Eval(5).X, 50);
+			double previous = path.Eval(1).X;
+			for (int i = 1; i <= 800; ++i)
+			{
+				const double t = 1 + i * .005;
+				const auto value = path.Eval(t);
+				check(std::isfinite(value.X) && std::isfinite(value.R.Norm()), "Warped pose stays finite");
+				near(value.Y, value.X * .2, .002);
+				near(value.Z, value.X * .1, .002);
+				near(value.GetEulerAngles().Yaw, 170 + value.X * 2, .02);
+				near(value.Fov, base.Eval(t).Fov, 1e-9);
+				if (type == Type::Expo)
+					check(value.X > previous - 1e-8,
+					      "Expo remains monotone with fades across all interior keys");
+				previous = value.X;
+			}
+			// No per-key easing restart: an ordinary key retains flowing travel.
+			if (type == Type::Expo)
+			{
+				const double speed = (path.Eval(2.001).X - path.Eval(1.999).X) / .002;
+				check(speed > .05, "Expo does not stop at an ordinary key");
+			}
+			std::string xml;
+			CamPath loaded;
+			check(path.SaveToString(xml) && loaded.LoadFromString(xml), "Easing modifier XML reloads");
+			check(loaded.CaptureState() == path.CaptureState(), "All easing parameters round-trip");
+			for (double t : {1.2, 2.4, 3.7, 4.9})
+				near(loaded.Eval(t).X, path.Eval(t).X, 1e-8);
+			check(path.CaptureState().Keys == authored.Keys,
+			      "Range easing never edits authored keys or tangents");
+			m.Strength = 0;
+			path.SetModifiers({m});
+			near(path.Eval(2.25).X, base.Eval(2.25).X, 1e-9);
+			m.Strength = 1;
+			m.Enabled = false;
+			path.SetModifiers({m});
+			near(path.Eval(2.25).X, base.Eval(2.25).X, 1e-9);
+		}
+
+	CamPath path;
+	path.RestoreState(authored);
+	CamPath::Modifier m;
+	m.Type = Type::Elastic;
+	m.Direction = Direction::Out;
+	m.Begin = 1;
+	m.End = 5;
+	m.Frequency = 3;
+	m.Damping = .3;
+	m.FadeIn = m.FadeOut = 0;
+	m.Amplitude[0] = 1;
+	path.SetModifiers({m});
+	check(path.Eval(1.65).X > 50, "Elastic can overshoot a range endpoint without sampling outside the path");
+	m.Type = Type::Bounce;
+	path.SetModifiers({m});
+	bool reversed = false;
+	double previous = path.Eval(1).X;
+	for (int i = 1; i < 400; ++i)
+	{
+		double x = path.Eval(1 + i * .01).X;
+		reversed |= x < previous;
+		previous = x;
+	}
+	check(reversed, "Bounce produces intentional rebounds across the range");
+
+	m.Type = Type::Expo;
+	m.FadeIn = m.FadeOut = .6;
+	m.Envelope = {{0, 0}, {.25, 1}, {.5, .2}, {1, 0}};
+	for (double strength : {.2, 1.0})
+		for (double power : {0.0, 5.0, 16.0})
+		{
+			m.Power = power;
+			m.Strength = strength;
+			path.SetModifiers({m});
+			previous = path.Eval(1).X;
+			for (int i = 1; i <= 400; ++i)
+			{
+				double x = path.Eval(1 + i * .01).X;
+				check(x > previous, "Expo envelopes and extreme valid powers preserve forward travel");
+				previous = x;
+				if (power == 0)
+					near(x, 10 * (1 + i * .01), .001);
+			}
+		}
+	const double strong = path.Eval(2).X;
+	m.Power = 2;
+	path.SetModifiers({m});
+	check(std::abs(path.Eval(2).X - strong) > .1, "Changing power invalidates the warped target cache");
+	const double out = path.Eval(2).X;
+	m.Direction = Direction::In;
+	path.SetModifiers({m});
+	check(std::abs(path.Eval(2).X - out) > .1, "Changing direction invalidates the target cache");
+	const auto valid = path.CaptureState();
+	for (double invalid : {-1.0, 17.0, std::numeric_limits<double>::infinity()})
+	{
+		m.Power = invalid;
+		check(!path.SetModifiers({m}) && path.CaptureState() == valid, "Invalid power rejects atomically");
+	}
+	m = valid.Modifiers.front();
+	m.Frequency = 17;
+	check(!path.SetModifiers({m}), "Excessive easing cycles reject before sampling");
+	m = valid.Modifiers.front();
+	m.Direction = (Direction)3;
+	check(!path.SetModifiers({m}), "Unknown easing direction rejects");
+
+	CamPath::Modifier noise;
+	noise.Begin = 1;
+	noise.End = 5;
+	noise.Amplitude[0] = .7;
+	noise.Frequency = 2;
+	m = valid.Modifiers.front();
+	m.Type = Type::Elastic;
+	m.Direction = Direction::Out;
+	m.Frequency = 3;
+	path.SetModifiers({noise, m});
+	const double noiseThenWarp = path.Eval(2.3).X;
+	path.SetModifiers({m, noise});
+	check(std::abs(path.Eval(2.3).X - noiseThenWarp) > .001, "Timing effects respect modifier stack order");
+	for (int edit = 0; edit < 5; ++edit)
+	{
+		if (edit == 0)
+			m.Strength = .4;
+		if (edit == 1)
+			m.FadeIn = .8;
+		if (edit == 2)
+			m.Envelope = {{0, 1}, {.4, .2}, {1, 1}};
+		if (edit == 3)
+			m.Amplitude[0] = .2;
+		if (edit == 4)
+			m.Begin = 1.2;
+		path.SetModifiers({noise, m});
+		CamPath fresh;
+		fresh.RestoreState(path.CaptureState());
+		for (double t : {4.8, 1.4, 2.9, 2.1})
+			near(path.Eval(t).X, fresh.Eval(t).X, 1e-9);
+	}
+	m = valid.Modifiers.front();
+	m.Type = Type::Elastic;
+	m.Direction = Direction::Out;
+	m.Frequency = 3;
+	path.SetModifiers({m});
+	const auto exportFile = std::filesystem::temp_directory_path() / "hlae-easing-export.xml";
+	check(path.ExportClassic(exportFile.wstring().c_str(), 1.0 / 120),
+	      "Range easing exports through the existing evaluator");
+	CamPath baked;
+	check(baked.Load(exportFile.wstring().c_str()), "Eased classic XML loads");
+	for (int i = 0; i <= 240; ++i)
+		near(path.Eval(i * .025).X, baked.Eval(i * .025).X, .03);
+	std::filesystem::remove(exportFile);
+
+	for (const char *name : {"handheld", "impact", "expo-in", "expo-out", "expo-in-out", "bounce-out",
+	                         "elastic-out", "stabilize", "fov-punch"})
+	{
+		CamPath::Modifier preset;
+		check(CamPath::MakeModifierPreset(name, 1, 5, preset), "Built-in modifier preset validates");
+		path.SetModifiers({preset});
+		std::string xml;
+		CamPath loaded;
+		check(path.SaveToString(xml) && loaded.LoadFromString(xml) &&
+		          loaded.GetModifiers() == path.GetModifiers(),
+		      "Preset remains ordinary editable saved settings");
+		for (double t : {1.1, 2.4, 4.8})
+			check(std::isfinite(path.Eval(t).X), "Preset evaluates safely");
+	}
+	CamPath::Modifier sentinel;
+	sentinel.Seed = 42;
+	check(!CamPath::MakeModifierPreset("missing", 1, 5, sentinel) && sentinel.Seed == 42,
+	      "Unknown preset leaves output intact");
+	check(!CamPath::MakeModifierPreset("handheld", 5, 1, sentinel), "Preset range validation is atomic");
+
+	CamPath historyPath;
+	CamPathCollection collection(historyPath);
+	historyPath.RestoreState(authored);
+	collection.BeginEdit();
+	CamPath::MakeModifierPreset("expo-in", 1, 5, m);
+	historyPath.SetModifiers({m});
+	collection.FinishEdit();
+	check(collection.Undo() && historyPath.GetModifiers().empty(), "Preset is one undo step");
+	check(collection.Undo(true) && historyPath.GetModifiers().size() == 1,
+	      "Preset redoes with its parameters");
+}
+
 void moreModifiers()
 {
 	CamPath p;
@@ -1918,6 +2142,7 @@ int main()
 		reviewBoundaryRegressions();
 		transformedCurves();
 		nextEditingRegressions();
+		rangeEasingModifiers();
 		moreModifiers();
 		modifierPersistenceAndExport();
 		std::cout << checks << " TF2 camera checks passed\n";

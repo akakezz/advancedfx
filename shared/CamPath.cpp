@@ -1476,7 +1476,8 @@ CamPathValue CamPath::EvalUnmodified(double time)
 bool CamPath::Modifier::operator==(const Modifier &b) const
 {
 	if (Type != b.Type || Strength != b.Strength || Phase != b.Phase || Octaves != b.Octaves ||
-		Roughness != b.Roughness || Window != b.Window || Damping != b.Damping || Envelope != b.Envelope)
+	    Roughness != b.Roughness || Window != b.Window || Damping != b.Damping || Envelope != b.Envelope ||
+	    Direction != b.Direction || Power != b.Power)
 		return false;
 	if (Begin != b.Begin || End != b.End || FadeIn != b.FadeIn || FadeOut != b.FadeOut ||
 		Frequency != b.Frequency || Seed != b.Seed || Enabled != b.Enabled || CameraSpace != b.CameraSpace)
@@ -1486,6 +1487,7 @@ bool CamPath::Modifier::operator==(const Modifier &b) const
 			return false;
 	return true;
 }
+
 bool CamPath::HasPositionModifiers() const
 {
 	for (const auto &m : m_Modifiers)
@@ -1502,11 +1504,13 @@ bool CamPath::ValidModifiers(const std::vector<NoiseModifier> &modifiers)
 	{
 		if (m.Enabled && int(m.Type) >= 2 && ++activeFilters > 8)
 			return false;
-		if (int(m.Type) < 0 || int(m.Type) > 3 || !std::isfinite(m.Strength) || m.Strength < 0 ||
-			m.Strength > 1 || !std::isfinite(m.Phase) || std::abs(m.Phase) > 1e6 || m.Octaves < 1 ||
-			m.Octaves > 8 || !std::isfinite(m.Roughness) || m.Roughness < 0 || m.Roughness > 1 ||
-			!std::isfinite(m.Window) || m.Window <= 0 || m.Window > 10 || !std::isfinite(m.Damping) ||
-			m.Damping < .05 || m.Damping > 2 || m.Envelope.size() > 128 ||
+		if (int(m.Type) < 0 || int(m.Type) >= int(ModifierType::Count) || !std::isfinite(m.Strength) ||
+		    m.Strength < 0 || m.Strength > 1 || !std::isfinite(m.Phase) || std::abs(m.Phase) > 1e6 ||
+		    m.Octaves < 1 || m.Octaves > 8 || !std::isfinite(m.Roughness) || m.Roughness < 0 ||
+		    m.Roughness > 1 || !std::isfinite(m.Window) || m.Window <= 0 || m.Window > 10 ||
+		    !std::isfinite(m.Damping) || m.Damping < .05 || m.Damping > 2 || !std::isfinite(m.Power) ||
+		    m.Power < 0 || m.Power > 16 || int(m.Direction) < 0 || int(m.Direction) > 2 ||
+		    (int(m.Type) >= int(ModifierType::Expo) && m.Frequency > 16) || m.Envelope.size() > 128 ||
 			(int(m.Type) >= 2 && m.CameraSpace))
 			return false;
 		if (!m.Envelope.empty() &&
@@ -1517,7 +1521,7 @@ bool CamPath::ValidModifiers(const std::vector<NoiseModifier> &modifiers)
 				m.Envelope[i].Value < 0 || m.Envelope[i].Value > 1 ||
 				(i && m.Envelope[i].Time <= m.Envelope[i - 1].Time))
 				return false;
-		if ((m.End - m.Begin) * ModifierSampleRate(m) > 1e12)
+		if (!std::isfinite(ModifierSampleRate(m)) || (m.End - m.Begin) * ModifierSampleRate(m) > 1e12)
 			return false;
 		if (!std::isfinite(m.Begin) || !std::isfinite(m.End) || m.End <= m.Begin ||
 			!std::isfinite(m.End - m.Begin) || !std::isfinite((m.End - m.Begin) * m.Frequency) ||
@@ -1532,6 +1536,7 @@ bool CamPath::ValidModifiers(const std::vector<NoiseModifier> &modifiers)
 	}
 	return true;
 }
+
 bool CamPath::SetModifiers(const std::vector<NoiseModifier> &modifiers)
 {
 	if (!ValidModifiers(modifiers))
@@ -1611,12 +1616,20 @@ const char *CamPath::ModifierTypeName(ModifierType type)
 		return "smooth";
 	case ModifierType::Spring:
 		return "spring";
+	case ModifierType::Expo:
+		return "expo";
+	case ModifierType::Bounce:
+		return "bounce";
+	case ModifierType::Elastic:
+		return "elastic";
+	case ModifierType::Count:
+		break;
 	}
 	return "unknown";
 }
 bool CamPath::ModifierTypeFromString(const char *name, ModifierType &type)
 {
-	for (int i = 0; i < 4; ++i)
+	for (int i = 0; i < int(ModifierType::Count); ++i)
 		if (!_stricmp(name, ModifierTypeName((ModifierType)i)))
 		{
 			type = (ModifierType)i;
@@ -1624,12 +1637,102 @@ bool CamPath::ModifierTypeFromString(const char *name, ModifierType &type)
 		}
 	return false;
 }
+double CamPath::ModifierEase(const Modifier &m, double progress)
+{
+	const double u = std::clamp(progress, 0.0, 1.0);
+	if (u == 0 || u == 1)
+		return u;
+	// Each function is evaluated once across the range, never once per key.
+	auto out = [&](double t) {
+		if (m.Type == ModifierType::Expo)
+			return m.Power < 1e-8 ? t : -std::expm1(-m.Power * t) / -std::expm1(-m.Power);
+		if (m.Type == ModifierType::Bounce)
+			return 1 - std::pow(1 - t, 1 + 3 * m.Damping) * std::abs(std::cos(M_PI * m.Frequency * t));
+		if (m.Type == ModifierType::Elastic)
+		{
+			const double decay = 6 * m.Damping;
+			return (1 - std::exp(-decay * t) * std::cos(2 * M_PI * m.Frequency * t)) /
+			       (1 - std::exp(-decay) * std::cos(2 * M_PI * m.Frequency));
+		}
+		return t;
+	};
+	if (m.Direction == EaseDirection::Out)
+		return out(u);
+	if (m.Direction == EaseDirection::In)
+		return 1 - out(1 - u);
+	return u < .5 ? .5 * (1 - out(1 - 2 * u)) : .5 + .5 * out(2 * u - 1);
+}
+
+bool CamPath::MakeModifierPreset(const char *name, double begin, double end, Modifier &out)
+{
+	Modifier m;
+	m.Begin = begin;
+	m.End = end;
+	m.FadeIn = m.FadeOut = (std::max)(0.0, (end - begin) * .15);
+	if (!_stricmp(name, "handheld"))
+	{
+		m.Frequency = 2;
+		m.Octaves = 3;
+		m.CameraSpace = true;
+		m.Amplitude[0] = .3;
+		m.Amplitude[1] = .2;
+		m.Amplitude[2] = .15;
+		m.Amplitude[4] = .2;
+		m.Amplitude[5] = .35;
+		m.Amplitude[6] = .2;
+	}
+	else if (!_stricmp(name, "impact"))
+	{
+		m.Type = ModifierType::Oscillation;
+		m.Frequency = 6;
+		m.Amplitude[2] = .8;
+		m.Amplitude[3] = 2.5;
+		m.Amplitude[4] = 1.2;
+		m.Envelope = {{0, 0}, {.08, 1}, {.35, .3}, {1, 0}};
+	}
+	else if (!_stricmp(name, "fov-punch"))
+	{
+		m.Type = ModifierType::Oscillation;
+		m.Frequency = .5 / (end - begin);
+		m.Amplitude[3] = 8;
+	}
+	else if (!_stricmp(name, "stabilize"))
+	{
+		m.Type = ModifierType::Smooth;
+		m.Window = .25;
+		m.Amplitude[4] = m.Amplitude[5] = m.Amplitude[6] = .6;
+	}
+	else if (!_stricmp(name, "expo-in") || !_stricmp(name, "expo-out") || !_stricmp(name, "expo-in-out"))
+	{
+		m.Type = ModifierType::Expo;
+		m.Direction = !_stricmp(name, "expo-in")
+		                  ? EaseDirection::In
+		                  : (!_stricmp(name, "expo-out") ? EaseDirection::Out : EaseDirection::InOut);
+		std::fill(m.Amplitude, m.Amplitude + 7, 1);
+	}
+	else if (!_stricmp(name, "bounce-out") || !_stricmp(name, "elastic-out"))
+	{
+		m.Type = !_stricmp(name, "bounce-out") ? ModifierType::Bounce : ModifierType::Elastic;
+		m.Direction = EaseDirection::Out;
+		m.Frequency = 3;
+		m.Amplitude[m.Type == ModifierType::Bounce ? 2 : 3] = 1;
+	}
+	else
+		return false;
+	if (!ValidModifiers({m}))
+		return false;
+	out = m;
+	return true;
+}
+
 double CamPath::ModifierSampleRate(const NoiseModifier &m)
 {
 	if (m.Type == ModifierType::Noise)
 		return m.Frequency * std::pow(2.0, m.Octaves - 1);
 	if (m.Type == ModifierType::Smooth)
 		return 1 / m.Window;
+	if (int(m.Type) >= int(ModifierType::Expo))
+		return (std::max)(m.Frequency, m.Power) / (m.End - m.Begin);
 	return m.Frequency;
 }
 double CamPath::ModifierInfluence(const NoiseModifier &m, double time)
@@ -1706,10 +1809,53 @@ void ApplyAdditiveModifier(CamPathValue &value, const CamPath::NoiseModifier &m,
 		value.SetOrientation(value.R * Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(
 										   QEulerAngles(offset[4], offset[5], offset[6]))));
 }
+// Positive rate integration keeps Expo monotone even when fades/envelopes are
+// used. A shared normalization offset conserves the range duration; zero-weight
+// regions retain unit rate. The table is built on edits, never per-frame.
+std::vector<double> ExpoProgress(const CamPath::Modifier &m, double amount)
+{
+	constexpr size_t count = 512;
+	std::vector<double> weight(count + 1), logRate(count + 1), rate(count + 1), progress(count + 1);
+	for (size_t i = 0; i <= count; ++i)
+	{
+		const double u = double(i) / count;
+		weight[i] = CamPath::ModifierInfluence(m, m.Begin + (m.End - m.Begin) * u) * amount;
+		const double exponent = m.Direction == CamPath::EaseDirection::In
+		                            ? 1 - u
+		                            : (m.Direction == CamPath::EaseDirection::Out ? u : std::abs(2 * u - 1));
+		logRate[i] = m.Power < 1e-8 ? 0 : std::log(m.Power / -std::expm1(-m.Power)) - m.Power * exponent;
+	}
+	auto area = [&](double offset) {
+		double sum = 0;
+		for (size_t i = 0; i <= count; ++i)
+		{
+			rate[i] = std::exp(weight[i] * (logRate[i] - offset));
+			sum += rate[i] * ((i == 0 || i == count) ? .5 : 1);
+		}
+		return sum / count;
+	};
+	double lo = -32, hi = 32;
+	for (int i = 0; i < 36; ++i)
+	{
+		const double mid = (lo + hi) * .5;
+		if (area(mid) > 1)
+			lo = mid;
+		else
+			hi = mid;
+	}
+	const double total = area((lo + hi) * .5);
+	for (size_t i = 1; i <= count; ++i)
+		progress[i] = progress[i - 1] + (rate[i - 1] + rate[i]) / (2 * count * total);
+	progress.back() = 1;
+	return progress;
+}
+
 void ApplyFilterModifier(CamPathValue &value, const CamPath::NoiseModifier &m, double time,
 						 const double target[7])
 {
-	const double influence = CamPath::ModifierInfluence(m, time);
+	const double influence = int(m.Type) >= int(CamPath::ModifierType::Expo)
+	                             ? (m.Enabled && m.Strength > 0 && m.Begin < time && time < m.End ? 1.0 : 0.0)
+	                             : CamPath::ModifierInfluence(m, time);
 	if (influence == 0)
 		return;
 	auto angles = value.GetEulerAngles();
@@ -1724,7 +1870,9 @@ void ApplyFilterModifier(CamPathValue &value, const CamPath::NoiseModifier &m, d
 	bool rotated = false;
 	for (int ch = 0; ch < 7; ++ch)
 	{
-		const double mix = influence * m.Amplitude[ch];
+		const double mix = int(m.Type) >= int(CamPath::ModifierType::Expo)
+		                       ? influence * (m.Amplitude[ch] != 0 ? 1 : 0)
+		                       : influence * m.Amplitude[ch];
 		if (mix == 0)
 			continue;
 		if (ch < 4)
@@ -1745,6 +1893,7 @@ void ApplyFilterModifier(CamPathValue &value, const CamPath::NoiseModifier &m, d
 	if (rotated)
 		value.SetEulerAngles(angles);
 }
+
 void SpringStep(double &position, double &velocity, double target, double seconds, double frequency,
 				double damping)
 {
@@ -1789,8 +1938,7 @@ void CamPath::BuildModifierCurves()
 	const size_t resolution = (size_t)std::clamp(std::ceil(duration * sampleRate), 256.0, 16384.0);
 	for (size_t i = 0; i <= resolution; ++i)
 		m_ModifierTimes.push_back(begin + duration * i / resolution);
-	auto add = [&](double time)
-	{
+	auto add = [&](double time) {
 		if (begin <= time && time <= end)
 			m_ModifierTimes.push_back(time);
 	};
@@ -1864,6 +2012,8 @@ void CamPath::BuildModifierCurves()
 				old.Enabled && old.Type == m.Type &&
 				(m.Type == ModifierType::Smooth ? old.Window == m.Window
 												: old.Frequency == m.Frequency && old.Damping == m.Damping);
+			if (int(m.Type) >= int(ModifierType::Expo))
+				reuse = reuse && old == m;
 			for (int ch = 0; ch < 7; ++ch)
 			{
 				if ((ch >= 4 || m.Amplitude[ch] != 0) && previousCurves[index].Values[ch].size() != n)
@@ -1889,6 +2039,7 @@ void CamPath::BuildModifierCurves()
 				}
 				angles.push_back(sample.GetEulerAngles());
 			}
+			std::map<double, std::vector<double>> expoMaps;
 			for (int ch = 0; ch < 7; ++ch)
 			{
 				if (ch < 4 && m.Amplitude[ch] == 0)
@@ -1897,7 +2048,7 @@ void CamPath::BuildModifierCurves()
 				v.resize(n);
 				for (size_t i = 0; i < n; ++i)
 				{
-					v[i] = ch < 4	 ? GetChannelValue(values[i], (Channel)ch)
+					v[i] = ch < 4    ? GetChannelValue(values[i], (Channel)ch)
 						   : ch == 4 ? angles[i].Pitch
 						   : ch == 5 ? angles[i].Yaw
 									 : angles[i].Roll;
@@ -1927,6 +2078,54 @@ void CamPath::BuildModifierCurves()
 						v[i] = position;
 					}
 				}
+				else if (int(m.Type) >= int(ModifierType::Expo) && m.Amplitude[ch] != 0)
+				{
+					const auto source = v;
+					std::vector<double> slopes;
+					AutoTangentSettings policy;
+					policy.Method = AutoTangentMethod::Monotone;
+					ComputeAutoTangents(m_ModifierTimes.data(), v.data(), (int)n, policy, slopes);
+					auto sample = [&](double time) {
+						if (time <= m_ModifierTimes.front())
+							return source.front();
+						if (time >= m_ModifierTimes.back())
+							return source.back();
+						const size_t b = std::lower_bound(m_ModifierTimes.begin(), m_ModifierTimes.end(),
+						                                  time) -
+						                 m_ModifierTimes.begin(),
+						             a = b - 1;
+						const double h = m_ModifierTimes[b] - m_ModifierTimes[a];
+						return EvalWeightedHermite((time - m_ModifierTimes[a]) / h, h, source[a], source[b],
+						                           slopes[a], slopes[b], 1, 1);
+					};
+					const double left = sample(m.Begin), right = sample(m.End);
+					const std::vector<double> *expo = nullptr;
+					if (m.Type == ModifierType::Expo)
+					{
+						auto &map = expoMaps[m.Amplitude[ch]];
+						if (map.empty())
+							map = ExpoProgress(m, m.Amplitude[ch]);
+						expo = &map;
+					}
+					for (size_t i = 0; i < n; ++i)
+						if (m.Begin < m_ModifierTimes[i] && m_ModifierTimes[i] < m.End)
+						{
+							const double t = (m_ModifierTimes[i] - m.Begin) / (m.End - m.Begin);
+							double u = t + ModifierInfluence(m, m_ModifierTimes[i]) * m.Amplitude[ch] *
+							                   (ModifierEase(m, t) - t);
+							if (expo)
+							{
+								const double x = t * (expo->size() - 1);
+								const size_t a = (std::min)(size_t(x), expo->size() - 2);
+								u = (*expo)[a] + ((*expo)[a + 1] - (*expo)[a]) * (x - a);
+							}
+							// Elastic overshoot extends the range's endpoint displacement;
+							// do not evaluate outside the underlying path or recurse into Eval.
+							v[i] = u < 0   ? left + (right - left) * u
+							       : u > 1 ? right + (right - left) * (u - 1)
+							               : sample(m.Begin + (m.End - m.Begin) * u);
+						}
+				}
 				AutoTangentSettings settings;
 				settings.Method = AutoTangentMethod::Monotone;
 				ComputeAutoTangents(m_ModifierTimes.data(), v.data(), (int)n, settings, curve.Slopes[ch]);
@@ -1947,13 +2146,16 @@ void CamPath::BuildModifierCurves()
 	m_ModifierInputs = m_Modifiers;
 	m_ModifierRevision = m_GeometryRevision;
 }
+
 CamPathValue CamPath::Eval(double time)
 {
 	auto value = EvalUnmodified(time);
 	for (size_t index = 0; index < m_Modifiers.size(); ++index)
 	{
 		const auto &m = m_Modifiers[index];
-		if (ModifierInfluence(m, time) == 0)
+		if (int(m.Type) >= int(ModifierType::Expo)
+		        ? (!m.Enabled || m.Strength == 0 || time <= m.Begin || time >= m.End)
+				: ModifierInfluence(m, time) == 0)
 			continue;
 		if (int(m.Type) < 2)
 		{
@@ -2193,10 +2395,12 @@ bool CamPath::SaveToString(std::string &xmlString)
 									 m.Amplitude[6]};
 			for (int i = 0; i < 15; ++i)
 				p->append_attribute(doc.allocate_attribute(names[i], double2xml(doc, values[i])));
-			const char *extraNames[] = {"strength", "phase", "octaves", "roughness", "window", "damping"};
-			const double extra[] = {m.Strength, m.Phase, double(m.Octaves), m.Roughness, m.Window, m.Damping},
-						 defaults[] = {1, 0, 1, .5, .25, .7};
-			for (int i = 0; i < 6; ++i)
+			const char *extraNames[] = {"strength", "phase", "octaves", "roughness", "window",
+				"damping", "power", "direction"};
+			const double extra[] = {m.Strength, m.Phase, double(m.Octaves), m.Roughness, m.Window,
+				m.Damping, m.Power, double(m.Direction)},
+						 defaults[] = {1, 0, 1, .5, .25, .7, 5, 2};
+			for (int i = 0; i < 8; ++i)
 				if (extra[i] != defaults[i])
 					p->append_attribute(doc.allocate_attribute(extraNames[i], double2xml(doc, extra[i])));
 			if (!m.Envelope.empty())
@@ -2686,6 +2890,13 @@ bool CamPath::LoadInternal(std::string xml)
 							bOk = false;
 						else
 							m.Octaves = (unsigned)octaves;
+						double direction = double(m.Direction);
+						if ((p->first_attribute("power") && !number(p, "power", m.Power)) ||
+							(p->first_attribute("direction") && !number(p, "direction", direction)) ||
+							direction < 0 || direction > 2 || direction != std::floor(direction))
+							bOk = false;
+						else
+							m.Direction = (EaseDirection)int(direction);
 						if (auto *envelope = p->first_node("envelope"))
 						{
 							for (auto *point = envelope->first_node(); point; point = point->next_sibling())

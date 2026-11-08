@@ -67,6 +67,9 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 							   "damping %.3f, envelope %u points\n",
 							   m.Strength, m.Phase, m.Octaves, m.Roughness, m.Window, m.Damping,
 							   (unsigned)m.Envelope.size());
+					if (int(m.Type) >= int(CamPath::ModifierType::Expo))
+						conMessage("    direction %s, power %.3f; frequency is cycles per range.\n",
+							int(m.Direction) == 0 ? "in" : int(m.Direction) == 1 ? "out" : "inout", m.Power);
 				}
 				return;
 			}
@@ -85,6 +88,24 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 				if (valid)
 					modifiers.erase(modifiers.begin() + (size_t)index);
 			}
+			if (argc == 3 && !_stricmp(args->ArgV(2), "presets"))
+			{
+				conMessage("Modifier presets:\n"
+					"    handheld | impact | fov-punch | stabilize\n"
+					"    expo-in | expo-out | expo-in-out\n"
+					"    bounce-out (Z) | elastic-out (FOV)\n");
+				return;
+			}
+			if (argc == 6 && !_stricmp(args->ArgV(2), "preset"))
+			{
+				handled = true;
+				double begin, end;
+				CamPath::Modifier m;
+				valid = number(4, begin) && number(5, end) &&
+					CamPath::MakeModifierPreset(args->ArgV(3), begin, end, m);
+				if (valid)
+					modifiers.push_back(m);
+			}
 			CamPath::ModifierType modifierType;
 			if ((argc == 7 || argc == 8) && CamPath::ModifierTypeFromString(args->ArgV(2), modifierType))
 			{
@@ -94,7 +115,8 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 				double amplitude = 0;
 				valid = number(3, m.Begin) && number(4, m.End) && number(6, amplitude) &&
 						(argc == 7 ||
-						 number(7, m.Type == CamPath::ModifierType::Smooth ? m.Window : m.Frequency));
+						 number(7, m.Type == CamPath::ModifierType::Smooth ? m.Window :
+							(m.Type == CamPath::ModifierType::Expo ? m.Power : m.Frequency)));
 				m.FadeIn = m.FadeOut = (std::max)(0.0, (m.End - m.Begin) * 0.15);
 				const char *names[] = {"x", "y", "z", "fov", "pitch", "yaw", "roll"};
 				bool channel = false;
@@ -157,7 +179,8 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 				handled = true;
 				double value = 0;
 				valid = number(3, index) && index >= 0 && index < modifiers.size() &&
-						index == std::floor(index) && (!_stricmp(args->ArgV(4), "type") || number(5, value));
+						index == std::floor(index) &&
+						(!_stricmp(args->ArgV(4), "type") || !_stricmp(args->ArgV(4), "direction") || number(5, value));
 				if (valid)
 				{
 					auto &m = modifiers[(size_t)index];
@@ -167,11 +190,23 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 						valid = CamPath::ModifierTypeFromString(args->ArgV(5), m.Type);
 						if (valid && int(m.Type) >= 2)
 						{
+							if (int(m.Type) >= int(CamPath::ModifierType::Expo))
+								m.Frequency = (std::min)(m.Frequency, 16.0);
 							m.CameraSpace = false;
 							for (auto &amplitude : m.Amplitude)
 								amplitude = std::clamp(std::abs(amplitude), 0.0, 1.0);
 						}
 					}
+					else if (!_stricmp(field, "direction"))
+					{
+						const char *direction = args->ArgV(5);
+						valid = !_stricmp(direction, "in") || !_stricmp(direction, "out") || !_stricmp(direction, "inout");
+						if (valid)
+							m.Direction = !_stricmp(direction, "in") ? CamPath::EaseDirection::In :
+								(!_stricmp(direction, "out") ? CamPath::EaseDirection::Out : CamPath::EaseDirection::InOut);
+					}
+					else if (!_stricmp(field, "power"))
+						m.Power = value;
 					else if (!_stricmp(field, "strength"))
 						m.Strength = value;
 					else if (!_stricmp(field, "phase"))
@@ -236,15 +271,18 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 				return;
 			}
 			conMessage(
-				"%s modifier list|clear|remove <index>\n%s modifier <noise|oscillation|smooth|spring> "
+				"%s modifier list|clear|remove <index>\n%s modifier <noise|oscillation|smooth|spring|expo|bounce|elastic> "
 				"<begin seconds> <end "
 				"seconds> <position|angles|x|y|z|fov|pitch|yaw|roll> <amplitude> [frequency Hz=1 / smooth "
-				"window seconds=0.25]\n%s "
+				"window seconds=0.25 / expo power=5 / bounce-elastic cycles=1]\n%s "
 				"modifier set <index> "
-				"<type|strength|phase|octaves|roughness|window|damping|begin|end|fadeIn|fadeOut|frequency|"
+				"<type|direction|power|strength|phase|octaves|roughness|window|damping|begin|end|fadeIn|fadeOut|frequency|"
 				"seed|enabled|cameraSpace|x|y|z|fov|pitch|yaw|"
 				"roll> <value>\n",
 				args->ArgV(0), args->ArgV(0), args->ArgV(0));
+			conMessage("%s modifier presets | preset <name> <begin seconds> <end seconds>\n"
+				"Easing direction: in|out|inout; expo power: 0..16.\n"
+				"Bounce/elastic: frequency is cycles per range (0..16]; damping: .05..2.\n", args->ArgV(0));
 			conMessage("%s modifier envelope <index> point <0..1 time> <0..1 weight>|remove "
 					   "<time>|clear\nFilter amplitudes are channel strengths (0..1); smooth window is in "
 					   "seconds; spring frequency is Hz.\n",

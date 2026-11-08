@@ -162,8 +162,13 @@ public:
 		Noise,
 		Oscillation,
 		Smooth,
-		Spring
+		Spring,
+		Expo,
+		Bounce,
+		Elastic,
+		Count
 	};
+	enum class EaseDirection { In, Out, InOut };
 	struct ModifierKey
 	{
 		double Time = 0, Value = 1;
@@ -177,6 +182,8 @@ public:
 		ModifierType Type = ModifierType::Noise;
 		double Strength = 1, Phase = 0, Roughness = .5, Window = .25, Damping = .7;
 		unsigned int Octaves = 1;
+		EaseDirection Direction = EaseDirection::InOut;
+		double Power = 5;
 		std::vector<ModifierKey> Envelope;
 		double Begin = 0, End = 1, FadeIn = 0.2, FadeOut = 0.2, Frequency = 1;
 		double Amplitude[7] = {};
@@ -288,6 +295,8 @@ public:
 	bool SetModifiers(const std::vector<NoiseModifier> &modifiers);
 	static double ModifierInfluence(const NoiseModifier &modifier, double time);
 	static const char *ModifierTypeName(ModifierType type);
+	static double ModifierEase(const Modifier &modifier, double progress);
+	static bool MakeModifierPreset(const char *name, double begin, double end, Modifier &out);
 	static bool ModifierTypeFromString(const char *name, ModifierType &type);
 	static double ModifierSampleRate(const NoiseModifier &modifier);
 

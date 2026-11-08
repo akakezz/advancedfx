@@ -1240,7 +1240,7 @@ struct ModifierFieldSelection
 {
 	unsigned long long PathId = 0, Revision = 0;
 	int Index = -1, Type = -1, Edited = -1;
-	bool Selected[15] = {}, Dragging = false;
+	bool Selected[16] = {}, Dragging = false;
 	float StartY = 0;
 	ImGuiID Input = 0;
 };
@@ -1251,7 +1251,7 @@ static double &ModifierValue(CamPath::Modifier &modifier, int index)
 						&modifier.Frequency,	&modifier.Roughness,	&modifier.Phase,
 						&modifier.Window,		&modifier.Damping,		&modifier.Amplitude[0],
 						&modifier.Amplitude[1], &modifier.Amplitude[2], &modifier.Amplitude[3],
-						&modifier.Amplitude[4], &modifier.Amplitude[5], &modifier.Amplitude[6]};
+						&modifier.Amplitude[4], &modifier.Amplitude[5], &modifier.Amplitude[6], &modifier.Power};
 	return *fields[index];
 }
 static ImU32 ModifierColor(size_t index, bool enabled = true)
@@ -1306,7 +1306,7 @@ static void ApplyModifierFields(CamPath::Modifier &modifier)
 	if (selection.Edited < 0 || !selection.Selected[selection.Edited])
 		return;
 	const double value = ModifierValue(modifier, selection.Edited);
-	for (int index = 0; index < 15; ++index)
+	for (int index = 0; index < 16; ++index)
 		if (selection.Selected[index])
 			ModifierValue(modifier, index) = value;
 }
@@ -1351,8 +1351,34 @@ static void DrawModifierControls(CamPath &path)
 
 	auto modifiers = path.GetModifiers();
 	static int newType = 0;
-	const char *types[] = {"Noise", "Oscillation", "Smooth / stabilize", "Spring"};
-	ImGui::Combo("New modifier type", &newType, types, 4);
+	const char *types[] = {"Noise",       "Oscillation",   "Smooth / stabilize", "Spring",
+	                       "Expo timing", "Bounce timing", "Elastic timing"};
+	ImGui::Combo("New modifier type", &newType, types, (int)CamPath::ModifierType::Count);
+	static int preset = 0;
+	const char *presets[] = {"Handheld",          "Impact shake",     "Expo in",
+	                         "Expo out",          "Expo in-out",      "Bounce out (Z)",
+	                         "Elastic out (FOV)", "Stabilize angles", "FOV punch"};
+	const char *presetIds[] = {"handheld",   "impact",      "expo-in",   "expo-out", "expo-in-out",
+	                           "bounce-out", "elastic-out", "stabilize", "fov-punch"};
+	ImGui::Combo("Modifier preset", &preset, presets, 9);
+	if (ImGui::Button("Add preset to range"))
+	{
+		CamPath::Modifier m;
+		if (CamPath::MakeModifierPreset(presetIds[preset], g_ModifierBegin, g_ModifierEnd, m))
+		{
+			modifiers.push_back(m);
+			if (path.SetModifiers(modifiers))
+				g_ModifierSelection = (int)modifiers.size() - 1;
+			else
+			{
+				modifiers = path.GetModifiers();
+				g_DocumentStatus = "Preset rejected: modifier stack limit reached.";
+			}
+		}
+		else
+			g_DocumentStatus = "Choose a finite range with begin before end.";
+	}
+	ImGui::TextDisabled("Presets add editable settings to the stack; existing modifiers are retained.");
 	const std::string addLabel =
 		std::string("Add ") + CamPath::ModifierTypeName((CamPath::ModifierType)newType) + " to range";
 	if (ImGui::Button(addLabel.c_str()))
@@ -1397,10 +1423,12 @@ static void DrawModifierControls(CamPath &path)
 		}
 		auto &m = modifiers[g_ModifierSelection];
 		int type = (int)m.Type;
-		bool changed = ImGui::Combo("Modifier type", &type, types, 4);
+		bool changed = ImGui::Combo("Modifier type", &type, types, (int)CamPath::ModifierType::Count);
 		if (changed)
 		{
 			m.Type = (CamPath::ModifierType)type;
+			if (type >= 4)
+				m.Frequency = (std::min)(m.Frequency, 16.0);
 			if (type >= 2)
 			{
 				m.CameraSpace = false;
@@ -1445,8 +1473,26 @@ static void DrawModifierControls(CamPath &path)
 		changed |= ImGui::InputDouble("End##noise", &m.End, 0, 0, "%.4f");
 		changed |= ModifierField(1, "Fade in (s)", &m.FadeIn);
 		changed |= ModifierField(2, "Fade out (s)", &m.FadeOut);
-		if (type != 2)
-			changed |= ModifierField(3, "Frequency (Hz)", &m.Frequency);
+		if (type != 2 && type != 4)
+			changed |= ModifierField(3, type >= 5 ? "Cycles across range" : "Frequency (Hz)", &m.Frequency);
+		if (type >= 4)
+		{
+			int direction = (int)m.Direction;
+			const char *directions[] = {"In", "Out", "In-out"};
+			if (ImGui::Combo("Easing direction", &direction, directions, 3))
+			{
+				m.Direction = (CamPath::EaseDirection)direction;
+				changed = true;
+			}
+			if (type == 4)
+				changed |= ModifierField(15, "Expo power", &m.Power);
+			if (type >= 5)
+				changed |= ModifierField(7, "Easing damping", &m.Damping);
+			ImGui::TextWrapped("Warps progress once across the range; does not restart at keys. Channel "
+			                   "strengths are 0..1. Equal XYZ strengths keep the spatial path inside the "
+			                   "range. Elastic overshoot extends its endpoint displacement. Timing effects "
+			                   "need changing values; use noise or FOV punch on a stationary pose.");
+		}
 		if (type == 0)
 		{
 			int octaves = (int)m.Octaves;
@@ -1475,7 +1521,7 @@ static void DrawModifierControls(CamPath &path)
 		const char *names[] = {"X amplitude (units)", "Y amplitude (units)",   "Z amplitude (units)",
 							   "FOV amplitude (deg)", "Pitch amplitude (deg)", "Yaw amplitude (deg)",
 							   "Roll amplitude (deg)"};
-		const char *filterNames[] = {"X strength",	   "Y strength",   "Z strength",   "FOV strength",
+		const char *filterNames[] = {"X strength",     "Y strength",   "Z strength",   "FOV strength",
 									 "Pitch strength", "Yaw strength", "Roll strength"};
 		for (int ch = 0; ch < 7; ++ch)
 			changed |= ModifierField(8 + ch, type >= 2 ? filterNames[ch] : names[ch], &m.Amplitude[ch]);
@@ -1515,6 +1561,7 @@ static void DrawModifierControls(CamPath &path)
 					   "spring damping 1 is critical damping.");
 	ImGui::EndChild();
 }
+
 static void DrawSpeedControls()
 {
 	auto &path = g_Hook_VClient_RenderView.m_CamPath;

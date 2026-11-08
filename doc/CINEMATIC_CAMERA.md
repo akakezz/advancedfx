@@ -284,7 +284,7 @@ each intermediate digit. Ordinary modifier toggles and envelope drags remain liv
 
 Choose **New modifier type**, then add it to the selected range. Existing modifiers
 can change type through **Modifier type**. Noise and Oscillation amplitudes use
-world units or degrees; Smooth and Spring amplitudes are channel strengths from
+world units or degrees; Smooth, Spring and the timing modifiers use channel strengths from
 0 to 1. The global **Modifier strength** multiplies every enabled channel.
 
 | Type | Controls and behavior |
@@ -293,6 +293,45 @@ world units or degrees; Smooth and Spring amplitudes are channel strengths from
 | Oscillation | Sine-wave position, angle or FOV offsets. Frequency is Hz; phase is in cycles. |
 | Smooth / stabilize | A bidirectional exponential filter across the complete input curve, controlled by **Smoothing window (s)**. |
 | Spring | A damped spring following the complete input curve. Frequency is Hz; damping below 1 oscillates, 1 is critically damped, and values above 1 settle without oscillation. |
+| Expo timing | Shapes a positive travel rate across the chosen range. In accelerates, Out decelerates, In-out does both. Power 0 is neutral; 0–16 is supported. Fades, channel strengths and envelopes shape the rate; normalization keeps the range duration fixed without backward travel. |
+| Bounce timing | Rebounds through the sampled range. Adjust cycles (up to 16), damping and In/Out/In-out direction. Reversals are intentional. |
+| Elastic timing | Overshoots and oscillates through the sampled range. Cycles, damping and direction control the effect. Beyond-range progress extends the displacement between the range endpoints, instead of reading outside the path. |
+
+**Modifier preset → Add preset to range** appends editable settings; it does not
+replace the existing stack. Presets are Handheld, Impact shake, Expo in, Expo out,
+Expo in-out, Bounce out (Z), Elastic out (FOV), Stabilize angles, and FOV punch.
+Bounce out needs changing Z values; Elastic out needs changing FOV. For effects
+on a stationary pose, use Handheld, Impact or FOV punch instead. Every setting
+remains editable, and creation participates in ordinary Undo/Redo.
+
+Timing modifiers remap the input of their stack stage once across the entire
+range, including any interior keys. They never restart easing at each key.
+Channels with strength zero are untouched. Matching X/Y/Z strengths follow the
+same sampled spatial curve inside the range; selecting axes separately can change
+its shape. Elastic extrapolation can leave that curve. Holds and original key
+arrival times can move within the affected channels; the authored keyframes and
+handles remain intact. Outside the range and at its two boundaries, the modifier
+returns the original stage input. Expo envelopes shape travel rate rather than
+an additive offset: a zero envelope locally restores the original rate, while
+progress can retain the offset accumulated earlier in the range.
+
+The existing Spring modifier follows a changing signal; Elastic timing changes
+when that signal is sampled. These are distinct effects. Timing modifiers do not
+repair a discontinuity already present in the input interpolation.
+
+```text
+mirv_campath modifier presets
+mirv_campath modifier preset expo-in-out 0 10
+mirv_campath modifier set 0 power 8
+mirv_campath modifier set 0 direction out
+mirv_campath modifier preset fov-punch 2 3
+```
+
+Times above are path seconds, before the path offset. `preset` appends an entry;
+use `modifier list` to find its index before editing. `direction` accepts `in`,
+`out`, or `inout`. Bounce/Elastic `frequency` means cycles across the range, unlike
+Noise/Oscillation/Spring frequencies in Hz. Native save/load, recovery and classic
+XML baking include the new settings and evaluated effects.
 
 Each modifier has begin/end, fade-in/out durations and an enable control. Noise
 has a seed. Noise and Oscillation can apply positional offsets in camera space.
@@ -312,7 +351,7 @@ Filters cache deterministic samples, interpolate them with shared Hermite
 slopes, and reuse the result when seeking or rendering frames out of order.
 Their sampling grid is bounded; very long paths and very rapid effects have a
 finite filtering resolution. A path supports 64 modifiers, including up to eight
-enabled Smooth/Spring stages. Modifier order determines each filter's input. Drag the boundaries and fade markers in the shaded strip
+enabled sampled stages (Smooth, Spring, Expo, Bounce or Elastic). Modifier order determines each filter's input. Drag the boundaries and fade markers in the shaded strip
 above the graph, or use exact numeric values. Envelope edges use smooth fades.
 The dim curve is the unmodified evaluated path; the bright curve includes the
 modifier, including movement during an explicitly covered hold. A stationary
