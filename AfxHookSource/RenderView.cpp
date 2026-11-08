@@ -435,6 +435,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 	void *attachedEntity = nullptr;
 	int attachedMode = MIRV_TF2_BONEMODE_WORLD;
 	const void *aimAttachment = nullptr;
+	const void *aimAngleAttachment = nullptr;
 	double aimCameraOrigin[3] = {};
 	float aimCameraAngles[3] = {};
 	double attachedPivot[3] = {}, attachedRoot[3] = {};
@@ -619,6 +620,8 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				if (g_Aiming.Aim(m_Globals->absoluteframetime_get(), Vector3(Tx, Ty, Tz), dRx, dRy, dRz))
 				{
 					originOrAnglesOverriden = true;
+					// Soft deactivation still owns the angles while Aim returns a view.
+					aimAngleAttachment = attachedIdentity;
 					if (g_Aiming.Active)
 					{
 						aimAttachment = attachedIdentity;
@@ -678,7 +681,8 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 	// Attached camera follow and framing.
 	float attachedAngles[3] = {Rx, Ry, Rz};
 	const bool aimFrame = attachedIdentity && aimAttachment == attachedIdentity;
-	const bool sourceFrame = attachedMode != MIRV_TF2_BONEMODE_WORLD && g_MirvCam.m_SourceUseXRotation &&
+	const bool sourceFrame = !(attachedIdentity && aimAngleAttachment == attachedIdentity) &&
+	                         attachedMode != MIRV_TF2_BONEMODE_WORLD && g_MirvCam.m_SourceUseXRotation &&
 	                         g_MirvCam.m_SourceUseYRotation && g_MirvCam.m_SourceUseZRotation;
 	if (MirvCameraAttachedApply(attachedIdentity, attachedEntity, attachedPivot, g_MirvTime.GetCurTime(), Tx, Ty,
 	                            Tz, attachedRoot, sourceFrame && !aimFrame ? attachedAngles : nullptr))

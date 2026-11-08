@@ -312,6 +312,7 @@ struct MirvCameraCollisionSettings
 	bool Free = false, Campath = false, Attached = false, Players = true, Slide = true, IgnoreLocal = true;
 	double Radius = 6, ReturnHalfLife = .2, ReturnSpeed = 300, FollowHalfLife = 0, FollowMaxDistance = 128;
 	double BoneHalfLife = 0, FollowTeleportDistance = 1024, AttachedSoftDistance = 24;
+	double OrbitHalfLife = .15, OrbitSpeed = 360, FollowRecoveryDelay = 1;
 };
 MirvCameraCollisionSettings MirvCameraCollisionGet();
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);

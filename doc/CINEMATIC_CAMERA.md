@@ -334,7 +334,7 @@ return. A paused path does not advance recovery. A forward stall while already
 blocked does not discard that anchor and snap through the obstacle. Explicit
 editor seeks and backward/cut resets still initialize a new shot.
 
-### Attached camera retraction and positional following
+### Attached camera follow and collision recovery
 
 `mirv_cam collision attached 1` uses a boom trace from the stabilized attachment
 pivot toward the desired camera position, plus a sweep of the camera's actual
@@ -348,7 +348,8 @@ Continuous approaches shorten the boom progressively before contact. Set it to
 the camera gradually while its hull remains clear; physical contact still uses
 an immediate safety correction. Clearing an obstacle restores boom length gradually
 using `returnHalfLife` and `returnSpeed`; those controls do not cap the subject's
-translation. Rotation is still supplied by the selected attach mode.
+translation. The selected attach mode supplies the desired pose; enabled follow
+coordinates the orbit and view as it approaches that pose.
 
 The pivot sweep ignores the attached subject because it starts inside the
 subject. Endpoint and movement checks include its solid hull independently of
@@ -356,7 +357,8 @@ other-player exclusions. If an endpoint falls inside the subject, the solver
 looks for its exit along the chosen boom, rather than jumping along arbitrary
 axes to find another viewpoint. A zero-offset camera inside its subject pulls
 back along the camera heading when available (otherwise world -X). Tight gaps
-may not have a valid camera-sized solution. Sudden geometry overlap can still require an immediate safety move;
+may not have a valid camera-sized solution. Sudden geometry overlap can still
+require an immediate safety move;
 blocked continuous movement may also leave the subject occluded. This does not
 plan an alternative route through a doorway or guarantee a full-body composition
 in confined space.
@@ -364,6 +366,9 @@ in confined space.
 ```text
 mirv_cam attach follow 0.15
 mirv_cam attach follow boneHalfLife 0.08
+mirv_cam attach follow orbitHalfLife 0.15
+mirv_cam attach follow orbitSpeed 360
+mirv_cam attach follow recoveryDelay 1
 mirv_cam attach follow maxDistance 128
 mirv_cam attach follow teleportDistance 1024
 mirv_cam attach follow status
@@ -380,50 +385,76 @@ camera down to the entity origin. Larger values smooth more and introduce more
 positional lag. Both springs reuse the existing campath modifier spring math;
 they do not change `mirv_input cfg smooth` settings.
 
-For a stationary target correction starting at rest, a half-life is the time to
-close half the positional gap. The exact spring update preserves velocity across
-small corrections instead of inferring a new velocity from each positional jump.
-It does not reconstruct missing snapshots. Entity/bone rotation remains controlled
-by the chosen attach mode; there is no additional angular-delay filter. In bone,
-entity and aligned modes, the final orientation compensates for positional lag
-and collision to retain the chosen composition, including deliberately off-centre
-framing, while preserving the authored roll instead of tilting the horizon.
-Near a vertical sight line, preserving roll can limit exact framing. Partial
-source-angle overrides are respected. `world` mode keeps its fixed heading instead of applying this attachment framing correction.
+The camera keeps a filtered focus, orbit direction, boom length and screen-space
+composition. Sharp entity turns therefore move the camera and its view together.
+`orbitHalfLife` controls the orbit/composition response (default 0.15 seconds,
+range 0..10); 0 restores immediate turning. `orbitSpeed` caps orbital turning at
+360 degrees/second by default; 0 removes that cap. Both apply while root follow
+is enabled. `follow 0` restores rigid orbit and view behavior even when collision
+remains enabled. Bone translation damping remains independent.
+
+Root and bone translation use the existing critically damped spring. From rest,
+a half-life closes half a stationary positional correction. The orbit uses
+quaternion interpolation over the shortest rotation, with consistent yaw wrapping.
+The focus is filtered too, so missing snapshots do not immediately jerk the view
+back toward the raw subject position. The subject can move within the frame while
+the shot catches up; this does not promise an exact target lock for every FOV.
+Larger half-lives introduce more lag. Use `mirv_aim` if an explicit target lock
+is needed.
+
+Bone/entity/aligned modes use the same coordinated framing, including captured
+and manual offsets. Roll and intentional composition changes follow the orbit
+response. An upside-down Euler solution is rejected for an upright view, and
+near-coincident target directions retain the preceding view. A zero-offset
+attachment smooths its authored view directly. Near a vertical sight line,
+preserving roll can limit exact framing. Partial source-angle overrides are
+respected. `world` mode retains its fixed heading.
 
 An active `mirv_aim` override retains its selected target after final position
 correction, including with manual camera offsets. The aiming controller advances
 once per frame; the correction transports its resulting composition and does not
-run the angular smoothing controller a second time.
+run the angular smoothing controller a second time. Source framing also yields
+to the aiming controller during soft deactivation.
 
 `maxDistance` bounds entity translation lag. Follow also smoothly limits lag along
 the chosen offset using filtered velocity, targeting a quarter of its length,
 and transverse lag to half its length. This avoids copying raw snapshot jitter
 back into the camera when the limiter is active. A half-boom safety envelope
 along the offset handles acceleration transients. This retains the selected
-camera side during backstepping in clear space; fast movement is followed more tightly rather than letting the entity pass through
-the delayed camera. Bone-position damping is applied independently. A zero-length
+camera side relative to the smoothed orbit during backstepping; fast movement
+is followed more tightly rather than letting the subject pass through the delayed
+camera. Bone-position damping is applied independently. A zero-length
 camera offset has no meaningful side constraint.
 
-`teleportDistance` resets both filters when the entity moves farther than that
-many units between frames; 1024 is the default and 0 disables this distance reset. Small corrections
-are smoothed. Explicit editor seeks, backward time, attachment/entity changes,
-loading and time gaps greater than 10 demo seconds reset the filters. Continuous
-frames above 0.25 demo seconds retain smoothing, including at higher timescales.
-Missing attachment poses also invalidate the history. Filters advance with demo time and
-freeze during pause or timescale 0. Use `reset` to reframe while paused. Set both
-`follow 0` and `follow boneHalfLife 0` to disable positional smoothing entirely.
-For repeatable recording, begin from the same earlier point and allow preroll.
-Collision remains independent and takes priority whenever smoothing would put
-the camera inside a solid.
+`teleportDistance` resets the shot when the **subject** moves farther than the
+threshold between updates (default 1024 units; 0 disables it). It measures a
+subject teleport, not camera separation. Explicit editor seeks, backward time,
+attachment/entity changes, loading and gaps over 10 demo seconds also reset the
+shot. Missing attachment poses invalidate history. All follow state advances in
+demo time and freezes when paused or at timescale 0. Use `reset` to reframe while
+paused. For repeatable recording, begin from the same earlier point and allow
+preroll. Set both `follow 0` and `follow boneHalfLife 0` to disable smoothing.
+
+A closed door can leave a solid camera with no route to its subject. With follow
+and attached collision enabled, `recoveryDelay` bounds persistent blocked movement:
+after 1 second of demo time by default, the camera cuts to a verified clear pose
+reachable from the subject's pivot. An obstructed view across a thin door also
+counts, even when the camera is only a few units from that pose. The whole shot
+is rebased at the cut to prevent another catch-up jump. This deliberately relocates the camera; it
+does not simulate travel through the obstacle. The old and new endpoint checks
+include the subject hull. If no safe destination exists, it remains obstructed.
+Set `recoveryDelay 0` to disable recovery cuts and retain strict collision, or
+choose a delay up to 60 seconds. Paused rendering does not advance the timer.
+Physical geometry overlapping the camera can still require immediate correction.
 
 `attachMode entity` uses entity-facing angles at the bone position; `bone` uses
 bone angles; `aligned` initially aligns with the entity and then follows bone
 rotation. This distinction also applies after `mirv_cam attach capture`: entity
 mode preserves the camera relative to entity facing, without inheriting bone
 pitch, yaw or roll. Bone damping controls position, while bone/aligned modes still
-inherit their chosen bone rotation. The new `world` mode follows the entity/bone
-position but keeps the camera heading it had when attached. Its offset stays in that fixed orientation
+inherit their chosen bone rotation, approached through the orbit response when
+follow is enabled. The `world` mode follows the entity/bone position but keeps
+the camera heading it had when attached. Its offset stays in that fixed orientation
 rather than orbiting around the subject as the subject turns. Head bob and other
 bone translation still affect the camera and can be softened with `boneHalfLife`.
 A separate `mirv_aim` override can still change the final angles.

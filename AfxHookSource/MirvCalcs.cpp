@@ -5890,7 +5890,11 @@ bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings)
 	    settings.FollowMaxDistance > 10000 || !std::isfinite(settings.BoneHalfLife) ||
 	    settings.BoneHalfLife < 0 || settings.BoneHalfLife > 10 ||
 	    !std::isfinite(settings.FollowTeleportDistance) || settings.FollowTeleportDistance < 0 ||
-	    settings.FollowTeleportDistance > 1e6 || !std::isfinite(settings.AttachedSoftDistance) ||
+	    settings.FollowTeleportDistance > 1e6 || !std::isfinite(settings.OrbitHalfLife) ||
+	    settings.OrbitHalfLife < 0 || settings.OrbitHalfLife > 10 || !std::isfinite(settings.OrbitSpeed) ||
+	    settings.OrbitSpeed < 0 || settings.OrbitSpeed > 1e6 ||
+	    !std::isfinite(settings.FollowRecoveryDelay) || settings.FollowRecoveryDelay < 0 ||
+	    settings.FollowRecoveryDelay > 60 || !std::isfinite(settings.AttachedSoftDistance) ||
 	    settings.AttachedSoftDistance < 0 || settings.AttachedSoftDistance > 256 ||
 	    ((settings.Free || settings.Campath || settings.Attached) && !CameraCollisionTraceInterface()) ||
 	    ((settings.FollowHalfLife > 0 || settings.BoneHalfLife > 0) && g_SourceSdkVer != SourceSdkVer_TF2 &&
@@ -5996,6 +6000,11 @@ struct AttachedCameraHistory
 	bool HasAngles = false;
 	double Root[3] = {}, FollowVelocity[3] = {}, BonePosition[3] = {}, BoneVelocity[3] = {};
 	double FollowHalfLife = 0, BoneHalfLife = 0;
+	// Orbit, composition and focus are one shot state. Source poses remain inputs,
+	// rather than repeatedly replacing the camera with an instantly rotating boom.
+	Afx::Math::Quaternion Orbit, Composition, View;
+	double OrbitLength = 0, OrbitYaw = 0, BlockedTime = 0;
+	bool CompositionValid = false;
 } g_AttachedCameraHistory;
 } // namespace
 // Capture the authored pose when recapturing the displayed, collision-corrected
@@ -6063,6 +6072,9 @@ bool MirvCameraAttachedReframe(const double from[3], const double to[3], const d
 		const double yaw = bearing + (branch ? 3.141592653589793 - side : side);
 		const double horizontal = std::cos(yaw) * after[0] + std::sin(yaw) * after[1];
 		const double pitch = std::atan2(vertical, local[0]) - std::atan2(after[2], horizontal);
+		if (std::abs(std::remainder(angles[0], 360.0)) <= 90 &&
+		    std::abs(std::remainder(pitch * degrees, 360.0)) > 90.00001)
+			continue;
 		const double dp = std::remainder(pitch * degrees - angles[0], 360.0);
 		const double dy = std::remainder(yaw * degrees - angles[1], 360.0);
 		const double cost = dp * dp + dy * dy;
@@ -6095,8 +6107,9 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 	double rootJump2 = 0;
 	for (int a = 0; a < 3; ++a)
 	{
-		if (!std::isfinite(desired[a]) || !std::isfinite(pivot[a]) || !std::isfinite(root[a]) ||
-		    std::abs(desired[a]) > 1e7 || std::abs(pivot[a]) > 1e7 || std::abs(root[a]) > 1e7)
+		if ((angles && !std::isfinite(angles[a])) || !std::isfinite(desired[a]) || !std::isfinite(pivot[a]) ||
+		    !std::isfinite(root[a]) || std::abs(desired[a]) > 1e7 || std::abs(pivot[a]) > 1e7 ||
+		    std::abs(root[a]) > 1e7)
 		{
 			history.Valid = false;
 			return false;
@@ -6110,6 +6123,36 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 	                        (settings.FollowTeleportDistance == 0 ||
 	                         rootJump2 <= settings.FollowTeleportDistance * settings.FollowTeleportDistance);
 	const double dt = continuous ? sceneTime - history.Time : 0;
+	const bool following = settings.FollowHalfLife > 1e-6;
+	const bool shotContinuous = continuous && (history.FollowHalfLife > 1e-6) == following;
+	const double orbitAlpha = following && settings.OrbitHalfLife > 1e-6
+	                              ? -std::expm1(-std::log(2.0) * dt / settings.OrbitHalfLife)
+	                              : 1;
+	if (!shotContinuous)
+		history.OrbitYaw = angles ? angles[1] : 0;
+	if (!continuous)
+	{
+		history.Contracting = false;
+		history.BlockedTime = 0;
+	}
+	using namespace Afx::Math;
+	auto directionFrame = [](const double v[3], double fallbackYaw) {
+		const double flat = std::hypot(v[0], v[1]);
+		return Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(
+		    QEulerAngles(std::atan2(-v[2], flat) * 57.29577951308232,
+			             flat > 1e-9 ? std::atan2(v[1], v[0]) * 57.29577951308232 : fallbackYaw, 0)));
+	};
+	auto forward = [](const Quaternion &q, double v[3]) {
+		const auto rotated = q * Quaternion(0, 1, 0, 0) * q.Conjugate();
+		v[0] = rotated.X;
+		v[1] = rotated.Y;
+		v[2] = rotated.Z;
+	};
+	auto blend = [](const Quaternion &from, Quaternion to, double alpha) {
+		if (DotProduct(from, to) < 0)
+			to = -1.0 * to;
+		return from.Slerp(to, alpha).Normalized();
+	};
 	double candidate[3];
 	for (int a = 0; a < 3; ++a)
 	{
@@ -6135,10 +6178,10 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 	// Limit the steady lag estimated from the filtered velocity. Clamping the
 	// raw root-to-camera difference feeds snapshot jitter straight back into
 	// the camera whenever that clamp saturates.
-	double offset[3], offset2 = 0, lag[3], rawLag[3], lag2 = 0, anchor[3];
+	double offset[3], rawOffset[3], offset2 = 0, lag[3], rawLag[3], lag2 = 0, anchor[3];
 	for (int a = 0; a < 3; ++a)
 	{
-		offset[a] = desired[a] - pivot[a];
+		offset[a] = rawOffset[a] = desired[a] - pivot[a];
 		offset2 += offset[a] * offset[a];
 		lag[a] = settings.FollowHalfLife > 1e-6
 		             ? -history.FollowVelocity[a] * (2 * settings.FollowHalfLife / 1.67834699001666)
@@ -6147,7 +6190,40 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 		lag2 += lag[a] * lag[a];
 		anchor[a] = root[a] + history.BonePosition[a];
 	}
-	const double offsetLength = std::sqrt(offset2), lagLength = std::sqrt(lag2);
+	const double rawLength = std::sqrt(offset2), lagLength = std::sqrt(lag2);
+	if (rawLength > 1e-6)
+	{
+		if (std::hypot(rawOffset[0], rawOffset[1]) > 1e-6)
+			history.OrbitYaw = std::atan2(rawOffset[1], rawOffset[0]) * 57.29577951308232;
+		auto target = directionFrame(rawOffset, history.OrbitYaw);
+		if (!shotContinuous || history.OrbitLength < 1e-6 || orbitAlpha == 1)
+			history.Orbit = target;
+		else
+		{
+			Vector3 axis;
+			if (DotProduct(history.Orbit, target) < 0)
+				target = -1.0 * target;
+			const double angle = std::abs(history.Orbit.GetAng(target, axis));
+			const double alpha =
+			    settings.OrbitSpeed > 0 && angle > 1e-9
+			        ? (std::min)(orbitAlpha, settings.OrbitSpeed / 57.29577951308232 * dt / angle)
+			        : orbitAlpha;
+			history.Orbit = blend(history.Orbit, target, alpha);
+		}
+	}
+	if (!shotContinuous || orbitAlpha == 1)
+		history.OrbitLength = rawLength;
+	else
+		history.OrbitLength += (rawLength - history.OrbitLength) * orbitAlpha;
+	if (history.OrbitLength > 1e-6)
+	{
+		forward(history.Orbit, offset);
+		for (int a = 0; a < 3; ++a)
+			offset[a] *= history.OrbitLength;
+	}
+	else
+		std::fill(offset, offset + 3, 0.0);
+	const double offsetLength = history.OrbitLength;
 	const double lagScale =
 	    lagLength > 1e-9
 	        ? settings.FollowMaxDistance * std::tanh(lagLength / settings.FollowMaxDistance) / lagLength
@@ -6194,9 +6270,13 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 		for (int a = 0; a < 3; ++a)
 			candidate[a] += (bounded - along) * offset[a] / offsetLength;
 	}
+	double focus[3];
+	for (int a = 0; a < 3; ++a)
+		focus[a] = candidate[a] - offset[a];
 	const double followed[3] = {candidate[0], candidate[1], candidate[2]};
 	if (settings.Attached)
 	{
+		double recoveryGoal[3] = {candidate[0], candidate[1], candidate[2]};
 		double direction[3], length2 = 0;
 		for (int a = 0; a < 3; ++a)
 		{
@@ -6249,6 +6329,10 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 					allowed = (std::max)(0.0, allowed - .25 * soft * h * h);
 				}
 			}
+			// A recovery cut uses the verified boom target, independently of
+			// gradual retraction, which can still be on the obstructed side.
+			for (int a = 0; a < 3; ++a)
+				recoveryGoal[a] = anchor[a] + direction[a] * allowed;
 			const bool abrupt =
 			    continuous && allowed < history.ArmLength &&
 			    (history.Contracting || history.LastAllowed - allowed > (std::max)(1.0, soft * .25));
@@ -6275,7 +6359,11 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 			       CameraCollisionTrace(point, point, settings, subject, nullptr, entity) &&
 			       !subject.startSolid && !subject.allSolid;
 		};
-		if (!clear(candidate) && length > 1e-6 && !hit.startSolid && !hit.allSolid)
+		MirvTf2Trace_t overlap;
+		const bool insideSubject =
+		    CameraCollisionTrace(candidate, candidate, settings, overlap, nullptr, entity) &&
+		    (overlap.startSolid || overlap.allSolid);
+		if (insideSubject && length > 1e-6 && !hit.startSolid && !hit.allSolid)
 		{
 			const double outerLength = length + 64 + settings.Radius * 2;
 			double outer[3];
@@ -6295,6 +6383,7 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 					std::copy(trial, trial + 3, candidate);
 			}
 		}
+		const double movementGoal[3] = {candidate[0], candidate[1], candidate[2]};
 		if (continuous && clear(history.Position))
 		{
 			double swept[3];
@@ -6314,22 +6403,132 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 		}
 		if (!clear(candidate) && continuous && clear(history.Position))
 			std::copy(history.Position, history.Position + 3, candidate);
+		// A collision sweep cannot find a route through a closed door. Bound the
+		// time spent stranded, and perform an explicit recovery cut only to a
+		// verified clear endpoint reachable from the subject's physical pivot.
+		double blocked2 = 0;
+		for (int a = 0; a < 3; ++a)
+			blocked2 += std::pow(candidate[a] - movementGoal[a], 2);
+		const double tolerance = (std::max)(settings.Radius * 2, offsetLength * .25);
+		bool blockedView = false;
+		if (following && continuous && settings.FollowRecoveryDelay > 0 &&
+		    (hit.startSolid || hit.allSolid || hit.fraction < 1 || blocked2 > 1e-6))
+		{
+			// A clear boom and unchanged movement endpoint already prove visibility.
+			MirvTf2Trace_t visibility;
+			auto sight = settings;
+			sight.Radius = 0; // Visibility uses a point ray, rather than the camera clearance hull.
+			blockedView = CameraCollisionTrace(anchor, candidate, sight, visibility, entity) &&
+			              !visibility.startSolid && !visibility.allSolid && visibility.fraction < 1;
+		}
+		// Opposite sides of a thin closed door can be only a few units apart.
+		// Distance alone must not leave the camera stranded indefinitely.
+		if (following && continuous && settings.FollowRecoveryDelay > 0 &&
+		    (blocked2 > tolerance * tolerance || blockedView))
+		{
+			if (!clear(recoveryGoal))
+				std::copy(movementGoal, movementGoal + 3, recoveryGoal);
+			MirvTf2Trace_t tether;
+			if (clear(recoveryGoal) && CameraCollisionTrace(anchor, recoveryGoal, settings, tether, entity) &&
+			    !tether.startSolid && !tether.allSolid && tether.fraction == 1)
+			{
+				history.BlockedTime += dt;
+				if (history.BlockedTime >= settings.FollowRecoveryDelay)
+				{
+					std::copy(recoveryGoal, recoveryGoal + 3, candidate);
+					std::copy(root, root + 3, history.FollowPosition);
+					std::fill(history.FollowVelocity, history.FollowVelocity + 3, 0.0);
+					std::copy(anchor, anchor + 3, focus);
+					// Rebase the whole shot to the recovered pose. Resetting only
+					// root lag would cause a second jump on the following frame.
+					double recoveredLength2 = 0;
+					for (int a = 0; a < 3; ++a)
+					{
+						offset[a] = candidate[a] - anchor[a];
+						recoveredLength2 += offset[a] * offset[a];
+					}
+					history.OrbitLength = std::sqrt(recoveredLength2);
+					if (history.OrbitLength > 1e-6)
+						history.Orbit = directionFrame(offset, history.OrbitYaw);
+					history.BlockedTime = 0;
+					history.Contracting = false;
+				}
+			}
+			else
+				history.BlockedTime = 0;
+		}
+		else
+			history.BlockedTime = 0;
 		// There may be no camera-sized gap between the subject and geometry.
 		// Keep the swept result in that case; do not teleport to another side.
 	}
+	if (!settings.Attached)
+		history.BlockedTime = 0;
 	std::copy(desired, desired + 3, history.Desired);
-	history.HasAngles = angles != nullptr;
 	if (angles)
-		std::copy(angles, angles + 3, history.AuthoredAngles);
-	if (angles && offsetLength > 1e-3)
 	{
-		double reference[3];
-		for (int a = 0; a < 3; ++a)
-			reference[a] = anchor[a] + offset[a];
-		MirvCameraAttachedReframe(reference, candidate, anchor, angles);
-	}
-	if (angles)
+		std::copy(angles, angles + 3, history.AuthoredAngles);
+		if (rawLength > 1e-3)
+		{
+			double f[3], r[3], u[3], local[3] = {};
+			MakeVectors(angles[2], angles[0], angles[1], f, r, u);
+			for (int a = 0; a < 3; ++a)
+			{
+				local[0] -= f[a] * rawOffset[a] / rawLength;
+				local[1] -= r[a] * rawOffset[a] / rawLength;
+				local[2] -= u[a] * rawOffset[a] / rawLength;
+			}
+			const auto target = directionFrame(local, 0);
+			const bool previous = shotContinuous && history.HasAngles && history.CompositionValid;
+			history.Composition = previous ? blend(history.Composition, target, orbitAlpha) : target;
+			const float roll =
+			    previous ? float(history.DisplayAngles[2] +
+				                 std::remainder(angles[2] - history.DisplayAngles[2], 360.0) * orbitAlpha)
+				         : angles[2];
+			if (previous)
+				std::copy(history.DisplayAngles, history.DisplayAngles + 3, angles);
+			angles[2] = roll;
+			forward(history.Composition, local);
+			MakeVectors(angles[2], angles[0], angles[1], f, r, u);
+			double reference[3], distance2 = 0;
+			// A filtered focus avoids turning snapshot/bone noise into view jitter.
+			// With rigid follow, use the physical pivot as before.
+			const double *targetPoint = following ? focus : anchor;
+			for (int a = 0; a < 3; ++a)
+			{
+				reference[a] = targetPoint[a] - (f[a] * local[0] + r[a] * local[1] + u[a] * local[2]);
+				distance2 += (candidate[a] - targetPoint[a]) * (candidate[a] - targetPoint[a]);
+			}
+			if (distance2 > 1)
+				MirvCameraAttachedReframe(reference, candidate, targetPoint, angles);
+		}
+		else if (following && shotContinuous && history.HasAngles)
+		{
+			// At zero boom length the target direction is undefined. Smooth the
+			// authored view directly instead of solving a coincident look-at.
+			auto target = Quaternion::FromQREulerAngles(
+			    QREulerAngles::FromQEulerAngles(QEulerAngles(angles[0], angles[1], angles[2])));
+			if (DotProduct(history.View, target) < 0)
+				target = -1.0 * target;
+			Vector3 axis;
+			const double angle = std::abs(history.View.GetAng(target, axis));
+			const double alpha =
+			    orbitAlpha < 1 && settings.OrbitSpeed > 0 && angle > 1e-9
+			        ? (std::min)(orbitAlpha, settings.OrbitSpeed / 57.29577951308232 * dt / angle)
+			        : orbitAlpha;
+			const auto value = NearestEquivalentEuler(
+			    blend(history.View, target, alpha).ToQREulerAngles().ToQEulerAngles(),
+			    QEulerAngles(history.DisplayAngles[0], history.DisplayAngles[1], history.DisplayAngles[2]));
+			angles[0] = float(value.Pitch);
+			angles[1] = float(value.Yaw);
+			angles[2] = float(value.Roll);
+		}
+		history.View = Quaternion::FromQREulerAngles(
+		    QREulerAngles::FromQEulerAngles(QEulerAngles(angles[0], angles[1], angles[2])));
 		std::copy(angles, angles + 3, history.DisplayAngles);
+	}
+	history.CompositionValid = angles && rawLength > 1e-3;
+	history.HasAngles = angles != nullptr;
 	x = float(candidate[0]);
 	y = float(candidate[1]);
 	z = float(candidate[2]);

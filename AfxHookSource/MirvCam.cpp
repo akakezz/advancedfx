@@ -269,8 +269,10 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 		return;
 	}
 	if ((argc == 4 && _stricmp(args->ArgV(3), "status")) ||
-	    (argc == 5 && (!_stricmp(args->ArgV(3), "maxDistance") || !_stricmp(args->ArgV(3), "boneHalfLife") ||
-	                   !_stricmp(args->ArgV(3), "teleportDistance"))))
+	    (argc == 5 &&
+	     (!_stricmp(args->ArgV(3), "maxDistance") || !_stricmp(args->ArgV(3), "boneHalfLife") ||
+	      !_stricmp(args->ArgV(3), "teleportDistance") || !_stricmp(args->ArgV(3), "orbitHalfLife") ||
+	      !_stricmp(args->ArgV(3), "orbitSpeed") || !_stricmp(args->ArgV(3), "recoveryDelay"))))
 	{
 		const char *value = args->ArgV(argc - 1);
 		char *end = nullptr;
@@ -282,6 +284,12 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 			settings.BoneHalfLife = number;
 		else if (!_stricmp(args->ArgV(3), "teleportDistance"))
 			settings.FollowTeleportDistance = number;
+		else if (!_stricmp(args->ArgV(3), "orbitHalfLife"))
+			settings.OrbitHalfLife = number;
+		else if (!_stricmp(args->ArgV(3), "orbitSpeed"))
+			settings.OrbitSpeed = number;
+		else if (!_stricmp(args->ArgV(3), "recoveryDelay"))
+			settings.FollowRecoveryDelay = number;
 		else
 			settings.FollowMaxDistance = number;
 		changed = valid;
@@ -289,22 +297,34 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 	else if (argc != 3 && !(argc == 4 && !_stricmp(args->ArgV(3), "status")))
 		valid = false;
 	if (!valid || (changed && !MirvCameraCollisionSet(settings)))
-		Tier0_Warning(
-		    "Attachment follow edit rejected: requires TF2/TF2C, finite half-life 0..10 s and "
-		    "maxDistance 1..10000 units, boneHalfLife 0..10 s, teleportDistance 0..1000000 units.\n");
+		Tier0_Warning("Attachment follow edit rejected: requires TF2/TF2C, finite half-life 0..10 s and "
+		              "maxDistance 1..10000 units, boneHalfLife/orbitHalfLife 0..10 s, teleportDistance "
+		              "0..1000000 units, "
+		              "orbitSpeed 0..1000000 deg/s, recoveryDelay 0..60 s.\n");
 	settings = MirvCameraCollisionGet();
 	Tier0_Msg("Attachment smooth follow: entity half-life %.3f s, bone half-life %.3f s (0 = rigid), "
 	          "maximum entity lag %.1f units, teleport reset %.1f units (0 = disabled).\n",
 	          settings.FollowHalfLife, settings.BoneHalfLife, settings.FollowMaxDistance,
 	          settings.FollowTeleportDistance);
+	Tier0_Msg("Orbit half-life %.3f s, maximum turn rate %.1f deg/s; blocked recovery cut after %.3f demo "
+	          "seconds (0 = disabled).\n",
+	          settings.OrbitHalfLife, settings.OrbitSpeed, settings.FollowRecoveryDelay);
 	if (argc == 3 || !valid)
-		Tier0_Msg("mirv_cam attach follow <seconds> - Entity translation smoothing; 0 disables.\n"
+		Tier0_Msg("mirv_cam attach follow <seconds> - Root movement smoothing; 0 restores rigid orbit and "
+		          "framing.\n"
 		          "mirv_cam attach follow boneHalfLife <seconds> - Bone motion damping; 0 disables.\n"
-		          "mirv_cam attach follow maxDistance <units> - Maximum entity translation lag; also bounded by the offset length.\n"
+		          "mirv_cam attach follow maxDistance <units> - Maximum entity translation lag; also bounded "
+		          "by the offset length.\n"
 		          "mirv_cam attach follow teleportDistance <units> - Large movement reset; 0 disables.\n"
-		          "mirv_cam attach follow reset - Reset both filters.\n"
+		          "mirv_cam attach follow orbitHalfLife <seconds> - Coordinated orbit/framing response; 0 is "
+		          "rigid.\n"
+		          "mirv_cam attach follow orbitSpeed <degrees/second> - Orbit turn cap; 0 is unlimited.\n"
+		          "mirv_cam attach follow recoveryDelay <seconds> - Cut to a clear subject-side pose after "
+		          "blocking; 0 disables.\n"
+		          "mirv_cam attach follow reset - Reset the follow shot.\n"
 		          "mirv_cam attach follow status - Show settings.\n"
-		          "Damping uses demo time. Framing follows the corrected position; world mode retains its heading. Seeks/cuts reset history.\n");
+		          "Damping uses demo time. Framing follows the corrected position; world mode retains its "
+		          "heading. Seeks/cuts reset history.\n");
 }
 // End camera collision console command.
 

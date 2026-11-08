@@ -3356,9 +3356,33 @@ void Draw()
 					Afx_ExecClientCmd(command);
 				}
 				ImGui::TextDisabled("Campaths return gradually after blocking. Speed 0 removes the cap; half-life 0 removes damping.");
-				if (ImGui::InputDouble("Entity follow half-life (s)", &collision.FollowHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
+				if (ImGui::InputDouble("Follow root half-life (s)", &collision.FollowHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
 				{
 					char command[128];std::snprintf(command,sizeof(command),"mirv_cam attach follow %.9g",collision.FollowHalfLife);Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Orbit half-life (s)", &collision.OrbitHalfLife, 0, 0,
+				                      "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam attach follow orbitHalfLife %.9g",
+					              collision.OrbitHalfLife);
+					Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Maximum orbit turn rate (deg/s)", &collision.OrbitSpeed, 0, 0,
+				                      "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam attach follow orbitSpeed %.9g",
+					              collision.OrbitSpeed);
+					Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Blocked recovery cut delay (s)", &collision.FollowRecoveryDelay, 0, 0,
+				                      "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam attach follow recoveryDelay %.9g",
+					              collision.FollowRecoveryDelay);
+					Afx_ExecClientCmd(command);
 				}
 				if (ImGui::InputDouble("Bone position half-life (s)", &collision.BoneHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
 				{
@@ -3366,7 +3390,7 @@ void Draw()
 					std::snprintf(command, sizeof(command), "mirv_cam attach follow boneHalfLife %.9g", collision.BoneHalfLife);
 					Afx_ExecClientCmd(command);
 				}
-				if (ImGui::InputDouble("Attachment teleport reset (units)", &collision.FollowTeleportDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
+				if (ImGui::InputDouble("Subject teleport reset (units)", &collision.FollowTeleportDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
 				{
 					char command[128];
 					std::snprintf(command, sizeof(command), "mirv_cam attach follow teleportDistance %.9g", collision.FollowTeleportDistance);
@@ -3378,7 +3402,7 @@ void Draw()
 				}
 				if (ImGui::Button("Reset attached follow"))
 					Afx_ExecClientCmd("mirv_cam attach follow reset");
-				ImGui::TextWrapped("Entity follow smooths movement and small snapshot corrections; lag is bounded relative to the captured offset to retain framing. Bone position damping softens animation translation, including during collision. Bone/aligned modes still inherit their chosen bone rotation. Both default to 0 (rigid). Teleport reset 0 disables the distance reset. Framing compensates for position corrections; world orientation retains its fixed heading. Collision retracts progressively inside the soft zone and restores boom length gradually. Sudden overlaps still require immediate correction. The pivot sweep ignores the subject, but the camera endpoint must clear its hull.");
+				ImGui::TextWrapped("Follow coordinates a filtered focus, orbit and framing. Root half-life 0 restores rigid attachment; otherwise orbit half-life smooths sharp turns and composition changes. Orbit speed 0 removes the turn cap. Bone damping separately smooths animation translation. World mode retains its heading; mirv_aim retains control of its target. Teleport reset responds to large subject jumps. With follow enabled, blocked recovery cuts to a verified clear subject-side pose after the configured demo time (default 1 s); 0 disables cuts. Physical overlaps still require immediate correction.");
 				if (ImGui::Button("Reset collision history"))
 					Afx_ExecClientCmd("mirv_cam collision reset");
 				ImGui::TextWrapped("TF2/TF2C only; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
