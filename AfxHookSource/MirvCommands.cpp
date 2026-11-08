@@ -2217,17 +2217,15 @@ CON_COMMAND(mirv_campath, "camera paths")
 		{
 			if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "begin"))
 			{
-				if (!AfxHookSource::Tf2Demo::BeginCheckpointCapture())
-					Tier0_Warning("Could not arm checkpoint capture: requires the verified Windows x64 TF2 engine, "
-						"an idle playing demo, and no active capture.\n");
+				AfxHookSource::Tf2Demo::BeginCheckpointCapture();
 			}
 			else if (args->ArgC() == 5 && !_stricmp(args->ArgV(3), "capture"))
 			{
 				std::wstring file;
-				if (!UTF8StringToWideString(args->ArgV(4), file)
-					|| !AfxHookSource::Tf2Demo::SaveCheckpointCapture(file.c_str()))
+				if (!UTF8StringToWideString(args->ArgV(4), file))
+					Tier0_Warning("Checkpoint filename could not be converted from UTF-8.\n");
+				else if (!AfxHookSource::Tf2Demo::SaveCheckpointCapture(file.c_str()))
 				{
-					Tier0_Warning("Checkpoint capture failed. Finish the seek, check capture status, and use a new writable filename.\n");
 					AfxHookSource::Tf2Demo::PrintCheckpointStatus();
 				}
 			}

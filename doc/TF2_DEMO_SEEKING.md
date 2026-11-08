@@ -39,6 +39,21 @@ is rejected. Restarting playback resets the collected state. `end` releases it.
 Hooks stay installed and forward calls after collection ends. Starting a trace
 or capture enables the same native seek-lifecycle observer.
 
+`begin` must print **Checkpoint capture armed** before you restart playback.
+If it fails, it now identifies the failed check (engine build, RTTI, instruction
+binding, unavailable player/entity list, loading/seeking state, or a Detours error).
+`status` retains the last command failure and relevant native binding diagnostic.
+A failed initialization can be retried after the demo is ready; it no longer
+permanently caches a failed attempt. If the build is unsupported, the message
+prints the actual and expected PE identifiers. That guard remains enforced: a
+different engine needs investigation before using these native layouts.
+
+If status remains `off`, copy the output of `begin` and `status`; do not repeatedly
+restart/seek or change output filenames. A normal demo restart clears collected
+data while preserving the armed state. Only a successful `begin` arms capture;
+`capture` reports separately when collection is off, unseeded, invalid, busy, or
+unable to create its output file.
+
 The XML includes:
 
 - Latest merged property encodings for each current network entity, full entity
@@ -213,6 +228,12 @@ inspected against the recorded engine binary.
 No complete TF2 playback or live hook invocation was tested in the cloud: the
 installation has client binaries only, as requested. This experiment requires
 compiling HLAE and collecting the native capture in a complete TF2 installation.
+
+`test_demo_startup.py` runs the actual startup/control functions against engine
+and OS stubs: failed-start retries, build rejection, missing decoder bindings,
+loading/seeking, preserving the armed state on reset, and specific capture/file
+errors. It is registered with the Unix test suite when Python is available.
+It does not invoke the real live hooks.
 
 `test_cinematic.cpp` also checks capture ownership, property timing retention,
 entity-slot reuse, invalid updates and memory-budget rejection. An optional Linux

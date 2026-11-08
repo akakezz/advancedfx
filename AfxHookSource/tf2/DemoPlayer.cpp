@@ -7,6 +7,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <array>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <deps/release/Detours/src/detours.h>
@@ -35,6 +36,23 @@ namespace
 // these layouts on an engine that has not passed the header and code checks.
 constexpr DWORD EngineTimestamp = 0x6ac41507, EngineImageSize = 0x822000, EngineChecksum = 0x4fb7d1;
 bool g_Attempted = false, g_Ready = false;
+char g_ProbeFailure[512]{}, g_CheckpointCommandError[512]{};
+
+bool ProbeFailed(const char *format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	std::vsnprintf(g_ProbeFailure, sizeof(g_ProbeFailure), format, args);
+	va_end(args);
+	return false;
+}
+
+bool CheckpointFailed(const char *reason)
+{
+	std::snprintf(g_CheckpointCommandError, sizeof(g_CheckpointCommandError), "%s", reason);
+	Tier0_Warning("Checkpoint: %s\n", g_CheckpointCommandError);
+	return false;
+}
 void **g_PlayerTable = nullptr, **g_PlayerSlot = nullptr;
 std::uint64_t g_Identity = 0, g_SeekSerial = 0;
 unsigned int g_SeekDepth = 0;
@@ -335,23 +353,29 @@ bool InitializeCapture()
 {
 	if (g_Decode)
 		return true;
+	g_ProbeFailure[0] = 0;
 	auto decode =
 	    FindDiagnosticFunction("RecvTable_Decode: table '%s' missing a decoder.", "48 8B 71 10 49 8B D8");
 	auto merge = FindDiagnosticFunction("RecvTable_MergeDeltas: invalid parameters passed.",
 	                                    "48 8B 41 10 48 89 44 24 48");
 	auto copy = FindDiagnosticFunction("CL_CopyExistingEntity: missing client entity %d.\n",
 	                                   "40 53 56 41 57 48 83 EC 30");
-	if (!decode || !merge || !copy)
-		return false;
+	if (!decode)
+		return ProbeFailed("Could not resolve RecvTable_Decode (diagnostic/unwind/code checks).");
+	if (!merge)
+		return ProbeFailed("Could not resolve RecvTable_MergeDeltas (diagnostic/unwind/code checks).");
+	if (!copy)
+		return ProbeFailed("Could not resolve CL_CopyExistingEntity (diagnostic/unwind/code checks).");
 	using namespace Afx::BinUtils;
 	const auto start = reinterpret_cast<size_t>(copy);
 	const auto load = FindPatternString(MemRange(start, start + 48), "48 8B 0D ?? ?? ?? ?? 44 8B 78 10");
 	if (load.IsEmpty())
-		return false;
+		return ProbeFailed("Entity-list access pattern was not found in CL_CopyExistingEntity.");
 	const auto code = reinterpret_cast<const unsigned char *>(load.Start);
 	g_EntityListSlot = reinterpret_cast<void **>(const_cast<unsigned char *>(code + 7) + Read<int>(code, 3));
 	if (!Readable(g_EntityListSlot, sizeof(void *)) || !Readable(*g_EntityListSlot, sizeof(void *)))
-		return false;
+		return ProbeFailed(
+		    "The native client entity list is not available yet. Load the demo and retry begin.");
 	g_Decode = reinterpret_cast<DecodeFn>(decode);
 	g_Merge = reinterpret_cast<MergeFn>(merge);
 	LONG error = DetourTransactionBegin();
@@ -369,7 +393,8 @@ bool InitializeCapture()
 	{
 		g_Decode = nullptr;
 		g_Merge = nullptr;
-		return false;
+		return ProbeFailed("Could not install the entity decoder hook (Detours error %ld).",
+		                   static_cast<long>(error));
 	}
 	return true;
 }
@@ -597,53 +622,70 @@ bool MyEntities(void *handler, void *message)
 
 bool Initialize()
 {
-	if (g_Attempted)
-		return g_Ready;
+	if (g_Ready)
+		return true;
+	// Readiness failures must be retryable. In particular an early explicit
+	// command must not permanently disable initialization for this HLAE session.
+	g_ProbeFailure[0] = 0;
 	if (!g_H_EngineDll || !g_VEngineClient)
-		return false;
+		return ProbeFailed("Engine module/client interface is not available yet. Load TF2 and retry begin.");
 	g_Attempted = true;
 	if (g_SourceSdkVer != SourceSdkVer_TF2)
-		return false;
+		return ProbeFailed("Native checkpoint capture supports the verified TF2 engine only.");
 	const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(g_H_EngineDll);
 	if (dos->e_magic != IMAGE_DOS_SIGNATURE)
-		return false;
+		return ProbeFailed("Invalid engine.dll DOS header.");
 	const auto pe = reinterpret_cast<const IMAGE_NT_HEADERS64 *>(
 	    reinterpret_cast<const unsigned char *>(dos) + dos->e_lfanew);
-	if (pe->Signature != IMAGE_NT_SIGNATURE || pe->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
-	    pe->FileHeader.TimeDateStamp != EngineTimestamp ||
+	if (pe->Signature != IMAGE_NT_SIGNATURE || pe->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
+		return ProbeFailed("engine.dll is not a Windows x64 PE image.");
+	if (pe->FileHeader.TimeDateStamp != EngineTimestamp ||
 	    pe->OptionalHeader.SizeOfImage != EngineImageSize || pe->OptionalHeader.CheckSum != EngineChecksum)
-		return false;
+		return ProbeFailed("Unsupported engine.dll build: timestamp=%08lX, image_size=%08lX, checksum=%08lX; "
+		                   "expected %08lX/%08lX/%08lX. Native layouts remain disabled.",
+		                   static_cast<unsigned long>(pe->FileHeader.TimeDateStamp),
+		                   static_cast<unsigned long>(pe->OptionalHeader.SizeOfImage),
+		                   static_cast<unsigned long>(pe->OptionalHeader.CheckSum),
+		                   static_cast<unsigned long>(EngineTimestamp),
+		                   static_cast<unsigned long>(EngineImageSize),
+		                   static_cast<unsigned long>(EngineChecksum));
 	g_PlayerTable =
 	    reinterpret_cast<void **>(Afx::BinUtils::FindClassVtable(g_H_EngineDll, ".?AVCDemoPlayer@@", 0, 0));
 	auto entities = reinterpret_cast<void **>(
 	    Afx::BinUtils::FindClassVtable(g_H_EngineDll, ".?AVCClientState@@", 0, 0x10));
 	auto engine = g_VEngineClient->GetVEngineClient_css();
-	if (!g_PlayerTable || !entities || !engine)
-		return false;
+	if (!g_PlayerTable)
+		return ProbeFailed("CDemoPlayer RTTI/vtable lookup failed.");
+	if (!entities)
+		return ProbeFailed("CClientState message-handler RTTI/vtable lookup failed.");
+	if (!engine)
+		return ProbeFailed("IVEngineClient013 is not available.");
 	auto isPlaying = reinterpret_cast<const unsigned char *>((*reinterpret_cast<void ***>(engine))[76]);
 	// IVEngineClient013::IsPlayingDemo loads the global player and tail-calls slot 6.
 	const unsigned char prefix[] = {0x48, 0x8b, 0x0d};
 	const unsigned char suffix[] = {0x48, 0x8b, 0x01, 0x48, 0xff, 0x60, 0x30};
 	if (!Readable(isPlaying, 14) || std::memcmp(isPlaying, prefix, 3) ||
 	    std::memcmp(isPlaying + 7, suffix, 7))
-		return false;
+		return ProbeFailed("IVEngineClient013::IsPlayingDemo instruction check failed.");
 	g_PlayerSlot = reinterpret_cast<void **>(const_cast<unsigned char *>(isPlaying + 7) +
 	                                         Read<std::int32_t>(isPlaying, 3));
 	if (!Readable(g_PlayerSlot, sizeof(void *)))
-		return false;
+		return ProbeFailed("Native demo-player storage is not readable.");
 	if (!Readable(*g_PlayerSlot, 0x6a0) || Read<void **>(*g_PlayerSlot, 0) != g_PlayerTable)
-		return false;
+		return ProbeFailed("Native demo-player instance is not ready or has an unexpected vtable. Load the "
+		                   "demo and retry begin.");
 	if (!Match(g_PlayerTable[6], "0F B6 81 B0 05 00 00 C3") ||
 	    !Match(g_PlayerTable[9], "80 B9 B0 05 00 00 00 74 0C 83 B9 BC 05 00 00 FF") ||
 	    !Match(g_PlayerTable[5], "C6 81 C4 05 00 00 01") || !Match(g_PlayerTable[14], "89 9F BC 05 00 00") ||
 	    !Match(entities[23], "80 7A 30 00"))
-		return false;
+		return ProbeFailed("Native demo-player/packet-handler instruction checks failed.");
 	g_Start = reinterpret_cast<StartFn>(g_PlayerTable[5]);
 	g_Seek = reinterpret_cast<SeekFn>(g_PlayerTable[14]);
 	g_Entities = reinterpret_cast<EntitiesFn>(entities[23]);
 	LONG error = DetourTransactionBegin();
 	if (error != NO_ERROR)
-		return false;
+		return ProbeFailed("Could not begin the native observer hook transaction (Detours error %ld).",
+		                   static_cast<long>(error));
 	error = DetourUpdateThread(GetCurrentThread());
 	if (error == NO_ERROR)
 		error = DetourAttach(reinterpret_cast<PVOID *>(&g_Start), reinterpret_cast<PVOID>(MyStart));
@@ -654,10 +696,15 @@ bool Initialize()
 	if (error != NO_ERROR)
 	{
 		DetourTransactionAbort();
-		return false;
+		return ProbeFailed("Could not attach the native observer hooks (Detours error %ld).",
+		                   static_cast<long>(error));
 	}
-	g_Ready = DetourTransactionCommit() == NO_ERROR;
-	return g_Ready;
+	error = DetourTransactionCommit();
+	if (error != NO_ERROR)
+		return ProbeFailed("Could not commit the native observer hooks (Detours error %ld).",
+		                   static_cast<long>(error));
+	g_Ready = true;
+	return true;
 }
 
 // Pointer-free diagnostic artifact. This deliberately has no load/restore path:
@@ -989,16 +1036,29 @@ bool StartTrace(const wchar_t *file)
 bool BeginCheckpointCapture()
 {
 #ifdef _WIN64
+	g_CheckpointCommandError[0] = 0;
 	Status status;
-	if (g_Checkpoint.Armed || !Initialize() || !GetStatus(status) || !status.Playing || status.Loading ||
-	    status.Skipping || !InitializeCapture())
-		return false;
+	if (g_Checkpoint.Armed)
+		return CheckpointFailed("Capture is already armed. Use status, or end before beginning again.");
+	if (!Initialize())
+		return CheckpointFailed(g_ProbeFailure);
+	if (!GetStatus(status))
+		return CheckpointFailed("Native demo-player status is unavailable. Load the demo and retry begin.");
+	if (!status.Playing)
+		return CheckpointFailed("No demo is playing. Load a demo before begin.");
+	if (status.Loading)
+		return CheckpointFailed("The demo is loading. Wait for loading to finish, then retry begin.");
+	if (status.Skipping)
+		return CheckpointFailed("A native seek is still running. Wait for it to finish, then retry begin.");
+	if (!InitializeCapture())
+		return CheckpointFailed(g_ProbeFailure);
 	g_Checkpoint.Reset();
 	g_Checkpoint.Armed = true;
 	Tier0_Msg("Checkpoint capture armed. Restart this demo normally (playdemo) to capture its initial full "
 	          "entity packet, then seek forward to the desired tick and wait for completion.\n");
 	return true;
 #else
+	Tier0_Warning("Checkpoint capture requires the verified Windows x64 TF2 engine.\n");
 	return false;
 #endif
 }
@@ -1006,11 +1066,27 @@ bool BeginCheckpointCapture()
 bool SaveCheckpointCapture(const wchar_t *file)
 {
 #ifdef _WIN64
+	g_CheckpointCommandError[0] = 0;
 	Status before;
-	if (!file || !*file || !g_Checkpoint.Armed || !g_Checkpoint.Seeded || g_Checkpoint.Error ||
-	    !g_Checkpoint.Boundary || g_DecodeClient || !GetStatus(before) || !before.Playing || before.Loading ||
-	    before.Skipping || !Readable(g_Checkpoint.Client, 0x8c20))
-		return false;
+	if (!file || !*file)
+		return CheckpointFailed("A non-empty output filename is required.");
+	if (!g_Checkpoint.Armed)
+		return CheckpointFailed("Capture is off. Run mirv_campath preview checkpoint begin and check its "
+		                        "output before restarting the demo.");
+	if (g_Checkpoint.Error)
+		return CheckpointFailed(g_Checkpoint.Error);
+	if (!g_Checkpoint.Seeded)
+		return CheckpointFailed("No initial full entity packet was captured. Keep capture armed and restart "
+		                        "the demo with playdemo.");
+	if (!GetStatus(before) || !before.Playing)
+		return CheckpointFailed("Native demo playback is unavailable.");
+	if (before.Loading || before.Skipping)
+		return CheckpointFailed("The demo is still loading/seeking. Wait for completion before capturing.");
+	if (!g_Checkpoint.Boundary || g_DecodeClient)
+		return CheckpointFailed("No completed network-update boundary is available yet. Wait for the next "
+		                        "update before capturing.");
+	if (!Readable(g_Checkpoint.Client, 0x8c20))
+		return CheckpointFailed("Captured client state is no longer readable. End and restart capture.");
 	try
 	{
 		const auto xml = ExportCheckpoint(before);
@@ -1022,7 +1098,14 @@ bool SaveCheckpointCapture(const wchar_t *file)
 		HANDLE output = CreateFileW(file, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
 		                            FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (output == INVALID_HANDLE_VALUE)
-			return false;
+		{
+			char error[256];
+			std::snprintf(error, sizeof(error),
+			              "Could not create output file (Windows error %lu). "
+			              "Use an existing directory and a filename that does not already exist.",
+			              static_cast<unsigned long>(GetLastError()));
+			return CheckpointFailed(error);
+		}
 		size_t position = 0;
 		while (position < xml.size())
 		{
@@ -1035,8 +1118,7 @@ bool SaveCheckpointCapture(const wchar_t *file)
 		const bool closed = CloseHandle(output) != 0;
 		if (position != xml.size() || !closed)
 		{
-			Tier0_Warning("Checkpoint file write failed; the new file may be incomplete.\n");
-			return false;
+			return CheckpointFailed("Checkpoint file write failed; the new file may be incomplete.");
 		}
 		Tier0_Msg("Captured checkpoint evidence at demo tick %d (%zu bytes). This file is not restorable.\n",
 		          before.Tick, xml.size());
@@ -1044,10 +1126,10 @@ bool SaveCheckpointCapture(const wchar_t *file)
 	}
 	catch (const std::exception &error)
 	{
-		Tier0_Warning("Checkpoint export rejected: %s.\n", error.what());
-		return false;
+		return CheckpointFailed(error.what());
 	}
 #else
+	Tier0_Warning("Checkpoint capture requires the verified Windows x64 TF2 engine.\n");
 	return false;
 #endif
 }
@@ -1055,6 +1137,7 @@ bool SaveCheckpointCapture(const wchar_t *file)
 void EndCheckpointCapture()
 {
 #ifdef _WIN64
+	g_CheckpointCommandError[0] = 0;
 	g_Checkpoint.Armed = false;
 	g_Checkpoint.Reset();
 #endif
@@ -1070,6 +1153,10 @@ void PrintCheckpointStatus()
 	          static_cast<unsigned long long>(g_Checkpoint.Decodes), g_Checkpoint.Entities.Bytes());
 	if (g_Checkpoint.Error)
 		Tier0_Warning("%s\n", g_Checkpoint.Error);
+	if (g_CheckpointCommandError[0])
+		Tier0_Msg("Last checkpoint command failed: %s\n", g_CheckpointCommandError);
+	if (!g_Checkpoint.Armed && g_ProbeFailure[0] && std::strcmp(g_CheckpointCommandError, g_ProbeFailure))
+		Tier0_Msg("Native binding diagnostic: %s\n", g_ProbeFailure);
 	Tier0_Msg("Capture experiment only: checkpoint restoration is not implemented.\n");
 #else
 	Tier0_Msg("Checkpoint capture requires the verified Windows x64 TF2 engine.\n");
@@ -1132,14 +1219,16 @@ void PrintTraceStatus()
 	const bool supported = GetStatus(status);
 	Tier0_Msg("TF2 demo probe: %s; trace %s; written %llu, buffered %zu, dropped %llu%s.\n",
 	          supported     ? "verified engine"
-	          : g_Attempted ? "unsupported engine"
-	                        : "not enabled (start a trace to enable)",
+	          : g_Attempted ? "initialization failed (see diagnostic)"
+	                        : "not enabled (start a trace or capture to enable)",
 	          g_Trace.File != INVALID_HANDLE_VALUE ? "on" : "off",
 	          static_cast<unsigned long long>(g_Trace.Written), g_Trace.Count,
 	          static_cast<unsigned long long>(g_Trace.Dropped), g_Trace.Failed ? "; file write failed" : "");
 	if (supported)
 		Tier0_Msg("Demo tick %d; target %d; playing %d, loading %d, skipping %d.\n", status.Tick,
 		          status.Target, status.Playing, status.Loading, status.Skipping);
+	else if (g_ProbeFailure[0])
+		Tier0_Msg("Native binding diagnostic: %s\n", g_ProbeFailure);
 #else
 	Tier0_Msg("TF2 demo probe: requires the verified Windows x64 TF2 engine. Ordinary seeking remains "
 	          "available.\n");
