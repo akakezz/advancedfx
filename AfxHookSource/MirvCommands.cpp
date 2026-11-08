@@ -4109,7 +4109,8 @@ bool InterpolationMatches(float a, float b)
 bool MirvFix_PlayerInterpolationAvailable()
 {
 	float values[3];
-	return g_VEngineClient && g_VEngineClient->IsPlayingDemo() && Tf2InterpolationValues(values, false) &&
+	return g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsDrawingLoadingImage()
+		&& Tf2InterpolationValues(values, false) &&
 		   std::isfinite(values[0]) && std::isfinite(values[1]) && std::isfinite(values[2]);
 }
 double MirvFix_GetPlayerInterpolation()
@@ -4131,6 +4132,10 @@ bool MirvFix_SetPlayerInterpolation(double seconds)
 				current[i] = g_Tf2InterpolationOriginal[i];
 		if (!Tf2InterpolationValues(current, true))
 			return false;
+		float restored[3];
+		if (!Tf2InterpolationValues(restored, false)) return false;
+		for (int i = 0; i < 3; ++i)
+			if (!InterpolationMatches(current[i], restored[i])) return false;
 		g_Tf2InterpolationActive = false;
 		return true;
 	}
@@ -4139,6 +4144,10 @@ bool MirvFix_SetPlayerInterpolation(double seconds)
 	float before[3];
 	if (!Tf2InterpolationValues(before, false))
 		return false;
+	float original[3];
+	for (int i = 0; i < 3; ++i)
+		original[i] = g_Tf2InterpolationActive && InterpolationMatches(before[i], g_Tf2InterpolationApplied[i])
+			? g_Tf2InterpolationOriginal[i] : before[i];
 	float target[3] = {1, (float)seconds, 2}, applied[3];
 	if (!Tf2InterpolationValues(target, true) || !Tf2InterpolationValues(applied, false))
 	{
@@ -4151,8 +4160,7 @@ bool MirvFix_SetPlayerInterpolation(double seconds)
 			Tf2InterpolationValues(before, true);
 			return false;
 		}
-	if (!g_Tf2InterpolationActive)
-		std::copy(before, before + 3, g_Tf2InterpolationOriginal);
+	std::copy(original, original + 3, g_Tf2InterpolationOriginal);
 	std::copy(applied, applied + 3, g_Tf2InterpolationApplied);
 	g_Tf2InterpolationActive = true;
 	return true;
@@ -4161,6 +4169,11 @@ void MirvFix_Update()
 {
 	if (!g_Tf2InterpolationActive)
 		return;
+	// Backward seeking reloads the demo. A temporary !IsPlayingDemo during
+	// the loading screen is not the end of playback. Defer ownership checks
+	// until loading finishes; explicit default still works during loading.
+	if (g_VEngineClient && g_VEngineClient->IsDrawingLoadingImage())
+		return;
 	float current[3];
 	bool changed = !g_VEngineClient || !g_VEngineClient->IsPlayingDemo();
 	if (Tf2InterpolationValues(current, false))
@@ -4168,6 +4181,34 @@ void MirvFix_Update()
 			changed |= !InterpolationMatches(current[i], g_Tf2InterpolationApplied[i]);
 	if (changed)
 		MirvFix_SetPlayerInterpolation(-1);
+}
+
+static void MirvFix_PrintPlayerInterpolationStatus()
+{
+	float values[3];
+	const bool available = Tf2InterpolationValues(values, false);
+	const bool loading = g_VEngineClient && g_VEngineClient->IsDrawingLoadingImage();
+	const bool playing = g_VEngineClient && g_VEngineClient->IsPlayingDemo();
+	bool matches = available;
+	if (g_Tf2InterpolationActive && available)
+		for (int i = 0; i < 3; ++i)
+			matches &= InterpolationMatches(values[i], g_Tf2InterpolationApplied[i]);
+	Tier0_Msg("Player interpolation control: %s; playback: %s.\n",
+	          g_Tf2InterpolationActive ? (loading ? "waiting for reload" : "enabled") : "default",
+	          loading   ? "loading"
+	          : playing ? (g_VEngineClient->IsHLTV() ? "STV/HLTV" : "POV/other demo")
+	                    : "no demo");
+	if (g_Tf2InterpolationActive)
+		Tier0_Msg("Requested cl_interp: %.6g seconds; native settings: %s.\n", g_Tf2InterpolationApplied[1],
+		          available ? (matches ? "match" : "overridden") : "unavailable");
+	if (available)
+		Tier0_Msg("Native cl_interpolate=%.6g, cl_interp=%.6g, cl_interp_ratio=%.6g.\n", values[0], values[1],
+		          values[2]);
+	else
+		Tier0_Msg("Native interpolation variables are unavailable.\n");
+	Tier0_Msg(
+	    "These are engine cvar values, not a measurement of rendered delay. POV prediction and "
+	    "per-entity interpolation rules can differ; compare the same movement with default settings.\n");
 }
 // End TF2 demo interpolation controls.
 
@@ -4182,10 +4223,16 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		// TF2 interpolation command.
 		if (!_stricmp(cmd1, "playerInterpolation"))
 		{
+			if (argc == 3 && !_stricmp(args->ArgV(2), "status"))
+			{
+				MirvFix_PrintPlayerInterpolationStatus();
+				return;
+			}
 			if (argc == 3 && !_stricmp(args->ArgV(2), "default"))
 			{
 				if (!MirvFix_SetPlayerInterpolation(-1))
 					Tier0_Warning("Could not restore interpolation settings.\n");
+				MirvFix_PrintPlayerInterpolationStatus();
 				return;
 			}
 			if (argc == 3)
@@ -4195,11 +4242,12 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				if (end == args->ArgV(2) || *end || !MirvFix_SetPlayerInterpolation(seconds))
 					Tier0_Warning("Interpolation edit rejected. Requires a TF2 demo, writable interpolation "
 								  "cvars and 0.001..1 seconds. Existing settings retained.\n");
+				MirvFix_PrintPlayerInterpolationStatus();
 				return;
 			}
-			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default\nUses TF2 interpolation for "
+			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status\nUses TF2 interpolation for "
 					  "uneven player movement; 0.1 seconds is a starting point. Adds presentation delay; "
-					  "cannot reconstruct missing snapshots.\nCurrent: %s, window %.3f seconds. "
+					  "cannot reconstruct missing snapshots.\nCurrent: %s, requested cl_interp %.3f seconds. "
 					  "Automatically restores settings when the demo ends.\n",
 					  MirvFix_GetPlayerInterpolation() < 0 ? "default" : "enabled",
 					  MirvFix_GetPlayerInterpolation() < 0 ? 0 : MirvFix_GetPlayerInterpolation());

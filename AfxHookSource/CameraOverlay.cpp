@@ -3197,6 +3197,8 @@ void Draw()
 					active && !MirvFix_SetPlayerInterpolation(interpolation))
 					g_DocumentStatus = "Use 0.001..1 seconds; existing interpolation settings retained.";
 				ImGui::EndDisabled();
+				if (ImGui::Button("Interpolation status") && g_VEngineClient)
+					g_VEngineClient->ClientCmd_Unrestricted("mirv_fix playerInterpolation status");
 				ImGui::TextWrapped("Uses TF2's existing movement interpolation. Adds presentation delay; it "
 								   "cannot add missing snapshots or fix limb-animation glitches. Restores "
 								   "settings when the demo ends. Default suggestion: 0.1 seconds.");

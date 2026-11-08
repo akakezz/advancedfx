@@ -496,6 +496,7 @@ same portion of the demo. Console equivalents are:
 ```text
 mirv_fix playerInterpolation 0.1
 mirv_fix playerInterpolation 0.15
+mirv_fix playerInterpolation status
 mirv_fix playerInterpolation default
 ```
 
@@ -511,6 +512,27 @@ Rejected/clamped engine settings roll back. The control is available only for a
 TF2 demo with the required engine variables; it does not bypass engine restrictions.
 It is off by default and does not alter seeking or set a persistent config preset.
 Its visual effect still needs validation against the user's stuttering demo.
+
+The control remains active while TF2 reports a loading screen, including the
+temporary playback gap during a backward-seek reload. It checks for demo ending
+and manual cvar overrides after loading finishes; it does not force settings back
+over a changed config. New window edits are rejected during loading, while
+**default** still restores the owned settings. A rejected restoration remains
+active so it can be retried. Manual edits made immediately before changing the
+window become the restore values for those fields.
+
+Use **Interpolation status** in Demo fixes, or the `status` command, to print
+the requested setting, actual `cl_interpolate`/`cl_interp`/`cl_interp_ratio`
+values, matching/overridden/unavailable state, and loading/STV/POV context.
+These are cvar readings, not measured visual delay: updaterate constraints,
+prediction and per-entity rules can alter interpolation. The SDK takes different
+paths for locally recorded POV and non-local demos; increasing `cl_interp` does
+not guarantee the same result for both or for the locally predicted player.
+
+For a visual check, replay the same section at the same timescale using default,
+0.1 and 0.15 seconds, checking status after each change and after a backward seek.
+Repeat with STV and POV demos. Compare movement smoothness and presentation delay;
+this control cannot replace snapshots missing from the recording.
 
 ## Rotation authoring and classic export
 

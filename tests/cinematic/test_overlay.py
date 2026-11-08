@@ -64,7 +64,7 @@ struct Clock{double Time=10;double GetTime(){return Time;}int GetFrameCount(){re
 std::vector<std::string> commands;
 struct DemoInfo{int TotalTicks=12000;int GetDemoPlaybackTick(){return int(g_MirvTime.Time*66);}int GetDemoPlaybackTotalTicks(){return TotalTicks;}float GetDemoPlaybackTimeScale(){return 1;}}demo;
 using WrpVEngineClientDemoInfoEx=DemoInfo;
-struct Engine{bool Playing=true,Hltv=true,HaveInfo=true;bool IsPlayingDemo(){return Playing;}bool IsHLTV(){return Hltv;}DemoInfo*GetDemoInfoEx(){return HaveInfo?&demo:nullptr;}void ClientCmd_Unrestricted(const char*c){commands.emplace_back(c);}}engine;Engine*g_VEngineClient=&engine;
+struct Engine{bool Playing=true,Hltv=true,HaveInfo=true,Loading=false;bool IsPlayingDemo(){return Playing;}bool IsDrawingLoadingImage(){return Loading;}bool IsHLTV(){return Hltv;}DemoInfo*GetDemoInfoEx(){return HaveInfo?&demo:nullptr;}void ClientCmd_Unrestricted(const char*c){commands.emplace_back(c);}}engine;Engine*g_VEngineClient=&engine;
 bool GetCurrentDemoTick(int&n){n=int(g_MirvTime.Time*66);return true;}bool GetCurrentDemoTime(double&t){t=g_MirvTime.Time;return true;}bool GetDemoTickFromClientTime(double,double t,int&n){n=int(t*66);return true;}
 int Mirv_Tf2_GetMaxPlayers(){return 1;}bool Mirv_Tf2_GetPlayerInfo(int i,char*b,int n,int*u){snprintf(b,n,"Scout");*u=42;return i==1;}
 constexpr int MIRV_TF2_MAX_BONES=256;
@@ -80,7 +80,10 @@ short GetKeyState(UINT key){return ((key==VK_CONTROL&&controlHeld)||(key==VK_SHI
 DWORD GetTickCount(){static DWORD tick=0;return tick+=16;}
 struct PreviewClock{bool GetDemoTickFromClientTime(double,double t,int&tick){return ::GetDemoTickFromClientTime(0,t,tick);}}g_MirvCampath_Time;
 #define _stricmp strcasecmp
-void Tier0_Msg(const char*,...){}void Tier0_Warning(const char*,...){}
+std::string fixMessages;
+void FixMessage(const char*f,va_list a){char b[2048];vsnprintf(b,sizeof(b),f,a);fixMessages+=b;}
+void Tier0_Msg(const char*f,...){va_list a;va_start(a,f);FixMessage(f,a);va_end(a);}
+void Tier0_Warning(const char*f,...){va_list a;va_start(a,f);FixMessage(f,a);va_end(a);}
 enum{SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2};int g_SourceSdkVer=SourceSdkVer_TF2;
 struct FakeConVar{float Value=0,Maximum=-1;bool Writable=true;float GetFloat(){return Value;}void SetValue(float value){if(Writable)Value=Maximum<0?value:(std::min)(Maximum,value);}};
 struct FakeCvar{std::map<std::string,FakeConVar> Vars{{"cl_interpolate",{1}},{"cl_interp",{.015f}},{"cl_interp_ratio",{1}}};FakeConVar *FindVar(const char*name){auto it=Vars.find(name);return it==Vars.end()?nullptr:&it->second;}}fakeCvar;
@@ -227,6 +230,23 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  fakeCvar.Vars["cl_interp"].Maximum=.05;check(!MirvFix_SetPlayerInterpolation(.2)&&fakeCvar.Vars["cl_interp"].Value==originalInterpolation,"Engine-clamped interpolation rejects and rolls back atomically");fakeCvar.Vars["cl_interp"].Maximum=-1;
  check(MirvFix_SetPlayerInterpolation(.1),"Interpolation enables before lifecycle check");engine.Playing=false;MirvFix_Update();check(MirvFix_GetPlayerInterpolation()<0&&fakeCvar.Vars["cl_interp"].Value==originalInterpolation,"Ending a demo restores native interpolation settings");engine.Playing=true;
  MirvFix_SetPlayerInterpolation(.1);fakeCvar.Vars["cl_interp"].Value=.04f;MirvFix_Update();check(MirvFix_GetPlayerInterpolation()<0&&fakeCvar.Vars["cl_interp"].Value==.04f&&fakeCvar.Vars["cl_interp_ratio"].Value==1,"Manual cvar edits are preserved when releasing interpolation ownership");fakeCvar.Vars["cl_interp"].Value=originalInterpolation;
+
+ check(MirvFix_SetPlayerInterpolation(.1),"Enable movement control before a backward-seek reload");
+ engine.Loading=true;engine.Playing=false;MirvFix_Update();
+ check(MirvFix_GetPlayerInterpolation()>=0&&fakeCvar.Vars["cl_interp"].Value==.1f,"Loading gap preserves interpolation ownership and cvars");
+ check(!MirvFix_PlayerInterpolationAvailable()&&!MirvFix_SetPlayerInterpolation(.2),"Loading rejects new edits without discarding active control");
+ fixMessages.clear();callFix({"mirv_fix","playerInterpolation","status"});
+ check(fixMessages.find("waiting for reload")!=std::string::npos&&fixMessages.find("native settings: match")!=std::string::npos,"Status distinguishes reload from demo ending and verifies native values");
+ engine.Loading=false;engine.Playing=true;MirvFix_Update();check(MirvFix_GetPlayerInterpolation()>=0,"Control survives completed reload");
+ engine.Loading=true;engine.Playing=false;check(MirvFix_SetPlayerInterpolation(-1)&&MirvFix_GetPlayerInterpolation()<0,"Explicit default remains available during reload");engine.Loading=false;engine.Playing=true;
+ MirvFix_SetPlayerInterpolation(.1);fakeCvar.Vars["cl_interp"].Value=.04f;
+ check(MirvFix_SetPlayerInterpolation(.2)&&MirvFix_SetPlayerInterpolation(-1)&&fakeCvar.Vars["cl_interp"].Value==.04f,"An immediate edit preserves intervening manual values for restoration");fakeCvar.Vars["cl_interp"].Value=originalInterpolation;
+ MirvFix_SetPlayerInterpolation(.1);fakeCvar.Vars["cl_interp"].Writable=false;
+ check(!MirvFix_SetPlayerInterpolation(-1)&&MirvFix_GetPlayerInterpolation()>=0,"Rejected restoration retains ownership for retry");
+ fakeCvar.Vars["cl_interp"].Writable=true;check(MirvFix_SetPlayerInterpolation(-1)&&fakeCvar.Vars["cl_interp"].Value==originalInterpolation,"Restoration succeeds once the engine accepts it");
+ engine.Hltv=false;MirvFix_SetPlayerInterpolation(.1);fixMessages.clear();callFix({"mirv_fix","playerInterpolation","status"});
+ check(fixMessages.find("POV/other demo")!=std::string::npos&&fixMessages.find("Native cl_interpolate=1")!=std::string::npos,"POV status reports native settings without claiming measured delay");
+ engine.Hltv=true;fixMessages.clear();callFix({"mirv_fix","playerInterpolation","status"});check(fixMessages.find("STV/HLTV")!=std::string::npos,"STV context is distinct in diagnostics");MirvFix_SetPlayerInterpolation(-1);
  SOURCESDK::CSS::g_pCVar=nullptr;SOURCESDK::L4D2::g_pCVar=&fakeCvar;check(MirvFix_SetPlayerInterpolation(.1),"TF2's alternate registered cvar interface is supported");MirvFix_SetPlayerInterpolation(-1);SOURCESDK::L4D2::g_pCVar=nullptr;SOURCESDK::CSS::g_pCVar=&fakeCvar;
  g_SourceSdkVer=0;check(!MirvFix_SetPlayerInterpolation(.1),"Interpolation repair does not affect another game");g_SourceSdkVer=SourceSdkVer_TF2;
  double demoTime=-1;engine.HaveInfo=false;check(!ActualGetCurrentDemoTime(demoTime)&&demoTime==-1,"Demo time rejects absent demo information without dereferencing it");engine.HaveInfo=true;g_Hook_VClient_RenderView.GlobalsAvailable=false;check(!ActualGetCurrentDemoTime(demoTime),"Demo time rejects absent globals");g_Hook_VClient_RenderView.GlobalsAvailable=true;check(ActualGetCurrentDemoTime(demoTime),"Demo time works with valid engine services");
