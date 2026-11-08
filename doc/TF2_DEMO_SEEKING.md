@@ -231,6 +231,44 @@ an error string is not necessarily the function entry.
 
 ## What this must establish before restoration
 
+### Bounded restore feasibility result: parked
+
+The first real capture passed isolated native encoding validation: 971 entity
+streams across 84 classes round-tripped bit-for-bit through the recorded engine's
+merge routine. Their 96,691 encoded fields matched the saved per-property tick
+records; 2,197 absent fields were explicitly marked unseen. All 84 matching class
+instance baselines also round-tripped. This validates wire encoding consistency,
+not a running client scene or resumable checkpoint.
+
+A subsequent bounded test walked those real encodings with the native property
+skip routines and evaluated their animation/simulation time fields using the
+public SDK's receive-proxy clock model (`GetNetworkBase`, networking base 100,
+randomization window 32, and the 256-tick wrap centered on the decode clock).
+Of 624 observed time fields, 517 decoded to different absolute ticks when the
+checkpoint server tick replaced the property's original server decode tick;
+the largest modeled difference was 10,000 ticks. Live client/global clock
+parameters were not captured or verified, so these are model results, not a
+measurement of 517 visible faults in TF2. They demonstrate why replaying the
+saved encodings at one current clock is not a valid general restore procedure.
+
+The narrow experiment cannot yet resume playback correctly because:
+
+- Original server-property ticks do not establish the full client/global clock
+  context or receive-proxy/lifecycle effects required when applying them.
+- The saved input cursor is not a validated packet-resume boundary. Associated
+  player timing, read-ahead and sequence state have not been captured/restored.
+- Reference-frame exports are explicitly incomplete. Entity creation/deletion,
+  transmit state, table updates and both baseline banks still need a coherent
+  native restoration sequence; populated entity-baseline banks were not covered
+  by this real capture.
+
+Under the requested limit on scope, checkpoint restoration is parked here.
+No live in-game restore was attempted, no restore command was added, and the
+capture format remains `restorable="0"`. Ordinary native seeking remains in
+use. The opt-in capture/trace tools are retained for future research, rather
+than expanding this into a client-state reconstruction project now. This is
+separate from ongoing TF2 demo fixes and camera-path editing work.
+
 Checkpoints need more than a demo file offset: matching class/string tables,
 both instance baseline banks, retained delta-reference frames, client entity
 state, and sequence/timing bookkeeping. The trace establishes a way to observe
