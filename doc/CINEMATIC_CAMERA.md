@@ -480,7 +480,9 @@ and world-space offset stay fixed while the target translates. Recapturing the
 current attached view preserves its authored pose and filter history, avoiding
 repeated collision compression. Capturing a newly moved free camera starts fresh.
 Later manual camera rotation/offset controls remain available. The Observing tab exposes the
-orientation choice; the Camera collision section exposes the smoothing controls.
+orientation choice; the Attached camera follow section exposes smoothing and
+blocked recovery controls. Collision switches and clearance remain in Camera
+collision.
 
 These attachment controls require `mirv_cam attach` to remain the active position
 source, with all three source-origin components enabled. A later free-camera,

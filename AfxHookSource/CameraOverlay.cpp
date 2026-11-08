@@ -3356,57 +3356,63 @@ void Draw()
 					Afx_ExecClientCmd(command);
 				}
 				ImGui::TextDisabled("Campaths return gradually after blocking. Speed 0 removes the cap; half-life 0 removes damping.");
-				if (ImGui::InputDouble("Follow root half-life (s)", &collision.FollowHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];std::snprintf(command,sizeof(command),"mirv_cam attach follow %.9g",collision.FollowHalfLife);Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Orbit half-life (s)", &collision.OrbitHalfLife, 0, 0,
-				                      "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam attach follow orbitHalfLife %.9g",
-					              collision.OrbitHalfLife);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Maximum orbit turn rate (deg/s)", &collision.OrbitSpeed, 0, 0,
-				                      "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam attach follow orbitSpeed %.9g",
-					              collision.OrbitSpeed);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Blocked recovery cut delay (s)", &collision.FollowRecoveryDelay, 0, 0,
-				                      "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam attach follow recoveryDelay %.9g",
-					              collision.FollowRecoveryDelay);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Bone position half-life (s)", &collision.BoneHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam attach follow boneHalfLife %.9g", collision.BoneHalfLife);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Subject teleport reset (units)", &collision.FollowTeleportDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam attach follow teleportDistance %.9g", collision.FollowTeleportDistance);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Maximum entity lag (units)", &collision.FollowMaxDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];std::snprintf(command,sizeof(command),"mirv_cam attach follow maxDistance %.9g",collision.FollowMaxDistance);Afx_ExecClientCmd(command);
-				}
-				if (ImGui::Button("Reset attached follow"))
-					Afx_ExecClientCmd("mirv_cam attach follow reset");
-				ImGui::TextWrapped("Follow coordinates a filtered focus, orbit and framing. Root half-life 0 restores rigid attachment; otherwise orbit half-life smooths sharp turns and composition changes. Orbit speed 0 removes the turn cap. Bone damping separately smooths animation translation. World mode retains its heading; mirv_aim retains control of its target. Teleport reset responds to large subject jumps. With follow enabled, blocked recovery cuts to a verified clear subject-side pose after the configured demo time (default 1 s); 0 disables cuts. Physical overlaps still require immediate correction.");
 				if (ImGui::Button("Reset collision history"))
 					Afx_ExecClientCmd("mirv_cam collision reset");
 				ImGui::TextWrapped("TF2/TF2C only; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
 			}
+			if (ImGui::CollapsingHeader("Attached camera follow"))
+			{
+				auto follow = MirvCameraCollisionGet();
+				if (ImGui::InputDouble("Follow root half-life (s)", &follow.FollowHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];std::snprintf(command,sizeof(command),"mirv_cam attach follow %.9g",follow.FollowHalfLife);Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Orbit half-life (s)", &follow.OrbitHalfLife, 0, 0,
+				                      "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam attach follow orbitHalfLife %.9g",
+					              follow.OrbitHalfLife);
+					Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Maximum orbit turn rate (deg/s)", &follow.OrbitSpeed, 0, 0,
+				                      "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam attach follow orbitSpeed %.9g",
+					              follow.OrbitSpeed);
+					Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Blocked recovery cut delay (s)", &follow.FollowRecoveryDelay, 0, 0,
+				                      "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam attach follow recoveryDelay %.9g",
+					              follow.FollowRecoveryDelay);
+					Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Bone position half-life (s)", &follow.BoneHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam attach follow boneHalfLife %.9g", follow.BoneHalfLife);
+					Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Subject teleport reset (units)", &follow.FollowTeleportDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam attach follow teleportDistance %.9g", follow.FollowTeleportDistance);
+					Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Maximum entity lag (units)", &follow.FollowMaxDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];std::snprintf(command,sizeof(command),"mirv_cam attach follow maxDistance %.9g",follow.FollowMaxDistance);Afx_ExecClientCmd(command);
+				}
+				if (ImGui::Button("Reset attached follow"))
+					Afx_ExecClientCmd("mirv_cam attach follow reset");
+				ImGui::TextWrapped("Follow coordinates a filtered focus, orbit and framing. Root half-life 0 restores rigid attachment; otherwise orbit half-life smooths sharp turns and composition changes. Orbit speed 0 removes the turn cap. Bone damping separately smooths animation translation. World mode retains its heading; mirv_aim retains control of its target. Teleport reset responds to large subject jumps. With follow enabled, blocked recovery cuts to a verified clear subject-side pose after the configured demo time (default 1 s); 0 disables cuts. Physical overlaps still require immediate correction.");
+				ImGui::TextDisabled("Blocked recovery requires attached camera collision.");
+			}
+
 			if (ImGui::CollapsingHeader("Demo fixes"))
 			{
 				bool deathcam = MirvFix_GetPovDeathcam();
