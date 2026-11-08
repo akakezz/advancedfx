@@ -93,7 +93,9 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 				conMessage("Modifier presets:\n"
 					"    handheld | impact | fov-punch | stabilize\n"
 					"    expo-in | expo-out | expo-in-out\n"
-					"    bounce-out (Z) | elastic-out (FOV)\n");
+					"    bounce-out (Z) | elastic-out (FOV)\n"
+					"    fov-safe | pitch-safe | slow-pan | stepped-12fps\n"
+					"    loop-position | ping-pong-position | reduce-roll | widen-fov\n");
 				return;
 			}
 			if (argc == 6 && !_stricmp(args->ArgV(2), "preset"))

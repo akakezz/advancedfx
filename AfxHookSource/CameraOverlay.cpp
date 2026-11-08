@@ -1355,12 +1355,43 @@ static void DrawModifierControls(CamPath &path)
 	                       "Stepped",        "Repeat / ping-pong", "Value remap"};
 	ImGui::Combo("New modifier type", &newType, types, (int)CamPath::ModifierType::Count);
 	static int preset = 0;
-	const char *presets[] = {"Handheld",          "Impact shake",     "Expo in",
-	                         "Expo out",          "Expo in-out",      "Bounce out (Z)",
-	                         "Elastic out (FOV)", "Stabilize angles", "FOV punch"};
-	const char *presetIds[] = {"handheld",   "impact",      "expo-in",   "expo-out", "expo-in-out",
-	                           "bounce-out", "elastic-out", "stabilize", "fov-punch"};
-	ImGui::Combo("Modifier preset", &preset, presets, 9);
+	const char *presets[] = {"Handheld",
+	                         "Impact shake",
+	                         "Expo in",
+	                         "Expo out",
+	                         "Expo in-out",
+	                         "Bounce out (Z)",
+	                         "Elastic out (FOV)",
+	                         "Stabilize angles",
+	                         "FOV punch",
+	                         "FOV soft bounds (35..110)",
+	                         "Pitch soft bounds (-85..85)",
+	                         "Pan rate (45 deg/s)",
+	                         "Stepped camera (12 Hz)",
+	                         "Loop position twice",
+	                         "Ping-pong position",
+	                         "Half roll",
+	                         "Widen FOV (+10)"};
+	const char *presetIds[] = {
+	    "handheld",    "impact",      "expo-in",       "expo-out",      "expo-in-out",
+	    "bounce-out",  "elastic-out", "stabilize",     "fov-punch",     "fov-safe",
+	    "pitch-safe",  "slow-pan",    "stepped-12fps", "loop-position", "ping-pong-position",
+	    "reduce-roll", "widen-fov"};
+	ImGui::Combo("Modifier preset", &preset, presets, (int)(sizeof(presets) / sizeof(presets[0])));
+	const char *controlDescriptions[] = {
+	    "Softly bounds FOV without changing camera position or angles.",
+	    "Softly bounds pitch; yaw and roll remain unchanged. This is not an Euler repair tool.",
+	    "Limits yaw to 45 degrees/s in the full-strength region. Fades relax the cap; pitch and roll are "
+		"untouched.",
+	    "Samples the complete camera pose at 12 Hz. Recording FPS remains unchanged.",
+	    "Repeats the selected position movement twice. Matching endpoint positions are needed to avoid a "
+		"jump; angles/FOV are untouched.",
+	    "Moves forward and backward once through the position curve. Angles and FOV keep their original "
+		"timing.",
+	    "Halves roll around zero, blending at the range edges. Pitch and yaw are unchanged.",
+	    "Adds 10 degrees of FOV, blending at the range edges. Geometry is unchanged."};
+	if (preset >= 9)
+		ImGui::TextWrapped("%s", controlDescriptions[preset - 9]);
 	if (ImGui::Button("Add preset to range"))
 	{
 		CamPath::Modifier m;

@@ -339,6 +339,22 @@ Bounce out needs changing Z values; Elastic out needs changing FOV. For effects
 on a stationary pose, use Handheld, Impact or FOV punch instead. Every setting
 remains editable, and creation participates in ordinary Undo/Redo.
 
+The control presets include descriptions in the chooser:
+
+| Preset / console name | Example use |
+| --- | --- |
+| FOV soft bounds / `fov-safe` | Keeps FOV between 35 and 110 degrees with a 5-degree soft knee. |
+| Pitch soft bounds / `pitch-safe` | Bounds pitch to -85..85 degrees with a soft knee; does not repair Euler winding. |
+| Pan rate / `slow-pan` | Limits yaw changes to 45 degrees/s in the full-strength region; its fades relax the cap. |
+| Stepped camera / `stepped-12fps` | Samples all camera channels at 12 Hz, independently of recording FPS. |
+| Loop position twice / `loop-position` | Repeats position twice; matching endpoint positions are needed for a seamless loop. |
+| Ping-pong position / `ping-pong-position` | Plays position forward and backward once while leaving angle/FOV timing intact. |
+| Half roll / `reduce-roll` | Reduces roll by half with blended range edges. |
+| Widen FOV / `widen-fov` | Adds 10 degrees of FOV with blended range edges. |
+
+These are starter settings, not enforced recommendations. Channel selection,
+strengths, fades and all type-specific controls remain editable after insertion.
+
 Timing modifiers remap the input of their stack stage once across the entire
 range, including any interior keys. They never restart easing at each key.
 Channels with strength zero are untouched. Matching X/Y/Z strengths follow the

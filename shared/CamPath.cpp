@@ -1788,6 +1788,45 @@ bool CamPath::MakeModifierPreset(const char *name, double begin, double end, Mod
 		m.Frequency = 3;
 		m.Amplitude[m.Type == ModifierType::Bounce ? 2 : 3] = 1;
 	}
+	else if (!_stricmp(name, "fov-safe") || !_stricmp(name, "pitch-safe"))
+	{
+		m.Type = ModifierType::Limits;
+		m.FadeIn = m.FadeOut = 0;
+		const bool fov = !_stricmp(name, "fov-safe");
+		m.Lower = fov ? 35 : -85;
+		m.Upper = fov ? 110 : 85;
+		m.Softness = 5;
+		m.Amplitude[fov ? 3 : 4] = 1;
+	}
+	else if (!_stricmp(name, "slow-pan"))
+	{
+		m.Type = ModifierType::Slew;
+		m.Rate = 45;
+		m.Amplitude[5] = 1;
+	}
+	else if (!_stricmp(name, "stepped-12fps"))
+	{
+		m.Type = ModifierType::Stepped;
+		m.Frequency = 12;
+		m.FadeIn = m.FadeOut = 0;
+		std::fill(m.Amplitude, m.Amplitude + 7, 1);
+	}
+	else if (!_stricmp(name, "loop-position") || !_stricmp(name, "ping-pong-position"))
+	{
+		m.Type = ModifierType::Repeat;
+		m.PingPong = !_stricmp(name, "ping-pong-position");
+		m.Frequency = m.PingPong ? 1 : 2;
+		m.FadeIn = m.FadeOut = 0;
+		m.Amplitude[0] = m.Amplitude[1] = m.Amplitude[2] = 1;
+	}
+	else if (!_stricmp(name, "reduce-roll") || !_stricmp(name, "widen-fov"))
+	{
+		m.Type = ModifierType::Remap;
+		const bool roll = !_stricmp(name, "reduce-roll");
+		m.Scale = roll ? .5 : 1;
+		m.Offset = roll ? 0 : 10;
+		m.Amplitude[roll ? 6 : 3] = 1;
+	}
 	else
 		return false;
 	if (!ValidModifiers({m}))

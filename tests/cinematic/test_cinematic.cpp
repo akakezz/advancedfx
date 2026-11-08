@@ -1570,7 +1570,8 @@ void rangeEasingModifiers()
 	std::filesystem::remove(exportFile);
 
 	for (const char *name : {"handheld", "impact", "expo-in", "expo-out", "expo-in-out", "bounce-out",
-	                         "elastic-out", "stabilize", "fov-punch"})
+	                         "elastic-out", "stabilize", "fov-punch", "fov-safe", "pitch-safe", "slow-pan",
+		"stepped-12fps", "loop-position", "ping-pong-position", "reduce-roll", "widen-fov"})
 	{
 		CamPath::Modifier preset;
 		check(CamPath::MakeModifierPreset(name, 1, 5, preset), "Built-in modifier preset validates");
