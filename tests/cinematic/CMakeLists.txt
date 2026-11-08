@@ -10,13 +10,6 @@ if(NOT MSVC)
 endif()
 add_test(NAME camera_core COMMAND cinematic_tests)
 
-if(UNIX)
-    find_package(Python3 QUIET COMPONENTS Interpreter)
-    if(Python3_Interpreter_FOUND)
-        add_test(NAME demo_checkpoint_startup COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_demo_startup.py" --compiler "${CMAKE_CXX_COMPILER}")
-    endif()
-endif()
-
 if(UNIX AND DEFINED AFX_IMGUI_SOURCE_DIR)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME camera_overlay_gui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_overlay.py" --imgui-dir "${AFX_IMGUI_SOURCE_DIR}" --build-dir "${CMAKE_CURRENT_BINARY_DIR}/overlay-gui")

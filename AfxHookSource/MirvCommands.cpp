@@ -33,7 +33,6 @@
 #include "aiming.h"
 #include "EntityIndexDrawer.h"
 #include "tf2/ClientToolsTf2.h"
-#include "tf2/DemoPlayer.h"
 #include "../shared/CommandSystem.h"
 #include <shared/binutils.h>
 
@@ -1465,9 +1464,10 @@ static bool g_CampathPreviewToggleHeld = false;
 static bool g_CampathPreviewUndoHeld = false;
 static bool g_CampathPreviewEditHeld[256] = {};
 static bool g_CampathRightCtrlHeld = false, g_CampathRightCtrlChord = false;
-static int g_CampathSeekMode = 0;
-static double g_CampathSeekScale = 0;
-static AfxHookSource::Tf2Demo::SeekQueue g_CampathSeeks;
+static int g_CampathSeekMode = 0, g_CampathSeekTarget = -1, g_CampathSeekFrom = 0,
+		   g_CampathSeekPendingMode = 0;
+static double g_CampathSeekScale = 0, g_CampathSeekPendingScale = 0;
+static DWORD g_CampathSeekStarted = 0;
 int MirvCampathPreview_GetSeekMode()
 {
 	return g_CampathSeekMode;
@@ -1484,60 +1484,56 @@ bool MirvCampathPreview_SetSeekOptions(int mode, double scale)
 	g_CampathSeekScale = scale;
 	return true;
 }
-static AfxHookSource::Tf2Demo::Status CampathPreview_DemoStatus()
-{
-	AfxHookSource::Tf2Demo::Status status;
-	if (!AfxHookSource::Tf2Demo::GetStatus(status) && g_VEngineClient)
-	{
-		status.Playing = g_VEngineClient->IsPlayingDemo();
-		status.Loading = g_VEngineClient->IsDrawingLoadingImage();
-		if (!GetCurrentDemoTick(status.Tick)) status.Tick = -1;
-	}
-	return status;
-}
-
-static void CampathPreview_FinishSeek()
-{
-	using namespace AfxHookSource::Tf2Demo;
-	if (!g_VEngineClient || !g_CampathSeeks.IsActive()) return;
-	const auto result = g_CampathSeeks.Update(CampathPreview_DemoStatus(), GetTickCount64());
-	std::ostringstream command;
-	switch (result.Type)
-	{
-	case SeekQueue::Action::Dispatch:
-		command << "demo_timescale 1;demo_resume;demo_gototick " << result.Request.Tick << " 0 1";
-		break;
-	case SeekQueue::Action::Apply:
-		if (result.Request.Mode == 1)
-			command << "demo_timescale 1;demo_pause";
-		else
-			command << "demo_timescale " << (result.Request.Mode == 2 ? 1 : result.Request.Scale)
-				<< ";demo_resume";
-		break;
-	case SeekQueue::Action::Cancel:
-		Tier0_Warning("Camera seek cancelled after a playback change; after-seek behavior was not applied.\n");
-		return;
-	case SeekQueue::Action::Timeout:
-		Tier0_Warning("Camera seek made no progress for two minutes; after-seek behavior was not applied.\n");
-		return;
-	default:
-		return;
-	}
-	g_VEngineClient->ClientCmd_Unrestricted(command.str().c_str());
-}
-
 bool MirvCampathPreview_SeekTick(int tick)
 {
-	if (!g_VEngineClient || tick < 0) return false;
-	const auto status = CampathPreview_DemoStatus();
-	if (!status.Playing && !status.Loading) return false;
-	if (status.Tick < 0 && !status.Loading) return false;
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || tick < 0 ||
+		!GetCurrentDemoTick(g_CampathSeekFrom))
+		return false;
 	if (auto *demo = g_VEngineClient->GetDemoInfoEx())
 		if (demo->GetDemoPlaybackTotalTicks() > 0)
 			tick = (std::min)(tick, demo->GetDemoPlaybackTotalTicks() - 1);
-	g_CampathSeeks.Request({tick, g_CampathSeekMode, g_CampathSeekScale}, GetTickCount64());
-	CampathPreview_FinishSeek();
+	g_CampathSeekTarget = tick;
+	g_CampathSeekPendingMode = g_CampathSeekMode;
+	g_CampathSeekPendingScale = g_CampathSeekScale;
+	g_CampathSeekStarted = GetTickCount();
+	std::ostringstream command;
+	command << "demo_timescale 1;demo_resume;demo_gototick " << tick << " 0 1";
+	g_VEngineClient->ClientCmd_Unrestricted(command.str().c_str());
 	return true;
+}
+static void CampathPreview_FinishSeek()
+{
+	if (g_CampathSeekTarget < 0 || !g_VEngineClient)
+		return;
+	int tick;
+	if (!g_VEngineClient->IsPlayingDemo())
+	{
+		g_CampathSeekTarget = -1;
+		Tier0_Warning("Camera seek did not complete; after-seek behavior was not applied.\n");
+		return;
+	}
+	if (!GetCurrentDemoTick(tick))
+		return;
+	const bool arrived = g_CampathSeekFrom <= g_CampathSeekTarget
+							 ? tick >= g_CampathSeekTarget
+							 : tick < g_CampathSeekFrom && tick >= g_CampathSeekTarget - 1;
+	if (!arrived)
+	{
+		if (GetTickCount() - g_CampathSeekStarted > 120000)
+		{
+			g_CampathSeekTarget = -1;
+			Tier0_Warning("Camera seek timed out before reaching its target.\n");
+		}
+		return;
+	}
+	std::ostringstream command;
+	if (g_CampathSeekPendingMode == 1)
+		command << "demo_timescale 1;demo_pause";
+	else
+		command << "demo_timescale " << (g_CampathSeekPendingMode == 2 ? 1 : g_CampathSeekPendingScale)
+				<< ";demo_resume";
+	g_CampathSeekTarget = -1;
+	g_VEngineClient->ClientCmd_Unrestricted(command.str().c_str());
 }
 
 static void CampathPreview_StopTravel()
@@ -1727,7 +1723,6 @@ bool MirvCampathPreview_Seek()
 void MirvCampathPreview_Update()
 {
 	CampathPreview_FinishSeek();
-	AfxHookSource::Tf2Demo::UpdateTrace();
 	static int historyFrame = -1;
 	if (historyFrame != g_MirvTime.GetFrameCount())
 	{
@@ -2009,8 +2004,6 @@ static void CampathPreview_PrintHelp()
 		"mirv_campath preview undo|redo - Undo / redo camera path edits.\n"
 		"CTRL+Z undoes; CTRL+SHIFT+Z redoes in preview, including edits made with the overlay closed.\n"
 		"mirv_campath preview seek - Seek the demo to the current preview time.\n"
-		"mirv_campath preview seekTrace start <file.csv>|stop|status - Opt-in TF2 native seek diagnostics.\n"
-		"mirv_campath preview checkpoint begin|capture <file.xml>|status|end - Experimental TF2 capture (no restoration).\n"
 		"mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
 		"mirv_campath preview afterSeek timescale <0..100>|pause|continue - Default: timescale 0.\n"
 		"E captures; Shift+E replaces; Y captures hold release; Shift+Y clears it; RCtrl seeks.\n"
@@ -2213,53 +2206,6 @@ CON_COMMAND(mirv_campath, "camera paths")
 		CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 		if (args->ArgC() == 2) { CampathPreview_PrintHelp(); return; }
 		const char * cmd = args->ArgV(2);
-		if (!_stricmp(cmd, "checkpoint"))
-		{
-			if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "begin"))
-			{
-				AfxHookSource::Tf2Demo::BeginCheckpointCapture();
-			}
-			else if (args->ArgC() == 5 && !_stricmp(args->ArgV(3), "capture"))
-			{
-				std::wstring file;
-				if (!UTF8StringToWideString(args->ArgV(4), file))
-					Tier0_Warning("Checkpoint filename could not be converted from UTF-8.\n");
-				else if (!AfxHookSource::Tf2Demo::SaveCheckpointCapture(file.c_str()))
-				{
-					AfxHookSource::Tf2Demo::PrintCheckpointStatus();
-				}
-			}
-			else if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "status"))
-				AfxHookSource::Tf2Demo::PrintCheckpointStatus();
-			else if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "end"))
-			{
-				AfxHookSource::Tf2Demo::EndCheckpointCapture();
-				AfxHookSource::Tf2Demo::PrintCheckpointStatus();
-			}
-			else Tier0_Msg("mirv_campath preview checkpoint begin|capture <file.xml>|status|end\n");
-			return;
-		}
-		if (!_stricmp(cmd, "seekTrace"))
-		{
-			if (args->ArgC() == 5 && !_stricmp(args->ArgV(3), "start"))
-			{
-				std::wstring file;
-				if (!UTF8StringToWideString(args->ArgV(4), file)
-					|| !AfxHookSource::Tf2Demo::StartTrace(file.c_str()))
-					Tier0_Warning("Could not start seek trace: requires a verified Windows x64 TF2 engine, "
-						"no active trace, and a new writable file. Existing files are not overwritten.\n");
-				else Tier0_Msg("Native seek trace started. Use preview seekTrace stop when finished.\n");
-			}
-			else if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "stop"))
-			{
-				AfxHookSource::Tf2Demo::StopTrace();
-				AfxHookSource::Tf2Demo::PrintTraceStatus();
-			}
-			else if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "status"))
-				AfxHookSource::Tf2Demo::PrintTraceStatus();
-			else Tier0_Msg("mirv_campath preview seekTrace start <file.csv>|stop|status\n");
-			return;
-		}
 		if (!_stricmp(cmd, "afterSeek"))
 		{
 			bool ok = false;

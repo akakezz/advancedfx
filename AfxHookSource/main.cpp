@@ -48,7 +48,6 @@
 #endif //#ifndef _WIN64
 
 #include "tf2/ClientToolsTf2.h"
-#include "tf2/DemoPlayer.h"
 
 #ifndef _WIN64
 #include "momentum/ClientToolsMom.h"
@@ -934,9 +933,6 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 	{
 	case SOURCESDK::TF2::FRAME_RENDER_END:
 		Shared_AfterFrameRenderEnd();
-		break;
-	case SOURCESDK::TF2::FRAME_NET_UPDATE_END:
-		AfxHookSource::Tf2Demo::OnNetUpdateEnd();
 		break;
 	}
 }
