@@ -83,4 +83,5 @@ private:
 	IMirvFovCalc * m_Fov = 0;
 };
 
+bool MirvCam_GetAttachAnchor(double origin[3], void *&entity, const void *&identity);
 extern CMirvCam g_MirvCam;

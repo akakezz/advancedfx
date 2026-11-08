@@ -431,6 +431,9 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 {
 	MirvCampathPreview_Update();
 	const CamPath *collisionPath = nullptr;
+	const void *attachedIdentity = nullptr;
+	void *attachedEntity = nullptr;
+	double attachedPivot[3] = {};
 	double collisionTime = 0;
 	bool collisionFree = false;
 	float collisionInputX = Tx, collisionInputY = Ty, collisionInputZ = Tz;
@@ -464,6 +467,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				originOrAnglesOverriden = true;
 				collisionFree = false;
 				collisionPath = nullptr;
+				if (!MirvCam_GetAttachAnchor(attachedPivot, attachedEntity, attachedIdentity)) attachedIdentity = nullptr;
 			}
 			break;
 
@@ -485,6 +489,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 					collisionPath = playbackPath;
 					collisionTime = campathCurTime;
 					collisionFree = false;
+					attachedIdentity = nullptr;
 					CamPathValue val = playbackPath->Eval(campathCurTime);
 					QEulerAngles ang = val.R.ToQREulerAngles().ToQEulerAngles();
 
@@ -519,6 +524,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 					originOrAnglesOverriden = true;
 
 					collisionFree = false;
+					attachedIdentity = nullptr;
 					collisionPath = nullptr;
 					Ty = (float)(-Tf[0]);
 					Tz = (float)(+Tf[1]);
@@ -540,6 +546,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 					originOrAnglesOverriden = true;
 
 					collisionFree = false;
+					attachedIdentity = nullptr;
 					collisionPath = nullptr;
 					Tx = (float)camData.XPosition;
 					Ty = (float)camData.YPosition;
@@ -569,6 +576,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				if (m_MirvInput->GetCameraControlMode())
 				{
 					collisionFree = true;
+					attachedIdentity = nullptr;
 					collisionPath = nullptr;
 					collisionInputX = Tx;
 					collisionInputY = Ty;
@@ -580,6 +588,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			if (MirvCampathPreview_GetCamera(preview))
 			{
 				collisionFree = false;
+				attachedIdentity = nullptr;
 				collisionPath = &m_CamPath;
 				collisionTime = MirvCampathPreview_GetTime();
 				const auto angles = preview.GetEulerAngles();
@@ -627,6 +636,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			{
 				originOrAnglesOverriden = true;
 				collisionFree = false;
+				attachedIdentity = nullptr;
 				collisionPath = nullptr;
 			}
 #endif //#ifndef _WIN64
@@ -639,6 +649,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 			{
 				originOrAnglesOverriden = true;
 				collisionFree = false;
+				attachedIdentity = nullptr;
 				collisionPath = nullptr;
 			}
 #endif
@@ -651,6 +662,10 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 		else if (Fov > 179) Fov = 179;
 	}
 	
+	// Attachment follow/retraction changes position only, after source offsets.
+	MirvCameraAttachedApply(attachedIdentity, attachedEntity, attachedPivot,
+		g_MirvTime.GetCurTime(), Tx, Ty, Tz);
+
 	// Collision correction is the last position stage, before view/export.
 	const float collisionRequestedX = Tx, collisionRequestedY = Ty, collisionRequestedZ = Tz;
 	if (MirvCameraCollisionApply(collisionFree, collisionPath,

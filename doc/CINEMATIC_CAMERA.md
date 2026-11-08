@@ -272,12 +272,17 @@ renderer.
 ## Optional camera collision (TF2 / TF2C)
 
 Open **Camera collision** in the Campath tab. **Free camera collision** and
-**Campath collision** are independent and both default off. Campath collision
+**Campath collision** are independent and default off. **Attached camera collision**
+is a third independent switch, also off by default. Campath collision
 also applies to the shared preview camera. The equivalent console commands are:
 
 ```text
 mirv_cam collision free 1
 mirv_cam collision campath 1
+mirv_cam collision attached 1
+mirv_cam collision ignoreLocal 0
+mirv_cam collision returnHalfLife 0.2
+mirv_cam collision returnSpeed 300
 mirv_cam collision radius 6
 mirv_cam collision players 1
 mirv_cam collision response slide
@@ -285,9 +290,9 @@ mirv_cam collision status
 mirv_cam collision reset
 ```
 
-Use `free 0` or `campath 0` to disable either independently. Radius is the
-half-width of a swept axis-aligned camera cube, from 1 to 64 world units. The
-same clearance, player filter and response settings apply to both camera modes.
+Use `free 0`, `campath 0` or `attached 0` to disable each independently. Radius is the
+half-width of a swept axis-aligned camera cube, from 1 to 64 world units. Clearance and player filtering are shared. Stop/slide applies to free cameras
+and campaths; attached cameras use the boom response described below.
 `response stop` stops the requested movement at a solid; `slide` retains movement
 along obstacle surfaces. Angular and FOV animation are not changed. Free-camera
 corrections feed back into its input position, avoiding accumulated movement
@@ -295,9 +300,13 @@ behind walls while retaining unobstructed camera smoothing and existing offsets.
 
 This reuses TF2's `EngineTraceClient003` hull tracing with `MASK_SOLID`, including
 solid map geometry and props. Player collision uses current client-side solid
-hulls, not visible meshes or hitboxes. The engine's local player is ignored to
-allow POV cameras to leave that player's hull. Disable `players` to pass through
-other players while retaining world/prop collision. Particles, non-solid models
+hulls, not visible meshes or hitboxes. The engine's local player is ignored by default to
+allow POV cameras to leave that player's hull. Use `ignoreLocal 0` to include it.
+`players` controls other players independently: `players 0; ignoreLocal 0` still
+collides with the local player. The subject of an attached-camera boom remains
+excluded even when it is the local player, because the sweep begins inside its
+bone/entity pivot. Disable `players` to pass through other players while retaining
+world/prop collision. Particles, non-solid models
 and decorative surfaces have no solid collision representation. Camera clearance
 does not guarantee that the near-plane edges cannot clip at every FOV/aspect.
 
@@ -310,6 +319,53 @@ recording if reproducible collision response matters. Editor seeks, backward
 movement, time/cursor jumps over 0.25 seconds, shot switches, and geometry edits
 invalidate the old anchor. A new clear shot can start across a wall without
 sweeping from the previous shot. Use `reset` for other deliberate camera jumps.
+
+When a campath is held back by collision, its authored clock continues advancing.
+After the obstacle clears, the camera now returns with exponential damping and
+a speed cap, sweeping every return step. Defaults are a 0.2-second return half-life
+and 300 units/s. This speed cap is the camera's absolute movement limit while
+recovering, so a faster path can remain ahead until it slows or stops. Half-life
+0 removes damping; speed 0 removes the cap. Setting both to 0 restores immediate
+return. A paused path does not advance recovery. A forward stall while already
+blocked does not discard that anchor and snap through the obstacle. Explicit
+editor seeks and backward/cut resets still initialize a new shot.
+
+### Attached camera retraction and positional following
+
+`mirv_cam collision attached 1` traces from the current attachment bone/entity
+pivot toward the final offset camera position, excluding the attached subject.
+Walls shorten the offset immediately; clearing an obstacle extends it gradually
+using the return settings. Extension is measured relative to the moving pivot,
+so the extension speed cap does not cap the subject's movement. This is boom retraction, not the free/path slide
+response. If the pivot itself lies inside world geometry, the previous clear
+camera position is retained when available; a valid framing is not always possible.
+
+```text
+mirv_cam attach follow 0.2
+mirv_cam attach follow maxDistance 128
+mirv_cam attach follow status
+mirv_cam attach follow reset
+mirv_cam attach follow 0
+```
+
+Position half-life 0 retains rigid attachment. Positive values follow the final
+world-space position after existing attachment/captured offsets, leaving angle values
+and the existing aiming override order unchanged. Position lag can change framing. Maximum lag bounds the distance behind that
+position. The filter advances with demo time, freezes during pause/timescale 0,
+and resets on source/entity changes, editor seeks, backward time and large time
+gaps. It uses analytic integration between sampled target positions, including a
+matching response for linearly moving targets at different rendering FPS.
+Use the reset command to reframe while paused, or temporarily use rigid follow.
+For repeatable recording, begin from the same earlier point and allow preroll.
+Collision and follow can be enabled independently. Collision retraction takes
+priority over lag when keeping the camera outside an obstacle requires moving
+inward immediately.
+
+These attachment controls require `mirv_cam attach` to remain the active position
+source, with all three source-origin components enabled. A later free-camera,
+campath, preview or imported camera override takes precedence. Settings are
+available alongside collision controls in the overlay and remain runtime
+preferences rather than campath keyframe data.
 
 A moving solid overlapping the camera triggers a bounded search for a nearby
 clear position, up to 64 units away; complex corners may stop rather than slide.

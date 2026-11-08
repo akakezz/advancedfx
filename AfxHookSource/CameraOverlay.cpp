@@ -3312,6 +3312,10 @@ void Draw()
 					Afx_ExecClientCmd(collision.Free ? "mirv_cam collision free 1" : "mirv_cam collision free 0");
 				if (ImGui::Checkbox("Campath collision", &collision.Campath))
 					Afx_ExecClientCmd(collision.Campath ? "mirv_cam collision campath 1" : "mirv_cam collision campath 0");
+				if (ImGui::Checkbox("Attached camera collision", &collision.Attached))
+					Afx_ExecClientCmd(collision.Attached ? "mirv_cam collision attached 1" : "mirv_cam collision attached 0");
+				if (ImGui::Checkbox("Ignore local player", &collision.IgnoreLocal))
+					Afx_ExecClientCmd(collision.IgnoreLocal ? "mirv_cam collision ignoreLocal 1" : "mirv_cam collision ignoreLocal 0");
 				if (ImGui::Checkbox("Collide with other players", &collision.Players))
 					Afx_ExecClientCmd(collision.Players ? "mirv_cam collision players 1" : "mirv_cam collision players 0");
 				if (ImGui::Checkbox("Slide along obstacles", &collision.Slide))
@@ -3322,9 +3326,29 @@ void Draw()
 					std::snprintf(command, sizeof(command), "mirv_cam collision radius %.9g", collision.Radius);
 					Afx_ExecClientCmd(command);
 				}
+				if (ImGui::InputDouble("Collision return half-life (s)", &collision.ReturnHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];std::snprintf(command,sizeof(command),"mirv_cam collision returnHalfLife %.9g",collision.ReturnHalfLife);Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Maximum return speed (units/s)", &collision.ReturnSpeed, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];std::snprintf(command,sizeof(command),"mirv_cam collision returnSpeed %.9g",collision.ReturnSpeed);Afx_ExecClientCmd(command);
+				}
+				ImGui::TextDisabled("Campaths return gradually after blocking. Speed 0 removes the cap; half-life 0 removes damping.");
+				if (ImGui::InputDouble("Attachment position half-life (s)", &collision.FollowHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];std::snprintf(command,sizeof(command),"mirv_cam attach follow %.9g",collision.FollowHalfLife);Afx_ExecClientCmd(command);
+				}
+				if (ImGui::InputDouble("Maximum attachment lag (units)", &collision.FollowMaxDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];std::snprintf(command,sizeof(command),"mirv_cam attach follow maxDistance %.9g",collision.FollowMaxDistance);Afx_ExecClientCmd(command);
+				}
+				if (ImGui::Button("Reset attached follow"))
+					Afx_ExecClientCmd("mirv_cam attach follow reset");
+				ImGui::TextWrapped("Attachment follow affects position only; 0 is rigid. It advances with demo time and resets on cuts. Attachment collision ignores its subject, retracts toward the bone/entity pivot immediately, then extends gradually.");
 				if (ImGui::Button("Reset collision history"))
 					Afx_ExecClientCmd("mirv_cam collision reset");
-				ImGui::TextWrapped("TF2/TF2C only; both switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local recorder is ignored. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
+				ImGui::TextWrapped("TF2/TF2C only; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
 			}
 			if (ImGui::CollapsingHeader("Demo fixes"))
 			{

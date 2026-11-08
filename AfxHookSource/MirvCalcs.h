@@ -307,14 +307,17 @@ int Mirv_Tf2_GetBoneNames(int entityIndex, MirvTf2BoneName_t * outNames);
 // Optional TF2 camera collision.
 struct MirvCameraCollisionSettings
 {
-	bool Free = false, Campath = false, Players = true, Slide = true;
-	double Radius = 6;
+	bool Free = false, Campath = false, Attached = false, Players = true, Slide = true, IgnoreLocal = true;
+	double Radius = 6, ReturnHalfLife = .2, ReturnSpeed = 300, FollowHalfLife = 0, FollowMaxDistance = 128;
 };
 MirvCameraCollisionSettings MirvCameraCollisionGet();
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);
 void MirvCameraCollisionReset();
+void MirvCameraAttachedReset();
 bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,
 	double sceneTime, double pathTime, const double seed[3], float &x, float &y, float &z);
+bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3],
+	double sceneTime, float &x, float &y, float &z);
 // End optional TF2 camera collision.
 
 // True if tracing is available. outIndex is -1 when no networked entity was hit.
@@ -330,6 +333,7 @@ bool Mirv_Tf2_ParseBoneArg(int entityIndex, const char * arg, int & outBone);
 /// <param name="camAngles">World angles (pitch, yaw, roll).</param>
 /// <param name="outLocalOffset">Position relative to the target in the camera's own axes (forward, left, up).</param>
 /// <returns>true on success.</returns>
+bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity);
 bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc * calc, const double camOrigin[3], const double camAngles[3], float outLocalOffset[3]);
 
 /// <returns>true on success. The entity's abs angles and render angles (pitch, yaw, roll).</returns>

@@ -26,6 +26,7 @@ static void MirvCam_SetAttachCalc(IMirvVecAngCalc * calc)
 	if (calc) calc->AddRef();
 	if (g_MirvCamAttachCalc) g_MirvCamAttachCalc->Release();
 	g_MirvCamAttachCalc = calc;
+	MirvCameraAttachedReset();
 }
 
 static char const * MirvCam_AttachModeName(int mode)
@@ -164,6 +165,14 @@ void CMirvCam::RebuildCalc(void)
 
 CMirvCam g_MirvCam;
 
+bool MirvCam_GetAttachAnchor(double origin[3], void *&entity, const void *&identity)
+{
+	if (!g_MirvCamAttachCalc || g_MirvCam.Source_get() != g_MirvCamAttachCalc ||
+		!g_MirvCam.m_SourceUseX || !g_MirvCam.m_SourceUseY || !g_MirvCam.m_SourceUseZ) return false;
+	identity = g_MirvCamAttachCalc;
+	return Mirv_Tf2_GetAttachAnchor(g_MirvCamAttachCalc, origin, entity);
+}
+
 // Camera collision console command.
 static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 {
@@ -179,20 +188,32 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 	{
 		const char *field = args->ArgV(2), *value = args->ArgV(3);
 		const bool boolean = !std::strcmp(value, "0") || !std::strcmp(value, "1");
-		if (!_stricmp(field, "free") || !_stricmp(field, "campath") || !_stricmp(field, "players"))
+		if (!_stricmp(field, "free") || !_stricmp(field, "campath") || !_stricmp(field, "players") ||
+		    !_stricmp(field, "attached") || !_stricmp(field, "ignoreLocal"))
 		{
 			valid = boolean;
 			if (!_stricmp(field, "free"))
 				settings.Free = !std::strcmp(value, "1");
 			else if (!_stricmp(field, "campath"))
 				settings.Campath = !std::strcmp(value, "1");
+			else if (!_stricmp(field, "attached"))
+				settings.Attached = !std::strcmp(value, "1");
+			else if (!_stricmp(field, "ignoreLocal"))
+				settings.IgnoreLocal = !std::strcmp(value, "1");
 			else
 				settings.Players = !std::strcmp(value, "1");
 		}
-		else if (!_stricmp(field, "radius"))
+		else if (!_stricmp(field, "radius") || !_stricmp(field, "returnHalfLife") ||
+		         !_stricmp(field, "returnSpeed"))
 		{
 			char *end = nullptr;
-			settings.Radius = std::strtod(value, &end);
+			double number = std::strtod(value, &end);
+			if (!_stricmp(field, "radius"))
+				settings.Radius = number;
+			else if (!_stricmp(field, "returnHalfLife"))
+				settings.ReturnHalfLife = number;
+			else
+				settings.ReturnSpeed = number;
 			valid = end != value && !*end;
 		}
 		else if (!_stricmp(field, "response"))
@@ -208,17 +229,58 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 		valid = false;
 	if (!valid || (changed && !MirvCameraCollisionSet(settings)))
 		Tier0_Warning("Camera collision edit rejected. TF2/TF2C EngineTraceClient003 is required when "
-		              "enabled; radius must be finite, 1..64 units.\n");
+		              "enabled; radius 1..64, return half-life 0..10 s, speed 0..1000000; all values must be "
+		              "finite.\n");
 	settings = MirvCameraCollisionGet();
 	Tier0_Msg("Camera collision: free %d, campath %d, radius %.2f, players %d, response %s.\n", settings.Free,
 	          settings.Campath, settings.Radius, settings.Players, settings.Slide ? "slide" : "stop");
+	Tier0_Msg(
+	    "Attachment collision %d; ignore local %d; return half-life %.3f s, maximum speed %.1f units/s.\n",
+	    settings.Attached, settings.IgnoreLocal, settings.ReturnHalfLife, settings.ReturnSpeed);
 	if (argc == 2 || !valid)
-		Tier0_Msg("mirv_cam collision free|campath|players 0|1\n"
-		          "mirv_cam collision radius <1..64> | response stop|slide | reset | status\n"
-		          "Both camera switches default off. Local recorder is ignored; other client-solid player "
+		Tier0_Msg("mirv_cam collision free|campath|attached|players|ignoreLocal 0|1\n"
+		          "mirv_cam collision radius <1..64> | response stop|slide | returnHalfLife <0..10> | "
+		          "returnSpeed <0..1000000> | reset | status\n"
+		          "All collision switches default off. Local player is ignored by default; other "
+		          "client-solid player "
 		          "hulls are optional.\n"
 		          "Correction changes only the live view. Deeply embedded starts may require disabling "
 		          "collision and moving clear.\n");
+}
+static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
+{
+	auto settings = MirvCameraCollisionGet();
+	const int argc = args->ArgC();
+	bool changed = false, valid = true;
+	if (argc == 4 && !_stricmp(args->ArgV(3), "reset"))
+	{
+		MirvCameraAttachedReset();
+		return;
+	}
+	if ((argc == 4 && _stricmp(args->ArgV(3), "status")) ||
+	    (argc == 5 && !_stricmp(args->ArgV(3), "maxDistance")))
+	{
+		const char *value = args->ArgV(argc - 1);
+		char *end = nullptr;
+		double number = std::strtod(value, &end);
+		valid = end != value && !*end;
+		if (argc == 4)
+			settings.FollowHalfLife = number;
+		else
+			settings.FollowMaxDistance = number;
+		changed = valid;
+	}
+	else if (argc != 3 && !(argc == 4 && !_stricmp(args->ArgV(3), "status")))
+		valid = false;
+	if (!valid || (changed && !MirvCameraCollisionSet(settings)))
+		Tier0_Warning("Attachment follow edit rejected: requires TF2/TF2C, finite half-life 0..10 s and "
+		              "maxDistance 1..10000 units.\n");
+	settings = MirvCameraCollisionGet();
+	Tier0_Msg("Attachment positional follow: half-life %.3f s (0 = rigid), maximum lag %.1f units.\n",
+	          settings.FollowHalfLife, settings.FollowMaxDistance);
+	if (argc == 3 || !valid)
+		Tier0_Msg("mirv_cam attach follow <half-life seconds> | maxDistance <units> | reset | "
+		          "status\nDemo-time following affects position only; seeks/cuts reset history.\n");
 }
 // End camera collision console command.
 
@@ -561,6 +623,7 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 		}
 		else if (0 == _stricmp("attach", arg1))
 		{
+			if (argc >= 3 && !_stricmp(args->ArgV(2),"follow")) { MirvCameraAttachFollowCommand(args); return; }
 			if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
 			{
 				Tier0_Warning("mirv_cam attach is only supported for TF2.\n");
@@ -590,6 +653,7 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 					return;
 				}
 
+				MirvCameraAttachedReset();
 				// The captured pose already includes everything, so the offsets must not be applied on top of it.
 				g_MirvCam.m_OffsetForwad = 0;
 				g_MirvCam.m_OffsetLeft = 0;
@@ -706,6 +770,7 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				"mirv_cam attach <entityIndex or part of player name> [<iBoneIndex or part of bone name> [<fXForward> <fYLeft> <fZUp> [<fRotXForward> <fRotYLeft> <fRotZUp>]]] - (TF2) Use the entity (or its bone) as camera source, optionally with offset (same as mirv_cam offset). Use -1 as bone for no bone.\n"
 				"mirv_cam attach capture - Use the current camera (i.e. the free camera from mirv_input camera) as the camera's position and angles relative to the attached target. Do mirv_cam attach first, fly the free camera to the framing you want, then capture and end the free camera with mirv_input end.\n"
 				"mirv_cam attach clear - Clear the camera source.\n"
+				"mirv_cam attach follow [...] - Optional demo-time positional following; 0 keeps rigid attachment.\n"
 				"Use mirv_listplayers to find players and mirv_listbones to find bones. The angles used for bones are controlled by mirv_cam attachMode.\n"
 			);
 			return;

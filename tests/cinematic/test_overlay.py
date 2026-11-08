@@ -17,7 +17,7 @@ fix_command='void callFix(std::initializer_list<const char*> words){struct Args{
 demo_time=native[native.index('bool GetCurrentDemoTime(double &outDemoTime)'):native.index('bool GetDemoTickFromClientTime(')].replace('GetCurrentDemoTime(', 'ActualGetCurrentDemoTime(',1)
 native=native[native.index('// Campath preview uses'):native.index('CON_COMMAND(mirv_campath,')]
 view=(root/'AfxHookSource/RenderView.cpp').read_text();view=view[view.index('case Override_Input:'):view.index('case Override_Aim:')];view=view.replace('case Override_Input:','').replace('break;','')
-view='void applyPreviewView(float&Tx,float&Ty,float&Tz,float&Rx,float&Ry,float&Rz,float&Fov){auto*m_MirvInput=&input;float m_LastFrameTime=0.016f;bool originOrAnglesOverriden=false;auto&m_CamPath=g_Hook_VClient_RenderView.m_CamPath;bool collisionFree=false;float collisionInputX=Tx,collisionInputY=Ty,collisionInputZ=Tz;const CamPath*collisionPath=nullptr;double collisionTime=0;'+view+'}\n'
+view='void applyPreviewView(float&Tx,float&Ty,float&Tz,float&Rx,float&Ry,float&Rz,float&Fov){auto*m_MirvInput=&input;float m_LastFrameTime=0.016f;bool originOrAnglesOverriden=false;auto&m_CamPath=g_Hook_VClient_RenderView.m_CamPath;bool collisionFree=false;const void*attachedIdentity=nullptr;float collisionInputX=Tx,collisionInputY=Ty,collisionInputZ=Tz;const CamPath*collisionPath=nullptr;double collisionTime=0;'+view+'}\n'
 preview_api=(root/'AfxHookSource/RenderView.h').read_text().split('// Shared campath preview controls')[1].split('// Hook_VClient_RenderView')[0]
 preview_api='// Shared campath preview controls'+preview_api
 preamble=r'''
@@ -171,7 +171,7 @@ struct CollisionFakeTrace:CMirvTf2EngineTrace{
  }
 }collisionTrace;
 void*CollisionFactory(const char*name,int*){return collisionFactoryAvailable&&!strcmp(name,"EngineTraceClient003")?&collisionTrace:nullptr;}
-void collisionCommand(std::initializer_list<const char*>v){struct Args:IWrpCommandArgs{std::vector<const char*>V;int ArgC()override{return V.size();}const char*ArgV(int i)override{return V[i];}}a;a.V=v;MirvCameraCollisionCommand(&a);}
+void collisionCommand(std::initializer_list<const char*>v){struct Args:IWrpCommandArgs{std::vector<const char*>V;int ArgC()override{return V.size();}const char*ArgV(int i)override{return V[i];}}a;a.V=v;if(a.V.size()>1&&!strcmp(a.V[1],"attach"))MirvCameraAttachFollowCommand(&a);else MirvCameraCollisionCommand(&a);}
 """
 collision_code=collision_header+collision_stub+collision_abi+collision_core+collision_command+collision_fake
 collision_stage=(root/'AfxHookSource/RenderView.cpp').read_text()
@@ -371,7 +371,7 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  render([&]{manager.Dx9_Destroy();manager.Dx9_Create(&device);});manager.CacheRender(data);frames=device.Frames;render([&]{manager.Dx9_Render();manager.Dx9_Destroy();});check(device.Frames==frames+1,"Queued drawing resumes after device recreation");std::atomic<bool> stop{false};std::thread consumer([&]{renderThread=std::this_thread::get_id();manager.Dx9_Create(&device);while(!stop.load()){manager.Dx9_Render();std::this_thread::yield();}manager.Dx9_Render();manager.Dx9_Render();manager.Dx9_Destroy();});for(int i=0;i<200;++i)manager.CacheRender(data);stop=true;consumer.join();
  check(wrongThread==0,"Concurrent production and consumption keep every D3D call on the consumer thread");
  }
- button("Camera collision");check(widgets.count("Free camera collision")&&widgets.count("Campath collision"),"Overlay exposes independent opt-in camera collision switches");button("Free camera collision");check(commands.back()=="mirv_cam collision free 1","Free collision toggle queues the existing camera console command");button("Campath collision");check(commands.back()=="mirv_cam collision campath 1","Campath collision toggle does not enable the free camera");button("Collide with other players");check(commands.back()=="mirv_cam collision players 0","Player hull filtering is exposed in the overlay");button("Camera collision");frame();frame();
+ button("Camera collision");check(widgets.count("Free camera collision")&&widgets.count("Campath collision"),"Overlay exposes independent opt-in camera collision switches");button("Free camera collision");check(commands.back()=="mirv_cam collision free 1","Free collision toggle queues the existing camera console command");button("Campath collision");check(commands.back()=="mirv_cam collision campath 1","Campath collision toggle does not enable the free camera");button("Attached camera collision");check(commands.back()=="mirv_cam collision attached 1","Attached camera collision has its own switch");button("Ignore local player");check(commands.back()=="mirv_cam collision ignoreLocal 0","Local-player exclusion can be disabled in the overlay");button("Collide with other players");check(commands.back()=="mirv_cam collision players 0","Player hull filtering is exposed in the overlay");button("Camera collision");frame();frame();
  button("Add point");check(g_Hook_VClient_RenderView.m_CamPath.GetSize()==1,"Overlay captures a full camera key");
  g_MirvTime.Time=12;g_Hook_VClient_RenderView.LastCameraOrigin[0]=200;g_Hook_VClient_RenderView.LastCameraFov=170;button("Add point");auto&path=g_Hook_VClient_RenderView.m_CamPath;check(path.GetSize()==2&&path.CanEval(),"Overlay uses custom interpolation with two keys");
  auto captured=path.CaptureState();button("Undo");check(path.GetSize()==1,"Overlay undo reverses capture");button("Redo");check(path.CaptureState()==captured,"Overlay redo restores pose and tangent metadata");
@@ -606,7 +606,50 @@ void CollisionTests(){
  MirvCameraCollisionSettings off;MirvCameraCollisionSet(off);collisionTrace.Boxes.clear();MirvCameraCollisionReset();
 }
 """
-test=test.replace('int main(){try{',collision_tests+'\nint main(){try{CollisionTests();',1)
+collision_tests+=r"""
+void AttachedFollowTests(){
+ const double seed[3]={0,0,0};int path=1,attachment=2;float x=0,y=0,z=0;
+ auto cfg=MirvCameraCollisionGet();cfg.Radius=1;cfg.Free=true;cfg.Players=false;cfg.IgnoreLocal=false;cfg.Slide=false;
+ check(MirvCameraCollisionSet(cfg),"Local-player collision can be enabled separately from other players");
+ collisionTrace.Boxes={{{10,-100,-100},{11,100,100},(void*)1}};MirvCameraCollisionReset();x=20;
+ MirvCameraCollisionApply(true,nullptr,0,1,1,seed,x,y,z);check(x<9,"Disabling local exclusion includes the recorder even with other players disabled");
+ cfg.IgnoreLocal=true;MirvCameraCollisionSet(cfg);x=20;MirvCameraCollisionApply(true,nullptr,0,1.01,1.01,seed,x,y,z);check(x==20,"Local exclusion remains an independent opt-out");
+ cfg.Free=false;cfg.Campath=true;cfg.ReturnHalfLife=.2;cfg.ReturnSpeed=10;MirvCameraCollisionSet(cfg);MirvCameraCollisionReset();collisionTrace.Boxes={{{10,-100,-100},{11,100,100},nullptr}};
+ x=0;MirvCameraCollisionApply(false,&path,0,1,1,seed,x,y,z);x=20;MirvCameraCollisionApply(false,&path,0,1.01,1.01,seed,x,y,z);const double blocked=x;check(blocked<9,"Set up a blocked campath for controlled return");
+ collisionTrace.Boxes.clear();x=20;MirvCameraCollisionApply(false,&path,0,2,2,seed,x,y,z);check(x>blocked&&x<=blocked+1.001,"A blocked path cannot teleport to its goal after a forward stall");
+ const double paused=x;x=20;MirvCameraCollisionApply(false,&path,0,2,2,seed,x,y,z);check(std::abs(x-paused)<1e-6,"Paused campath recovery does not advance");
+ collisionTrace.Boxes={{{14,-100,-100},{15,100,100},nullptr}};
+ double previous=x;
+ for(int i=1;i<=200;++i){if(i==100)collisionTrace.Boxes.clear();x=20;MirvCameraCollisionApply(false,&path,0,2+i*.05,2+i*.05,seed,x,y,z);check(x-previous<=.501&&x>=previous-1e-5,"Return movement obeys its speed cap");if(i<100)check(x<13.001,"Return movement is still collision checked against a second obstacle");previous=x;}
+ check(std::abs(x-20)<.001,"Controlled return eventually rejoins the authored path");
+ MirvCameraCollisionReset();x=20;MirvCameraCollisionApply(false,&path,0,0,0,seed,x,y,z);check(x==20,"An explicit seek resets old catch-up state");
+ cfg.Campath=false;cfg.Attached=true;cfg.IgnoreLocal=false;cfg.Players=false;MirvCameraCollisionSet(cfg);MirvCameraAttachedReset();
+ collisionTrace.Boxes={{{-1,-1,-1},{1,1,1},(void*)2},{{10,-100,-100},{11,100,100},nullptr}};x=20;y=z=0;
+ check(MirvCameraAttachedApply(&attachment,(void*)2,seed,1,x,y,z)&&x>8&&x<9,"An attached camera retracts its boom toward the pivot, ignoring its subject");
+ collisionTrace.Boxes[1].Min[0]=5;x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,1.01,x,y,z);check(x<4,"Attachment contraction is immediate even when the return speed is low");
+ const double contracted=x;collisionTrace.Boxes.resize(1);x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,1.02,x,y,z);check(x>contracted&&x<=contracted+.101,"Attachment extension is gradual after the wall clears");
+ const double movingPivot[3]={5,0,0};const double previousOffset=x;x=25;MirvCameraAttachedApply(&attachment,(void*)2,movingPivot,1.03,x,y,z);check(x>5&&x-5<=previousOffset+.101,"Boom extension follows a moving pivot instead of imposing the return cap on subject movement");
+ collisionTrace.Boxes={{{10,-100,-100},{11,100,100},(void*)1}};MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,2,x,y,z);check(x<9,"Attached collision includes a different local player when requested");
+ collisionTrace.Boxes={{{-1,-1,-1},{1,1,1},(void*)1}};MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)1,seed,2,x,y,z);check(x==20,"The attached subject remains excluded when it is the local player");
+ collisionTrace.Boxes.clear();MirvCameraAttachedReset();x=20;MirvCameraAttachedApply(&attachment,(void*)2,seed,3,x,y,z);const double movedPivot[3]={1,0,0};x=21;MirvCameraAttachedApply(&attachment,(void*)2,movedPivot,3.01,x,y,z);check(x==21,"Collision alone does not add lag to an unobstructed rigid attachment");
+ cfg.Attached=false;cfg.FollowHalfLife=.2;cfg.FollowMaxDistance=128;MirvCameraCollisionSet(cfg);const int queries=collisionTrace.Queries;
+ auto simulate=[&](int fps){MirvCameraAttachedReset();x=y=z=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,1,x,y,z);for(int i=1;i<=fps;++i){x=float(10.0*i/fps);MirvCameraAttachedApply(&attachment,(void*)2,seed,1+double(i)/fps,x,y,z);}return double(x);};
+ const double low=simulate(30),high=simulate(120);check(low>0&&low<10&&std::abs(low-high)<.0001,"Positional follow has the same moving-target response at 30 and 120 FPS");
+ check(collisionTrace.Queries==queries,"Positional follow can run without collision traces");
+ const double frozen=x;for(int i=0;i<10;++i){x=10;MirvCameraAttachedApply(&attachment,(void*)2,seed,2,x,y,z);}check(std::abs(x-frozen)<1e-5,"Demo-time positional follow freezes while paused");
+ cfg.FollowMaxDistance=2;MirvCameraCollisionSet(cfg);x=100;MirvCameraAttachedApply(&attachment,(void*)2,seed,2.01,x,y,z);check(x>=98,"Maximum positional lag is bounded");
+ x=0;MirvCameraAttachedApply(&attachment,(void*)2,seed,1,x,y,z);check(x==0,"Backward seeking resets positional follow");
+ int other=3;x=50;MirvCameraAttachedApply(&other,(void*)3,seed,1.01,x,y,z);check(x==50,"Changing the attachment resets positional follow");
+ collisionCommand({"mirv_cam","collision","attached","1"});check(MirvCameraCollisionGet().Attached,"Console exposes attached-camera collision independently");
+ collisionCommand({"mirv_cam","collision","ignoreLocal","0"});check(!MirvCameraCollisionGet().IgnoreLocal,"Console exposes local-player inclusion");
+ collisionCommand({"mirv_cam","collision","returnHalfLife","0.4"});collisionCommand({"mirv_cam","collision","returnSpeed","50"});check(MirvCameraCollisionGet().ReturnHalfLife==.4&&MirvCameraCollisionGet().ReturnSpeed==50,"Console configures collision return damping and speed");
+ collisionCommand({"mirv_cam","attach","follow","0.3"});collisionCommand({"mirv_cam","attach","follow","maxDistance","256"});check(MirvCameraCollisionGet().FollowHalfLife==.3&&MirvCameraCollisionGet().FollowMaxDistance==256,"Console configures positional follow and lag limit");
+ const auto good=MirvCameraCollisionGet();auto bad=good;bad.FollowHalfLife=-1;check(!MirvCameraCollisionSet(bad)&&MirvCameraCollisionGet().FollowHalfLife==good.FollowHalfLife,"Invalid follow preferences reject atomically");bad=good;bad.ReturnSpeed=std::numeric_limits<double>::infinity();check(!MirvCameraCollisionSet(bad),"Invalid return speed rejects");
+ MirvCameraCollisionSettings off;MirvCameraCollisionSet(off);MirvCameraCollisionReset();collisionTrace.Boxes.clear();
+}
+"""
+
+test=test.replace('int main(){try{',collision_tests+'\nint main(){try{CollisionTests();AttachedFollowTests();',1)
 
 neo=(root/'shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.cpp').read_text()
 neo='extern void TestRecordNeoLabel(int,int);\n'+neo.replace('snprintf(lbl, sizeof(lbl), "%d", labelIndex);','snprintf(lbl, sizeof(lbl), "%d", labelIndex); TestRecordNeoLabel(*frame,labelIndex);')
