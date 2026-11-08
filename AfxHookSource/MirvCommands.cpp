@@ -4278,9 +4278,10 @@ unsigned int g_Tf2DeathcamBlocked = 0;
 
 void Tf2FixObserverMode(const Tf2FixProxyData *data, void *object, void *out)
 {
-	// TF2 shareddefs.h: deathcam=1, freezecam=2, POI=6, roaming=7.
+	// TF2 shareddefs.h and inspected TF2C x64 client: deathcam=1, freezecam=2, POI=6, roaming=7.
 	if (g_Tf2PovDeathcam && data && data->Prop && data->Prop->Name &&
-	    !std::strcmp(data->Prop->Name, "m_iObserverMode") && g_SourceSdkVer == SourceSdkVer_TF2 &&
+	    !std::strcmp(data->Prop->Name, "m_iObserverMode") &&
+	    (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified) &&
 	    g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV() &&
 	    data->ObjectId > 0 && data->ObjectId == g_VEngineClient->GetLocalPlayer() &&
 	    (data->Value.Int == 1 || data->Value.Int == 2))
@@ -4329,9 +4330,9 @@ bool MirvFix_SetPovDeathcam(bool enabled)
 		g_Tf2PovDeathcam = false;
 		return true;
 	}
-	if (g_SourceSdkVer != SourceSdkVer_TF2 || !g_Tf2FixClient)
+	if ((g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified) || !g_Tf2FixClient)
 	{
-		Tier0_Warning("POV deathcam: the TF2 VClient017 interface is unavailable.\n");
+		Tier0_Warning("POV deathcam: the TF2/TF2C VClient017 interface is unavailable.\n");
 		return false;
 	}
 	if (!g_Tf2ObserverProxy)
@@ -4397,13 +4398,13 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			if (argc == 3 && (!std::strcmp(args->ArgV(2), "0") || !std::strcmp(args->ArgV(2), "1")))
 			{
 				if (!MirvFix_SetPovDeathcam(!std::strcmp(args->ArgV(2), "1")))
-					Tier0_Warning("POV deathcam fix unavailable: requires TF2 VClient017 observer receive tables and a successful proxy hook.\n");
+					Tier0_Warning("POV deathcam fix unavailable: requires TF2/TF2C VClient017 observer receive tables and a successful proxy hook.\n");
 			}
 			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
 				Tier0_Warning("Usage: mirv_fix povDeathcam 0|1|status\n");
 			Tier0_Msg("POV deathcam suppression: %s; proxy %s; blocked updates %u.\n",
 				g_Tf2PovDeathcam ? "enabled" : "disabled", g_Tf2ObserverProxy ? "installed" : "not installed", g_Tf2DeathcamBlocked);
-			Tier0_Msg("Enable before death. Local TF2 POV death/freeze modes use roaming instead, allowing HLAE camera control "
+			Tier0_Msg("Enable before death. Local TF2/TF2C POV death/freeze modes use roaming instead, allowing HLAE camera control "
 				"without freeze-frame/mixer entry. Live play and STV pass through. If already frozen, seek before death after enabling.\n");
 			return;
 		}

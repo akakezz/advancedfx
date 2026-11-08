@@ -534,7 +534,7 @@ For a visual check, replay the same section at the same timescale using default,
 Repeat with STV and POV demos. Compare movement smoothness and presentation delay;
 this control cannot replace snapshots missing from the recording.
 
-## TF2 POV death/freeze camera suppression
+## TF2 / TF2C POV death/freeze camera suppression
 
 In **Demo fixes**, enable **Suppress POV deathcam**, or use:
 
@@ -552,7 +552,7 @@ requests a frozen render frame. Suppressing that transition avoids both entry
 effects while HLAE's free camera or campath continues overriding the view. Without
 an HLAE camera override, the native roaming camera is the fallback.
 
-Only the local recorder during non-HLTV TF2 demo playback is affected. Other
+Only the local recorder during non-HLTV TF2 or TF2C/Classified demo playback is affected. Other
 players, live play, STV, ordinary observer modes and other Source games forward
 their original data. The demo file and audio-mixer cvars are left intact. Unsupported
 client interfaces, missing receive metadata and failed hook installation reject
@@ -567,6 +567,25 @@ takes effect on subsequent incoming observer updates. Check `status` after the
 death: its blocked-update count should increase. The hook/controller and ABI
 are tested with engine stubs and Windows cross-compilation; visual/audio behavior
 still needs validation in a complete TF2 installation.
+
+## Overlay render isolation
+
+The overlay draws only when render target zero is the swapchain backbuffer.
+Offscreen EndScene calls (for example while updating a game texture) are skipped
+without consuming the queued UI snapshot or the frame's overlay draw opportunity.
+A later backbuffer scene can draw it. This prevents overlay geometry from being
+written into reusable game textures, where corruption can persist after closing
+an overlay. Device/target-query failures skip drawing.
+
+Rendering explicitly captures the DX9 state block and backs up/restores world,
+view and projection transforms separately, matching ImGui's DX9 backend's driver
+workarounds. Failed capture/transform queries skip the draw. Regression tests
+model offscreen targets, omitted transforms, non-default shader/texture/sampler
+states, failure paths and surface-reference ownership.
+
+Relaunch the game after installing this fix; closing the overlay cannot undo
+pixels an older build already wrote into a cached game texture. Full in-game
+validation is still needed for the affected TF2C build.
 
 ## Rotation authoring and classic export
 

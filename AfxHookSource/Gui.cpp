@@ -119,8 +119,18 @@ public:
 		m_Device = 0;
 	}
 
-	void Dx9_Render()
+	bool Dx9_Render()
 	{
+		if (!m_Device) return false;
+		// Source may end offscreen scenes before the main scene. Drawing into
+		// a material/shadow/atlas texture here corrupts subsequent game frames.
+		IDirect3DSurface9 *target = nullptr, *backbuffer = nullptr;
+		const bool mainTarget = m_Device->GetRenderTarget(0, &target) >= 0 &&
+			m_Device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backbuffer) >= 0 &&
+			target && target == backbuffer;
+		if (target) target->Release();
+		if (backbuffer) backbuffer->Release();
+		if (!mainTarget) return false;
 		CImGuiRenderCache *cache = nullptr;
 		std::list<CImGuiRenderCache *> stale;
 		{
@@ -147,6 +157,7 @@ public:
 		}
 		if (m_CurrentCache)
 			m_CurrentCache->Render(*this);
+		return true;
 	}
 
 	void CacheRender(ImDrawData* draw_data)
@@ -329,6 +340,17 @@ private:
 			IDirect3DStateBlock9* d3d9_state_block = NULL;
 			if (m_Device->CreateStateBlock(D3DSBT_ALL, &d3d9_state_block) < 0)
 				return;
+			// Match ImGui's DX9 backend: explicitly capture, and preserve fixed
+			// transforms separately (some implementations omit them from blocks).
+			D3DMATRIX lastWorld, lastView, lastProjection;
+			if (d3d9_state_block->Capture() < 0 ||
+				m_Device->GetTransform(D3DTS_WORLD, &lastWorld) < 0 ||
+				m_Device->GetTransform(D3DTS_VIEW, &lastView) < 0 ||
+				m_Device->GetTransform(D3DTS_PROJECTION, &lastProjection) < 0)
+			{
+				d3d9_state_block->Release();
+				return;
+			}
 
 			m_Device->SetStreamSource(0, m_pVB, 0, sizeof(CUSTOMVERTEX));
 			m_Device->SetIndices(m_pIB);
@@ -430,6 +452,9 @@ private:
 			}
 
 			// Restore the DX9 state
+			m_Device->SetTransform(D3DTS_WORLD, &lastWorld);
+			m_Device->SetTransform(D3DTS_VIEW, &lastView);
+			m_Device->SetTransform(D3DTS_PROJECTION, &lastProjection);
 			d3d9_state_block->Apply();
 			d3d9_state_block->Release();
 		}
@@ -923,9 +948,8 @@ void On_Direct3DDevice9_EndScene()
 
 	if (m_FirstEndScene && m_Active && g_FontTexture && CameraOverlay::IsOpen())
 	{
-		m_FirstEndScene = false;
-
-		m_ImGuiRernderCacheManager.Dx9_Render();
+		if (m_ImGuiRernderCacheManager.Dx9_Render())
+			m_FirstEndScene = false;
 	}
 }
 

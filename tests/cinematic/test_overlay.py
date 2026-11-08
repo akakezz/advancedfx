@@ -137,6 +137,8 @@ renderer=renderer[renderer.index('class CImGuiRenderCacheManager'):renderer.inde
 constants=sorted(set(re.findall(r'\bD3D[A-Z_0-9]+\b',renderer))-{'D3DVIEWPORT9','D3DMATRIX'})
 render_preamble=r"""
 #include <thread>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <list>
 namespace RenderCacheTest {
@@ -148,19 +150,27 @@ std::thread::id renderThread;std::atomic<int> wrongThread{0},calls{0};
 void gpu(){++calls;if(std::this_thread::get_id()!=renderThread)++wrongThread;}
 struct Buffer{std::vector<unsigned char> Bytes;bool Locked=false;bool *Fail=nullptr;Buffer(size_t n,bool*f):Bytes(n),Fail(f){}int Lock(unsigned,unsigned,void**out,int){gpu();if(Fail&&*Fail){*Fail=false;return -1;}Locked=true;*out=Bytes.data();return 0;}void Unlock(){gpu();Locked=false;}void Release(){gpu();delete this;}};
 using IDirect3DVertexBuffer9=Buffer;using IDirect3DIndexBuffer9=Buffer;using LPDIRECT3DVERTEXBUFFER9=Buffer*;using LPDIRECT3DINDEXBUFFER9=Buffer*;
-struct IDirect3DStateBlock9{void Apply(){gpu();}void Release(){gpu();delete this;}};
+struct IDirect3DSurface9{int References=1,Writes=0;void Release(){gpu();--References;}};
+struct IDirect3DStateBlock9{std::function<int()>Save,Restore;int Capture(){gpu();return Save();}int Apply(){gpu();return Restore();}void Release(){gpu();delete this;}};
 struct IDirect3DDevice9{
- bool FailVertex=false,FailIndex=false;int Draws=0,Frames=0;float FirstX=0;Buffer*VB=nullptr,*IB=nullptr;
+ bool FailVertex=false,FailIndex=false,FailCapture=false,FailTransform=false,FailTarget=false;int Draws=0,Frames=0;float FirstX=0;Buffer*VB=nullptr,*IB=nullptr;
+ using StateMap=std::map<std::pair<int,int>,uintptr_t>;StateMap States;std::map<int,D3DMATRIX>Transforms;
+ IDirect3DSurface9 Back,Offscreen;IDirect3DSurface9*Target=&Back;
+ int GetRenderTarget(int,IDirect3DSurface9**out){gpu();if(FailTarget)return -1;*out=Target;++Target->References;return 0;}
+ int GetBackBuffer(int,int,int,IDirect3DSurface9**out){gpu();*out=&Back;++Back.References;return 0;}
  int CreateVertexBuffer(unsigned n,int,int,int,Buffer**out,void*){gpu();*out=new Buffer(n,&FailVertex);return 0;}
  int CreateIndexBuffer(unsigned n,int,int,int,Buffer**out,void*){gpu();*out=new Buffer(n,&FailIndex);return 0;}
- int CreateStateBlock(int,IDirect3DStateBlock9**out){gpu();++Frames;*out=new IDirect3DStateBlock9;return 0;}
- void SetStreamSource(int,Buffer*v,int,unsigned){gpu();VB=v;}void SetIndices(Buffer*v){gpu();IB=v;}
- void DrawIndexedPrimitive(int,int,int,unsigned,int,unsigned){gpu();++Draws;FirstX=reinterpret_cast<CUSTOMVERTEX*>(VB->Bytes.data())->pos[0];}
- template<class...T>void SetFVF(T...){gpu();}template<class...T>void SetViewport(T...){gpu();}
- template<class...T>void SetRenderState(T...){gpu();}template<class...T>void SetPixelShader(T...){gpu();}
- template<class...T>void SetVertexShader(T...){gpu();}template<class...T>void SetTextureStageState(T...){gpu();}
- template<class...T>void SetSamplerState(T...){gpu();}template<class...T>void SetTransform(T...){gpu();}
- template<class...T>void SetTexture(T...){gpu();}template<class...T>void SetScissorRect(T...){gpu();}
+ int CreateStateBlock(int,IDirect3DStateBlock9**out){gpu();++Frames;auto saved=std::make_shared<StateMap>();
+  *out=new IDirect3DStateBlock9{[this,saved]{if(FailCapture)return -1;*saved=States;return 0;},[this,saved]{States=*saved;return 0;}};return 0;}
+ void SetStreamSource(int,Buffer*v,int,unsigned){gpu();VB=v;States[{1,0}]=(uintptr_t)v;}void SetIndices(Buffer*v){gpu();IB=v;States[{1,1}]=(uintptr_t)v;}
+ void DrawIndexedPrimitive(int,int,int,unsigned,int,unsigned){gpu();++Draws;++Target->Writes;FirstX=reinterpret_cast<CUSTOMVERTEX*>(VB->Bytes.data())->pos[0];}
+ void SetFVF(int v){gpu();States[{1,2}]=v;}void SetViewport(D3DVIEWPORT9*v){gpu();States[{1,3}]=v->Width;}
+ void SetRenderState(int k,int v){gpu();States[{2,k}]=v;}void SetPixelShader(void*v){gpu();States[{3,0}]=(uintptr_t)v;}
+ void SetVertexShader(void*v){gpu();States[{3,1}]=(uintptr_t)v;}void SetTextureStageState(int stage,int k,int v){gpu();States[{4,stage*1000+k}]=v;}
+ void SetSamplerState(int stage,int k,int v){gpu();States[{5,stage*1000+k}]=v;}
+ void SetTransform(int k,const D3DMATRIX*m){gpu();Transforms[k]=*m;}
+ int GetTransform(int k,D3DMATRIX*m){gpu();if(FailTransform)return -1;*m=Transforms[k];return 0;}
+ void SetTexture(int k,void*v){gpu();States[{6,k}]=(uintptr_t)v;}void SetScissorRect(const RECT*v){gpu();States[{7,0}]=v->left;}
 };
 static void*g_FontTexture=nullptr;
 """
@@ -253,6 +263,8 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  engine.Hltv=true;Tf2FixObserverMode(&data,&object,&out);check(povObserved==2,"STV playback bypasses POV suppression");engine.Hltv=false;
  engine.Playing=false;Tf2FixObserverMode(&data,&object,&out);check(povObserved==2,"Live play bypasses POV suppression");engine.Playing=true;
  g_SourceSdkVer=0;Tf2FixObserverMode(&data,&object,&out);check(povObserved==2,"Another Source game bypasses POV suppression");g_SourceSdkVer=SourceSdkVer_TF2;
+ g_SourceSdkVer=SourceSdkVer_TF2Classified;Tf2FixObserverMode(&data,&object,&out);check(povObserved==7,"TF2C uses its verified roaming mode for the local POV recorder");
+ check(MirvFix_SetPovDeathcam(true),"TF2C accepts the VClient017 observer proxy control");g_SourceSdkVer=SourceSdkVer_TF2;
  check(MirvFix_SetPovDeathcam(true)&&povHookCommits==1,"Repeated enable does not stack hooks");
  callFix({"mirv_fix","povDeathcam","0"});Tf2FixObserverMode(&data,&object,&out);check(!MirvFix_GetPovDeathcam()&&povObserved==2,"Disabled POV hook forwards original freeze mode");
  callFix({"mirv_fix","povDeathcam","2"});check(!MirvFix_GetPovDeathcam(),"Invalid POV command does not enable suppression");
@@ -293,6 +305,18 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  const float originalX=data->CmdLists[0]->VtxBuffer[0].pos.x;const int beforeUpload=calls;
  manager.CacheRender(data);check(calls==beforeUpload,"UI producer never allocates, locks or releases a D3D resource");
  data->CmdLists[0]->VtxBuffer[0].pos.x=originalX+100;render([&]{manager.Dx9_Render();});check(device.Draws>0&&device.FirstX==originalX,"Render thread uploads an owned CPU snapshot, not live ImGui buffers");data->CmdLists[0]->VtxBuffer[0].pos.x=originalX;
+
+ auto gameState=device.States;D3DMATRIX gameMatrix{};gameMatrix.m[0][0]=17;gameMatrix.m[3][1]=42;
+ render([&]{device.States[{99,1}]=123;device.States[{3,0}]=77;device.States[{3,1}]=88;device.States[{6,0}]=99;device.States[{5,D3DSAMP_MINFILTER}]=123;device.States[{2,D3DRS_FOGENABLE}]=1;device.SetTransform(D3DTS_WORLD,&gameMatrix);device.SetTransform(D3DTS_VIEW,&gameMatrix);device.SetTransform(D3DTS_PROJECTION,&gameMatrix);});gameState=device.States;
+ render([&]{manager.Dx9_Render();});check(device.States==gameState,"Explicit state capture restores bindings, shaders, textures and render/sampler state");
+ check(device.Transforms[D3DTS_WORLD].m[0][0]==17&&device.Transforms[D3DTS_VIEW].m[3][1]==42&&device.Transforms[D3DTS_PROJECTION].m[0][0]==17,"World/view/projection survive a driver whose state blocks omit transforms");
+ auto beforeOffscreen=device.Draws;manager.CacheRender(data);render([&]{device.Target=&device.Offscreen;check(!manager.Dx9_Render(),"Offscreen EndScene is not accepted as the overlay frame");});
+ check(device.Draws==beforeOffscreen&&device.Offscreen.Writes==0&&device.States==gameState,"Overlay cannot write UI geometry into a game atlas or shadow target");
+ render([&]{device.Target=&device.Back;check(manager.Dx9_Render(),"A later backbuffer scene can render the pending overlay");});check(device.Draws>beforeOffscreen,"Offscreen rejection does not discard queued UI data");
+ auto beforeCaptureFail=device.Draws;render([&]{device.FailCapture=true;manager.Dx9_Render();device.FailCapture=false;});check(device.Draws==beforeCaptureFail&&device.States==gameState,"Failed state capture skips drawing without changing game state");
+ render([&]{device.FailTransform=true;manager.Dx9_Render();device.FailTransform=false;});check(device.Draws==beforeCaptureFail&&device.States==gameState,"Failed transform backup skips drawing without changing game state");
+ render([&]{device.FailTarget=true;manager.Dx9_Render();device.FailTarget=false;});check(device.Draws==beforeCaptureFail,"Unavailable render target skips overlay drawing");
+ check(device.Back.References==1&&device.Offscreen.References==1,"Render-target probes release every acquired surface reference");
  auto draws=device.Draws;manager.CacheRender(data);device.FailIndex=true;render([&]{manager.Dx9_Render();});check(device.Draws==draws&&!device.VB->Locked,"Index lock failure unlocks the vertex buffer and skips the frame");
  for(int i=0;i<12;++i){data->CmdLists[0]->VtxBuffer[0].pos.x=originalX+i;manager.CacheRender(data);}data->CmdLists[0]->VtxBuffer[0].pos.x=originalX;auto frames=device.Frames;render([&]{for(int i=0;i<12;++i)manager.Dx9_Render();});check(device.Frames-frames==12,"Renderer retains the newest UI snapshot across render frames without producer updates");check(device.FirstX==originalX+11,"The newest pointer/UI snapshot is the one uploaded");
  frames=device.Frames;manager.CacheRender(nullptr);render([&]{manager.Dx9_Render();manager.Dx9_Render();});check(device.Frames==frames,"An explicit empty UI frame clears the retained geometry without resurrecting old panels");

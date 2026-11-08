@@ -3188,7 +3188,7 @@ void Draw()
 				if (ImGui::Checkbox("Suppress POV deathcam", &deathcam) && g_VEngineClient)
 					g_VEngineClient->ClientCmd_Unrestricted(deathcam ? "mirv_fix povDeathcam 1" : "mirv_fix povDeathcam 0");
 				ImGui::TextWrapped("Enable before the recorder dies. Keeps death/freeze camera effects from "
-					"freezing HLAE's view or selecting the freeze-cam sound mixer. Applies only to TF2 POV demos.");
+					"freezing HLAE's view or selecting the freeze-cam sound mixer. Applies only to TF2/TF2C POV demos.");
 				static double interpolation = .1;
 				bool active = MirvFix_GetPlayerInterpolation() >= 0;
 				if (active)
