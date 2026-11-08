@@ -163,6 +163,66 @@ bool CamPath::UpdateKey(double oldTime, double newTime, const CamPathValue &valu
 	keys[newTime] = value;
 	return ReplaceKeys(keys);
 }
+bool CamPath::Retime(const std::vector<double> &arrivals)
+{
+	if (arrivals.size() != m_Map.size())
+		return false;
+	size_t i = 0;
+	bool moved = false;
+	for (const auto &key : m_Map)
+	{
+		if (!std::isfinite(arrivals[i]) || (i && arrivals[i] <= arrivals[i - 1]))
+			return false;
+		moved |= arrivals[i++] != key.first;
+	}
+	if (!moved)
+		return true;
+	CamPath work;
+	work.RestoreState(CaptureState());
+	// Freeze effective derivatives before changing time. Keeping degrees/second
+	// or units/second unchanged stretches handles and can create whole turns.
+	if (m_RotationInterpMethod == QI_CUSTOM && work.CanEval() && !work.MakeScalarCurvesEditable())
+		return false;
+	if (work.CanEval())
+		work.BakeTangents();
+	auto keys = work.m_Map;
+	CInterpolationMap<CamPathValue> result;
+	i = 0;
+	for (auto key = keys.begin(); key != keys.end(); ++key, ++i)
+	{
+		auto &value = key->second;
+		if (m_RotationInterpMethod == QI_CUSTOM && work.m_RInterp->CanEval())
+			value.SetEulerAngles(
+			    static_cast<CEulerHermiteQuaternionInterpolation<CamPathValue> *>(work.m_RInterp)
+			        ->EvalAngles(key->first));
+		for (int side = 0; side < 2; ++side)
+		{
+			if ((!side && !i) || (side && i + 1 == arrivals.size()))
+				continue;
+			const auto left = side ? key : std::prev(key), right = std::next(left);
+			const size_t a = side ? i : i - 1;
+			const double oldSpan = right->first - left->first - left->second.HoldDuration;
+			const double newSpan = arrivals[a + 1] - arrivals[a] - left->second.HoldDuration;
+			if (newSpan < 0 || (oldSpan > 0 && newSpan <= 0))
+				return false;
+			const double scale = newSpan > 0 ? oldSpan / newSpan : 1;
+			for (int ch = 0; ch < 7; ++ch)
+			{
+				value.*(side ? TangentOut[ch] : TangentIn[ch]) *= scale;
+				(side ? value.AccelerationOut[ch] : value.AccelerationIn[ch]) *= scale * scale;
+			}
+		}
+		result.emplace(arrivals[i], value);
+	}
+	if (!work.ReplaceKeys(result))
+		return false;
+	if (work.m_PositionInterpMethod != m_PositionInterpMethod || work.m_FovInterpMethod != m_FovInterpMethod)
+		RestoreState(work.CaptureState());
+	else
+		return ReplaceKeys(result);
+	return true;
+}
+
 bool CamPath::AddPose(double time, const CamPathValue &pose)
 {
 	if (!std::isfinite(time) || !ValidValue(pose))
@@ -322,8 +382,7 @@ bool CamPath::MakeScalarCurvesEditable()
 }
 bool CamPath::BakeTangents()
 {
-	if (!CanEval() || (m_PositionInterpMethod != DI_CUSTOM && m_PositionInterpMethod != DI_LINEAR) ||
-		(m_FovInterpMethod != DI_CUSTOM && m_FovInterpMethod != DI_LINEAR))
+	if (!CanEval())
 		return false;
 	auto keys = m_Map;
 	CInterpolation<double> *scalars[] = {m_XInterp, m_YInterp, m_ZInterp, m_FovInterp};
@@ -1477,7 +1536,8 @@ bool CamPath::Modifier::operator==(const Modifier &b) const
 {
 	if (Type != b.Type || Strength != b.Strength || Phase != b.Phase || Octaves != b.Octaves ||
 	    Roughness != b.Roughness || Window != b.Window || Damping != b.Damping || Envelope != b.Envelope ||
-	    Direction != b.Direction || Power != b.Power)
+	    Direction != b.Direction || Power != b.Power || Lower != b.Lower || Upper != b.Upper ||
+		Softness != b.Softness || Rate != b.Rate || Scale != b.Scale || Offset != b.Offset || Pivot != b.Pivot || PingPong != b.PingPong)
 		return false;
 	if (Begin != b.Begin || End != b.End || FadeIn != b.FadeIn || FadeOut != b.FadeOut ||
 		Frequency != b.Frequency || Seed != b.Seed || Enabled != b.Enabled || CameraSpace != b.CameraSpace)
@@ -1510,8 +1570,14 @@ bool CamPath::ValidModifiers(const std::vector<NoiseModifier> &modifiers)
 		    m.Roughness > 1 || !std::isfinite(m.Window) || m.Window <= 0 || m.Window > 10 ||
 		    !std::isfinite(m.Damping) || m.Damping < .05 || m.Damping > 2 || !std::isfinite(m.Power) ||
 		    m.Power < 0 || m.Power > 16 || int(m.Direction) < 0 || int(m.Direction) > 2 ||
-		    (int(m.Type) >= int(ModifierType::Expo) && m.Frequency > 16) || m.Envelope.size() > 128 ||
+		    (IsTimingModifier(m.Type) && m.Frequency > 16) || m.Envelope.size() > 128 ||
 			(int(m.Type) >= 2 && m.CameraSpace))
+			return false;
+		if (!std::isfinite(m.Lower) || !std::isfinite(m.Upper) || std::abs(m.Lower) > 1e9 ||
+		    std::abs(m.Upper) > 1e9 || m.Lower > m.Upper || !std::isfinite(m.Softness) || m.Softness < 0 ||
+		    m.Softness > (m.Upper - m.Lower) * .5 || !std::isfinite(m.Rate) || m.Rate <= 0 || m.Rate > 1e6 ||
+		    !std::isfinite(m.Scale) || std::abs(m.Scale) > 1000 || !std::isfinite(m.Offset) ||
+		    std::abs(m.Offset) > 1e6 || !std::isfinite(m.Pivot) || std::abs(m.Pivot) > 1e6)
 			return false;
 		if (!m.Envelope.empty() &&
 			(m.Envelope.size() < 2 || m.Envelope.front().Time != 0 || m.Envelope.back().Time != 1))
@@ -1622,6 +1688,11 @@ const char *CamPath::ModifierTypeName(ModifierType type)
 		return "bounce";
 	case ModifierType::Elastic:
 		return "elastic";
+	case ModifierType::Limits: return "limits";
+	case ModifierType::Slew: return "slew";
+	case ModifierType::Stepped: return "stepped";
+	case ModifierType::Repeat: return "repeat";
+	case ModifierType::Remap: return "remap";
 	case ModifierType::Count:
 		break;
 	}
@@ -1731,13 +1802,13 @@ double CamPath::ModifierSampleRate(const NoiseModifier &m)
 		return m.Frequency * std::pow(2.0, m.Octaves - 1);
 	if (m.Type == ModifierType::Smooth)
 		return 1 / m.Window;
-	if (int(m.Type) >= int(ModifierType::Expo))
-		return (std::max)(m.Frequency, m.Power) / (m.End - m.Begin);
+	if (IsTimingModifier(m.Type) || m.Type == ModifierType::Repeat)
+		return (std::max)(m.Frequency, m.Type == ModifierType::Repeat ? 0.0 : m.Power) / (m.End - m.Begin);
 	return m.Frequency;
 }
 double CamPath::ModifierInfluence(const NoiseModifier &m, double time)
 {
-	if (!m.Enabled || time <= m.Begin || time >= m.End)
+	if (!m.Enabled || (m.Type >= ModifierType::Limits ? (time < m.Begin || time > m.End) : (time <= m.Begin || time >= m.End)))
 		return 0;
 	double envelope = m.Strength;
 	if (!m.Envelope.empty())
@@ -1853,7 +1924,7 @@ std::vector<double> ExpoProgress(const CamPath::Modifier &m, double amount)
 void ApplyFilterModifier(CamPathValue &value, const CamPath::NoiseModifier &m, double time,
 						 const double target[7])
 {
-	const double influence = int(m.Type) >= int(CamPath::ModifierType::Expo)
+	const double influence = CamPath::IsTimingModifier(m.Type)
 	                             ? (m.Enabled && m.Strength > 0 && m.Begin < time && time < m.End ? 1.0 : 0.0)
 	                             : CamPath::ModifierInfluence(m, time);
 	if (influence == 0)
@@ -1870,7 +1941,7 @@ void ApplyFilterModifier(CamPathValue &value, const CamPath::NoiseModifier &m, d
 	bool rotated = false;
 	for (int ch = 0; ch < 7; ++ch)
 	{
-		const double mix = int(m.Type) >= int(CamPath::ModifierType::Expo)
+		const double mix = CamPath::IsTimingModifier(m.Type)
 		                       ? influence * (m.Amplitude[ch] != 0 ? 1 : 0)
 		                       : influence * m.Amplitude[ch];
 		if (mix == 0)
@@ -1952,6 +2023,15 @@ void CamPath::BuildModifierCurves()
 		}
 	for (const auto &m : m_Modifiers)
 	{
+		if (m.Enabled && m.Type == ModifierType::Stepped && m.Begin < end && m.End > begin)
+		{
+			const double first =
+			    (std::max)(0.0, std::ceil(((std::max)(begin, m.Begin) - m.Begin) * m.Frequency));
+			const double last = std::floor(((std::min)(end, m.End) - m.Begin) * m.Frequency);
+			const double stride = (std::max)(1.0, std::ceil((last - first + 1) / 2048));
+			for (double k = first; k <= last; k += stride)
+				add(m.Begin + k / m.Frequency);
+		}
 		add(m.Begin);
 		add(m.End);
 		add(m.Begin + m.FadeIn);
@@ -2012,7 +2092,7 @@ void CamPath::BuildModifierCurves()
 				old.Enabled && old.Type == m.Type &&
 				(m.Type == ModifierType::Smooth ? old.Window == m.Window
 												: old.Frequency == m.Frequency && old.Damping == m.Damping);
-			if (int(m.Type) >= int(ModifierType::Expo))
+			if (IsTimingModifier(m.Type) || m.Type >= ModifierType::Limits)
 				reuse = reuse && old == m;
 			for (int ch = 0; ch < 7; ++ch)
 			{
@@ -2078,7 +2158,7 @@ void CamPath::BuildModifierCurves()
 						v[i] = position;
 					}
 				}
-				else if (int(m.Type) >= int(ModifierType::Expo) && m.Amplitude[ch] != 0)
+				else if (IsTimingModifier(m.Type) && m.Amplitude[ch] != 0)
 				{
 					const auto source = v;
 					std::vector<double> slopes;
@@ -2126,6 +2206,64 @@ void CamPath::BuildModifierCurves()
 							               : sample(m.Begin + (m.End - m.Begin) * u);
 						}
 				}
+				else if (m.Type >= ModifierType::Limits && m.Amplitude[ch] != 0)
+				{
+					const auto source = v;
+					auto sample = [&](double time) {
+						auto right = std::lower_bound(m_ModifierTimes.begin(), m_ModifierTimes.end(), time);
+						if (right == m_ModifierTimes.begin())
+							return source.front();
+						if (right == m_ModifierTimes.end())
+							return source.back();
+						const size_t b = right - m_ModifierTimes.begin(), a = b - 1;
+						const double u =
+						    (time - m_ModifierTimes[a]) / (m_ModifierTimes[b] - m_ModifierTimes[a]);
+						return source[a] + (source[b] - source[a]) * u;
+					};
+					for (size_t i = 0; i < n; ++i)
+					{
+						if ((m.Type == ModifierType::Stepped || m.Type == ModifierType::Repeat) &&
+						    (m_ModifierTimes[i] < m.Begin || m_ModifierTimes[i] > m.End))
+							continue;
+						if (m.Type == ModifierType::Limits)
+						{
+							double x = std::clamp(source[i], m.Lower, m.Upper);
+							if (m.Softness > 0)
+							{
+								if (x < m.Lower + m.Softness)
+									x = m.Lower + m.Softness * std::exp((source[i] - m.Lower - m.Softness) /
+									                                    m.Softness);
+								else if (x > m.Upper - m.Softness)
+									x = m.Upper - m.Softness * std::exp((m.Upper - m.Softness - source[i]) /
+									                                    m.Softness);
+							}
+							v[i] = x;
+						}
+						else if (m.Type == ModifierType::Slew && i)
+						{
+							const double step = m.Rate * (m_ModifierTimes[i] - m_ModifierTimes[i - 1]);
+							v[i] = std::clamp(source[i], v[i - 1] - step, v[i - 1] + step);
+						}
+						else if (m.Type == ModifierType::Stepped)
+							v[i] = sample(m.Begin +
+							              std::floor((m_ModifierTimes[i] - m.Begin) * m.Frequency + 1e-9) /
+							                  m.Frequency);
+						else if (m.Type == ModifierType::Repeat)
+						{
+							const double cycles =
+							    (m_ModifierTimes[i] - m.Begin) / (m.End - m.Begin) * m.Frequency;
+							double u = cycles - std::floor(cycles);
+							if (m.PingPong)
+							{
+								const double p = 2 * (cycles - std::floor(cycles));
+								u = p <= 1 ? p : 2 - p;
+							}
+							v[i] = sample(m.Begin + u * (m.End - m.Begin));
+						}
+						else if (m.Type == ModifierType::Remap)
+							v[i] = m.Pivot + (source[i] - m.Pivot) * m.Scale + m.Offset;
+					}
+				}
 				AutoTangentSettings settings;
 				settings.Method = AutoTangentMethod::Monotone;
 				ComputeAutoTangents(m_ModifierTimes.data(), v.data(), (int)n, settings, curve.Slopes[ch]);
@@ -2153,7 +2291,7 @@ CamPathValue CamPath::Eval(double time)
 	for (size_t index = 0; index < m_Modifiers.size(); ++index)
 	{
 		const auto &m = m_Modifiers[index];
-		if (int(m.Type) >= int(ModifierType::Expo)
+		if (IsTimingModifier(m.Type)
 		        ? (!m.Enabled || m.Strength == 0 || time <= m.Begin || time >= m.End)
 				: ModifierInfluence(m, time) == 0)
 			continue;
@@ -2179,7 +2317,14 @@ CamPathValue CamPath::Eval(double time)
 				target[ch] = 0;
 				continue;
 			}
-			if (a == b)
+			if (m.Type == ModifierType::Stepped)
+				target[ch] = curve.Values[ch][time == m_ModifierTimes[b] ? b : a];
+			else if (m.Type == ModifierType::Slew && a != b)
+			{
+				const double u = (time - m_ModifierTimes[a]) / (m_ModifierTimes[b] - m_ModifierTimes[a]);
+				target[ch] = curve.Values[ch][a] + u * (curve.Values[ch][b] - curve.Values[ch][a]);
+			}
+			else if (a == b)
 				target[ch] = curve.Values[ch][b];
 			else
 			{
@@ -2396,11 +2541,11 @@ bool CamPath::SaveToString(std::string &xmlString)
 			for (int i = 0; i < 15; ++i)
 				p->append_attribute(doc.allocate_attribute(names[i], double2xml(doc, values[i])));
 			const char *extraNames[] = {"strength", "phase", "octaves", "roughness", "window",
-				"damping", "power", "direction"};
+				"damping", "power", "direction", "lower", "upper", "softness", "rate", "scale", "offset", "pivot", "pingPong"};
 			const double extra[] = {m.Strength, m.Phase, double(m.Octaves), m.Roughness, m.Window,
-				m.Damping, m.Power, double(m.Direction)},
-						 defaults[] = {1, 0, 1, .5, .25, .7, 5, 2};
-			for (int i = 0; i < 8; ++i)
+				m.Damping, m.Power, double(m.Direction), m.Lower, m.Upper, m.Softness, m.Rate, m.Scale, m.Offset, m.Pivot, m.PingPong ? 1.0 : 0.0},
+						 defaults[] = {1, 0, 1, .5, .25, .7, 5, 2, 0, 179, 0, 90, 1, 0, 0, 0};
+			for (int i = 0; i < 16; ++i)
 				if (extra[i] != defaults[i])
 					p->append_attribute(doc.allocate_attribute(extraNames[i], double2xml(doc, extra[i])));
 			if (!m.Envelope.empty())
@@ -2897,6 +3042,12 @@ bool CamPath::LoadInternal(std::string xml)
 							bOk = false;
 						else
 							m.Direction = (EaseDirection)int(direction);
+						const char *controlNames[] = {"lower", "upper", "softness", "rate", "scale", "offset", "pivot"};
+						double *control[] = {&m.Lower, &m.Upper, &m.Softness, &m.Rate, &m.Scale, &m.Offset, &m.Pivot};
+						for (int c = 0; c < 7; ++c) if (p->first_attribute(controlNames[c]) && !number(p, controlNames[c], *control[c])) bOk = false;
+						double pingPong = 0;
+						if (p->first_attribute("pingPong") && (!number(p, "pingPong", pingPong) || (pingPong != 0 && pingPong != 1))) bOk = false;
+						m.PingPong = pingPong != 0;
 						if (auto *envelope = p->first_node("envelope"))
 						{
 							for (auto *point = envelope->first_node(); point; point = point->next_sibling())

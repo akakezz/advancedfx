@@ -118,6 +118,18 @@ nearest that key's current evaluated angles. This prevents a wrapped capture nea
 ±180° from inserting an unintended revolution, including after subdivision.
 Explicit numeric winding and authored multi-turn paths remain available.
 
+Retiming keys in the sequencer, inspector or graph preserves the shaped editable
+intervals. Effective Auto tangents are frozen to Free and incoming/outgoing
+velocities are scaled by their own interval duration ratios; accelerations use
+the squared ratios. This avoids stretching a handle into an overshoot or Euler
+revolution when making a shot longer. Hold durations and explicit angle winding
+are retained. Crossing key order, collisions and invalid hold timings reject the
+whole edit. With editable Euler rotation, Classic position/FOV curves convert
+through the existing exact editable conversion when necessary to retain their
+shape. Reset tangents to Auto explicitly if you want the interpolation solver to
+recalculate a different curve after retiming. Unequal interval duration changes
+can change speed continuity even though the spatial curves are preserved.
+
 The sequencer keeps classic zero-based key indices when zooming or panning past
 hidden keys. Zoom changes visibility, not numbering.
 
@@ -296,6 +308,29 @@ world units or degrees; Smooth, Spring and the timing modifiers use channel stre
 | Expo timing | Shapes a positive travel rate across the chosen range. In accelerates, Out decelerates, In-out does both. Power 0 is neutral; 0–16 is supported. Fades, channel strengths and envelopes shape the rate; normalization keeps the range duration fixed without backward travel. |
 | Bounce timing | Rebounds through the sampled range. Adjust cycles (up to 16), damping and In/Out/In-out direction. Reversals are intentional. |
 | Elastic timing | Overshoots and oscillates through the sampled range. Cycles, damping and direction control the effect. Beyond-range progress extends the displacement between the range endpoints, instead of reading outside the path. |
+| Value limits | Lower/upper bounds with an optional soft knee. Use full strength and zero fades for strict bounds, including both range endpoints. Soft width is at most half the bound span. |
+| Slew / rate limit | Caps each selected channel's change per second. Position uses units/s; Euler angles and FOV use degrees/s. It limits components, not the total quaternion angular speed or total XYZ speed. |
+| Stepped | Samples and holds each selected channel at the chosen Hz, aligned to the range begin. Use full strength and zero fades for discrete holds. |
+| Repeat / ping-pong | Reuses the range's sampled movement for the chosen number of cycles. Ping-pong makes each cycle a complete forward/backward trip. Matching endpoint poses are needed for a continuous ordinary repeat. |
+| Value remap | Applies `pivot + (input - pivot) * scale + offset` to selected channels. Useful for reducing roll, changing FOV or amplifying vertical motion without moving keys. |
+
+The five control modifiers use the same stack, range, strengths, envelope and
+history as existing modifiers. Zero fades let them affect both range endpoints;
+partial strengths and fades blend toward the original signal and relax bounds
+or rate caps. A partial-range slew limiter can require an entry/exit transition;
+use fades to avoid a jump, accepting that the transition is not rate-limited.
+Sampled slew reconstruction is linear so it cannot introduce an inter-sample
+rate overshoot. These are value controls, not replacements for retiming.
+
+Stepped boundaries and repeat effects share the bounded sampling budget. Very
+long ranges or high frequencies can exceed its temporal resolution; classic XML
+export also approximates abrupt jumps at its sampling resolution.
+
+Console types are `limits`, `slew`, `stepped`, `repeat`, and `remap`. The additional
+`modifier set` fields are `lower`, `upper`, `softness`, `rate`, `scale`, `offset`,
+`pivot`, and `pingPong` (0/1). Frequency is Hz for Stepped and cycles per range for
+Repeat. Select channels with their existing strength fields, e.g. `fov` or `yaw`.
+
 
 **Modifier preset → Add preset to range** appends editable settings; it does not
 replace the existing stack. Presets are Handheld, Impact shake, Expo in, Expo out,
@@ -351,7 +386,7 @@ Filters cache deterministic samples, interpolate them with shared Hermite
 slopes, and reuse the result when seeking or rendering frames out of order.
 Their sampling grid is bounded; very long paths and very rapid effects have a
 finite filtering resolution. A path supports 64 modifiers, including up to eight
-enabled sampled stages (Smooth, Spring, Expo, Bounce or Elastic). Modifier order determines each filter's input. Drag the boundaries and fade markers in the shaded strip
+enabled sampled stages (all types except Noise and Oscillation). Modifier order determines each filter's input. Drag the boundaries and fade markers in the shaded strip
 above the graph, or use exact numeric values. Envelope edges use smooth fades.
 The dim curve is the unmodified evaluated path; the bright curve includes the
 modifier, including movement during an explicitly covered hold. A stationary

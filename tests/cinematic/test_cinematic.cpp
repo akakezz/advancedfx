@@ -575,6 +575,11 @@ void consoleProfiles()
 	call({"mirv_campath", "modifier", "preset", "missing", "0", "2"});
 	check(path.CaptureState() == presetState, "Invalid preset/direction cannot change the stack");
 	call({"mirv_campath", "modifier", "clear"});
+	call({"mirv_campath", "modifier", "remap", "0", "2", "fov", "1"});
+	call({"mirv_campath", "modifier", "set", "0", "scale", "0.5"});
+	call({"mirv_campath", "modifier", "set", "0", "offset", "5"});
+	check(path.GetModifiers()[0].Scale==.5 && path.GetModifiers()[0].Offset==5, "Console exposes control modifier fields");
+	call({"mirv_campath", "modifier", "clear"});
 	call({"mirv_campath", "speedProfile", "point", "0", "0"});
 	check(path.GetDistanceTiming() && path.GetSpeedProfile().front().Speed == 0,
 		  "Console edits whole-path speed profile");
@@ -1229,6 +1234,161 @@ void nextEditingRegressions()
 		near(line.Eval(t).Y, left->second.Y + (right->second.Y - left->second.Y) * u, .05);
 	}
 }
+void shapePreservingRetiming()
+{
+	for (auto method : {AutoTangentMethod::Spline, AutoTangentMethod::CatmullRom, AutoTangentMethod::Monotone,
+	                    AutoTangentMethod::MinimumJerk})
+		for (bool edited : {false, true})
+			for (bool hold : {false, true})
+			{
+				CamPath path;
+				custom(path);
+				path.SetAutoTangentSettings({method, 0});
+				for (int i = 0; i < 5; ++i)
+					path.Add(i, CamPathValue(10 * i, i * i, 2 * i, 5 * i, std::remainder(170 + 20 * i, 360.0),
+					                         2 * i, 60 + 3 * i));
+				if (hold)
+					check(path.SetKeyHold(1, 1.25), "Create retiming hold");
+				if (edited)
+				{
+					check(path.BakeTangents(), "Bake edited retiming handles");
+					path.SetTangentWeight(CamPath::CH_RYAW, true, true, .8, .8);
+				}
+				CamPath original;
+				original.RestoreState(path.CaptureState());
+				const std::vector<double> times = {0, 1.5, 12, 13, 15};
+				check(path.Retime(times), "Stretch intervals without stretching shaped handles");
+				for (int key = 0; key < 4; ++key)
+				{
+					const double h = hold && key == 1 ? .25 : 0;
+					for (int i = 0; i <= 60; ++i)
+					{
+						double u = i / 60.0;
+						auto a = original.Eval(key + h + u * (1 - h));
+						auto b = path.Eval(times[key] + h + u * (times[key + 1] - times[key] - h));
+						near(a.X, b.X, 1e-6);
+						near(a.Y, b.Y, 1e-6);
+						near(a.Fov, b.Fov, 1e-6);
+						near(std::abs(DotProduct(a.R, b.R)), 1, 1e-8);
+					}
+				}
+				const auto valid = path.CaptureState();
+				check(!path.Retime({0, 2, 1, 3, 4}) && path.CaptureState() == valid,
+				      "Crossed key order rejects atomically");
+				check(!path.Retime({0, 1}) && path.CaptureState() == valid,
+				      "Missing retime arrivals reject atomically");
+				check(path.Retime({0, 1, 2, 3, 4}),
+				      "Repeated compression preserves the original shaped curve");
+				for (int i = 0; i <= 200; ++i)
+					near(std::abs(DotProduct(path.Eval(i * .02).R, original.Eval(i * .02).R)), 1, 1e-8);
+			}
+	CamPath mixed;
+	mixed.RotationInterpMethod_set(CamPath::QI_CUSTOM);
+	for (int i = 0; i < 5; ++i)
+		mixed.Add(i, CamPathValue(i * 10, i * i, 0, 0, 170 + 10 * i, 0, 60 + 5 * i));
+	CamPath before;
+	before.RestoreState(mixed.CaptureState());
+	check(mixed.Retime({0, 1, 12, 13, 14}), "Mixed Classic scalars and editable Euler retime safely");
+	check(mixed.PositionInterpMethod_get() == CamPath::DI_CUSTOM,
+	      "Classic scalar curves convert through the existing exact editable conversion");
+	for (int key = 0; key < 4; ++key)
+		for (int i = 0; i <= 50; ++i)
+		{
+			double u = i / 50.0;
+			const double times[] = {0, 1, 12, 13, 14};
+			near(mixed.Eval(times[key] + u * (times[key + 1] - times[key])).X, before.Eval(key + u).X, 1e-6);
+		}
+	CamPath turns; custom(turns);
+	turns.Add(0,CamPathValue(0,0,0,0,0,0,90));
+	turns.Add(2,CamPathValue(20,0,0,0,720,0,90));
+	check(turns.Retime({0,20}), "Intentional multi-turn animation retimes without losing winding");
+	near(turns.Eval(10).GetEulerAngles().Yaw,360,1e-6);
+	near(turns.Eval(20).GetEulerAngles().Yaw,720,1e-6);
+
+}
+
+void pathControlModifiers()
+{
+	using Type = CamPath::ModifierType;
+	CamPath path;
+	custom(path);
+	path.PositionInterpMethod_set(CamPath::DI_LINEAR);
+	path.FovInterpMethod_set(CamPath::DI_LINEAR);
+	for (int i = 0; i <= 4; ++i)
+		path.Add(i, CamPathValue(100 * i, 0, 0, 0, 170 + 30 * i, 0, 60 + 20 * i));
+	const auto source = path.CaptureState();
+	CamPath::Modifier m;
+	m.Begin = 0;
+	m.End = 4;
+	m.FadeIn = m.FadeOut = 0;
+	m.Amplitude[0] = 1;
+	for (Type type : {Type::Limits, Type::Slew, Type::Stepped, Type::Repeat, Type::Remap})
+	{
+		m.Type = type;
+		m.Lower = 80;
+		m.Upper = 160;
+		m.Rate = 20;
+		m.Scale = 2;
+		m.Offset = 3;
+		m.Pivot = 50;
+		m.Frequency = 2;
+		m.PingPong = true;
+		check(path.SetModifiers({m}), "Every control modifier validates");
+		if (type == Type::Limits)
+			for (int i = 1; i < 400; ++i)
+				check(path.Eval(i * .01).X >= 80 - 1e-7 && path.Eval(i * .01).X <= 160 + 1e-7,
+				      "Hard limits bound the evaluated channel");
+		if (type == Type::Slew)
+			for (int i = 2; i < 390; ++i)
+				check(std::abs(path.Eval(i * .01).X - path.Eval((i - 1) * .01).X) <= .200001,
+				      "Slew cap holds between cached samples");
+		if (type == Type::Stepped)
+		{
+			near(path.Eval(.6).X, 50, .001);
+			near(path.Eval(.95).X, 50, .001);
+			near(path.Eval(1.1).X, 100, .001);
+		}
+		if (type == Type::Repeat)
+		{
+			near(path.Eval(1).X, 400, .001);
+			near(path.Eval(3).X, 400, .001);
+		}
+		if (type == Type::Remap)
+			near(path.Eval(1).X, 153, .001);
+		near(path.Eval(1).Fov, 80);
+		if (type == Type::Limits)
+		{
+			near(path.Eval(0).X, 80);
+			near(path.Eval(4).X, 160);
+		}
+		if (type == Type::Slew)
+			near(path.Eval(4).X, 80, .001);
+		if (type == Type::Repeat)
+			near(path.Eval(4).X, 0, .001);
+		std::string xml;
+		CamPath loaded;
+		check(path.SaveToString(xml) && loaded.LoadFromString(xml) &&
+		          loaded.CaptureState() == path.CaptureState(),
+		      "Control modifier parameters round-trip");
+		for (double t : {.6, 1.1, 2.8, 3.7})
+			near(path.Eval(t).X, loaded.Eval(t).X, 1e-8);
+		check(path.CaptureState().Keys == source.Keys, "Control modifiers retain authored keys");
+	}
+	m.Type = Type::Limits;
+	m.Softness = 20;
+	path.SetModifiers({m});
+	check(path.Eval(.7).X > 80 && path.Eval(.7).X < 100, "Soft limits approach a bound gradually");
+	const auto valid = path.CaptureState();
+	m.Lower = 200;
+	check(!path.SetModifiers({m}) && path.CaptureState() == valid, "Inverted limits reject atomically");
+	m = valid.Modifiers.front();
+	m.Rate = 0;
+	check(!path.SetModifiers({m}), "Zero slew rate rejects");
+	m = valid.Modifiers.front();
+	m.Scale = std::numeric_limits<double>::infinity();
+	check(!path.SetModifiers({m}), "Nonfinite remapping rejects");
+}
+
 void rangeEasingModifiers()
 {
 	using Type = CamPath::ModifierType;
@@ -2142,6 +2302,8 @@ int main()
 		reviewBoundaryRegressions();
 		transformedCurves();
 		nextEditingRegressions();
+		shapePreservingRetiming();
+		pathControlModifiers();
 		rangeEasingModifiers();
 		moreModifiers();
 		modifierPersistenceAndExport();

@@ -895,14 +895,11 @@ static void DrawKeyInspector()
 	ImGui::EndDisabled();
 	if (changed && std::isfinite(newTime))
 	{
-		CInterpolationMap<CamPathValue> moved;
-		bool unique = true;
-		for (auto key : keys)
-			unique &=
-				moved.emplace(key.first + (key.second.Selected ? newTime - time : 0), key.second).second;
-		if (unique && path.ReplaceKeys(moved))
+		std::vector<double> arrivals;
+		for (const auto &key : keys) arrivals.push_back(key.first + (key.second.Selected ? newTime - time : 0));
+		if (path.Retime(arrivals))
 		{
-			keys = moved;
+			keys = path.CaptureState().Keys;
 			first = keys.find(newTime);
 			time = newTime;
 		}
@@ -1240,7 +1237,7 @@ struct ModifierFieldSelection
 {
 	unsigned long long PathId = 0, Revision = 0;
 	int Index = -1, Type = -1, Edited = -1;
-	bool Selected[16] = {}, Dragging = false;
+	bool Selected[23] = {}, Dragging = false;
 	float StartY = 0;
 	ImGuiID Input = 0;
 };
@@ -1251,7 +1248,8 @@ static double &ModifierValue(CamPath::Modifier &modifier, int index)
 						&modifier.Frequency,	&modifier.Roughness,	&modifier.Phase,
 						&modifier.Window,		&modifier.Damping,		&modifier.Amplitude[0],
 						&modifier.Amplitude[1], &modifier.Amplitude[2], &modifier.Amplitude[3],
-						&modifier.Amplitude[4], &modifier.Amplitude[5], &modifier.Amplitude[6], &modifier.Power};
+						&modifier.Amplitude[4], &modifier.Amplitude[5], &modifier.Amplitude[6], &modifier.Power,
+		&modifier.Lower, &modifier.Upper, &modifier.Softness, &modifier.Rate, &modifier.Scale, &modifier.Offset, &modifier.Pivot};
 	return *fields[index];
 }
 static ImU32 ModifierColor(size_t index, bool enabled = true)
@@ -1306,7 +1304,7 @@ static void ApplyModifierFields(CamPath::Modifier &modifier)
 	if (selection.Edited < 0 || !selection.Selected[selection.Edited])
 		return;
 	const double value = ModifierValue(modifier, selection.Edited);
-	for (int index = 0; index < 16; ++index)
+	for (int index = 0; index < 23; ++index)
 		if (selection.Selected[index])
 			ModifierValue(modifier, index) = value;
 }
@@ -1351,8 +1349,10 @@ static void DrawModifierControls(CamPath &path)
 
 	auto modifiers = path.GetModifiers();
 	static int newType = 0;
-	const char *types[] = {"Noise",       "Oscillation",   "Smooth / stabilize", "Spring",
-	                       "Expo timing", "Bounce timing", "Elastic timing"};
+	const char *types[] = {"Noise",          "Oscillation",        "Smooth / stabilize",
+	                       "Spring",         "Expo timing",        "Bounce timing",
+	                       "Elastic timing", "Value limits",       "Slew / rate limit",
+	                       "Stepped",        "Repeat / ping-pong", "Value remap"};
 	ImGui::Combo("New modifier type", &newType, types, (int)CamPath::ModifierType::Count);
 	static int preset = 0;
 	const char *presets[] = {"Handheld",          "Impact shake",     "Expo in",
@@ -1388,9 +1388,11 @@ static void DrawModifierControls(CamPath &path)
 		m.Begin = g_ModifierBegin;
 		m.End = g_ModifierEnd;
 		m.FadeIn = m.FadeOut = (std::max)(0.0, (m.End - m.Begin) * 0.15);
+		if (m.Type == CamPath::ModifierType::Limits)
+			m.FadeIn = m.FadeOut = 0;
 		for (int ch = 0; ch < 7; ++ch)
 			if (g_CurveShow[ch] && (g_CurveFocusChannel < 0 || g_CurveFocusChannel == ch))
-				m.Amplitude[ch] = newType >= 2 ? .75 : ch < 3 ? 3 : 1;
+				m.Amplitude[ch] = newType >= 7 ? 1 : newType >= 2 ? .75 : ch < 3 ? 3 : 1;
 		modifiers.push_back(m);
 		if (path.SetModifiers(modifiers))
 			g_ModifierSelection = (int)modifiers.size() - 1;
@@ -1427,7 +1429,7 @@ static void DrawModifierControls(CamPath &path)
 		if (changed)
 		{
 			m.Type = (CamPath::ModifierType)type;
-			if (type >= 4)
+			if (CamPath::IsTimingModifier(m.Type))
 				m.Frequency = (std::min)(m.Frequency, 16.0);
 			if (type >= 2)
 			{
@@ -1473,9 +1475,13 @@ static void DrawModifierControls(CamPath &path)
 		changed |= ImGui::InputDouble("End##noise", &m.End, 0, 0, "%.4f");
 		changed |= ModifierField(1, "Fade in (s)", &m.FadeIn);
 		changed |= ModifierField(2, "Fade out (s)", &m.FadeOut);
-		if (type != 2 && type != 4)
-			changed |= ModifierField(3, type >= 5 ? "Cycles across range" : "Frequency (Hz)", &m.Frequency);
-		if (type >= 4)
+		if (type == 0 || type == 1 || type == 3 || type == 5 || type == 6 || type == 9 || type == 10)
+			changed |= ModifierField(3,
+			                         (type == 5 || type == 6 || type == 10) ? "Cycles across range"
+			                         : type == 9                            ? "Sample rate (Hz)"
+			                                                                : "Frequency (Hz)",
+			                         &m.Frequency);
+		if (CamPath::IsTimingModifier(m.Type))
 		{
 			int direction = (int)m.Direction;
 			const char *directions[] = {"In", "Out", "In-out"};
@@ -1493,6 +1499,30 @@ static void DrawModifierControls(CamPath &path)
 			                   "range. Elastic overshoot extends its endpoint displacement. Timing effects "
 			                   "need changing values; use noise or FOV punch on a stationary pose.");
 		}
+		if (type == 7)
+		{
+			changed |= ModifierField(16, "Lower bound", &m.Lower);
+			changed |= ModifierField(17, "Upper bound", &m.Upper);
+			changed |= ModifierField(18, "Soft limit width", &m.Softness);
+		}
+		if (type == 8)
+		{
+			changed |= ModifierField(19, "Maximum change per second", &m.Rate);
+			ImGui::TextWrapped("Per-channel units/s or degrees/s; not total orientation angular speed. Full "
+			                   "strength with no fade enforces the cap; blending relaxes it.");
+		}
+		if (type == 10)
+			changed |= ImGui::Checkbox("Ping-pong", &m.PingPong);
+		if (type == 11)
+		{
+			changed |= ModifierField(20, "Value scale", &m.Scale);
+			changed |= ModifierField(21, "Value offset", &m.Offset);
+			changed |= ModifierField(22, "Value pivot", &m.Pivot);
+		}
+		if (type >= 7)
+			ImGui::TextWrapped("Use channel strengths to choose the affected values. Limits and rate caps "
+			                   "are strict only at full strength, away from fades and range edges. Repeat "
+			                   "needs matching endpoint poses for a seamless loop.");
 		if (type == 0)
 		{
 			int octaves = (int)m.Octaves;
@@ -2862,10 +2892,21 @@ static void DrawCurveEditor()
 				for (int c = 0; c < 7; ++c)
 					if (drawMask[c] && (g_CurveFocusChannel < 0 || g_CurveFocusChannel == c))
 						visibleMask |= 1u << c;
+				CamPath retimed;
+				retimed.RestoreState(dragStart);
+				std::vector<double> arrivals;
+				for (const auto &key : dragStart.Keys)
+				{
+					const auto mask = dragChannels.count(key.first) ? dragChannels.at(key.first) & visibleMask : 0;
+					arrivals.push_back(key.first + (mask ? dt : 0));
+				}
+				unique = retimed.Retime(arrivals);
+				const auto shaped = retimed.CaptureState().Keys;
 				for (auto key : dragStart.Keys)
 				{
 					const auto mask =
 						dragChannels.count(key.first) ? dragChannels.at(key.first) & visibleMask : 0;
+					if (unique) key.second = shaped.at(key.first + (mask ? dt : 0));
 					if (pixels != 0)
 						for (int c = 0; c < 7; ++c)
 							if ((mask & (1u << c)) && !g_CurveLocked[c])
@@ -2875,10 +2916,16 @@ static void DrawCurveEditor()
 										pixels * valuePerPixel[c]);
 					unique &= keys.emplace(key.first + (mask ? dt : 0), key.second).second;
 				}
-				if (!unique || !g_Hook_VClient_RenderView.m_CamPath.ReplaceKeys(keys))
+				if (!unique || !retimed.ReplaceKeys(keys))
 					g_DocumentStatus = "Keys cannot share an arrival time or cross a hold release.";
 				else
 				{
+					auto &path = g_Hook_VClient_RenderView.m_CamPath;
+					if (path.PositionInterpMethod_get() != retimed.PositionInterpMethod_get() ||
+						path.FovInterpMethod_get() != retimed.FovInterpMethod_get())
+						path.RestoreState(retimed.CaptureState());
+					else
+						path.ReplaceKeys(keys);
 					g_GraphChannels.clear();
 					for (const auto &entry : dragChannels)
 						g_GraphChannels[entry.first + ((entry.second & visibleMask) ? dt : 0)] |=
@@ -4044,12 +4091,6 @@ void Draw()
 						bool draggingNow = ImGui::NeoIsDraggingSelection();
 						if (!g_CancelGesture && s_wasDragging && !draggingNow)
 						{
-							// Gather authoritative values
-							std::vector<CamPathValue> liveValues;
-							liveValues.reserve(g_Hook_VClient_RenderView.m_CamPath.GetSize());
-							for (CamPathIterator it = g_Hook_VClient_RenderView.m_CamPath.GetBegin();
-								 it != g_Hook_VClient_RenderView.m_CamPath.GetEnd(); ++it)
-								liveValues.push_back(it.GetValue());
 							// Preserve selection indices
 							std::vector<int> prevSelectedIdx = g_CurveSelection;
 							int prevGizmoIdx = -1;
@@ -4071,7 +4112,6 @@ void Draw()
 							struct TmpKey
 							{
 								double t;
-								CamPathValue v;
 								int origIndex;
 							};
 							std::vector<TmpKey> newKeys;
@@ -4081,18 +4121,16 @@ void Draw()
 								const double newRelTime =
 									s_cache.times[i] +
 									(double(s_cache.ticks[i]) - s_cache.originalTicks[i]) * ipt;
-								CamPathValue v = (i < liveValues.size()) ? liveValues[i] : s_cache.values[i];
-								newKeys.push_back({newRelTime, v, (int)i});
+								newKeys.push_back({newRelTime, (int)i});
 							}
 							// Validate all arrivals before replacing the native map.
 							std::sort(newKeys.begin(), newKeys.end(),
 									  [](const TmpKey &a, const TmpKey &b) { return a.t < b.t; });
 
-							CInterpolationMap<CamPathValue> replacements;
-							bool unique = true;
-							for (const auto &k : newKeys)
-								unique &= replacements.emplace(k.t, k.v).second;
-							if (!unique || !g_Hook_VClient_RenderView.m_CamPath.ReplaceKeys(replacements))
+							std::vector<double> arrivals;
+							for (size_t i = 0; i < s_cache.ticks.size(); ++i)
+								arrivals.push_back(s_cache.times[i] + (double(s_cache.ticks[i]) - s_cache.originalTicks[i]) * ipt);
+							if (!g_Hook_VClient_RenderView.m_CamPath.Retime(arrivals))
 							{
 								g_DocumentStatus = "Keys cannot share an arrival time or cross a hold release.";
 								g_SequencerNeedsRefresh = true;
@@ -4269,6 +4307,7 @@ void Draw()
 				s_fitTimeline = true;
 			ImGui::SameLine();
 			ImGui::TextDisabled("View %d - %d | Wheel: zoom | MMB / Shift+wheel: pan", visibleStart, visibleEnd);
+			ImGui::TextDisabled("Retiming preserves editable curve shape: Auto tangents become Free; Classic scalar curves convert when using editable Euler.");
 			// Controls row
 			if (ImGui::SmallButton("Play"))
 			{

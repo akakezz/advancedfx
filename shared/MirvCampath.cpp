@@ -67,7 +67,7 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 							   "damping %.3f, envelope %u points\n",
 							   m.Strength, m.Phase, m.Octaves, m.Roughness, m.Window, m.Damping,
 							   (unsigned)m.Envelope.size());
-					if (int(m.Type) >= int(CamPath::ModifierType::Expo))
+					if (CamPath::IsTimingModifier(m.Type))
 						conMessage("    direction %s, power %.3f; frequency is cycles per range.\n",
 							int(m.Direction) == 0 ? "in" : int(m.Direction) == 1 ? "out" : "inout", m.Power);
 				}
@@ -118,6 +118,7 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 						 number(7, m.Type == CamPath::ModifierType::Smooth ? m.Window :
 							(m.Type == CamPath::ModifierType::Expo ? m.Power : m.Frequency)));
 				m.FadeIn = m.FadeOut = (std::max)(0.0, (m.End - m.Begin) * 0.15);
+				if (m.Type == CamPath::ModifierType::Limits) m.FadeIn = m.FadeOut = 0;
 				const char *names[] = {"x", "y", "z", "fov", "pitch", "yaw", "roll"};
 				bool channel = false;
 				for (int ch = 0; ch < 7; ++ch)
@@ -190,7 +191,7 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 						valid = CamPath::ModifierTypeFromString(args->ArgV(5), m.Type);
 						if (valid && int(m.Type) >= 2)
 						{
-							if (int(m.Type) >= int(CamPath::ModifierType::Expo))
+							if (CamPath::IsTimingModifier(m.Type))
 								m.Frequency = (std::min)(m.Frequency, 16.0);
 							m.CameraSpace = false;
 							for (auto &amplitude : m.Amplitude)
@@ -207,6 +208,14 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 					}
 					else if (!_stricmp(field, "power"))
 						m.Power = value;
+					else if (!_stricmp(field, "lower")) m.Lower = value;
+					else if (!_stricmp(field, "upper")) m.Upper = value;
+					else if (!_stricmp(field, "softness")) m.Softness = value;
+					else if (!_stricmp(field, "rate")) m.Rate = value;
+					else if (!_stricmp(field, "scale")) m.Scale = value;
+					else if (!_stricmp(field, "offset")) m.Offset = value;
+					else if (!_stricmp(field, "pivot")) m.Pivot = value;
+					else if (!_stricmp(field, "pingPong")) { valid = value == 0 || value == 1; if (valid) m.PingPong = value != 0; }
 					else if (!_stricmp(field, "strength"))
 						m.Strength = value;
 					else if (!_stricmp(field, "phase"))
@@ -271,13 +280,13 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 				return;
 			}
 			conMessage(
-				"%s modifier list|clear|remove <index>\n%s modifier <noise|oscillation|smooth|spring|expo|bounce|elastic> "
+				"%s modifier list|clear|remove <index>\n%s modifier <noise|oscillation|smooth|spring|expo|bounce|elastic|limits|slew|stepped|repeat|remap> "
 				"<begin seconds> <end "
 				"seconds> <position|angles|x|y|z|fov|pitch|yaw|roll> <amplitude> [frequency Hz=1 / smooth "
 				"window seconds=0.25 / expo power=5 / bounce-elastic cycles=1]\n%s "
 				"modifier set <index> "
 				"<type|direction|power|strength|phase|octaves|roughness|window|damping|begin|end|fadeIn|fadeOut|frequency|"
-				"seed|enabled|cameraSpace|x|y|z|fov|pitch|yaw|"
+				"lower|upper|softness|rate|scale|offset|pivot|pingPong|seed|enabled|cameraSpace|x|y|z|fov|pitch|yaw|"
 				"roll> <value>\n",
 				args->ArgV(0), args->ArgV(0), args->ArgV(0));
 			conMessage("%s modifier presets | preset <name> <begin seconds> <end seconds>\n"

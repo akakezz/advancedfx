@@ -166,6 +166,11 @@ public:
 		Expo,
 		Bounce,
 		Elastic,
+		Limits,
+		Slew,
+		Stepped,
+		Repeat,
+		Remap,
 		Count
 	};
 	enum class EaseDirection { In, Out, InOut };
@@ -184,6 +189,8 @@ public:
 		unsigned int Octaves = 1;
 		EaseDirection Direction = EaseDirection::InOut;
 		double Power = 5;
+		double Lower = 0, Upper = 179, Softness = 0, Rate = 90, Scale = 1, Offset = 0, Pivot = 0;
+		bool PingPong = false;
 		std::vector<ModifierKey> Envelope;
 		double Begin = 0, End = 1, FadeIn = 0.2, FadeOut = 0.2, Frequency = 1;
 		double Amplitude[7] = {};
@@ -268,6 +275,7 @@ public:
 	};
 	bool ReplaceKeys(const CInterpolationMap<CamPathValue> &keys);
 	bool UpdateKey(double oldTime, double newTime, const CamPathValue &value);
+	bool Retime(const std::vector<double> &arrivals);
 	// Physical camera capture; align wrapped angles with the existing curve.
 	bool AddPose(double time, const CamPathValue &pose);
 	bool ReplacePose(double time, const CamPathValue &pose, unsigned int channels = 127);
@@ -296,6 +304,7 @@ public:
 	static double ModifierInfluence(const NoiseModifier &modifier, double time);
 	static const char *ModifierTypeName(ModifierType type);
 	static double ModifierEase(const Modifier &modifier, double progress);
+	static bool IsTimingModifier(ModifierType type) { return type >= ModifierType::Expo && type <= ModifierType::Elastic; }
 	static bool MakeModifierPreset(const char *name, double begin, double end, Modifier &out);
 	static bool ModifierTypeFromString(const char *name, ModifierType &type);
 	static double ModifierSampleRate(const NoiseModifier &modifier);
