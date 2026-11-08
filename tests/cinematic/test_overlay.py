@@ -17,7 +17,7 @@ fix_command='void callFix(std::initializer_list<const char*> words){struct Args{
 demo_time=native[native.index('bool GetCurrentDemoTime(double &outDemoTime)'):native.index('bool GetDemoTickFromClientTime(')].replace('GetCurrentDemoTime(', 'ActualGetCurrentDemoTime(',1)
 native=native[native.index('// Campath preview uses'):native.index('CON_COMMAND(mirv_campath,')]
 view=(root/'AfxHookSource/RenderView.cpp').read_text();view=view[view.index('case Override_Input:'):view.index('case Override_Aim:')];view=view.replace('case Override_Input:','').replace('break;','')
-view='void applyPreviewView(float&Tx,float&Ty,float&Tz,float&Rx,float&Ry,float&Rz,float&Fov){auto*m_MirvInput=&input;float m_LastFrameTime=0.016f;bool originOrAnglesOverriden=false;'+view+'}\n'
+view='void applyPreviewView(float&Tx,float&Ty,float&Tz,float&Rx,float&Ry,float&Rz,float&Fov){auto*m_MirvInput=&input;float m_LastFrameTime=0.016f;bool originOrAnglesOverriden=false;auto&m_CamPath=g_Hook_VClient_RenderView.m_CamPath;bool collisionFree=false;float collisionInputX=Tx,collisionInputY=Ty,collisionInputZ=Tz;const CamPath*collisionPath=nullptr;double collisionTime=0;'+view+'}\n'
 preview_api=(root/'AfxHookSource/RenderView.h').read_text().split('// Shared campath preview controls')[1].split('// Hook_VClient_RenderView')[0]
 preview_api='// Shared campath preview controls'+preview_api
 preamble=r'''
@@ -61,7 +61,7 @@ void* ShellExecuteW(void*,const wchar_t*,const wchar_t*,void*,void*,int){return 
 template<size_t N,class... Args>int sprintf_s(char(&b)[N],const char*f,Args...a){return snprintf(b,N,f,a...);}
 template<size_t N>void strncpy_s(char(&b)[N],const char*s,size_t){snprintf(b,N,"%s",s);}
 namespace advancedfx {void Message(const char*,...){}void Warning(const char*,...){} }
-struct MirvInput{int MovementClears=0;void ClearMovementInput(){++MovementClears;}void ResetCameraSmoothing(){}bool Override(float,float&x,float&y,float&z,float&a,float&b,float&c,float&f){x=y=z=a=b=c=f=-999;return true;}bool Camera=false;float Pose[7]={};double Sens=1;bool GetCameraControlMode(){return Camera;}void SetCameraControlMode(bool b){Camera=b;}void SetTx(float x){Pose[0]=x;}void SetTy(float x){Pose[1]=x;}void SetTz(float x){Pose[2]=x;}void SetRx(float x){Pose[3]=x;}void SetRy(float x){Pose[4]=x;}void SetRz(float x){Pose[5]=x;}void SetFov(float x){Pose[6]=x;}double GetKeyboardSensitivty(){return Sens;}void SetKeyboardSensitivity(double x){Sens=x;}} input;
+struct MirvInput{int MovementClears=0;void ClearMovementInput(){++MovementClears;}void ResetCameraSmoothing(){}int CollisionAdoptions=0;void AdoptCollisionPosition(float x,float y,float z){++CollisionAdoptions;Pose[0]=x;Pose[1]=y;Pose[2]=z;}bool Override(float,float&x,float&y,float&z,float&a,float&b,float&c,float&f){x=y=z=a=b=c=f=-999;return true;}bool Camera=false;float Pose[7]={};double Sens=1;bool GetCameraControlMode(){return Camera;}void SetCameraControlMode(bool b){Camera=b;}void SetTx(float x){Pose[0]=x;}void SetTy(float x){Pose[1]=x;}void SetTz(float x){Pose[2]=x;}void SetRx(float x){Pose[3]=x;}void SetRy(float x){Pose[4]=x;}void SetRz(float x){Pose[5]=x;}void SetFov(float x){Pose[6]=x;}double GetKeyboardSensitivty(){return Sens;}void SetKeyboardSensitivity(double x){Sens=x;}} input;
 struct WrpGlobals{double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
 struct FakeView{CamPath m_CamPath;CamPathCollection m_CamPaths{m_CamPath};MirvInput*m_MirvInput=&input;double LastCameraOrigin[3]={100,-100,50},LastCameraAngles[3]={0,135,0},LastCameraFov=130;int LastWidth=1600,LastHeight=1000;bool Menu=false,GlobalsAvailable=true;bool IsInstalled(){return true;}bool IsMenuActive(){return Menu;}bool IsSourceUiActive(){return Menu;}WrpGlobals*GetGlobals(){return GlobalsAvailable?&globals:nullptr;}}g_Hook_VClient_RenderView;
 struct CCampathDrawer{bool Names=true,Holds=true,Durations=true;bool GetDrawNames(){return Names;}bool GetDrawHolds(){return Holds;}bool GetDrawDurations(){return Durations;}void SetDrawNames(bool v){Names=v;}void SetDrawHolds(bool v){Holds=v;}void SetDrawDurations(bool v){Durations=v;}bool Draw=false;float Index=18;bool Draw_get(){return Draw;}void Draw_set(bool b){Draw=b;}float GetDrawKeyframeIndex(){return Index;}void SetDrawKeyframeIndex(float x){Index=x;}}g_CampathDrawer;
@@ -69,7 +69,7 @@ struct Clock{double Time=10;double GetTime(){return Time;}int GetFrameCount(){re
 std::vector<std::string> commands;
 struct DemoInfo{int TotalTicks=12000;int GetDemoPlaybackTick(){return int(g_MirvTime.Time*66);}int GetDemoPlaybackTotalTicks(){return TotalTicks;}float GetDemoPlaybackTimeScale(){return 1;}}demo;
 using WrpVEngineClientDemoInfoEx=DemoInfo;
-struct Engine{bool Playing=true,Hltv=true,HaveInfo=true,Loading=false;int Local=1;int GetLocalPlayer(){return Local;}bool IsPlayingDemo(){return Playing;}bool IsDrawingLoadingImage(){return Loading;}bool IsHLTV(){return Hltv;}DemoInfo*GetDemoInfoEx(){return HaveInfo?&demo:nullptr;}void ClientCmd_Unrestricted(const char*c){commands.emplace_back(c);}}engine;Engine*g_VEngineClient=&engine;
+struct Engine{bool Playing=true,Hltv=true,HaveInfo=true,Loading=false,InGame=true;bool IsInGame(){return InGame;}int Local=1;int GetLocalPlayer(){return Local;}bool IsPlayingDemo(){return Playing;}bool IsDrawingLoadingImage(){return Loading;}bool IsHLTV(){return Hltv;}DemoInfo*GetDemoInfoEx(){return HaveInfo?&demo:nullptr;}void ClientCmd_Unrestricted(const char*c){commands.emplace_back(c);}}engine;Engine*g_VEngineClient=&engine;
 bool GetCurrentDemoTick(int&n){n=int(g_MirvTime.Time*66);return true;}bool GetCurrentDemoTime(double&t){t=g_MirvTime.Time;return true;}bool GetDemoTickFromClientTime(double,double t,int&n){n=int(t*66);return true;}
 int Mirv_Tf2_GetMaxPlayers(){return 1;}bool Mirv_Tf2_GetPlayerInfo(int i,char*b,int n,int*u){snprintf(b,n,"Scout");*u=42;return i==1;}
 constexpr int MIRV_TF2_MAX_BONES=256;
@@ -98,6 +98,7 @@ namespace SOURCESDK{namespace CSS{FakeCvar*g_pCVar=&fakeCvar;}namespace L4D2{Fak
 namespace AfxHookSource{namespace Gui{bool SetOverlayOpen(bool b){CameraOverlay::SetOpen(b);return true;}}namespace CameraOverlay{namespace Recording{const char*GetName(){return "test";}void SetName(const char*){}bool ScreenEnabled(){return true;}bool IsActive(){return false;}}}}
 struct Rect{ImVec2 Min,Max;};std::map<std::string,Rect>widgets;
 bool trackDouble(const char*l,double*v,double step=0,double fast=0,const char*format="%.6f",ImGuiInputTextFlags flags=0){bool b=ImGui::InputDouble(l,v,step,fast,format,flags);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
+bool trackHeader(const char*l,ImGuiTreeNodeFlags flags=0){bool b=ImGui::CollapsingHeader(l,flags);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackCheckbox(const char*l,bool*v){bool b=ImGui::Checkbox(l,v);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackButton(const char*l,const ImVec2&s=ImVec2(0,0)){bool b=ImGui::Button(l,s);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackTab(const char*l,bool*p=nullptr,ImGuiTabItemFlags f=0){bool b=ImGui::BeginTabItem(l,p,f);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
@@ -118,6 +119,7 @@ bool trackCombo(const char*l,const char*p,ImGuiComboFlags f=0){bool b=ImGui::Beg
 '''
 s=s.replace('ImGui::InputDouble(', 'trackDouble(').replace('ImGui::Checkbox(', 'trackCheckbox(').replace('ImGui::Button(', 'trackButton(').replace('ImGui::SmallButton(', 'trackButton(').replace('ImGui::BeginTabItem(', 'trackTab(').replace('ImGui::BeginNeoSequencer(', 'trackSequencer(').replace('ImGui::Selectable(', 'trackSelectable(').replace('ImGui::BeginCombo(', 'trackCombo(').replace('ImGui::InvisibleButton(', 'trackInvisible(').replace('ImGui::Combo(', 'trackArrayCombo(').replace('ImGui::SliderFloat(', 'trackSlider(').replace('ImGui::BeginNeoTimelineEx(', 'trackTimeline(').replace('ImGui::NeoKeyframe(', 'trackKeyframe(')
 s=s.replace('ImGui::NeoTimelineSpan(', 'trackSpan(')
+s=s.replace('ImGui::CollapsingHeader(', 'trackHeader(')
 # Keep Windows' min/max macros active around the field editor, even on non-Windows hosts.
 s=s.replace('static bool ModifierField(', '#define min(a,b) (((a)<(b))?(a):(b))\n#define max(a,b) (((a)>(b))?(a):(b))\nstatic bool ModifierField(')
 s=s.replace('static void ApplyModifierFields(', '#undef min\n#undef max\nstatic void ApplyModifierFields(')
@@ -132,6 +134,51 @@ s=s.replace('// Background + border', 'graphRect = {p0,p1};\n// Background + bor
 drawer=(root/'AfxHookSource/CampathDrawer.cpp').read_text()
 layout=drawer[drawer.index('// World-position-aware label slots'):drawer.index('// CCampathDrawer //////////////////')]
 # Exercise the actual CPU/render queue with a fake D3D device that rejects producer-thread calls.
+collision_header=(root/'AfxHookSource/MirvCalcs.h').read_text()
+collision_header=collision_header[collision_header.index('// Optional TF2 camera collision.'):collision_header.index('// End optional TF2 camera collision.')]
+collision_source=(root/'AfxHookSource/MirvCalcs.cpp').read_text()
+collision_abi=collision_source[collision_source.index('struct alignas(16) MirvTf2Ray_t'):collision_source.index('bool Mirv_Tf2_TraceEntity(')]
+collision_core=collision_source[collision_source.index('// Optional camera collision implementation.'):collision_source.index('// End optional camera collision implementation.')]
+collision_command=(root/'AfxHookSource/MirvCam.cpp').read_text()
+collision_command=collision_command[collision_command.index('// Camera collision console command.'):collision_command.index('// End camera collision console command.')]
+collision_stub=r"""
+#include <mutex>
+namespace SOURCESDK { namespace TF2 { struct IClientTools {void*GetLocalPlayer(){return (void*)1;}bool IsPlayer(void*p){return p==(void*)1||p==(void*)2;}};}}
+bool collisionToolsAvailable=true,collisionFactoryAvailable=true;
+struct CClientToolsTf2{static CClientToolsTf2*Instance(){static CClientToolsTf2 t;return collisionToolsAvailable?&t:nullptr;}SOURCESDK::TF2::IClientTools*GetClientTools(){static SOURCESDK::TF2::IClientTools t;return &t;}};
+void*CollisionFactory(const char*,int*);
+void*(*g_AppSystemFactory)(const char*,int*)=CollisionFactory;
+struct IWrpCommandArgs{virtual int ArgC()=0;virtual const char*ArgV(int)=0;};
+"""
+collision_fake=r"""
+struct CollisionBox {double Min[3],Max[3];void*Entity=nullptr;};
+struct CollisionFakeTrace:CMirvTf2EngineTrace{
+ std::vector<CollisionBox>Boxes;int Queries=0;unsigned Mask=0;bool IsRay=true;float Radius=0;
+ void _UNUSED_GetPointContents()override{}void _UNUSED_GetPointContents_Collideable()override{}
+ void _UNUSED_ClipRayToEntity()override{}void _UNUSED_ClipRayToCollideable()override{}
+ void TraceRay(const MirvTf2Ray_t&r,unsigned mask,CMirvTf2TraceFilter*f,MirvTf2Trace_t*out)override{
+  ++Queries;Mask=mask;IsRay=r.isRay;Radius=r.extents[0];*out={};out->fraction=1;
+  for(const auto&box:Boxes){if(box.Entity&&!f->ShouldHitEntity(box.Entity,mask))continue;
+   double lo[3],hi[3];bool inside=true,endInside=true;
+   for(int a=0;a<3;++a){lo[a]=box.Min[a]-r.extents[a];hi[a]=box.Max[a]+r.extents[a];inside&=r.start[a]>lo[a]+1e-6&&r.start[a]<hi[a]-1e-6;endInside&=r.start[a]+r.delta[a]>lo[a]&&r.start[a]+r.delta[a]<hi[a];}
+   if(inside){out->startSolid=true;out->allSolid=endInside;out->fraction=0;continue;}
+   double enter=0,leave=1;int axis=-1;double sign=0;bool hit=true;
+   for(int a=0;a<3;++a){if(std::abs(r.delta[a])<1e-12){if(r.start[a]<=lo[a]||r.start[a]>=hi[a])hit=false;continue;}
+    double t0=(lo[a]-r.start[a])/r.delta[a],t1=(hi[a]-r.start[a])/r.delta[a];double n=-1;if(t0>t1){std::swap(t0,t1);n=1;}
+    if(t0>=enter){enter=t0;axis=a;sign=n;}leave=(std::min)(leave,t1);if(enter>leave)hit=false;}
+   if(hit&&axis>=0&&enter>=0&&enter<=out->fraction&&leave>=0){out->fraction=(float)enter;out->plane={};out->plane.normal[axis]=(float)sign;out->entity=box.Entity;}
+  }
+ }
+}collisionTrace;
+void*CollisionFactory(const char*name,int*){return collisionFactoryAvailable&&!strcmp(name,"EngineTraceClient003")?&collisionTrace:nullptr;}
+void collisionCommand(std::initializer_list<const char*>v){struct Args:IWrpCommandArgs{std::vector<const char*>V;int ArgC()override{return V.size();}const char*ArgV(int i)override{return V[i];}}a;a.V=v;MirvCameraCollisionCommand(&a);}
+"""
+collision_code=collision_header+collision_stub+collision_abi+collision_core+collision_command+collision_fake
+collision_stage=(root/'AfxHookSource/RenderView.cpp').read_text()
+collision_stage=collision_stage[collision_stage.index('// Collision correction is the last position stage'):collision_stage.index('// End collision correction stage.')]
+collision_code+='void CollisionView(bool collisionFree,const CamPath*collisionPath,double curTime,double collisionTime,const double*LastCameraOrigin,float&Tx,float&Ty,float&Tz,const double*inputOrigin=nullptr){auto*m_MirvInput=&input;float collisionInputX=inputOrigin?inputOrigin[0]:Tx,collisionInputY=inputOrigin?inputOrigin[1]:Ty,collisionInputZ=inputOrigin?inputOrigin[2]:Tz;'+collision_stage+'}\n'
+
+
 renderer=(root/'AfxHookSource/Gui.cpp').read_text()
 renderer=renderer[renderer.index('class CImGuiRenderCacheManager'):renderer.index('} m_ImGuiRernderCacheManager;')+1]+';'
 constants=sorted(set(re.findall(r'\bD3D[A-Z_0-9]+\b',renderer))-{'D3DVIEWPORT9','D3DMATRIX'})
@@ -324,6 +371,7 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  render([&]{manager.Dx9_Destroy();manager.Dx9_Create(&device);});manager.CacheRender(data);frames=device.Frames;render([&]{manager.Dx9_Render();manager.Dx9_Destroy();});check(device.Frames==frames+1,"Queued drawing resumes after device recreation");std::atomic<bool> stop{false};std::thread consumer([&]{renderThread=std::this_thread::get_id();manager.Dx9_Create(&device);while(!stop.load()){manager.Dx9_Render();std::this_thread::yield();}manager.Dx9_Render();manager.Dx9_Render();manager.Dx9_Destroy();});for(int i=0;i<200;++i)manager.CacheRender(data);stop=true;consumer.join();
  check(wrongThread==0,"Concurrent production and consumption keep every D3D call on the consumer thread");
  }
+ button("Camera collision");check(widgets.count("Free camera collision")&&widgets.count("Campath collision"),"Overlay exposes independent opt-in camera collision switches");button("Free camera collision");check(commands.back()=="mirv_cam collision free 1","Free collision toggle queues the existing camera console command");button("Campath collision");check(commands.back()=="mirv_cam collision campath 1","Campath collision toggle does not enable the free camera");button("Collide with other players");check(commands.back()=="mirv_cam collision players 0","Player hull filtering is exposed in the overlay");button("Camera collision");frame();frame();
  button("Add point");check(g_Hook_VClient_RenderView.m_CamPath.GetSize()==1,"Overlay captures a full camera key");
  g_MirvTime.Time=12;g_Hook_VClient_RenderView.LastCameraOrigin[0]=200;g_Hook_VClient_RenderView.LastCameraFov=170;button("Add point");auto&path=g_Hook_VClient_RenderView.m_CamPath;check(path.GetSize()==2&&path.CanEval(),"Overlay uses custom interpolation with two keys");
  auto captured=path.CaptureState();button("Undo");check(path.GetSize()==1,"Overlay undo reverses capture");button("Redo");check(path.CaptureState()==captured,"Overlay redo restores pose and tangent metadata");
@@ -514,11 +562,57 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''
+collision_tests=r"""
+void CollisionTests(){
+ auto cfg=MirvCameraCollisionGet();check(!cfg.Free&&!cfg.Campath,"Camera collisions default off independently");
+ const double seed[3]={0,0,0};int pathId=1;float x=20,y=0,z=0;int before=collisionTrace.Queries;
+ check(!MirvCameraCollisionApply(true,nullptr,0,1,1,seed,x,y,z)&&collisionTrace.Queries==before&&x==20,"Disabled free collision never traces or alters the view");
+ check(!MirvCameraCollisionApply(false,&pathId,0,1,1,seed,x,y,z)&&collisionTrace.Queries==before,"Disabled campath collision never traces");
+ cfg.Free=true;cfg.Radius=1;cfg.Slide=false;collisionFactoryAvailable=false;check(!MirvCameraCollisionSet(cfg),"Missing TF2 trace interface rejects enable");collisionFactoryAvailable=true;
+ check(MirvCameraCollisionSet(cfg),"TF2 collision settings enable");collisionTrace.Boxes={{{10,-100,-100},{11,100,100},nullptr}};
+ check(MirvCameraCollisionApply(true,nullptr,0,1,1,seed,x,y,z)&&x>8.9&&x<9,"First free-camera frame sweeps a hull through a thin wall");
+ check(collisionTrace.Mask==0x200400B&&!collisionTrace.IsRay&&collisionTrace.Radius==1,"Collision reuses the solid hull-trace ABI and clearance");
+ x=20;MirvCameraCollisionApply(true,nullptr,0,1.01,1.01,seed,x,y,z);check(x<9,"Repeated input cannot accumulate movement behind a wall");
+ cfg.Slide=true;MirvCameraCollisionSet(cfg);x=20;y=5;z=0;MirvCameraCollisionApply(true,nullptr,0,2,2,seed,x,y,z);check(x<9&&std::abs(y-5)<1e-4,"Slide retains motion along a wall");
+ cfg.Slide=false;MirvCameraCollisionSet(cfg);MirvCameraCollisionReset();x=20;y=5;z=0;MirvCameraCollisionApply(true,nullptr,0,2,2,seed,x,y,z);check(x<9&&y<3,"Stop response stops the complete movement");
+ const float stoppedX=x,stoppedY=y;for(int i=0;i<50;++i){x=20;y=5;z=0;MirvCameraCollisionApply(true,nullptr,0,2,2,seed,x,y,z);}check(std::abs(x-stoppedX)<.001&&std::abs(y-stoppedY)<.001,"A fixed paused target cannot creep along a wall in stop mode");
+ cfg.Slide=true;MirvCameraCollisionSet(cfg);collisionTrace.Boxes.push_back({{-100,10,-100},{100,11,100},nullptr});x=20;y=20;z=0;MirvCameraCollisionApply(true,nullptr,0,2,2,seed,x,y,z);if(!(x<9&&y<9))std::cerr<<"Corner pose "<<x<<","<<y<<","<<z<<"\n";check(x<9&&y<9,"Multiple clipping planes keep the camera outside a corner");
+ cfg.Free=false;cfg.Campath=true;MirvCameraCollisionSet(cfg);collisionTrace.Boxes.resize(1);x=20;y=z=0;before=collisionTrace.Queries;
+ check(!MirvCameraCollisionApply(true,nullptr,0,3,3,seed,x,y,z)&&x==20&&collisionTrace.Queries==before,"Campath switch does not enable free-camera collision");
+ MirvCameraCollisionApply(false,&pathId,0,3,3,seed,x,y,z);check(x==20,"A new shot may start at a clear pose without sweeping from the game camera");
+ x=0;MirvCameraCollisionApply(false,&pathId,0,3.01,3.01,seed,x,y,z);check(x>12&&x<12.1,"Continuous campath playback sweeps from the previous corrected position");
+ cfg.Slide=false;MirvCameraCollisionSet(cfg);x=0;MirvCameraCollisionApply(false,&pathId,0,3.02,3.02,seed,x,y,z);check(x>12,"Changing collision response cannot teleport a blocked path through a wall");
+ x=0;MirvCameraCollisionApply(false,&pathId,0,2,2,seed,x,y,z);check(x==0,"Backward seeking discards the old camera collision anchor");
+ x=20;MirvCameraCollisionApply(false,&pathId,1,2.01,2.01,seed,x,y,z);check(x==20,"Editing geometry discards stale collision history");
+ x=0;MirvCameraCollisionApply(false,&pathId,1,2.02,7,seed,x,y,z);check(x==0,"Preview jumps do not sweep between unrelated cursor positions");
+ cfg.Free=true;cfg.Campath=false;cfg.Players=true;MirvCameraCollisionSet(cfg);collisionTrace.Boxes={{{10,-10,-10},{11,10,10},(void*)2}};x=20;y=z=0;MirvCameraCollisionApply(true,nullptr,0,4,4,seed,x,y,z);check(x<9,"Other players use their solid collision hulls");
+ cfg.Players=false;MirvCameraCollisionSet(cfg);x=20;MirvCameraCollisionApply(true,nullptr,0,4,4,seed,x,y,z);check(x==20,"Player collision can be disabled while retaining solid geometry");
+ collisionTrace.Boxes[0].Entity=(void*)3;MirvCameraCollisionReset();x=20;MirvCameraCollisionApply(true,nullptr,0,4,4,seed,x,y,z);check(x<9,"Disabling players does not exclude solid props");
+ collisionTrace.Boxes[0].Entity=(void*)1;cfg.Players=true;MirvCameraCollisionSet(cfg);x=20;MirvCameraCollisionApply(true,nullptr,0,4,4,seed,x,y,z);check(x==20,"The local recorder is ignored so a POV camera can leave its player hull");
+ collisionTrace.Boxes.clear();MirvCameraCollisionReset();x=y=z=0;MirvCameraCollisionApply(true,nullptr,0,5,5,seed,x,y,z);collisionTrace.Boxes={{{-.5,-.5,-.5},{.5,.5,.5},(void*)2}};
+ MirvCameraCollisionApply(true,nullptr,0,5.01,5.01,seed,x,y,z);check(std::abs(x)>1.5||std::abs(y)>1.5||std::abs(z)>1.5,"A moving player engulfing the camera triggers bounded overlap recovery");
+ collisionTrace.Boxes={{{-1000,-1000,-1000},{1000,1000,1000},nullptr}};MirvCameraCollisionReset();x=y=z=0;before=collisionTrace.Queries;MirvCameraCollisionApply(true,nullptr,0,6,6,seed,x,y,z);check(x==0&&y==0&&z==0&&collisionTrace.Queries-before<=26,"Deeply embedded starts have a bounded recovery budget");
+ const auto valid=MirvCameraCollisionGet();for(double bad:{0.0,65.0,std::numeric_limits<double>::infinity()}){auto invalid=valid;invalid.Radius=bad;check(!MirvCameraCollisionSet(invalid)&&MirvCameraCollisionGet().Radius==valid.Radius,"Invalid radius rejects atomically");}
+ g_SourceSdkVer=0;check(!MirvCameraCollisionSet(valid),"Unsupported Source games reject enabling TF2 collision");g_SourceSdkVer=SourceSdkVer_TF2Classified;check(MirvCameraCollisionSet(valid),"TF2C uses the same verified trace adapter");g_SourceSdkVer=SourceSdkVer_TF2;
+ collisionTrace.Boxes.clear();x=1;y=2;z=3;collisionToolsAvailable=false;check(!MirvCameraCollisionApply(true,nullptr,0,7,7,seed,x,y,z)&&x==1,"Missing client tools leaves the view unchanged");collisionToolsAvailable=true;
+ collisionCommand({"mirv_cam","collision","free","0"});check(!MirvCameraCollisionGet().Free,"Console independently disables free collision");collisionCommand({"mirv_cam","collision","campath","1"});check(MirvCameraCollisionGet().Campath,"Console independently enables campath collision");collisionCommand({"mirv_cam","collision","radius","nan"});check(MirvCameraCollisionGet().Radius==valid.Radius,"Console rejects non-finite clearance");collisionCommand({"mirv_cam","collision","response","stop"});check(!MirvCameraCollisionGet().Slide,"Console selects stop response");
+ cfg.Free=true;cfg.Campath=false;cfg.Slide=true;MirvCameraCollisionSet(cfg);collisionTrace.Boxes.clear();x=3;y=z=0;int adopted=input.CollisionAdoptions;CollisionView(true,nullptr,8,8,seed,x,y,z);check(input.CollisionAdoptions==adopted,"Unobstructed collision does not reset free-camera smoothing or input state");
+ collisionTrace.Boxes={{{10,-100,-100},{11,100,100},nullptr}};MirvCameraCollisionReset();x=20;y=z=0;CollisionView(true,nullptr,8,8,seed,x,y,z);check(input.CollisionAdoptions==adopted+1&&input.Pose[0]==x&&x<9,"The final collision stage feeds back only a corrected free-camera position");
+ const double beforeOffset[3]={5,0,0};MirvCameraCollisionReset();x=15;y=z=0;CollisionView(true,nullptr,8,8,seed,x,y,z,beforeOffset);check(std::abs(input.Pose[0]+10-x)<.0001,"Collision feedback preserves the pre-offset free-camera origin instead of accumulating camera offsets");
+ engine.InGame=false;x=20;before=collisionTrace.Queries;check(!MirvCameraCollisionApply(true,nullptr,0,9,9,seed,x,y,z)&&x==20&&collisionTrace.Queries==before,"Disconnected views do not trace or alter the camera");engine.InGame=true;engine.Loading=true;check(!MirvCameraCollisionApply(true,nullptr,0,9,9,seed,x,y,z)&&x==20,"Loading views suspend collision");engine.Loading=false;
+ MirvCameraCollisionReset();x=1000000;y=z=0;check(MirvCameraCollisionApply(true,nullptr,0,10,10,seed,x,y,z)&&x<9,"Large free-camera requests are bounded before the engine trace and cannot tunnel through a thin wall");
+ before=collisionTrace.Queries;x=std::numeric_limits<float>::quiet_NaN();check(!MirvCameraCollisionApply(true,nullptr,0,10,10,seed,x,y,z)&&collisionTrace.Queries==before,"Non-finite camera targets are rejected before reaching native tracing");
+ collisionCommand({"mirv_cam","collision","free","2"});check(MirvCameraCollisionGet().Free,"Invalid boolean commands retain accepted settings");
+ MirvCameraCollisionSettings off;MirvCameraCollisionSet(off);collisionTrace.Boxes.clear();MirvCameraCollisionReset();
+}
+"""
+test=test.replace('int main(){try{',collision_tests+'\nint main(){try{CollisionTests();',1)
+
 neo=(root/'shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.cpp').read_text()
 neo='extern void TestRecordNeoLabel(int,int);\n'+neo.replace('snprintf(lbl, sizeof(lbl), "%d", labelIndex);','snprintf(lbl, sizeof(lbl), "%d", labelIndex); TestRecordNeoLabel(*frame,labelIndex);')
 neo+='\nnamespace ImGui{void TestSetNeoView(float zoom,int offset){for(auto &entry:sequencerData){entry.second.Zoom=zoom;entry.second.OffsetFrame=offset;}}}\n'
 neo_file=out/'neo_labels_test.cpp';neo_file.write_text(neo)
-source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+demo_time+fix_api+pov_api+fix_command+s+native+view+layout+test)
+source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+demo_time+fix_api+pov_api+fix_command+collision_code+s+native+view+layout+test)
 cmd=['g++','-std=c++17','-O0','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),'-I'+str(imgui),'-I'+str(root/'shared/overlay/third_party/imgui_neo_sequencer'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp')]+[str(imgui/f) for f in ['imgui.cpp','imgui_draw.cpp','imgui_widgets.cpp','imgui_tables.cpp']]+[(str(neo_file) if f=='imgui_neo_sequencer.cpp' else str(root/'shared/overlay/third_party/imgui_neo_sequencer'/f)) for f in ['imgui_neo_sequencer.cpp','imgui_neo_internal.cpp']]+[str(root/'shared/overlay/third_party/imguizmo/ImGuizmo.cpp'),'-o',str(out/'overlay_test')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 p=subprocess.run(cmd,capture_output=True,text=True);(out/'build.log').write_text(p.stdout+p.stderr)

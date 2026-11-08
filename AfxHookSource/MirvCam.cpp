@@ -164,6 +164,64 @@ void CMirvCam::RebuildCalc(void)
 
 CMirvCam g_MirvCam;
 
+// Camera collision console command.
+static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
+{
+	auto settings = MirvCameraCollisionGet();
+	const int argc = args->ArgC();
+	bool changed = false, valid = true;
+	if (argc == 3 && !_stricmp(args->ArgV(2), "reset"))
+	{
+		MirvCameraCollisionReset();
+		return;
+	}
+	if (argc == 4)
+	{
+		const char *field = args->ArgV(2), *value = args->ArgV(3);
+		const bool boolean = !std::strcmp(value, "0") || !std::strcmp(value, "1");
+		if (!_stricmp(field, "free") || !_stricmp(field, "campath") || !_stricmp(field, "players"))
+		{
+			valid = boolean;
+			if (!_stricmp(field, "free"))
+				settings.Free = !std::strcmp(value, "1");
+			else if (!_stricmp(field, "campath"))
+				settings.Campath = !std::strcmp(value, "1");
+			else
+				settings.Players = !std::strcmp(value, "1");
+		}
+		else if (!_stricmp(field, "radius"))
+		{
+			char *end = nullptr;
+			settings.Radius = std::strtod(value, &end);
+			valid = end != value && !*end;
+		}
+		else if (!_stricmp(field, "response"))
+		{
+			valid = !_stricmp(value, "stop") || !_stricmp(value, "slide");
+			settings.Slide = !_stricmp(value, "slide");
+		}
+		else
+			valid = false;
+		changed = valid;
+	}
+	else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
+		valid = false;
+	if (!valid || (changed && !MirvCameraCollisionSet(settings)))
+		Tier0_Warning("Camera collision edit rejected. TF2/TF2C EngineTraceClient003 is required when "
+		              "enabled; radius must be finite, 1..64 units.\n");
+	settings = MirvCameraCollisionGet();
+	Tier0_Msg("Camera collision: free %d, campath %d, radius %.2f, players %d, response %s.\n", settings.Free,
+	          settings.Campath, settings.Radius, settings.Players, settings.Slide ? "slide" : "stop");
+	if (argc == 2 || !valid)
+		Tier0_Msg("mirv_cam collision free|campath|players 0|1\n"
+		          "mirv_cam collision radius <1..64> | response stop|slide | reset | status\n"
+		          "Both camera switches default off. Local recorder is ignored; other client-solid player "
+		          "hulls are optional.\n"
+		          "Correction changes only the live view. Deeply embedded starts may require disabling "
+		          "collision and moving clear.\n");
+}
+// End camera collision console command.
+
 CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 {
 	int argc = args->ArgC();
@@ -171,6 +229,8 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 	if (2 <= argc)
 	{
 		char const * arg1 = args->ArgV(1);
+
+		if (!_stricmp("collision", arg1)) { MirvCameraCollisionCommand(args); return; }
 
 		if (0 == _stricmp("source", arg1))
 		{
@@ -690,5 +750,6 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 		"mirv_cam attachMode [...] - (TF2) Controls which angles attach uses for bones.\n"
 		"mirv_cam offset [...] - Control camera offset (in local space).\n"
 		"mirv_cam order [...] - Control order of camera overrides.\n"
+		"mirv_cam collision [...] - Optional TF2/TF2C free-camera and campath collision.\n"
 	);
 }

@@ -269,6 +269,55 @@ along world Z as the view rotates or moves; unrelated projected overlaps cannot
 push a label into an empty area. All text continues through the classic depth-tested
 renderer.
 
+## Optional camera collision (TF2 / TF2C)
+
+Open **Camera collision** in the Campath tab. **Free camera collision** and
+**Campath collision** are independent and both default off. Campath collision
+also applies to the shared preview camera. The equivalent console commands are:
+
+```text
+mirv_cam collision free 1
+mirv_cam collision campath 1
+mirv_cam collision radius 6
+mirv_cam collision players 1
+mirv_cam collision response slide
+mirv_cam collision status
+mirv_cam collision reset
+```
+
+Use `free 0` or `campath 0` to disable either independently. Radius is the
+half-width of a swept axis-aligned camera cube, from 1 to 64 world units. The
+same clearance, player filter and response settings apply to both camera modes.
+`response stop` stops the requested movement at a solid; `slide` retains movement
+along obstacle surfaces. Angular and FOV animation are not changed. Free-camera
+corrections feed back into its input position, avoiding accumulated movement
+behind walls while retaining unobstructed camera smoothing and existing offsets.
+
+This reuses TF2's `EngineTraceClient003` hull tracing with `MASK_SOLID`, including
+solid map geometry and props. Player collision uses current client-side solid
+hulls, not visible meshes or hitboxes. The engine's local player is ignored to
+allow POV cameras to leave that player's hull. Disable `players` to pass through
+other players while retaining world/prop collision. Particles, non-solid models
+and decorative surfaces have no solid collision representation. Camera clearance
+does not guarantee that the near-plane edges cannot clip at every FOV/aspect.
+
+Campath correction is a live view adjustment. Keys, handles, drawn paths and
+native/classic XML path exports remain authored data; a live camera recording
+sees the corrected view. This does not plan a new route around a wall or predict
+where moving entities will be at other demo times. It uses previous corrected
+positions during continuous playback, so start playback consistently before a
+recording if reproducible collision response matters. Editor seeks, backward
+movement, time/cursor jumps over 0.25 seconds, shot switches, and geometry edits
+invalidate the old anchor. A new clear shot can start across a wall without
+sweeping from the previous shot. Use `reset` for other deliberate camera jumps.
+
+A moving solid overlapping the camera triggers a bounded search for a nearby
+clear position, up to 64 units away; complex corners may stop rather than slide.
+Deeply embedded starts cannot always be resolved. If stuck, disable collision,
+move to clear space, then enable it again. Loading/disconnected views suspend
+collision. Preferences remain runtime settings rather than saved path data.
+Other Source games reject enabling this TF2-specific trace adapter.
+
 ## Range modifiers
 
 Open **Range modifiers** in the graph. Use **Draw modifier range** and drag across

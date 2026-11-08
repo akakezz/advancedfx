@@ -3305,6 +3305,27 @@ void Draw()
 			if (ImGui::Button("Anchor selection here"))
 				PreviewAnchor();
 			DrawSeekSettings();
+			if (ImGui::CollapsingHeader("Camera collision"))
+			{
+				auto collision = MirvCameraCollisionGet();
+				if (ImGui::Checkbox("Free camera collision", &collision.Free))
+					Afx_ExecClientCmd(collision.Free ? "mirv_cam collision free 1" : "mirv_cam collision free 0");
+				if (ImGui::Checkbox("Campath collision", &collision.Campath))
+					Afx_ExecClientCmd(collision.Campath ? "mirv_cam collision campath 1" : "mirv_cam collision campath 0");
+				if (ImGui::Checkbox("Collide with other players", &collision.Players))
+					Afx_ExecClientCmd(collision.Players ? "mirv_cam collision players 1" : "mirv_cam collision players 0");
+				if (ImGui::Checkbox("Slide along obstacles", &collision.Slide))
+					Afx_ExecClientCmd(collision.Slide ? "mirv_cam collision response slide" : "mirv_cam collision response stop");
+				if (ImGui::InputDouble("Camera clearance (units)", &collision.Radius, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
+				{
+					char command[128];
+					std::snprintf(command, sizeof(command), "mirv_cam collision radius %.9g", collision.Radius);
+					Afx_ExecClientCmd(command);
+				}
+				if (ImGui::Button("Reset collision history"))
+					Afx_ExecClientCmd("mirv_cam collision reset");
+				ImGui::TextWrapped("TF2/TF2C only; both switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local recorder is ignored. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
+			}
 			if (ImGui::CollapsingHeader("Demo fixes"))
 			{
 				bool deathcam = MirvFix_GetPovDeathcam();

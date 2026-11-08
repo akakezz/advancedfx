@@ -1494,6 +1494,7 @@ bool MirvCampathPreview_SeekTick(int tick)
 	if (auto *demo = g_VEngineClient->GetDemoInfoEx())
 		if (demo->GetDemoPlaybackTotalTicks() > 0)
 			tick = (std::min)(tick, demo->GetDemoPlaybackTotalTicks() - 1);
+	MirvCameraCollisionReset();
 	g_CampathSeekTarget = tick;
 	g_CampathSeekPendingMode = g_CampathSeekMode;
 	g_CampathSeekPendingScale = g_CampathSeekScale;

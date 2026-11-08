@@ -430,6 +430,10 @@ void TrySetView(float Tx, float Ty, float Tz, float Rx, float Ry, float Rz, floa
 void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, float &Rx, float &Ry, float &Rz, float &Fov)
 {
 	MirvCampathPreview_Update();
+	const CamPath *collisionPath = nullptr;
+	double collisionTime = 0;
+	bool collisionFree = false;
+	float collisionInputX = Tx, collisionInputY = Ty, collisionInputZ = Tz;
 	bool originOrAnglesOverriden = false;
 
 	float curTime = g_MirvTime.GetTime();
@@ -455,7 +459,12 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 		switch (m_Overrides[i])
 		{
 		case Override_CamSource:
-			if (g_MirvCam.ApplySource(Tx, Ty, Tz, Rz, Rx, Ry)) originOrAnglesOverriden = true;
+			if (g_MirvCam.ApplySource(Tx, Ty, Tz, Rz, Rx, Ry))
+			{
+				originOrAnglesOverriden = true;
+				collisionFree = false;
+				collisionPath = nullptr;
+			}
 			break;
 
 		case Override_Campath:
@@ -473,6 +482,9 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				if (playbackPath->GetLowerBound() <= campathCurTime &&
 					campathCurTime <= playbackPath->GetUpperBound())
 				{
+					collisionPath = playbackPath;
+					collisionTime = campathCurTime;
+					collisionFree = false;
 					CamPathValue val = playbackPath->Eval(campathCurTime);
 					QEulerAngles ang = val.R.ToQREulerAngles().ToQEulerAngles();
 
@@ -506,6 +518,8 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				)) {
 					originOrAnglesOverriden = true;
 
+					collisionFree = false;
+					collisionPath = nullptr;
 					Ty = (float)(-Tf[0]);
 					Tz = (float)(+Tf[1]);
 					Tx = (float)(-Tf[2]);
@@ -525,6 +539,8 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				{
 					originOrAnglesOverriden = true;
 
+					collisionFree = false;
+					collisionPath = nullptr;
 					Tx = (float)camData.XPosition;
 					Ty = (float)camData.YPosition;
 					Tz = (float)camData.ZPosition;
@@ -548,11 +564,24 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 				m_MirvInput->ResetCameraSmoothing();
 			}
 			if (m_MirvInput->Override(m_LastFrameTime, Tx, Ty, Tz, Rx, Ry, Rz, Fov))
+			{
 				originOrAnglesOverriden = true;
+				if (m_MirvInput->GetCameraControlMode())
+				{
+					collisionFree = true;
+					collisionPath = nullptr;
+					collisionInputX = Tx;
+					collisionInputY = Ty;
+					collisionInputZ = Tz;
+				}
+			}
 			// Camera smoothing and free-camera movement must not alter an evaluated preview.
 			CamPathValue preview;
 			if (MirvCampathPreview_GetCamera(preview))
 			{
+				collisionFree = false;
+				collisionPath = &m_CamPath;
+				collisionTime = MirvCampathPreview_GetTime();
 				const auto angles = preview.GetEulerAngles();
 				Tx = (float)preview.X;
 				Ty = (float)preview.Y;
@@ -594,14 +623,24 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 
 		case Override_MirvPgl:
 #ifndef _WIN64
-			if (MirvPgl::OnViewOverride(Tx, Ty, Tz, Rx, Ry, Rz, Fov)) originOrAnglesOverriden = true;
+			if (MirvPgl::OnViewOverride(Tx, Ty, Tz, Rx, Ry, Rz, Fov))
+			{
+				originOrAnglesOverriden = true;
+				collisionFree = false;
+				collisionPath = nullptr;
+			}
 #endif //#ifndef _WIN64
 			break;
 
 		case Override_Interop:
 #ifndef _WIN64
 #ifdef AFX_INTEROP
-			if (AfxInterop::OnViewOverride(Tx, Ty, Tz, Rx, Ry, Rz, Fov)) originOrAnglesOverriden = true;
+			if (AfxInterop::OnViewOverride(Tx, Ty, Tz, Rx, Ry, Rz, Fov))
+			{
+				originOrAnglesOverriden = true;
+				collisionFree = false;
+				collisionPath = nullptr;
+			}
 #endif
 #endif //#ifndef _WIN64
 			break;
@@ -612,6 +651,16 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 		else if (Fov > 179) Fov = 179;
 	}
 	
+	// Collision correction is the last position stage, before view/export.
+	const float collisionRequestedX = Tx, collisionRequestedY = Ty, collisionRequestedZ = Tz;
+	if (MirvCameraCollisionApply(collisionFree, collisionPath,
+		collisionPath ? collisionPath->GetGeometryRevision() : 0, curTime, collisionTime,
+		LastCameraOrigin, Tx, Ty, Tz) && collisionFree &&
+		(Tx != collisionRequestedX || Ty != collisionRequestedY || Tz != collisionRequestedZ))
+		m_MirvInput->AdoptCollisionPosition(collisionInputX + (Tx - collisionRequestedX),
+			collisionInputY + (Ty - collisionRequestedY), collisionInputZ + (Tz - collisionRequestedZ));
+	// End collision correction stage.
+
 	static bool viewOverriding = false;
 
 	if (originOrAnglesOverriden && (this->ForceViewOverride || this->ForceViewOverrideHltv))

@@ -18,6 +18,8 @@
 #include <string.h>
 
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 #include <cstddef>
 
 #define _USE_MATH_DEFINES
@@ -5471,11 +5473,15 @@ static_assert(offsetof(MirvTf2Trace_t, entity) == (sizeof(void *) == 8 ? 88 : 76
 class CMirvTf2TraceFilter
 {
 public:
-	virtual bool ShouldHitEntity(void *entity, int) { return entity != m_Skip; }
+	virtual bool ShouldHitEntity(void *entity, int)
+	{ return entity != m_Skip && (m_Players || !m_Tools || !m_Tools->IsPlayer(entity)); }
 	virtual int GetTraceType() const { return 0; } // TRACE_EVERYTHING: walls occlude selection.
-	explicit CMirvTf2TraceFilter(void *skip) : m_Skip(skip) {}
+	explicit CMirvTf2TraceFilter(void *skip, SOURCESDK::TF2::IClientTools *tools = nullptr, bool players = true)
+		: m_Skip(skip), m_Tools(tools), m_Players(players) {}
 private:
 	void *m_Skip;
+	SOURCESDK::TF2::IClientTools *m_Tools;
+	bool m_Players;
 };
 class CMirvTf2EngineTrace
 {
@@ -5528,6 +5534,246 @@ bool Mirv_Tf2_TraceEntity(const double origin[3], const double angles[3], int &o
 	return true;
 }
 
+
+// Optional camera collision implementation.
+namespace
+{
+std::mutex g_CameraCollisionMutex;
+MirvCameraCollisionSettings g_CameraCollisionSettings;
+std::atomic<unsigned long long> g_CameraCollisionGeneration{0};
+struct CameraCollisionHistory
+{
+	bool Valid = false, Free = false;
+	const void *Path = nullptr;
+	unsigned long long Revision = 0, Generation = 0;
+	double SceneTime = 0, PathTime = 0, Position[3] = {};
+} g_CameraCollisionHistory;
+
+CMirvTf2EngineTrace *CameraCollisionTraceInterface()
+{
+	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
+		return nullptr;
+	static CMirvTf2EngineTrace *trace = nullptr;
+	if (!trace && g_AppSystemFactory)
+		trace = reinterpret_cast<CMirvTf2EngineTrace *>(g_AppSystemFactory("EngineTraceClient003", nullptr));
+	return trace;
+}
+
+bool CameraCollisionTrace(const double start[3], const double end[3],
+                          const MirvCameraCollisionSettings &settings, MirvTf2Trace_t &hit)
+{
+	auto *trace = CameraCollisionTraceInterface();
+	auto *tools = CClientToolsTf2::Instance();
+	auto *iface = tools ? tools->GetClientTools() : nullptr;
+	if (!trace || !iface)
+		return false;
+	MirvTf2Ray_t ray = {};
+	double length2 = 0;
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		if (!std::isfinite(start[axis]) || !std::isfinite(end[axis]) || std::abs(start[axis]) > 1e7 ||
+		    std::abs(end[axis]) > 1e7)
+			return false;
+		ray.start[axis] = float(start[axis]);
+		ray.delta[axis] = float(end[axis] - start[axis]);
+		ray.extents[axis] = float(settings.Radius);
+		length2 += double(ray.delta[axis]) * ray.delta[axis];
+	}
+	if (length2 > 56756.0 * 56756.0)
+		return false;
+	ray.isRay = false;
+	ray.isSwept = length2 > 0;
+	hit = {};
+	hit.fraction = 1;
+	CMirvTf2TraceFilter filter(iface->GetLocalPlayer(), iface, settings.Players);
+	trace->TraceRay(ray, 0x200400B, &filter, &hit); // SDK MASK_SOLID; ignore non-solid decoration.
+	return std::isfinite(hit.fraction) && hit.fraction >= 0 && hit.fraction <= 1;
+}
+
+bool CameraCollisionClear(const double point[3], const MirvCameraCollisionSettings &settings)
+{
+	MirvTf2Trace_t hit;
+	return CameraCollisionTrace(point, point, settings, hit) && !hit.startSolid && !hit.allSolid;
+}
+
+bool CameraCollisionMove(const double from[3], const double target[3],
+                         const MirvCameraCollisionSettings &settings, double output[3])
+{
+	double position[3] = {from[0], from[1], from[2]};
+	if (!CameraCollisionClear(position, settings))
+	{
+		// A moving solid can engulf a stationary camera. Bounded recovery only;
+		// do not run an unbounded search or promise to escape deeply embedded starts.
+		bool clear = false;
+		for (int ring = 0; ring < 4 && !clear; ++ring)
+			for (int direction = 0; direction < 6 && !clear; ++direction)
+			{
+				double candidate[3] = {from[0], from[1], from[2]};
+				const double distance = (std::min)(64.0, (settings.Radius + 1) * (1 << ring));
+				candidate[direction / 2] += direction % 2 ? distance : -distance;
+				if (CameraCollisionClear(candidate, settings))
+				{
+					std::copy(candidate, candidate + 3, position);
+					clear = true;
+				}
+			}
+		if (!clear)
+		{
+			std::copy(from, from + 3, output);
+			return true;
+		}
+	}
+	double safe[3] = {position[0], position[1], position[2]};
+	double remaining[3] = {target[0] - position[0], target[1] - position[1], target[2] - position[2]};
+	double length2 = 0;
+	for (double v : remaining)
+		length2 += v * v;
+	if (length2 > 56755.0 * 56755.0)
+		for (auto &v : remaining)
+			v *= 56755.0 / std::sqrt(length2);
+	double planes[3][3] = {};
+	for (int pass = 0; pass < 3; ++pass)
+	{
+		double end[3];
+		for (int axis = 0; axis < 3; ++axis)
+			end[axis] = position[axis] + remaining[axis];
+		MirvTf2Trace_t hit;
+		if (!CameraCollisionTrace(position, end, settings, hit))
+			return false;
+		if (hit.startSolid || hit.allSolid)
+			break;
+		for (int axis = 0; axis < 3; ++axis)
+			position[axis] += remaining[axis] * hit.fraction;
+		if (hit.fraction == 1)
+			break;
+		double normal2 = 0;
+		for (int axis = 0; axis < 3; ++axis)
+		{
+			planes[pass][axis] = hit.plane.normal[axis];
+			normal2 += planes[pass][axis] * planes[pass][axis];
+		}
+		if (!std::isfinite(normal2) || normal2 < .5 || normal2 > 1.5)
+			break;
+		if (!settings.Slide)
+		{
+			double length2 = 0;
+			for (double v : remaining)
+				length2 += v * v;
+			const double length = std::sqrt(length2);
+			// Back off along the sweep, not the plane normal. Repeating a fixed
+			// paused target then stays at the same contact instead of creeping.
+			if (length > 0)
+				for (int axis = 0; axis < 3; ++axis)
+					position[axis] -= remaining[axis] * (std::min)(.03125 / length, double(hit.fraction));
+			break;
+		}
+		for (int axis = 0; axis < 3; ++axis)
+		{
+			position[axis] += planes[pass][axis] * .03125;
+			remaining[axis] *= 1 - hit.fraction;
+		}
+		for (int plane = 0; plane <= pass; ++plane)
+		{
+			double into = 0;
+			for (int axis = 0; axis < 3; ++axis)
+				into += remaining[axis] * planes[plane][axis];
+			if (into < 0)
+				for (int axis = 0; axis < 3; ++axis)
+					remaining[axis] -= planes[plane][axis] * into;
+		}
+	}
+	// Multiple planes can constrain the final clearance nudge. Retain a verified
+	// clear point if that happens rather than feed an embedded position to the view.
+	const double *result = CameraCollisionClear(position, settings) ? position : safe;
+	std::copy(result, result + 3, output);
+	return true;
+}
+} // namespace
+
+MirvCameraCollisionSettings MirvCameraCollisionGet()
+{
+	std::lock_guard<std::mutex> lock(g_CameraCollisionMutex);
+	return g_CameraCollisionSettings;
+}
+bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings)
+{
+	if (!std::isfinite(settings.Radius) || settings.Radius < 1 || settings.Radius > 64 ||
+	    ((settings.Free || settings.Campath) && !CameraCollisionTraceInterface()))
+		return false;
+	{
+		std::lock_guard<std::mutex> lock(g_CameraCollisionMutex);
+		const auto &old = g_CameraCollisionSettings;
+		if (old.Free == settings.Free && old.Campath == settings.Campath && old.Players == settings.Players &&
+		    old.Slide == settings.Slide && old.Radius == settings.Radius)
+			return true;
+		g_CameraCollisionSettings = settings;
+	}
+	return true;
+}
+void MirvCameraCollisionReset()
+{
+	++g_CameraCollisionGeneration;
+}
+
+bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,
+                              double sceneTime, double pathTime, const double seed[3], float &x, float &y,
+                              float &z)
+{
+	auto &history = g_CameraCollisionHistory;
+	const auto settings = MirvCameraCollisionGet();
+	if ((freeCamera ? !settings.Free : !settings.Campath || !path) || !std::isfinite(sceneTime) ||
+	    !std::isfinite(pathTime))
+	{
+		history.Valid = false;
+		return false;
+	}
+	auto *tools = CClientToolsTf2::Instance();
+	if (!CameraCollisionTraceInterface() || !g_VEngineClient || !g_VEngineClient->IsInGame() ||
+	    g_VEngineClient->IsDrawingLoadingImage() || !tools || !tools->GetClientTools())
+	{
+		history.Valid = false;
+		return false;
+	}
+	const double desired[3] = {x, y, z};
+	for (int axis = 0; axis < 3; ++axis)
+		if (!std::isfinite(desired[axis]) || !std::isfinite(seed[axis]) || std::abs(desired[axis]) > 1e7 ||
+		    std::abs(seed[axis]) > 1e7)
+		{
+			history.Valid = false;
+			return false;
+		}
+	const auto generation = g_CameraCollisionGeneration.load();
+	const bool continuous =
+	    history.Valid && history.Free == freeCamera && history.Path == path && history.Revision == revision &&
+	    history.Generation == generation && sceneTime >= history.SceneTime &&
+	    sceneTime - history.SceneTime <= .25 &&
+	    (freeCamera || (pathTime >= history.PathTime && pathTime - history.PathTime <= .25));
+	double from[3], corrected[3];
+	if (continuous)
+		std::copy(history.Position, history.Position + 3, from);
+	else if (!freeCamera && CameraCollisionClear(desired, settings))
+		std::copy(desired, desired + 3, from);
+	else
+		std::copy(seed, seed + 3, from);
+	if (!CameraCollisionMove(from, desired, settings, corrected))
+	{
+		history.Valid = false;
+		return false;
+	}
+	x = float(corrected[0]);
+	y = float(corrected[1]);
+	z = float(corrected[2]);
+	history.Valid = true;
+	history.Free = freeCamera;
+	history.Path = path;
+	history.Revision = revision;
+	history.Generation = generation;
+	history.SceneTime = sceneTime;
+	history.PathTime = pathTime;
+	std::copy(corrected, corrected + 3, history.Position);
+	return true;
+}
+// End optional camera collision implementation.
 
 // Minimal IVModelInfo (public Source SDK interface "VModelInfoClient006") up to GetStudiomodel.
 // The declarations mirror the SDK's IVModelInfo in order (including the overloads), so the compiler
@@ -8418,5 +8664,6 @@ CON_COMMAND(mirv_calcs, "Expressions, currently mainly for usage mirv_calcs, mir
 
 void MirvCalcs_LevelInitPreEntity()
 {
+	MirvCameraCollisionReset();
 	++g_LevelInitCount;
 }

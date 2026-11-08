@@ -69,6 +69,13 @@ public:
 		m_SmoothWasEnabled = false;
 	}
 
+	void AdoptCollisionPosition(float x, float y, float z)
+	{
+		m_InputX = m_LastX = x;
+		m_InputY = m_LastY = y;
+		m_InputZ = m_LastZ = z;
+	}
+
 	void MenuAwareEscape_set(bool value) { m_MenuAwareEscape = value; }
 
 	// Default to real-time free-camera movement regardless of demo timescale.

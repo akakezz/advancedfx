@@ -304,6 +304,19 @@ struct MirvTf2BoneName_t
 /// <returns>Number of bones with names (0 if names are not available).</returns>
 int Mirv_Tf2_GetBoneNames(int entityIndex, MirvTf2BoneName_t * outNames);
 
+// Optional TF2 camera collision.
+struct MirvCameraCollisionSettings
+{
+	bool Free = false, Campath = false, Players = true, Slide = true;
+	double Radius = 6;
+};
+MirvCameraCollisionSettings MirvCameraCollisionGet();
+bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);
+void MirvCameraCollisionReset();
+bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,
+	double sceneTime, double pathTime, const double seed[3], float &x, float &y, float &z);
+// End optional TF2 camera collision.
+
 // True if tracing is available. outIndex is -1 when no networked entity was hit.
 bool Mirv_Tf2_TraceEntity(const double origin[3], const double angles[3], int & outIndex);
 
