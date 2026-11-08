@@ -318,7 +318,7 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 		{
 			SMirvCameraValue camera = mirvCamera->GetCamera();
 
-			camPath->Add(
+			camPath->AddPose(
 				mirvTime->GetTime() - camPath->GetOffset(),
 				CamPathValue(camera.X, camera.Y, camera.Z, camera.Pitch, camera.Yaw, camera.Roll, camera.Fov)
 			);

@@ -163,6 +163,54 @@ bool CamPath::UpdateKey(double oldTime, double newTime, const CamPathValue &valu
 	keys[newTime] = value;
 	return ReplaceKeys(keys);
 }
+bool CamPath::AddPose(double time, const CamPathValue &pose)
+{
+	if (!std::isfinite(time) || !ValidValue(pose))
+		return false;
+	auto value = pose;
+	// A captured camera orientation is not an authored revolution count. In
+	// particular, Source/free-camera angles can accumulate past +/-180 degrees.
+	value.HasEuler = false;
+	if (!m_Map.empty())
+	{
+		// Resolve existing winding even if the user temporarily switched to a
+		// quaternion backend. Preserve exact authored turns; unwrap other keys.
+		auto previous = m_Map.begin();
+		auto reference = previous->second.GetEulerAngles();
+		for (auto next = std::next(previous); next != m_Map.end() && time > previous->first; ++next)
+		{
+			const auto angles = next->second.HasEuler
+			                        ? next->second.GetEulerAngles()
+			                        : NearestEquivalentEuler(next->second.GetEulerAngles(), reference);
+			if (time <= next->first)
+			{
+				const double u = (time - previous->first) / (next->first - previous->first);
+				reference = QEulerAngles(reference.Pitch + u * (angles.Pitch - reference.Pitch),
+				                         reference.Yaw + u * (angles.Yaw - reference.Yaw),
+				                         reference.Roll + u * (angles.Roll - reference.Roll));
+				break;
+			}
+			reference = angles;
+			previous = next;
+		}
+		if (m_RotationInterpMethod == QI_CUSTOM && m_RInterp->CanEval())
+		{
+			// Use raw rotation time: scalar minimum-key requirements, distance
+			// timing and modifiers must not change this branch reference.
+			const double referenceTime =
+			    (std::max)(m_Map.begin()->first, (std::min)(time, m_Map.rbegin()->first));
+			reference =
+			    static_cast<CEulerHermiteQuaternionInterpolation<CamPathValue> *>(m_RInterp)->EvalAngles(
+			        referenceTime);
+		}
+		value.SetEulerAngles(reference);
+		value.SetOrientation(pose.R);
+	}
+	auto keys = m_Map;
+	keys[time] = value;
+	return ReplaceKeys(keys);
+}
+
 bool CamPath::ReplacePose(double time, const CamPathValue &pose, unsigned int channels)
 {
 	auto found = m_Map.find(time);
@@ -934,23 +982,7 @@ void CamPathValue::SetOrientation(const Quaternion &orientation)
 		R = result;
 		return;
 	}
-	const auto previous = GetEulerAngles(), base = result.ToQREulerAngles().ToQEulerAngles();
-	auto nearestEquivalent = [](double angle, double reference)
-	{ return reference + std::remainder(angle - reference, 360.0); };
-	auto candidate = [&](QEulerAngles a)
-	{
-		return QEulerAngles(nearestEquivalent(a.Pitch, previous.Pitch),
-							nearestEquivalent(a.Yaw, previous.Yaw),
-							nearestEquivalent(a.Roll, previous.Roll));
-	};
-	auto first = candidate(base),
-		 second = candidate(QEulerAngles(180 - base.Pitch, base.Yaw + 180, base.Roll + 180));
-	auto distance = [&](const QEulerAngles &a)
-	{
-		double p = a.Pitch - previous.Pitch, y = a.Yaw - previous.Yaw, r = a.Roll - previous.Roll;
-		return p * p + y * y + r * r;
-	};
-	SetEulerAngles(distance(first) <= distance(second) ? first : second);
+	SetEulerAngles(NearestEquivalentEuler(result.ToQREulerAngles().ToQEulerAngles(), GetEulerAngles()));
 	R = result;
 }
 

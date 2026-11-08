@@ -261,6 +261,8 @@ public:
 	};
 	bool ReplaceKeys(const CInterpolationMap<CamPathValue> &keys);
 	bool UpdateKey(double oldTime, double newTime, const CamPathValue &value);
+	// Physical camera capture; align wrapped angles with the existing curve.
+	bool AddPose(double time, const CamPathValue &pose);
 	bool ReplacePose(double time, const CamPathValue &pose, unsigned int channels = 127);
 	bool DeleteSelected();
 	bool SetKeyHold(size_t index, double releaseTime);

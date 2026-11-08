@@ -11,6 +11,31 @@
 namespace Afx {
 namespace Math {
 
+QEulerAngles NearestEquivalentEuler(const QEulerAngles &angles, const QEulerAngles &reference)
+{
+	auto candidate = [&](double pitch, double yaw, double roll) {
+		return QEulerAngles(reference.Pitch + std::remainder(pitch - reference.Pitch, 360.0),
+		                    reference.Yaw + std::remainder(yaw - reference.Yaw, 360.0),
+		                    reference.Roll + std::remainder(roll - reference.Roll, 360.0));
+	};
+	auto first = candidate(angles.Pitch, angles.Yaw, angles.Roll);
+	// At a pitch pole, yaw and roll describe the same axis. Preserve the
+	// nearest combination instead of accepting quaternion conversion's yaw=0.
+	if (std::abs(std::abs(angles.Pitch) - 90.0) < 1e-8)
+	{
+		const double sign = angles.Pitch > 0 ? 1.0 : -1.0;
+		const double shift = ((reference.Yaw - first.Yaw) + sign * (reference.Roll - first.Roll)) * .5;
+		first.Yaw += shift;
+		first.Roll += sign * shift;
+	}
+	const auto second = candidate(180 - angles.Pitch, angles.Yaw + 180, angles.Roll + 180);
+	auto distance = [&](const QEulerAngles &a) {
+		const double p = a.Pitch - reference.Pitch, y = a.Yaw - reference.Yaw, r = a.Roll - reference.Roll;
+		return p * p + y * y + r * r;
+	};
+	return distance(first) <= distance(second) ? first : second;
+}
+
 const char *AutoTangentMethodToString(AutoTangentMethod method)
 {
 	switch (method)

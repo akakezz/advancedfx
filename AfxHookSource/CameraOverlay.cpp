@@ -650,9 +650,7 @@ bool PreviewCapture(bool replace)
 			path.RotationInterpMethod_set(CamPath::QI_CUSTOM);
 			path.FovInterpMethod_set(CamPath::DI_CUSTOM);
 		}
-		const auto revision = path.GetRevision();
-		path.Add(g_MirvTime.GetTime() - path.GetOffset(), pose);
-		ok = revision != path.GetRevision();
+		ok = path.AddPose(g_MirvTime.GetTime() - path.GetOffset(), pose);
 	}
 	if (!ok)
 	{

@@ -589,10 +589,15 @@ validation is still needed for the affected TF2C build.
 
 ## Rotation authoring and classic export
 
-Ordinary wrapped captures still unwrap across +180/-180 using the short route.
-Captures with pitch beyond 90 degrees or explicitly unwrapped yaw/roll retain
-those authored values. Custom Euler interpolation and numeric editing can express
-complete turns: for example, yaw 0 to yaw 720 gives two turns. Editing another
+Camera captures (`mirv_campath add` and **Add point**) align their physical
+orientation with the existing Euler curve, including after tangent edits or
+rotation-backend switches. Accumulated free-camera angles are not interpreted as
+new revolutions. Pitch-fold crossings use equivalent Euler representations, and
+yaw/roll at a pitch pole keep the nearest continuous combination. Explicit turns
+authored in the graph or loaded from XML remain intact. This does not clamp
+intentional Free tangents or overshoot from the chosen interpolation.
+
+Custom Euler interpolation and numeric editing can express complete turns: for example, yaw 0 to yaw 720 gives two turns. Editing another
 angle component retains the untouched winding; rotation and anchor transforms
 retain an equivalent Euler representation near the authored angles.
 

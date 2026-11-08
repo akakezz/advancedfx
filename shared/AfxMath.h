@@ -151,6 +151,9 @@ struct QEulerAngles
 	QEulerAngles(double pitch, double yaw, double roll);
 };
 
+// Choose the equivalent Euler representation nearest a continuous curve branch.
+QEulerAngles NearestEquivalentEuler(const QEulerAngles &angles, const QEulerAngles &reference);
+
 // QREulerAngles ///////////////////////////////////////////////////////////////
 
 /// <summary>
@@ -1021,18 +1024,7 @@ template <class TMap> class CEulerHermiteQuaternionInterpolation : public CInter
 			QEulerAngles a = m_EulerSelector ? m_EulerSelector(v) : v.R.ToQREulerAngles().ToQEulerAngles();
 			if (i && !(m_ExactEulerSelector && m_ExactEulerSelector(v)))
 			{
-				auto unwrap = [](double value, double previous)
-				{
-					double delta = std::fmod(value - previous, 360.0);
-					if (delta > 180)
-						delta -= 360;
-					if (delta < -180)
-						delta += 360;
-					return previous + delta;
-				};
-				a.Pitch = unwrap(a.Pitch, m_Pitch[i - 1]);
-				a.Yaw = unwrap(a.Yaw, m_Yaw[i - 1]);
-				a.Roll = unwrap(a.Roll, m_Roll[i - 1]);
+				a = NearestEquivalentEuler(a, QEulerAngles(m_Pitch[i - 1], m_Yaw[i - 1], m_Roll[i - 1]));
 			}
 			m_Pitch[i] = a.Pitch;
 			m_Yaw[i] = a.Yaw;

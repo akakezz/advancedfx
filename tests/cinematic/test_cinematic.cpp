@@ -1431,6 +1431,226 @@ void modifierPersistenceAndExport()
 	std::filesystem::remove(classic);
 }
 
+// Normal camera capture must not interpret wrapped/accumulated camera angles as
+// explicit turns, including after graph edits have baked exact Euler branches.
+void capturedEulerRegressionMatrix()
+{
+	for (auto method : {AutoTangentMethod::Spline, AutoTangentMethod::CatmullRom, AutoTangentMethod::Monotone,
+	                    AutoTangentMethod::MinimumJerk})
+		for (auto backend : {CamPath::QI_CUSTOM, CamPath::QI_SLINEAR, CamPath::QI_DEFAULT})
+			for (bool edited : {false, true})
+				for (double time : {-1.0, 1.5, 2.0, 4.25, 5.0})
+					for (double captureTurns : {-720.0, 0.0, 720.0})
+					{
+						CamPath path;
+						custom(path);
+						auto settings = path.GetAutoTangentSettings();
+						settings.Method = method;
+						check(path.SetAutoTangentSettings(settings), "Select Euler regression profile");
+						for (int i = 0; i < 5; ++i)
+							path.Add(i, CamPathValue(i * 10, 0, 0, 20, std::remainder(170 + i * 12, 360.0), 0,
+							                         90));
+						if (edited)
+						{
+							check(path.BakeTangents(), "Bake Euler values as graph handle editing does");
+							path.SetTangentMode(CamPath::CH_RYAW, true, true, CamPath::TM_FREE);
+							path.SetTangent(CamPath::CH_RYAW, true, true, 12, 12);
+						}
+						path.RotationInterpMethod_set(backend);
+						const auto before = path.CaptureState();
+						// The free camera can accumulate any number of full rotations.
+						const double yaw = 170 + 12 * time;
+						check(path.AddPose(time,
+						                   CamPathValue(time * 10, 0, 0, 20,
+						                                std::remainder(yaw, 360.0) + captureTurns, 0, 90)),
+						      "Capture at the beginning, middle, end or an existing timestamp succeeds");
+						for (const auto &key : before.Keys)
+							if (key.first != time)
+								check(path.CaptureState().Keys.at(key.first) == key.second,
+								      "Capturing leaves every other key and authored handle unchanged");
+						path.RotationInterpMethod_set(CamPath::QI_CUSTOM);
+						const double begin = path.GetLowerBound(), end = path.GetUpperBound();
+						const double branchOffset =
+						    360 *
+						    std::round((path.Eval(begin).GetEulerAngles().Yaw - (170 + 12 * begin)) / 360);
+						auto previous = path.Eval(begin).R;
+						for (int i = 0; i <= 500; ++i)
+						{
+							const auto value = path.Eval(begin + (end - begin) * i / 500);
+							auto angles = value.GetEulerAngles();
+							angles.Yaw -= branchOffset;
+							if (!(angles.Yaw > 100 && angles.Yaw < 290 && std::abs(angles.Roll) < 1e-5))
+								std::cerr << "Capture case: " << (int)method << " backend " << backend
+								          << " edited " << edited << " time " << time << " sample " << i
+								          << " angles " << angles.Pitch << "," << angles.Yaw << ","
+								          << angles.Roll << "\n";
+							check(angles.Yaw > 100 && angles.Yaw < 290 && std::abs(angles.Roll) < 1e-5,
+							      "Capture after mode/handle edits cannot inject a revolution");
+							check(std::abs(DotProduct(previous, value.R)) > .995,
+							      "Sampled orientation remains continuous across captured keys");
+							previous = value.R;
+						}
+						std::string xml;
+						CamPath loaded;
+						check(path.SaveToString(xml) && loaded.LoadFromString(xml),
+						      "Captured Euler branch round-trips");
+						for (int i = 0; i <= 20; ++i)
+						{
+							const double t = begin + (end - begin) * i / 20;
+							near(std::abs(DotProduct(path.Eval(t).R, loaded.Eval(t).R)), 1, 1e-8);
+						}
+					}
+
+	// Exercise quaternion-only legacy keys as well as physical captures. Pitch
+	// folding changes all three canonical Euler coordinates, not just +/-360.
+	for (bool captured : {false, true})
+		for (double direction : {-1.0, 1.0})
+		{
+			CamPath path;
+			custom(path);
+			auto settings = path.GetAutoTangentSettings();
+			settings.Method = AutoTangentMethod::CatmullRom;
+			path.SetAutoTangentSettings(settings);
+			for (int i = 0; i < 5; ++i)
+			{
+				CamPathValue pose(i, 0, 0, direction * (80 + 5 * i), 30, 10, 90);
+				pose.HasEuler = false;
+				if (captured)
+					check(path.AddPose(i, pose), "Capture through a pitch fold succeeds");
+				else
+					path.Add(i, pose);
+			}
+			for (int i = 0; i <= 400; ++i)
+			{
+				auto value = path.Eval(i * .01);
+				CamPathValue expected(0, 0, 0, direction * (80 + i * .05), 30, 10, 90);
+				near(std::abs(DotProduct(value.R, expected.R)), 1, 1e-7);
+			}
+		}
+
+	// Repeated captures, reverse editing order, roll as well as yaw, and repeated
+	// backend switches exercise a different failure path from preview insertion.
+	for (bool rollChannel : {false, true})
+		for (double direction : {-1.0, 1.0})
+			for (bool reverse : {false, true})
+			{
+				CamPath path;
+				custom(path);
+				path.SetAutoTangentSettings({AutoTangentMethod::CatmullRom, 0});
+				for (int i = 0; i <= 20; ++i)
+				{
+					const int key = reverse ? 20 - i : i;
+					path.RotationInterpMethod_set(
+					    i % 3 == 0 ? CamPath::QI_DEFAULT
+						           : (i % 3 == 1 ? CamPath::QI_SLINEAR : CamPath::QI_CUSTOM));
+					const double angle = direction * (170 + 15 * key) - 1080;
+					check(path.AddPose(key, CamPathValue(key, 0, 0, 20, rollChannel ? 30 : angle,
+					                                     rollChannel ? angle : 10, 90)),
+					      "Repeated physical capture succeeds");
+					path.RotationInterpMethod_set(CamPath::QI_CUSTOM);
+					if (i > 0 && i % 4 == 0)
+						check(path.BakeTangents(), "Handle bake between captures succeeds");
+				}
+				for (int i = 0; i <= 1000; ++i)
+				{
+					const double t = i * .02, angle = direction * (170 + 15 * t);
+					CamPathValue expected(t, 0, 0, 20, rollChannel ? 30 : angle, rollChannel ? angle : 10,
+					                      90);
+					near(std::abs(DotProduct(path.Eval(t).R, expected.R)), 1, 1e-7);
+				}
+			}
+
+	// Call the real classic console command, including the path time offset.
+	struct Args : advancedfx::ICommandArgs
+	{
+		int ArgC() override
+		{
+			return 2;
+		}
+		const char *ArgV(int i) override
+		{
+			return i ? "add" : "mirv_campath";
+		}
+	} args;
+	struct Clock : IMirvCampath_Time
+	{
+		double Time = 0;
+		double GetTime() override
+		{
+			return Time;
+		}
+		double GetCurTime() override
+		{
+			return Time;
+		}
+		bool GetCurrentDemoTick(int &) override
+		{
+			return false;
+		}
+		bool GetCurrentDemoTime(double &) override
+		{
+			return false;
+		}
+		bool GetDemoTickFromDemoTime(double, double, int &) override
+		{
+			return false;
+		}
+		bool GetDemoTimeFromClientTime(double, double, double &) override
+		{
+			return false;
+		}
+		bool GetDemoTickFromClientTime(double, double, int &) override
+		{
+			return false;
+		}
+	} clock;
+	struct Camera : IMirvCampath_Camera
+	{
+		double Yaw = 170;
+		SMirvCameraValue GetCamera() override
+		{
+			return SMirvCameraValue(0, 0, 0, 0, Yaw, 0, 90);
+		}
+	} camera;
+	CamPath console;
+	custom(console);
+	console.SetOffset(5);
+	for (int i = 0; i < 5; ++i)
+	{
+		clock.Time = 5 + i;
+		camera.Yaw = 170 + 12 * i - 720;
+		MirvCampath_ConCommand(&args, IgnoreConsole, IgnoreConsole, &console, &clock, &camera, nullptr);
+		if (i == 1)
+			check(console.BakeTangents(), "Console capture can follow graph tangent edits");
+	}
+	check(console.GetSize() == 5, "Classic add command uses physical capture with the path offset");
+	for (int i = 0; i <= 400; ++i)
+		check(console.Eval(i * .01).GetEulerAngles().Yaw > 160 &&
+		          console.Eval(i * .01).GetEulerAngles().Yaw < 230,
+		      "Normal console capture after handle edits never inserts a full turn");
+
+	CamPath mixed;
+	mixed.RotationInterpMethod_set(CamPath::QI_CUSTOM);
+	mixed.Add(0, CamPathValue(0, 0, 0, 0, 170, 0, 90));
+	mixed.Add(2, CamPathValue(2, 0, 0, 0, 190, 0, 90));
+	check(!mixed.CanEval() && mixed.AddPose(3, CamPathValue(3, 0, 0, 0, -160, 0, 90)),
+	      "Rotation branch alignment works before scalar classic cubic has enough keys");
+	near(mixed.CaptureState().Keys.at(3).GetEulerAngles().Yaw, 200);
+
+	CamPath turns;
+	custom(turns);
+	turns.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	turns.Add(2, CamPathValue(2, 0, 0, 0, 720, 0, 90));
+	check(turns.AddPose(1, CamPathValue(1, 0, 0, 0, -350, 0, 90)),
+	      "Physical capture respects authored winding");
+	near(turns.CaptureState().Keys.at(1).GetEulerAngles().Yaw, 370);
+	near(turns.CaptureState().Keys.at(2).GetEulerAngles().Yaw, 720);
+	const auto before = turns.CaptureState();
+	check(!turns.AddPose(std::numeric_limits<double>::infinity(), CamPathValue()),
+	      "Invalid capture time rejected");
+	check(turns.CaptureState() == before, "Failed capture is atomic");
+}
+
 void insertedEulerPoseAndSpeedMarkers()
 {
 	CamPath path;
@@ -1678,6 +1898,7 @@ int main()
 {
 	try
 	{
+		capturedEulerRegressionMatrix();
 		insertedEulerPoseAndSpeedMarkers();
 		tangentBatchEdits();
 		modifierCacheEdits();
