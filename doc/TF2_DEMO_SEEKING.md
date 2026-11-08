@@ -102,8 +102,11 @@ Capture requires a completed network-update boundary, idle native seek state,
 matching entity identities and a new writable filename. Existing files are not
 overwritten. Property payload storage has a 64 MiB budget, each entity encoding
 is capped at the engine's 16 KiB limit, and output assembly has an additional
-bounded budget. A conservative preflight rejects merges that could overflow the
-native writer, whose own error path would be fatal. Collection failures invalidate
+bounded budget. The merge workspace uses a conservative upper bound (less than 64 KiB),
+so the native writer cannot overflow even when old and incoming fields overlap.
+The actual merged result still must fit the native 16 KiB entity limit. Large
+schemas and overlapping inputs are not rejected merely because their worst-case
+workspace exceeds that final-size limit. Collection failures invalidate
 the candidate and are reported by `status`; they do not change the original
 decoder's return value. Explicit XML export is synchronous and may briefly stall;
 leave collection off during normal editing or performance measurements.
@@ -274,7 +277,7 @@ g++ -std=c++17 -O1 tests/cinematic/test_native_demo.cpp -o /tmp/tf2-native-demo-
 It checks the diagnostic-string bindings, including shared strings and chained
 unwind records, maps the verified PE at its preferred base, and supplies the memory/error
 imports required by this isolated call. It never runs the DLL entry point or
-initializes Steam, the engine or a game world. The test covers 1,007 merges,
+initializes Steam, the engine or a game world. The test covers 1,009 merges,
 all six flattened property types, unsigned variable integers, field insertion
 and replacement, changed-field indices, non-byte-aligned input, empty inputs,
 and input-payload isolation. Synthetic schemas do not prove fidelity for every

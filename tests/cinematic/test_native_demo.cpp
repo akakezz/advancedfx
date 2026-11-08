@@ -1,6 +1,7 @@
 // Optional Linux x64 test; requires the externally supplied, recorded engine.dll.
 // Execute only isolated bitstream routines from the recorded Windows engine.
 // No PE entry point, Steam initialization, game world, or engine globals setup.
+#include "../../AfxHookSource/tf2/DemoPlayer.h"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -294,7 +295,7 @@ int main(int argc, char **argv)
 		put(table.data(), 0x10, decoder.data());
 		int cases = 0;
 		auto test = [&](const std::vector<Field> &oldFields, const std::vector<Field> &deltaFields,
-		                int prefix = 0, bool nullOld = false) {
+		                int prefix = 0, bool nullOld = false, bool oversized = false) {
 			std::map<int, Bits> all;
 			for (const auto &f : oldFields)
 				all.insert_or_assign(f.first, f.second);
@@ -305,7 +306,13 @@ int main(int argc, char **argv)
 			     expected = encode(expectedFields), out;
 			Buffer from = original.reader(), change = delta.reader();
 			change.Position = prefix;
-			Buffer output{out.Data.data(), 16384, 16384 * 8, 0, false, false, nullptr};
+			using Store = AfxHookSource::Tf2Demo::EncodedEntities;
+			const auto capacity =
+			    Store::MergeCapacity(nullOld ? 0 : original.Count, delta.Count - prefix, int(props.size()));
+			if (!capacity)
+				throw std::runtime_error("invalid production merge capacity");
+			out.Data.assign(capacity + 8, 0);
+			Buffer output{out.Data.data(), int(capacity), int(capacity * 8), 0, false, false, nullptr};
 			std::array<int, 4096> changed;
 			changed.fill(-1);
 			const auto originalInput = original.Data, deltaInput = delta.Data;
@@ -324,6 +331,11 @@ int main(int argc, char **argv)
 					throw std::runtime_error("native merged bits differ");
 			if (originalInput != original.Data || deltaInput != delta.Data)
 				throw std::runtime_error("merge changed its input payload");
+			Store owned;
+			const bool stored = owned.Put(0, 1, 0, int(props.size()), out.Data.data(), output.Position,
+			                              changed.data(), result, 1000);
+			if (stored == oversized)
+				throw std::runtime_error("actual output size acceptance differs");
 			++cases;
 		};
 		std::cout << "Calling recorded native RecvTable_MergeDeltas on isolated buffers\n" << std::flush;
@@ -363,6 +375,17 @@ int main(int argc, char **argv)
 			}
 			test(previous, next, trial % 31);
 		}
+		std::vector<Field> dense, replacement, disjoint;
+		for (int i = 7; i < 2007; ++i)
+		{
+			dense.emplace_back(i, raw({42}));
+			replacement.emplace_back(i, raw({99}));
+		}
+		test(dense, replacement); // Large overlap: upper bound exceeds 16 KiB, final encoding fits.
+		dense.resize(1800);
+		for (int i = 1807; i < 3607; ++i)
+			disjoint.emplace_back(i, raw({7}));
+		test(dense, disjoint, 0, false, true); // Actual union exceeds 16 KiB; owned storage must reject it.
 		std::cout << "PASS: " << cases
 		          << " native merges; all six property types, variable integers, changed-field indices, "
 		             "unaligned input, input isolation\n";

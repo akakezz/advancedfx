@@ -1807,7 +1807,15 @@ void demoSeekLifecycle()
 void checkpointOwnership()
 {
 	using namespace AfxHookSource::Tf2Demo;
-	EncodedEntities states;
+	check(EncodedEntities::MergeCapacity(78001, 78001, 4096) > EncodedEntities::MaxBytes,
+        "Overlapping streams may require a workspace larger than the final entity limit");
+    check(EncodedEntities::MergeCapacity(0, 1, 4096) > EncodedEntities::MaxBytes,
+        "A large schema does not imply a large encoded entity");
+    check(!EncodedEntities::MergeCapacity(-1, 1, 1) && !EncodedEntities::MergeCapacity(0, 0, 1)
+        && !EncodedEntities::MergeCapacity(0, 1, 4097), "Merge workspace inputs are bounded");
+    check(EncodedEntities::MergeCapacity(131072, 131072, 4096) < 65536,
+        "Maximum merge workspace remains below 64 KiB");
+    EncodedEntities states;
 	unsigned char input[] = {0xff, 0xff};
 	int changed[] = {0, 2};
 	check(states.Put(3, 0x1003, 7, 4, input, 9, changed, 2, 1200), "Initial owned entity encoding");

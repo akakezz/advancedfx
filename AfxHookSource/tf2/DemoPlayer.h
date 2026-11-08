@@ -50,6 +50,17 @@ class EncodedEntities
 public:
 	static constexpr int MaxEntities = 2048, MaxProperties = 4096, MaxBytes = 16384;
 	static constexpr int UnseenTick = (std::numeric_limits<int>::min)();
+	// A conservative merge workspace can exceed the final entity size: old and
+	// incoming streams may contain the same properties. Enforce MaxBytes on the
+	// merged result, rather than rejecting this upper bound as if it were exact.
+	static size_t MergeCapacity(int oldBits, int incomingBits, int properties)
+	{
+		if (oldBits < 0 || oldBits > MaxBytes * 8 || incomingBits < 1 || incomingBits > MaxBytes * 8 ||
+		    properties < 0 || properties > MaxProperties)
+			return 0;
+		const size_t bits = size_t(oldBits) + size_t(incomingBits) + size_t(properties) * 35 + 1;
+		return ((bits + 7) / 8 + 3) & ~size_t(3);
+	}
 	explicit EncodedEntities(size_t budget = 64 * 1024 * 1024) : m_Budget(budget)
 	{
 	}

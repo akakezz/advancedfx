@@ -325,22 +325,23 @@ bool MyDecode(void *table, void *data, BitBuffer *stream, int index, bool debug)
 		const bool same = old && old->Handle == handle && old->ClassId == classId &&
 		                  g_Checkpoint.Tables[index] == table &&
 		                  old->PropertyTicks.size() == size_t(properties);
-		// Worst case: no property overlap, with every field index using its longest
-		// header. Reject before calling the engine, whose overflow path is fatal.
-		const std::int64_t worstBits = (same ? old->Bits : 0) +
-		                               std::int64_t(stream->Position - before.Position) +
-		                               std::int64_t(properties) * 35 + 1;
-		if (worstBits > EncodedEntities::MaxBytes * 8)
-			throw std::runtime_error("merge exceeds conservative native output bound");
-		alignas(16) std::array<unsigned char, EncodedEntities::MaxBytes + 8> output{};
+		const size_t capacity = EncodedEntities::MergeCapacity(
+		    same ? old->Bits : 0, stream->Position - before.Position, properties);
+		if (!capacity)
+			throw std::runtime_error("invalid merge input size");
+		// Allocate the conservative upper bound before calling the native writer
+		// (its overflow path is fatal). Only the actual result has the 16 KiB limit.
+		std::vector<unsigned char> output(capacity + 8, 0);
 		std::array<int, EncodedEntities::MaxProperties> changed{};
 		BitBuffer previous;
 		if (same)
 			previous = {const_cast<unsigned char *>(old->Data.data()), int(old->Data.size()), old->Bits};
-		BitBuffer result{output.data(), EncodedEntities::MaxBytes, EncodedEntities::MaxBytes * 8};
+		BitBuffer result{output.data(), int(capacity), int(capacity * 8)};
 		before.Bits = stream->Position;
 		const int count =
 		    g_Merge(table, same ? &previous : nullptr, &before, &result, -1, changed.data(), false);
+		if (result.Position > EncodedEntities::MaxBytes * 8)
+			throw std::runtime_error("actual merged entity encoding exceeds the native 16 KiB limit");
 		if (before.Overflow || previous.Overflow || result.Overflow || before.Position != before.Bits ||
 		    !g_Checkpoint.Entities.Put(index, handle, classId, properties, output.data(), result.Position,
 		                               changed.data(), count, Read<int>(g_DecodeClient, 0x1b0)))
@@ -1078,7 +1079,7 @@ bool StartTrace(const wchar_t *file)
 	    "ms,event,identity,seek_serial,demo_tick,pending_tick,playing,loading,skipping,arg_tick,relative,"
 	    "pause,accepted,server_tick,delta_from,delta,update_baseline,bank,updated_entities,frames_before,"
 	    "reference_present,tables,baseline_strings,capture_armed,capture_requested,capture_seeded,capture_"
-		"session\n";
+	    "session\n";
 	if (!Write(header, sizeof(header) - 1))
 	{
 		StopTrace();
