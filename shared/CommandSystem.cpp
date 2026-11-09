@@ -3,6 +3,14 @@
 #include "CommandSystem.h"
 
 #include "StringTools.h"
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cerrno>
+#include <climits>
+#include <cmath>
+#include <memory>
 
 #include "../deps/release/rapidxml/rapidxml.hpp"
 #include "../deps/release/rapidxml/rapidxml_print.hpp"
@@ -21,6 +29,134 @@ CommandSystem::CommandSystem(class IExecuteClientCmdForCommandSystem * pExecuteC
 {
 
 }
+
+
+// Sequencer tick markers.
+void CommandSystem::TickMarkersChanged()
+{
+	std::stable_sort(m_TickMarkers.begin(), m_TickMarkers.end(),
+	                 [](const TickMarker &a, const TickMarker &b) {
+		                 return a.Tick < b.Tick || (a.Tick == b.Tick && a.Id < b.Id);
+	                 });
+	++m_TickMarkerRevision;
+	// Keep the playback cursor: edits do not execute past markers or suppress
+	// unrelated markers crossed by the next normal frame.
+}
+void CommandSystem::EnableTickMarkers(bool enabled)
+{
+	m_TickMarkersEnabled = enabled;
+	m_TickMarkerHaveTick = false;
+}
+unsigned long long CommandSystem::AddTickMarker(int tick, const std::string &name, const std::string &command)
+{
+	if (tick < 0 || name.size() > 128 || command.size() > 16384 || m_TickMarkers.size() >= 10000 ||
+	    name.find('\0') != std::string::npos || command.find('\0') != std::string::npos)
+		return 0;
+	size_t bytes = name.size() + command.size();
+	for (const auto &item : m_TickMarkers)
+		bytes += item.Name.size() + item.Command.size();
+	if (bytes > 1024 * 1024)
+		return 0;
+	TickMarker value;
+	value.Id = m_NextTickMarker++;
+	value.Tick = tick;
+	value.Name = name;
+	value.Command = command;
+	m_TickMarkers.push_back(value);
+	TickMarkersChanged();
+	return value.Id;
+}
+bool CommandSystem::SetTickMarker(const TickMarker &marker)
+{
+	if (marker.Tick < 0 || marker.Name.size() > 128 || marker.Command.size() > 16384 ||
+	    marker.Name.find('\0') != std::string::npos || marker.Command.find('\0') != std::string::npos)
+		return false;
+	for (auto &value : m_TickMarkers)
+		if (value.Id == marker.Id)
+		{
+			size_t bytes = marker.Name.size() + marker.Command.size();
+			for (const auto &item : m_TickMarkers)
+				if (item.Id != marker.Id)
+					bytes += item.Name.size() + item.Command.size();
+			if (bytes > 1024 * 1024)
+				return false;
+			value = marker;
+			TickMarkersChanged();
+			return true;
+		}
+	return false;
+}
+bool CommandSystem::RemoveTickMarker(unsigned long long id)
+{
+	for (auto it = m_TickMarkers.begin(); it != m_TickMarkers.end(); ++it)
+		if (it->Id == id)
+		{
+			m_TickMarkers.erase(it);
+			TickMarkersChanged();
+			return true;
+		}
+	return false;
+}
+void CommandSystem::ClearTickMarkers()
+{
+	m_TickMarkers.clear();
+	EnableTickMarkers(false);
+	TickMarkersChanged();
+}
+bool CommandSystem::RunTickMarker(unsigned long long id)
+{
+	for (const auto &value : m_TickMarkers)
+		if (value.Id == id && !value.Command.empty())
+		{
+			m_CommandsToExecute.push(value.Command);
+			return true;
+		}
+	return false;
+}
+void CommandSystem::BeginTickMarkerSeek()
+{
+	m_TickMarkerSeeking = true;
+}
+void CommandSystem::EndTickMarkerSeek(int tick)
+{
+	if (tick < 0)
+		return;
+	if (m_TickMarkersEnabled && Enabled)
+		for (const auto &marker : m_TickMarkers)
+			if (marker.Enabled && marker.RunOnSeek && marker.Tick <= tick && !marker.Command.empty())
+				m_CommandsToExecute.push(marker.Command);
+	m_TickMarkerSeeking = false;
+	m_TickMarkerHaveTick = true;
+	m_TickMarkerLastTick = tick;
+}
+void CommandSystem::UpdateTickMarkers(bool playing, int tick, bool seeking, bool paused)
+{
+	if (!playing || tick < 0)
+	{
+		EnableTickMarkers(false);
+		m_TickMarkerSeeking = false;
+		return;
+	}
+	if (seeking)
+	{
+		m_TickMarkerSeeking = true;
+		return;
+	}
+	if (m_TickMarkerSeeking ||
+	    (m_TickMarkerHaveTick && (tick < m_TickMarkerLastTick || (paused && tick != m_TickMarkerLastTick))))
+	{
+		EndTickMarkerSeek(tick);
+		return;
+	}
+	if (m_TickMarkerHaveTick && m_TickMarkersEnabled && Enabled && tick > m_TickMarkerLastTick)
+		for (const auto &marker : m_TickMarkers)
+			if (marker.Enabled && marker.Tick > m_TickMarkerLastTick && marker.Tick <= tick &&
+			    !marker.Command.empty())
+				m_CommandsToExecute.push(marker.Command);
+	m_TickMarkerLastTick = tick;
+	m_TickMarkerHaveTick = true;
+}
+// End sequencer tick markers.
 
 void CommandSystem::Add(char const * command)
 {
@@ -155,6 +291,7 @@ bool CommandSystem::Remove(int index)
 
 void CommandSystem::Clear(void)
 {
+	ClearTickMarkers();
 	for (auto it = m_TickMap.begin(); it != m_TickMap.end(); ++it) delete it->second;
 	m_TickMap.clear();
 	DeleteTickTree();
@@ -180,9 +317,133 @@ char * double2xml(rapidxml::xml_document<> & doc, double value)
 	return doc.allocate_string(szTmp);
 }
 
+
+void AppendTickMarkers(rapidxml::xml_document<> &doc, rapidxml::xml_node<> *root,
+                       const std::vector<CommandSystem::TickMarker> &markers)
+{
+	auto node = doc.allocate_node(rapidxml::node_element, "sequencer");
+	node->append_attribute(doc.allocate_attribute("version", "1"));
+	root->append_node(node);
+	for (const auto &marker : markers)
+	{
+		auto item = doc.allocate_node(rapidxml::node_element, "marker");
+		item->append_attribute(doc.allocate_attribute("tick", int2xml(doc, marker.Tick)));
+		item->append_attribute(doc.allocate_attribute("name", doc.allocate_string(marker.Name.c_str())));
+		item->append_attribute(doc.allocate_attribute("enabled", marker.Enabled ? "1" : "0"));
+		item->append_attribute(doc.allocate_attribute("runOnSeek", marker.RunOnSeek ? "1" : "0"));
+		item->append_node(
+		    doc.allocate_node(rapidxml::node_element, "body", doc.allocate_string(marker.Command.c_str())));
+		node->append_node(item);
+	}
+}
+bool ParseTickMarkers(rapidxml::xml_node<> *node, std::vector<CommandSystem::TickMarker> &markers)
+{
+	if (!node)
+		return false;
+	auto version = node->first_attribute("version");
+	if (!version || std::strcmp(version->value(), "1"))
+		return false;
+	size_t textBytes = 0;
+	for (auto item = node->first_node("marker"); item; item = item->next_sibling("marker"))
+	{
+		auto tick = item->first_attribute("tick");
+		auto body = item->first_node("body");
+		if (!tick || !body || markers.size() >= 10000)
+			return false;
+		errno = 0;
+		char *end = nullptr;
+		long value = std::strtol(tick->value(), &end, 10);
+		if (errno || end == tick->value() || *end || value < 0 || value > INT_MAX)
+			return false;
+		CommandSystem::TickMarker marker;
+		marker.Tick = int(value);
+		marker.Command.assign(body->value(), body->value_size());
+		if (auto name = item->first_attribute("name"))
+			marker.Name.assign(name->value(), name->value_size());
+		textBytes += marker.Name.size() + marker.Command.size();
+		if (marker.Name.size() > 128 || marker.Command.size() > 16384 || textBytes > 1024 * 1024 ||
+		    marker.Name.find('\0') != std::string::npos || marker.Command.find('\0') != std::string::npos)
+			return false;
+		for (auto key : {"enabled", "runOnSeek"})
+			if (auto flag = item->first_attribute(key))
+			{
+				if (std::strcmp(flag->value(), "0") && std::strcmp(flag->value(), "1"))
+					return false;
+				if (!std::strcmp(key, "enabled"))
+					marker.Enabled = flag->value()[0] == '1';
+				else
+					marker.RunOnSeek = flag->value()[0] == '1';
+			}
+		markers.push_back(std::move(marker));
+	}
+	return true;
+}
+bool WriteXML(const wchar_t *file, rapidxml::xml_document<> &doc)
+{
+	std::string text;
+	rapidxml::print(std::back_inserter(text), doc);
+	FILE *out = nullptr;
+	if (_wfopen_s(&out, file, L"wb") || !out)
+		return false;
+	bool ok = std::fwrite(text.data(), 1, text.size(), out) == text.size();
+	return std::fclose(out) == 0 && ok;
+}
+
 };
 
 using namespace CommandSystemXML;
+
+
+bool CommandSystem::SaveTickMarkers(const wchar_t *file)
+{
+	rapidxml::xml_document<> doc;
+	auto root = doc.allocate_node(rapidxml::node_element, "commandSystem");
+	doc.append_node(root);
+	AppendTickMarkers(doc, root, m_TickMarkers);
+	return WriteXML(file, doc);
+}
+bool CommandSystem::LoadTickMarkers(const wchar_t *file)
+{
+	EnableTickMarkers(false); // Loading never arms executable content.
+	FILE *input = nullptr;
+	if (_wfopen_s(&input, file, L"rb") || !input)
+		return false;
+	if (std::fseek(input, 0, SEEK_END))
+	{
+		std::fclose(input);
+		return false;
+	}
+	long length = std::ftell(input);
+	if (length < 0 || length > 16 * 1024 * 1024)
+	{
+		std::fclose(input);
+		return false;
+	}
+	std::rewind(input);
+	std::vector<char> bytes(size_t(length) + 1, 0);
+	bool read = std::fread(bytes.data(), 1, size_t(length), input) == size_t(length);
+	std::fclose(input);
+	if (!read)
+		return false;
+	try
+	{
+		rapidxml::xml_document<> doc;
+		doc.parse<0>(bytes.data());
+		auto root = doc.first_node("commandSystem");
+		std::vector<TickMarker> parsed;
+		if (!root || !ParseTickMarkers(root->first_node("sequencer"), parsed))
+			return false;
+		for (auto &marker : parsed)
+			marker.Id = m_NextTickMarker++;
+		m_TickMarkers.swap(parsed);
+		TickMarkersChanged();
+		return true;
+	}
+	catch (const rapidxml::parse_error &)
+	{
+		return false;
+	}
+}
 
 bool CommandSystem::Save(wchar_t const * fileName)
 {
@@ -293,6 +554,7 @@ bool CommandSystem::Save(wchar_t const * fileName)
 		cmds->append_node(cmd);
 	}
 
+	AppendTickMarkers(doc, commandSystem, m_TickMarkers);
 	std::string xmlString;
 	rapidxml::print(std::back_inserter(xmlString), doc);
 
@@ -311,6 +573,7 @@ bool CommandSystem::Save(wchar_t const * fileName)
 
 bool CommandSystem::Load(wchar_t const * fileName)
 {
+	EnableTickMarkers(false);
 	bool bOk = false;
 	bool bUsedByTick = false;
 	bool bUsedByTime = false;
@@ -343,8 +606,14 @@ bool CommandSystem::Load(wchar_t const * fileName)
 				rapidxml::xml_node<> * cur_node = doc.first_node("commandSystem");
 				if(!cur_node) break;
 
+				std::vector<TickMarker> parsedMarkers;
+				if (auto sequencer = cur_node->first_node("sequencer"))
+					if (!ParseTickMarkers(sequencer, parsedMarkers)) { bOk = false; break; }
 				// Clear current Map:
 				Clear();
+				for (auto &marker : parsedMarkers) marker.Id = m_NextTickMarker++;
+				m_TickMarkers.swap(parsedMarkers); TickMarkersChanged();
+
 
 				cur_node = cur_node->first_node("commands");
 				if(!cur_node) break;
@@ -563,6 +832,9 @@ void CommandSystem::Console_List(void)
 
 void CommandSystem::OnExecuteCommands(void)
 {
+	if (m_Executing) return;
+	m_Executing = true;
+	struct Scope { bool &Value; ~Scope() { Value = false; } } scope{m_Executing};
 	// We first collect all commands to be execute and only then execute them to prevent consistency errors
 	// due to commands accessing the command system itself.
 
@@ -601,14 +873,21 @@ void CommandSystem::OnExecuteCommands(void)
 		m_LastTime = time;
 	}
 
-	while(!m_CommandsToExecute.empty()) {
-		if(m_pExecuteClientCmd) m_pExecuteClientCmd->ExecuteClientCmd(m_CommandsToExecute.front().c_str());
-		m_CommandsToExecute.pop();
+	// Commands queued by a command execute on the next update, never in an
+	// unbounded self-scheduling loop inside this render callback.
+	size_t count = m_CommandsToExecute.size();
+	while (count-- && !m_CommandsToExecute.empty())
+	{
+		auto command = std::move(m_CommandsToExecute.front()); m_CommandsToExecute.pop();
+		if (m_pExecuteClientCmd) m_pExecuteClientCmd->ExecuteClientCmd(command.c_str());
 	}
 }
 
-void CommandSystem::OnLevelInitPreEntity(void)
+void CommandSystem::OnLevelInitPreEntity(bool demoSeek)
 {
+	if (!demoSeek && !m_TickMarkerSeeking) EnableTickMarkers(false);
+	m_TickMarkerHaveTick = false;
+
 	m_LastTime = -1;
 	m_LastTick = -1;
 }
@@ -1266,7 +1545,105 @@ void CommandSystem::EditCommandCurves(Interval I, CCommand* c, advancedfx::IComm
 	);
 }
 
+
+void CommandSystem::Console_TickMarkers(advancedfx::ICommandArgs *args)
+{
+	const int argc = args->ArgC();
+	const char *kind = argc > 2 ? args->ArgV(2) : "";
+	auto number = [&](int arg, unsigned long long &out) {
+		const char *value = args->ArgV(arg);
+		if (!*value || *value == '-')
+			return false;
+		errno = 0;
+		char *end = nullptr;
+		out = std::strtoull(value, &end, 10);
+		return !errno && end != value && !*end;
+	};
+	auto boolean = [](const char *v) { return !std::strcmp(v, "0") || !std::strcmp(v, "1"); };
+	unsigned long long id = 0, tick = 0;
+	if (argc == 4 && !_stricmp(kind, "enabled") && boolean(args->ArgV(3)))
+	{
+		EnableTickMarkers(args->ArgV(3)[0] == '1');
+		return;
+	}
+	if (argc == 3 && !_stricmp(kind, "clear"))
+	{
+		ClearTickMarkers();
+		return;
+	}
+	if (argc == 6 && !_stricmp(kind, "add") && number(3, tick) && tick <= INT_MAX)
+	{
+		id = AddTickMarker(int(tick), args->ArgV(4), args->ArgV(5));
+		if (id)
+		{
+			advancedfx::Message("Command marker %llu added.\n", id);
+			return;
+		}
+	}
+	if (argc == 3 && !_stricmp(kind, "list"))
+	{
+		advancedfx::Message("Sequencer commands: %s\n", TickMarkersEnabled() ? "enabled" : "disabled");
+		for (const auto &marker : m_TickMarkers)
+			advancedfx::Message("%llu: tick %d, %s, enabled %d, runOnSeek %d -> %s\n", marker.Id, marker.Tick,
+			                    marker.Name.c_str(), marker.Enabled, marker.RunOnSeek,
+			                    marker.Command.c_str());
+		return;
+	}
+	if (argc == 4 && number(3, id))
+	{
+		if (!_stricmp(kind, "remove") && RemoveTickMarker(id))
+			return;
+		if (!_stricmp(kind, "run") && RunTickMarker(id))
+			return;
+	}
+	if (argc == 6 && !_stricmp(kind, "edit") && number(3, id))
+	{
+		for (auto marker : m_TickMarkers)
+			if (marker.Id == id)
+			{
+				const char *field = args->ArgV(4), *value = args->ArgV(5);
+				bool valid = true;
+				if (!_stricmp(field, "tick"))
+				{
+					valid = number(5, tick) && tick <= INT_MAX;
+					if (valid)
+						marker.Tick = int(tick);
+				}
+				else if (!_stricmp(field, "name"))
+					marker.Name = value;
+				else if (!_stricmp(field, "command"))
+					marker.Command = value;
+				else if (!_stricmp(field, "enabled") && boolean(value))
+					marker.Enabled = value[0] == '1';
+				else if (!_stricmp(field, "runOnSeek") && boolean(value))
+					marker.RunOnSeek = value[0] == '1';
+				else
+					valid = false;
+				if (valid && SetTickMarker(marker))
+					return;
+				break;
+			}
+	}
+	if (argc == 4 && (!_stricmp(kind, "save") || !_stricmp(kind, "load")))
+	{
+		std::wstring file;
+		bool ok = UTF8StringToWideString(args->ArgV(3), file) &&
+		          (!_stricmp(kind, "save") ? SaveTickMarkers(file.c_str()) : LoadTickMarkers(file.c_str()));
+		advancedfx::Message("Command track: %s.\n", ok ? "OK" : "ERROR");
+		return;
+	}
+	advancedfx::Message(
+	    "mirv_cmd markers enabled 0|1 | list | clear\n"
+	    "mirv_cmd markers add <tick> \"name\" \"command text\"\n"
+	    "mirv_cmd markers edit <id> tick|name|command|enabled|runOnSeek <value>\n"
+	    "mirv_cmd markers remove|run <id>\n"
+	    "mirv_cmd markers save|load <file.xml>\n"
+	    "Enabling starts from the next tick update; run explicitly to apply a current marker.\n");
+}
+
 void CommandSystem::Console_Command(advancedfx::ICommandArgs* args) {
+	if (args->ArgC() == 1) advancedfx::Message("%s markers - Sequencer command track.\n", args->ArgV(0));
+	if (args->ArgC() > 1 && !_stricmp(args->ArgV(1), "markers")) { Console_TickMarkers(args); return; }
 	int argc = args->ArgC();
 	const char * arg0 = args->ArgV(0);
 

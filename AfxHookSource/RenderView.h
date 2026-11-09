@@ -22,6 +22,8 @@ bool MirvCampathPreview_SetTime(double time);
 bool MirvCampathPreview_Seek();
 // 0: resume at the chosen timescale, 1: pause, 2: continue at normal speed.
 bool MirvCampathPreview_SeekTick(int tick);
+bool MirvCampathPreview_IsSeeking();
+bool MirvCampath_CommandSeekObserverReady();
 bool MirvCampathPreview_SetSeekOptions(int mode, double timescale);
 int MirvCampathPreview_GetSeekMode();
 double MirvCampathPreview_GetSeekScale();

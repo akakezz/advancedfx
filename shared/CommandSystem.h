@@ -29,6 +29,33 @@ class CommandSystem
 public:
 	bool Enabled;
 
+	// Sequencer-owned point commands share the native dispatcher, with explicit
+	// seek semantics distinct from legacy mirv_cmd interval/curve commands.
+	struct TickMarker
+	{
+		unsigned long long Id = 0;
+		int Tick = 0;
+		std::string Name, Command;
+		bool Enabled = true, RunOnSeek = false;
+	};
+	const std::vector<TickMarker> &GetTickMarkers() const { return m_TickMarkers; }
+	unsigned long long GetTickMarkerRevision() const { return m_TickMarkerRevision; }
+	bool TickMarkersEnabled() const { return m_TickMarkersEnabled; }
+	void EnableTickMarkers(bool enabled);
+	unsigned long long AddTickMarker(int tick, const std::string &name, const std::string &command);
+	bool SetTickMarker(const TickMarker &marker);
+	bool RemoveTickMarker(unsigned long long id);
+	void ClearTickMarkers();
+	bool RunTickMarker(unsigned long long id);
+	bool SaveTickMarkers(const wchar_t *file);
+	bool LoadTickMarkers(const wchar_t *file);
+	// Called by the engine render lifecycle even while the overlay is closed.
+	void UpdateTickMarkers(bool playing, int tick, bool seeking, bool paused);
+	void BeginTickMarkerSeek();
+	void CancelTickMarkerSeek() { m_TickMarkerSeeking = false; m_TickMarkerHaveTick = false; }
+	void EndTickMarkerSeek(int tick);
+
+
 	/// <param name="pExecuteClientCmd">must not be nullptr</param>
 	/// <param name="pGetTick">can be nullptr</param>
 	/// <param name="pGetTime">can be nullptr</param>
@@ -43,11 +70,19 @@ public:
 
 	void OnExecuteCommands(void);
 
-	void OnLevelInitPreEntity(void);
+	void OnLevelInitPreEntity(bool demoSeek = false);
 
 	void Console_Command(advancedfx::ICommandArgs* args);
 
 private:
+	std::vector<TickMarker> m_TickMarkers;
+	unsigned long long m_NextTickMarker = 1, m_TickMarkerRevision = 0;
+	bool m_TickMarkersEnabled = false, m_TickMarkerHaveTick = false, m_TickMarkerSeeking = false;
+	int m_TickMarkerLastTick = 0;
+	void TickMarkersChanged();
+	void Console_TickMarkers(advancedfx::ICommandArgs *args);
+	bool m_Executing = false;
+
 	class CDoubleInterp
 	{
 	public:

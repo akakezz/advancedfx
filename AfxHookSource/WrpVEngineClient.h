@@ -47,6 +47,7 @@ public:
 	virtual bool IsPlayingDemo( void ) abstract = 0;
 	virtual bool IsRecordingDemo( void ) abstract = 0;
 	virtual bool IsPlayingTimeDemo( void ) abstract = 0;
+	virtual bool IsSkippingDemo() { return false; }
 	virtual bool IsPaused( void ) abstract = 0;
 	virtual bool IsTakingScreenshot( void ) abstract = 0;
 	virtual bool IsHLTV( void ) abstract = 0;
@@ -157,6 +158,7 @@ public:
 	virtual float GetDemoPlaybackTimeScale( void ); 
 	virtual int GetDemoPlaybackTotalTicks( void ); 
 
+	virtual bool IsSkippingDemo() override;
 	virtual bool IsPaused( void );
 	virtual bool IsTakingScreenshot( void );
 	virtual bool IsHLTV( void );

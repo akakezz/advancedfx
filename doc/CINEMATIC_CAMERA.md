@@ -133,6 +133,78 @@ can change speed continuity even though the spatial curves are preserved.
 The sequencer keeps classic zero-based key indices when zooming or panning past
 hidden keys. Zoom changes visibility, not numbering.
 
+### Command track
+
+The sequencer has a **Commands** row and a **Commands** tab below the timeline.
+Choose **Add command at playhead**, enter a name, tick and command text, then
+**Apply command edits**. The tick field and **Use playhead** move a marker;
+editing the draft does not execute it. **Run command now** explicitly runs the
+saved version. Multiple commands at the same tick run in creation order.
+
+**Enable command execution** arms future playback crossings. It works with the
+overlay closed, using HLAE's existing `mirv_cmd` dispatcher. Loading a command
+track or starting another demo disables automatic execution. The global
+`mirv_cmd enabled` setting also gates it. Automatic execution requires the
+TF2/TF2C native seek observer; the UI reports when that observer is unavailable.
+
+Ordinary commands are skipped during forward/backward seeks and demo rebuilds.
+**Run on seek** is an opt-in for persistent settings: after a seek, all enabled
+markers with this flag at or before the destination execute in tick order.
+Include initial/reset markers when a setting must be restored on backward seeks.
+This cannot undo arbitrary console-command effects. Replaying a previously
+visited interval normally executes its commands again.
+
+**Save command track** and **Load command track** use a separate XML file; a
+`<demo>.commands.xml` name is suggested beside the indexed demo. Apply drafts
+before saving. Existing `mirv_cmd save/load` also includes these markers alongside
+its legacy commands. Import never enables execution. Console access is available:
+
+```text
+mirv_cmd markers add 1200 "Slow motion" "demo_timescale 0.5"
+mirv_cmd markers list
+mirv_cmd markers edit <id> runOnSeek 1
+mirv_cmd markers enabled 1
+mirv_cmd markers save "shot.commands.xml"
+```
+
+Use `mirv_cmd markers` for the remaining edit/remove/run/load commands. These
+markers use integer demo ticks; camera key indices and camera undo history are
+unchanged.
+
+### Demo events
+
+The **Demo events** row indexes events across the entire demo, including ticks
+not yet played. Opening a demo with the overlay's existing file picker starts
+indexing in the background. For demos opened through the console, choose
+**Index demo** in the **Events** tab. Indexing is read-only and never executes
+console commands embedded in a demo. Progress and cancellation are available;
+completed results are kept in memory, with no continuous file parsing while idle.
+
+Filter deaths, rounds, objectives and player events; search names, weapons or
+other event fields. **Recorder deaths only** uses the recorded header name when
+it can be matched to a player. Names are resolved from the demo's user-info
+snapshots and retain their historical values. High-frequency damage/healing
+notifications are deliberately excluded from the cinematic event track.
+
+Click a marker to inspect **all events at that tick** below the timeline,
+including their individual fields. **Previous event**, **Next event** and
+**Seek to event** provide navigation. Seeking uses the existing after-seek policy.
+Dense markers share a pixel when zoomed out; zoom in or use event navigation to
+inspect them individually. The existing wheel zoom, pan and overview work across
+camera, command and event tracks.
+
+Check the indexed filename shown in the tab. The native engine interface only
+lets the overlay compare the playing demo's map and tick count to the index;
+these checks cannot distinguish two different files with identical metadata.
+Unsupported, truncated or changing files report an error without publishing a
+partial index. This reader supports Source demo protocol 3, network protocols
+15–24; TF2C-specific event coverage still needs testing with real TF2C demos.
+
+The portable C++ reader uses the public Source demo layout and network/event
+layouts studied in [Valve's Source SDK](https://github.com/ValveSoftware/source-sdk-2013)
+and [demostf/parser](https://codeberg.org/demostf/parser). It adds no external
+parser runtime or build dependency.
+
 The overlay uses ImGui's own drawn cursor, including the I-beam over text fields.
 Windows cursor changes and Source UI queries are avoided in the busy cursor hooks.
 Menus, focus loss and free-camera mouse-look restore the game's cursor; they also

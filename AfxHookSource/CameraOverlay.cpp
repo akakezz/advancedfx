@@ -19,6 +19,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <future>
+#include <cctype>
+#include <shared/CommandSystem.h>
+#include <shared/DemoTimeline.h>
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <shared/AfxConsole.h>
@@ -29,6 +33,7 @@
 #include <string>
 #include <vector>
 extern WrpVEngineClient *g_VEngineClient;
+extern CommandSystem g_CommandSystem;
 extern bool GetCurrentDemoTick(int &);
 extern bool GetCurrentDemoTime(double &);
 extern bool GetDemoTickFromClientTime(double, double, int &);
@@ -3121,8 +3126,437 @@ static void DrawCurveEditor()
 	}
 	ImGui::End();
 }
+// Demo events and command-marker details share the existing sequencer renderer.
+struct SequencerTimeline
+{
+	std::future<advancedfx::DemoTimeline::Index> Worker;
+	std::shared_ptr<std::atomic_bool> Cancel;
+	std::shared_ptr<std::atomic<float>> Progress;
+	std::filesystem::path Pending;
+	advancedfx::DemoTimeline::Index Index;
+	std::vector<size_t> Filtered;
+	bool Categories[4] = {true, true, true, false}, RecorderOnly = false, FilterDirty = true;
+	char Search[128] = {};
+	int SelectedTick = -1;
+	unsigned long long SelectedCommand = 0, DraftRevision = ~0ull, DraftId = 0;
+	CommandSystem::TickMarker Draft;
+	char CommandName[129] = {}, CommandBody[16385] = {};
+	std::filesystem::path CommandsFile;
+	std::string Status;
+	bool FocusEvents = false, FocusCommands = false;
+	~SequencerTimeline()
+	{
+		if (Cancel)
+			Cancel->store(true);
+	}
+} g_SequencerTimeline;
+
+static void StartTimelineIndex(const std::filesystem::path &file)
+{
+	auto &state = g_SequencerTimeline;
+	if (state.Worker.valid())
+	{
+		state.Pending = file;
+		state.Cancel->store(true);
+		return;
+	}
+	state.Index = {};
+	state.Index.File = file;
+	state.Filtered.clear();
+	state.SelectedTick = -1;
+	state.FilterDirty = true;
+	state.Cancel = std::make_shared<std::atomic_bool>(false);
+	state.Progress = std::make_shared<std::atomic<float>>(0);
+	auto cancel = state.Cancel;
+	auto progress = state.Progress;
+	try
+	{
+		state.Worker = std::async(std::launch::async, [file, cancel, progress]() {
+			return advancedfx::DemoTimeline::Read(file, *cancel, *progress);
+		});
+	}
+	catch (const std::exception &e)
+	{
+		state.Index.Error = e.what();
+	}
+}
+static void PollTimelineIndex()
+{
+	auto &state = g_SequencerTimeline;
+	if (state.Worker.valid() && state.Worker.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+	{
+		try
+		{
+			state.Index = state.Worker.get();
+		}
+		catch (const std::exception &e)
+		{
+			state.Index.Error = e.what();
+		}
+		state.FilterDirty = true;
+		if (!state.Pending.empty())
+		{
+			auto next = state.Pending;
+			state.Pending.clear();
+			StartTimelineIndex(next);
+		}
+	}
+}
+static bool TimelineMatchesDemo()
+{
+	const auto &index = g_SequencerTimeline.Index;
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
+		return false;
+	auto demo = g_VEngineClient->GetDemoInfoEx();
+	if (!demo || index.File.empty() || !index.Error.empty())
+		return false;
+	const char *level = g_VEngineClient->GetLevelName();
+	if (!level)
+		return false;
+	auto map = std::filesystem::path(level).stem().u8string();
+	return demo->GetDemoPlaybackTotalTicks() == index.TotalTicks && !_stricmp(map.c_str(), index.Map.c_str());
+}
+static void FilterTimelineEvents()
+{
+	auto &state = g_SequencerTimeline;
+	if (!state.FilterDirty)
+		return;
+	state.Filtered.clear();
+	std::string search = state.Search;
+	for (auto &c : search)
+		if ('A' <= c && c <= 'Z')
+			c = char(c - 'A' + 'a');
+	for (size_t i = 0; i < state.Index.Events.size(); ++i)
+	{
+		const auto &event = state.Index.Events[i];
+		if (!state.Categories[int(event.Kind)] || (state.RecorderOnly && !event.RecorderDeath))
+			continue;
+		if (!search.empty() && event.Search.find(search) == std::string::npos)
+			continue;
+		state.Filtered.push_back(i);
+	}
+	state.FilterDirty = false;
+}
+static void DrawSequencerExtraTracks(int visibleStart, int visibleEnd)
+{
+	auto &state = g_SequencerTimeline;
+	const int buckets = (std::max)(1, (std::min)(2000, int(ImGui::GetContentRegionAvail().x)));
+	auto bucket = [&](int tick) {
+		return int((int64_t(tick) - visibleStart) * buckets /
+		           (std::max)(int64_t(1), int64_t(visibleEnd) - visibleStart + 1));
+	};
+	if (ImGui::BeginNeoTimelineEx("Commands", nullptr, ImGuiNeoTimelineFlags_None))
+	{
+		int previous = -1;
+		for (const auto &marker : g_CommandSystem.GetTickMarkers())
+		{
+			if (marker.Tick < visibleStart || marker.Tick > visibleEnd)
+				continue;
+			int pixel = bucket(marker.Tick);
+			if (pixel == previous)
+				continue;
+			previous = pixel;
+			std::string label = marker.Name.empty() ? "Command" : marker.Name;
+			label += marker.Enabled ? "" : " [disabled]";
+			if (ImGui::NeoTimelineSpan(marker.Tick, marker.Tick,
+			                           marker.Id == state.SelectedCommand ? IM_COL32(255, 230, 110, 255)
+			                           : marker.Enabled                   ? IM_COL32(190, 130, 255, 255)
+			                                                              : IM_COL32(100, 100, 100, 255),
+			                           label.c_str()))
+			{
+				state.SelectedCommand = marker.Id;
+				state.FocusCommands = true;
+				ImGui::NeoCancelSelection();
+			}
+		}
+		ImGui::EndNeoTimeLine();
+	}
+	if (ImGui::BeginNeoTimelineEx("Demo events", nullptr, ImGuiNeoTimelineFlags_None))
+	{
+		FilterTimelineEvents();
+		int previous = -1;
+		auto first = std::lower_bound(state.Filtered.begin(), state.Filtered.end(), visibleStart,
+		                              [&](size_t i, int tick) { return state.Index.Events[i].Tick < tick; });
+		for (auto it = first; it != state.Filtered.end(); ++it)
+		{
+			const auto &event = state.Index.Events[*it];
+			if (event.Tick > visibleEnd)
+				break;
+			int pixel = bucket(event.Tick);
+			if (pixel == previous)
+				continue;
+			previous = pixel;
+			const ImU32 colors[] = {IM_COL32(255, 100, 90, 255), IM_COL32(100, 180, 255, 255),
+			                        IM_COL32(255, 190, 60, 255), IM_COL32(120, 210, 160, 255)};
+			if (ImGui::NeoTimelineSpan(event.Tick, event.Tick, colors[int(event.Kind)],
+			                           event.Summary.c_str()))
+			{
+				state.SelectedTick = event.Tick;
+				state.FocusEvents = true;
+				ImGui::NeoCancelSelection();
+			}
+		}
+		ImGui::EndNeoTimeLine();
+	}
+}
+static void DrawSequencerDetails(int playhead)
+{
+	auto &state = g_SequencerTimeline;
+	static ImGui::FileBrowser indexDialog(ImGuiFileBrowserFlags_CloseOnEsc |
+	                                      ImGuiFileBrowserFlags_EditPathString);
+	static ImGui::FileBrowser loadDialog(ImGuiFileBrowserFlags_CloseOnEsc |
+	                                     ImGuiFileBrowserFlags_EditPathString);
+	static ImGui::FileBrowser saveDialog(
+	    ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_EditPathString |
+	    ImGuiFileBrowserFlags_EnterNewFilename | ImGuiFileBrowserFlags_CreateNewDir);
+	if (!ImGui::BeginTabBar("Sequencer details"))
+		return;
+	if (ImGui::BeginTabItem("Commands", nullptr, state.FocusCommands ? ImGuiTabItemFlags_SetSelected : 0))
+	{
+		state.FocusCommands = false;
+		bool enabled = g_CommandSystem.TickMarkersEnabled();
+		ImGui::BeginDisabled(!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+		                     !MirvCampath_CommandSeekObserverReady());
+		if (ImGui::Checkbox("Enable command execution", &enabled))
+			g_CommandSystem.EnableTickMarkers(enabled);
+		ImGui::EndDisabled();
+		if (!MirvCampath_CommandSeekObserverReady())
+			ImGui::TextDisabled("Automatic commands require the TF2/TF2C native seek observer.");
+		if (!g_CommandSystem.Enabled)
+			ImGui::TextDisabled("The global mirv_cmd scheduler is disabled.");
+		if (ImGui::Button("Add command at playhead"))
+		{
+			state.SelectedCommand = g_CommandSystem.AddTickMarker((std::max)(0, playhead), "Command", "");
+			if (!state.SelectedCommand)
+				state.Status = "Cannot add another command marker.";
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Load command track"))
+		{
+			loadDialog.SetTitle("Load command track");
+			loadDialog.SetTypeFilters({".xml"});
+			loadDialog.Open();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Save command track"))
+		{
+			saveDialog.SetTitle("Save command track");
+			saveDialog.SetTypeFilters({".xml"});
+			if (!state.Index.File.empty())
+			{
+				saveDialog.SetDirectory(state.Index.File.parent_path());
+				saveDialog.SetInputName(state.Index.File.stem().u8string() + ".commands.xml");
+			}
+			else if (!state.CommandsFile.empty())
+				saveDialog.SetInputName(state.CommandsFile.filename().u8string());
+			saveDialog.Open();
+		}
+		loadDialog.Display();
+		saveDialog.Display();
+		if (loadDialog.HasSelected())
+		{
+			auto file = loadDialog.GetSelected();
+			bool ok = g_CommandSystem.LoadTickMarkers(file.wstring().c_str());
+			state.Status = ok ? "Command track loaded; execution is disabled."
+			                  : "Could not load command track; execution is disabled.";
+			if (ok)
+			{
+				state.CommandsFile = file;
+				state.SelectedCommand = 0;
+			}
+			loadDialog.ClearSelected();
+		}
+		if (saveDialog.HasSelected())
+		{
+			auto file = saveDialog.GetSelected();
+			bool ok = g_CommandSystem.SaveTickMarkers(file.wstring().c_str());
+			state.Status = ok ? "Command track saved." : "Could not save command track.";
+			if (ok)
+				state.CommandsFile = file;
+			saveDialog.ClearSelected();
+		}
+		const auto &markers = g_CommandSystem.GetTickMarkers();
+		if (ImGui::BeginChild("Command marker list", ImVec2(0, 85), true))
+		{
+			ImGuiListClipper clipper;
+			clipper.Begin(int(markers.size()));
+			while (clipper.Step())
+				for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
+				{
+					const auto &marker = markers[size_t(i)];
+					ImGui::PushID(int(marker.Id));
+					std::string label = std::to_string(marker.Tick) + ": " + marker.Name +
+					                    (marker.Enabled ? "" : " [disabled]");
+					if (ImGui::Selectable(label.c_str(), state.SelectedCommand == marker.Id))
+						state.SelectedCommand = marker.Id;
+					ImGui::PopID();
+				}
+		}
+		ImGui::EndChild();
+		auto selected = std::find_if(markers.begin(), markers.end(), [&](const CommandSystem::TickMarker &m) {
+			return m.Id == state.SelectedCommand;
+		});
+		if (selected != markers.end())
+		{
+			if (state.DraftId != selected->Id ||
+			    state.DraftRevision != g_CommandSystem.GetTickMarkerRevision())
+			{
+				state.Draft = *selected;
+				state.DraftId = selected->Id;
+				state.DraftRevision = g_CommandSystem.GetTickMarkerRevision();
+				std::snprintf(state.CommandName, sizeof(state.CommandName), "%s", selected->Name.c_str());
+				std::snprintf(state.CommandBody, sizeof(state.CommandBody), "%s", selected->Command.c_str());
+			}
+			ImGui::InputText("Command name", state.CommandName, sizeof(state.CommandName));
+			ImGui::InputInt("Command tick", &state.Draft.Tick);
+			ImGui::SameLine();
+			if (ImGui::Button("Use playhead"))
+				state.Draft.Tick = playhead;
+			ImGui::Checkbox("Marker enabled", &state.Draft.Enabled);
+			ImGui::SameLine();
+			ImGui::Checkbox("Run on seek", &state.Draft.RunOnSeek);
+			ImGui::InputTextMultiline("Command text", state.CommandBody, sizeof(state.CommandBody),
+			                          ImVec2(-1, 90));
+			if (ImGui::Button("Apply command edits"))
+			{
+				state.Draft.Name = state.CommandName;
+				state.Draft.Command = state.CommandBody;
+				state.Status = g_CommandSystem.SetTickMarker(state.Draft)
+				                   ? "Command updated; no command executed."
+				                   : "Invalid command tick or track size.";
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Discard command edits"))
+				state.DraftRevision = ~0ull;
+			ImGui::SameLine();
+			if (ImGui::Button("Duplicate command"))
+			{
+				auto copy = state.Draft;
+				copy.Name = state.CommandName;
+				copy.Command = state.CommandBody;
+				copy.Id = g_CommandSystem.AddTickMarker(copy.Tick, copy.Name, copy.Command);
+				if (copy.Id)
+				{
+					g_CommandSystem.SetTickMarker(copy);
+					state.SelectedCommand = copy.Id;
+				}
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Delete command"))
+			{
+				g_CommandSystem.RemoveTickMarker(state.SelectedCommand);
+				state.SelectedCommand = 0;
+			}
+			ImGui::BeginDisabled(!g_VEngineClient || !g_VEngineClient->IsPlayingDemo());
+			if (ImGui::Button("Run command now"))
+				g_CommandSystem.RunTickMarker(state.SelectedCommand);
+			ImGui::SameLine();
+			if (ImGui::Button("Seek to command"))
+				Afx_GotoDemoTick(state.Draft.Tick);
+			ImGui::EndDisabled();
+		}
+		ImGui::TextWrapped("Playback executes crossed markers once, in tick order. Editing never runs a "
+		                   "command. Run on seek reapplies enabled flagged markers up to the destination, in "
+		                   "order; include initial/reset settings. Other crossed commands are skipped. "
+		                   "Loading a track or starting another demo disables automatic execution.");
+		if (!state.Status.empty())
+			ImGui::TextWrapped("%s", state.Status.c_str());
+		ImGui::EndTabItem();
+	}
+	if (ImGui::BeginTabItem("Events", nullptr, state.FocusEvents ? ImGuiTabItemFlags_SetSelected : 0))
+	{
+		state.FocusEvents = false;
+		if (ImGui::Button("Index demo events"))
+		{
+			indexDialog.SetTitle("Index demo events");
+			indexDialog.SetTypeFilters({".dem"});
+			if (!g_OverlayPaths.demoDir.empty())
+				indexDialog.SetDirectory(g_OverlayPaths.demoDir);
+			indexDialog.Open();
+		}
+		if (state.Worker.valid())
+		{
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel indexing"))
+			{
+				state.Pending.clear();
+				state.Cancel->store(true);
+			}
+			ImGui::ProgressBar(state.Progress->load());
+		}
+		indexDialog.Display();
+		if (indexDialog.HasSelected())
+		{
+			StartTimelineIndex(indexDialog.GetSelected());
+			indexDialog.ClearSelected();
+		}
+		if (!state.Index.File.empty())
+			ImGui::TextWrapped("Demo: %s", state.Index.File.u8string().c_str());
+		if (!state.Index.Error.empty())
+			ImGui::TextWrapped("Index failed: %s", state.Index.Error.c_str());
+		const char *labels[] = {"Deaths / kills", "Rounds", "Objectives", "Players"};
+		for (int i = 0; i < 4; ++i)
+		{
+			if (i)
+				ImGui::SameLine();
+			state.FilterDirty |= ImGui::Checkbox(labels[i], &state.Categories[i]);
+		}
+		state.FilterDirty |= ImGui::Checkbox("Recorder deaths only", &state.RecorderOnly);
+		state.FilterDirty |=
+		    ImGui::InputText("Find event / player / weapon", state.Search, sizeof(state.Search));
+		FilterTimelineEvents();
+		ImGui::Text("%zu matching events", state.Filtered.size());
+		int reference = state.SelectedTick >= 0 ? state.SelectedTick : playhead;
+		if (ImGui::Button("Previous event"))
+			for (auto i = state.Filtered.rbegin(); i != state.Filtered.rend(); ++i)
+				if (state.Index.Events[*i].Tick < reference)
+				{
+					state.SelectedTick = state.Index.Events[*i].Tick;
+					break;
+				}
+		ImGui::SameLine();
+		if (ImGui::Button("Next event"))
+			for (auto i : state.Filtered)
+				if (state.Index.Events[i].Tick > reference)
+				{
+					state.SelectedTick = state.Index.Events[i].Tick;
+					break;
+				}
+		ImGui::SameLine();
+		ImGui::BeginDisabled(state.SelectedTick < 0 || !TimelineMatchesDemo());
+		if (ImGui::Button("Seek to event"))
+			Afx_GotoDemoTick(state.SelectedTick);
+		ImGui::EndDisabled();
+		if (!state.Index.File.empty() && !TimelineMatchesDemo())
+			ImGui::TextDisabled("Seeking requires a playing demo with the indexed map and tick count.");
+		if (state.SelectedTick >= 0)
+		{
+			ImGui::Text("All events at tick %d (%.3f s)", state.SelectedTick,
+			            state.SelectedTick * state.Index.Interval);
+			auto first = std::lower_bound(
+			    state.Index.Events.begin(), state.Index.Events.end(), state.SelectedTick,
+			    [](const advancedfx::DemoTimeline::Event &e, int tick) { return e.Tick < tick; });
+			for (auto i = first; i != state.Index.Events.end() && i->Tick == state.SelectedTick; ++i)
+			{
+				ImGui::PushID(int(i - state.Index.Events.begin()));
+				ImGui::TextWrapped("%s%s", i->RecorderDeath ? "[Recorder died] " : "", i->Summary.c_str());
+				if (ImGui::TreeNode(i->Name.c_str()))
+				{
+					for (const auto &field : i->Fields)
+						ImGui::TextWrapped("%s: %s", field.first.c_str(), field.second.c_str());
+					ImGui::TreePop();
+				}
+				ImGui::PopID();
+			}
+		}
+		ImGui::EndTabItem();
+	}
+	ImGui::EndTabBar();
+}
+
 void Draw()
 {
+	PollTimelineIndex();
 	if (!g_Open)
 		return;
 	static bool subscribed = false;
@@ -3847,7 +4281,10 @@ void Draw()
 					char cmd[2048];
 					snprintf(cmd, sizeof(cmd), "playdemo \"%s\"", path.c_str());
 					if (path.find_first_of("\"\r\n") == std::string::npos)
+					{
 						Afx_ExecClientCmd(cmd);
+						StartTimelineIndex(g_DemoOpenDialog.GetSelected());
+					}
 					// remember directory
 					try
 					{
@@ -3981,7 +4418,7 @@ void Draw()
 			float zoomH = ImGui::GetFontSize() * neo.ZoomHeightScale + st.FramePadding.y * 2.0f;
 			float rowLabelH =
 				ImGui::CalcTextSize("Campath").y + st.FramePadding.y * 2.0f + neo.ItemSpacing.y * 2.0f;
-			const float rows = (float)(g_Hook_VClient_RenderView.m_CamPaths.GetCount() + 1);
+			const float rows = (float)(g_Hook_VClient_RenderView.m_CamPaths.GetCount() + 3);
 			float desiredSeqH = topBarH + neo.TopBarSpacing + zoomH + rowLabelH * (std::min)(rows, 6.0f);
 			float minSeqH = ImMax(60.0f, topBarH + neo.TopBarSpacing + zoomH + rowLabelH);
 			float maxSeqHAvail = ImMax(minSeqH, ImMax(55.0f, availY - btnRowH));
@@ -4425,6 +4862,7 @@ void Draw()
 						}
 						ImGui::EndNeoTimeLine();
 					}
+					DrawSequencerExtraTracks(visibleStart, visibleEnd);
 					if (choosePath < document.GetCount())
 						ImGui::NeoCancelSelection();
 					ImGui::EndNeoSequencer();
@@ -4522,6 +4960,8 @@ void Draw()
 				ImGui::TextDisabled("Camera preview: %.3f s | Demo time stays independent",
 									MirvCampathPreview_GetTime());
 			}
+
+			DrawSequencerDetails(int(s_seqFrame));
 
 			// Frame pointer dragging -> demo_gototick
 			static bool s_draggingPointer = false;

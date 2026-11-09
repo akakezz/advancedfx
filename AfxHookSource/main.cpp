@@ -267,7 +267,7 @@ public:
 
 	virtual void LevelInitPreEntityAllTools()
 	{
-		g_CommandSystem.OnLevelInitPreEntity();
+		g_CommandSystem.OnLevelInitPreEntity(g_VEngineClient && g_VEngineClient->IsSkippingDemo());
 
 		g_Engine_ClientEngineTools->LevelInitPreEntityAllTools();
 	}
@@ -279,6 +279,14 @@ public:
 		//Tier0_Msg("ClientEngineTools::PreRenderAllTools\n");
 		// Warning: This can be called multiple times during a frame (i.e. for skybox view and normal world view)!
 
+		if (g_VEngineClient)
+		{
+			auto *demo = g_VEngineClient->GetDemoInfoEx();
+			g_CommandSystem.UpdateTickMarkers(g_VEngineClient->IsPlayingDemo() && demo && MirvCampath_CommandSeekObserverReady(),
+			    demo ? demo->GetDemoPlaybackTick() : -1,
+			    g_VEngineClient->IsSkippingDemo() || MirvCampathPreview_IsSeeking(),
+			    g_VEngineClient->IsPaused());
+		}
 		g_CommandSystem.OnExecuteCommands();
 
 		g_Engine_ClientEngineTools->PreRenderAllTools();

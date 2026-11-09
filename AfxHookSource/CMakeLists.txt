@@ -317,6 +317,8 @@ target_sources(AfxHookSource PRIVATE
     ../shared/CamPath.h
     ../shared/CommandSystem.cpp
     ../shared/CommandSystem.h
+    ../shared/DemoTimeline.cpp
+    ../shared/DemoTimeline.h
     ../shared/EasySampler.cpp
     ../shared/EasySampler.h
     ../shared/FileTools.cpp

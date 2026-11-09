@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "WrpConsole.h"
+extern void MirvCampath_ObserveDemoSeeks(void *command, void *play, void *timedemo, size_t callbackOffset);
 
 #include <malloc.h>
 #include <string.h>
@@ -219,6 +220,8 @@ void WrpConCommands::RegisterCommands(SOURCESDK::ICvar_004 * cvarIface) {
 		// will init themself since s_pAccessor is set:
 		new SOURCESDK::ConCommand_004(cmd->GetName(), cmd->GetCallback(), cmd->GetHelpString(), FCVAR_CLIENTDLL);
 	}
+	MirvCampath_ObserveDemoSeeks(cvarIface->FindCommand("demo_gototick"), cvarIface->FindCommand("playdemo"),
+	    cvarIface->FindCommand("timedemo"), sizeof(SOURCESDK::ConCommandBase_004));
 }
 
 void WrpConCommands::RegisterCommands(SOURCESDK::CSGO::ICvar * cvarIface) {
@@ -267,6 +270,8 @@ void WrpConCommands::RegisterCommands(SOURCESDK::L4D2::ICvar * cvarIface) {
 		// will init themself since s_pAccessor is set:
 		new SOURCESDK::L4D2::ConCommand(cmd->GetName(), cmd, cmd->GetHelpString(), SOURCESDK_L4D2_FCVAR_CLIENTDLL);
 	}
+	MirvCampath_ObserveDemoSeeks(cvarIface->FindCommand("demo_gototick"), cvarIface->FindCommand("playdemo"),
+	    cvarIface->FindCommand("timedemo"), sizeof(SOURCESDK::L4D2::ConCommandBase));
 }
 
 void WrpConCommands::RegisterCommands(SOURCESDK::BM::ICvar * cvarIface) {

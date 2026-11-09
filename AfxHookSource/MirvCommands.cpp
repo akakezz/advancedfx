@@ -34,6 +34,7 @@
 #include "EntityIndexDrawer.h"
 #include "tf2/ClientToolsTf2.h"
 #include "../shared/CommandSystem.h"
+extern CommandSystem g_CommandSystem;
 #include <shared/binutils.h>
 
 #ifndef _WIN64
@@ -1452,6 +1453,105 @@ public:
 
 } g_MirvCampath_Drawer;
  
+// Observe the native demo_gototick callback as well as asynchronous skipping.
+// A short seek can begin and finish between render callbacks.
+namespace
+{
+using DemoSeekCallback = void(__cdecl *)(const void *);
+DemoSeekCallback g_NativeDemoSeek = nullptr, g_NativeDemoPlay = nullptr, g_NativeTimedemo = nullptr;
+void __cdecl ObserveNativeDemoSeek(const void *args)
+{
+	int count = 0;
+	if (args)
+		std::memcpy(&count, args, sizeof(count));
+	bool track =
+	    count >= 2 && !MirvCampathPreview_IsSeeking() && g_VEngineClient && g_VEngineClient->IsPlayingDemo();
+	int before = -1;
+	if (track)
+	{
+		GetCurrentDemoTick(before);
+		g_CommandSystem.BeginTickMarkerSeek();
+	}
+	g_NativeDemoSeek(args);
+	if (track && !g_VEngineClient->IsSkippingDemo())
+	{
+		int after = -1;
+		if (GetCurrentDemoTick(after) && after != before)
+			g_CommandSystem.EndTickMarkerSeek(after);
+		else
+			g_CommandSystem.CancelTickMarkerSeek();
+	}
+}
+void __cdecl ObserveNativeDemoPlay(const void *args)
+{
+	g_CommandSystem.EnableTickMarkers(false);
+	g_CommandSystem.CancelTickMarkerSeek();
+	g_NativeDemoPlay(args);
+}
+void __cdecl ObserveNativeTimedemo(const void *args)
+{
+	g_CommandSystem.EnableTickMarkers(false);
+	g_CommandSystem.CancelTickMarkerSeek();
+	g_NativeTimedemo(args);
+}
+} // namespace
+
+bool MirvCampath_CommandSeekObserverReady()
+{
+	return g_NativeDemoSeek && g_NativeDemoPlay;
+}
+void MirvCampath_ObserveDemoSeeks(void *command, void *play, void *timedemo, size_t callbackOffset)
+{
+	if (g_NativeDemoSeek || !command || !play ||
+	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified))
+		return;
+	auto callbackAt = [&](void *object) -> DemoSeekCallback {
+		if (!object)
+			return nullptr;
+		DemoSeekCallback callback = nullptr;
+		std::memcpy(&callback, static_cast<const char *>(object) + callbackOffset, sizeof(callback));
+		MEMORY_BASIC_INFORMATION info = {};
+		if (!callback || !VirtualQuery(reinterpret_cast<void *>(callback), &info, sizeof(info)) ||
+		    (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+		    !(info.Protect &
+		      (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+			return nullptr;
+		return callback;
+	};
+	g_NativeDemoSeek = callbackAt(command);
+	g_NativeDemoPlay = callbackAt(play);
+	g_NativeTimedemo = callbackAt(timedemo);
+	if (!g_NativeDemoSeek || !g_NativeDemoPlay)
+	{
+		g_NativeDemoSeek = g_NativeDemoPlay = g_NativeTimedemo = nullptr;
+		return;
+	}
+	LONG error = DetourTransactionBegin();
+	if (error == NO_ERROR)
+	{
+		error = DetourUpdateThread(GetCurrentThread());
+		if (error == NO_ERROR)
+			error = DetourAttach(reinterpret_cast<PVOID *>(&g_NativeDemoSeek),
+			                     reinterpret_cast<PVOID>(ObserveNativeDemoSeek));
+		if (error == NO_ERROR)
+			error = DetourAttach(reinterpret_cast<PVOID *>(&g_NativeDemoPlay),
+			                     reinterpret_cast<PVOID>(ObserveNativeDemoPlay));
+		if (error == NO_ERROR && g_NativeTimedemo)
+			error = DetourAttach(reinterpret_cast<PVOID *>(&g_NativeTimedemo),
+			                     reinterpret_cast<PVOID>(ObserveNativeTimedemo));
+		if (error == NO_ERROR)
+			error = DetourTransactionCommit();
+		else
+			DetourTransactionAbort();
+	}
+	if (error != NO_ERROR)
+	{
+		g_NativeDemoSeek = g_NativeDemoPlay = g_NativeTimedemo = nullptr;
+		Tier0_Warning("Sequencer command execution unavailable: native seek observer failed (%ld).\n",
+		              long(error));
+	}
+}
+
 // Campath preview uses the existing CamPath evaluator and mirv_input free camera.
 static bool g_CampathPreviewActive = false;
 static bool g_CampathPreviewForward = false;
@@ -1470,6 +1570,7 @@ static int g_CampathSeekMode = 0, g_CampathSeekTarget = -1, g_CampathSeekFrom = 
 		   g_CampathSeekPendingMode = 0;
 static double g_CampathSeekScale = 0, g_CampathSeekPendingScale = 0;
 static DWORD g_CampathSeekStarted = 0;
+bool MirvCampathPreview_IsSeeking() { return g_CampathSeekTarget >= 0; }
 int MirvCampathPreview_GetSeekMode()
 {
 	return g_CampathSeekMode;
@@ -1495,6 +1596,7 @@ bool MirvCampathPreview_SeekTick(int tick)
 		if (demo->GetDemoPlaybackTotalTicks() > 0)
 			tick = (std::min)(tick, demo->GetDemoPlaybackTotalTicks() - 1);
 	MirvCameraCollisionReset();
+	g_CommandSystem.BeginTickMarkerSeek();
 	g_CampathSeekTarget = tick;
 	g_CampathSeekPendingMode = g_CampathSeekMode;
 	g_CampathSeekPendingScale = g_CampathSeekScale;
@@ -1512,6 +1614,7 @@ static void CampathPreview_FinishSeek()
 	if (!g_VEngineClient->IsPlayingDemo())
 	{
 		g_CampathSeekTarget = -1;
+		g_CommandSystem.CancelTickMarkerSeek();
 		Tier0_Warning("Camera seek did not complete; after-seek behavior was not applied.\n");
 		return;
 	}
@@ -1525,6 +1628,7 @@ static void CampathPreview_FinishSeek()
 		if (GetTickCount() - g_CampathSeekStarted > 120000)
 		{
 			g_CampathSeekTarget = -1;
+			g_CommandSystem.CancelTickMarkerSeek();
 			Tier0_Warning("Camera seek timed out before reaching its target.\n");
 		}
 		return;
@@ -1536,6 +1640,7 @@ static void CampathPreview_FinishSeek()
 		command << "demo_timescale " << (g_CampathSeekPendingMode == 2 ? 1 : g_CampathSeekPendingScale)
 				<< ";demo_resume";
 	g_CampathSeekTarget = -1;
+	g_CommandSystem.EndTickMarkerSeek(tick);
 	g_VEngineClient->ClientCmd_Unrestricted(command.str().c_str());
 }
 

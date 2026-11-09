@@ -4,6 +4,7 @@
 // Wrapper(s) for Source's IVEngineClient Interface
 
 #include "WrpVEngineClient.h"
+#include "addresses.h"
 
 #include <stdarg.h>
 
@@ -269,6 +270,17 @@ float WrpVEngineClient_013::GetDemoPlaybackTimeScale( void )
 int WrpVEngineClient_013::GetDemoPlaybackTotalTicks( void )
 {
 	return m_VEngineClient_013->GetDemoPlaybackTotalTicks();
+}
+
+// The public Windows Source SDK 2013 IVEngineClient013 extension follows the
+// 127 slots represented by HLAE's legacy declaration: ServerCmdKeyValues (127),
+// IsSkippingPlayback (128). No private demo-player address or detour is needed.
+bool WrpVEngineClient_013::IsSkippingDemo()
+{
+	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified) return false;
+	using Function = bool (__thiscall *)(SOURCESDK::IVEngineClient_013 *);
+	auto table = *reinterpret_cast<void ***>(m_VEngineClient_013);
+	return reinterpret_cast<Function>(table[128])(m_VEngineClient_013);
 }
 
 bool WrpVEngineClient_013::IsPaused( void ) {
