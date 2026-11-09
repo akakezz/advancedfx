@@ -1,5 +1,6 @@
 #include "shared/CommandSystem.h"
 #include "shared/DemoTimeline.h"
+#include "shared/PlayerRepair.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -203,6 +204,81 @@ void Scheduler(const std::filesystem::path &dir)
 	Check(!budget.AddTickMarker(65, "", "x"), "Total marker text has a bounded size");
 	Check(budget.SaveTickMarkers(xml.wstring().c_str()) && budget.LoadTickMarkers(xml.wstring().c_str()),
 	      "Maximum-sized escaped tracks can be loaded again");
+}
+
+void Repair(const std::filesystem::path &dir)
+{
+	using Repair = advancedfx::PlayerRepair;
+	Repair model;
+	model.Demo = "demo identity";
+	model.Player = "A & B";
+	model.UserId = 42;
+	for (int tick : {0, 10, 15, 20, 30})
+	{
+		Repair::Sample sample;
+		sample.Mask = Repair::All;
+		sample.Value = {double(tick), 2.0 * tick, 0, tick == 15 ? 90.0 : 0.0, tick < 15 ? 179.0 : -179.0};
+		Check(model.Observe(tick, sample), "Original samples captured");
+	}
+	Repair::Range range;
+	range.First = range.Last = 15;
+	range.Mask = Repair::All;
+	Check(model.Exclude(range), "A single bad pose can be marked");
+	std::array<double, 5> value{};
+	Check(model.Evaluate(15, value) == Repair::All && std::abs(value[0] - 15) < 1e-8 && value[3] == 0 &&
+	          std::abs(value[4] - 180) < 1e-8,
+	      "Reconstruction bridges positions and wrapped angles without a revolution");
+	Check(!model.Evaluate(14, value), "Unmarked ticks are untouched");
+	Check(!model.Exclude(range), "Overlapping channel exclusions reject");
+	Check(model.ToggleCut(16) && !model.Evaluate(15, value),
+	      "A manual cut blocks reconstruction across a real discontinuity");
+	Check(model.Undo(false) && model.Evaluate(15, value), "Cut removal undoes atomically");
+	Check(model.Undo(true) && !model.Evaluate(15, value), "Manual boundaries redo");
+	model.Undo(false);
+	auto edited = model.Samples().at(20);
+	edited.Epoch = 1;
+	model.Observe(20, edited);
+	Check(!model.Evaluate(15, value), "Life-state boundaries cannot be interpolated away");
+	edited.Epoch = 0;
+	model.Observe(20, edited);
+	model.MaxBridgeTicks = 5;
+	Check(!model.Evaluate(15, value), "Large untrusted gaps are rejected");
+	model.MaxBridgeTicks = 330;
+	auto xml = dir / "repair.xml";
+	Check(model.Save(xml.wstring().c_str()), "Repair sidecar saves original samples and marks");
+	Repair loaded;
+	Check(loaded.Load(xml.wstring().c_str()) && loaded.UserId == 42 && loaded.Player == "A & B" &&
+	          loaded.Evaluate(15, value) == Repair::All,
+	      "Repair sidecar round trips without executing commands");
+	std::ofstream(xml) << "<playerRepair version=\"1\" user=\"42\" maxBridge=\"330\" demo=\"demo\"><sample "
+	                      "tick=\"0\" mask=\"31\" epoch=\"0\" v0=\"nan\"/></playerRepair>";
+	Check(!loaded.Load(xml.wstring().c_str()) && loaded.Samples().size() == 5,
+	      "Malformed sidecars leave existing work intact");
+	Check(model.RemoveRange(0) && !model.Evaluate(15, value) && model.Undo(false) &&
+	          model.Evaluate(15, value),
+	      "Exclusion removal participates in undo");
+	Repair edge;
+	edge.Observe(0, model.Samples().at(0));
+	range.First = 0;
+	range.Last = 10;
+	Check(edge.Exclude(range) && !edge.Evaluate(5, value), "Missing anchors do not extrapolate");
+	Repair smooth;
+	for (int t : {0, 10, 20, 30})
+	{
+		Repair::Sample x;
+		x.Mask = Repair::All;
+		x.Value = {t < 20 ? double(t) : 20, 0, 0, 0, 0};
+		smooth.Observe(t, x);
+	}
+	range.First = 11;
+	range.Last = 19;
+	range.Mask = Repair::Position;
+	smooth.Exclude(range);
+	for (int t = 11; t < 20; ++t)
+	{
+		Check(smooth.Evaluate(t, value) == Repair::Position && value[0] >= 10 && value[0] <= 20,
+		      "Smooth reconstruction preserves its anchor bounds");
+	}
 }
 
 struct Writer
@@ -451,6 +527,7 @@ int main(int argc, char **argv)
 		std::filesystem::create_directories(dir);
 		Scheduler(dir);
 		Indexing(dir);
+		Repair(dir);
 		for (int i = 1; i < argc; ++i)
 		{
 			std::atomic_bool cancel{false};

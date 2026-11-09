@@ -33,6 +33,12 @@
 #include "aiming.h"
 #include "EntityIndexDrawer.h"
 #include "tf2/ClientToolsTf2.h"
+#include <shared/PlayerRepair.h>
+#include <filesystem>
+#include <fstream>
+#include <climits>
+#include <cerrno>
+#include <stdexcept>
 #include "../shared/CommandSystem.h"
 extern CommandSystem g_CommandSystem;
 #include <shared/binutils.h>
@@ -1484,15 +1490,18 @@ void __cdecl ObserveNativeDemoSeek(const void *args)
 }
 void RememberNativeDemoFile(const void *args)
 {
-#if AFX_ENABLE_GUI
 	// Both TF2 console-interface variants use the public Source CCommand layout.
 	if (args)
 	{
 		const auto &command = *static_cast<const SOURCESDK::CCommand_004 *>(args);
 		if (command.ArgC() >= 2)
+		{
+			MirvFix_PlayerRepairNewDemo(command.Arg(1));
+#if AFX_ENABLE_GUI
 			AfxHookSource::CameraOverlay::NotifyDemoPlaybackFile(command.Arg(1));
-	}
 #endif
+		}
+	}
 }
 void __cdecl ObserveNativeDemoPlay(const void *args)
 {
@@ -4505,6 +4514,393 @@ bool MirvFix_SetPovDeathcam(bool enabled)
 }
 // End TF2 POV deathcam control.
 
+// TF2 manual player repair. Observe original receive values before substituting
+// explicitly excluded samples; Source retains ownership of interpolation/bones.
+namespace
+{
+using PlayerRepair = advancedfx::PlayerRepair;
+struct RepairProperty
+{
+	int First = 0, Count = 0;
+	bool Life = false;
+};
+struct RepairProxySlot
+{
+	Tf2FixProxy Original = nullptr;
+};
+RepairProxySlot g_RepairProxySlots[16];
+std::map<const Tf2FixRecvProp *, RepairProperty> g_RepairProperties;
+PlayerRepair g_PlayerRepair;
+bool g_RepairHooks = false, g_RepairCollect = false, g_RepairEnabled = false;
+int g_RepairEntity = -1, g_RepairTick = -1, g_RepairLastTick = -1, g_RepairLife = -1;
+unsigned g_RepairEpoch = 0;
+PlayerRepair::Sample g_RepairRaw;
+std::string g_RepairDemo, g_RepairStatus;
+unsigned long long g_RepairWrites = 0;
+int g_RepairEvaluationTick = -1, g_RepairEvaluationBridge = 0;
+uint64_t g_RepairEvaluationRevision = 0;
+std::array<double, 5> g_RepairEvaluated{};
+unsigned g_RepairEvaluationMask = 0;
+void RepairFlush()
+{
+	if (g_RepairCollect && g_RepairTick >= 0 && g_RepairRaw.Mask)
+	{
+		g_RepairRaw.Epoch = g_RepairEpoch;
+		if (!g_PlayerRepair.Observe(g_RepairTick, g_RepairRaw))
+		{
+			g_RepairCollect = false;
+			g_RepairStatus = "Collection stopped: invalid sample or 100,000-sample limit.";
+		}
+	}
+	g_RepairTick = -1;
+}
+void RepairReceive(unsigned slot, const Tf2FixProxyData *data, void *object, void *out)
+{
+	auto original = g_RepairProxySlots[slot].Original;
+	auto property = data ? g_RepairProperties.find(data->Prop) : g_RepairProperties.end();
+	if ((!g_RepairCollect && !g_RepairEnabled) || property == g_RepairProperties.end() || !g_VEngineClient ||
+	    !g_VEngineClient->IsPlayingDemo() || data->ObjectId != g_RepairEntity ||
+	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified))
+	{
+		original(data, object, out);
+		return;
+	}
+	int user = 0, tick = -1;
+	char name[64];
+	if (!Mirv_Tf2_GetPlayerInfo(g_RepairEntity, name, sizeof(name), &user) || user != g_PlayerRepair.UserId ||
+	    g_PlayerRepair.Demo != g_RepairDemo || !GetCurrentDemoTick(tick))
+	{
+		original(data, object, out);
+		return;
+	}
+	const auto spec = property->second;
+	if (g_RepairCollect)
+	{
+		if (tick < g_RepairLastTick)
+		{
+			g_PlayerRepair.ClearSamples();
+			g_RepairRaw = {};
+			g_RepairLife = -1;
+			g_RepairEpoch = 0;
+			g_RepairTick = -1;
+			g_RepairStatus = "Collection restarted after a backward seek; replay through both anchors.";
+		}
+		if (g_RepairTick >= 0 && tick != g_RepairTick)
+			RepairFlush();
+		g_RepairLastTick = g_RepairTick = tick;
+		if (spec.Life)
+		{
+			if (g_RepairLife >= 0 && g_RepairLife != data->Value.Int)
+				++g_RepairEpoch;
+			g_RepairLife = data->Value.Int;
+		}
+		else
+			for (int c = 0; c < spec.Count; ++c)
+			{
+				int channel = spec.First + c;
+				g_RepairRaw.Value[channel] = spec.Count == 1 ? data->Value.Float : data->Value.Vector[c];
+				g_RepairRaw.Mask |= 1u << channel;
+			}
+	}
+	if (g_RepairEnabled && !spec.Life)
+	{
+		if (g_RepairEvaluationTick != tick || g_RepairEvaluationRevision != g_PlayerRepair.Revision() ||
+		    g_RepairEvaluationBridge != g_PlayerRepair.MaxBridgeTicks)
+		{
+			g_RepairEvaluationTick = tick;
+			g_RepairEvaluationRevision = g_PlayerRepair.Revision();
+			g_RepairEvaluationBridge = g_PlayerRepair.MaxBridgeTicks;
+			std::string reason;
+			g_RepairEvaluationMask = g_PlayerRepair.Evaluate(tick, g_RepairEvaluated, &reason);
+			if (!reason.empty())
+				g_RepairStatus = reason;
+		}
+		unsigned mask = g_RepairEvaluationMask;
+		auto replacement = *data;
+		bool changed = false;
+		for (int c = 0; c < spec.Count; ++c)
+			if (mask & (1u << (spec.First + c)))
+			{
+				float value = float(g_RepairEvaluated[spec.First + c]);
+				if (spec.Count == 1)
+					replacement.Value.Float = value;
+				else
+					replacement.Value.Vector[c] = value;
+				changed = true;
+			}
+		if (changed)
+		{
+			++g_RepairWrites;
+			original(&replacement, object, out);
+			return;
+		}
+	}
+	original(data, object, out);
+}
+template <unsigned Slot> void RepairProxy(const Tf2FixProxyData *data, void *object, void *out)
+{
+	RepairReceive(Slot, data, object, out);
+}
+Tf2FixProxy g_RepairCallbacks[] = {RepairProxy<0>,  RepairProxy<1>,  RepairProxy<2>,  RepairProxy<3>,
+                                   RepairProxy<4>,  RepairProxy<5>,  RepairProxy<6>,  RepairProxy<7>,
+                                   RepairProxy<8>,  RepairProxy<9>,  RepairProxy<10>, RepairProxy<11>,
+                                   RepairProxy<12>, RepairProxy<13>, RepairProxy<14>, RepairProxy<15>};
+void FindRepairProperties(Tf2FixRecvTable *table, std::set<Tf2FixRecvTable *> &seen, int depth = 0)
+{
+	if (!table || depth >= 64 || !seen.insert(table).second || seen.size() > 4096 || !table->Name ||
+	    table->Count < 0 || table->Count > 4096 || (!table->Props && table->Count))
+		return;
+	std::string name = table->Name;
+	bool playerTable = name == "DT_TFPlayer" || name == "DT_TFLocalPlayerExclusive" ||
+	                   name == "DT_TFNonLocalPlayerExclusive" || name == "DT_BaseEntity" ||
+	                   name == "DT_BasePlayer";
+	for (int i = 0; i < table->Count; ++i)
+	{
+		auto &p = table->Props[i];
+		if (p.Type == 6)
+			FindRepairProperties(p.Table, seen, depth + 1);
+		if (!playerTable || !p.Name || !p.Proxy)
+			continue;
+		RepairProperty spec;
+		if (!std::strcmp(p.Name, "m_lifeState") && p.Type == 0)
+			spec.Life = true;
+		else if (!std::strcmp(p.Name, "m_vecOrigin") && (p.Type == 2 || p.Type == 3))
+			spec.Count = p.Type == 3 ? 2 : 3;
+		else if (!std::strcmp(p.Name, "m_vecOrigin[0]") && p.Type == 1)
+		{
+			spec.First = 0;
+			spec.Count = 1;
+		}
+		else if (!std::strcmp(p.Name, "m_vecOrigin[1]") && p.Type == 1)
+		{
+			spec.First = 1;
+			spec.Count = 1;
+		}
+		else if (!std::strcmp(p.Name, "m_vecOrigin[2]") && p.Type == 1)
+		{
+			spec.First = 2;
+			spec.Count = 1;
+		}
+		else if (!std::strcmp(p.Name, "m_angEyeAngles[0]") && p.Type == 1)
+		{
+			spec.First = 3;
+			spec.Count = 1;
+		}
+		else if (!std::strcmp(p.Name, "m_angEyeAngles[1]") && p.Type == 1)
+		{
+			spec.First = 4;
+			spec.Count = 1;
+		}
+		else if (!std::strcmp(p.Name, "m_angEyeAngles") && (p.Type == 2 || p.Type == 3))
+		{
+			spec.First = 3;
+			spec.Count = 2;
+		}
+		else
+			continue;
+		g_RepairProperties[&p] = spec;
+	}
+}
+bool InstallRepairProxies()
+{
+	if (g_RepairHooks)
+		return true;
+	if (!g_Tf2FixClient ||
+	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified))
+		return false;
+#ifdef _WIN64
+	using ClassesFn = Tf2FixClientClass *(*)(void *);
+#else
+	using ClassesFn = Tf2FixClientClass *(__thiscall *)(void *);
+#endif
+	auto classes = reinterpret_cast<ClassesFn>((*static_cast<void ***>(g_Tf2FixClient))[8])(g_Tf2FixClient);
+	std::set<Tf2FixClientClass *> visited;
+	std::set<Tf2FixRecvTable *> tables;
+	for (auto c = classes; c && visited.size() < 4096 && visited.insert(c).second; c = c->Next)
+		if (c->Table && c->Table->Name && !std::strcmp(c->Table->Name, "DT_TFPlayer"))
+			FindRepairProperties(c->Table, tables);
+	unsigned channels = 0;
+	bool life = false;
+	std::vector<Tf2FixProxy> originals;
+	for (const auto &p : g_RepairProperties)
+	{
+		life |= p.second.Life;
+		for (int c = 0; c < p.second.Count; ++c)
+			channels |= 1u << (p.second.First + c);
+		if (std::find(originals.begin(), originals.end(), p.first->Proxy) == originals.end())
+			originals.push_back(p.first->Proxy);
+	}
+	if (channels != PlayerRepair::All || !life || originals.empty() || originals.size() > 16)
+	{
+		g_RepairStatus =
+		    "Required TF2 player origin, eye-angle and life-state receive properties are unavailable.";
+		g_RepairProperties.clear();
+		return false;
+	}
+	for (size_t i = 0; i < originals.size(); ++i)
+		g_RepairProxySlots[i].Original = originals[i];
+	LONG error = DetourTransactionBegin();
+	if (error == NO_ERROR)
+	{
+		error = DetourUpdateThread(GetCurrentThread());
+		for (size_t i = 0; i < originals.size() && error == NO_ERROR; ++i)
+			error = DetourAttach(reinterpret_cast<PVOID *>(&g_RepairProxySlots[i].Original),
+			                     reinterpret_cast<PVOID>(g_RepairCallbacks[i]));
+		if (error == NO_ERROR)
+			error = DetourTransactionCommit();
+		else
+			DetourTransactionAbort();
+	}
+	if (error != NO_ERROR)
+	{
+		g_RepairProperties.clear();
+		g_RepairStatus = "Could not install player repair receive observers.";
+		return false;
+	}
+	g_RepairHooks = true;
+	return true;
+}
+} // namespace
+advancedfx::PlayerRepair &MirvFix_PlayerRepairModel()
+{
+	return g_PlayerRepair;
+}
+bool MirvFix_PlayerRepairCollecting()
+{
+	return g_RepairCollect;
+}
+bool MirvFix_PlayerRepairEnabled()
+{
+	return g_RepairEnabled;
+}
+const char *MirvFix_PlayerRepairStatus()
+{
+	return g_RepairStatus.c_str();
+}
+unsigned long long MirvFix_PlayerRepairWrites()
+{
+	return g_RepairWrites;
+}
+void MirvFix_PlayerRepairNewDemo(const char *name)
+{
+	RepairFlush();
+	g_RepairCollect = false;
+	g_RepairEnabled = false;
+	g_RepairDemo.clear();
+	g_RepairEntity = -1;
+	if (!name || !*name || !g_VEngineClient)
+		return;
+	try
+	{
+		std::filesystem::path file(name);
+		if (!file.has_extension())
+			file += ".dem";
+		if (file.is_relative())
+		{
+			auto dir = g_VEngineClient->GetGameDirectory();
+			if (!dir || !*dir)
+				return;
+			file = std::filesystem::path(dir) / file;
+		}
+		file = std::filesystem::weakly_canonical(file);
+		std::ifstream input(file, std::ios::binary);
+		char header[1072];
+		if (!input.read(header, sizeof(header)) || std::memcmp(header, "HL2DEMO", 7))
+			throw std::runtime_error("Cannot read demo identity.");
+		unsigned long long hash = 14695981039346656037ull;
+		for (unsigned char b : header)
+		{
+			hash ^= b;
+			hash *= 1099511628211ull;
+		}
+		g_RepairDemo = file.u8string() + "|" + std::to_string(std::filesystem::file_size(file)) + "|" +
+		               std::to_string(hash);
+		g_RepairStatus = "Player repair is off. Collect original samples before marking a range.";
+	}
+	catch (const std::exception &e)
+	{
+		g_RepairStatus = e.what();
+	}
+}
+bool MirvFix_PlayerRepairBegin(int entity)
+{
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || g_RepairDemo.empty())
+	{
+		g_RepairStatus = "Open or bind the playing demo first.";
+		return false;
+	}
+	int user = 0;
+	char name[64];
+	if (!Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user) || user <= 0 || !InstallRepairProxies())
+		return false;
+	g_PlayerRepair.Reset();
+	g_PlayerRepair.Demo = g_RepairDemo;
+	g_PlayerRepair.UserId = user;
+	g_PlayerRepair.Player = name;
+	g_RepairEntity = entity;
+	g_RepairTick = g_RepairLastTick = -1;
+	g_RepairLife = -1;
+	g_RepairEpoch = 0;
+	g_RepairRaw = {};
+	g_RepairWrites = 0;
+	g_RepairEnabled = false;
+	g_RepairCollect = true;
+	g_RepairStatus =
+	    "Collecting original network values. Seek backward before the section, then play through its end.";
+	return true;
+}
+void MirvFix_PlayerRepairEnd()
+{
+	RepairFlush();
+	g_RepairCollect = false;
+	g_RepairStatus = "Collection stopped. Mark a range, then rewind before it to compare.";
+}
+bool MirvFix_PlayerRepairEnable(bool enabled)
+{
+	g_RepairEnabled = false;
+	if (!enabled)
+		return true;
+	if (g_RepairCollect || g_PlayerRepair.Demo != g_RepairDemo || g_PlayerRepair.Samples().empty() ||
+	    !g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
+	{
+		g_RepairStatus = "Stop collection and load the exact demo associated with these samples.";
+		return false;
+	}
+	g_RepairEntity = -1;
+	for (int entity = 1; entity <= Mirv_Tf2_GetMaxPlayers(); ++entity)
+	{
+		int user = 0;
+		char name[64];
+		if (Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user) && user == g_PlayerRepair.UserId)
+		{
+			g_RepairEntity = entity;
+			break;
+		}
+	}
+	if (g_RepairEntity < 0 || !InstallRepairProxies())
+	{
+		g_RepairStatus = "The sampled player or required receive hooks are unavailable.";
+		return false;
+	}
+	g_RepairEnabled = true;
+	g_RepairWrites = 0;
+	g_RepairEvaluationTick = -1;
+	g_RepairStatus =
+	    "Repair enabled. Rewind before the excluded interval to rebuild Source's interpolation history.";
+	return true;
+}
+void MirvFix_PlayerRepairFrameEnd()
+{
+	RepairFlush();
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
+	{
+		g_RepairCollect = false;
+		g_RepairEnabled = false;
+	}
+}
+// End TF2 manual player repair.
+
+
 CON_COMMAND(mirv_fix, "Various fixes")
 {
 	int argc = args->ArgC();
@@ -4530,6 +4926,82 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		}
 		// End TF2 POV deathcam command.
 
+		// TF2 player repair command.
+		if (!_stricmp(cmd1, "playerRepair"))
+		{
+			const char *op = argc > 2 ? args->ArgV(2) : "status";
+			auto integer = [&](int index, int &out) {
+				if (index >= argc)
+					return false;
+				char *end = nullptr;
+				errno = 0;
+				long value = std::strtol(args->ArgV(index), &end, 10);
+				if (errno || end == args->ArgV(index) || *end || value < 0 || value > INT_MAX)
+					return false;
+				out = int(value);
+				return true;
+			};
+			auto &model = MirvFix_PlayerRepairModel();
+			int tick = 0, last = 0;
+			if (!_stricmp(op, "demo") && argc == 4)
+				MirvFix_PlayerRepairNewDemo(args->ArgV(3));
+			else if (!_stricmp(op, "begin") && argc == 4 && integer(3, tick))
+				MirvFix_PlayerRepairBegin(tick);
+			else if (!_stricmp(op, "end") && argc == 3)
+				MirvFix_PlayerRepairEnd();
+			else if (!_stricmp(op, "enabled") && argc == 4 &&
+			         (!std::strcmp(args->ArgV(3), "0") || !std::strcmp(args->ArgV(3), "1")))
+				MirvFix_PlayerRepairEnable(args->ArgV(3)[0] == '1');
+			else if (!_stricmp(op, "exclude") && argc == 7 && integer(3, tick) && integer(4, last))
+			{
+				advancedfx::PlayerRepair::Range range;
+				range.First = tick;
+				range.Last = last;
+				const char *channel = args->ArgV(5), *mode = args->ArgV(6);
+				range.Mask = !_stricmp(channel, "position") ? 7
+				             : !_stricmp(channel, "angles") ? 24
+				             : !_stricmp(channel, "all")    ? 31
+				                                            : 0;
+				range.Smooth = !_stricmp(mode, "smooth");
+				if (MirvFix_PlayerRepairCollecting() || (!range.Smooth && _stricmp(mode, "linear")) ||
+				    !model.Exclude(range))
+					Tier0_Warning("Player repair exclusion rejected.\n");
+			}
+			else if (!_stricmp(op, "cut") && argc == 4 && integer(3, tick))
+				model.ToggleCut(tick);
+			else if (!_stricmp(op, "undo") && argc == 3)
+				model.Undo(false);
+			else if (!_stricmp(op, "redo") && argc == 3)
+				model.Undo(true);
+			else if ((!_stricmp(op, "save") || !_stricmp(op, "load")) && argc == 4)
+			{
+				std::wstring file;
+				bool load = !_stricmp(op, "load");
+				if (load)
+				{
+					MirvFix_PlayerRepairEnable(false);
+					MirvFix_PlayerRepairEnd();
+				}
+				bool ok = UTF8StringToWideString(args->ArgV(3), file) &&
+				          (load ? model.Load(file.c_str()) : model.Save(file.c_str()));
+				Tier0_Msg("Player repair file: %s.\n", ok ? "OK" : "ERROR");
+			}
+			else if (_stricmp(op, "status"))
+			{
+				Tier0_Msg(
+				    "mirv_fix playerRepair demo <file.dem> | begin <entity> | end | enabled 0|1 | status\n"
+				    "mirv_fix playerRepair exclude <first tick> <last tick> position|angles|all linear|smooth\n"
+				    "mirv_fix playerRepair cut <tick> | undo | redo | save|load <file.xml>\n");
+				return;
+			}
+			Tier0_Msg(
+			    "Player repair: collect %d, apply %d; user %d; samples %zu, exclusions %zu, writes %llu.\n%s\n",
+			    MirvFix_PlayerRepairCollecting(), MirvFix_PlayerRepairEnabled(), model.UserId,
+			    model.Samples().size(), model.GetEdits().Ranges.size(), MirvFix_PlayerRepairWrites(),
+			    MirvFix_PlayerRepairStatus());
+			return;
+		}
+		// End TF2 player repair command.
 		// TF2 interpolation command.
 		if (!_stricmp(cmd1, "playerInterpolation"))
 		{
@@ -4900,7 +5372,8 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		"mirv_fix suppressFileCRCCheck 0|1 - This is only useful with HLAE special builds and it's on by default.\n"
 	);
 #endif // #ifndef _WIN64
-	Tier0_Msg("mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
+	Tier0_Msg("mirv_fix playerRepair [...] - Manual TF2 player sample reconstruction.\n"
+        "mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
 			  "mirv_fix povDeathcam [...] - Suppress recorder death/freeze camera in TF2 POV demos.\n"
 			  "mirv_fix panoramaTiming [...]\n");
 	if(AFXADDR_GET(engine_HostError)) Tier0_Msg(

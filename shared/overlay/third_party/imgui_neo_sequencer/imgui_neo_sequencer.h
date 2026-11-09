@@ -108,7 +108,8 @@ namespace ImGui {
 
     IMGUI_API bool BeginNeoSequencer(const char* id, FrameIndexType * frame, FrameIndexType * startFrame, FrameIndexType * endFrame,const ImVec2& size = ImVec2(0, 0),ImGuiNeoSequencerFlags flags = ImGuiNeoSequencerFlags_None);
     IMGUI_API void GetNeoSequencerView(FrameIndexType *startFrame, FrameIndexType *endFrame); // Inside Begin/End.
-    IMGUI_API bool GetNeoSequencerMouseFrame(FrameIndexType *frame); // Timeline/ruler only, inside Begin/End.
+    IMGUI_API bool GetNeoTimelineMouseFrame(FrameIndexType *frame); // Current timeline row.
+    IMGUI_API bool GetNeoSequencerMouseFrame(FrameIndexType *frame, ImGuiHoveredFlags hoverFlags = 0); // Timeline/ruler only, inside Begin/End.
     IMGUI_API void SetNextNeoSequencerFit(); // Fit full range on next BeginNeoSequencer.
     IMGUI_API void EndNeoSequencer(); //Call only when BeginNeoSequencer() returns true!!
 

@@ -166,5 +166,16 @@ double MirvFix_GetPlayerInterpolation();
 bool MirvFix_SetPlayerInterpolation(double seconds);
 void MirvFix_Update();
 void MirvFix_InitializeTf2Client(void *client);
+namespace advancedfx { class PlayerRepair; }
+advancedfx::PlayerRepair &MirvFix_PlayerRepairModel();
+void MirvFix_PlayerRepairNewDemo(const char *file);
+bool MirvFix_PlayerRepairBegin(int entity);
+void MirvFix_PlayerRepairEnd();
+bool MirvFix_PlayerRepairCollecting();
+bool MirvFix_PlayerRepairEnable(bool enabled);
+bool MirvFix_PlayerRepairEnabled();
+const char *MirvFix_PlayerRepairStatus();
+unsigned long long MirvFix_PlayerRepairWrites();
+void MirvFix_PlayerRepairFrameEnd();
 bool MirvFix_GetPovDeathcam();
 bool MirvFix_SetPovDeathcam(bool enabled);

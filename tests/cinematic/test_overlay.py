@@ -10,10 +10,12 @@ root=Path(__file__).resolve().parents[2];imgui=args.imgui_dir.resolve();out=args
 s=(root/'AfxHookSource/CameraOverlay.cpp').read_text();s=s[re.search(r'namespace AfxHookSource\s*\{\s*namespace CameraOverlay\s*\{',s).start():]
 native=(root/'AfxHookSource/MirvCommands.cpp').read_text()
 fix_api=native[native.index('// TF2 demo interpolation controls.'):native.index('// End TF2 demo interpolation controls.')]
+repair_api=native[native.index('// TF2 manual player repair.'):native.index('// End TF2 manual player repair.')]
 pov_api=native[native.index('// TF2 POV deathcam control.'):native.index('// End TF2 POV deathcam control.')]
 pov_command=native[native.index('// TF2 POV deathcam command.'):native.index('// End TF2 POV deathcam command.')]
 fix_command=native[native.index('// TF2 interpolation command.'):native.index('// End TF2 interpolation command.')]
-fix_command='void callFix(std::initializer_list<const char*> words){struct Args{std::vector<const char*> V;int ArgC(){return (int)V.size();}const char*ArgV(int i){return V[i];}} data;data.V=words;auto *args=&data;int argc=args->ArgC();const char *cmd1=args->ArgV(1);'+pov_command+fix_command+'}\n'
+repair_command=native[native.index('// TF2 player repair command.'):native.index('// End TF2 player repair command.')]
+fix_command='void callFix(std::initializer_list<const char*> words){struct Args{std::vector<const char*> V;int ArgC(){return (int)V.size();}const char*ArgV(int i){return V[i];}} data;data.V=words;auto *args=&data;int argc=args->ArgC();const char *cmd1=args->ArgV(1);'+repair_command+pov_command+fix_command+'}\n'
 demo_time=native[native.index('bool GetCurrentDemoTime(double &outDemoTime)'):native.index('bool GetDemoTickFromClientTime(')].replace('GetCurrentDemoTime(', 'ActualGetCurrentDemoTime(',1)
 marker_observer=native[native.index('// Observe the native demo_gototick'):native.index('void MirvCampath_ObserveDemoSeeks')]
 main_source=(root/'AfxHookSource/main.cpp').read_text();clock_at=main_source.index('g_CommandSystem.UpdateTickMarkers');clock_start=main_source.rfind('\t\tif (g_VEngineClient)',0,clock_at);clock_end=main_source.index('g_CommandSystem.OnExecuteCommands();',clock_at)+len('g_CommandSystem.OnExecuteCommands();');marker_clock='void MarkerEngineFrame(){'+main_source[clock_start:clock_end]+'}\n'
@@ -30,6 +32,8 @@ preamble=r'''
 #include <codecvt>
 #include <locale>
 #include "AfxHookSource/CameraOverlay.h"
+#include "shared/PlayerRepair.h"
+void MirvFix_PlayerRepairNewDemo(const char*);
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -39,6 +43,8 @@ preamble=r'''
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
+#include <climits>
+#include <cerrno>
 #include <cstdarg>
 #include <set>
 #include <cstddef>
@@ -125,8 +131,8 @@ int tooltipSpanTick=-1;void TestRecordSpanTooltip(int tick){tooltipSpanTick=tick
 namespace ImGui{void TestSetNeoView(float zoom,int offset);}
 int seqEnd=0,viewStart=0,viewEnd=0,timelineSelected=0;Rect seqRect,graphRect;
 struct Span{int Begin,End;ImU32 Color;std::string Caption;};std::vector<Span> spans;
-std::map<std::string,ImVec2> spanPoints;
-bool trackSpan(int begin,int end,ImU32 color,const char*caption=nullptr,bool*hovered=nullptr){spans.push_back({begin,end,color,caption?caption:""});auto*d=ImGui::GetWindowDrawList();int n=d->VtxBuffer.Size;bool clicked=ImGui::NeoTimelineSpan(begin,end,color,caption,hovered);if(caption&&begin==end&&d->VtxBuffer.Size>=n+4){ImVec2 low(FLT_MAX,FLT_MAX),high(-FLT_MAX,-FLT_MAX);for(int i=n;i<d->VtxBuffer.Size;++i){auto p=d->VtxBuffer[i].pos;low.x=std::min(low.x,p.x);low.y=std::min(low.y,p.y);high.x=std::max(high.x,p.x);high.y=std::max(high.y,p.y);}spanPoints[caption]={(low.x+high.x)/2,(low.y+high.y)/2};}return clicked;}
+std::map<std::string,ImVec2> spanPoints;std::map<int,ImVec2> playerSamplePoints;
+bool trackSpan(int begin,int end,ImU32 color,const char*caption=nullptr,bool*hovered=nullptr){spans.push_back({begin,end,color,caption?caption:""});auto*d=ImGui::GetWindowDrawList();int n=d->VtxBuffer.Size;bool clicked=ImGui::NeoTimelineSpan(begin,end,color,caption,hovered);if(caption&&begin==end&&d->VtxBuffer.Size>=n+4){ImVec2 low(FLT_MAX,FLT_MAX),high(-FLT_MAX,-FLT_MAX);for(int i=n;i<d->VtxBuffer.Size;++i){auto p=d->VtxBuffer[i].pos;low.x=std::min(low.x,p.x);low.y=std::min(low.y,p.y);high.x=std::max(high.x,p.x);high.y=std::max(high.y,p.y);}spanPoints[caption]={(low.x+high.x)/2,(low.y+high.y)/2};if(std::string(caption)=="Original player sample")playerSamplePoints[begin]=spanPoints[caption];}return clicked;}
 
 bool trackSequencer(const char*id,int32_t*frame,int32_t*start,int32_t*end,const ImVec2&size,ImGuiNeoSequencerFlags flags){seqEnd=*end;seqRect={ImGui::GetCursorScreenPos(),ImGui::GetCursorScreenPos()+size};bool b=ImGui::BeginNeoSequencer(id,frame,start,end,size,flags);if(b)ImGui::GetNeoSequencerView(&viewStart,&viewEnd);return b;}
 bool trackSelectable(const char*l,bool selected=false,ImGuiSelectableFlags flags=0,const ImVec2&size=ImVec2(0,0)){bool b=ImGui::Selectable(l,selected,flags,size);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
@@ -313,6 +319,7 @@ void frame(ImVec2 mouse=ImVec2(-100,-100),bool down=false,float wheel=0,bool mid
 void button(const char*l){auto r=widgets.at(l);ImVec2 p((r.Min.x+r.Max.x)/2,(r.Min.y+r.Max.y)/2);frame(p,false);frame(p,true);frame(p,false);frame();}
 Tf2FixClientClass *povClasses=nullptr;
 Tf2FixClientClass *PovGetClasses(void*){return povClasses;}
+float repairReceived=0;void RepairOriginal(const Tf2FixProxyData*d,void*,void*out){repairReceived=d->Value.Float;if(out)*static_cast<float*>(out)=repairReceived;}
 int povProxyCalls=0,povObserved=-1;const Tf2FixProxyData*povSeenData=nullptr;void*povSeenObject=nullptr,*povSeenOut=nullptr;
 void PovOriginal(const Tf2FixProxyData*d,void*object,void*out){++povProxyCalls;povObserved=d?d->Value.Int:-1;povSeenData=d;povSeenObject=object;povSeenOut=out;}
 int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=nullptr;io.DisplaySize=ImVec2(1600,1000);unsigned char*pixels;int w,h;io.Fonts->AddFontDefault();io.Fonts->GetTexDataAsRGBA32(&pixels,&w,&h);
@@ -635,6 +642,20 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  SetOpen(false);g_CampathSeekTarget=-1;g_CommandSystem.CancelTickMarkerSeek();g_CommandSystem.ClearTickMarkers();g_MirvTime.Time=1;g_CommandSystem.AddTickMarker(70,"closed overlay","closed overlay");g_CommandSystem.EnableTickMarkers(true);MarkerEngineFrame();g_MirvTime.Time=72.0/66;MarkerEngineFrame();check(commands.back()=="closed overlay","Command execution continues through the engine lifecycle while the overlay is closed");
  g_CommandSystem.ClearTickMarkers();auto setting=g_CommandSystem.AddTickMarker(10,"setting","seek setting");auto m=g_CommandSystem.GetTickMarkers()[0];m.RunOnSeek=true;g_CommandSystem.SetTickMarker(m);g_CommandSystem.AddTickMarker(40,"ordinary","ordinary seek command");g_CommandSystem.EnableTickMarkers(true);g_MirvTime.Time=1;MarkerEngineFrame();size_t beforeNative=commands.size();int nativeArgs=2;nativeDemoAction=[&]{engine.Skipping=true;};ObserveNativeDemoSeek(&nativeArgs);g_MirvTime.Time=50.0/66;engine.Skipping=false;MarkerEngineFrame();check(commands.size()==beforeNative+1&&commands.back()=="seek setting","Native seeks observed between render updates skip ordinary commands and restore flagged settings once");
  nativeDemoAction=[&]{g_MirvTime.Time=30.0/66;};beforeNative=commands.size();ObserveNativeDemoSeek(&nativeArgs);MarkerEngineFrame();check(commands.size()==beforeNative+1,"A synchronous native seek cannot execute its flagged prefix twice");nativeDemoAction=[]{};SOURCESDK::CCommand_004 playArgs;playArgs.Count=1;g_CommandSystem.BeginTickMarkerSeek();ObserveNativeDemoPlay(&playArgs);MarkerEngineFrame();check(!g_CommandSystem.TickMarkersEnabled(),"Starting another demo disarms command execution even during an earlier seek");nativeDemoAction={};
+ // Actual receive interception: original network payloads remain immutable and unmarked entities pass through.
+ {using Repair=advancedfx::PlayerRepair;auto &repair=MirvFix_PlayerRepairModel();repair.Reset();repair.Demo=g_RepairDemo="runtime-demo";repair.UserId=42;repair.Player="Scout";g_RepairEntity=1;g_RepairEnabled=true;g_RepairCollect=false;g_MirvTime.Time=15.0/66;
+ for(int t:{10,15,20}){Repair::Sample sample;sample.Mask=Repair::All;sample.Value={double(t),0,0,t==15?90.0:0.0,t==15?90.0:0.0};repair.Observe(t,sample);}Repair::Range range;range.First=range.Last=15;range.Mask=Repair::Angles;repair.Exclude(range);
+ Tf2FixRecvProp prop{};prop.Name="m_angEyeAngles[0]";prop.Type=1;g_RepairProperties[&prop]={3,1,false};g_RepairProxySlots[0].Original=RepairOriginal;Tf2FixProxyData data{};data.Prop=&prop;data.ObjectId=1;data.Value.Float=90;float output=0;
+ RepairReceive(0,&data,nullptr,&output);check(output==0&&data.Value.Float==90,"Marked eye-angle samples are corrected before the original receive proxy without altering packet data");g_RepairEnabled=false;RepairReceive(0,&data,nullptr,&output);check(output==90,"Original comparison forwards the unmodified network value");g_RepairEnabled=true;data.ObjectId=2;RepairReceive(0,&data,nullptr,&output);check(output==90,"A different entity is never repaired by slot alone");data.ObjectId=1;g_RepairDemo="different-demo";RepairReceive(0,&data,nullptr,&output);check(output==90,"Repairs cannot apply to another bound demo");g_RepairDemo="runtime-demo";g_MirvTime.Time=16.0/66;RepairReceive(0,&data,nullptr,&output);check(output==90,"Unmarked receive ticks are unchanged");
+ g_RepairEnabled=false;g_RepairCollect=true;g_RepairRaw={};g_RepairTick=g_RepairLastTick=-1;repair.ClearSamples();RepairReceive(0,&data,nullptr,&output);MirvFix_PlayerRepairFrameEnd();check(repair.Samples().size()==1&&repair.Samples().begin()->second.Value[3]==90,"Collection stores original network angles, not previously corrected output");MirvFix_PlayerRepairEnd();g_RepairProperties.clear();g_RepairEnabled=false;
+ callFix({"mirv_fix","playerRepair","exclude","16","17","position","linear"});check(repair.GetEdits().Ranges.size()==2,"Console and sequencer share manual exclusion storage");callFix({"mirv_fix","playerRepair","undo"});check(repair.GetEdits().Ranges.size()==1,"Console exposes manual repair undo");
+ SetOpen(true);g_ShowSequencer=true;g_SequencerTimeline.FocusCommands=false;frame();frame();button("Player repair");check(widgets.count("Start new player collection")&&widgets.count("Apply marked player repairs")&&widgets.count("Exclude marked player samples"),"Sequencer exposes collection, repair application and manual exclusion controls");
+ repair.Reset();repair.Player="Scout";repair.UserId=42;repair.Demo=g_RepairDemo="runtime-demo";for(int tick:{10,15,20}){Repair::Sample x;x.Mask=Repair::All;x.Value={double(tick),0,0,tick==15?90.0:0.0,0};repair.Observe(tick,x);}g_RepairHooks=true;g_RepairEditor.Follow=false;g_RepairEditor.Tick=15;ImGui::TestSetNeoView(100,0);frame();frame();for(auto*w:ImGui::GetCurrentContext()->Windows)if(std::string(w->Name).find("seq_child")!=std::string::npos)ImGui::SetScrollY(w,w->ScrollMax.y);frame();frame();
+ check(playerSamplePoints.count(10)&&playerSamplePoints.count(20),"Repair track draws original samples using the shared ruler");auto pa=playerSamplePoints.at(10),pb=playerSamplePoints.at(20);frame(pa);frame(pa,true);frame(pb,true);frame(pb,false);check(g_RepairEditor.First==10&&g_RepairEditor.Last==20,"Dragging across the repair row selects an exact tick range without camera retiming");
+ auto repairButton=[&](const char*label){frame();auto r=widgets.at(label);auto*w=ImGui::FindWindowByName("HLAE Sequencer");if(r.Min.y<w->InnerRect.Min.y||r.Max.y>w->InnerRect.Max.y){ImGui::SetScrollY(w,w->Scroll.y+r.Min.y-w->InnerRect.Min.y-40);frame();frame();}button(label);};
+ g_RepairEditor.First=g_RepairEditor.Last=15;g_RepairEditor.Channels=1;repairButton("Exclude marked player samples");check(repair.GetEdits().Ranges.size()==1&&repair.GetEdits().Ranges[0].Mask==Repair::Angles,"Manual exclusion UI writes the selected channel mask");repairButton("Undo player repair");check(repair.GetEdits().Ranges.empty(),"Repair UI undo removes only the manual exclusion");repairButton("Redo player repair");check(repair.GetEdits().Ranges.size()==1,"Repair UI redo restores the exclusion");repairButton("Compare repaired from before range");check(g_RepairEnabled&&commands.back().find("demo_gototick 0")!=std::string::npos,"Repaired comparison enables interception then seeks before the range");repairButton("Compare original from before range");check(!g_RepairEnabled,"Original comparison disables receive substitution");g_RepairHooks=false;
+
+ }
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''
@@ -947,8 +968,8 @@ neo=(root/'shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.cp
 neo='extern void TestRecordNeoLabel(int,int); extern void TestRecordSpanTooltip(int);\n'+neo.replace('TextUnformatted(context.SpanCaption.c_str());','TestRecordSpanTooltip(context.SpanBegin); TextUnformatted(context.SpanCaption.c_str());').replace('snprintf(lbl, sizeof(lbl), "%d", labelIndex);','snprintf(lbl, sizeof(lbl), "%d", labelIndex); TestRecordNeoLabel(*frame,labelIndex);')
 neo+='\nnamespace ImGui{void TestSetNeoView(float zoom,int offset){for(auto &entry:sequencerData){entry.second.Zoom=zoom;entry.second.OffsetFrame=offset;}}}\n'
 neo_file=out/'neo_labels_test.cpp';neo_file.write_text(neo)
-source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+marker_observer+marker_clock+demo_time+fix_api+pov_api+fix_command+collision_code+s+native+view+layout+test)
-cmd=['g++','-std=c++17','-O0','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),'-I'+str(imgui),'-I'+str(root/'shared/overlay/third_party/imgui_neo_sequencer'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp'),str(root/'shared/CommandSystem.cpp'),str(root/'shared/DemoTimeline.cpp'),str(root/'shared/AfxConsole.cpp')]+[str(imgui/f) for f in ['imgui.cpp','imgui_draw.cpp','imgui_widgets.cpp','imgui_tables.cpp']]+[(str(neo_file) if f=='imgui_neo_sequencer.cpp' else str(root/'shared/overlay/third_party/imgui_neo_sequencer'/f)) for f in ['imgui_neo_sequencer.cpp','imgui_neo_internal.cpp']]+[str(root/'shared/overlay/third_party/imguizmo/ImGuizmo.cpp'),'-o',str(out/'overlay_test')]
+source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+marker_observer+marker_clock+demo_time+fix_api+pov_api+repair_api+fix_command+collision_code+s+native+view+layout+test)
+cmd=['g++','-std=c++17','-O0','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),'-I'+str(imgui),'-I'+str(root/'shared/overlay/third_party/imgui_neo_sequencer'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp'),str(root/'shared/CommandSystem.cpp'),str(root/'shared/DemoTimeline.cpp'),str(root/'shared/PlayerRepair.cpp'),str(root/'shared/AfxConsole.cpp')]+[str(imgui/f) for f in ['imgui.cpp','imgui_draw.cpp','imgui_widgets.cpp','imgui_tables.cpp']]+[(str(neo_file) if f=='imgui_neo_sequencer.cpp' else str(root/'shared/overlay/third_party/imgui_neo_sequencer'/f)) for f in ['imgui_neo_sequencer.cpp','imgui_neo_internal.cpp']]+[str(root/'shared/overlay/third_party/imguizmo/ImGuizmo.cpp'),'-o',str(out/'overlay_test')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 p=subprocess.run(cmd,capture_output=True,text=True);(out/'build.log').write_text(p.stdout+p.stderr)
 if p.returncode:print(p.stderr[-6500:]);raise SystemExit(p.returncode)

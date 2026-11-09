@@ -220,6 +220,90 @@ layouts studied in [Valve's Source SDK](https://github.com/ValveSoftware/source-
 and [demostf/parser](https://codeberg.org/demostf/parser). It adds no external
 parser runtime or build dependency.
 
+### Experimental manual player repair
+
+The sequencer's **Player repair** tab tests correction of a single player's
+network position and eye pitch/yaw. It does not rewrite `.dem` files or delete
+packets. Marked receive values are replaced before Source processes them, so the
+engine owns subsequent interpolation, animation and camera attachment. Unmarked
+channels and other entities pass through unchanged. This is a runtime prototype,
+not a general demo-file repair tool or skeletal-animation reconstruction.
+
+1. Open the demo normally with HLAE loaded. If it was already playing when HLAE
+   started, index that exact file and choose **Bind playing demo to indexed file**,
+   or use `mirv_fix playerRepair demo "file.dem"` without reopening playback.
+2. Choose **Repair player**, then **Start new player collection**. This replaces
+   the previous player's samples and marks; save existing work first.
+3. Seek backward to tick zero or before the troublesome section, then play
+   through it and far enough beyond it to collect a good future anchor. The
+   collector records incoming network values, not smoothed render-frame poses.
+   Delta-unchanged fields retain their last received original value. A backward
+   seek while collecting restarts the sample history to avoid mixing passes.
+4. Choose **Stop player collection**. Inspect the original values by tick,
+   previous/next sample, or clicking blue sample marks on the repair track.
+   Network ticks can precede the visible glitch because of interpolation delay;
+   inspect the raw values rather than selecting only by the rendered frame.
+   A partial mask means not all channels have been received yet. Seeking to the
+   beginning while collecting helps capture initial full values.
+5. Select a sample, enter the inclusive first/last bad ticks, or drag a range
+   across the repair track. Choose **Position**, **Eye angles**, or both, then
+   **Exclude marked player samples**. Red spans mark exclusions.
+6. Choose **Compare original from before range** or **Compare repaired from
+   before range**, then press **Play**. Both seek 66 ticks before the selection.
+   Rewind before the interval after every edit or application toggle: changing
+   the checkbox cannot retroactively replace values already latched by Source.
+7. Save the repair sidecar. It contains original samples and editing marks;
+   loading it leaves application disabled. Open the same unchanged demo before
+   enabling it. The binding uses the canonical filename, header fingerprint and
+   file size, plus the recorded player user ID; a different path needs a new
+   collection. Only one player repair is active in this first version.
+
+**Smooth bounded reconstruction** uses monotone cubic slopes from neighboring
+valid samples; disabling it uses linear interpolation. Angles take the shortest
+wrapped route. Exclusions never become future anchors. Missing anchors,
+life-state boundaries, manual cuts, or bridges longer than **Maximum bridge
+(ticks)** preserve the original channel and report why. The default maximum is
+330 ticks. Use **Toggle discontinuity at sample** for a genuine teleport or cut;
+these boundaries draw in purple. **Undo player repair** and **Redo player
+repair** cover exclusions and manual cuts separately from camera-path history.
+
+The collector is capped at 100,000 original sample ticks. It stores decoded
+changes that were actually observed; it does not invent network messages where
+none existed. Corrected inputs may improve both player rendering and attached
+cameras, but do not repair animation sequences, ragdolls or individual bones.
+The POV recorder's separate command-info camera is not changed; channels that
+were never networked for that player remain unavailable. TF2/TF2C receive
+metadata must expose the required origin, eye-angle and life
+properties; otherwise collection/application refuses to start. Live builds must
+be tested: offline tests cannot prove that every rendering/attachment mode
+consumes these corrected inputs.
+
+The same storage is available under `mirv_fix`:
+
+```text
+mirv_fix playerRepair begin <entity index>
+mirv_fix playerRepair end
+mirv_fix playerRepair exclude <first tick> <last tick> position|angles|all linear|smooth
+mirv_fix playerRepair enabled 0|1
+mirv_fix playerRepair cut <tick>
+mirv_fix playerRepair undo
+mirv_fix playerRepair redo
+mirv_fix playerRepair save "player.repair.xml"
+mirv_fix playerRepair load "player.repair.xml"
+mirv_fix playerRepair status
+```
+
+AGR is useful as a validation export: TF2's existing recorder writes rendered
+world transforms and skeletal matrices, so original/repaired AGR captures can
+be compared. It is downstream of interpolation and animation and cannot replace
+the original network sample history used by this tool.
+
+Reference checks: [p2sr/demofixup](https://github.com/p2sr/demofixup) replaces
+obsolete Portal 2 class/table entries while preserving class IDs;
+[VolvoWrench](https://github.com/Traderain/VolvoWrench) places its Demo doctor under
+GoldSource. These structural repairs do not implement the runtime player-sample
+reconstruction described here.
+
 The overlay uses ImGui's own drawn cursor, including the I-beam over text fields.
 Windows cursor changes and Source UI queries are avoided in the busy cursor hooks.
 Menus, focus loss and free-camera mouse-look restore the game's cursor; they also

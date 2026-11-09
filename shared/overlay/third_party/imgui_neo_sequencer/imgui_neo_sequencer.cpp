@@ -1356,19 +1356,27 @@ namespace ImGui
         context.IsLastKeyframeSelected = selected;
     }
 
-    bool GetNeoSequencerMouseFrame(FrameIndexType *frame)
+    bool GetNeoSequencerMouseFrame(FrameIndexType *frame, ImGuiHoveredFlags hoverFlags)
     {
         IM_ASSERT(inSequencer);
         auto &context = sequencerData[currentSequencer];
         const float left = context.StartValuesCursor.x + GetStyle().FramePadding.x + context.ValuesWidth;
         const ImRect area(ImVec2(left, context.TopBarStartCursor.y), context.TopLeftCursor + context.Size);
         const float step = getPerFrameWidth(context);
-        if (!frame || step <= 0 || !IsWindowHovered() || !IsMouseHoveringRect(area.Min, area.Max))
+        if (!frame || step <= 0 || !IsWindowHovered(hoverFlags) || !IsMouseHoveringRect(area.Min, area.Max))
             return false;
         const double tick = double(context.StartFrame) + context.OffsetFrame +
                             floor((GetIO().MousePos.x - left) / step + 0.5);
         *frame = (FrameIndexType)ImClamp(tick, double(context.StartFrame), double(context.EndFrame));
         return true;
+    }
+
+    bool GetNeoTimelineMouseFrame(FrameIndexType *frame)
+    {
+        if (!GetNeoSequencerMouseFrame(frame, ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) return false;
+        auto &context = sequencerData[currentSequencer];
+        return GetIO().MousePos.y >= context.ValuesCursor.y &&
+               GetIO().MousePos.y < context.ValuesCursor.y + currentTimelineHeight;
     }
 
     bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption, bool *hovered)

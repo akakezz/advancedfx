@@ -939,6 +939,9 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 
 	switch (curStage)
 	{
+	case SOURCESDK::TF2::FRAME_NET_UPDATE_END:
+		MirvFix_PlayerRepairFrameEnd();
+		break;
 	case SOURCESDK::TF2::FRAME_RENDER_END:
 		Shared_AfterFrameRenderEnd();
 		break;

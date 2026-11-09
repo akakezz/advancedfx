@@ -319,6 +319,8 @@ target_sources(AfxHookSource PRIVATE
     ../shared/CommandSystem.h
     ../shared/DemoTimeline.cpp
     ../shared/DemoTimeline.h
+    ../shared/PlayerRepair.cpp
+    ../shared/PlayerRepair.h
     ../shared/EasySampler.cpp
     ../shared/EasySampler.h
     ../shared/FileTools.cpp

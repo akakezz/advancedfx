@@ -23,6 +23,7 @@
 #include <cctype>
 #include <shared/CommandSystem.h>
 #include <shared/DemoTimeline.h>
+#include <shared/PlayerRepair.h>
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <shared/AfxConsole.h>
@@ -3441,6 +3442,308 @@ static void DrawDemoPicker()
 	}
 	g_DemoOpenDialog.ClearSelected();
 }
+struct RepairEditor
+{
+	int Entity = 1, Tick = 0, First = 0, Last = 0, Channels = 2;
+	bool Smooth = true, Follow = true, Drag = false, DragMoved = false;
+	float DragMouseX = 0;
+	int DragStart = 0;
+	std::string Status;
+} g_RepairEditor;
+static void DrawPlayerRepairTrack(int visibleStart, int visibleEnd)
+{
+	auto &model = MirvFix_PlayerRepairModel();
+	auto &ui = g_RepairEditor;
+	std::string label = "Player repair";
+	if (!model.Player.empty())
+		label += ": " + model.Player;
+	if (!ImGui::BeginNeoTimelineEx(label.c_str(), nullptr, ImGuiNeoTimelineFlags_None))
+		return;
+	const ImGuiID dragId = ImGui::GetID("player_repair_range_drag");
+	ImGui::FrameIndexType tick;
+	if (ImGui::GetNeoTimelineMouseFrame(&tick))
+	{
+		if (ImGui::IsMouseClicked(0))
+		{
+			ui.Drag = true;
+			ui.DragMoved = false;
+			ui.DragMouseX = ImGui::GetIO().MousePos.x;
+			ui.DragStart = tick;
+			ui.First = ui.Last = tick;
+			ui.Follow = false;
+		}
+		if (ui.Drag && ImGui::IsMouseDown(0))
+		{
+			ui.DragMoved |= std::abs(ImGui::GetIO().MousePos.x - ui.DragMouseX) > 3;
+			if (ui.DragMoved)
+			{
+				ui.First = (std::min)(ui.DragStart, int(tick));
+				ui.Last = (std::max)(ui.DragStart, int(tick));
+				ui.Tick = tick;
+			}
+			ImGui::NeoCancelSelection();
+		}
+	}
+	if (!ImGui::IsMouseDown(0))
+	{
+		ui.Drag = false;
+		if (ImGui::GetActiveID() == dragId)
+			ImGui::ClearActiveID();
+	}
+	for (const auto &r : model.GetEdits().Ranges)
+		ImGui::NeoTimelineSpan(r.First, r.Last, IM_COL32(255, 100, 80, 150), "Excluded original samples");
+	if (ui.Drag)
+		ImGui::NeoTimelineSpan(ui.First, ui.Last, IM_COL32(255, 220, 80, 140), "Repair selection");
+	for (int cut : model.GetEdits().Cuts)
+		if (cut >= visibleStart && cut <= visibleEnd)
+			ImGui::NeoTimelineSpan(cut, cut, IM_COL32(255, 80, 255, 255),
+			                       "Do not interpolate across this tick");
+	const int width = (std::max)(1, int(ImGui::GetContentRegionAvail().x));
+	for (auto i = model.Samples().lower_bound(visibleStart);
+	     i != model.Samples().end() && i->first <= visibleEnd;)
+	{
+		int pixel =
+		    int((int64_t(i->first) - visibleStart) * width / (int64_t(visibleEnd) - visibleStart + 1));
+		if (ImGui::NeoTimelineSpan(i->first, i->first, IM_COL32(110, 210, 255, 255),
+		                           "Original player sample"))
+		{
+			ui.Drag = true;
+			ui.DragStart = i->first;
+			ui.DragMouseX = ImGui::GetIO().MousePos.x;
+			ui.DragMoved = false;
+			ui.Tick = i->first;
+			ui.First = ui.Last = i->first;
+			ui.Follow = false;
+		}
+		const int64_t span = int64_t(visibleEnd) - visibleStart + 1;
+		const int64_t next = int64_t(visibleStart) + ((int64_t(pixel) + 1) * span + width - 1) / width;
+		const int64_t target = (std::max)(int64_t(i->first) + 1, next);
+		if (target > INT_MAX)
+			break;
+		i = model.Samples().lower_bound(int(target));
+	}
+	if (ui.Drag)
+	{
+		if (ImGui::GetActiveID() != dragId)
+		{
+			ImGui::SetActiveID(dragId, ImGui::GetCurrentWindow());
+			ImGui::FocusWindow(ImGui::GetCurrentWindow());
+		}
+		ImGui::KeepAliveID(dragId);
+	}
+	ImGui::EndNeoTimeLine();
+}
+static void DrawPlayerRepairEditor(int playhead)
+{
+	if (!ImGui::BeginTabItem("Player repair"))
+		return;
+	auto &model = MirvFix_PlayerRepairModel();
+	auto &ui = g_RepairEditor;
+	static ImGui::FileBrowser loadDialog(ImGuiFileBrowserFlags_CloseOnEsc |
+	                                     ImGuiFileBrowserFlags_EditPathString);
+	static ImGui::FileBrowser saveDialog(
+	    ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_EditPathString |
+	    ImGuiFileBrowserFlags_EnterNewFilename | ImGuiFileBrowserFlags_CreateNewDir);
+	ImGui::TextWrapped("Experimental: collect one player's original network values, stop collection, exclude "
+	                   "bad ticks, then replay. The demo file is never rewritten. Starting a new collection "
+	                   "clears previous samples and marks.");
+	char previewName[64];
+	int previewUser = 0;
+	bool havePreview = Mirv_Tf2_GetPlayerInfo(ui.Entity, previewName, sizeof(previewName), &previewUser);
+	if (ImGui::BeginCombo("Repair player", havePreview ? previewName : "Choose player"))
+	{
+		for (int entity = 1; entity <= Mirv_Tf2_GetMaxPlayers(); ++entity)
+		{
+			char name[64];
+			int user = 0;
+			if (!Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user))
+				continue;
+			std::string label = std::to_string(entity) + ": " + name;
+			if (ImGui::Selectable(label.c_str(), entity == ui.Entity))
+				ui.Entity = entity;
+		}
+		ImGui::EndCombo();
+	}
+	char chosen[64];
+	int user = 0;
+	if (Mirv_Tf2_GetPlayerInfo(ui.Entity, chosen, sizeof(chosen), &user))
+		ImGui::Text("Collection target: %s (user %d)", chosen, user);
+	if (ImGui::Button("Start new player collection"))
+		MirvFix_PlayerRepairBegin(ui.Entity);
+	ImGui::SameLine();
+	if (ImGui::Button("Stop player collection"))
+		MirvFix_PlayerRepairEnd();
+	if (TimelineMatchesDemo() && ImGui::Button("Bind playing demo to indexed file"))
+		MirvFix_PlayerRepairNewDemo(g_SequencerTimeline.Index.File.string().c_str());
+	bool enabled = MirvFix_PlayerRepairEnabled();
+	if (ImGui::Checkbox("Apply marked player repairs", &enabled))
+		MirvFix_PlayerRepairEnable(enabled);
+	ImGui::TextWrapped("%s", MirvFix_PlayerRepairStatus());
+	if (!model.Demo.empty())
+		ImGui::TextWrapped("Sample demo: %s", model.Demo.substr(0, model.Demo.find('|')).c_str());
+	ImGui::Text("%zu original samples | %zu exclusions | %llu receive replacements%s", model.Samples().size(),
+	            model.GetEdits().Ranges.size(), MirvFix_PlayerRepairWrites(),
+	            MirvFix_PlayerRepairCollecting() ? " | collecting" : "");
+	if (ImGui::Button("Load player repair"))
+	{
+		loadDialog.SetTitle("Load player repair");
+		loadDialog.SetTypeFilters({".xml"});
+		loadDialog.Open();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Save player repair"))
+	{
+		saveDialog.SetTitle("Save player repair");
+		saveDialog.SetTypeFilters({".xml"});
+		saveDialog.SetInputName("player.repair.xml");
+		saveDialog.Open();
+	}
+	loadDialog.Display();
+	saveDialog.Display();
+	if (loadDialog.HasSelected())
+	{
+		MirvFix_PlayerRepairEnable(false);
+		MirvFix_PlayerRepairEnd();
+		ui.Status = model.Load(loadDialog.GetSelected().wstring().c_str())
+		                ? "Repair loaded; application is disabled."
+		                : "Invalid repair file; previous data retained.";
+		loadDialog.ClearSelected();
+	}
+	if (saveDialog.HasSelected())
+	{
+		ui.Status = model.Save(saveDialog.GetSelected().wstring().c_str())
+		                ? "Repair and original samples saved."
+		                : "Could not save repair.";
+		saveDialog.ClearSelected();
+	}
+	ImGui::Checkbox("Follow demo tick in samples", &ui.Follow);
+	if (ui.Follow)
+		ui.Tick = playhead;
+	ImGui::SetNextItemWidth(120);
+	ImGui::InputInt("Inspect sample tick", &ui.Tick);
+	ui.Tick = (std::max)(0, ui.Tick);
+	auto selected = model.Samples().lower_bound(ui.Tick);
+	if (selected == model.Samples().end() && !model.Samples().empty())
+		selected = std::prev(model.Samples().end());
+	if (ImGui::Button("Previous sample"))
+	{
+		if (selected != model.Samples().begin())
+		{
+			--selected;
+			ui.Tick = selected->first;
+			ui.Follow = false;
+		}
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Next sample"))
+	{
+		if (selected != model.Samples().end())
+		{
+			auto next = std::next(selected);
+			if (next != model.Samples().end())
+			{
+				selected = next;
+				ui.Tick = selected->first;
+				ui.Follow = false;
+			}
+		}
+	}
+	if (selected != model.Samples().end())
+	{
+		ImGui::Text(
+		    "Original tick %d: XYZ %.3f %.3f %.3f | eye pitch/yaw %.3f %.3f | mask %u | life epoch %u",
+		    selected->first, selected->second.Value[0], selected->second.Value[1], selected->second.Value[2],
+		    selected->second.Value[3], selected->second.Value[4], selected->second.Mask,
+		    selected->second.Epoch);
+		auto repaired = selected->second.Value;
+		std::string reason;
+		unsigned mask = model.Evaluate(selected->first, repaired, &reason);
+		if (mask)
+			ImGui::Text("Repaired: XYZ %.3f %.3f %.3f | eye pitch/yaw %.3f %.3f | mask %u", repaired[0],
+			            repaired[1], repaired[2], repaired[3], repaired[4], mask);
+		if (!reason.empty())
+			ImGui::TextWrapped("%s", reason.c_str());
+		if (ImGui::Button("Select this sample"))
+		{
+			ui.First = ui.Last = selected->first;
+			ui.Follow = false;
+			ui.Tick = selected->first;
+		}
+	}
+	ImGui::BeginDisabled(MirvFix_PlayerRepairCollecting());
+	ImGui::SetNextItemWidth(120);
+	ImGui::InputInt("Exclude first tick", &ui.First);
+	ImGui::SameLine();
+	if (ImGui::Button("Start at playhead"))
+		ui.First = playhead;
+	ImGui::SetNextItemWidth(120);
+	ImGui::InputInt("Exclude last tick", &ui.Last);
+	ImGui::SameLine();
+	if (ImGui::Button("End at playhead"))
+		ui.Last = playhead;
+	const char *channels[] = {"Position", "Eye angles", "Position + eye angles"};
+	ImGui::Combo("Repair channels", &ui.Channels, channels, 3);
+	ImGui::Checkbox("Smooth bounded reconstruction", &ui.Smooth);
+	ImGui::SetNextItemWidth(120);
+	ImGui::InputInt("Maximum bridge (ticks)", &model.MaxBridgeTicks);
+	model.MaxBridgeTicks = (std::clamp)(model.MaxBridgeTicks, 1, 100000);
+	if (ImGui::Button("Exclude marked player samples"))
+	{
+		advancedfx::PlayerRepair::Range range;
+		range.First = ui.First;
+		range.Last = ui.Last;
+		range.Mask = ui.Channels == 0 ? 7 : ui.Channels == 1 ? 24 : 31;
+		range.Smooth = ui.Smooth;
+		auto first = model.Samples().lower_bound(range.First);
+		ui.Status = first != model.Samples().end() && first->first <= range.Last && model.Exclude(range)
+		                ? "Excluded. Rewind before this interval to rebuild interpolation."
+		                : "No recorded sample in range, overlapping channels, or invalid tick range.";
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Toggle discontinuity at sample"))
+		model.ToggleCut(ui.Tick);
+	if (ImGui::Button("Undo player repair"))
+		model.Undo(false);
+	ImGui::SameLine();
+	if (ImGui::Button("Redo player repair"))
+		model.Undo(true);
+	for (size_t i = 0; i < model.GetEdits().Ranges.size(); ++i)
+	{
+		const auto &r = model.GetEdits().Ranges[i];
+		ImGui::PushID(int(i));
+		ImGui::Text("%zu: ticks %d..%d | %s | %s", i, r.First, r.Last,
+		            r.Mask == 7    ? "position"
+		            : r.Mask == 24 ? "eye angles"
+		                           : "both",
+		            r.Smooth ? "smooth" : "linear");
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Remove exclusion"))
+		{
+			model.RemoveRange(i);
+			ImGui::PopID();
+			break;
+		}
+		ImGui::PopID();
+	}
+	ImGui::EndDisabled();
+	if (ImGui::Button("Compare original from before range"))
+	{
+		MirvFix_PlayerRepairEnable(false);
+		Afx_GotoDemoTick((std::max)(0, ui.First - 66));
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Compare repaired from before range"))
+	{
+		if (MirvFix_PlayerRepairEnable(true))
+			Afx_GotoDemoTick((std::max)(0, ui.First - 66));
+	}
+	ImGui::TextWrapped("After either comparison seek, press Play. Seek before the interval after every "
+	                   "edit/toggle. Missing anchors, life-state boundaries, manual cuts and excessive gaps "
+	                   "keep the original value. Animation sequences and bone poses are not repaired.");
+	if (!ui.Status.empty())
+		ImGui::TextWrapped("%s", ui.Status.c_str());
+	ImGui::EndTabItem();
+}
 static void DrawSequencerDetails(int playhead)
 {
 	auto &state = g_SequencerTimeline;
@@ -3702,6 +4005,7 @@ static void DrawSequencerDetails(int playhead)
 		}
 		ImGui::EndTabItem();
 	}
+	DrawPlayerRepairEditor(playhead);
 	ImGui::EndTabBar();
 }
 
@@ -4530,7 +4834,7 @@ void Draw()
 			float zoomH = ImGui::GetFontSize() * neo.ZoomHeightScale + st.FramePadding.y * 2.0f;
 			float rowLabelH =
 				ImGui::CalcTextSize("Campath").y + st.FramePadding.y * 2.0f + neo.ItemSpacing.y * 2.0f;
-			const float rows = (float)(g_Hook_VClient_RenderView.m_CamPaths.GetCount() + 3);
+			const float rows = (float)(g_Hook_VClient_RenderView.m_CamPaths.GetCount() + 4);
 			float desiredSeqH = topBarH + neo.TopBarSpacing + zoomH + rowLabelH * (std::min)(rows, 6.0f);
 			float minSeqH = ImMax(60.0f, topBarH + neo.TopBarSpacing + zoomH + rowLabelH);
 			float maxSeqHAvail = ImMax(minSeqH, ImMax(55.0f, availY - btnRowH));
@@ -4984,6 +5288,7 @@ void Draw()
 						ImGui::EndNeoTimeLine();
 					}
 					DrawSequencerExtraTracks(visibleStart, visibleEnd);
+					DrawPlayerRepairTrack(visibleStart, visibleEnd);
 					DrawSequencerSeekContext();
 					if (choosePath < document.GetCount())
 						ImGui::NeoCancelSelection();

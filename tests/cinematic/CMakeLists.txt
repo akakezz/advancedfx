@@ -15,7 +15,7 @@ if(UNIX AND DEFINED AFX_IMGUI_SOURCE_DIR)
     add_test(NAME camera_overlay_gui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_overlay.py" --imgui-dir "${AFX_IMGUI_SOURCE_DIR}" --build-dir "${CMAKE_CURRENT_BINARY_DIR}/overlay-gui")
 endif()
 
-add_executable(sequencer_tests test_sequencer.cpp ../../shared/CommandSystem.cpp ../../shared/DemoTimeline.cpp ../../shared/AfxMath.cpp ../../shared/AfxConsole.cpp)
+add_executable(sequencer_tests test_sequencer.cpp ../../shared/PlayerRepair.cpp ../../shared/CommandSystem.cpp ../../shared/DemoTimeline.cpp ../../shared/AfxMath.cpp ../../shared/AfxConsole.cpp)
 target_include_directories(sequencer_tests PRIVATE ../.. ../../AfxHookSource)
 if(NOT MSVC)
     target_compile_definitions(sequencer_tests PRIVATE abstract=)
