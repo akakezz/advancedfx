@@ -34,6 +34,7 @@
 #include "EntityIndexDrawer.h"
 #include "tf2/ClientToolsTf2.h"
 #include <shared/PlayerRepair.h>
+#include <shared/DemoTimeline.h>
 #include <filesystem>
 #include <fstream>
 #include <climits>
@@ -4793,6 +4794,65 @@ unsigned long long MirvFix_PlayerRepairWrites()
 {
 	return g_RepairWrites;
 }
+namespace
+{
+struct RepairDemoIdentity
+{
+	std::string Key, Map;
+	int Ticks = 0;
+};
+RepairDemoIdentity ReadRepairDemoIdentity(const char *name)
+{
+	if (!name || !*name)
+		throw std::runtime_error("Choose the .dem file currently playing.");
+	std::filesystem::path file(name);
+	if (!file.has_extension())
+		file += ".dem";
+	if (file.is_relative())
+	{
+		auto directory = g_VEngineClient ? g_VEngineClient->GetGameDirectory() : nullptr;
+		if (!directory || !*directory)
+			throw std::runtime_error("The game directory is unavailable; choose an absolute demo filename.");
+		file = std::filesystem::path(directory) / file;
+	}
+	file = std::filesystem::weakly_canonical(file);
+	std::ifstream input(file, std::ios::binary);
+	unsigned char header[1072];
+	if (!input.read(reinterpret_cast<char *>(header), sizeof(header)) || std::memcmp(header, "HL2DEMO\0", 8))
+		throw std::runtime_error("Cannot read the selected Source demo header.");
+	auto integer = [&](int at) {
+		return uint32_t(header[at]) | uint32_t(header[at + 1]) << 8 | uint32_t(header[at + 2]) << 16 |
+		       uint32_t(header[at + 3]) << 24;
+	};
+	if (integer(8) != 3 || integer(1060) > INT_MAX)
+		throw std::runtime_error("The selected file is not a supported Source demo.");
+	unsigned long long hash = 14695981039346656037ull;
+	for (auto byte : header)
+	{
+		hash ^= byte;
+		hash *= 1099511628211ull;
+	}
+	RepairDemoIdentity result;
+	result.Key =
+	    file.u8string() + "|" + std::to_string(std::filesystem::file_size(file)) + "|" + std::to_string(hash);
+	result.Map.assign(reinterpret_cast<char *>(header + 536), 260);
+	auto end = result.Map.find('\0');
+	if (end != std::string::npos)
+		result.Map.resize(end);
+	result.Ticks = int(integer(1060));
+	return result;
+}
+void BindRepairDemoIdentity(const RepairDemoIdentity &file)
+{
+	RepairFlush();
+	g_RepairCollect = false;
+	g_RepairEnabled = false;
+	g_RepairEntity = -1;
+	g_RepairDemo = file.Key;
+	g_RepairStatus = "Playing demo file identified. Choose a player and start collection, or enable a "
+	                 "matching saved repair.";
+}
+} // namespace
 void MirvFix_PlayerRepairNewDemo(const char *name)
 {
 	RepairFlush();
@@ -4800,38 +4860,44 @@ void MirvFix_PlayerRepairNewDemo(const char *name)
 	g_RepairEnabled = false;
 	g_RepairDemo.clear();
 	g_RepairEntity = -1;
-	if (!name || !*name || !g_VEngineClient)
+	if (!name || !*name)
 		return;
 	try
 	{
-		std::filesystem::path file(name);
-		if (!file.has_extension())
-			file += ".dem";
-		if (file.is_relative())
-		{
-			auto dir = g_VEngineClient->GetGameDirectory();
-			if (!dir || !*dir)
-				return;
-			file = std::filesystem::path(dir) / file;
-		}
-		file = std::filesystem::weakly_canonical(file);
-		std::ifstream input(file, std::ios::binary);
-		char header[1072];
-		if (!input.read(header, sizeof(header)) || std::memcmp(header, "HL2DEMO", 7))
-			throw std::runtime_error("Cannot read demo identity.");
-		unsigned long long hash = 14695981039346656037ull;
-		for (unsigned char b : header)
-		{
-			hash ^= b;
-			hash *= 1099511628211ull;
-		}
-		g_RepairDemo = file.u8string() + "|" + std::to_string(std::filesystem::file_size(file)) + "|" +
-		               std::to_string(hash);
-		g_RepairStatus = "Player repair is off. Collect original samples before marking a range.";
+		BindRepairDemoIdentity(ReadRepairDemoIdentity(name));
 	}
 	catch (const std::exception &e)
 	{
 		g_RepairStatus = e.what();
+	}
+}
+bool MirvFix_PlayerRepairBindPlayingDemo(const char *name)
+{
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
+	{
+		g_RepairStatus = "Load the demo before choosing its file for player repair.";
+		return false;
+	}
+	try
+	{
+		auto file = ReadRepairDemoIdentity(name);
+		auto demo = g_VEngineClient->GetDemoInfoEx();
+		auto level = g_VEngineClient->GetLevelName();
+		if (!demo || !level || !*level)
+			throw std::runtime_error(
+			    "Wait for the playing demo's map to finish loading before choosing its file.");
+		if (!advancedfx::DemoTimeline::SameMap(level, file.Map) ||
+		    (file.Ticks > 0 && demo->GetDemoPlaybackTotalTicks() > 0 &&
+		     file.Ticks != demo->GetDemoPlaybackTotalTicks()))
+			throw std::runtime_error("The selected demo's map or tick count differs from the playing demo. "
+			                         "Choose the currently playing file.");
+		BindRepairDemoIdentity(file);
+		return true;
+	}
+	catch (const std::exception &e)
+	{
+		g_RepairStatus = e.what();
+		return false;
 	}
 }
 bool MirvFix_PlayerRepairBegin(int entity)
@@ -4990,7 +5056,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			auto &model = MirvFix_PlayerRepairModel();
 			int tick = 0, last = 0;
 			if (!_stricmp(op, "demo") && argc == 4)
-				MirvFix_PlayerRepairNewDemo(args->ArgV(3));
+				MirvFix_PlayerRepairBindPlayingDemo(args->ArgV(3));
 			else if (!_stricmp(op, "begin") && argc == 4 && integer(3, tick))
 				MirvFix_PlayerRepairBegin(tick);
 			else if (!_stricmp(op, "end") && argc == 3)

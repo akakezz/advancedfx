@@ -229,12 +229,18 @@ engine owns subsequent interpolation, animation and camera attachment. Unmarked
 channels and other entities pass through unchanged. This is a runtime prototype,
 not a general demo-file repair tool or skeletal-animation reconstruction.
 
-1. Open the demo normally with HLAE loaded. If it was already playing when HLAE
-   started, index that exact file and choose **Bind playing demo to indexed file**,
-   or use `mirv_fix playerRepair demo "file.dem"` without reopening playback.
+1. Open the demo normally with HLAE loaded. If its filename is unknown, Start
+   opens **Choose the demo currently playing**. Select that `.dem` and collection
+   continues automatically without reopening or seeking it. Event indexing is not
+   required. **Choose playing demo file...** can also identify the file without
+   starting collection, for example before enabling a saved repair. Console
+   access is `mirv_fix playerRepair demo "C:\full\path\file.dem"`.
+   The selected file's map and available tick count are checked against playback;
+   cancelled or mismatched selections preserve the existing samples.
 2. Explicitly choose a valid player from **Repair player**, then **Start new
    player collection**. Empty slots and nonpositive user IDs cannot start a
-   collection. A matching indexed demo binds automatically when no file is bound.
+   collection. A matching indexed demo binds automatically when no file is bound; otherwise
+   Start asks for the playing demo file.
    This replaces
    the previous player's samples and marks; save existing work first.
 3. Seek backward to tick zero or before the troublesome section, then play

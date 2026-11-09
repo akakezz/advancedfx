@@ -3265,8 +3265,7 @@ static bool TimelineMatchesDemo()
 	const char *level = g_VEngineClient->GetLevelName();
 	if (!level)
 		return false;
-	auto map = std::filesystem::path(level).stem().u8string();
-	return demo->GetDemoPlaybackTotalTicks() == index.TotalTicks && !_stricmp(map.c_str(), index.Map.c_str());
+	return demo->GetDemoPlaybackTotalTicks() == index.TotalTicks && advancedfx::DemoTimeline::SameMap(level, index.Map);
 }
 static void FilterTimelineEvents()
 {
@@ -3448,6 +3447,7 @@ struct RepairEditor
 	bool Smooth = true, Follow = true, Drag = false, DragMoved = false;
 	float DragMouseX = 0;
 	int DragStart = 0;
+	int PendingEntity=-1, PendingUser=0;
 	std::string Status;
 } g_RepairEditor;
 static void DrawPlayerRepairTrack(int visibleStart, int visibleEnd)
@@ -3533,6 +3533,56 @@ static void DrawPlayerRepairTrack(int visibleStart, int visibleEnd)
 	}
 	ImGui::EndNeoTimeLine();
 }
+static ImGui::FileBrowser g_RepairDemoDialog(ImGuiFileBrowserFlags_CloseOnEsc |
+                                             ImGuiFileBrowserFlags_EditPathString);
+static void OpenRepairDemoPicker(int entity = -1, int user = 0)
+{
+	auto &ui = g_RepairEditor;
+	ui.PendingEntity = entity;
+	ui.PendingUser = user;
+	g_RepairDemoDialog.SetTitle("Choose the demo currently playing");
+	g_RepairDemoDialog.SetTypeFilters({".dem"});
+	if (!g_OverlayPaths.demoDir.empty())
+		g_RepairDemoDialog.SetDirectory(g_OverlayPaths.demoDir);
+	else if (g_VEngineClient)
+	{
+		auto directory = g_VEngineClient->GetGameDirectory();
+		if (directory && *directory)
+			g_RepairDemoDialog.SetDirectory(directory);
+	}
+	g_RepairDemoDialog.Open();
+	ui.Status =
+	    "Select the .dem currently playing. Playback will not restart; event indexing is not required.";
+}
+static void CompleteRepairDemoSelection(const std::filesystem::path &file)
+{
+	auto &ui = g_RepairEditor;
+	if (ui.PendingEntity >= 0)
+	{
+		char name[64];
+		int user = 0;
+		if (!Mirv_Tf2_GetPlayerInfo(ui.PendingEntity, name, sizeof(name), &user) || user != ui.PendingUser)
+		{
+			ui.Status = "The selected player changed while choosing the demo. Choose the player again and "
+			            "start collection.";
+			ui.PendingEntity = -1;
+			return;
+		}
+	}
+	if (MirvFix_PlayerRepairBindPlayingDemo(file.string().c_str()))
+	{
+		g_OverlayPaths.demoDir = file.parent_path().string();
+		ImGui::MarkIniSettingsDirty();
+		ui.Status.clear();
+		if (ui.PendingEntity >= 0)
+			MirvFix_PlayerRepairBegin(ui.PendingEntity);
+	}
+	else
+		ui.Status =
+		    "The demo could not be identified. Check the message above and choose the playing file again.";
+	ui.PendingEntity = -1;
+	ui.PendingUser = 0;
+}
 static void DrawPlayerRepairEditor(int playhead)
 {
 	if (!ImGui::BeginTabItem("Player repair"))
@@ -3574,11 +3624,15 @@ static void DrawPlayerRepairEditor(int playhead)
 	ImGui::BeginDisabled(!validPlayer);
 	if (ImGui::Button("Start new player collection"))
 	{
-		bool attemptedBinding = !MirvFix_PlayerRepairHasDemo() && TimelineMatchesDemo();
-		if (attemptedBinding)
-			MirvFix_PlayerRepairNewDemo(g_SequencerTimeline.Index.File.string().c_str());
-		if (!attemptedBinding || MirvFix_PlayerRepairHasDemo())
+		if (!MirvFix_PlayerRepairHasDemo() && TimelineMatchesDemo())
+			MirvFix_PlayerRepairBindPlayingDemo(g_SequencerTimeline.Index.File.string().c_str());
+		if (MirvFix_PlayerRepairHasDemo())
+		{
+			ui.Status.clear();
 			MirvFix_PlayerRepairBegin(ui.Entity);
+		}
+		else
+			OpenRepairDemoPicker(ui.Entity, user);
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
@@ -3587,7 +3641,21 @@ static void DrawPlayerRepairEditor(int playhead)
 		MirvFix_PlayerRepairEnd();
 	ImGui::EndDisabled();
 	if (TimelineMatchesDemo() && ImGui::Button("Bind playing demo to indexed file"))
-		MirvFix_PlayerRepairNewDemo(g_SequencerTimeline.Index.File.string().c_str());
+		MirvFix_PlayerRepairBindPlayingDemo(g_SequencerTimeline.Index.File.string().c_str());
+	if (ImGui::Button("Choose playing demo file..."))
+		OpenRepairDemoPicker();
+	g_RepairDemoDialog.Display();
+	if (g_RepairDemoDialog.HasSelected())
+	{
+		CompleteRepairDemoSelection(g_RepairDemoDialog.GetSelected());
+		g_RepairDemoDialog.ClearSelected();
+	}
+	else if (!g_RepairDemoDialog.IsOpened() && ui.PendingEntity >= 0)
+	{
+		ui.PendingEntity = -1;
+		ui.PendingUser = 0;
+		ui.Status = "Collection was not started; no playing demo file was selected.";
+	}
 	bool enabled = MirvFix_PlayerRepairEnabled();
 	if (ImGui::Checkbox("Apply marked player repairs", &enabled))
 		MirvFix_PlayerRepairEnable(enabled);

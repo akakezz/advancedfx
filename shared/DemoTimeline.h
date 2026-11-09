@@ -33,6 +33,8 @@ struct Index
 	double Interval = 1.0 / 66;
 	std::vector<Event> Events;
 };
+// Compare Source map identities, preserving workshop .ugc suffixes.
+bool SameMap(const std::string &left, const std::string &right);
 // Read-only, engine-independent indexing. Safe to run on a worker thread.
 // Failure leaves Error populated; partial results must not be presented as complete.
 Index Read(const std::filesystem::path &file, const std::atomic_bool &cancel, std::atomic<float> &progress);

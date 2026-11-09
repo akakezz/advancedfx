@@ -596,6 +596,34 @@ struct Reader
 };
 } // namespace
 
+bool SameMap(const std::string &left, const std::string &right)
+{
+	auto normalized = [](std::string value) {
+		for (auto &c : value)
+		{
+			if (c == '\\')
+				c = '/';
+			if (c >= 'A' && c <= 'Z')
+				c = char(c - 'A' + 'a');
+		}
+		auto maps = value.rfind("/maps/");
+		if (maps != std::string::npos)
+			value.erase(0, maps + 6);
+		else if (value.compare(0, 5, "maps/") == 0)
+			value.erase(0, 5);
+		if (value.size() >= 4 && value.compare(value.size() - 4, 4, ".bsp") == 0)
+			value.resize(value.size() - 4);
+		return value;
+	};
+	auto a = normalized(left), b = normalized(right);
+	if (a.empty() || b.empty())
+		return false;
+	if (a == b)
+		return true;
+	if (a.find('/') != std::string::npos && b.find('/') != std::string::npos)
+		return false;
+	return a.substr(a.find_last_of('/') + 1) == b.substr(b.find_last_of('/') + 1);
+}
 Index Read(const std::filesystem::path &file, const std::atomic_bool &cancel, std::atomic<float> &progress)
 {
 	Reader reader;

@@ -169,6 +169,7 @@ void MirvFix_InitializeTf2Client(void *client);
 namespace advancedfx { class PlayerRepair; }
 advancedfx::PlayerRepair &MirvFix_PlayerRepairModel();
 void MirvFix_PlayerRepairNewDemo(const char *file);
+bool MirvFix_PlayerRepairBindPlayingDemo(const char *file);
 bool MirvFix_PlayerRepairBegin(int entity);
 void MirvFix_PlayerRepairEnd();
 bool MirvFix_PlayerRepairHasDemo();

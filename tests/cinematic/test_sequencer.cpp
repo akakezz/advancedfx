@@ -526,6 +526,9 @@ int main(int argc, char **argv)
 	{
 		std::filesystem::create_directories(dir);
 		Scheduler(dir);
+        Check(advancedfx::DemoTimeline::SameMap("maps/CP_Gullywash.bsp","cp_gullywash"),"Map identities normalize the engine prefix and BSP extension");
+        Check(advancedfx::DemoTimeline::SameMap("C:\\tf\\maps\\workshop\\cp_process.ugc123.BSP","workshop/cp_process.ugc123"),"Workshop map identities retain their UGC suffix");
+        Check(!advancedfx::DemoTimeline::SameMap("maps/workshop/cp_process.ugc123.bsp","workshop/cp_process.ugc456"),"Different workshop versions cannot match");
 		Indexing(dir);
 		Repair(dir);
 		for (int i = 1; i < argc; ++i)
