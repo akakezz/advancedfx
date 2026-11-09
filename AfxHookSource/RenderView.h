@@ -178,6 +178,7 @@ bool MirvFix_PlayerRepairEnable(bool enabled);
 bool MirvFix_PlayerRepairEnabled();
 const char *MirvFix_PlayerRepairStatus();
 unsigned long long MirvFix_PlayerRepairWrites();
+unsigned long long MirvFix_PlayerRepairChanged();
 void MirvFix_PlayerRepairFrameEnd();
 bool MirvFix_GetPovDeathcam();
 bool MirvFix_SetPovDeathcam(bool enabled);

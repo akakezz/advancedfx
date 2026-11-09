@@ -257,10 +257,13 @@ not a general demo-file repair tool or skeletal-animation reconstruction.
 5. Select a sample, enter the inclusive first/last bad ticks, or drag a range
    across the repair track. Choose **Position**, **Eye angles**, or both, then
    **Exclude marked player samples**. Red spans mark exclusions.
-6. Choose **Compare original from before range** or **Compare repaired from
-   before range**, then press **Play**. Both seek 66 ticks before the selection.
-   Rewind before the interval after every edit or application toggle: changing
-   the checkbox cannot retroactively replace values already latched by Source.
+6. Choose **Use for comparison** on a marked repair, then **Compare original from
+   before range** or **Compare repaired from before range**. Both seek 66 ticks
+   before that repair and play automatically at normal speed. If no marked range
+   is selected, comparison uses the earliest repair, not an unmarked inspector
+   selection. Your usual after-seek setting is preserved for other seeks.
+   Compare again after every edit or application toggle: changing the checkbox
+   cannot retroactively replace values already latched by Source.
 7. Save the repair sidecar. It contains original samples and editing marks;
    loading it leaves application disabled. Open the same unchanged demo before
    enabling it. The binding uses the canonical filename, header fingerprint and
@@ -279,17 +282,36 @@ valid samples; disabling it uses linear interpolation. Angles take the shortest
 wrapped route. Exclusions never become future anchors. Missing anchors,
 life-state boundaries, manual cuts, or bridges longer than **Maximum bridge
 (ticks)** preserve the original channel and report why. The default maximum is
-330 ticks. Use **Toggle discontinuity at sample** for a genuine teleport or cut;
-these boundaries draw in purple. **Undo player repair** and **Redo player
-repair** cover exclusions and manual cuts separately from camera-path history.
+330 ticks. These controls are under **Advanced repair boundaries**. Use **Toggle
+discontinuity at sample** only for a genuine teleport or cut; it blocks repairs
+across that tick, rather than marking bad data. These boundaries draw in purple
+and are listed with individual **Remove boundary** buttons. **Undo player repair**
+and **Redo player repair** cover exclusions and manual cuts separately from
+camera-path history.
 
 Exclusions are red when the selected channels have a usable reconstruction and
 amber when they are blocked or partly blocked. Hover a span or inspect its list
 entry for the exact anchor ticks and reason. Readiness checks are cached until
 the sample history, edits or bridge limit changes. A ready bridge still needs
 **Apply marked player repairs** or **Compare repaired from before range**, then
-playback through the interval. The `writes` counter confirms receive callbacks
-were substituted; it does not measure visual improvement.
+playback through the interval. Enabling is refused when nothing is marked or
+all ranges are blocked. If only some channels or ranges are blocked, the usable
+ones can still apply and status warns about the others.
+
+The `writes` counter counts substituted receive callbacks, even when the
+replacement equals the original. **Actually changed** (`changed updates` in the
+console) counts callbacks with at least one numerically different input value.
+Counters reset when a repaired comparison is enabled. Neither counter measures
+rendered quality. An ON state with no substitutions means no eligible repair
+updates have arrived yet; replay the marked interval with the sampled player
+present. Substitutions with no changed values have had no numeric repair effect.
+The menu separates recording, marking, and comparison; raw masks and internal
+life epochs are no longer shown in the ordinary sample readout.
+
+During a controlled comparison seek, a same-file demo restart or transient
+no-demo state preserves the requested repair. A different or unknown file,
+explicit restart outside a controlled seek, or leaving playback disarms it.
+Samples and marks are retained, and playback interruptions are reported.
 
 A life-state rejection identifies the first recorded sample in the new epoch;
 split or narrow the exclusion rather than bridging a death/respawn. Manual cuts

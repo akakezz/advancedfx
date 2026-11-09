@@ -4538,7 +4538,7 @@ int g_RepairEntity = -1, g_RepairTick = -1, g_RepairLastTick = -1, g_RepairLife 
 unsigned g_RepairEpoch = 0;
 PlayerRepair::Sample g_RepairRaw;
 std::string g_RepairDemo, g_RepairStatus;
-unsigned long long g_RepairWrites = 0;
+unsigned long long g_RepairWrites = 0, g_RepairChanged = 0;
 int g_RepairEvaluationTick = -1, g_RepairEvaluationBridge = 0;
 uint64_t g_RepairEvaluationRevision = 0;
 std::array<double, 5> g_RepairEvaluated{};
@@ -4619,11 +4619,13 @@ void RepairReceive(unsigned slot, const Tf2FixProxyData *data, void *object, voi
 		}
 		unsigned mask = g_RepairEvaluationMask;
 		auto replacement = *data;
-		bool changed = false;
+		bool changed = false, different = false;
 		for (int c = 0; c < spec.Count; ++c)
 			if (mask & (1u << (spec.First + c)))
 			{
 				float value = float(g_RepairEvaluated[spec.First + c]);
+				float before = spec.Count == 1 ? data->Value.Float : data->Value.Vector[c];
+				different |= value != before;
 				if (spec.Count == 1)
 					replacement.Value.Float = value;
 				else
@@ -4633,6 +4635,8 @@ void RepairReceive(unsigned slot, const Tf2FixProxyData *data, void *object, voi
 		if (changed)
 		{
 			++g_RepairWrites;
+			if (different)
+				++g_RepairChanged;
 			original(&replacement, object, out);
 			return;
 		}
@@ -4794,6 +4798,10 @@ unsigned long long MirvFix_PlayerRepairWrites()
 {
 	return g_RepairWrites;
 }
+unsigned long long MirvFix_PlayerRepairChanged()
+{
+	return g_RepairChanged;
+}
 namespace
 {
 struct RepairDemoIdentity
@@ -4855,6 +4863,20 @@ void BindRepairDemoIdentity(const RepairDemoIdentity &file)
 } // namespace
 void MirvFix_PlayerRepairNewDemo(const char *name)
 {
+	// A backward comparison seek may restart this same demo through playdemo.
+	// Keep the requested repair active while the engine rebuilds its history.
+	if (name && *name && MirvCampathPreview_IsSeeking())
+	{
+		try
+		{
+			if (ReadRepairDemoIdentity(name).Key == g_RepairDemo)
+				return;
+		}
+		catch (const std::exception &)
+		{
+			// Unknown or different files must disarm repairs below.
+		}
+	}
 	RepairFlush();
 	g_RepairCollect = false;
 	g_RepairEnabled = false;
@@ -4940,7 +4962,7 @@ bool MirvFix_PlayerRepairBegin(int entity)
 	g_RepairLife = -1;
 	g_RepairEpoch = 0;
 	g_RepairRaw = {};
-	g_RepairWrites = 0;
+	g_RepairWrites = g_RepairChanged = 0;
 	g_RepairEnabled = false;
 	g_RepairCollect = true;
 	g_RepairStatus =
@@ -4971,11 +4993,35 @@ bool MirvFix_PlayerRepairEnable(bool enabled)
 {
 	g_RepairEnabled = false;
 	if (!enabled)
+	{
+		g_RepairStatus = "Original playback: repairs are OFF. Replay from before the marked interval "
+		                 "to rebuild the original movement history.";
 		return true;
+	}
 	if (g_RepairCollect || g_PlayerRepair.Demo != g_RepairDemo || g_PlayerRepair.Samples().empty() ||
 	    !g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
 	{
 		g_RepairStatus = "Stop collection and load the exact demo associated with these samples.";
+		return false;
+	}
+	if (g_PlayerRepair.GetEdits().Ranges.empty())
+	{
+		g_RepairStatus = "Nothing marked for repair. Select bad samples and add a repair first.";
+		return false;
+	}
+	bool ready = false;
+	std::string blocked;
+	for (const auto &range : g_PlayerRepair.GetEdits().Ranges)
+	{
+		std::array<double, 5> value{};
+		std::string reason;
+		ready |= (g_PlayerRepair.Evaluate(range.First, value, &reason) & range.Mask) != 0;
+		if (blocked.empty() && !reason.empty())
+			blocked = reason;
+	}
+	if (!ready)
+	{
+		g_RepairStatus = "Repair not enabled: every marked range is blocked. " + blocked;
 		return false;
 	}
 	g_RepairEntity = -1;
@@ -4995,17 +5041,22 @@ bool MirvFix_PlayerRepairEnable(bool enabled)
 		return false;
 	}
 	g_RepairEnabled = true;
-	g_RepairWrites = 0;
+	g_RepairWrites = g_RepairChanged = 0;
 	g_RepairEvaluationTick = -1;
-	g_RepairStatus =
-	    "Repair enabled. Rewind before the excluded interval to rebuild Source's interpolation history.";
+	g_RepairStatus = "Repair enabled. Replay from before the marked interval. Changed updates count numeric "
+	                 "differences, not visual quality.";
+	if (!blocked.empty())
+		g_RepairStatus += " Some marked channels are blocked: " + blocked;
 	return true;
 }
 void MirvFix_PlayerRepairFrameEnd()
 {
 	RepairFlush();
-	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
+	if (!g_VEngineClient || (!g_VEngineClient->IsPlayingDemo() && !MirvCampathPreview_IsSeeking()))
 	{
+		if (g_RepairCollect || g_RepairEnabled)
+			g_RepairStatus = "Repair stopped because demo playback ended or was interrupted. "
+			                 "Recorded samples and marks are retained; compare again in the matching demo.";
 		g_RepairCollect = false;
 		g_RepairEnabled = false;
 	}
@@ -5107,10 +5158,11 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				return;
 			}
 			Tier0_Msg(
-			    "Player repair: collect %d, apply %d; user %d; samples %zu, exclusions %zu, writes %llu.\n%s\n",
+			    "Player repair: collect %d, apply %d; user %d; samples %zu, exclusions %zu, writes %llu, "
+			    "changed updates %llu.\n%s\n",
 			    MirvFix_PlayerRepairCollecting(), MirvFix_PlayerRepairEnabled(), model.UserId,
 			    model.Samples().size(), model.GetEdits().Ranges.size(), MirvFix_PlayerRepairWrites(),
-			    MirvFix_PlayerRepairStatus());
+			    MirvFix_PlayerRepairChanged(), MirvFix_PlayerRepairStatus());
 			Tier0_Msg("Player repair setup: bound demo %d; TF2 client %d; hooks %d; properties %zu; requested "
 			          "entity %d; active entity %d.\n",
 			          !g_RepairDemo.empty(), g_Tf2FixClient != nullptr, g_RepairHooks, g_RepairProperties.size(),

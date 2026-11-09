@@ -3472,7 +3472,7 @@ static void UpdatePlayerRepairReports()
 		ui.RangeReady.push_back(ready);
 		if (ready == range.Mask)
 			ui.RangeReports.push_back(
-			    "Excluded original samples. Reconstruction ready; enable repair and replay to apply.");
+			    "Ready: reconstruction available. Compare repaired to replay and apply.");
 		else
 			ui.RangeReports.push_back(std::string(ready ? "Partly blocked: " : "Blocked: ") + reason);
 	}
@@ -3617,6 +3617,47 @@ static void CompleteRepairDemoSelection(const std::filesystem::path &file)
 	ui.PendingEntity = -1;
 	ui.PendingUser = 0;
 }
+// Comparison uses the marked interval, not a stale inspector tick. The native seek
+// helper snapshots its after-seek options, so other sequencer seeks keep their settings.
+static const advancedfx::PlayerRepair::Range *PlayerRepairComparisonRange()
+{
+	const auto &ranges = MirvFix_PlayerRepairModel().GetEdits().Ranges;
+	const advancedfx::PlayerRepair::Range *first = nullptr;
+	for (const auto &range : ranges)
+	{
+		if (g_RepairEditor.First == range.First && g_RepairEditor.Last == range.Last)
+			return &range;
+		if (!first || range.First < first->First)
+			first = &range;
+	}
+	return first;
+}
+static void ComparePlayerRepair(bool repaired)
+{
+	auto &ui = g_RepairEditor;
+	auto range = PlayerRepairComparisonRange();
+	if (!range)
+	{
+		ui.Status = "Mark bad samples before comparing a repair.";
+		return;
+	}
+	ui.First = range->First;
+	ui.Last = range->Last;
+	if (!MirvFix_PlayerRepairEnable(repaired))
+	{
+		ui.Status.clear(); // The native status explains the blocked repair.
+		return;
+	}
+	int previousMode = MirvCampathPreview_GetSeekMode();
+	double previousScale = MirvCampathPreview_GetSeekScale();
+	MirvCampathPreview_SetSeekOptions(2, previousScale);
+	bool seeking = MirvCampathPreview_SeekTick((std::max)(0, ui.First - 66));
+	MirvCampathPreview_SetSeekOptions(previousMode, previousScale);
+	if (!seeking && repaired)
+		MirvFix_PlayerRepairEnable(false);
+	ui.Status = seeking ? "Comparison will play at normal speed after seeking. Watch the sampled player."
+	                    : "Comparison seek could not start. Load the matching demo and try again.";
+}
 static void DrawPlayerRepairEditor(int playhead)
 {
 	if (!ImGui::BeginTabItem("Player repair"))
@@ -3628,9 +3669,12 @@ static void DrawPlayerRepairEditor(int playhead)
 	static ImGui::FileBrowser saveDialog(
 	    ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_EditPathString |
 	    ImGuiFileBrowserFlags_EnterNewFilename | ImGuiFileBrowserFlags_CreateNewDir);
-	ImGui::TextWrapped("Experimental: collect one player's original network values, stop collection, exclude "
-	                   "bad ticks, then replay. The demo file is never rewritten. Starting a new collection "
-	                   "clears previous samples and marks.");
+	ImGui::TextWrapped("Experimental player repair changes position and eye angles during playback. "
+	                   "It does not rewrite the demo or repair animation/bone poses.");
+	ImGui::Separator();
+	ImGui::TextUnformatted("1. Record the player's movement");
+	ImGui::TextWrapped("Choose a player, start collection, and play through the glitch with good movement "
+	                   "before and after it. Starting a new collection replaces previous samples and marks.");
 	char previewName[64];
 	int previewUser = 0;
 	bool havePreview = Mirv_Tf2_GetPlayerInfo(ui.Entity, previewName, sizeof(previewName), &previewUser);
@@ -3674,8 +3718,7 @@ static void DrawPlayerRepairEditor(int playhead)
 	if (ImGui::Button("Stop player collection"))
 		MirvFix_PlayerRepairEnd();
 	ImGui::EndDisabled();
-	if (TimelineMatchesDemo() && ImGui::Button("Bind playing demo to indexed file"))
-		MirvFix_PlayerRepairBindPlayingDemo(g_SequencerTimeline.Index.File.string().c_str());
+
 	if (ImGui::Button("Choose playing demo file..."))
 		OpenRepairDemoPicker();
 	g_RepairDemoDialog.Display();
@@ -3690,15 +3733,13 @@ static void DrawPlayerRepairEditor(int playhead)
 		ui.PendingUser = 0;
 		ui.Status = "Collection was not started; no playing demo file was selected.";
 	}
-	bool enabled = MirvFix_PlayerRepairEnabled();
-	if (ImGui::Checkbox("Apply marked player repairs", &enabled))
-		MirvFix_PlayerRepairEnable(enabled);
 	ImGui::TextWrapped("%s", MirvFix_PlayerRepairStatus());
 	if (!model.Demo.empty())
-		ImGui::TextWrapped("Sample demo: %s", model.Demo.substr(0, model.Demo.find('|')).c_str());
-	ImGui::Text("%zu original samples | %zu exclusions | %llu receive replacements%s", model.Samples().size(),
-	            model.GetEdits().Ranges.size(), MirvFix_PlayerRepairWrites(),
-	            MirvFix_PlayerRepairCollecting() ? " | collecting" : "");
+		ImGui::TextWrapped(
+		    "Sample demo: %s",
+		    std::filesystem::path(model.Demo.substr(0, model.Demo.find('|'))).filename().string().c_str());
+	ImGui::Text("%zu recorded samples | %zu marked repairs%s", model.Samples().size(),
+	            model.GetEdits().Ranges.size(), MirvFix_PlayerRepairCollecting() ? " | collecting" : "");
 	if (ImGui::Button("Load player repair"))
 	{
 		loadDialog.SetTitle("Load player repair");
@@ -3719,9 +3760,14 @@ static void DrawPlayerRepairEditor(int playhead)
 	{
 		MirvFix_PlayerRepairEnable(false);
 		MirvFix_PlayerRepairEnd();
-		ui.Status = model.Load(loadDialog.GetSelected().wstring().c_str())
-		                ? "Repair loaded; application is disabled."
-		                : "Invalid repair file; previous data retained.";
+		bool loaded = model.Load(loadDialog.GetSelected().wstring().c_str());
+		ui.Status = loaded ? "Repair loaded. Choose Compare repaired to test it."
+		                   : "Invalid repair file; previous data retained.";
+		if (loaded && !model.GetEdits().Ranges.empty())
+		{
+			ui.First = model.GetEdits().Ranges.front().First;
+			ui.Last = model.GetEdits().Ranges.front().Last;
+		}
 		loadDialog.ClearSelected();
 	}
 	if (saveDialog.HasSelected())
@@ -3731,6 +3777,10 @@ static void DrawPlayerRepairEditor(int playhead)
 		                : "Could not save repair.";
 		saveDialog.ClearSelected();
 	}
+	ImGui::Separator();
+	ImGui::TextUnformatted("2. Mark the bad samples");
+	ImGui::TextWrapped("Drag on the Player repair timeline row, or select one sample below. "
+	                   "Use separate small repairs for scattered glitches to preserve good movement.");
 	ImGui::Checkbox("Follow demo tick in samples", &ui.Follow);
 	if (ui.Follow)
 		ui.Tick = playhead;
@@ -3765,17 +3815,15 @@ static void DrawPlayerRepairEditor(int playhead)
 	}
 	if (selected != model.Samples().end())
 	{
-		ImGui::Text(
-		    "Original tick %d: XYZ %.3f %.3f %.3f | eye pitch/yaw %.3f %.3f | mask %u | life epoch %u",
-		    selected->first, selected->second.Value[0], selected->second.Value[1], selected->second.Value[2],
-		    selected->second.Value[3], selected->second.Value[4], selected->second.Mask,
-		    selected->second.Epoch);
+		ImGui::Text("Sample tick %d | position %.3f %.3f %.3f | pitch/yaw %.3f %.3f", selected->first,
+		            selected->second.Value[0], selected->second.Value[1], selected->second.Value[2],
+		            selected->second.Value[3], selected->second.Value[4]);
 		auto repaired = selected->second.Value;
 		std::string reason;
 		unsigned mask = model.Evaluate(selected->first, repaired, &reason);
 		if (mask)
-			ImGui::Text("Repaired: XYZ %.3f %.3f %.3f | eye pitch/yaw %.3f %.3f | mask %u", repaired[0],
-			            repaired[1], repaired[2], repaired[3], repaired[4], mask);
+			ImGui::Text("Replacement: position %.3f %.3f %.3f | pitch/yaw %.3f %.3f", repaired[0],
+			            repaired[1], repaired[2], repaired[3], repaired[4]);
 		if (!reason.empty())
 			ImGui::TextWrapped("%s", reason.c_str());
 		if (ImGui::Button("Select this sample"))
@@ -3799,9 +3847,6 @@ static void DrawPlayerRepairEditor(int playhead)
 	const char *channels[] = {"Position", "Eye angles", "Position + eye angles"};
 	ImGui::Combo("Repair channels", &ui.Channels, channels, 3);
 	ImGui::Checkbox("Smooth bounded reconstruction", &ui.Smooth);
-	ImGui::SetNextItemWidth(120);
-	ImGui::InputInt("Maximum bridge (ticks)", &model.MaxBridgeTicks);
-	model.MaxBridgeTicks = (std::clamp)(model.MaxBridgeTicks, 1, 100000);
 	if (ImGui::Button("Exclude marked player samples"))
 	{
 		advancedfx::PlayerRepair::Range range;
@@ -3811,12 +3856,9 @@ static void DrawPlayerRepairEditor(int playhead)
 		range.Smooth = ui.Smooth;
 		auto first = model.Samples().lower_bound(range.First);
 		ui.Status = first != model.Samples().end() && first->first <= range.Last && model.Exclude(range)
-		                ? "Excluded. Rewind before this interval to rebuild interpolation."
+		                ? "Marked for repair. Check Ready/Blocked below, then Compare repaired."
 		                : "No recorded sample in range, overlapping channels, or invalid tick range.";
 	}
-	ImGui::SameLine();
-	if (ImGui::Button("Toggle discontinuity at sample"))
-		model.ToggleCut(ui.Tick);
 	if (ImGui::Button("Undo player repair"))
 		model.Undo(false);
 	ImGui::SameLine();
@@ -3829,6 +3871,12 @@ static void DrawPlayerRepairEditor(int playhead)
 	{
 		const auto &r = model.GetEdits().Ranges[i];
 		ImGui::PushID(int(i));
+		if (ImGui::SmallButton("Use for comparison"))
+		{
+			ui.First = r.First;
+			ui.Last = r.Last;
+		}
+		ImGui::SameLine();
 		ImGui::Text("%zu: ticks %d..%d | %s | %s", i, r.First, r.Last,
 		            r.Mask == 7    ? "position"
 		            : r.Mask == 24 ? "eye angles"
@@ -3841,25 +3889,59 @@ static void DrawPlayerRepairEditor(int playhead)
 			ImGui::PopID();
 			break;
 		}
-		if (ui.RangeReady[i] != r.Mask)
-			ImGui::TextWrapped("%s", ui.RangeReports[i].c_str());
+		ImGui::TextWrapped("%s", ui.RangeReports[i].c_str());
 		ImGui::PopID();
 	}
-	ImGui::EndDisabled();
-	if (ImGui::Button("Compare original from before range"))
+	if (ImGui::CollapsingHeader("Advanced repair boundaries"))
 	{
-		MirvFix_PlayerRepairEnable(false);
-		Afx_GotoDemoTick((std::max)(0, ui.First - 66));
+		ImGui::TextWrapped("A discontinuity protects a real teleport or other intentional jump. "
+		                   "It BLOCKS repair across that tick; it does not exclude a bad sample.");
+		ImGui::SetNextItemWidth(120);
+		ImGui::InputInt("Maximum bridge (ticks)", &model.MaxBridgeTicks);
+		model.MaxBridgeTicks = (std::clamp)(model.MaxBridgeTicks, 1, 100000);
+		ImGui::Text("Boundary tick: %d (Inspect sample tick above)", ui.Tick);
+		if (ImGui::Button("Toggle discontinuity at sample"))
+			model.ToggleCut(ui.Tick);
+		for (int cut : model.GetEdits().Cuts)
+		{
+			ImGui::PushID(cut);
+			ImGui::Text("Protected discontinuity at tick %d", cut);
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Remove boundary"))
+			{
+				model.ToggleCut(cut);
+				ImGui::PopID();
+				break;
+			}
+			ImGui::PopID();
+		}
 	}
+	ImGui::EndDisabled();
+	ImGui::Separator();
+	ImGui::TextUnformatted("3. Compare during playback");
+	if (auto range = PlayerRepairComparisonRange())
+		ImGui::Text("Comparison: ticks %d..%d (starts 66 ticks earlier)", range->First, range->Last);
+	ImGui::TextWrapped("Comparison seeks before the marked range and plays automatically. "
+	                   "Use the same view of the sampled player for both versions.");
+	bool enabled = MirvFix_PlayerRepairEnabled();
+	if (ImGui::Checkbox("Apply marked player repairs", &enabled))
+		MirvFix_PlayerRepairEnable(enabled);
+	ImGui::Text("Repair: %s | %llu substituted updates | %llu actually changed",
+	            MirvFix_PlayerRepairEnabled() ? "ON" : "OFF", MirvFix_PlayerRepairWrites(),
+	            MirvFix_PlayerRepairChanged());
+	if (MirvFix_PlayerRepairEnabled() && !MirvFix_PlayerRepairWrites())
+		ImGui::TextWrapped(
+		    "No repair updates received yet. Replay the marked interval with the sampled player present.");
+	if (MirvFix_PlayerRepairEnabled() && MirvFix_PlayerRepairWrites() && !MirvFix_PlayerRepairChanged())
+		ImGui::TextWrapped("Replacements so far equal the original values. No numeric repair effect yet.");
+	if (ImGui::Button("Compare original from before range"))
+		ComparePlayerRepair(false);
 	ImGui::SameLine();
 	if (ImGui::Button("Compare repaired from before range"))
-	{
-		if (MirvFix_PlayerRepairEnable(true))
-			Afx_GotoDemoTick((std::max)(0, ui.First - 66));
-	}
-	ImGui::TextWrapped("After either comparison seek, press Play. Seek before the interval after every "
-	                   "edit/toggle. Missing anchors, life-state boundaries, manual cuts and excessive gaps "
-	                   "keep the original value. Animation sequences and bone poses are not repaired.");
+		ComparePlayerRepair(true);
+	ImGui::TextWrapped("Changing marks or switching repair ON/OFF does not rebuild past movement. "
+	                   "Compare again after each edit. Changed updates confirm numeric substitution, "
+	                   "not the quality of the rendered result.");
 	if (!ui.Status.empty())
 		ImGui::TextWrapped("%s", ui.Status.c_str());
 	ImGui::EndTabItem();
