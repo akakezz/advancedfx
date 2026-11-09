@@ -160,7 +160,11 @@ private:
 	bool OverrideFromString(const char * value, Override & outOverride);
 };
 
-// TF2 demo interpolation repair, shared by the console and overlay.
+// TF2 demo controls, shared by the console and overlay.
+bool MirvFix_GetRecorderSoundMute();
+bool MirvFix_SetRecorderSoundMute(bool enabled);
+const char *MirvFix_RecorderSoundStatus();
+void MirvFix_RecorderSoundUpdate();
 bool MirvFix_PlayerInterpolationAvailable();
 double MirvFix_GetPlayerInterpolation();
 bool MirvFix_SetPlayerInterpolation(double seconds);

@@ -5,6 +5,8 @@
 #include <shared/StringTools.h>
 
 #include <SourceInterfaces.h>
+#include <l4d2/sdk_src/public/tier0/memalloc.h>
+extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 
 #include "RenderView.h"
 #include "MirvTime.h"
@@ -4203,6 +4205,196 @@ void New_HostError(const char * fmt, ...) {
 	va_end(args);
 }
 
+// TF2 POV recorder sound mute. IEngineSoundClient003 and SndInfo_t from
+// Valve's public SDK. No mixer replacement or sound-position changes.
+namespace
+{
+struct Tf2ActiveSound
+{
+	int Guid;
+	void *Filename;
+	int Source, Channel, Speaker;
+	float Volume, LastSpatializedVolume, Radius;
+	int Pitch;
+	void *Origin, *Direction;
+	bool UpdatePositions, Sentence, DryMix, IsSpeaker, SpecialDsp, FromServer;
+};
+// CUtlVector<SndInfo_t> ABI. The engine grows this buffer using tier0's
+// allocator; release it through that same allocator, never our CRT.
+struct Tf2ActiveSoundList
+{
+	Tf2ActiveSound *Memory = nullptr;
+	int Capacity = 0, GrowSize = 0, Size = 0;
+	Tf2ActiveSound *Elements = nullptr;
+};
+static_assert(sizeof(Tf2ActiveSound) == (sizeof(void *) == 8 ? 72 : 52), "SndInfo_t ABI");
+static_assert(offsetof(Tf2ActiveSound, Origin) == (sizeof(void *) == 8 ? 48 : 36), "SndInfo_t ABI");
+static_assert(offsetof(Tf2ActiveSoundList, Size) == (sizeof(void *) == 8 ? 16 : 12), "CUtlVector ABI");
+static_assert(sizeof(Tf2ActiveSoundList) == (sizeof(void *) == 8 ? 32 : 20), "CUtlVector ABI");
+struct Tf2MutedSound
+{
+	void *Filename;
+	int Source;
+	float Volume;
+};
+bool g_Tf2RecorderSoundMute = false;
+void *g_Tf2RecorderSound = nullptr;
+Tf2ActiveSoundList g_Tf2RecorderSoundList;
+std::map<int, Tf2MutedSound> g_Tf2MutedSounds;
+const char *g_Tf2RecorderSoundStatus = "Disabled.";
+
+bool Tf2RecorderSoundPov()
+{
+	return (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified) &&
+	       g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV() &&
+	       !g_VEngineClient->IsDrawingLoadingImage() && g_VEngineClient->GetLocalPlayer() > 0;
+}
+bool Tf2RecorderSoundQuery()
+{
+	if (!g_Tf2RecorderSound)
+		return false;
+	// GetActiveSounds appends; retain capacity but discard the previous snapshot.
+	g_Tf2RecorderSoundList.Size = 0;
+	using Query = void(__thiscall *)(void *, Tf2ActiveSoundList &);
+	reinterpret_cast<Query>((*static_cast<void ***>(g_Tf2RecorderSound))[17])(g_Tf2RecorderSound,
+	                                                                          g_Tf2RecorderSoundList);
+	return g_Tf2RecorderSoundList.Size >= 0 &&
+	       g_Tf2RecorderSoundList.Size <= g_Tf2RecorderSoundList.Capacity &&
+	       (!g_Tf2RecorderSoundList.Size || g_Tf2RecorderSoundList.Memory);
+}
+void Tf2RecorderSoundVolume(int guid, float volume)
+{
+	using SetVolume = void(__thiscall *)(void *, int, float);
+	reinterpret_cast<SetVolume>((*static_cast<void ***>(g_Tf2RecorderSound))[16])(g_Tf2RecorderSound, guid,
+	                                                                              volume);
+}
+void Tf2RecorderSoundRestore(const Tf2ActiveSound &sound)
+{
+	auto found = g_Tf2MutedSounds.find(sound.Guid);
+	if (found != g_Tf2MutedSounds.end() && found->second.Source == sound.Source &&
+	    found->second.Filename == sound.Filename && sound.Volume == 0)
+		Tf2RecorderSoundVolume(sound.Guid, found->second.Volume);
+}
+} // namespace
+bool MirvFix_GetRecorderSoundMute()
+{
+	return g_Tf2RecorderSoundMute;
+}
+const char *MirvFix_RecorderSoundStatus()
+{
+	return g_Tf2RecorderSoundStatus;
+}
+bool MirvFix_SetRecorderSoundMute(bool enabled)
+{
+	if (!enabled)
+	{
+		if (Tf2RecorderSoundQuery())
+			for (int i = 0; i < g_Tf2RecorderSoundList.Size; ++i)
+				Tf2RecorderSoundRestore(g_Tf2RecorderSoundList.Memory[i]);
+		g_Tf2MutedSounds.clear();
+		if (g_Tf2RecorderSoundList.Memory && SOURCESDK::L4D2::g_pMemAlloc)
+			SOURCESDK::L4D2::g_pMemAlloc->Free(g_Tf2RecorderSoundList.Memory);
+		g_Tf2RecorderSoundList = {};
+		g_Tf2RecorderSound = nullptr;
+		g_Tf2RecorderSoundMute = false;
+		g_Tf2RecorderSoundStatus = "Disabled; restored volumes of surviving sounds still owned by the mute.";
+		return true;
+	}
+	if (g_Tf2RecorderSoundMute)
+		return true;
+	if (!Tf2RecorderSoundPov() || !SOURCESDK::L4D2::g_pMemAlloc || !CClientToolsTf2::Instance() ||
+	    !CClientToolsTf2::Instance()->GetClientTools())
+	{
+		g_Tf2RecorderSoundStatus = "Requires a playing TF2/TF2C POV demo and native client tools/allocator.";
+		return false;
+	}
+	if (!g_AppSystemFactory || !(g_Tf2RecorderSound = g_AppSystemFactory("IEngineSoundClient003", nullptr)))
+	{
+		g_Tf2RecorderSoundStatus = "IEngineSoundClient003 is unavailable.";
+		return false;
+	}
+	g_Tf2RecorderSoundMute = true;
+	g_Tf2RecorderSoundStatus = "Enabled. Active recorder/owned-entity sounds are muted each frame.";
+	MirvFix_RecorderSoundUpdate();
+	return g_Tf2RecorderSoundMute;
+}
+void MirvFix_RecorderSoundUpdate()
+{
+	if (!g_Tf2RecorderSoundMute)
+		return;
+	// A backward seek may temporarily leave playback while the loading image is up.
+	if (g_VEngineClient && g_VEngineClient->IsDrawingLoadingImage())
+		return;
+	if (!Tf2RecorderSoundPov())
+	{
+		MirvFix_SetRecorderSoundMute(false);
+		return;
+	}
+	if (!Tf2RecorderSoundQuery())
+	{
+		MirvFix_SetRecorderSoundMute(false);
+		g_Tf2RecorderSoundStatus = "Active sound query failed; mute disabled.";
+		return;
+	}
+	auto *tools = CClientToolsTf2::Instance() ? CClientToolsTf2::Instance()->GetClientTools() : nullptr;
+	if (!tools)
+	{
+		MirvFix_SetRecorderSoundMute(false);
+		g_Tf2RecorderSoundStatus = "Client tools unavailable; mute disabled.";
+		return;
+	}
+	const int recorder = g_VEngineClient->GetLocalPlayer();
+	std::set<int> sources, owned{-1, recorder}; // SDK SOUND_FROM_LOCAL_PLAYER = -1.
+	for (int i = 0; i < g_Tf2RecorderSoundList.Size; ++i)
+		if (g_Tf2RecorderSoundList.Memory[i].Source > 0 &&
+		    g_Tf2RecorderSoundList.Memory[i].Source != recorder)
+			sources.insert(g_Tf2RecorderSoundList.Memory[i].Source);
+	// Reuse the tools ownership traversal: weapon/viewmodel sounds need not
+	// carry the recorder's own entity index. Never infer ownership by classname.
+	int count = 0;
+	for (auto entity = tools->FirstEntity(); entity && !sources.empty() && count++ < 8192;
+	     entity = tools->NextEntity(entity))
+	{
+		const int index = tools->GetEntIndex(entity);
+		if (!sources.erase(index))
+			continue;
+		auto owner = entity;
+		for (int depth = 0; depth < 16 && owner; ++depth)
+		{
+			if (tools->GetEntIndex(owner) == recorder)
+			{
+				owned.insert(index);
+				break;
+			}
+			owner = tools->GetOwnerEntity(owner);
+		}
+	}
+	std::map<int, Tf2MutedSound> active;
+	for (int i = 0; i < g_Tf2RecorderSoundList.Size; ++i)
+	{
+		const auto &sound = g_Tf2RecorderSoundList.Memory[i];
+		// SDK CHAN_VOICE_BASE..CHAN_USER_BASE-1 belongs to microphone voice chat,
+		// unlike character speech on CHAN_VOICE / CHAN_VOICE2.
+		const bool microphone = sound.Channel >= 8 && sound.Channel < 136;
+		if (microphone || !owned.count(sound.Source) || !std::isfinite(sound.Volume) || sound.Volume < 0 ||
+		    sound.Volume > 1)
+		{
+			Tf2RecorderSoundRestore(sound);
+			continue;
+		}
+		float original = sound.Volume;
+		auto previous = g_Tf2MutedSounds.find(sound.Guid);
+		if (sound.Volume == 0 && previous != g_Tf2MutedSounds.end() &&
+		    previous->second.Source == sound.Source && previous->second.Filename == sound.Filename)
+			original = previous->second.Volume;
+		active.emplace(sound.Guid, Tf2MutedSound{sound.Filename, sound.Source, original});
+		if (sound.Volume != 0)
+			Tf2RecorderSoundVolume(sound.Guid, 0);
+	}
+	g_Tf2MutedSounds.swap(active); // Drop finished sounds and reused identities.
+}
+// End TF2 POV recorder sound mute.
+
 // TF2 demo interpolation controls. Reuse the registered engine cvar interfaces;
 // WrpConVarRef currently wraps only CS:GO's encoded ConVar representation.
 namespace
@@ -4301,6 +4493,11 @@ bool MirvFix_SetPlayerInterpolation(double seconds)
 }
 void MirvFix_Update()
 {
+	// FRAME_START also runs when there is no rendered world. Release audio
+	// ownership here; query/mute after network updates at FRAME_RENDER_START.
+	if (g_Tf2RecorderSoundMute && (!g_VEngineClient || !g_VEngineClient->IsDrawingLoadingImage()) &&
+		!Tf2RecorderSoundPov())
+		MirvFix_SetRecorderSoundMute(false);
 	if (!g_Tf2InterpolationActive)
 		return;
 	// Backward seeking reloads the demo. A temporary !IsPlayingDemo during
@@ -5742,6 +5939,23 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	if (2 <= argc)
 	{
 		char const * cmd1 = args->ArgV(1);
+		// TF2 recorder sound command.
+		if (!_stricmp(cmd1, "recorderSounds"))
+		{
+			if (argc == 3 && (!std::strcmp(args->ArgV(2), "0") || !std::strcmp(args->ArgV(2), "1")))
+			{
+				if (!MirvFix_SetRecorderSoundMute(!std::strcmp(args->ArgV(2), "0")))
+					Tier0_Warning("Recorder sound mute could not be enabled.\n");
+			}
+			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
+				Tier0_Warning("Usage: mirv_fix recorderSounds 0|1|status (0 mutes, 1 restores)\n");
+			Tier0_Msg("Recorder sounds: %s; active muted sounds %zu. %s\n",
+				MirvFix_GetRecorderSoundMute() ? "muted" : "normal", g_Tf2MutedSounds.size(),
+				MirvFix_RecorderSoundStatus());
+			Tier0_Msg("POV demos only. Active sounds are checked each frame; short sound onsets may still be audible.\n");
+			return;
+		}
+		// End TF2 recorder sound command.
 		// TF2 POV deathcam command.
 		if (!_stricmp(cmd1, "povDeathcam"))
 		{
@@ -6237,6 +6451,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 #endif // #ifndef _WIN64
 	Tier0_Msg("mirv_fix playerRepair [...] - Manual TF2 player sample reconstruction.\n"
         "mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
+			  "mirv_fix recorderSounds [...] - Mute/restore recorder sounds in TF2 POV demos.\n"
 			  "mirv_fix povDeathcam [...] - Suppress recorder death/freeze camera in TF2 POV demos.\n"
 			  "mirv_fix panoramaTiming [...]\n");
 	if(AFXADDR_GET(engine_HostError)) Tier0_Msg(

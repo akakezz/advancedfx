@@ -35,6 +35,11 @@ preamble=r'''
 #include "shared/PlayerRepair.h"
 void MirvFix_PlayerRepairNewDemo(const char*);
 void MirvFix_PlayerAngleTraceEnd();
+bool MirvFix_GetRecorderSoundMute(){return false;}
+bool MirvFix_SetRecorderSoundMute(bool b){return !b;}
+const char*MirvFix_RecorderSoundStatus(){return "Unavailable in UI harness";}
+void MirvFix_RecorderSoundUpdate(){}
+bool g_Tf2RecorderSoundMute=false;bool Tf2RecorderSoundPov(){return false;}
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 #include "imgui_internal.h"

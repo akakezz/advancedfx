@@ -1372,3 +1372,31 @@ Selection changes keep trajectory and distance caches intact; the drawer updates
 selection colors without resampling geometry. Minimum-jerk curves use a cached
 banded solve rather than solving again on each evaluation. GPU performance and
 high-frequency world-path drawing still require measurement in TF2.
+
+## POV recorder sound mute
+
+In the Campath tab, open **Demo fixes** and enable **Mute recorder sounds**.
+Console equivalents:
+
+```text
+mirv_fix recorderSounds 0
+mirv_fix recorderSounds status
+mirv_fix recorderSounds 1
+```
+
+`0` mutes and `1` restores normal recorder audio. This is off by default and
+requires a playing TF2/TF2C POV demo. It mutes active sounds attributed to the
+recorder, the SDK's local-player sound source, and entities whose ownership chain
+leads to the recorder (such as weapons). Other players, world sounds and UI audio
+with other emitters retain their volumes. It does not reposition sounds, change
+the global mixer, mute microphone voice chat, or modify the demo file. Sounds
+recorded as world/UI emitters cannot reliably be attributed to the recorder.
+
+The engine's active-sound interface is checked once per client frame. A short
+onset can reach the audio device before that check; this is not a sample-accurate
+sound filter. Please test voice lines, firing and footsteps in your POV demo.
+Disabling restores the previous volumes of surviving sounds still owned by the
+mute, including loops. Native volume changes observed while muted become the new
+restore values. Finished sounds are discarded. Ending playback or entering STV
+playback disables the mute; loading during a backward seek temporarily suspends
+checks. It is not saved as a persistent overlay preference.

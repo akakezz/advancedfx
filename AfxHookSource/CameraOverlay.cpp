@@ -4578,6 +4578,13 @@ void Draw()
 
 			if (ImGui::CollapsingHeader("Demo fixes"))
 			{
+				bool muteRecorder = MirvFix_GetRecorderSoundMute();
+				if (ImGui::Checkbox("Mute recorder sounds", &muteRecorder) &&
+					!MirvFix_SetRecorderSoundMute(muteRecorder))
+					g_DocumentStatus = MirvFix_RecorderSoundStatus();
+				ImGui::TextWrapped("TF2/TF2C POV demos only. Mutes active sounds from the recorder and owned "
+					"entities, including weapons. Short sound onsets may still be audible. "
+					"Disabling restores surviving sounds; ending playback disables the mute.");
 				bool deathcam = MirvFix_GetPovDeathcam();
 				if (ImGui::Checkbox("Suppress POV deathcam", &deathcam) && g_VEngineClient)
 					g_VEngineClient->ClientCmd_Unrestricted(deathcam ? "mirv_fix povDeathcam 1" : "mirv_fix povDeathcam 0");
