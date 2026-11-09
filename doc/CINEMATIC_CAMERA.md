@@ -283,6 +283,22 @@ life-state boundaries, manual cuts, or bridges longer than **Maximum bridge
 these boundaries draw in purple. **Undo player repair** and **Redo player
 repair** cover exclusions and manual cuts separately from camera-path history.
 
+Exclusions are red when the selected channels have a usable reconstruction and
+amber when they are blocked or partly blocked. Hover a span or inspect its list
+entry for the exact anchor ticks and reason. Readiness checks are cached until
+the sample history, edits or bridge limit changes. A ready bridge still needs
+**Apply marked player repairs** or **Compare repaired from before range**, then
+playback through the interval. The `writes` counter confirms receive callbacks
+were substituted; it does not measure visual improvement.
+
+A life-state rejection identifies the first recorded sample in the new epoch;
+split or narrow the exclusion rather than bridging a death/respawn. Manual cuts
+identify their exact tick. Maximum-bridge rejection reports the actual distance
+between the valid anchors, which can be wider than the marked interval itself.
+Enabling repair never bypasses these constraints. Blue sample gaps alone do not
+prove missing data: updates are change-driven and dense points collapse on the
+ruler. This version does not invent packets where no update was received.
+
 The collector is capped at 100,000 original sample ticks. It stores decoded
 changes that were actually observed; it does not invent network messages where
 none existed. Corrected inputs may improve both player rendering and attached

@@ -3447,11 +3447,39 @@ struct RepairEditor
 	bool Smooth = true, Follow = true, Drag = false, DragMoved = false;
 	float DragMouseX = 0;
 	int DragStart = 0;
-	int PendingEntity=-1, PendingUser=0;
+	unsigned long long ReportRevision = ~0ull;
+	int ReportBridge = -1;
+	std::vector<std::string> RangeReports;
+	std::vector<unsigned> RangeReady;
+	int PendingEntity = -1, PendingUser = 0;
 	std::string Status;
 } g_RepairEditor;
+static void UpdatePlayerRepairReports()
+{
+	auto &model = MirvFix_PlayerRepairModel();
+	auto &ui = g_RepairEditor;
+	if (ui.ReportRevision == model.Revision() && ui.ReportBridge == model.MaxBridgeTicks)
+		return;
+	ui.ReportRevision = model.Revision();
+	ui.ReportBridge = model.MaxBridgeTicks;
+	ui.RangeReports.clear();
+	ui.RangeReady.clear();
+	for (const auto &range : model.GetEdits().Ranges)
+	{
+		std::array<double, 5> values{};
+		std::string reason;
+		unsigned ready = model.Evaluate(range.First, values, &reason) & range.Mask;
+		ui.RangeReady.push_back(ready);
+		if (ready == range.Mask)
+			ui.RangeReports.push_back(
+			    "Excluded original samples. Reconstruction ready; enable repair and replay to apply.");
+		else
+			ui.RangeReports.push_back(std::string(ready ? "Partly blocked: " : "Blocked: ") + reason);
+	}
+}
 static void DrawPlayerRepairTrack(int visibleStart, int visibleEnd)
 {
+	UpdatePlayerRepairReports();
 	auto &model = MirvFix_PlayerRepairModel();
 	auto &ui = g_RepairEditor;
 	std::string label = "Player repair";
@@ -3490,8 +3518,14 @@ static void DrawPlayerRepairTrack(int visibleStart, int visibleEnd)
 		if (ImGui::GetActiveID() == dragId)
 			ImGui::ClearActiveID();
 	}
-	for (const auto &r : model.GetEdits().Ranges)
-		ImGui::NeoTimelineSpan(r.First, r.Last, IM_COL32(255, 100, 80, 150), "Excluded original samples");
+	for (size_t i = 0; i < model.GetEdits().Ranges.size(); ++i)
+	{
+		const auto &r = model.GetEdits().Ranges[i];
+		bool ready = ui.RangeReady[i] == r.Mask;
+		ImGui::NeoTimelineSpan(r.First, r.Last,
+		                       ready ? IM_COL32(255, 100, 80, 150) : IM_COL32(255, 190, 50, 190),
+		                       ui.RangeReports[i].c_str());
+	}
 	if (ui.Drag)
 		ImGui::NeoTimelineSpan(ui.First, ui.Last, IM_COL32(255, 220, 80, 140), "Repair selection");
 	for (int cut : model.GetEdits().Cuts)
@@ -3788,6 +3822,9 @@ static void DrawPlayerRepairEditor(int playhead)
 	ImGui::SameLine();
 	if (ImGui::Button("Redo player repair"))
 		model.Undo(true);
+	UpdatePlayerRepairReports();
+	if (!model.GetEdits().Ranges.empty())
+		ImGui::TextDisabled("Amber spans are blocked or partly blocked; hover for anchor details.");
 	for (size_t i = 0; i < model.GetEdits().Ranges.size(); ++i)
 	{
 		const auto &r = model.GetEdits().Ranges[i];
@@ -3804,6 +3841,8 @@ static void DrawPlayerRepairEditor(int playhead)
 			ImGui::PopID();
 			break;
 		}
+		if (ui.RangeReady[i] != r.Mask)
+			ImGui::TextWrapped("%s", ui.RangeReports[i].c_str());
 		ImGui::PopID();
 	}
 	ImGui::EndDisabled();

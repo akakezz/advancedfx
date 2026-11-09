@@ -149,29 +149,62 @@ unsigned PlayerRepair::Evaluate(int tick, std::array<double, 5> &out, std::strin
 				break;
 			}
 		}
+		auto report = [&](const std::string &detail) {
+			if (!reason)
+				return;
+			if (!reason->empty())
+				*reason += "; ";
+			*reason += std::string(mask == Position ? "Position" : "Eye angles") + " [" +
+			           std::to_string(range->First) + ".." + std::to_string(range->Last) + "]: " + detail;
+		};
 		if (!haveLeft || right == m_Samples.end())
 		{
-			if (reason)
-				*reason = "Need valid original samples before and after the excluded range.";
+			std::string detail;
+			if (!haveLeft)
+				detail = "no valid original anchor before tick " + std::to_string(range->First);
+			if (right == m_Samples.end())
+			{
+				if (!detail.empty())
+					detail += " and ";
+				detail += "no valid original anchor after tick " + std::to_string(range->Last);
+			}
+			report(detail);
 			continue;
 		}
-		auto safe = [&](auto a, auto b) {
-			if (a->second.Epoch != b->second.Epoch)
-				return false;
-			auto cut = m_Edits.Cuts.upper_bound(a->first);
-			if (cut != m_Edits.Cuts.end() && *cut <= b->first)
-				return false;
-			// A recorded discontinuity anywhere inside the bridge must survive exclusion.
-			for (auto i = a; i != b; ++i)
+		auto boundary = [&](auto a, auto b) {
+			for (auto i = std::next(a);; ++i)
+			{
 				if (i->second.Epoch != a->second.Epoch)
-					return false;
-			return true;
+					return i;
+				if (i == b)
+					return m_Samples.end();
+			}
+		};
+		auto safe = [&](auto a, auto b) {
+			auto cut = m_Edits.Cuts.upper_bound(a->first);
+			return (cut == m_Edits.Cuts.end() || *cut > b->first) && boundary(a, b) == m_Samples.end();
 		};
 		const double h = double(right->first) - left->first;
-		if (h > MaxBridgeTicks || !safe(left, right))
+		const std::string anchors =
+		    "anchors " + std::to_string(left->first) + " -> " + std::to_string(right->first);
+		if (h > MaxBridgeTicks)
 		{
-			if (reason)
-				*reason = "Bridge crosses a life-state boundary, manual cut, or maximum bridge length.";
+			report("anchor gap " + std::to_string(right->first - left->first) + " ticks (" + anchors +
+			       ") exceeds maximum " + std::to_string(MaxBridgeTicks));
+			continue;
+		}
+		auto cut = m_Edits.Cuts.upper_bound(left->first);
+		if (cut != m_Edits.Cuts.end() && *cut <= right->first)
+		{
+			report("manual cut at tick " + std::to_string(*cut) + " blocks " + anchors);
+			continue;
+		}
+		auto life = boundary(left, right);
+		if (life != m_Samples.end())
+		{
+			report("recorded life-state boundary at sample tick " + std::to_string(life->first) + " (epoch " +
+			       std::to_string(left->second.Epoch) + " -> " + std::to_string(life->second.Epoch) +
+			       ") blocks " + anchors);
 			continue;
 		}
 		auto before = left, after = right;

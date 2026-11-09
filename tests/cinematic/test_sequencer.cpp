@@ -230,19 +230,38 @@ void Repair(const std::filesystem::path &dir)
 	      "Reconstruction bridges positions and wrapped angles without a revolution");
 	Check(!model.Evaluate(14, value), "Unmarked ticks are untouched");
 	Check(!model.Exclude(range), "Overlapping channel exclusions reject");
-	Check(model.ToggleCut(16) && !model.Evaluate(15, value),
+	std::string reason;
+	Check(model.ToggleCut(16) && !model.Evaluate(15, value, &reason),
 	      "A manual cut blocks reconstruction across a real discontinuity");
+	Check(reason.find("manual cut at tick 16") != std::string::npos &&
+	          reason.find("anchors 10 -> 20") != std::string::npos,
+	      "Manual-cut rejection identifies the cut and both anchors");
 	Check(model.Undo(false) && model.Evaluate(15, value), "Cut removal undoes atomically");
 	Check(model.Undo(true) && !model.Evaluate(15, value), "Manual boundaries redo");
 	model.Undo(false);
 	auto edited = model.Samples().at(20);
 	edited.Epoch = 1;
 	model.Observe(20, edited);
-	Check(!model.Evaluate(15, value), "Life-state boundaries cannot be interpolated away");
+	Check(!model.Evaluate(15, value, &reason), "Life-state boundaries cannot be interpolated away");
+	Check(reason.find("boundary at sample tick 20") != std::string::npos &&
+	          reason.find("epoch 0 -> 1") != std::string::npos,
+	      "Life-state rejection identifies the observed boundary and epochs");
 	edited.Epoch = 0;
 	model.Observe(20, edited);
 	model.MaxBridgeTicks = 5;
-	Check(!model.Evaluate(15, value), "Large untrusted gaps are rejected");
+	Check(!model.Evaluate(15, value, &reason), "Large untrusted gaps are rejected");
+	Check(reason.find("anchor gap 10 ticks") != std::string::npos &&
+	          reason.find("maximum 5") != std::string::npos,
+	      "Gap rejection reports actual anchor separation and configured limit");
+	model.ToggleCut(16);
+	model.Evaluate(15, value, &reason);
+	Check(reason.find("maximum 5") != std::string::npos,
+	      "An excessive bridge reports its gap before evaluating discontinuities");
+	model.MaxBridgeTicks = 330;
+	model.Evaluate(15, value, &reason);
+	Check(reason.find("manual cut at tick 16") != std::string::npos,
+	      "Raising the bridge limit does not bypass a manual cut");
+	model.Undo(false);
 	model.MaxBridgeTicks = 330;
 	auto xml = dir / "repair.xml";
 	Check(model.Save(xml.wstring().c_str()), "Repair sidecar saves original samples and marks");
@@ -526,9 +545,14 @@ int main(int argc, char **argv)
 	{
 		std::filesystem::create_directories(dir);
 		Scheduler(dir);
-        Check(advancedfx::DemoTimeline::SameMap("maps/CP_Gullywash.bsp","cp_gullywash"),"Map identities normalize the engine prefix and BSP extension");
-        Check(advancedfx::DemoTimeline::SameMap("C:\\tf\\maps\\workshop\\cp_process.ugc123.BSP","workshop/cp_process.ugc123"),"Workshop map identities retain their UGC suffix");
-        Check(!advancedfx::DemoTimeline::SameMap("maps/workshop/cp_process.ugc123.bsp","workshop/cp_process.ugc456"),"Different workshop versions cannot match");
+		Check(advancedfx::DemoTimeline::SameMap("maps/CP_Gullywash.bsp", "cp_gullywash"),
+		      "Map identities normalize the engine prefix and BSP extension");
+		Check(advancedfx::DemoTimeline::SameMap("C:\\tf\\maps\\workshop\\cp_process.ugc123.BSP",
+		                                        "workshop/cp_process.ugc123"),
+		      "Workshop map identities retain their UGC suffix");
+		Check(!advancedfx::DemoTimeline::SameMap("maps/workshop/cp_process.ugc123.bsp",
+		                                         "workshop/cp_process.ugc456"),
+		      "Different workshop versions cannot match");
 		Indexing(dir);
 		Repair(dir);
 		for (int i = 1; i < argc; ++i)
