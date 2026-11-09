@@ -383,12 +383,12 @@ orientation. Pose values are normalized slots; model metadata supplies their
 names and ranges when available.
 
 The file ends with `coverage` counts and `summary` rows, including capture
-status, requested ticks, matrix-row count and dropped bone records. Statuses
-are `ok`, `unavailable`, `unobserved`, `invalid_layout`, `inactive_layer`,
+status, requested ticks, resolved layer-field count, matrix-row count and dropped
+bone records. Statuses are `ok`, `unavailable`, `unobserved`, `invalid_layout`, `inactive_layer`,
 `nonfinite` and `masked_out`. Masked-out matrices may be stale; the call mask
 and model bone flags explain which output was requested. Blank values are
-unavailable, never implicit zeroes. Begin reports resolved pose slots and bone
-observer availability; the UI reports actual pose/matrix coverage afterward.
+unavailable, never implicit zeroes. Begin reports resolved pose slots, layer
+fields and bone observer availability; the UI reports actual pose/matrix coverage afterward.
 
 No file I/O runs during capture; export happens after stopping. Storage is
 capped at 250,000 rows and the worker queue at 16 calls. Overflow is counted;
@@ -396,6 +396,23 @@ more than eight model generations stops the capture with an explicit message.
 A rewind clears rows, counts and remembered bindings to avoid mixing passes.
 Opening another demo or leaving playback stops capture. The UI's tick-zero
 replay captures initial state; the console entry point only arms recording.
+
+Layer discovery follows Valve's `DT_BaseAnimatingOverlay -> overlay_vars ->
+DT_OverlayVars -> m_AnimOverlay` wrapper before inspecting the vector metadata.
+The SDK reference is [c_baseanimatingoverlay.cpp](https://github.com/ValveSoftware/source-sdk-2013/blob/master/src/game/client/c_baseanimatingoverlay.cpp).
+A zero `layer_fields_resolved` is missing layer coverage, not evidence that the
+player has no active animation layers.
+
+For a focused investigation of blending itself, Valve also supplies
+`r_sequence_debug <entity index>`. In the public SDK its output includes the
+base sequence, transition queue, and accumulated overlay cycles/weights, which
+can supplement the stage snapshots. For the same diagnostic pass, note the
+previous values of `developer`, `r_sequence_debug`, and `con_logfile`, enable
+`developer 1`, set `r_sequence_debug` to the selected entity index, and set
+`con_logfile` to a new filename. After capture, restore the previous values.
+This native log is separate from the CSV and may add console/file overhead; it
+is optional and is never enabled automatically by HLAE. The public reference
+explains the intended behavior; available output can differ in shipped builds.
 
 This is diagnostic coverage, not an animation fix. Fields missing from public
 receive/model metadata remain unavailable, and private animation-state internals

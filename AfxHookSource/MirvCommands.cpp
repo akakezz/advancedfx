@@ -4686,7 +4686,7 @@ static void AngleTraceDiscover(Tf2FixRecvTable *table, int offset, std::vector<A
 		}
 		else if (p.Type == 6 &&
 		         (n == "baseclass" || n == "serveranimdata" || n == "tflocaldata" || n == "tfnonlocaldata" ||
-		          n == "localdata" || n == "m_Local" || n == "m_Shared"))
+		          n == "localdata" || n == "m_Local" || n == "m_Shared" || n == "overlay_vars"))
 			AngleTraceDiscover(p.Table, at, out, path, depth + 1);
 		else
 		{
@@ -5422,11 +5422,14 @@ bool MirvFix_PlayerAngleTraceBegin(int entity, int first, int last)
 	bool bones = Mirv_Tf2_DiagnosticBoneConfigure(entity, generation) > 0;
 	Mirv_Tf2_DiagnosticBoneStop();
 	t.DroppedStart = Mirv_Tf2_DiagnosticBoneDropped();
-	int poses = 0;
+	int poses = 0, layers = 0;
 	for (int id : t.MetadataIds)
 		poses += id >= 2 && id < 26;
+	for (const auto &field : t.Metadata)
+		layers += field.VectorOffset >= 0;
 	t.Status = "Recording ORIGINAL playback; repair is OFF. Preflight: " + std::to_string(poses) +
-	           " live pose slots; bone observer " + (bones ? "available" : "unavailable") +
+	           " live pose slots; " + std::to_string(layers) + " layer fields; bone observer " +
+	           (bones ? "available" : "unavailable") +
 	           ". Waiting for the capture interval.";
 	return true;
 }
@@ -5715,6 +5718,9 @@ bool MirvFix_PlayerAngleTraceSave(const wchar_t *file)
 		};
 		summary("capture_first_tick", t.First);
 		summary("capture_last_tick", t.Last);
+		unsigned layerFields = 0;
+		for (const auto &field : t.Metadata) layerFields += field.VectorOffset >= 0;
+		summary("layer_fields_resolved", layerFields);
 		summary("bone_matrix_rows", t.BoneRows);
 		summary("bone_queue_dropped_total", Mirv_Tf2_DiagnosticBoneDropped() - t.DroppedStart);
 		summary("capture_status=" + t.Status, 1);
