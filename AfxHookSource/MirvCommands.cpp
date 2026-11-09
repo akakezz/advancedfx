@@ -40,6 +40,8 @@
 #include <climits>
 #include <cerrno>
 #include <stdexcept>
+#include <locale>
+#include <limits>
 #include "../shared/CommandSystem.h"
 extern CommandSystem g_CommandSystem;
 #include <shared/binutils.h>
@@ -4524,6 +4526,8 @@ struct RepairProperty
 {
 	int First = 0, Count = 0;
 	bool Life = false;
+	int Pose = -1;
+	bool PoseArray = false;
 };
 struct RepairProxySlot
 {
@@ -4543,6 +4547,101 @@ int g_RepairEvaluationTick = -1, g_RepairEvaluationBridge = 0;
 uint64_t g_RepairEvaluationRevision = 0;
 std::array<double, 5> g_RepairEvaluated{};
 unsigned g_RepairEvaluationMask = 0;
+// Short, opt-in diagnostic. This observes existing receive/render stages and
+// never calls SetupBones or substitutes values of its own.
+struct PlayerAngleTrace
+{
+	struct Row
+	{
+		int Tick, Frame, Stage, Field;
+		double Time;
+		float Value;
+		bool Repair;
+	};
+	bool Active = false;
+	int Entity = -1, User = 0, First = 0, Last = 0, LastTick = -1;
+	const void *Object = nullptr;
+	std::array<int, 26> Offsets;
+	std::array<const void *, 26> Objects{};
+	std::vector<Row> Rows;
+	std::string Demo, Status = "No angle diagnostic recorded.";
+	PlayerAngleTrace()
+	{
+		Offsets.fill(-1);
+	}
+} g_PlayerAngleTrace;
+static bool AngleTraceTarget(int entity)
+{
+	auto &t = g_PlayerAngleTrace;
+	if (!t.Active || entity != t.Entity || t.Demo != g_RepairDemo)
+		return false;
+	int user = 0;
+	char name[64];
+	return Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user) && user == t.User;
+}
+static void AngleTraceTick(int tick)
+{
+	auto &t = g_PlayerAngleTrace;
+	if (t.LastTick >= 0 && tick < t.LastTick)
+	{
+		t.Rows.clear();
+		t.Object = nullptr;
+		t.Offsets.fill(-1);
+		t.Objects.fill(nullptr);
+		t.Status = "Angle diagnostic restarted after rewind; waiting for the capture interval.";
+	}
+	t.LastTick = tick;
+	if (tick > t.Last)
+	{
+		t.Active = false;
+		t.Status = "Angle diagnostic complete. Save CSV to inspect the receive and render stages.";
+	}
+}
+static void AngleTraceAppend(int tick, int stage, int field, float value)
+{
+	auto &t = g_PlayerAngleTrace;
+	if (!t.Active || tick < t.First || tick > t.Last)
+		return;
+	if (t.Rows.size() >= 50000)
+	{
+		t.Active = false;
+		t.Status = "Angle diagnostic stopped at the 50,000-row limit; save CSV.";
+		return;
+	}
+	auto gl = g_Hook_VClient_RenderView.GetGlobals();
+	t.Rows.push_back({tick, gl ? gl->framecount_get() : -1, stage, field, gl ? gl->curtime_get() : 0, value,
+	                  g_RepairEnabled});
+}
+static void AngleTraceReceive(const RepairProperty &spec, const Tf2FixProxyData *raw,
+                              const Tf2FixProxyData *forwarded, void *object, void *out, int tick)
+{
+	auto &t = g_PlayerAngleTrace;
+	if (!t.Active || spec.Life || !out)
+		return;
+	int pose = spec.Pose;
+	if (spec.PoseArray)
+		pose += raw->Element;
+	for (int c = 0; c < spec.Count; ++c)
+	{
+		int field = pose >= 0 ? 2 + pose : spec.First + c - 3;
+		if ((pose < 0 && (spec.First + c < 3 || spec.First + c > 4)) || field < 0 || field >= 26)
+			continue;
+		float value;
+		std::memcpy(&value, static_cast<const char *>(out) + c * sizeof(float), sizeof(value));
+		AngleTraceAppend(tick, 0, field, spec.Count == 1 ? raw->Value.Float : raw->Value.Vector[c]);
+		AngleTraceAppend(tick, 1, field,
+		                 spec.Count == 1 ? forwarded->Value.Float : forwarded->Value.Vector[c]);
+		AngleTraceAppend(tick, 2, field, value);
+		auto base = reinterpret_cast<uintptr_t>(object), address = reinterpret_cast<uintptr_t>(out);
+		if (object && address >= base && address - base <= 65536 - sizeof(float) * spec.Count)
+		{
+			if (field < 2)
+				t.Object = object;
+			t.Objects[field] = object;
+			t.Offsets[field] = int(address - base) + c * sizeof(float);
+		}
+	}
+}
 void RepairFlush()
 {
 	if (g_RepairCollect && g_RepairTick >= 0 && g_RepairRaw.Mask)
@@ -4560,8 +4659,9 @@ void RepairReceive(unsigned slot, const Tf2FixProxyData *data, void *object, voi
 {
 	auto original = g_RepairProxySlots[slot].Original;
 	auto property = data ? g_RepairProperties.find(data->Prop) : g_RepairProperties.end();
-	if ((!g_RepairCollect && !g_RepairEnabled) || property == g_RepairProperties.end() || !g_VEngineClient ||
-	    !g_VEngineClient->IsPlayingDemo() || data->ObjectId != g_RepairEntity ||
+	if ((!g_RepairCollect && !g_RepairEnabled && !g_PlayerAngleTrace.Active) ||
+	    property == g_RepairProperties.end() || (property->second.Pose >= 0 && !g_PlayerAngleTrace.Active) ||
+	    !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
 	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified))
 	{
 		original(data, object, out);
@@ -4569,14 +4669,25 @@ void RepairReceive(unsigned slot, const Tf2FixProxyData *data, void *object, voi
 	}
 	int user = 0, tick = -1;
 	char name[64];
-	if (!Mirv_Tf2_GetPlayerInfo(g_RepairEntity, name, sizeof(name), &user) || user != g_PlayerRepair.UserId ||
-	    g_PlayerRepair.Demo != g_RepairDemo || !GetCurrentDemoTick(tick))
+	bool repairTarget = property->second.Pose < 0 && (g_RepairCollect || g_RepairEnabled) &&
+	                    data->ObjectId == g_RepairEntity && g_PlayerRepair.Demo == g_RepairDemo &&
+	                    Mirv_Tf2_GetPlayerInfo(g_RepairEntity, name, sizeof(name), &user) &&
+	                    user == g_PlayerRepair.UserId;
+	bool traceTarget = AngleTraceTarget(data->ObjectId);
+	if ((!repairTarget && !traceTarget) || !GetCurrentDemoTick(tick))
 	{
 		original(data, object, out);
 		return;
 	}
 	const auto spec = property->second;
-	if (g_RepairCollect)
+	if (traceTarget)
+		AngleTraceTick(tick);
+	auto forward = [&](const Tf2FixProxyData *value) {
+		original(value, object, out);
+		if (traceTarget)
+			AngleTraceReceive(spec, data, value, object, out, tick);
+	};
+	if (repairTarget && g_RepairCollect && spec.Pose < 0)
 	{
 		if (tick < g_RepairLastTick)
 		{
@@ -4604,7 +4715,7 @@ void RepairReceive(unsigned slot, const Tf2FixProxyData *data, void *object, voi
 				g_RepairRaw.Mask |= 1u << channel;
 			}
 	}
-	if (g_RepairEnabled && !spec.Life)
+	if (repairTarget && g_RepairEnabled && !spec.Life && spec.Pose < 0)
 	{
 		if (g_RepairEvaluationTick != tick || g_RepairEvaluationRevision != g_PlayerRepair.Revision() ||
 		    g_RepairEvaluationBridge != g_PlayerRepair.MaxBridgeTicks)
@@ -4637,11 +4748,11 @@ void RepairReceive(unsigned slot, const Tf2FixProxyData *data, void *object, voi
 			++g_RepairWrites;
 			if (different)
 				++g_RepairChanged;
-			original(&replacement, object, out);
+			forward(&replacement);
 			return;
 		}
 	}
-	original(data, object, out);
+	forward(data);
 }
 template <unsigned Slot> void RepairProxy(const Tf2FixProxyData *data, void *object, void *out)
 {
@@ -4665,6 +4776,19 @@ void FindRepairProperties(Tf2FixRecvTable *table, std::set<Tf2FixRecvTable *> &s
 		auto &p = table->Props[i];
 		if (p.Type == 6)
 			FindRepairProperties(p.Table, seen, depth + 1);
+		if (name == "DT_BaseAnimating" && p.Name && !std::strcmp(p.Name, "m_flPoseParameter"))
+		{
+			if (p.Type == 6 && p.Table && p.Table->Props && p.Table->Count > 0 && p.Table->Count <= 24)
+				for (int pose = 0; pose < p.Table->Count; ++pose)
+				{
+					auto &field = p.Table->Props[pose];
+					if (field.Type == 1 && field.Proxy && field.Offset == pose * int(sizeof(float)))
+						g_RepairProperties[&field] = {0, 1, false, pose};
+				}
+			else if (p.Type == 5 && p.Array && p.Array->Type == 1 && p.Array->Proxy && p.Elements > 0 &&
+			         p.Elements <= 24 && p.Stride == sizeof(float))
+				g_RepairProperties[p.Array] = {0, 1, false, 0, true};
+		}
 		if (!playerTable || !p.Name || !p.Proxy)
 			continue;
 		RepairProperty spec;
@@ -4735,8 +4859,9 @@ bool InstallRepairProxies()
 	for (const auto &p : g_RepairProperties)
 	{
 		life |= p.second.Life;
-		for (int c = 0; c < p.second.Count; ++c)
-			channels |= 1u << (p.second.First + c);
+		if (p.second.Pose < 0)
+			for (int c = 0; c < p.second.Count; ++c)
+				channels |= 1u << (p.second.First + c);
 		if (std::find(originals.begin(), originals.end(), p.first->Proxy) == originals.end())
 			originals.push_back(p.first->Proxy);
 	}
@@ -4857,6 +4982,8 @@ void BindRepairDemoIdentity(const RepairDemoIdentity &file)
 	g_RepairEnabled = false;
 	g_RepairEntity = -1;
 	g_RepairDemo = file.Key;
+	if (g_PlayerAngleTrace.Active)
+		MirvFix_PlayerAngleTraceEnd();
 	g_RepairStatus = "Playing demo file identified. Choose a player and start collection, or enable a "
 	                 "matching saved repair.";
 }
@@ -4882,6 +5009,8 @@ void MirvFix_PlayerRepairNewDemo(const char *name)
 	g_RepairEnabled = false;
 	g_RepairDemo.clear();
 	g_RepairEntity = -1;
+	if (g_PlayerAngleTrace.Active)
+		MirvFix_PlayerAngleTraceEnd();
 	if (!name || !*name)
 		return;
 	try
@@ -5061,6 +5190,129 @@ void MirvFix_PlayerRepairFrameEnd()
 		g_RepairEnabled = false;
 	}
 }
+bool MirvFix_PlayerAngleTraceBegin(int entity, int first, int last)
+{
+	auto &t = g_PlayerAngleTrace;
+	if (g_RepairCollect || !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || g_RepairDemo.empty() ||
+	    first < 0 || last < first || last - first > 2000)
+	{
+		t.Status = "Stop collection, identify the playing demo, and choose a range of at most 2,000 ticks.";
+		return false;
+	}
+	int user = 0;
+	char name[64];
+	if (!Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user) || user <= 0 || !InstallRepairProxies())
+	{
+		t.Status = "Choose a recorded TF2 player; receive observers must be available.";
+		return false;
+	}
+	t = PlayerAngleTrace{};
+	t.Entity = entity;
+	t.User = user;
+	t.First = first;
+	t.Last = last;
+	t.Demo = g_RepairDemo;
+	t.Rows.reserve(50000);
+	MirvFix_PlayerRepairEnable(false);
+	t.Active = true;
+	t.Status = "Recording ORIGINAL playback; repair is OFF. Waiting for the capture interval.";
+	return true;
+}
+void MirvFix_PlayerAngleTraceEnd()
+{
+	g_PlayerAngleTrace.Active = false;
+	g_PlayerAngleTrace.Status = "Angle diagnostic stopped. Recorded rows are retained; save CSV.";
+}
+bool MirvFix_PlayerAngleTraceActive()
+{
+	return g_PlayerAngleTrace.Active;
+}
+const char *MirvFix_PlayerAngleTraceStatus()
+{
+	return g_PlayerAngleTrace.Status.c_str();
+}
+size_t MirvFix_PlayerAngleTraceRows()
+{
+	return g_PlayerAngleTrace.Rows.size();
+}
+void MirvFix_PlayerAngleTraceFrame(int stage)
+{
+	auto &t = g_PlayerAngleTrace;
+	if (!t.Active)
+		return;
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
+	{
+		if (!MirvCampathPreview_IsSeeking())
+			MirvFix_PlayerAngleTraceEnd();
+		return;
+	}
+	int tick;
+	if (!GetCurrentDemoTick(tick))
+		return;
+	AngleTraceTick(tick);
+	if (!t.Active || tick < t.First || !AngleTraceTarget(t.Entity) || stage < 0 || stage > 2)
+		return;
+	std::array<float, 26> values;
+	values.fill(std::numeric_limits<float>::quiet_NaN());
+	float render[3];
+	std::fill(render, render + 3, std::numeric_limits<float>::quiet_NaN());
+	// The helper verifies the current entity is exactly the object observed by
+	// the receive callback before reading any remembered field offset.
+	auto offsets = t.Offsets;
+	for (int i = 0; i < 26; ++i)
+		if (t.Objects[i] != t.Object)
+			offsets[i] = -1;
+	Mirv_Tf2_ReadDiagnosticFields(t.Entity, t.Object, offsets.data(), values.data(), 26, render);
+	for (int i = 0; i < 26; ++i)
+		AngleTraceAppend(tick, 3 + stage, i, values[i]);
+	for (int i = 0; i < 3; ++i)
+		AngleTraceAppend(tick, 3 + stage, 26 + i, render[i]);
+	float interpolation[3];
+	if (Tf2InterpolationValues(interpolation, false))
+		for (int i = 0; i < 3; ++i)
+			AngleTraceAppend(tick, 3 + stage, 29 + i, interpolation[i]);
+}
+bool MirvFix_PlayerAngleTraceSave(const wchar_t *file)
+{
+	auto &t = g_PlayerAngleTrace;
+	if (!file || t.Active || t.Rows.empty())
+		return false;
+	try
+	{
+		std::filesystem::path path(file);
+		if (std::filesystem::exists(path))
+			return false;
+		std::ofstream out(path, std::ios::binary);
+		out.imbue(std::locale::classic());
+		out << "tick,frame,client_time,stage,entity,user,repair_enabled,field,value\n";
+		const char *stages[] = {"receive_raw",    "receive_forwarded", "receive_output",
+		                        "net_update_end", "render_start",      "render_end"};
+		out.precision(9);
+		for (const auto &r : t.Rows)
+		{
+			out << r.Tick << ',' << r.Frame << ',' << r.Time << ',' << stages[r.Stage] << ',' << t.Entity
+			    << ',' << t.User << ',' << r.Repair << ',';
+			if (r.Field < 2)
+				out << (r.Field == 0 ? "eye_pitch" : "eye_yaw");
+			else if (r.Field < 26)
+				out << "pose_" << r.Field - 2;
+			else if (r.Field < 29)
+				out << "render_" << (r.Field == 26 ? "pitch" : r.Field == 27 ? "yaw" : "roll");
+			else
+				out << (r.Field == 29 ? "cl_interpolate" : r.Field == 30 ? "cl_interp" : "cl_interp_ratio");
+			out << ',';
+			if (std::isfinite(r.Value))
+				out << r.Value; // Blank means unavailable, never zero.
+			out << '\n';
+		}
+		out.close();
+		return !out.fail();
+	}
+	catch (const std::exception &)
+	{
+		return false;
+	}
+}
 // End TF2 manual player repair.
 
 
@@ -5106,6 +5358,29 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			};
 			auto &model = MirvFix_PlayerRepairModel();
 			int tick = 0, last = 0;
+			if (!_stricmp(op, "diagnostic"))
+			{
+				int entity = 0;
+				if (argc == 7 && !_stricmp(args->ArgV(3), "begin") && integer(4, entity) &&
+				    integer(5, tick) && integer(6, last))
+					MirvFix_PlayerAngleTraceBegin(entity, tick, last);
+				else if (argc == 4 && !_stricmp(args->ArgV(3), "end"))
+					MirvFix_PlayerAngleTraceEnd();
+				else if (argc == 5 && !_stricmp(args->ArgV(3), "save"))
+				{
+					std::wstring file;
+					bool ok = UTF8StringToWideString(args->ArgV(4), file) &&
+					          MirvFix_PlayerAngleTraceSave(file.c_str());
+					Tier0_Msg("Angle diagnostic CSV: %s. Use a new writable filename after capture stops.\n",
+					          ok ? "OK" : "ERROR");
+				}
+				else if (!(argc == 3 || (argc == 4 && !_stricmp(args->ArgV(3), "status"))))
+					Tier0_Msg("mirv_fix playerRepair diagnostic begin <entity> <first tick> <last tick> | end | save <file.csv> | status\n");
+				Tier0_Msg("Angle diagnostic: %s; %zu rows. %s\n",
+				          MirvFix_PlayerAngleTraceActive() ? "recording" : "stopped",
+				          MirvFix_PlayerAngleTraceRows(), MirvFix_PlayerAngleTraceStatus());
+				return;
+			}
 			if (!_stricmp(op, "demo") && argc == 4)
 				MirvFix_PlayerRepairBindPlayingDemo(args->ArgV(3));
 			else if (!_stricmp(op, "begin") && argc == 4 && integer(3, tick))
@@ -5154,7 +5429,8 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				Tier0_Msg(
 				    "mirv_fix playerRepair demo <file.dem> | begin <entity> | end | enabled 0|1 | status\n"
 				    "mirv_fix playerRepair exclude <first tick> <last tick> position|angles|all linear|smooth\n"
-				    "mirv_fix playerRepair cut <tick> | undo | redo | save|load <file.xml>\n");
+				    "mirv_fix playerRepair cut <tick> | undo | redo | save|load <file.xml>\n"
+				    "mirv_fix playerRepair diagnostic - Capture original angles at receive/render stages.\n");
 				return;
 			}
 			Tier0_Msg(

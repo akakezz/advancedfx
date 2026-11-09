@@ -34,6 +34,7 @@ preamble=r'''
 #include "AfxHookSource/CameraOverlay.h"
 #include "shared/PlayerRepair.h"
 void MirvFix_PlayerRepairNewDemo(const char*);
+void MirvFix_PlayerAngleTraceEnd();
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -79,7 +80,7 @@ template<size_t N>void strncpy_s(char(&b)[N],const char*s,size_t){snprintf(b,N,"
 bool UTF8StringToWideString(const char*s,std::wstring&w){try{w=std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.from_bytes(s);return true;}catch(...){return false;}}
 bool StringIBeginsWith(const char*a,const char*b){return strncasecmp(a,b,strlen(b))==0;}
 struct MirvInput{int MovementClears=0;void ClearMovementInput(){++MovementClears;}void ResetCameraSmoothing(){}int CollisionAdoptions=0;void AdoptCollisionPosition(float x,float y,float z){++CollisionAdoptions;Pose[0]=x;Pose[1]=y;Pose[2]=z;}bool Override(float,float&x,float&y,float&z,float&a,float&b,float&c,float&f){x=y=z=a=b=c=f=-999;return true;}bool Camera=false;float Pose[7]={};double Sens=1;bool GetCameraControlMode(){return Camera;}void SetCameraControlMode(bool b){Camera=b;}void SetTx(float x){Pose[0]=x;}void SetTy(float x){Pose[1]=x;}void SetTz(float x){Pose[2]=x;}void SetRx(float x){Pose[3]=x;}void SetRy(float x){Pose[4]=x;}void SetRz(float x){Pose[5]=x;}void SetFov(float x){Pose[6]=x;}double GetKeyboardSensitivty(){return Sens;}void SetKeyboardSensitivity(double x){Sens=x;}} input;
-struct WrpGlobals{double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
+struct WrpGlobals{int framecount_get(){return 1;}double curtime_get(){return 1;}double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
 struct FakeView{CamPath m_CamPath;CamPathCollection m_CamPaths{m_CamPath};MirvInput*m_MirvInput=&input;double LastCameraOrigin[3]={100,-100,50},LastCameraAngles[3]={0,135,0},LastCameraFov=130;int LastWidth=1600,LastHeight=1000;bool Menu=false,GlobalsAvailable=true;bool IsInstalled(){return true;}bool IsMenuActive(){return Menu;}bool IsSourceUiActive(){return Menu;}WrpGlobals*GetGlobals(){return GlobalsAvailable?&globals:nullptr;}}g_Hook_VClient_RenderView;
 struct CCampathDrawer{bool Names=true,Holds=true,Durations=true;bool GetDrawNames(){return Names;}bool GetDrawHolds(){return Holds;}bool GetDrawDurations(){return Durations;}void SetDrawNames(bool v){Names=v;}void SetDrawHolds(bool v){Holds=v;}void SetDrawDurations(bool v){Durations=v;}bool Draw=false;float Index=18;bool Draw_get(){return Draw;}void Draw_set(bool b){Draw=b;}float GetDrawKeyframeIndex(){return Index;}void SetDrawKeyframeIndex(float x){Index=x;}}g_CampathDrawer;
 struct Clock{double Time=10;double GetTime(){return Time;}int GetFrameCount(){return int(Time*100);}}g_MirvTime;
@@ -91,6 +92,8 @@ struct DemoInfo{int TotalTicks=12000;int GetDemoPlaybackTick(){return int(g_Mirv
 using WrpVEngineClientDemoInfoEx=DemoInfo;
 struct Engine{bool Playing=true,Hltv=true,HaveInfo=true,Loading=false,InGame=true;bool IsInGame(){return InGame;}int Local=1;int GetLocalPlayer(){return Local;}bool Paused=false,Skipping=false;bool IsPaused(){return Paused;}bool IsSkippingDemo(){return Skipping;}const char*GetGameDirectory(){return "/workspace/scratch";}const char*GetLevelName(){return "maps/cp_gullywash.bsp";}bool IsPlayingDemo(){return Playing;}bool IsDrawingLoadingImage(){return Loading;}bool IsHLTV(){return Hltv;}DemoInfo*GetDemoInfoEx(){return HaveInfo?&demo:nullptr;}void ClientCmd_Unrestricted(const char*c){commands.emplace_back(c);}}engine;Engine*g_VEngineClient=&engine;
 bool GetCurrentDemoTick(int&n){n=int(g_MirvTime.Time*66);return true;}bool GetCurrentDemoTime(double&t){t=g_MirvTime.Time;return true;}bool GetDemoTickFromClientTime(double,double t,int&n){n=int(t*66);return true;}
+void* diagnosticObject=nullptr;float diagnosticRender[3]={0,0,0};
+void Mirv_Tf2_ReadDiagnosticFields(int,const void*object,const int*offsets,float*values,int count,float*render){if(object!=diagnosticObject||!object)return;for(int i=0;i<count;++i)if(offsets[i]>=0)std::memcpy(values+i,static_cast<const char*>(object)+offsets[i],sizeof(float));std::copy(diagnosticRender,diagnosticRender+3,render);}
 int repairTestUser=42;int Mirv_Tf2_GetMaxPlayers(){return 1;}bool Mirv_Tf2_GetPlayerInfo(int i,char*b,int n,int*u){snprintf(b,n,"Scout");*u=repairTestUser;return i==1;}
 constexpr int MIRV_TF2_MAX_BONES=256;
 struct MirvTf2BoneName_t{char name[64];int parent;};
@@ -674,13 +677,49 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  auto boundKey=g_RepairDemo;g_RepairEnabled=true;g_CampathSeekTarget=1;MirvFix_PlayerRepairNewDemo(bindFile.string().c_str());check(g_RepairEnabled&&g_RepairDemo==boundKey,"Same-file restart during a comparison seek preserves the requested repair");g_CampathSeekTarget=-1;MirvFix_PlayerRepairNewDemo(bindFile.string().c_str());check(!g_RepairEnabled,"Explicit playdemo outside a comparison still disables repair");Repair::Sample kept;kept.Mask=Repair::All;repair.Observe(2,kept);auto keptCount=repair.Samples().size();auto wrongBytes=bindBytes;std::memset(wrongBytes.data()+536,0,260);std::memcpy(wrongBytes.data()+536,"cp_wrong",8);auto wrongFile=RecoveryDirectory()/"wrong-player-demo.dem";{std::ofstream out(wrongFile,std::ios::binary);out.write((const char*)wrongBytes.data(),wrongBytes.size());}check(!MirvFix_PlayerRepairBindPlayingDemo(wrongFile.string().c_str())&&g_RepairDemo==boundKey&&repair.Samples().size()==keptCount,"A mismatched map is rejected without losing the current binding or samples");wrongBytes=bindBytes;wrongBytes[1060]^=1;{std::ofstream out(wrongFile,std::ios::binary);out.write((const char*)wrongBytes.data(),wrongBytes.size());}check(!MirvFix_PlayerRepairBindPlayingDemo(wrongFile.string().c_str()),"A mismatched demo tick count is rejected");
  g_RepairDemo.clear();g_SequencerTimeline.Index.File.clear();size_t commandsBeforeBinding=commands.size();repairButton("Start new player collection");check(g_RepairDemoDialog.IsOpened()&&g_RepairEditor.PendingEntity==1&&!g_RepairCollect&&repair.Samples().size()==keptCount,"Start without a known filename opens the file picker and preserves existing samples");g_RepairDemoDialog.Close();frame();frame();check(g_RepairEditor.PendingEntity<0&&!g_RepairCollect,"Cancelling the filename picker leaves collection stopped");
  repairButton("Start new player collection");CompleteRepairDemoSelection(bindFile);g_RepairDemoDialog.Close();frame();check(g_RepairCollect&&repair.UserId==42&&commands.size()==commandsBeforeBinding,"Choosing the playing file continues collection without reopening or seeking the demo");MirvFix_PlayerRepairEnd();repair.Observe(2,kept);OpenRepairDemoPicker();CompleteRepairDemoSelection(bindFile);g_RepairDemoDialog.Close();frame();check(!g_RepairCollect&&repair.Samples().size()==1,"Choosing a binding without Start preserves loaded repairs and does not collect");
- std::filesystem::remove(wrongFile);std::filesystem::remove(bindFile);g_RepairHooks=false;
+g_RepairHooks=true;repairButton("Investigate angle snapping");repairButton("Use current tick +/- 66");repairButton("Record original angle diagnostic");check(MirvFix_PlayerAngleTraceActive()&&!g_RepairEnabled&&g_CampathSeekTarget==0&&g_CampathSeekPendingMode==2,"The repair UI records original playback from demo start without deleting marks");MirvFix_PlayerAngleTraceEnd();g_CampathSeekTarget=-1;
+ std::filesystem::remove(wrongFile);std::filesystem::remove(bindFile);g_RepairHooks=false; // Diagnostic capture is independent of sample collection and never substitutes its own values.
+ {g_RepairHooks=true;g_RepairCollect=false;g_RepairDemo="trace-test";g_RepairEnabled=true;g_RepairEntity=1;
+ check(!MirvFix_PlayerAngleTraceBegin(1,20,10)&&!MirvFix_PlayerAngleTraceActive(),"Diagnostic refuses reversed ranges");check(!MirvFix_PlayerAngleTraceBegin(1,0,2001),"Diagnostic windows are bounded to 2000 ticks");check(MirvFix_PlayerAngleTraceBegin(1,10,20)&&!g_RepairEnabled,"Diagnostic starts original playback without enabling repair");
+ struct Fields{float Pitch=-12,Yaw=20,Pose=.4f;} fields;diagnosticObject=&fields;Tf2FixRecvProp pitch{},pose{};g_RepairProperties.clear();g_RepairProperties[&pitch]={3,1,false};g_RepairProperties[&pose]={0,1,false,0};g_RepairProxySlots[0].Original=RepairOriginal;
+ Tf2FixProxyData d{};d.Prop=&pitch;d.ObjectId=1;d.Value.Float=-12;g_MirvTime.Time=10.0/66;RepairReceive(0,&d,&fields,&fields.Pitch);check(fields.Pitch==-12&&d.Value.Float==-12,"Diagnostic preserves the incoming angle and original proxy output");d.Prop=&pose;d.Value.Float=.4f;RepairReceive(0,&d,&fields,&fields.Pose);MirvFix_PlayerAngleTraceFrame(0);fields.Pitch=80;fields.Pose=.9f;MirvFix_PlayerAngleTraceFrame(1);MirvFix_PlayerAngleTraceFrame(2);
+ auto row=[&](int stage,int field,float value){for(auto &r:g_PlayerAngleTrace.Rows)if(r.Stage==stage&&r.Field==field&&std::abs(r.Value-value)<1e-5)return true;return false;};check(row(0,0,-12)&&row(2,0,-12)&&row(4,0,80),"Diagnostic distinguishes normal receive input/output from a later stored-angle spike");check(row(3,2,.4f)&&row(4,2,.9f),"Pose slots are sampled separately before and after render processing");check(row(5,26,0)&&row(5,27,0)&&row(5,28,0),"Entity render-angle fields are recorded when available");
+ auto n=g_PlayerAngleTrace.Rows.size();d.ObjectId=2;RepairReceive(0,&d,&fields,&fields.Pose);check(g_PlayerAngleTrace.Rows.size()==n,"Other players cannot contaminate a diagnostic");repairTestUser=43;MirvFix_PlayerAngleTraceFrame(1);check(g_PlayerAngleTrace.Rows.size()==n,"A reused entity slot with another user is not sampled");repairTestUser=42;d.ObjectId=1;
+ diagnosticObject=nullptr;MirvFix_PlayerAngleTraceFrame(1);check(std::isnan(g_PlayerAngleTrace.Rows[g_PlayerAngleTrace.Rows.size()-32].Value),"Unavailable live storage is recorded as unavailable rather than zero");diagnosticObject=&fields;
+ auto csv=RecoveryDirectory()/"player-angle-diagnostic.csv";check(!MirvFix_PlayerAngleTraceSave(csv.wstring().c_str()),"An active capture cannot export an incomplete changing buffer");g_MirvTime.Time=21.0/66;MirvFix_PlayerAngleTraceFrame(1);check(!MirvFix_PlayerAngleTraceActive()&&MirvFix_PlayerAngleTraceSave(csv.wstring().c_str()),"Capture completes at the end tick and exports CSV");std::ifstream in(csv);std::string contents((std::istreambuf_iterator<char>(in)),{});check(contents.find("receive_raw")!=std::string::npos&&contents.find("render_start")!=std::string::npos&&contents.find("eye_pitch,80")!=std::string::npos,"Saved diagnostic contains distinct receive/render evidence");check(!MirvFix_PlayerAngleTraceSave(csv.wstring().c_str()),"Diagnostic export refuses existing filenames");std::filesystem::remove(csv);
+ check(MirvFix_PlayerAngleTraceBegin(1,10,20),"Another bounded diagnostic can start");g_MirvTime.Time=15.0/66;d.Prop=&pitch;d.Value.Float=-12;RepairReceive(0,&d,&fields,&fields.Pitch);g_MirvTime.Time=0;MirvFix_PlayerAngleTraceFrame(1);check(g_PlayerAngleTrace.Rows.empty()&&g_PlayerAngleTrace.Offsets[0]==-1,"Backward seeks clear diagnostic rows and stale field bindings before a new pass");g_PlayerAngleTrace.Rows.resize(50000);AngleTraceAppend(10,0,0,0);check(!MirvFix_PlayerAngleTraceActive()&&g_PlayerAngleTrace.Rows.size()==50000,"Diagnostic storage stops at its row cap");g_PlayerAngleTrace=PlayerAngleTrace{};
+ // Metadata discovery includes pose slots, which never become repairable position channels.
+ Tf2FixRecvProp slots[2]{};for(int i=0;i<2;++i){slots[i].Type=1;slots[i].Proxy=RepairOriginal;slots[i].Offset=i*4;}Tf2FixRecvTable poseTable{};poseTable.Name="pose slots";poseTable.Count=2;poseTable.Props=slots;Tf2FixRecvProp poseArray{};poseArray.Name="m_flPoseParameter";poseArray.Type=6;poseArray.Table=&poseTable;Tf2FixRecvTable anim{};anim.Name="DT_BaseAnimating";anim.Count=1;anim.Props=&poseArray;std::set<Tf2FixRecvTable*> visited;g_RepairProperties.clear();FindRepairProperties(&anim,visited);check(g_RepairProperties.at(&slots[0]).Pose==0&&g_RepairProperties.at(&slots[1]).Pose==1,"Pose slots are discovered from receive metadata");
+ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;
+ }
+
 
 
  }
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''
+# Compile the actual identity-checked field reader against a tiny public-tools fixture.
+reader=(root/'AfxHookSource/MirvCalcs.cpp').read_text()
+a=reader.index('void Mirv_Tf2_ReadDiagnosticFields(');b=reader.index('{',a);depth=1;end=b+1
+while depth:
+ if reader[end]=='{':depth+=1
+ elif reader[end]=='}':depth-=1
+ end+=1
+reader_fixture=r"""
+namespace AngleFieldReaderTest {
+struct Renderable { float Angles[3]={4,5,6}; const float*GetRenderAngles(){return Angles;} } renderable;
+struct CMirvTf2ClientUnknown { Renderable *GetClientRenderable(){return &renderable;} };
+struct Entity: CMirvTf2ClientUnknown { float Pitch=30; } entity;
+struct Tools { void*FirstEntity(){return &entity;}void*NextEntity(void*){return nullptr;}int GetEntIndex(void*){return 1;} } tools;
+struct CClientToolsTf2 {static CClientToolsTf2 *Instance(){static CClientToolsTf2 t;return &t;}Tools*GetClientTools(){return &tools;}};
+READER_IMPLEMENTATION
+void Tests(){
+ int offset=int(reinterpret_cast<uintptr_t>(&entity.Pitch)-reinterpret_cast<uintptr_t>(&entity));float value=-999,angles[3]={};Mirv_Tf2_ReadDiagnosticFields(1,&entity,&offset,&value,1,angles);check(value==30&&angles[0]==4,"The actual diagnostic accessor reads observed live-entity fields and render angles");value=-999;Entity stale;Mirv_Tf2_ReadDiagnosticFields(1,&stale,&offset,&value,1,angles);check(value==-999,"The actual accessor rejects an object that is no longer the current entity");Mirv_Tf2_ReadDiagnosticFields(2,&entity,&offset,&value,1,angles);check(value==-999,"The actual accessor rejects another entity index");offset=-1;Mirv_Tf2_ReadDiagnosticFields(1,&entity,&offset,&value,1,angles);check(value==-999,"Unobserved field offsets are never read");offset=65536;Mirv_Tf2_ReadDiagnosticFields(1,&entity,&offset,&value,1,angles);check(value==-999,"Out-of-bound field offsets are never read");
+}
+}
+""".replace('READER_IMPLEMENTATION',reader[a:end])
+test=test.replace('int main(){try{',reader_fixture+'int main(){try{AngleFieldReaderTest::Tests();')
 collision_tests=r"""
 void CollisionTests(){
  auto cfg=MirvCameraCollisionGet();check(!cfg.Free&&!cfg.Campath,"Camera collisions default off independently");

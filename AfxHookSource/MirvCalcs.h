@@ -349,6 +349,11 @@ bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc * calc, const double camOrigin[3], c
 /// <returns>true on success. The entity's abs angles and render angles (pitch, yaw, roll).</returns>
 bool Mirv_Tf2_GetEntityAnglesInfo(int entityIndex, float outAbsAngles[3], float outRenderAngles[3]);
 
+// Read only receive-observed float offsets after checking the live object identity.
+// Unavailable fields/angles remain untouched. No SetupBones or animation update.
+void Mirv_Tf2_ReadDiagnosticFields(int entity, const void *object, const int *offsets, float *values,
+                                   int count, float renderAngles[3]);
+
 // Renderer classification (unknown classes fall back to Other).
 enum MirvTf2EntityCategory_t
 {

@@ -6819,6 +6819,32 @@ bool Mirv_Tf2_GetEntityAnglesInfo(int entityIndex, float outAbsAngles[3], float 
 	return ok;
 }
 
+void Mirv_Tf2_ReadDiagnosticFields(int entity, const void *object, const int *offsets, float *values,
+                                   int count, float renderAngles[3])
+{
+	if (!object || !offsets || !values || count < 0 || count > 32)
+		return;
+	auto tools = CClientToolsTf2::Instance();
+	auto iface = tools ? tools->GetClientTools() : nullptr;
+	if (!iface)
+		return;
+	for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+	{
+		if (iface->GetEntIndex(ent) != entity)
+			continue;
+		if (static_cast<const void *>(ent) != object)
+			return;
+		for (int i = 0; i < count; ++i)
+			if (offsets[i] >= 0 && offsets[i] <= 65536 - int(sizeof(float)))
+				std::memcpy(values + i, static_cast<const char *>(object) + offsets[i], sizeof(float));
+		auto renderable = reinterpret_cast<CMirvTf2ClientUnknown *>(ent)->GetClientRenderable();
+		auto angles = renderable ? reinterpret_cast<const float *>(renderable->GetRenderAngles()) : nullptr;
+		if (angles && renderAngles)
+			std::copy(angles, angles + 3, renderAngles);
+		return;
+	}
+}
+
 static bool Mirv_IsUsableBound(float v)
 {
 	// Also false for NaN.

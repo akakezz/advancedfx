@@ -941,8 +941,13 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 	{
 	case SOURCESDK::TF2::FRAME_NET_UPDATE_END:
 		MirvFix_PlayerRepairFrameEnd();
+		MirvFix_PlayerAngleTraceFrame(0);
+		break;
+	case SOURCESDK::TF2::FRAME_RENDER_START:
+		MirvFix_PlayerAngleTraceFrame(1);
 		break;
 	case SOURCESDK::TF2::FRAME_RENDER_END:
+		MirvFix_PlayerAngleTraceFrame(2);
 		Shared_AfterFrameRenderEnd();
 		break;
 	}

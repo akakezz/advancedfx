@@ -332,6 +332,57 @@ properties; otherwise collection/application refuses to start. Live builds must
 be tested: offline tests cannot prove that every rendering/attachment mode
 consumes these corrected inputs.
 
+#### Investigating a visible angle snap
+
+If network eye pitch/yaw look normal but the rendered player snaps, use
+**Investigate angle snapping** in the Player repair tab. This is an observation
+experiment, not an automatic animation fix:
+
+1. Identify the playing demo with **Choose playing demo file...** if necessary,
+   choose the player in **Repair player**, and stop sample collection.
+2. Position the playhead at the visible glitch, expand **Investigate angle
+   snapping**, and click **Use current tick +/- 66**. Adjust the window if needed
+   (maximum 2,000 ticks).
+3. Click **Record original angle diagnostic**. It disables repair, rewinds to
+   tick zero, and plays at normal speed. Existing repair samples/marks remain.
+   The seek temporarily uses Continue; other after-seek preferences are retained.
+4. Keep the player visible and let playback pass the end of the diagnostic
+   window. Capture stops automatically, or use **Stop angle diagnostic**.
+5. **Save angle diagnostic CSV...** to a new filename and share the CSV together
+   with the tick at which you saw the snap. Existing files are not overwritten.
+
+The CSV includes demo tick, engine frame, client time, player identity, repair
+state, field and value. Rows distinguish `receive_raw`, `receive_forwarded`,
+`receive_output`, `net_update_end`, `render_start`, and `render_end`. Float pose
+slots (`pose_0` through `pose_23`) are discovered through receive metadata;
+values are normalized slots, not degrees or named model-specific parameters.
+Eye fields and pose fields are read only after their real receive callback has
+provided a storage offset and the current live entity matches that object.
+Unknown fields are blank in CSV, never substituted with zero. Render angles
+are the entity's render orientation, not the eye direction or head-bone rotation.
+The three interpolation cvars are also captured when available.
+
+Capture uses the existing receive and frame-stage hooks. It does not call
+SetupBones, change animation parameters, or require AGR recording. No disk I/O
+runs during capture; export happens after stopping. Storage is capped at 50,000
+rows. A rewind clears the diagnostic buffer and observed storage bindings to
+avoid mixing passes. Opening another demo or leaving playback stops capture.
+The first run should use the UI's tick-zero replay so initial unchanged fields
+can be observed; the console entry point merely arms capture and does not seek.
+
+Stage differences can narrow the failure to received values versus later
+processing, but do not alone identify the exact interpolation or animation
+function responsible. Bone transforms and animation-layer internals are not
+captured in this first diagnostic. Normal pose/eye fields with a visible snap
+would motivate inspecting those next.
+
+```text
+mirv_fix playerRepair diagnostic begin <entity index> <first tick> <last tick>
+mirv_fix playerRepair diagnostic status
+mirv_fix playerRepair diagnostic end
+mirv_fix playerRepair diagnostic save "new-player-angle-trace.csv"
+```
+
 The same storage is available under `mirv_fix`:
 
 ```text

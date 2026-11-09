@@ -3658,6 +3658,75 @@ static void ComparePlayerRepair(bool repaired)
 	ui.Status = seeking ? "Comparison will play at normal speed after seeking. Watch the sampled player."
 	                    : "Comparison seek could not start. Load the matching demo and try again.";
 }
+static void DrawPlayerAngleDiagnostic(int playhead)
+{
+	if (!ImGui::CollapsingHeader("Investigate angle snapping"))
+		return;
+	static int first = 0, last = 0;
+	static std::string status;
+	static ImGui::FileBrowser saveDialog(ImGuiFileBrowserFlags_CloseOnEsc |
+	                                     ImGuiFileBrowserFlags_EditPathString |
+	                                     ImGuiFileBrowserFlags_EnterNewFilename);
+	ImGui::TextWrapped("Record ORIGINAL playback around a glitch. This disables player repair, rewinds "
+	                   "to the beginning, and plays automatically. No samples or marks are removed.");
+	ImGui::BeginDisabled(MirvFix_PlayerAngleTraceActive());
+	if (ImGui::Button("Use current tick +/- 66"))
+	{
+		first = (std::max)(0, playhead - 66);
+		last = playhead <= INT_MAX - 66 ? playhead + 66 : INT_MAX;
+	}
+	ImGui::SetNextItemWidth(120);
+	ImGui::InputInt("Diagnostic first tick", &first);
+	ImGui::SetNextItemWidth(120);
+	ImGui::InputInt("Diagnostic last tick", &last);
+	if (ImGui::Button("Record original angle diagnostic"))
+	{
+		if (!MirvFix_PlayerRepairHasDemo() && TimelineMatchesDemo())
+			MirvFix_PlayerRepairBindPlayingDemo(g_SequencerTimeline.Index.File.string().c_str());
+		if (MirvFix_PlayerAngleTraceBegin(g_RepairEditor.Entity, first, last))
+		{
+			int mode = MirvCampathPreview_GetSeekMode();
+			double scale = MirvCampathPreview_GetSeekScale();
+			MirvCampathPreview_SetSeekOptions(2, scale);
+			bool seeking = MirvCampathPreview_SeekTick(0);
+			MirvCampathPreview_SetSeekOptions(mode, scale);
+			if (!seeking)
+				MirvFix_PlayerAngleTraceEnd();
+			status = seeking ? "Wait for playback to pass the diagnostic end tick, then save CSV."
+			                 : "Could not start the diagnostic seek.";
+		}
+		else
+			status.clear();
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ImGui::Button("Stop angle diagnostic"))
+		MirvFix_PlayerAngleTraceEnd();
+	ImGui::TextWrapped("%s", MirvFix_PlayerAngleTraceStatus());
+	ImGui::Text("%zu diagnostic rows", MirvFix_PlayerAngleTraceRows());
+	ImGui::BeginDisabled(MirvFix_PlayerAngleTraceActive() || !MirvFix_PlayerAngleTraceRows());
+	if (ImGui::Button("Save angle diagnostic CSV..."))
+	{
+		saveDialog.SetTitle("Save angle diagnostic to a new file");
+		saveDialog.SetTypeFilters({".csv"});
+		saveDialog.SetInputName("player-angles.csv");
+		saveDialog.Open();
+	}
+	ImGui::EndDisabled();
+	saveDialog.Display();
+	if (saveDialog.HasSelected())
+	{
+		status = MirvFix_PlayerAngleTraceSave(saveDialog.GetSelected().wstring().c_str())
+		             ? "Angle diagnostic CSV saved."
+		             : "Save failed. Stop capture and choose a new writable filename.";
+		saveDialog.ClearSelected();
+	}
+	if (!status.empty())
+		ImGui::TextWrapped("%s", status.c_str());
+	ImGui::TextWrapped("Records receive input/output, stored eye angles, pose slots, and entity render "
+	                   "angles at network/render stages. Empty CSV values mean unavailable; pose slots "
+	                   "are normalized values, not degrees. No extra bone evaluation is performed.");
+}
 static void DrawPlayerRepairEditor(int playhead)
 {
 	if (!ImGui::BeginTabItem("Player repair"))
@@ -3944,6 +4013,7 @@ static void DrawPlayerRepairEditor(int playhead)
 	                   "not the quality of the rendered result.");
 	if (!ui.Status.empty())
 		ImGui::TextWrapped("%s", ui.Status.c_str());
+	DrawPlayerAngleDiagnostic(playhead);
 	ImGui::EndTabItem();
 }
 static void DrawSequencerDetails(int playhead)
