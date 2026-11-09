@@ -108,6 +108,7 @@ namespace ImGui {
 
     IMGUI_API bool BeginNeoSequencer(const char* id, FrameIndexType * frame, FrameIndexType * startFrame, FrameIndexType * endFrame,const ImVec2& size = ImVec2(0, 0),ImGuiNeoSequencerFlags flags = ImGuiNeoSequencerFlags_None);
     IMGUI_API void GetNeoSequencerView(FrameIndexType *startFrame, FrameIndexType *endFrame); // Inside Begin/End.
+    IMGUI_API bool GetNeoSequencerMouseFrame(FrameIndexType *frame); // Timeline/ruler only, inside Begin/End.
     IMGUI_API void SetNextNeoSequencerFit(); // Fit full range on next BeginNeoSequencer.
     IMGUI_API void EndNeoSequencer(); //Call only when BeginNeoSequencer() returns true!!
 
@@ -123,7 +124,7 @@ namespace ImGui {
     IMGUI_API void NeoSetKeyframeSelected(int32_t *value, bool selected);
     // Read-only ranges / markers share the ruler transform without retaining editable pointers.
     IMGUI_API bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color,
-                                   const char *caption = nullptr);
+                                   const char *caption = nullptr, bool *hovered = nullptr);
     IMGUI_API void NeoCancelSelection();
 
     IMGUI_API bool IsNeoKeyframeHovered();

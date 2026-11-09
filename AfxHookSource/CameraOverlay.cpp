@@ -3144,6 +3144,10 @@ struct SequencerTimeline
 	std::filesystem::path CommandsFile;
 	std::string Status;
 	bool FocusEvents = false, FocusCommands = false;
+	bool AutoIndex = true, MarkerContext = false, ContextEvent = false;
+	int ContextTick = 0, EventLeadTicks = 132, GoToTick = 0;
+	std::string RequestedDemo;
+	std::filesystem::file_time_type IndexedStamp{};
 	~SequencerTimeline()
 	{
 		if (Cancel)
@@ -3180,6 +3184,48 @@ static void StartTimelineIndex(const std::filesystem::path &file)
 		state.Index.Error = e.what();
 	}
 }
+void NotifyDemoPlaybackFile(const char *file)
+{
+	if (file && *file)
+		g_SequencerTimeline.RequestedDemo = file;
+}
+static void AutoIndexRequestedDemo()
+{
+	auto &state = g_SequencerTimeline;
+	if (state.RequestedDemo.empty())
+		return;
+	auto name = std::move(state.RequestedDemo);
+	state.RequestedDemo.clear();
+	if (!state.AutoIndex || !g_VEngineClient)
+		return;
+	try
+	{
+		std::filesystem::path file(name);
+		if (!file.has_extension())
+			file += ".dem";
+		if (file.is_relative())
+		{
+			const char *directory = g_VEngineClient->GetGameDirectory();
+			if (!directory || !*directory)
+				return;
+			file = std::filesystem::path(directory) / file;
+		}
+		file = std::filesystem::weakly_canonical(file);
+		if (state.Worker.valid() && state.Index.File == file && !state.Cancel->load())
+		{
+			state.Pending.clear();
+			return;
+		}
+		if (!state.Worker.valid() && state.Index.File == file && state.Index.Error.empty() &&
+		    std::filesystem::last_write_time(file) == state.IndexedStamp)
+			return;
+		StartTimelineIndex(file);
+	}
+	catch (const std::exception &e)
+	{
+		state.Status = std::string("Automatic event indexing: ") + e.what();
+	}
+}
 static void PollTimelineIndex()
 {
 	auto &state = g_SequencerTimeline;
@@ -3194,6 +3240,11 @@ static void PollTimelineIndex()
 			state.Index.Error = e.what();
 		}
 		state.FilterDirty = true;
+		if (state.Index.Error.empty())
+		{
+			std::error_code error;
+			state.IndexedStamp = std::filesystem::last_write_time(state.Index.File, error);
+		}
 		if (!state.Pending.empty())
 		{
 			auto next = state.Pending;
@@ -3240,6 +3291,9 @@ static void FilterTimelineEvents()
 static void DrawSequencerExtraTracks(int visibleStart, int visibleEnd)
 {
 	auto &state = g_SequencerTimeline;
+	state.MarkerContext = false;
+	ImGui::FrameIndexType mouseTick = 0;
+	ImGui::GetNeoSequencerMouseFrame(&mouseTick);
 	const int buckets = (std::max)(1, (std::min)(2000, int(ImGui::GetContentRegionAvail().x)));
 	auto bucket = [&](int tick) {
 		return int((int64_t(tick) - visibleStart) * buckets /
@@ -3248,6 +3302,7 @@ static void DrawSequencerExtraTracks(int visibleStart, int visibleEnd)
 	if (ImGui::BeginNeoTimelineEx("Commands", nullptr, ImGuiNeoTimelineFlags_None))
 	{
 		int previous = -1;
+		int64_t nearest = INT64_MAX;
 		for (const auto &marker : g_CommandSystem.GetTickMarkers())
 		{
 			if (marker.Tick < visibleStart || marker.Tick > visibleEnd)
@@ -3258,15 +3313,27 @@ static void DrawSequencerExtraTracks(int visibleStart, int visibleEnd)
 			previous = pixel;
 			std::string label = marker.Name.empty() ? "Command" : marker.Name;
 			label += marker.Enabled ? "" : " [disabled]";
+			bool hovered = false;
+			const int64_t distance = std::abs(int64_t(marker.Tick) - mouseTick);
 			if (ImGui::NeoTimelineSpan(marker.Tick, marker.Tick,
 			                           marker.Id == state.SelectedCommand ? IM_COL32(255, 230, 110, 255)
 			                           : marker.Enabled                   ? IM_COL32(190, 130, 255, 255)
 			                                                              : IM_COL32(100, 100, 100, 255),
-			                           label.c_str()))
+			                           label.c_str(), &hovered) && distance < nearest)
 			{
+				nearest = distance;
 				state.SelectedCommand = marker.Id;
 				state.FocusCommands = true;
 				ImGui::NeoCancelSelection();
+			}
+			if (hovered && distance < nearest && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+			{
+				nearest = distance;
+				state.ContextTick = marker.Tick;
+				state.ContextEvent = false;
+				state.MarkerContext = true;
+				state.SelectedCommand = marker.Id;
+				state.FocusCommands = true;
 			}
 		}
 		ImGui::EndNeoTimeLine();
@@ -3275,6 +3342,7 @@ static void DrawSequencerExtraTracks(int visibleStart, int visibleEnd)
 	{
 		FilterTimelineEvents();
 		int previous = -1;
+		int64_t nearest = INT64_MAX;
 		auto first = std::lower_bound(state.Filtered.begin(), state.Filtered.end(), visibleStart,
 		                              [&](size_t i, int tick) { return state.Index.Events[i].Tick < tick; });
 		for (auto it = first; it != state.Filtered.end(); ++it)
@@ -3288,16 +3356,90 @@ static void DrawSequencerExtraTracks(int visibleStart, int visibleEnd)
 			previous = pixel;
 			const ImU32 colors[] = {IM_COL32(255, 100, 90, 255), IM_COL32(100, 180, 255, 255),
 			                        IM_COL32(255, 190, 60, 255), IM_COL32(120, 210, 160, 255)};
-			if (ImGui::NeoTimelineSpan(event.Tick, event.Tick, colors[int(event.Kind)],
-			                           event.Summary.c_str()))
+			bool hovered = false;
+			const int64_t distance = std::abs(int64_t(event.Tick) - mouseTick);
+			if (ImGui::NeoTimelineSpan(event.Tick, event.Tick, colors[int(event.Kind)], event.Summary.c_str(),
+			                           &hovered) && distance < nearest)
 			{
+				nearest = distance;
 				state.SelectedTick = event.Tick;
 				state.FocusEvents = true;
 				ImGui::NeoCancelSelection();
 			}
+			if (hovered && distance < nearest && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+			{
+				nearest = distance;
+				state.ContextTick = event.Tick;
+				state.ContextEvent = true;
+				state.MarkerContext = true;
+				state.SelectedTick = event.Tick;
+				state.FocusEvents = true;
+			}
 		}
 		ImGui::EndNeoTimeLine();
 	}
+}
+static int EventSeekTick(int tick)
+{
+	return (std::max)(0, tick - (std::max)(0, g_SequencerTimeline.EventLeadTicks));
+}
+static void DrawSequencerSeekContext()
+{
+	auto &state = g_SequencerTimeline;
+	ImGui::FrameIndexType tick;
+	if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && ImGui::GetNeoSequencerMouseFrame(&tick))
+	{
+		if (!state.MarkerContext)
+		{
+			state.ContextTick = tick;
+			state.ContextEvent = false;
+		}
+		ImGui::OpenPopup("sequencer_seek_context");
+		ImGui::NeoCancelSelection();
+	}
+	if (ImGui::BeginPopup("sequencer_seek_context"))
+	{
+		ImGui::Text("Tick %d", state.ContextTick);
+		ImGui::BeginDisabled(!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+		                     (state.ContextEvent && !TimelineMatchesDemo()));
+		if (ImGui::MenuItem("Go to"))
+			Afx_GotoDemoTick(state.ContextTick);
+		if (ImGui::MenuItem("Go to with lead-in"))
+			Afx_GotoDemoTick(EventSeekTick(state.ContextTick));
+		ImGui::EndDisabled();
+		ImGui::SetNextItemWidth(140);
+		ImGui::InputInt("Lead-in (ticks)", &state.EventLeadTicks);
+		state.EventLeadTicks = (std::max)(0, state.EventLeadTicks);
+		ImGui::EndPopup();
+	}
+}
+static void OpenDemoPicker()
+{
+	if (!g_DemoDialogInit)
+	{
+		g_DemoOpenDialog.SetTitle("Open demo");
+		g_DemoOpenDialog.SetTypeFilters({".dem"});
+		g_DemoDialogInit = true;
+	}
+	if (!g_OverlayPaths.demoDir.empty())
+		g_DemoOpenDialog.SetDirectory(g_OverlayPaths.demoDir);
+	g_DemoOpenDialog.Open();
+}
+static void DrawDemoPicker()
+{
+	g_DemoOpenDialog.Display();
+	if (!g_DemoOpenDialog.HasSelected())
+		return;
+	const auto file = g_DemoOpenDialog.GetSelected();
+	const auto path = file.string();
+	if (path.find_first_of("\"\r\n") == std::string::npos)
+	{
+		Afx_ExecClientCmd(("playdemo \"" + path + "\"").c_str());
+		NotifyDemoPlaybackFile(path.c_str());
+		g_OverlayPaths.demoDir = file.parent_path().string();
+		ImGui::MarkIniSettingsDirty();
+	}
+	g_DemoOpenDialog.ClearSelected();
 }
 static void DrawSequencerDetails(int playhead)
 {
@@ -3492,9 +3634,18 @@ static void DrawSequencerDetails(int playhead)
 		}
 		if (!state.Index.File.empty())
 			ImGui::TextWrapped("Demo: %s", state.Index.File.u8string().c_str());
+		else
+			ImGui::TextDisabled("No demo indexed. Open a demo or choose Index demo events.");
 		if (!state.Index.Error.empty())
 			ImGui::TextWrapped("Index failed: %s", state.Index.Error.c_str());
+		ImGui::Checkbox("Automatically index opened demos", &state.AutoIndex);
+		ImGui::SetNextItemWidth(140);
+		ImGui::InputInt("Event lead-in (ticks)", &state.EventLeadTicks);
+		state.EventLeadTicks = (std::max)(0, state.EventLeadTicks);
+		if (!state.Status.empty())
+			ImGui::TextWrapped("%s", state.Status.c_str());
 		const char *labels[] = {"Deaths / kills", "Rounds", "Objectives", "Players"};
+
 		for (int i = 0; i < 4; ++i)
 		{
 			if (i)
@@ -3525,7 +3676,7 @@ static void DrawSequencerDetails(int playhead)
 		ImGui::SameLine();
 		ImGui::BeginDisabled(state.SelectedTick < 0 || !TimelineMatchesDemo());
 		if (ImGui::Button("Seek to event"))
-			Afx_GotoDemoTick(state.SelectedTick);
+			Afx_GotoDemoTick(EventSeekTick(state.SelectedTick));
 		ImGui::EndDisabled();
 		if (!state.Index.File.empty() && !TimelineMatchesDemo())
 			ImGui::TextDisabled("Seeking requires a playing demo with the indexed map and tick count.");
@@ -3557,6 +3708,7 @@ static void DrawSequencerDetails(int playhead)
 void Draw()
 {
 	PollTimelineIndex();
+	AutoIndexRequestedDemo();
 	if (!g_Open)
 		return;
 	static bool subscribed = false;
@@ -4254,49 +4406,9 @@ void Draw()
 			float snapped = floorf(scale * 16.0f + 0.5f) / 16.0f;
 			io.FontGlobalScale = snapped;
 
-			{
-				if (!g_DemoDialogInit)
-				{
-					g_DemoOpenDialog.SetTitle("Open demo");
-					g_DemoOpenDialog.SetTypeFilters({".dem"});
-					g_DemoDialogInit = true;
-				}
+			if (ImGui::Button("Open demo"))
+				OpenDemoPicker();
 
-				if (ImGui::Button("Open demo"))
-				{
-					// Prefer last-used demo directory, otherwise default to game\csgo
-					if (!g_OverlayPaths.demoDir.empty())
-					{
-						g_DemoOpenDialog.SetDirectory(g_OverlayPaths.demoDir);
-					}
-
-					g_DemoOpenDialog.Open();
-				}
-
-				// Render and handle selection
-				g_DemoOpenDialog.Display();
-				if (g_DemoOpenDialog.HasSelected())
-				{
-					const std::string path = g_DemoOpenDialog.GetSelected().string();
-					char cmd[2048];
-					snprintf(cmd, sizeof(cmd), "playdemo \"%s\"", path.c_str());
-					if (path.find_first_of("\"\r\n") == std::string::npos)
-					{
-						Afx_ExecClientCmd(cmd);
-						StartTimelineIndex(g_DemoOpenDialog.GetSelected());
-					}
-					// remember directory
-					try
-					{
-						g_OverlayPaths.demoDir = std::filesystem::path(path).parent_path().string();
-					}
-					catch (...)
-					{
-					}
-					ImGui::MarkIniSettingsDirty();
-					g_DemoOpenDialog.ClearSelected();
-				}
-			}
 			// UI Font picker
 			ImGui::SameLine();
 			{
@@ -4587,6 +4699,15 @@ void Draw()
 								ImGui::CloseCurrentPopup();
 							}
 							ImGui::BeginDisabled(!s_ctxMenuPending.active);
+							const int contextTick = tick_from_client(s_ctxMenuPending.time +
+							    g_Hook_VClient_RenderView.m_CamPath.GetOffset());
+							ImGui::BeginDisabled(!g_VEngineClient || !g_VEngineClient->IsPlayingDemo());
+							if (ImGui::MenuItem("Go to"))
+								Afx_GotoDemoTick(contextTick);
+							if (ImGui::MenuItem("Go to with lead-in"))
+								Afx_GotoDemoTick(EventSeekTick(contextTick));
+							ImGui::EndDisabled();
+							ImGui::Separator();
 							bool doRemove = false, doGet = false, doSet = false;
 							if (ImGui::MenuItem("Remove"))
 								doRemove = true;
@@ -4863,6 +4984,7 @@ void Draw()
 						ImGui::EndNeoTimeLine();
 					}
 					DrawSequencerExtraTracks(visibleStart, visibleEnd);
+					DrawSequencerSeekContext();
 					if (choosePath < document.GetCount())
 						ImGui::NeoCancelSelection();
 					ImGui::EndNeoSequencer();
@@ -4961,6 +5083,16 @@ void Draw()
 									MirvCampathPreview_GetTime());
 			}
 
+			if (ImGui::Button("Open demo..."))
+				OpenDemoPicker();
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(140);
+			bool go = ImGui::InputInt("Go to tick", &g_SequencerTimeline.GoToTick, 1, 100,
+			                          ImGuiInputTextFlags_EnterReturnsTrue);
+			ImGui::SameLine();
+			go |= ImGui::Button("Go");
+			if (go)
+				Afx_GotoDemoTick((std::max)(0, g_SequencerTimeline.GoToTick));
 			DrawSequencerDetails(int(s_seqFrame));
 
 			// Frame pointer dragging -> demo_gototick
@@ -5425,6 +5557,7 @@ void Draw()
 		}
 	}
 
+	DrawDemoPicker();
 	DrawCurveEditor();
 	if (g_GestureStart)
 	{

@@ -9,6 +9,8 @@ bool IsMouseLook();
 void SetMouseLook(bool value);
 void Initialize();
 void Draw();
+// Called on the engine thread for playdemo/timedemo; indexing starts outside the command callback.
+void NotifyDemoPlaybackFile(const char *file);
 // Shared by the overlay and native mirv_campath / preview commands.
 void BeginEdit();
 void FinishEdit();

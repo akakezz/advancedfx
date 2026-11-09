@@ -1482,14 +1482,28 @@ void __cdecl ObserveNativeDemoSeek(const void *args)
 			g_CommandSystem.CancelTickMarkerSeek();
 	}
 }
+void RememberNativeDemoFile(const void *args)
+{
+#if AFX_ENABLE_GUI
+	// Both TF2 console-interface variants use the public Source CCommand layout.
+	if (args)
+	{
+		const auto &command = *static_cast<const SOURCESDK::CCommand_004 *>(args);
+		if (command.ArgC() >= 2)
+			AfxHookSource::CameraOverlay::NotifyDemoPlaybackFile(command.Arg(1));
+	}
+#endif
+}
 void __cdecl ObserveNativeDemoPlay(const void *args)
 {
+	RememberNativeDemoFile(args);
 	g_CommandSystem.EnableTickMarkers(false);
 	g_CommandSystem.CancelTickMarkerSeek();
 	g_NativeDemoPlay(args);
 }
 void __cdecl ObserveNativeTimedemo(const void *args)
 {
+	RememberNativeDemoFile(args);
 	g_CommandSystem.EnableTickMarkers(false);
 	g_CommandSystem.CancelTickMarkerSeek();
 	g_NativeTimedemo(args);

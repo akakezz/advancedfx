@@ -9,6 +9,8 @@
 
 #include <unordered_map>
 #include <math.h>
+#include <string>
+#include <cfloat>
 
 namespace ImGui
 {
@@ -48,6 +50,10 @@ namespace ImGui
         FrameIndexType OffsetFrame = 0; // Offset from start
 
         float ValuesWidth = 32.0f; // Width of biggest label in timeline, used for offset of timeline
+
+        std::string SpanCaption;
+        float SpanHoverDistance = FLT_MAX;
+        FrameIndexType SpanBegin = 0, SpanEnd = 0;
 
         float FilledHeight = 0.0f; // Height of whole sequencer
 
@@ -1204,6 +1210,8 @@ namespace ImGui
         const bool closable = open != nullptr;
 
         auto& context = sequencerData[currentSequencer];
+        context.SpanCaption.clear();
+        context.SpanHoverDistance = FLT_MAX;
         const auto& imStyle = GetStyle();
         ImGuiWindow* window = GetCurrentWindow();
         const ImGuiID id = window->GetID(label);
@@ -1302,6 +1310,15 @@ namespace ImGui
 
         IM_ASSERT(context.TimelineStack.size() > 0 && "Timeline stack push/pop missmatch!");
 
+        // Resolve overlapping hover targets once, showing only the nearest marker/range.
+        if (!context.SpanCaption.empty() && BeginTooltip())
+        {
+            TextUnformatted(context.SpanCaption.c_str());
+            if (context.SpanBegin == context.SpanEnd) Text("Tick %d", context.SpanBegin);
+            else Text("%d - %d ticks", context.SpanBegin, context.SpanEnd);
+            EndTooltip();
+        }
+        context.SpanCaption.clear();
         context.ValuesCursor.x += imStyle.FramePadding.x + (float) currentTimelineDepth * style.DepthItemSpacing;
         context.ValuesCursor.y += currentTimelineHeight;
 
@@ -1339,11 +1356,27 @@ namespace ImGui
         context.IsLastKeyframeSelected = selected;
     }
 
-    bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption)
+    bool GetNeoSequencerMouseFrame(FrameIndexType *frame)
+    {
+        IM_ASSERT(inSequencer);
+        auto &context = sequencerData[currentSequencer];
+        const float left = context.StartValuesCursor.x + GetStyle().FramePadding.x + context.ValuesWidth;
+        const ImRect area(ImVec2(left, context.TopBarStartCursor.y), context.TopLeftCursor + context.Size);
+        const float step = getPerFrameWidth(context);
+        if (!frame || step <= 0 || !IsWindowHovered() || !IsMouseHoveringRect(area.Min, area.Max))
+            return false;
+        const double tick = double(context.StartFrame) + context.OffsetFrame +
+                            floor((GetIO().MousePos.x - left) / step + 0.5);
+        *frame = (FrameIndexType)ImClamp(tick, double(context.StartFrame), double(context.EndFrame));
+        return true;
+    }
+
+    bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption, bool *hovered)
     {
         IM_ASSERT(inSequencer);
         auto &context = sequencerData[currentSequencer];
         IM_ASSERT(!context.TimelineStack.empty());
+        if (hovered) *hovered = false;
         if (end < begin)
             return false;
         const float left = context.StartValuesCursor.x + GetStyle().FramePadding.x + context.ValuesWidth;
@@ -1363,13 +1396,24 @@ namespace ImGui
         else
             draw->AddRectFilled(bounds.Min, bounds.Max, color, 3);
         draw->PopClipRect();
-        const bool hover = IsWindowHovered() && IsMouseHoveringRect(bounds.Min, bounds.Max);
-        if (hover && caption)
+        // Point markers have a visible head and a forgiving hit area, independent of zoom.
+        if (begin == end)
         {
-            BeginTooltip();
-            TextUnformatted(caption);
-            Text("%d - %d ticks", begin, end);
-            EndTooltip();
+            draw->PushClipRect(ImVec2(left, y0), ImVec2(right, y1), true);
+            draw->AddRectFilled(ImVec2(x0 - 3, y0), ImVec2(x0 + 3, y0 + 5), color, 1);
+            draw->PopClipRect();
+            bounds.Min.x = ImMax(left, x0 - 6);
+            bounds.Max.x = ImMin(right, x0 + 6);
+        }
+        const bool hover = IsWindowHovered() && IsMouseHoveringRect(bounds.Min, bounds.Max);
+        if (hovered) *hovered = hover;
+        const float distance = fabsf(GetIO().MousePos.x - ImClamp(GetIO().MousePos.x, x0, x1));
+        if (hover && caption && distance < context.SpanHoverDistance)
+        {
+            context.SpanCaption = caption;
+            context.SpanHoverDistance = distance;
+            context.SpanBegin = begin;
+            context.SpanEnd = end;
         }
         return hover && IsMouseClicked(ImGuiMouseButton_Left);
     }

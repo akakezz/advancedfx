@@ -171,31 +171,46 @@ Use `mirv_cmd markers` for the remaining edit/remove/run/load commands. These
 markers use integer demo ticks; camera key indices and camera undo history are
 unchanged.
 
-### Demo events
+### Demo events and navigation
 
 The **Demo events** row indexes events across the entire demo, including ticks
-not yet played. Opening a demo with the overlay's existing file picker starts
-indexing in the background. For demos opened through the console, choose
-**Index demo** in the **Events** tab. Indexing is read-only and never executes
-console commands embedded in a demo. Progress and cancellation are available;
-completed results are kept in memory, with no continuous file parsing while idle.
+not yet played. **Open demo...** is available directly in the sequencer and uses
+the same file picker as Settings. Native `playdemo`/`timedemo` commands also
+supply their filenames for automatic background indexing, including Source UI
+actions that issue those commands. Relative names resolve against the game
+directory; a missing extension defaults to `.dem`. An unchanged completed index
+is reused. **Automatically index opened demos** can disable this behavior.
+
+For a demo already playing when HLAE starts, or a UI that opens playback without
+issuing an observed console command, choose **Index demo events** in the
+**Events** tab. Indexing is read-only and never executes embedded demo console
+commands. Progress and cancellation are available; completed results stay in
+memory, with no continuous file parsing while idle.
+
+Right-click the ruler or a timeline track for **Go to** at the clicked tick.
+Right-click a command/event marker to target its exact tick. **Go to with
+lead-in** seeks the configured number of ticks earlier, clamping at zero. The
+**Go to tick** field and **Go** button provide exact navigation; Enter also seeks.
+All these routes use the existing after-seek policy.
 
 Filter deaths, rounds, objectives and player events; search names, weapons or
 other event fields. **Recorder deaths only** uses the recorded header name when
-it can be matched to a player. Names are resolved from the demo's user-info
-snapshots and retain their historical values. High-frequency damage/healing
-notifications are deliberately excluded from the cinematic event track.
+it can be matched to a player. Names resolve from the demo's user-info snapshots
+and retain their historical values. High-frequency damage/healing notifications
+are excluded from the cinematic event track.
 
 Click a marker to inspect **all events at that tick** below the timeline,
 including their individual fields. **Previous event**, **Next event** and
-**Seek to event** provide navigation. Seeking uses the existing after-seek policy.
-Dense markers share a pixel when zoomed out; zoom in or use event navigation to
-inspect them individually. The existing wheel zoom, pan and overview work across
-camera, command and event tracks.
+**Seek to event** provide navigation. **Event lead-in (ticks)** also affects
+**Seek to event**; it defaults to 132 ticks, so a kill can be viewed with its
+lead-up. Set it to zero to seek to the exact event tick. Point markers have
+12-pixel hover targets and display one tick in their tooltips. Dense markers
+share a pixel when zoomed out; zoom in or use event navigation to inspect them
+individually. Existing wheel zoom, pan and overview work across all tracks.
 
 Check the indexed filename shown in the tab. The native engine interface only
 lets the overlay compare the playing demo's map and tick count to the index;
-these checks cannot distinguish two different files with identical metadata.
+these checks cannot distinguish different files with identical metadata.
 Unsupported, truncated or changing files report an error without publishing a
 partial index. This reader supports Source demo protocol 3, network protocols
 15–24; TF2C-specific event coverage still needs testing with real TF2C demos.
