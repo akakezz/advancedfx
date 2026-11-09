@@ -171,6 +171,7 @@ advancedfx::PlayerRepair &MirvFix_PlayerRepairModel();
 void MirvFix_PlayerRepairNewDemo(const char *file);
 bool MirvFix_PlayerRepairBegin(int entity);
 void MirvFix_PlayerRepairEnd();
+bool MirvFix_PlayerRepairHasDemo();
 bool MirvFix_PlayerRepairCollecting();
 bool MirvFix_PlayerRepairEnable(bool enabled);
 bool MirvFix_PlayerRepairEnabled();

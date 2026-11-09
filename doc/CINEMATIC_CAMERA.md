@@ -232,7 +232,10 @@ not a general demo-file repair tool or skeletal-animation reconstruction.
 1. Open the demo normally with HLAE loaded. If it was already playing when HLAE
    started, index that exact file and choose **Bind playing demo to indexed file**,
    or use `mirv_fix playerRepair demo "file.dem"` without reopening playback.
-2. Choose **Repair player**, then **Start new player collection**. This replaces
+2. Explicitly choose a valid player from **Repair player**, then **Start new
+   player collection**. Empty slots and nonpositive user IDs cannot start a
+   collection. A matching indexed demo binds automatically when no file is bound.
+   This replaces
    the previous player's samples and marks; save existing work first.
 3. Seek backward to tick zero or before the troublesome section, then play
    through it and far enough beyond it to collect a good future anchor. The
@@ -257,6 +260,13 @@ not a general demo-file repair tool or skeletal-animation reconstruction.
    enabling it. The binding uses the canonical filename, header fingerprint and
    file size, plus the recorded player user ID; a different path needs a new
    collection. Only one player repair is active in this first version.
+
+If no samples appear, run `mirv_fix playerRepair status` immediately after Start.
+A successful start reports `collect 1` and a positive user ID. The status also
+shows the demo binding, client interface, observer hooks, properties and entity
+selection. Stop preserves setup errors and explicitly reports a zero-sample
+collection; it does not imply collection succeeded. Collected samples stay in
+memory after Stop.
 
 **Smooth bounded reconstruction** uses monotone cubic slopes from neighboring
 valid samples; disabling it uses linear interpolation. Angles take the shortest

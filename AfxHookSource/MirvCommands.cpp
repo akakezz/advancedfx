@@ -4532,6 +4532,7 @@ RepairProxySlot g_RepairProxySlots[16];
 std::map<const Tf2FixRecvProp *, RepairProperty> g_RepairProperties;
 PlayerRepair g_PlayerRepair;
 bool g_RepairHooks = false, g_RepairCollect = false, g_RepairEnabled = false;
+int g_RepairRequestedEntity = -1;
 int g_RepairEntity = -1, g_RepairTick = -1, g_RepairLastTick = -1, g_RepairLife = -1;
 unsigned g_RepairEpoch = 0;
 PlayerRepair::Sample g_RepairRaw;
@@ -4707,7 +4708,11 @@ bool InstallRepairProxies()
 		return true;
 	if (!g_Tf2FixClient ||
 	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified))
+	{
+		g_RepairStatus = "Player collection requires the TF2/TF2C VClient017 receive-table interface.";
 		return false;
+	}
+	g_RepairProperties.clear();
 #ifdef _WIN64
 	using ClassesFn = Tf2FixClientClass *(*)(void *);
 #else
@@ -4732,8 +4737,10 @@ bool InstallRepairProxies()
 	}
 	if (channels != PlayerRepair::All || !life || originals.empty() || originals.size() > 16)
 	{
-		g_RepairStatus =
-		    "Required TF2 player origin, eye-angle and life-state receive properties are unavailable.";
+		g_RepairStatus = "Required player receive properties are unavailable: channel mask " +
+		                 std::to_string(channels) + "/31, life state " + std::to_string(life) +
+		                 ", properties " + std::to_string(g_RepairProperties.size()) + ", proxy functions " +
+		                 std::to_string(originals.size()) + ".";
 		g_RepairProperties.clear();
 		return false;
 	}
@@ -4754,7 +4761,8 @@ bool InstallRepairProxies()
 	if (error != NO_ERROR)
 	{
 		g_RepairProperties.clear();
-		g_RepairStatus = "Could not install player repair receive observers.";
+		g_RepairStatus = "Could not install player repair receive observers (Detours error " +
+		                 std::to_string(error) + ").";
 		return false;
 	}
 	g_RepairHooks = true;
@@ -4764,6 +4772,10 @@ bool InstallRepairProxies()
 advancedfx::PlayerRepair &MirvFix_PlayerRepairModel()
 {
 	return g_PlayerRepair;
+}
+bool MirvFix_PlayerRepairHasDemo()
+{
+	return !g_RepairDemo.empty();
 }
 bool MirvFix_PlayerRepairCollecting()
 {
@@ -4824,14 +4836,34 @@ void MirvFix_PlayerRepairNewDemo(const char *name)
 }
 bool MirvFix_PlayerRepairBegin(int entity)
 {
-	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || g_RepairDemo.empty())
+	g_RepairRequestedEntity = entity;
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
 	{
-		g_RepairStatus = "Open or bind the playing demo first.";
+		g_RepairStatus = "Start player collection while a TF2 demo is playing.";
+		return false;
+	}
+	if (g_RepairDemo.empty())
+	{
+		g_RepairStatus =
+		    "No demo file bound. Open it through the sequencer, or index the playing file and start again.";
 		return false;
 	}
 	int user = 0;
 	char name[64];
-	if (!Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user) || user <= 0 || !InstallRepairProxies())
+	if (!Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user))
+	{
+		g_RepairStatus = "Entity " + std::to_string(entity) +
+		                 " has no available player information. Choose a player from Repair player.";
+		return false;
+	}
+	if (user <= 0)
+	{
+		g_RepairStatus = "Player " + std::string(name) + " at entity " + std::to_string(entity) +
+		                 " has invalid user ID " + std::to_string(user) +
+		                 "; choose a recorded player instead.";
+		return false;
+	}
+	if (!InstallRepairProxies())
 		return false;
 	g_PlayerRepair.Reset();
 	g_PlayerRepair.Demo = g_RepairDemo;
@@ -4851,9 +4883,23 @@ bool MirvFix_PlayerRepairBegin(int entity)
 }
 void MirvFix_PlayerRepairEnd()
 {
+	bool wasCollecting = g_RepairCollect;
 	RepairFlush();
+	bool completed = wasCollecting && g_RepairCollect;
 	g_RepairCollect = false;
-	g_RepairStatus = "Collection stopped. Mark a range, then rewind before it to compare.";
+	// Stop is idempotent. Preserve the actual start/flush failure instead of
+	// replacing it with a success message when collection never began.
+	if (completed)
+	{
+		if (g_PlayerRepair.Samples().empty())
+			g_RepairStatus = "Collection stopped with zero samples. No matching player receive updates were "
+			                 "observed; status shows the target and observer state.";
+		else
+			g_RepairStatus = "Collection stopped. " + std::to_string(g_PlayerRepair.Samples().size()) +
+			                 " original samples retained; mark a range, then rewind to compare.";
+	}
+	else if (g_RepairStatus.empty())
+		g_RepairStatus = "No player collection has been started.";
 }
 bool MirvFix_PlayerRepairEnable(bool enabled)
 {
@@ -4999,6 +5045,10 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			    MirvFix_PlayerRepairCollecting(), MirvFix_PlayerRepairEnabled(), model.UserId,
 			    model.Samples().size(), model.GetEdits().Ranges.size(), MirvFix_PlayerRepairWrites(),
 			    MirvFix_PlayerRepairStatus());
+			Tier0_Msg("Player repair setup: bound demo %d; TF2 client %d; hooks %d; properties %zu; requested "
+			          "entity %d; active entity %d.\n",
+			          !g_RepairDemo.empty(), g_Tf2FixClient != nullptr, g_RepairHooks, g_RepairProperties.size(),
+			          g_RepairRequestedEntity, g_RepairEntity);
 			return;
 		}
 		// End TF2 player repair command.

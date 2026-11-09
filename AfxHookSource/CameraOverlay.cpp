@@ -3444,7 +3444,7 @@ static void DrawDemoPicker()
 }
 struct RepairEditor
 {
-	int Entity = 1, Tick = 0, First = 0, Last = 0, Channels = 2;
+	int Entity = -1, Tick = 0, First = 0, Last = 0, Channels = 2;
 	bool Smooth = true, Follow = true, Drag = false, DragMoved = false;
 	float DragMouseX = 0;
 	int DragStart = 0;
@@ -3556,7 +3556,7 @@ static void DrawPlayerRepairEditor(int playhead)
 		{
 			char name[64];
 			int user = 0;
-			if (!Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user))
+			if (!Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user) || user <= 0)
 				continue;
 			std::string label = std::to_string(entity) + ": " + name;
 			if (ImGui::Selectable(label.c_str(), entity == ui.Entity))
@@ -3566,13 +3566,26 @@ static void DrawPlayerRepairEditor(int playhead)
 	}
 	char chosen[64];
 	int user = 0;
-	if (Mirv_Tf2_GetPlayerInfo(ui.Entity, chosen, sizeof(chosen), &user))
-		ImGui::Text("Collection target: %s (user %d)", chosen, user);
+	bool validPlayer = Mirv_Tf2_GetPlayerInfo(ui.Entity, chosen, sizeof(chosen), &user) && user > 0;
+	if (validPlayer)
+		ImGui::Text("Selected player: %s (user %d)", chosen, user);
+	else
+		ImGui::TextWrapped("Choose a recorded player from Repair player before starting collection.");
+	ImGui::BeginDisabled(!validPlayer);
 	if (ImGui::Button("Start new player collection"))
-		MirvFix_PlayerRepairBegin(ui.Entity);
+	{
+		bool attemptedBinding = !MirvFix_PlayerRepairHasDemo() && TimelineMatchesDemo();
+		if (attemptedBinding)
+			MirvFix_PlayerRepairNewDemo(g_SequencerTimeline.Index.File.string().c_str());
+		if (!attemptedBinding || MirvFix_PlayerRepairHasDemo())
+			MirvFix_PlayerRepairBegin(ui.Entity);
+	}
+	ImGui::EndDisabled();
 	ImGui::SameLine();
+	ImGui::BeginDisabled(!MirvFix_PlayerRepairCollecting());
 	if (ImGui::Button("Stop player collection"))
 		MirvFix_PlayerRepairEnd();
+	ImGui::EndDisabled();
 	if (TimelineMatchesDemo() && ImGui::Button("Bind playing demo to indexed file"))
 		MirvFix_PlayerRepairNewDemo(g_SequencerTimeline.Index.File.string().c_str());
 	bool enabled = MirvFix_PlayerRepairEnabled();
