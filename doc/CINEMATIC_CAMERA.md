@@ -352,29 +352,56 @@ experiment, not an automatic animation fix:
    with the tick at which you saw the snap. Existing files are not overwritten.
 
 The CSV includes demo tick, engine frame, client time, player identity, repair
-state, field and value. Rows distinguish `receive_raw`, `receive_forwarded`,
-`receive_output`, `net_update_end`, `render_start`, and `render_end`. Float pose
-slots (`pose_0` through `pose_23`) are discovered through receive metadata;
-values are normalized slots, not degrees or named model-specific parameters.
-Eye fields and pose fields are read only after their real receive callback has
-provided a storage offset and the current live entity matches that object.
-Unknown fields are blank in CSV, never substituted with zero. Render angles
-are the entity's render orientation, not the eye direction or head-bone rotation.
-The three interpolation cvars are also captured when available.
+state, field, values, status and event number. It now covers:
 
-Capture uses the existing receive and frame-stage hooks. It does not call
-SetupBones, change animation parameters, or require AGR recording. No disk I/O
-runs during capture; export happens after stopping. Storage is capped at 50,000
-rows. A rewind clears the diagnostic buffer and observed storage bindings to
-avoid mixing passes. Opening another demo or leaving playback stops capture.
-The first run should use the UI's tick-zero replay so initial unchanged fields
-can be observed; the console entry point merely arms capture and does not seek.
+- Raw, forwarded and written receive values for eye angles, origin and life state.
+- Live pose slots resolved from receive-table metadata, even when the server
+  never updates them. The recorded player is checked before each read.
+- Sequence, cycle, playback rate, animation/simulation times, sequence/reset
+  parity, client-animation flags, interpolation-frame flags, health/team/life,
+  model index/scale, flags, origin/velocity and rotation where metadata exposes them.
+- Animation-layer sequence/order, current/previous cycle, weight and playback rate.
+  CUtlVector layout is validated from its receive-proxy metadata; its current
+  bounded contents are copied with a checked process-memory read. Missing slots
+  have `inactive_layer` status, rather than being confused with weight zero.
+- State at network-update end, before the engine's render-start callback, after
+  that callback, and at render end. Frame/tick interval, interpolation amount,
+  demo timescale/pause/skip/HLTV state and interpolation cvars accompany the data.
+- Bone matrices from the selected renderable's **natural SetupBones calls**.
+  A bounded mutex-protected queue supports worker calls. No additional bone
+  evaluation or AGR recording mode is requested. Each call includes success,
+  output-buffer presence, mask and sample time. Matrices include every available
+  bone, with model generation, names, parents, flags, and pose names/ranges.
 
-Stage differences can narrow the failure to received values versus later
-processing, but do not alone identify the exact interpolation or animation
-function responsible. Bone transforms and animation-layer internals are not
-captured in this first diagnostic. Normal pose/eye fields with a visible snap
-would motivate inspecting those next.
+For scalar rows only `value` is populated. For bone rows, `value,v1,...,v11`
+contain the row-major world-space 3x4 matrix (translation is at columns `v3`,
+`v7`, `v11`). `event` joins a matrix to its SetupBones call information. Bone
+frames and client times are stamped during the call; the demo tick is that of
+the main-thread drain, so use captured frame/time when matching late worker
+output. Entity render angles are not the same as eye direction or head-bone
+orientation. Pose values are normalized slots; model metadata supplies their
+names and ranges when available.
+
+The file ends with `coverage` counts and `summary` rows, including capture
+status, requested ticks, matrix-row count and dropped bone records. Statuses
+are `ok`, `unavailable`, `unobserved`, `invalid_layout`, `inactive_layer`,
+`nonfinite` and `masked_out`. Masked-out matrices may be stale; the call mask
+and model bone flags explain which output was requested. Blank values are
+unavailable, never implicit zeroes. Begin reports resolved pose slots and bone
+observer availability; the UI reports actual pose/matrix coverage afterward.
+
+No file I/O runs during capture; export happens after stopping. Storage is
+capped at 250,000 rows and the worker queue at 16 calls. Overflow is counted;
+more than eight model generations stops the capture with an explicit message.
+A rewind clears rows, counts and remembered bindings to avoid mixing passes.
+Opening another demo or leaving playback stops capture. The UI's tick-zero
+replay captures initial state; the console entry point only arms recording.
+
+This is diagnostic coverage, not an animation fix. Fields missing from public
+receive/model metadata remain unavailable, and private animation-state internals
+are not guessed from unverified offsets. Stage differences and actual skeleton
+output should help distinguish interpolation, animation blending and bone
+processing without repeatedly extending the capture for each likely cause.
 
 ```text
 mirv_fix playerRepair diagnostic begin <entity index> <first tick> <last tick>

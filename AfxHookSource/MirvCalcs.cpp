@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <shared/AfxDetours.h>
 #include <cstddef>
 #include <cstring>
 
@@ -6845,6 +6846,317 @@ void Mirv_Tf2_ReadDiagnosticFields(int entity, const void *object, const int *of
 	}
 }
 
+// Animation diagnostic access stays next to the existing TF2 entity helpers.
+void *Mirv_Tf2_DiagnosticEntity(int entity)
+{
+	auto tools = CClientToolsTf2::Instance();
+	auto iface = tools ? tools->GetClientTools() : nullptr;
+	if (iface)
+		for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+			if (iface->GetEntIndex(ent) == entity)
+				return ent;
+	return nullptr;
+}
+void Mirv_Tf2_ReadAnimationDiagnostic(int entity, const void *object, const MirvTf2DiagnosticField *fields,
+                                      int count, double *values, int *status, float origin[3])
+{
+	if (!fields || !values || !status || count < 0 || count > 512)
+		return;
+	void *live = Mirv_Tf2_DiagnosticEntity(entity);
+	if (!live || live != object)
+		return;
+	struct VectorCopy
+	{
+		int Length = 0, Stride = 0, Maximum = 0, Status = 3;
+		std::vector<char> Data;
+	};
+	std::map<int, VectorCopy> vectors;
+	for (int i = 0; i < count; ++i)
+	{
+		const auto &f = fields[i];
+		int size = f.Kind == 2 ? 1 : f.Kind == 3 ? 2 : 4;
+		if (f.Kind < 0 || f.Kind > 3 || f.Offset < 0 || f.Offset > 65536 - size)
+			continue;
+		const char *base = static_cast<const char *>(object);
+		if (f.VectorOffset >= 0)
+		{
+			// Public Source SDK CUtlVector/CUtlMemory layout. The location, element
+			// stride and maximum are supplied by validated receive-proxy extra data.
+			if (f.VectorOffset > 65536 - 32 || f.Maximum < 1 || f.Maximum > 64 || f.Element < 0 ||
+			    f.Element >= f.Maximum || f.Stride < size || f.Stride > 512 || f.Offset > f.Stride - size)
+			{
+				status[i] = 3;
+				continue;
+			}
+			const char *data = nullptr;
+			int allocation = 0, length = 0;
+			std::memcpy(&data, base + f.VectorOffset, sizeof(data));
+			std::memcpy(&allocation, base + f.VectorOffset + sizeof(void *), sizeof(int));
+			std::memcpy(&length, base + f.VectorOffset + sizeof(void *) + 2 * sizeof(int), sizeof(int));
+			if (length < 0 || length > f.Maximum || allocation < length || allocation > 65536 ||
+			    (length && !data))
+			{
+				status[i] = 3;
+				continue;
+			}
+			if (f.Element >= length)
+			{
+				status[i] = 4;
+				continue;
+			}
+			auto found = vectors.find(f.VectorOffset);
+			if (found == vectors.end())
+			{
+				VectorCopy copy;
+				copy.Length = length;
+				copy.Stride = f.Stride;
+				copy.Maximum = f.Maximum;
+				copy.Data.resize(size_t(length) * f.Stride);
+				SIZE_T read = 0;
+				if (ReadProcessMemory(GetCurrentProcess(), data, copy.Data.data(), copy.Data.size(), &read) &&
+				    read == copy.Data.size())
+					copy.Status = 0;
+				found = vectors.emplace(f.VectorOffset, std::move(copy)).first;
+			}
+			const auto &copy = found->second;
+			if (copy.Status || copy.Length != length || copy.Stride != f.Stride || copy.Maximum != f.Maximum)
+			{
+				status[i] = 3;
+				continue;
+			}
+			base = copy.Data.data() + f.Element * f.Stride;
+		}
+		if (f.Kind == 0)
+		{
+			float v;
+			std::memcpy(&v, base + f.Offset, 4);
+			values[i] = v;
+		}
+		else if (f.Kind == 1)
+		{
+			int v;
+			std::memcpy(&v, base + f.Offset, 4);
+			values[i] = v;
+		}
+		else if (f.Kind == 2)
+		{
+			unsigned char v;
+			std::memcpy(&v, base + f.Offset, 1);
+			values[i] = v;
+		}
+		else
+		{
+			short v;
+			std::memcpy(&v, base + f.Offset, 2);
+			values[i] = v;
+		}
+		status[i] = std::isfinite(values[i]) ? 0 : 5;
+	}
+	auto renderable = reinterpret_cast<CMirvTf2ClientUnknown *>(live)->GetClientRenderable();
+	auto renderOrigin = renderable ? reinterpret_cast<const float *>(renderable->GetRenderOrigin()) : nullptr;
+	if (origin && renderOrigin)
+		std::copy(renderOrigin, renderOrigin + 3, origin);
+}
+bool Mirv_Tf2_DiagnosticModel(int entity, MirvTf2DiagnosticModel &out)
+{
+	out = MirvTf2DiagnosticModel{};
+	auto live = Mirv_Tf2_DiagnosticEntity(entity);
+	auto renderable = live ? reinterpret_cast<CMirvTf2ClientUnknown *>(live)->GetClientRenderable() : nullptr;
+	auto info = Mirv_Tf2_GetModelInfo();
+	auto model = renderable ? renderable->GetModel() : nullptr;
+	if (!info || !model)
+		return false;
+	const char *name = info->GetModelName(model);
+	if (name)
+	{
+		std::strncpy(out.Name, name, sizeof(out.Name) - 1);
+	}
+	auto hdr = static_cast<const unsigned char *>(info->GetStudiomodel(model));
+	if (!hdr)
+		return false;
+	MirvTf2BoneName_t names[MIRV_TF2_MAX_BONES];
+	out.Bones = Mirv_Tf2_ReadBoneNames(hdr, names);
+	if (!out.Bones)
+		return false;
+	int length, boneOffset;
+	std::memcpy(&length, hdr + 76, 4);
+	std::memcpy(&boneOffset, hdr + 160, 4);
+	for (int i = 0; i < out.Bones; ++i)
+		std::memcpy(out.BoneFlags + i, hdr + boneOffset + i * 216 + 160, 4);
+	if (length < 308)
+		return true;
+	int count, offset;
+	std::memcpy(&count, hdr + 300, 4);
+	std::memcpy(&offset, hdr + 304, 4);
+	if (count < 0 || count > 24 || offset < 308 || (long long)offset + count * 20 > length)
+		return true;
+	out.Poses = count;
+	for (int i = 0; i < count; ++i)
+	{
+		int at = offset + i * 20, nameOffset;
+		std::memcpy(&nameOffset, hdr + at, 4);
+		if (nameOffset > 0 && nameOffset <= length - at - 1)
+			for (int j = 0; j < 63 && at + nameOffset + j < length && hdr[at + nameOffset + j]; ++j)
+				out.PoseNames[i][j] = char(hdr[at + nameOffset + j]);
+		std::memcpy(out.PoseStart + i, hdr + at + 8, 4);
+		std::memcpy(out.PoseEnd + i, hdr + at + 12, 4);
+		std::memcpy(out.PoseLoop + i, hdr + at + 16, 4);
+	}
+	return true;
+}
+namespace
+{
+struct DiagnosticBoneObserver
+{
+	std::mutex Mutex;
+	std::atomic<void *> Target{nullptr};
+	const void *Model = nullptr;
+	int Count = 0, Generation = 0;
+	unsigned long long Call = 0, Dropped = 0;
+	MirvTf2DiagnosticBones Queue[16];
+	int Read = 0, Size = 0;
+} g_DiagnosticBones;
+#ifdef _WIN64
+using DiagnosticSetupBones = bool (*)(void *, SOURCESDK::matrix3x4_t *, int, int, float);
+#else
+using DiagnosticSetupBones = bool(__fastcall *)(void *, void *, SOURCESDK::matrix3x4_t *, int, int, float);
+#endif
+DiagnosticSetupBones g_DiagnosticSetupBones = nullptr;
+void *g_DiagnosticSetupBonesAddress = nullptr;
+bool __fastcall DiagnosticObserveSetupBones(void *self,
+#ifndef _WIN64
+                                            void *edx,
+#endif
+                                            SOURCESDK::matrix3x4_t *matrix, int maximum, int mask, float time)
+{
+	bool result = g_DiagnosticSetupBones(self,
+#ifndef _WIN64
+	                                     edx,
+#endif
+	                                     matrix, maximum, mask, time);
+	auto &o = g_DiagnosticBones;
+	if (self != o.Target.load())
+		return result;
+	const void *model = static_cast<CMirvTf2ClientRenderable *>(self)->GetModel();
+	std::lock_guard<std::mutex> lock(o.Mutex);
+	if (self != o.Target.load())
+		return result;
+	if (model != o.Model)
+	{
+		++o.Dropped;
+		return result;
+	}
+	if (o.Size == 16)
+	{
+		++o.Dropped;
+		return result;
+	}
+	auto &row = o.Queue[(o.Read + o.Size++) % 16];
+	row.Call = ++o.Call;
+	row.Success = result;
+	row.Output = matrix != nullptr;
+	row.Time = time;
+	row.Mask = mask;
+	row.Generation = o.Generation;
+	auto gl = g_Hook_VClient_RenderView.GetGlobals();
+	row.Frame = gl ? gl->framecount_get() : -1;
+	row.ClientTime = gl ? gl->curtime_get() : time;
+	row.Count = result && matrix && maximum > 0 ? (std::min)(maximum, o.Count) : 0;
+	for (int b = 0; b < row.Count; ++b)
+		std::memcpy(row.Matrix[b], matrix[b].m_flMatVal, sizeof(row.Matrix[b]));
+	return result;
+}
+} // namespace
+int Mirv_Tf2_DiagnosticBoneConfigure(int entity, int &generation)
+{
+	auto &o = g_DiagnosticBones;
+	void *live = Mirv_Tf2_DiagnosticEntity(entity);
+	auto renderable = live ? reinterpret_cast<CMirvTf2ClientUnknown *>(live)->GetClientRenderable() : nullptr;
+	if (!renderable)
+	{
+		Mirv_Tf2_DiagnosticBoneStop();
+		return 0;
+	}
+	void *address = (*reinterpret_cast<void ***>(renderable))[16];
+	if (!g_DiagnosticSetupBones)
+	{
+		g_DiagnosticSetupBones = reinterpret_cast<DiagnosticSetupBones>(address);
+		LONG error = DetourTransactionBegin();
+		if (error == NO_ERROR)
+		{
+			error = DetourUpdateThread(GetCurrentThread());
+			if (error == NO_ERROR)
+				error = DetourAttach(reinterpret_cast<PVOID *>(&g_DiagnosticSetupBones),
+				                     reinterpret_cast<PVOID>(DiagnosticObserveSetupBones));
+			if (error == NO_ERROR)
+				error = DetourTransactionCommit();
+			else
+				DetourTransactionAbort();
+		}
+		if (error != NO_ERROR)
+		{
+			g_DiagnosticSetupBones = nullptr;
+			return 0;
+		}
+		g_DiagnosticSetupBonesAddress = address;
+	}
+	if (address != g_DiagnosticSetupBonesAddress)
+	{
+		Mirv_Tf2_DiagnosticBoneStop();
+		return 0;
+	}
+	const void *model = renderable->GetModel();
+	{
+		std::lock_guard<std::mutex> lock(o.Mutex);
+		if (o.Model == model && o.Target.load() == renderable && o.Count > 0)
+		{
+			generation = o.Generation;
+			return o.Count;
+		}
+	}
+	// Model-cache calls must stay outside the queue mutex (bone jobs can hold the model-cache lock).
+	MirvTf2BoneName_t names[MIRV_TF2_MAX_BONES];
+	int count = Mirv_Tf2_GetBoneNames(entity, names);
+	std::lock_guard<std::mutex> lock(o.Mutex);
+	if (o.Model != model || o.Target.load() != renderable || o.Count != count)
+	{
+		o.Target.store(nullptr);
+		o.Dropped += o.Size;
+		o.Read = o.Size = 0;
+		o.Count = count;
+		o.Model = model;
+		++o.Generation;
+		o.Target.store(renderable);
+	}
+	generation = o.Generation;
+	return o.Count;
+}
+bool Mirv_Tf2_DiagnosticBonePop(MirvTf2DiagnosticBones &out)
+{
+	auto &o = g_DiagnosticBones;
+	std::lock_guard<std::mutex> lock(o.Mutex);
+	if (!o.Size)
+		return false;
+	out = o.Queue[o.Read];
+	o.Read = (o.Read + 1) % 16;
+	--o.Size;
+	return true;
+}
+unsigned long long Mirv_Tf2_DiagnosticBoneDropped()
+{
+	std::lock_guard<std::mutex> lock(g_DiagnosticBones.Mutex);
+	return g_DiagnosticBones.Dropped;
+}
+void Mirv_Tf2_DiagnosticBoneStop()
+{
+	auto &o = g_DiagnosticBones;
+	std::lock_guard<std::mutex> lock(o.Mutex);
+	o.Target.store(nullptr);
+	o.Model = nullptr;
+	o.Count = 0;
+	o.Dropped += o.Size;
+	o.Read = o.Size = 0;
+}
 static bool Mirv_IsUsableBound(float v)
 {
 	// Also false for NaN.

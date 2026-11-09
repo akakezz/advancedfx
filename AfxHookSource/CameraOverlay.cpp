@@ -3723,9 +3723,10 @@ static void DrawPlayerAngleDiagnostic(int playhead)
 	}
 	if (!status.empty())
 		ImGui::TextWrapped("%s", status.c_str());
-	ImGui::TextWrapped("Records receive input/output, stored eye angles, pose slots, and entity render "
-	                   "angles at network/render stages. Empty CSV values mean unavailable; pose slots "
-	                   "are normalized values, not degrees. No extra bone evaluation is performed.");
+	ImGui::TextWrapped("Records receive angles, live poses, sequences/cycles, animation layers, movement/timing, "
+	                   "model metadata, and natural bone matrices. Coverage counts and status codes identify "
+	                   "unavailable or dropped data. Pose slots are normalized, not degrees. "
+	                   "No additional bone evaluation is requested.");
 }
 static void DrawPlayerRepairEditor(int playhead)
 {

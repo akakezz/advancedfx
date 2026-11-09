@@ -43,12 +43,15 @@ void MirvFix_PlayerAngleTraceEnd();
 #include "shared/overlay/third_party/imguizmo/ImGuizmo.h"
 #include <algorithm>
 #include <atomic>
+#include <thread>
+#include <mutex>
 #include <cfloat>
 #include <climits>
 #include <cerrno>
 #include <cstdarg>
 #include <set>
 #include <cstddef>
+#define __fastcall
 #define __thiscall
 #define __cdecl
 #define AFX_ENABLE_GUI 1
@@ -80,7 +83,7 @@ template<size_t N>void strncpy_s(char(&b)[N],const char*s,size_t){snprintf(b,N,"
 bool UTF8StringToWideString(const char*s,std::wstring&w){try{w=std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.from_bytes(s);return true;}catch(...){return false;}}
 bool StringIBeginsWith(const char*a,const char*b){return strncasecmp(a,b,strlen(b))==0;}
 struct MirvInput{int MovementClears=0;void ClearMovementInput(){++MovementClears;}void ResetCameraSmoothing(){}int CollisionAdoptions=0;void AdoptCollisionPosition(float x,float y,float z){++CollisionAdoptions;Pose[0]=x;Pose[1]=y;Pose[2]=z;}bool Override(float,float&x,float&y,float&z,float&a,float&b,float&c,float&f){x=y=z=a=b=c=f=-999;return true;}bool Camera=false;float Pose[7]={};double Sens=1;bool GetCameraControlMode(){return Camera;}void SetCameraControlMode(bool b){Camera=b;}void SetTx(float x){Pose[0]=x;}void SetTy(float x){Pose[1]=x;}void SetTz(float x){Pose[2]=x;}void SetRx(float x){Pose[3]=x;}void SetRy(float x){Pose[4]=x;}void SetRz(float x){Pose[5]=x;}void SetFov(float x){Pose[6]=x;}double GetKeyboardSensitivty(){return Sens;}void SetKeyboardSensitivity(double x){Sens=x;}} input;
-struct WrpGlobals{int framecount_get(){return 1;}double curtime_get(){return 1;}double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
+struct WrpGlobals{double absoluteframetime_get(){return 1.0/60;}int framecount_get(){return 1;}double curtime_get(){return 1;}double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
 struct FakeView{CamPath m_CamPath;CamPathCollection m_CamPaths{m_CamPath};MirvInput*m_MirvInput=&input;double LastCameraOrigin[3]={100,-100,50},LastCameraAngles[3]={0,135,0},LastCameraFov=130;int LastWidth=1600,LastHeight=1000;bool Menu=false,GlobalsAvailable=true;bool IsInstalled(){return true;}bool IsMenuActive(){return Menu;}bool IsSourceUiActive(){return Menu;}WrpGlobals*GetGlobals(){return GlobalsAvailable?&globals:nullptr;}}g_Hook_VClient_RenderView;
 struct CCampathDrawer{bool Names=true,Holds=true,Durations=true;bool GetDrawNames(){return Names;}bool GetDrawHolds(){return Holds;}bool GetDrawDurations(){return Durations;}void SetDrawNames(bool v){Names=v;}void SetDrawHolds(bool v){Holds=v;}void SetDrawDurations(bool v){Durations=v;}bool Draw=false;float Index=18;bool Draw_get(){return Draw;}void Draw_set(bool b){Draw=b;}float GetDrawKeyframeIndex(){return Index;}void SetDrawKeyframeIndex(float x){Index=x;}}g_CampathDrawer;
 struct Clock{double Time=10;double GetTime(){return Time;}int GetFrameCount(){return int(Time*100);}}g_MirvTime;
@@ -97,7 +100,47 @@ void Mirv_Tf2_ReadDiagnosticFields(int,const void*object,const int*offsets,float
 int repairTestUser=42;int Mirv_Tf2_GetMaxPlayers(){return 1;}bool Mirv_Tf2_GetPlayerInfo(int i,char*b,int n,int*u){snprintf(b,n,"Scout");*u=repairTestUser;return i==1;}
 constexpr int MIRV_TF2_MAX_BONES=256;
 struct MirvTf2BoneName_t{char name[64];int parent;};
-int Mirv_Tf2_GetBoneNames(int entity,MirvTf2BoneName_t*out){if(entity!=1)return 0;snprintf(out[0].name,64,"root");snprintf(out[1].name,64,"bip_head");return 2;}
+int diagnosticNameCount=2;int Mirv_Tf2_GetBoneNames(int entity,MirvTf2BoneName_t*out){if(entity!=1)return 0;snprintf(out[0].name,64,"root");snprintf(out[1].name,64,"bip_head");out[0].parent=-1;out[1].parent=0;return diagnosticNameCount;}
+// Read-only animation diagnostic metadata (Kind: 0=float, 1=int32, 2=byte, 3=int16).
+// A nonnegative VectorOffset describes a bounded CUtlVector element, not a root offset.
+struct MirvTf2DiagnosticField
+{
+	int Offset = -1, Kind = 0, VectorOffset = -1, Element = 0, Stride = 0, Maximum = 0;
+};
+void *Mirv_Tf2_DiagnosticEntity(int entity);
+void Mirv_Tf2_ReadAnimationDiagnostic(int entity, const void *object,
+    const MirvTf2DiagnosticField *fields, int count, double *values, int *status, float origin[3]);
+struct MirvTf2DiagnosticBones
+{
+	int Count = 0, Mask = 0, Frame = -1, Generation = 0;
+	float Time = 0, ClientTime = 0;
+	bool Success = false, Output = false;
+	unsigned long long Call = 0;
+	float Matrix[MIRV_TF2_MAX_BONES][12];
+};
+// Observes natural SetupBones calls; never requests additional evaluations.
+int Mirv_Tf2_DiagnosticBoneConfigure(int entity, int &generation);
+bool Mirv_Tf2_DiagnosticBonePop(MirvTf2DiagnosticBones &out);
+unsigned long long Mirv_Tf2_DiagnosticBoneDropped();
+void Mirv_Tf2_DiagnosticBoneStop();
+struct MirvTf2DiagnosticModel
+{
+	char Name[260]{};
+	int Bones = 0, Poses = 0;
+	int BoneFlags[MIRV_TF2_MAX_BONES]{};
+	char PoseNames[24][64]{};
+	float PoseStart[24]{}, PoseEnd[24]{}, PoseLoop[24]{};
+};
+bool Mirv_Tf2_DiagnosticModel(int entity, MirvTf2DiagnosticModel &out);
+
+void *Mirv_Tf2_DiagnosticEntity(int){return diagnosticObject;}
+void Mirv_Tf2_ReadAnimationDiagnostic(int,const void*object,const MirvTf2DiagnosticField*f,int count,double*values,int*status,float*origin){if(!object||object!=diagnosticObject)return;for(int i=0;i<count;++i)if(f[i].Offset>=0&&f[i].Kind==0){float v;std::memcpy(&v,static_cast<const char*>(object)+f[i].Offset,4);values[i]=v;status[i]=0;}std::fill(origin,origin+3,0);}
+int diagnosticBoneCount=0;std::vector<MirvTf2DiagnosticBones> diagnosticBones;
+int Mirv_Tf2_DiagnosticBoneConfigure(int,int&gen){gen=1;return diagnosticBoneCount;}
+bool Mirv_Tf2_DiagnosticBonePop(MirvTf2DiagnosticBones&out){if(diagnosticBones.empty())return false;out=diagnosticBones.back();diagnosticBones.pop_back();return true;}
+unsigned long long Mirv_Tf2_DiagnosticBoneDropped(){return 0;}
+void Mirv_Tf2_DiagnosticBoneStop(){diagnosticBones.clear();}
+bool Mirv_Tf2_DiagnosticModel(int,MirvTf2DiagnosticModel&){return false;}
 int MirvCam_GetAttachMode(){return 2;}
 int tracedEntity=1;bool traceAvailable=true;
 bool Mirv_Tf2_TraceEntity(const double*,const double*,int&out){out=tracedEntity;return traceAvailable;}
@@ -119,7 +162,7 @@ enum{SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2};int g_SourceSdkVer=SourceS
 struct FakeConVar{float Value=0,Maximum=-1;bool Writable=true;float GetFloat(){return Value;}void SetValue(float value){if(Writable)Value=Maximum<0?value:(std::min)(Maximum,value);}};
 struct FakeCvar{std::map<std::string,FakeConVar> Vars{{"cl_interpolate",{1}},{"cl_interp",{.015f}},{"cl_interp_ratio",{1}}};FakeConVar *FindVar(const char*name){auto it=Vars.find(name);return it==Vars.end()?nullptr:&it->second;}}fakeCvar;
 namespace AfxHookSource{namespace CameraOverlay{void NotifyDemoPlaybackFile(const char*);}}
-namespace SOURCESDK{struct CCommand_004{int Count=2;const char*File="";int ArgC()const{return Count;}const char*Arg(int)const{return File;}};namespace CSS{FakeCvar*g_pCVar=&fakeCvar;}namespace L4D2{FakeCvar*g_pCVar=nullptr;}}
+namespace SOURCESDK{struct matrix3x4_t{float m_flMatVal[3][4];};struct CCommand_004{int Count=2;const char*File="";int ArgC()const{return Count;}const char*Arg(int)const{return File;}};namespace CSS{FakeCvar*g_pCVar=&fakeCvar;}namespace L4D2{FakeCvar*g_pCVar=nullptr;}}
 namespace AfxHookSource{namespace Gui{bool SetOverlayOpen(bool b){CameraOverlay::SetOpen(b);return true;}}namespace CameraOverlay{namespace Recording{const char*GetName(){return "test";}void SetName(const char*){}bool ScreenEnabled(){return true;}bool IsActive(){return false;}}}}
 struct Rect{ImVec2 Min,Max;};std::map<std::string,Rect>widgets;
 bool trackDouble(const char*l,double*v,double step=0,double fast=0,const char*format="%.6f",ImGuiInputTextFlags flags=0){bool b=ImGui::InputDouble(l,v,step,fast,format,flags);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
@@ -680,17 +723,23 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
 g_RepairHooks=true;repairButton("Investigate angle snapping");repairButton("Use current tick +/- 66");repairButton("Record original angle diagnostic");check(MirvFix_PlayerAngleTraceActive()&&!g_RepairEnabled&&g_CampathSeekTarget==0&&g_CampathSeekPendingMode==2,"The repair UI records original playback from demo start without deleting marks");MirvFix_PlayerAngleTraceEnd();g_CampathSeekTarget=-1;
  std::filesystem::remove(wrongFile);std::filesystem::remove(bindFile);g_RepairHooks=false; // Diagnostic capture is independent of sample collection and never substitutes its own values.
  {g_RepairHooks=true;g_RepairCollect=false;g_RepairDemo="trace-test";g_RepairEnabled=true;g_RepairEntity=1;
+ struct Fields{float Pitch=-12,Yaw=20,Pose=.4f;} fields;diagnosticObject=&fields;Tf2FixRecvProp poseSlot{};poseSlot.Type=1;poseSlot.Offset=0;Tf2FixRecvTable poseMetadata{};poseMetadata.Name="pose slots";poseMetadata.Count=1;poseMetadata.Props=&poseSlot;Tf2FixRecvProp poseParent{};poseParent.Name="m_flPoseParameter";poseParent.Type=6;poseParent.Table=&poseMetadata;poseParent.Offset=int(reinterpret_cast<uintptr_t>(&fields.Pose)-reinterpret_cast<uintptr_t>(&fields));Tf2FixRecvTable rootMetadata{};rootMetadata.Name="DT_BaseAnimating";rootMetadata.Count=1;rootMetadata.Props=&poseParent;g_RepairPlayerTable=&rootMetadata;
+
  check(!MirvFix_PlayerAngleTraceBegin(1,20,10)&&!MirvFix_PlayerAngleTraceActive(),"Diagnostic refuses reversed ranges");check(!MirvFix_PlayerAngleTraceBegin(1,0,2001),"Diagnostic windows are bounded to 2000 ticks");check(MirvFix_PlayerAngleTraceBegin(1,10,20)&&!g_RepairEnabled,"Diagnostic starts original playback without enabling repair");
- struct Fields{float Pitch=-12,Yaw=20,Pose=.4f;} fields;diagnosticObject=&fields;Tf2FixRecvProp pitch{},pose{};g_RepairProperties.clear();g_RepairProperties[&pitch]={3,1,false};g_RepairProperties[&pose]={0,1,false,0};g_RepairProxySlots[0].Original=RepairOriginal;
- Tf2FixProxyData d{};d.Prop=&pitch;d.ObjectId=1;d.Value.Float=-12;g_MirvTime.Time=10.0/66;RepairReceive(0,&d,&fields,&fields.Pitch);check(fields.Pitch==-12&&d.Value.Float==-12,"Diagnostic preserves the incoming angle and original proxy output");d.Prop=&pose;d.Value.Float=.4f;RepairReceive(0,&d,&fields,&fields.Pose);MirvFix_PlayerAngleTraceFrame(0);fields.Pitch=80;fields.Pose=.9f;MirvFix_PlayerAngleTraceFrame(1);MirvFix_PlayerAngleTraceFrame(2);
+ diagnosticBoneCount=2;MirvTf2DiagnosticBones natural{};natural.Count=2;natural.Generation=1;natural.Frame=123;natural.ClientTime=99;natural.Time=.5f;natural.Call=42;natural.Success=natural.Output=true;natural.Mask=0x7ff00;for(int i=0;i<2;++i){natural.Matrix[i][0]=natural.Matrix[i][5]=natural.Matrix[i][10]=1;natural.Matrix[i][3]=10;natural.Matrix[i][7]=20;natural.Matrix[i][11]=30;}diagnosticBones.push_back(natural);
+ g_MirvTime.Time=10.0/66;MirvFix_PlayerAngleTraceFrame(0);bool boneRow=false;for(const auto&r:g_PlayerAngleTrace.Rows)if(r.Stage==7&&r.Count==12)boneRow|=r.Frame==123&&r.Time==99&&r.Event==42&&r.Extra[2]==10&&r.Extra[6]==20&&r.Extra[10]==30;check(boneRow&&g_PlayerAngleTrace.BoneRows==2,"Natural matrices retain callback frame/time, call ID and all translation columns");check(g_PlayerAngleTrace.Metadata.size()==1&&g_PlayerAngleTrace.Offsets[2]==-1&&g_PlayerAngleTrace.Valid[2]>0,"Live pose capture works without a pose receive callback");Tf2FixRecvProp pitch{},pose{};g_RepairProperties.clear();g_RepairProperties[&pitch]={3,1,false};g_RepairProperties[&pose]={0,1,false,0};g_RepairProxySlots[0].Original=RepairOriginal;
+ Tf2FixProxyData d{};d.Prop=&pitch;d.ObjectId=1;d.Value.Float=-12;g_MirvTime.Time=10.0/66;RepairReceive(0,&d,&fields,&fields.Pitch);check(fields.Pitch==-12&&d.Value.Float==-12,"Diagnostic preserves the incoming angle and original proxy output");d.Prop=&pose;d.Value.Float=.4f;RepairReceive(0,&d,&fields,&fields.Pose);MirvFix_PlayerAngleTraceFrame(0);fields.Pitch=80;fields.Pose=.9f;natural.Generation=999;natural.Count=0;natural.Call=43;natural.Frame=124;natural.Success=natural.Output=false;diagnosticBones.push_back(natural);MirvFix_PlayerAngleTraceFrame(1);MirvFix_PlayerAngleTraceFrame(2);bool failedCall=false;for(const auto&r:g_PlayerAngleTrace.Rows)failedCall|=r.Stage==7&&r.Event==43&&r.Frame==124&&r.Field==g_PlayerAngleTrace.NameIds.at("setup_bones.success")&&r.Value==0;check(failedCall,"Failed natural calls remain visible even without skeleton metadata");
  auto row=[&](int stage,int field,float value){for(auto &r:g_PlayerAngleTrace.Rows)if(r.Stage==stage&&r.Field==field&&std::abs(r.Value-value)<1e-5)return true;return false;};check(row(0,0,-12)&&row(2,0,-12)&&row(4,0,80),"Diagnostic distinguishes normal receive input/output from a later stored-angle spike");check(row(3,2,.4f)&&row(4,2,.9f),"Pose slots are sampled separately before and after render processing");check(row(5,26,0)&&row(5,27,0)&&row(5,28,0),"Entity render-angle fields are recorded when available");
  auto n=g_PlayerAngleTrace.Rows.size();d.ObjectId=2;RepairReceive(0,&d,&fields,&fields.Pose);check(g_PlayerAngleTrace.Rows.size()==n,"Other players cannot contaminate a diagnostic");repairTestUser=43;MirvFix_PlayerAngleTraceFrame(1);check(g_PlayerAngleTrace.Rows.size()==n,"A reused entity slot with another user is not sampled");repairTestUser=42;d.ObjectId=1;
- diagnosticObject=nullptr;MirvFix_PlayerAngleTraceFrame(1);check(std::isnan(g_PlayerAngleTrace.Rows[g_PlayerAngleTrace.Rows.size()-32].Value),"Unavailable live storage is recorded as unavailable rather than zero");diagnosticObject=&fields;
- auto csv=RecoveryDirectory()/"player-angle-diagnostic.csv";check(!MirvFix_PlayerAngleTraceSave(csv.wstring().c_str()),"An active capture cannot export an incomplete changing buffer");g_MirvTime.Time=21.0/66;MirvFix_PlayerAngleTraceFrame(1);check(!MirvFix_PlayerAngleTraceActive()&&MirvFix_PlayerAngleTraceSave(csv.wstring().c_str()),"Capture completes at the end tick and exports CSV");std::ifstream in(csv);std::string contents((std::istreambuf_iterator<char>(in)),{});check(contents.find("receive_raw")!=std::string::npos&&contents.find("render_start")!=std::string::npos&&contents.find("eye_pitch,80")!=std::string::npos,"Saved diagnostic contains distinct receive/render evidence");check(!MirvFix_PlayerAngleTraceSave(csv.wstring().c_str()),"Diagnostic export refuses existing filenames");std::filesystem::remove(csv);
- check(MirvFix_PlayerAngleTraceBegin(1,10,20),"Another bounded diagnostic can start");g_MirvTime.Time=15.0/66;d.Prop=&pitch;d.Value.Float=-12;RepairReceive(0,&d,&fields,&fields.Pitch);g_MirvTime.Time=0;MirvFix_PlayerAngleTraceFrame(1);check(g_PlayerAngleTrace.Rows.empty()&&g_PlayerAngleTrace.Offsets[0]==-1,"Backward seeks clear diagnostic rows and stale field bindings before a new pass");g_PlayerAngleTrace.Rows.resize(50000);AngleTraceAppend(10,0,0,0);check(!MirvFix_PlayerAngleTraceActive()&&g_PlayerAngleTrace.Rows.size()==50000,"Diagnostic storage stops at its row cap");g_PlayerAngleTrace=PlayerAngleTrace{};
+ diagnosticObject=nullptr;MirvFix_PlayerAngleTraceFrame(1);check(std::isnan(g_PlayerAngleTrace.Rows[n+0].Value),"Unavailable live storage is recorded as unavailable rather than zero");diagnosticObject=&fields;
+ auto csv=RecoveryDirectory()/"player-angle-diagnostic.csv";check(!MirvFix_PlayerAngleTraceSave(csv.wstring().c_str()),"An active capture cannot export an incomplete changing buffer");g_MirvTime.Time=21.0/66;MirvFix_PlayerAngleTraceFrame(1);check(!MirvFix_PlayerAngleTraceActive()&&MirvFix_PlayerAngleTraceSave(csv.wstring().c_str()),"Capture completes at the end tick and exports CSV");std::ifstream in(csv);std::string contents((std::istreambuf_iterator<char>(in)),{});check(contents.find("coverage.render_start")!=std::string::npos&&contents.find("bone_output")!=std::string::npos&&contents.find("status,event")!=std::string::npos,"CSV includes per-stage coverage, matrix events and explicit availability statuses");check(contents.find("receive_raw")!=std::string::npos&&contents.find("render_start")!=std::string::npos&&contents.find("eye_pitch,80")!=std::string::npos,"Saved diagnostic contains distinct receive/render evidence");check(!MirvFix_PlayerAngleTraceSave(csv.wstring().c_str()),"Diagnostic export refuses existing filenames");std::filesystem::remove(csv);
+ check(MirvFix_PlayerAngleTraceBegin(1,10,20),"Another bounded diagnostic can start");g_MirvTime.Time=15.0/66;d.Prop=&pitch;d.Value.Float=-12;RepairReceive(0,&d,&fields,&fields.Pitch);g_MirvTime.Time=0;MirvFix_PlayerAngleTraceFrame(1);check(g_PlayerAngleTrace.Rows.empty()&&g_PlayerAngleTrace.Offsets[0]==-1,"Backward seeks clear diagnostic rows and stale field bindings before a new pass");g_PlayerAngleTrace.Rows.resize(250000);AngleTraceAppend(10,0,0,0);check(!MirvFix_PlayerAngleTraceActive()&&g_PlayerAngleTrace.Rows.size()==250000,"Diagnostic storage stops at its row cap");g_PlayerAngleTrace=PlayerAngleTrace{};
  // Metadata discovery includes pose slots, which never become repairable position channels.
  Tf2FixRecvProp slots[2]{};for(int i=0;i<2;++i){slots[i].Type=1;slots[i].Proxy=RepairOriginal;slots[i].Offset=i*4;}Tf2FixRecvTable poseTable{};poseTable.Name="pose slots";poseTable.Count=2;poseTable.Props=slots;Tf2FixRecvProp poseArray{};poseArray.Name="m_flPoseParameter";poseArray.Type=6;poseArray.Table=&poseTable;Tf2FixRecvTable anim{};anim.Name="DT_BaseAnimating";anim.Count=1;anim.Props=&poseArray;std::set<Tf2FixRecvTable*> visited;g_RepairProperties.clear();FindRepairProperties(&anim,visited);check(g_RepairProperties.at(&slots[0]).Pose==0&&g_RepairProperties.at(&slots[1]).Pose==1,"Pose slots are discovered from receive metadata");
- g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;
+
+ // Resolve UtlVector locations from their proxy metadata, rather than guessing player offsets.
+ struct Extra{void*Functions[4]{};int Stride=12,Offset=128,Maximum=2;} extra;Tf2FixRecvProp layerFields[3]{};layerFields[0].Name="m_nSequence";layerFields[0].Type=0;layerFields[1].Name="m_flCycle";layerFields[1].Type=1;layerFields[1].Offset=4;layerFields[2].Name="m_flWeight";layerFields[2].Type=1;layerFields[2].Offset=8;Tf2FixRecvTable layerTable{};layerTable.Name="DT_AnimationLayer";layerTable.Count=3;layerTable.Props=layerFields;Tf2FixRecvProp elements[3]{};elements[0].Name="lengthproxy";elements[0].Extra=&extra;for(int i=1;i<3;++i){elements[i].Extra=&extra;elements[i].Stride=i-1;elements[i].Table=&layerTable;}Tf2FixRecvTable vectorTable{};vectorTable.Name="overlay vector";vectorTable.Count=3;vectorTable.Props=elements;Tf2FixRecvProp overlay{};overlay.Name="m_AnimOverlay";overlay.Type=6;overlay.Table=&vectorTable;Tf2FixRecvTable overlayRoot{};overlayRoot.Name="DT_BaseAnimatingOverlay";overlayRoot.Count=1;overlayRoot.Props=&overlay;std::vector<AngleTraceField> descriptors;std::set<Tf2FixRecvTable*> path;AngleTraceDiscover(&overlayRoot,0,descriptors,path);check(descriptors.size()==6&&descriptors[3].Access.Element==1&&descriptors[3].Access.VectorOffset==128&&descriptors[3].Access.Stride==12,"Layer schemas retain validated vector location, element and stride");extra.Maximum=99;descriptors.clear();AngleTraceDiscover(&overlayRoot,0,descriptors,path);check(descriptors.empty(),"An incompatible UtlVector proxy layout is rejected");
+g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_RepairPlayerTable=nullptr;diagnosticBoneCount=0;
  }
 
 
@@ -720,6 +769,53 @@ void Tests(){
 }
 """.replace('READER_IMPLEMENTATION',reader[a:end])
 test=test.replace('int main(){try{',reader_fixture+'int main(){try{AngleFieldReaderTest::Tests();')
+
+def cpp_function(text, signature):
+ start=text.index(signature);body=text.index('{',start);end=body+1;depth=1
+ while depth:
+  if text[end]=='{':depth+=1
+  elif text[end]=='}':depth-=1
+  end+=1
+ return text[start:end]
+deep_fixture=r"""
+namespace DeepAnimationDiagnosticTest {
+using SIZE_T=size_t;
+void *GetCurrentProcess(){return nullptr;}
+struct Layer {int Sequence=2;float Cycle=.3f,Weight=.5f;} layers[2];
+int memoryReads=0;
+bool ReadProcessMemory(void*,const void*src,void*dst,size_t n,size_t*read){++memoryReads;if(src!=layers||n>sizeof(layers))return false;std::memcpy(dst,src,n);*read=n;return true;}
+struct Renderable {
+ void **Vtable;float Origin[3]={1,2,3};float Angles[3]={4,5,6};const void*Model=reinterpret_cast<void*>(1);
+ const void*GetModel(){return Model;}const float*GetRenderOrigin(){return Origin;}const float*GetRenderAngles(){return Angles;}
+} renderable;
+using CMirvTf2ClientRenderable=Renderable;
+struct CMirvTf2ClientUnknown {Renderable*GetClientRenderable(){return &renderable;}};
+struct Vector {void*Data=layers;int Allocation=2,Grow=0,Size=2;};
+struct Entity:CMirvTf2ClientUnknown {float Pose=.8f;int Sequence=5;unsigned char Life=1;short Model=7;Vector Overlay;} entity;
+void *Mirv_Tf2_DiagnosticEntity(int id){return id==1?&entity:nullptr;}
+void Mirv_Tf2_DiagnosticBoneStop();
+ANIMATION_READER
+BONE_OBSERVER
+std::atomic<int> originalCalls{0};
+bool Original(void*,void*,SOURCESDK::matrix3x4_t*out,int maximum,int,float time){++originalCalls;for(int i=0;out&&i<maximum&&i<2;++i){std::memset(out+i,0,sizeof(*out));for(int c=0;c<3;++c)out[i].m_flMatVal[c][c]=1;out[i].m_flMatVal[0][3]=time;}return true;}
+void Tests(){
+ int savedCommits=povHookCommits;
+ auto off=[](const void*p){return int(reinterpret_cast<uintptr_t>(p)-reinterpret_cast<uintptr_t>(&entity));};
+ MirvTf2DiagnosticField f[6];f[0].Offset=off(&entity.Pose);f[1].Offset=off(&entity.Sequence);f[1].Kind=1;f[2].Offset=off(&entity.Life);f[2].Kind=2;f[3].Offset=off(&entity.Model);f[3].Kind=3;
+ for(int i=4;i<6;++i){f[i].Offset=4;f[i].VectorOffset=off(&entity.Overlay);f[i].Element=i-4;f[i].Stride=sizeof(Layer);f[i].Maximum=2;}
+ double values[6]={};int status[6]={1,1,1,1,1,1};float origin[3]={};DeepAnimationDiagnosticTest::Mirv_Tf2_ReadAnimationDiagnostic(1,&entity,f,6,values,status,origin);
+ check(std::abs(values[0]-.8)<1e-6&&values[1]==5&&values[2]==1&&values[3]==7,"Direct metadata reads float/int/byte/short state without a receive event");check(!status[4]&&!status[5]&&memoryReads==1,"Layer memory is copied once for multiple fields in the same vector");
+ entity.Overlay.Size=1;DeepAnimationDiagnosticTest::Mirv_Tf2_ReadAnimationDiagnostic(1,&entity,f,6,values,status,origin);check(status[5]==4,"Nonexistent layer slots are explicitly inactive");entity.Overlay.Size=3;DeepAnimationDiagnosticTest::Mirv_Tf2_ReadAnimationDiagnostic(1,&entity,f,6,values,status,origin);check(status[4]==3,"A malformed layer length is rejected");entity.Overlay.Size=2;entity.Overlay.Data=reinterpret_cast<void*>(1);DeepAnimationDiagnosticTest::Mirv_Tf2_ReadAnimationDiagnostic(1,&entity,f,6,values,status,origin);check(status[4]==3,"Unreadable layer memory is rejected without dereferencing it");entity.Overlay.Data=layers;
+ void*vt[17]={};vt[16]=reinterpret_cast<void*>(Original);renderable.Vtable=vt;int generation=0;diagnosticNameCount=0;check(Mirv_Tf2_DiagnosticBoneConfigure(1,generation)==0,"An unloaded skeleton is reported as unavailable");diagnosticNameCount=2;check(Mirv_Tf2_DiagnosticBoneConfigure(1,generation)==2,"Natural bone observation configures from the existing renderable");SOURCESDK::matrix3x4_t matrix[2];check(DiagnosticObserveSetupBones(&renderable,nullptr,matrix,2,0x7ff00,.5f)&&originalCalls==1,"The observer calls the original SetupBones exactly once");MirvTf2DiagnosticBones row;check(DeepAnimationDiagnosticTest::Mirv_Tf2_DiagnosticBonePop(row)&&row.Count==2&&row.Matrix[0][3]==.5f&&row.Success,"Natural bone output is queued without additional evaluation");
+ auto dropped=Mirv_Tf2_DiagnosticBoneDropped();std::vector<std::thread> workers;for(int w=0;w<4;++w)workers.emplace_back([&]{SOURCESDK::matrix3x4_t m[2];for(int i=0;i<100;++i)DiagnosticObserveSetupBones(&renderable,nullptr,m,2,0x7ff00,1);});for(auto &t:workers)t.join();int count=0;while(DeepAnimationDiagnosticTest::Mirv_Tf2_DiagnosticBonePop(row))++count;check(count==16&&Mirv_Tf2_DiagnosticBoneDropped()-dropped==384,"Worker bone jobs respect the queue bound and count every overflow");
+ renderable.Model=reinterpret_cast<void*>(2);auto old=g_DiagnosticBones.Generation;DiagnosticObserveSetupBones(&renderable,nullptr,matrix,2,0x7ff00,.5f);check(!DeepAnimationDiagnosticTest::Mirv_Tf2_DiagnosticBonePop(row),"A changed model cannot be read with the previous skeleton's bone count");check(Mirv_Tf2_DiagnosticBoneConfigure(1,generation)==2&&generation>old,"Model changes bind a new skeleton generation");Mirv_Tf2_DiagnosticBoneStop();DiagnosticObserveSetupBones(&renderable,nullptr,matrix,2,0x7ff00,.5f);check(!DeepAnimationDiagnosticTest::Mirv_Tf2_DiagnosticBonePop(row),"Stopping capture prevents later bone records");povHookCommits=savedCommits;
+}
+}
+"""
+bone_start=reader.index('namespace\n{\nstruct DiagnosticBoneObserver')
+bone_end=reader.index('static bool Mirv_IsUsableBound',bone_start)
+deep_fixture=deep_fixture.replace('ANIMATION_READER',cpp_function(reader,'void Mirv_Tf2_ReadAnimationDiagnostic(')).replace('BONE_OBSERVER',reader[bone_start:bone_end])
+test=test.replace('int main(){try{',deep_fixture+'int main(){try{DeepAnimationDiagnosticTest::Tests();')
 collision_tests=r"""
 void CollisionTests(){
  auto cfg=MirvCameraCollisionGet();check(!cfg.Free&&!cfg.Campath,"Camera collisions default off independently");

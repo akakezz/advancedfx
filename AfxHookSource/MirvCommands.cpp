@@ -4536,6 +4536,7 @@ struct RepairProxySlot
 RepairProxySlot g_RepairProxySlots[16];
 std::map<const Tf2FixRecvProp *, RepairProperty> g_RepairProperties;
 PlayerRepair g_PlayerRepair;
+Tf2FixRecvTable *g_RepairPlayerTable = nullptr;
 bool g_RepairHooks = false, g_RepairCollect = false, g_RepairEnabled = false;
 int g_RepairRequestedEntity = -1;
 int g_RepairEntity = -1, g_RepairTick = -1, g_RepairLastTick = -1, g_RepairLife = -1;
@@ -4554,9 +4555,11 @@ struct PlayerAngleTrace
 	struct Row
 	{
 		int Tick, Frame, Stage, Field;
-		double Time;
-		float Value;
+		double Time, Value;
 		bool Repair;
+		int Status = 0, Count = 1;
+		unsigned long long Event = 0;
+		std::array<float, 11> Extra{};
 	};
 	bool Active = false;
 	int Entity = -1, User = 0, First = 0, Last = 0, LastTick = -1;
@@ -4564,12 +4567,155 @@ struct PlayerAngleTrace
 	std::array<int, 26> Offsets;
 	std::array<const void *, 26> Objects{};
 	std::vector<Row> Rows;
+	std::vector<std::string> Names;
+	std::map<std::string, int> NameIds;
+	std::vector<MirvTf2DiagnosticField> Metadata;
+	std::vector<int> MetadataIds;
+	std::vector<unsigned long long> Valid;
+	std::vector<std::array<unsigned long long, 9>> StageValid;
+	int BoneGeneration = -1;
+	unsigned long long BoneRows = 0, DroppedStart = 0;
+	std::map<int, std::vector<int>> BoneFields, BoneMasks;
 	std::string Demo, Status = "No angle diagnostic recorded.";
 	PlayerAngleTrace()
 	{
 		Offsets.fill(-1);
 	}
 } g_PlayerAngleTrace;
+struct AngleTraceField
+{
+	std::string Name;
+	MirvTf2DiagnosticField Access;
+	int Id = -1;
+};
+static int AngleTraceNamedField(const std::string &name)
+{
+	auto &t = g_PlayerAngleTrace;
+	auto i = t.NameIds.find(name);
+	if (i != t.NameIds.end())
+		return i->second;
+	if (t.Names.size() >= 8192)
+		return -1;
+	int id = 32 + int(t.Names.size());
+	t.Names.push_back(name);
+	t.NameIds.emplace(name, id);
+	return id;
+}
+static void AngleTraceDiscover(Tf2FixRecvTable *table, int offset, std::vector<AngleTraceField> &out,
+                               std::set<Tf2FixRecvTable *> &path, int depth = 0)
+{
+	if (!table || !table->Name || depth > 32 || table->Count < 0 || table->Count > 4096 ||
+	    (!table->Props && table->Count) || !path.insert(table).second)
+		return;
+	auto add = [&](const std::string &name, int off, int kind, int id = -1) {
+		if (out.size() >= 512 || off < 0 || off > 65532)
+			return;
+		AngleTraceField f;
+		f.Name = name;
+		f.Access.Offset = off;
+		f.Access.Kind = kind;
+		f.Id = id >= 0 ? id : AngleTraceNamedField(name);
+		out.push_back(f);
+	};
+	for (int i = 0; i < table->Count; ++i)
+	{
+		auto &p = table->Props[i];
+		if (!p.Name || p.Offset < 0 || p.Offset > 65532 - offset)
+			continue;
+		std::string n = p.Name;
+		int at = offset + p.Offset;
+		if (n == "m_flPoseParameter" && p.Type == 6 && p.Table && p.Table->Props && p.Table->Count > 0 &&
+		    p.Table->Count <= 24)
+		{
+			for (int k = 0; k < p.Table->Count; ++k)
+				if (p.Table->Props[k].Type == 1 && p.Table->Props[k].Offset == k * 4)
+					add("pose_" + std::to_string(k), at + k * 4, 0, 2 + k);
+		}
+		else if (n == "m_flPoseParameter" && p.Type == 5 && p.Elements > 0 && p.Elements <= 24 &&
+		         p.Stride == 4 && p.Array && p.Array->Type == 1)
+			for (int k = 0; k < p.Elements; ++k)
+				add("pose_" + std::to_string(k), at + k * 4, 0, 2 + k);
+		else if (n == "m_AnimOverlay" && p.Type == 6 && p.Table && p.Table->Props && p.Table->Count > 1 &&
+		         p.Table->Count <= 65)
+		{
+			// Layout from public dt_utlvector_recv.cpp. Do not sum offsets through
+			// a vector proxy: its target is a heap element, not part of the player.
+			struct Extra
+			{
+				void *Functions[4];
+				int Stride, Offset, Maximum;
+			};
+			auto &length = p.Table->Props[0];
+			if (!length.Name || std::strcmp(length.Name, "lengthproxy") || !length.Extra)
+				continue;
+			Extra extra;
+			std::memcpy(&extra, length.Extra, sizeof(extra));
+			if (extra.Stride < 4 || extra.Stride > 512 || extra.Offset < 0 || extra.Offset > 65504 ||
+			    extra.Maximum != p.Table->Count - 1)
+				continue;
+			for (int k = 1; k < p.Table->Count; ++k)
+			{
+				auto &element = p.Table->Props[k];
+				if (element.Extra != length.Extra || element.Stride != k - 1 || !element.Table ||
+				    !element.Table->Props || element.Table->Count < 0 || element.Table->Count > 64)
+					continue;
+				for (int j = 0; j < element.Table->Count; ++j)
+				{
+					auto &v = element.Table->Props[j];
+					if (!v.Name || v.Offset < 0 || v.Offset > extra.Stride - 4 || out.size() >= 512)
+						continue;
+					std::string field = v.Name;
+					bool integer = field == "m_nSequence" || field == "m_nOrder";
+					if (!integer && field != "m_flCycle" && field != "m_flPrevCycle" &&
+					    field != "m_flWeight" && field != "m_flPlaybackRate")
+						continue;
+					if (v.Type != (integer ? 0 : 1))
+						continue;
+					AngleTraceField f;
+					f.Name = "layer_" + std::to_string(k - 1) + "." + field;
+					f.Id = AngleTraceNamedField(f.Name);
+					f.Access.Offset = v.Offset;
+					f.Access.Kind = integer ? 1 : 0;
+					f.Access.VectorOffset = offset + extra.Offset;
+					f.Access.Element = k - 1;
+					f.Access.Stride = extra.Stride;
+					f.Access.Maximum = extra.Maximum;
+					out.push_back(f);
+				}
+			}
+		}
+		else if (p.Type == 6 &&
+		         (n == "baseclass" || n == "serveranimdata" || n == "tflocaldata" || n == "tfnonlocaldata" ||
+		          n == "localdata" || n == "m_Local" || n == "m_Shared"))
+			AngleTraceDiscover(p.Table, at, out, path, depth + 1);
+		else
+		{
+			std::string field = std::string(table->Name) + "." + n;
+			if ((p.Type == 1 || p.Type == 0) &&
+			    (n == "m_flSimulationTime" || n == "m_flAnimTime" || n == "m_flCycle" ||
+			     n == "m_flPlaybackRate" || n == "m_flModelScale"))
+				add(field, at, 0);
+			else if (p.Type == 0 &&
+			         (n == "m_nSequence" || n == "m_nSkin" || n == "m_nBody" || n == "m_nHitboxSet" ||
+			          n == "m_fFlags" || n == "m_fEffects" || n == "m_iHealth" || n == "m_iTeamNum"))
+				add(field, at, 1);
+			else if (p.Type == 0 && n == "m_nModelIndex")
+				add(field, at, 3);
+			else if (p.Type == 0 &&
+			         (n == "m_lifeState" || n == "m_bClientSideAnimation" || n == "m_bClientSideFrameReset" ||
+			          n == "m_ubInterpolationFrame" || n == "m_nNewSequenceParity" ||
+			          n == "m_nResetEventsParity" || n == "m_nMuzzleFlashParity"))
+				add(field, at, 2);
+			else if ((p.Type == 2 || p.Type == 3) &&
+			         (n == "m_vecOrigin" || n == "m_vecVelocity" || n == "m_angRotation"))
+				for (int c = 0; c < (p.Type == 3 ? 2 : 3); ++c)
+					add(field + "." + std::to_string(c), at + c * 4, 0);
+			else if (p.Type == 1 && (n.find("m_vecOrigin[") == 0 || n.find("m_vecVelocity[") == 0))
+				add(field, at, 0);
+		}
+	}
+	path.erase(table);
+}
 static bool AngleTraceTarget(int entity)
 {
 	auto &t = g_PlayerAngleTrace;
@@ -4582,49 +4728,91 @@ static bool AngleTraceTarget(int entity)
 static void AngleTraceTick(int tick)
 {
 	auto &t = g_PlayerAngleTrace;
+	// The UI queues a rewind to zero. Do not finish an armed capture on the
+	// previous playback tick before that command reaches the engine.
+	if (t.LastTick < 0 && MirvCampathPreview_IsSeeking() && tick > t.Last)
+		return;
 	if (t.LastTick >= 0 && tick < t.LastTick)
 	{
 		t.Rows.clear();
 		t.Object = nullptr;
 		t.Offsets.fill(-1);
 		t.Objects.fill(nullptr);
+		t.Valid.clear();
+		t.StageValid.clear();
+		t.BoneRows = 0;
+		t.BoneGeneration = -1;
+		t.BoneFields.clear();
+		t.BoneMasks.clear();
+		Mirv_Tf2_DiagnosticBoneStop();
+		t.DroppedStart = Mirv_Tf2_DiagnosticBoneDropped();
 		t.Status = "Angle diagnostic restarted after rewind; waiting for the capture interval.";
 	}
 	t.LastTick = tick;
 	if (tick > t.Last)
 	{
 		t.Active = false;
+		Mirv_Tf2_DiagnosticBoneStop();
 		t.Status = "Angle diagnostic complete. Save CSV to inspect the receive and render stages.";
 	}
 }
-static void AngleTraceAppend(int tick, int stage, int field, float value)
+static void AngleTraceAppend(int tick, int stage, int field, double value, int status = 0)
 {
 	auto &t = g_PlayerAngleTrace;
 	if (!t.Active || tick < t.First || tick > t.Last)
 		return;
-	if (t.Rows.size() >= 50000)
+	if (t.Rows.size() >= 250000)
 	{
 		t.Active = false;
-		t.Status = "Angle diagnostic stopped at the 50,000-row limit; save CSV.";
+		Mirv_Tf2_DiagnosticBoneStop();
+		t.Status = "Angle diagnostic stopped at the 250,000-row limit; save CSV.";
 		return;
 	}
 	auto gl = g_Hook_VClient_RenderView.GetGlobals();
 	t.Rows.push_back({tick, gl ? gl->framecount_get() : -1, stage, field, gl ? gl->curtime_get() : 0, value,
-	                  g_RepairEnabled});
+	                  g_RepairEnabled,
+	                  status                 ? status
+	                  : std::isfinite(value) ? 0
+	                                         : 1});
+	if (field >= 0)
+	{
+		if (t.Valid.size() <= size_t(field))
+			t.Valid.resize(field + 1);
+		if (t.StageValid.size() <= size_t(field))
+			t.StageValid.resize(field + 1);
+		if (!t.Rows.back().Status)
+		{
+			++t.Valid[field];
+			if (stage >= 0 && stage < 9)
+				++t.StageValid[field][stage];
+		}
+	}
 }
 static void AngleTraceReceive(const RepairProperty &spec, const Tf2FixProxyData *raw,
                               const Tf2FixProxyData *forwarded, void *object, void *out, int tick)
 {
 	auto &t = g_PlayerAngleTrace;
-	if (!t.Active || spec.Life || !out)
+	if (!t.Active || !out)
 		return;
+	if (spec.Life)
+	{
+		unsigned char value;
+		std::memcpy(&value, out, 1);
+		int field = AngleTraceNamedField("received_life_state");
+		AngleTraceAppend(tick, 0, field, raw->Value.Int);
+		AngleTraceAppend(tick, 1, field, forwarded->Value.Int);
+		AngleTraceAppend(tick, 2, field, value);
+		return;
+	}
 	int pose = spec.Pose;
 	if (spec.PoseArray)
 		pose += raw->Element;
 	for (int c = 0; c < spec.Count; ++c)
 	{
 		int field = pose >= 0 ? 2 + pose : spec.First + c - 3;
-		if ((pose < 0 && (spec.First + c < 3 || spec.First + c > 4)) || field < 0 || field >= 26)
+		if (pose < 0 && spec.First + c < 3)
+			field = AngleTraceNamedField("received_origin_" + std::to_string(spec.First + c));
+		if (field < 0 || (pose >= 0 && field >= 26))
 			continue;
 		float value;
 		std::memcpy(&value, static_cast<const char *>(out) + c * sizeof(float), sizeof(value));
@@ -4633,7 +4821,7 @@ static void AngleTraceReceive(const RepairProperty &spec, const Tf2FixProxyData 
 		                 spec.Count == 1 ? forwarded->Value.Float : forwarded->Value.Vector[c]);
 		AngleTraceAppend(tick, 2, field, value);
 		auto base = reinterpret_cast<uintptr_t>(object), address = reinterpret_cast<uintptr_t>(out);
-		if (object && address >= base && address - base <= 65536 - sizeof(float) * spec.Count)
+		if (field < 26 && object && address >= base && address - base <= 65536 - sizeof(float) * spec.Count)
 		{
 			if (field < 2)
 				t.Object = object;
@@ -4842,6 +5030,7 @@ bool InstallRepairProxies()
 		return false;
 	}
 	g_RepairProperties.clear();
+	g_RepairPlayerTable = nullptr;
 #ifdef _WIN64
 	using ClassesFn = Tf2FixClientClass *(*)(void *);
 #else
@@ -4852,7 +5041,10 @@ bool InstallRepairProxies()
 	std::set<Tf2FixRecvTable *> tables;
 	for (auto c = classes; c && visited.size() < 4096 && visited.insert(c).second; c = c->Next)
 		if (c->Table && c->Table->Name && !std::strcmp(c->Table->Name, "DT_TFPlayer"))
+		{
+			g_RepairPlayerTable = c->Table;
 			FindRepairProperties(c->Table, tables);
+		}
 	unsigned channels = 0;
 	bool life = false;
 	std::vector<Tf2FixProxy> originals;
@@ -5212,15 +5404,36 @@ bool MirvFix_PlayerAngleTraceBegin(int entity, int first, int last)
 	t.First = first;
 	t.Last = last;
 	t.Demo = g_RepairDemo;
-	t.Rows.reserve(50000);
+	t.Rows.reserve(250000);
+	Mirv_Tf2_DiagnosticBoneStop();
+	t.DroppedStart = Mirv_Tf2_DiagnosticBoneDropped();
+	AngleTraceNamedField("private_animation_state"); // Explicitly unsupported; no verified public layout.
+	std::vector<AngleTraceField> metadata;
+	std::set<Tf2FixRecvTable *> path;
+	AngleTraceDiscover(g_RepairPlayerTable, 0, metadata, path);
+	for (const auto &f : metadata)
+	{
+		t.Metadata.push_back(f.Access);
+		t.MetadataIds.push_back(f.Id);
+	}
 	MirvFix_PlayerRepairEnable(false);
 	t.Active = true;
-	t.Status = "Recording ORIGINAL playback; repair is OFF. Waiting for the capture interval.";
+	int generation = 0;
+	bool bones = Mirv_Tf2_DiagnosticBoneConfigure(entity, generation) > 0;
+	Mirv_Tf2_DiagnosticBoneStop();
+	t.DroppedStart = Mirv_Tf2_DiagnosticBoneDropped();
+	int poses = 0;
+	for (int id : t.MetadataIds)
+		poses += id >= 2 && id < 26;
+	t.Status = "Recording ORIGINAL playback; repair is OFF. Preflight: " + std::to_string(poses) +
+	           " live pose slots; bone observer " + (bones ? "available" : "unavailable") +
+	           ". Waiting for the capture interval.";
 	return true;
 }
 void MirvFix_PlayerAngleTraceEnd()
 {
 	g_PlayerAngleTrace.Active = false;
+	Mirv_Tf2_DiagnosticBoneStop();
 	g_PlayerAngleTrace.Status = "Angle diagnostic stopped. Recorded rows are retained; save CSV.";
 }
 bool MirvFix_PlayerAngleTraceActive()
@@ -5229,11 +5442,64 @@ bool MirvFix_PlayerAngleTraceActive()
 }
 const char *MirvFix_PlayerAngleTraceStatus()
 {
-	return g_PlayerAngleTrace.Status.c_str();
+	auto &t = g_PlayerAngleTrace;
+	static std::string result;
+	int poses = 0;
+	for (int i = 2; i < 26 && i < int(t.StageValid.size()); ++i)
+		poses += t.StageValid[i][3] || t.StageValid[i][4] || t.StageValid[i][5] || t.StageValid[i][6];
+	result = t.Status;
+	if (!t.Rows.empty())
+		result += " Coverage: " + std::to_string(poses) + "/24 pose slots; " + std::to_string(t.BoneRows) +
+		          " bone-matrix rows.";
+	return result.c_str();
 }
 size_t MirvFix_PlayerAngleTraceRows()
 {
 	return g_PlayerAngleTrace.Rows.size();
+}
+static void AngleTraceDrainBones(int tick)
+{
+	auto &t = g_PlayerAngleTrace;
+	MirvTf2DiagnosticBones bones;
+	while (Mirv_Tf2_DiagnosticBonePop(bones))
+	{
+		if (!t.Active)
+			continue;
+		auto scalar = [&](const char *name, double value) {
+			AngleTraceAppend(tick, 7, AngleTraceNamedField(name), value);
+			if (!t.Active)
+				return;
+			t.Rows.back().Event = bones.Call;
+			t.Rows.back().Frame = bones.Frame;
+			t.Rows.back().Time = bones.ClientTime;
+		};
+		scalar("setup_bones.success", bones.Success);
+		scalar("setup_bones.output_buffer", bones.Output);
+		scalar("setup_bones.mask", bones.Mask);
+		scalar("setup_bones.sample_time", bones.Time);
+		if (!t.Active)
+			return;
+		if (!t.BoneFields.count(bones.Generation)) continue;
+		const auto &fields = t.BoneFields.at(bones.Generation);
+		for (int i = 0; i < bones.Count && i < int(fields.size()); ++i)
+		{
+			bool finite = true;
+			for (float v : bones.Matrix[i])
+				finite &= std::isfinite(v);
+			const auto &masks = t.BoneMasks[bones.Generation];
+			bool masked = i < int(masks.size()) && masks[i] >= 0 && !(masks[i] & bones.Mask);
+			AngleTraceAppend(tick, 7, fields[i], bones.Matrix[i][0], !finite ? 5 : masked ? 6 : 0);
+			if (!t.Active)
+				return;
+			auto &row = t.Rows.back();
+			row.Count = 12;
+			row.Frame = bones.Frame;
+			row.Event = bones.Call;
+			row.Time = bones.ClientTime;
+			std::copy(bones.Matrix[i] + 1, bones.Matrix[i] + 12, row.Extra.begin());
+			++t.BoneRows;
+		}
+	}
 }
 void MirvFix_PlayerAngleTraceFrame(int stage)
 {
@@ -5250,27 +5516,105 @@ void MirvFix_PlayerAngleTraceFrame(int stage)
 	if (!GetCurrentDemoTick(tick))
 		return;
 	AngleTraceTick(tick);
-	if (!t.Active || tick < t.First || !AngleTraceTarget(t.Entity) || stage < 0 || stage > 2)
+	if (!t.Active || tick < t.First || tick > t.Last || !AngleTraceTarget(t.Entity) || stage < 0 || stage > 3)
 		return;
+	int generation = 0;
+	int boneCount = Mirv_Tf2_DiagnosticBoneConfigure(t.Entity, generation);
+	if (boneCount > 0 && !t.BoneFields.count(generation) && t.BoneFields.size() >= 8)
+	{
+		MirvFix_PlayerAngleTraceEnd();
+		t.Status = "Capture stopped at the eight-model limit; save CSV.";
+		return;
+	}
+	if (boneCount > 0 && t.BoneGeneration != generation && t.BoneFields.size() < 8)
+	{
+		MirvTf2BoneName_t names[MIRV_TF2_MAX_BONES];
+		int count = (std::min)(boneCount, Mirv_Tf2_GetBoneNames(t.Entity, names));
+		auto &fields = t.BoneFields[generation];
+		t.BoneMasks[generation].assign(count, -1);
+		for (int i = 0; i < count; ++i)
+		{
+			std::string name = "model_" + std::to_string(generation) + ".bone_" + std::to_string(i);
+			if (names[i].name[0])
+				name += "." + std::string(names[i].name);
+			fields.push_back(AngleTraceNamedField(name));
+			AngleTraceAppend(tick, 8, AngleTraceNamedField(name + ".parent"), names[i].parent);
+		}
+		MirvTf2DiagnosticModel model;
+		if (Mirv_Tf2_DiagnosticModel(t.Entity, model))
+		{
+			std::string prefix = "model_" + std::to_string(generation);
+			AngleTraceAppend(tick, 8, AngleTraceNamedField(prefix + ".name=" + model.Name), 1);
+			for (int i = 0; i < count && i < model.Bones; ++i)
+			{
+				t.BoneMasks[generation][i] = model.BoneFlags[i];
+				AngleTraceAppend(tick, 8,
+				                 AngleTraceNamedField(prefix + ".bone_" + std::to_string(i) + ".flags"),
+				                 model.BoneFlags[i]);
+			}
+			for (int i = 0; i < model.Poses; ++i)
+			{
+				std::string pose = prefix + ".pose_" + std::to_string(i) + "." + model.PoseNames[i];
+				AngleTraceAppend(tick, 8, AngleTraceNamedField(pose + ".start"), model.PoseStart[i]);
+				AngleTraceAppend(tick, 8, AngleTraceNamedField(pose + ".end"), model.PoseEnd[i]);
+				AngleTraceAppend(tick, 8, AngleTraceNamedField(pose + ".loop"), model.PoseLoop[i]);
+			}
+		}
+		t.BoneGeneration = generation;
+	}
+	AngleTraceDrainBones(tick);
+	if (!t.Active)
+		return;
+	int phase = stage == 3 ? 6 : 3 + stage;
 	std::array<float, 26> values;
 	values.fill(std::numeric_limits<float>::quiet_NaN());
-	float render[3];
+	float render[3], origin[3];
 	std::fill(render, render + 3, std::numeric_limits<float>::quiet_NaN());
-	// The helper verifies the current entity is exactly the object observed by
-	// the receive callback before reading any remembered field offset.
+	std::fill(origin, origin + 3, std::numeric_limits<float>::quiet_NaN());
+	void *live = Mirv_Tf2_DiagnosticEntity(t.Entity);
 	auto offsets = t.Offsets;
 	for (int i = 0; i < 26; ++i)
-		if (t.Objects[i] != t.Object)
+		if (t.Objects[i] != live)
 			offsets[i] = -1;
-	Mirv_Tf2_ReadDiagnosticFields(t.Entity, t.Object, offsets.data(), values.data(), 26, render);
+	Mirv_Tf2_ReadDiagnosticFields(t.Entity, live, offsets.data(), values.data(), 26, render);
+	std::vector<double> metadata(t.Metadata.size(), std::numeric_limits<double>::quiet_NaN());
+	std::vector<int> status(t.Metadata.size(), 1);
+	Mirv_Tf2_ReadAnimationDiagnostic(t.Entity, live, t.Metadata.data(), int(t.Metadata.size()),
+	                                 metadata.data(), status.data(), origin);
+	for (size_t i = 0; i < metadata.size(); ++i)
+		if (t.MetadataIds[i] >= 2 && t.MetadataIds[i] < 26 && !status[i])
+			values[t.MetadataIds[i]] = float(metadata[i]);
 	for (int i = 0; i < 26; ++i)
-		AngleTraceAppend(tick, 3 + stage, i, values[i]);
+		AngleTraceAppend(tick, phase, i, values[i]);
 	for (int i = 0; i < 3; ++i)
-		AngleTraceAppend(tick, 3 + stage, 26 + i, render[i]);
+		AngleTraceAppend(tick, phase, 26 + i, render[i]);
 	float interpolation[3];
 	if (Tf2InterpolationValues(interpolation, false))
 		for (int i = 0; i < 3; ++i)
-			AngleTraceAppend(tick, 3 + stage, 29 + i, interpolation[i]);
+			AngleTraceAppend(tick, phase, 29 + i, interpolation[i]);
+	for (size_t i = 0; i < metadata.size(); ++i)
+		if (t.MetadataIds[i] >= 32)
+			AngleTraceAppend(tick, phase, t.MetadataIds[i], metadata[i], status[i]);
+	for (int i = 0; i < 3; ++i)
+		AngleTraceAppend(tick, phase, AngleTraceNamedField("render_origin_" + std::to_string(i)), origin[i]);
+	auto gl = g_Hook_VClient_RenderView.GetGlobals();
+	if (gl)
+	{
+		AngleTraceAppend(tick, phase, AngleTraceNamedField("tick_interval"), gl->interval_per_tick_get());
+		AngleTraceAppend(tick, phase, AngleTraceNamedField("absolute_frame_time"),
+		                 gl->absoluteframetime_get());
+		AngleTraceAppend(tick, phase, AngleTraceNamedField("interpolation_amount"),
+		                 gl->interpolation_amount_get());
+	}
+	if (auto demo = g_VEngineClient->GetDemoInfoEx())
+		AngleTraceAppend(tick, phase, AngleTraceNamedField("demo_timescale"),
+		                 demo->GetDemoPlaybackTimeScale());
+	AngleTraceAppend(tick, phase, AngleTraceNamedField("demo_paused"), g_VEngineClient->IsPaused());
+	AngleTraceAppend(tick, phase, AngleTraceNamedField("demo_skipping"), g_VEngineClient->IsSkippingDemo());
+	AngleTraceAppend(tick, phase, AngleTraceNamedField("demo_hltv"), g_VEngineClient->IsHLTV());
+	AngleTraceAppend(tick, phase, AngleTraceNamedField("bone_hook_available"), boneCount > 0);
+	AngleTraceAppend(tick, phase, AngleTraceNamedField("bone_queue_dropped"),
+	                 double(Mirv_Tf2_DiagnosticBoneDropped() - t.DroppedStart));
 }
 bool MirvFix_PlayerAngleTraceSave(const wchar_t *file)
 {
@@ -5284,27 +5628,96 @@ bool MirvFix_PlayerAngleTraceSave(const wchar_t *file)
 			return false;
 		std::ofstream out(path, std::ios::binary);
 		out.imbue(std::locale::classic());
-		out << "tick,frame,client_time,stage,entity,user,repair_enabled,field,value\n";
-		const char *stages[] = {"receive_raw",    "receive_forwarded", "receive_output",
-		                        "net_update_end", "render_start",      "render_end"};
 		out.precision(9);
+		out << "tick,frame,client_time,stage,entity,user,repair_enabled,field,value";
+		for (int i = 1; i < 12; ++i)
+			out << ",v" << i;
+		out << ",status,event\n";
+		const char *stages[] = {"receive_raw",         "receive_forwarded", "receive_output",
+		                        "net_update_end",      "render_start",      "render_end",
+		                        "render_start_before", "bone_output",       "metadata"};
+		const char *statuses[] = {
+		    "ok", "unavailable", "unobserved", "invalid_layout", "inactive_layer", "nonfinite", "masked_out"};
+		auto fieldName = [&](int f) -> std::string {
+			if (f < 2)
+				return f == 0 ? "eye_pitch" : "eye_yaw";
+			if (f < 26)
+				return "pose_" + std::to_string(f - 2);
+			if (f < 29)
+				return f == 26 ? "render_pitch" : f == 27 ? "render_yaw" : "render_roll";
+			if (f < 32)
+				return f == 29 ? "cl_interpolate" : f == 30 ? "cl_interp" : "cl_interp_ratio";
+			return t.Names.at(f - 32);
+		};
+		auto quoted = [&](const std::string &name) {
+			if (name.find_first_of(",\"\r\n") == std::string::npos)
+			{
+				out << name;
+				return;
+			}
+			out << '"';
+			for (char c : name)
+			{
+				if (c == '"')
+					out << '"';
+				out << c;
+			}
+			out << '"';
+		};
 		for (const auto &r : t.Rows)
 		{
 			out << r.Tick << ',' << r.Frame << ',' << r.Time << ',' << stages[r.Stage] << ',' << t.Entity
 			    << ',' << t.User << ',' << r.Repair << ',';
-			if (r.Field < 2)
-				out << (r.Field == 0 ? "eye_pitch" : "eye_yaw");
-			else if (r.Field < 26)
-				out << "pose_" << r.Field - 2;
-			else if (r.Field < 29)
-				out << "render_" << (r.Field == 26 ? "pitch" : r.Field == 27 ? "yaw" : "roll");
-			else
-				out << (r.Field == 29 ? "cl_interpolate" : r.Field == 30 ? "cl_interp" : "cl_interp_ratio");
+			quoted(fieldName(r.Field));
 			out << ',';
 			if (std::isfinite(r.Value))
-				out << r.Value; // Blank means unavailable, never zero.
-			out << '\n';
+				out << r.Value;
+			for (int i = 1; i < 12; ++i)
+			{
+				out << ',';
+				if (i < r.Count && std::isfinite(r.Extra[i - 1]))
+					out << r.Extra[i - 1];
+			}
+			out << ',' << statuses[r.Status] << ',' << r.Event << '\n';
 		}
+		// Explicit coverage counts make a missing stage/field visible in this same file.
+		for (int i = 0; i < 32 + int(t.Names.size()); ++i)
+		{
+			unsigned long long n = i < int(t.Valid.size()) ? t.Valid[i] : 0;
+			out << "-1,-1,0,coverage," << t.Entity << ',' << t.User << ",0,";
+			quoted(fieldName(i));
+			out << ',' << n;
+			for (int j = 1; j < 12; ++j)
+				out << ',';
+			out << ',' << (n ? "ok" : "unobserved") << ",0\n";
+			bool live =
+			    i < 32 || std::find(t.MetadataIds.begin(), t.MetadataIds.end(), i) != t.MetadataIds.end();
+			for (int stage = 0; stage < 9; ++stage)
+			{
+				unsigned long long count = i < int(t.StageValid.size()) ? t.StageValid[i][stage] : 0;
+				if (!count && !(live && stage >= 3 && stage <= 6))
+					continue;
+				out << "-1,-1,0,coverage." << stages[stage] << ',' << t.Entity << ',' << t.User << ",0,";
+				quoted(fieldName(i));
+				out << ',' << count;
+				for (int j = 1; j < 12; ++j)
+					out << ',';
+				out << ',' << (count ? "ok" : "unobserved") << ",0\n";
+			}
+		}
+		auto summary = [&](const std::string &name, unsigned long long value) {
+			out << "-1,-1,0,summary," << t.Entity << ',' << t.User << ",0,";
+			quoted(name);
+			out << ',' << value;
+			for (int j = 1; j < 12; ++j)
+				out << ',';
+			out << ",ok,0\n";
+		};
+		summary("capture_first_tick", t.First);
+		summary("capture_last_tick", t.Last);
+		summary("bone_matrix_rows", t.BoneRows);
+		summary("bone_queue_dropped_total", Mirv_Tf2_DiagnosticBoneDropped() - t.DroppedStart);
+		summary("capture_status=" + t.Status, 1);
 		out.close();
 		return !out.fail();
 	}

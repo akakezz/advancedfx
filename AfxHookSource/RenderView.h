@@ -180,7 +180,7 @@ const char *MirvFix_PlayerRepairStatus();
 unsigned long long MirvFix_PlayerRepairWrites();
 unsigned long long MirvFix_PlayerRepairChanged();
 void MirvFix_PlayerRepairFrameEnd();
-// Bounded original-angle diagnostic; stage 0=net end, 1=render start, 2=render end.
+// Bounded animation diagnostic; stages: 0=net end, 1=post render start, 2=render end, 3=pre render start.
 bool MirvFix_PlayerAngleTraceBegin(int entity, int first, int last);
 void MirvFix_PlayerAngleTraceEnd();
 bool MirvFix_PlayerAngleTraceActive();

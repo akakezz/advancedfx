@@ -928,6 +928,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 	{
 	case SOURCESDK::TF2::FRAME_RENDER_START:
 		Shared_BeforeFrameRenderStart();
+		MirvFix_PlayerAngleTraceFrame(3);
 		break;
 	}
 

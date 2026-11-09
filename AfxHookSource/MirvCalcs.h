@@ -354,6 +354,38 @@ bool Mirv_Tf2_GetEntityAnglesInfo(int entityIndex, float outAbsAngles[3], float 
 void Mirv_Tf2_ReadDiagnosticFields(int entity, const void *object, const int *offsets, float *values,
                                    int count, float renderAngles[3]);
 
+// Read-only animation diagnostic metadata (Kind: 0=float, 1=int32, 2=byte, 3=int16).
+// A nonnegative VectorOffset describes a bounded CUtlVector element, not a root offset.
+struct MirvTf2DiagnosticField
+{
+	int Offset = -1, Kind = 0, VectorOffset = -1, Element = 0, Stride = 0, Maximum = 0;
+};
+void *Mirv_Tf2_DiagnosticEntity(int entity);
+void Mirv_Tf2_ReadAnimationDiagnostic(int entity, const void *object, const MirvTf2DiagnosticField *fields,
+                                      int count, double *values, int *status, float origin[3]);
+struct MirvTf2DiagnosticBones
+{
+	int Count = 0, Mask = 0, Frame = -1, Generation = 0;
+	float Time = 0, ClientTime = 0;
+	bool Success = false, Output = false;
+	unsigned long long Call = 0;
+	float Matrix[MIRV_TF2_MAX_BONES][12];
+};
+struct MirvTf2DiagnosticModel
+{
+	char Name[260]{};
+	int Bones = 0, Poses = 0;
+	int BoneFlags[MIRV_TF2_MAX_BONES]{};
+	char PoseNames[24][64]{};
+	float PoseStart[24]{}, PoseEnd[24]{}, PoseLoop[24]{};
+};
+bool Mirv_Tf2_DiagnosticModel(int entity, MirvTf2DiagnosticModel &out);
+
+// Observes natural SetupBones calls; never requests additional evaluations.
+int Mirv_Tf2_DiagnosticBoneConfigure(int entity, int &generation);
+bool Mirv_Tf2_DiagnosticBonePop(MirvTf2DiagnosticBones &out);
+unsigned long long Mirv_Tf2_DiagnosticBoneDropped();
+void Mirv_Tf2_DiagnosticBoneStop();
 // Renderer classification (unknown classes fall back to Other).
 enum MirvTf2EntityCategory_t
 {
