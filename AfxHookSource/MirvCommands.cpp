@@ -81,6 +81,8 @@ extern CommandSystem g_CommandSystem;
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <atomic>
+#include <memory>
 #include <cstddef>
 
 extern WrpVEngineClient * g_VEngineClient;
@@ -4249,6 +4251,164 @@ bool Tf2RecorderSoundPov()
 	       g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV() &&
 	       !g_VEngineClient->IsDrawingLoadingImage() && g_VEngineClient->GetLocalPlayer() > 0;
 }
+// Stop new sounds before S_StartSound can allocate/queue an audible channel.
+// Its prefix is verified through the versioned engine interface's ambient
+// emitter below. Source and channel precede pointers on both supported ABIs.
+using Tf2StartSound = int(__cdecl *)(void *);
+Tf2StartSound g_Tf2StartSound = nullptr;
+std::shared_ptr<const std::set<int>> g_Tf2RecorderSoundTargets;
+std::atomic<unsigned long long> g_Tf2RecorderSoundsBlocked{0};
+std::atomic<DWORD> g_Tf2RecorderSoundThread{0};
+
+bool Tf2RecorderSoundOwned(int source, int recorder)
+{
+	if (source == -1 || source == recorder)
+		return true;
+	if (source <= 0 || !CClientToolsTf2::Instance())
+		return false;
+	auto *tools = CClientToolsTf2::Instance()->GetClientTools();
+	if (!tools)
+		return false;
+	int count = 0;
+	for (auto entity = tools->FirstEntity(); entity && count++ < 8192; entity = tools->NextEntity(entity))
+	{
+		if (tools->GetEntIndex(entity) != source)
+			continue;
+		for (int depth = 0; depth < 16 && entity; ++depth)
+		{
+			if (tools->GetEntIndex(entity) == recorder)
+				return true;
+			entity = tools->GetOwnerEntity(entity);
+		}
+		break;
+	}
+	return false;
+}
+int __cdecl Tf2RecorderStartSound(void *params)
+{
+	auto targets = std::atomic_load(&g_Tf2RecorderSoundTargets);
+	if (params && targets)
+	{
+		int source, channel, flags;
+		std::memcpy(&source, static_cast<const char *>(params) + 8, sizeof(source));
+		std::memcpy(&channel, static_cast<const char *>(params) + 12, sizeof(channel));
+		std::memcpy(&flags, static_cast<const char *>(params) + (sizeof(void *) == 8 ? 64 : 60),
+		            sizeof(flags));
+		// Always allow stop requests and microphone voice chat. Perform client
+		// entity queries only on the thread that enabled this control; sound
+		// workers use the immutable ownership snapshot published each frame.
+		bool owned = targets->count(source) != 0;
+		if (GetCurrentThreadId() == g_Tf2RecorderSoundThread)
+			owned = Tf2RecorderSoundPov() && Tf2RecorderSoundOwned(source, g_VEngineClient->GetLocalPlayer());
+		// Anonymous static ambient sounds also use source -1; they are not
+		// recorder speech/weapon effects and must retain background audio.
+		const bool ambient = source == -1 && *static_cast<const unsigned char *>(params) != 0;
+		if (!(flags & (4 | 32)) && !(channel >= 8 && channel < 136) && !ambient && owned)
+		{
+			g_Tf2RecorderSoundsBlocked.fetch_add(1, std::memory_order_relaxed);
+			return 0; // Native failure/no channel result, as used by mirv_snd_filter.
+		}
+	}
+	return g_Tf2StartSound(params);
+}
+// Platform-specific resolver kept separate from the filtering policy for tests.
+bool Tf2SoundCodeRead(const void *address, void *buffer, size_t length)
+{
+	MEMORY_BASIC_INFORMATION info{};
+	SIZE_T read = 0;
+	return VirtualQuery(address, &info, sizeof(info)) && !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
+	       (info.Protect &
+	        (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) &&
+	       ReadProcessMemory(GetCurrentProcess(), address, buffer, length, &read) && read == length;
+}
+void *Tf2FindStartSound(const void *ambient, bool is64)
+{
+	unsigned char code[256];
+	if (!Tf2SoundCodeRead(ambient, code, sizeof(code)))
+		return nullptr;
+	// Verify the ambient emitter builds a static/local-player prefix: its
+	// source and channel stores are exactly +8/+12 from the static flag.
+	bool prefix = false;
+	for (size_t i = 0; i + 25 < sizeof(code); ++i)
+	{
+		if (is64)
+		{
+			const unsigned char a[]{0xc6, 0x44, 0x24}, b[]{0xc7, 0x44, 0x24};
+			if (!std::memcmp(code + i, a, 3) && code[i + 4] == 1 && !std::memcmp(code + i + 5, b, 3) &&
+			    code[i + 8] == code[i + 3] + 8 && !std::memcmp(code + i + 9, "\xff\xff\xff\xff", 4) &&
+			    !std::memcmp(code + i + 13, b, 3) && code[i + 16] == code[i + 3] + 12 &&
+			    !std::memcmp(code + i + 17, "\x06\x00\x00\x00", 4))
+			{
+				for (size_t j = 0; j + 4 < sizeof(code); ++j)
+					if (!std::memcmp(code + j, "\x89\x5c\x24", 3) && code[j + 3] == code[i + 3] + 64)
+						prefix = true; // Ambient flags store verifies the flags offset too.
+			}
+		}
+		else if (code[i] == 0xc6 && code[i + 1] == 0x45 && code[i + 3] == 1 && code[i + 4] == 0xc7 &&
+		         code[i + 5] == 0x45 && code[i + 6] == static_cast<unsigned char>(code[i + 2] + 8) &&
+		         !std::memcmp(code + i + 7, "\xff\xff\xff\xff", 4) && code[i + 11] == 0xc7 &&
+		         code[i + 12] == 0x45 && code[i + 13] == static_cast<unsigned char>(code[i + 2] + 12) &&
+		         !std::memcmp(code + i + 14, "\x06\x00\x00\x00", 4))
+		{
+			for (size_t j = 0; j + 3 < sizeof(code); ++j)
+				if (code[j] == 0x89 && code[j + 1] == 0x45 &&
+				    code[j + 2] == static_cast<unsigned char>(code[i + 2] + 60))
+					prefix = true;
+		}
+	}
+	if (!prefix)
+		return nullptr;
+	void *result = nullptr;
+	for (size_t i = 0; i + 5 <= sizeof(code); ++i)
+	{
+		if (code[i] != 0xe8)
+			continue;
+		int displacement;
+		std::memcpy(&displacement, code + i + 1, sizeof(displacement));
+		auto target = reinterpret_cast<const unsigned char *>(ambient) + i + 5 + displacement;
+		unsigned char entry[21];
+		if (!Tf2SoundCodeRead(target, entry, sizeof(entry)))
+			continue;
+		const bool match = is64 ? !std::memcmp(entry, "\x40\x57\x48\x81\xec", 5) &&
+		                              !std::memcmp(entry + 9, "\x48\x83\x79\x10\x00\x48\x8b\xf9\x75", 9) &&
+		                              !std::memcmp(entry + 19, "\x33\xc0", 2)
+		                        : !std::memcmp(entry, "\x55\x8b\xec\x81\xec", 5) &&
+		                              !std::memcmp(entry + 9, "\x56\x8b\x75\x08\x83\x7e\x10\x00\x75", 9) &&
+		                              !std::memcmp(entry + 19, "\x33\xc0", 2);
+		if (match)
+		{
+			if (result && result != target)
+				return nullptr;
+			result = const_cast<unsigned char *>(target);
+		}
+	}
+	return result;
+}
+bool Tf2InstallRecorderSoundHook(void *sound)
+{
+	if (g_Tf2StartSound)
+		return true;
+	auto address = Tf2FindStartSound((*static_cast<void ***>(sound))[11], sizeof(void *) == 8);
+	if (!address)
+		return false;
+	g_Tf2StartSound = reinterpret_cast<Tf2StartSound>(address);
+	LONG error = DetourTransactionBegin();
+	if (error == NO_ERROR)
+	{
+		error = DetourUpdateThread(GetCurrentThread());
+		if (error == NO_ERROR)
+			error = DetourAttach(reinterpret_cast<PVOID *>(&g_Tf2StartSound),
+			                     reinterpret_cast<PVOID>(Tf2RecorderStartSound));
+		if (error == NO_ERROR)
+			error = DetourTransactionCommit();
+		else
+			DetourTransactionAbort();
+	}
+	if (error != NO_ERROR)
+		g_Tf2StartSound = nullptr;
+	return error == NO_ERROR;
+}
+// End platform-specific recorder sound resolver.
 bool Tf2RecorderSoundQuery()
 {
 	if (!g_Tf2RecorderSound)
@@ -4288,6 +4448,7 @@ bool MirvFix_SetRecorderSoundMute(bool enabled)
 {
 	if (!enabled)
 	{
+		std::atomic_store(&g_Tf2RecorderSoundTargets, std::shared_ptr<const std::set<int>>{});
 		if (Tf2RecorderSoundQuery())
 			for (int i = 0; i < g_Tf2RecorderSoundList.Size; ++i)
 				Tf2RecorderSoundRestore(g_Tf2RecorderSoundList.Memory[i]);
@@ -4313,8 +4474,17 @@ bool MirvFix_SetRecorderSoundMute(bool enabled)
 		g_Tf2RecorderSoundStatus = "IEngineSoundClient003 is unavailable.";
 		return false;
 	}
+	if (!Tf2InstallRecorderSoundHook(g_Tf2RecorderSound))
+	{
+		g_Tf2RecorderSound = nullptr;
+		g_Tf2RecorderSoundStatus =
+		    "Pre-playback recorder sound filter unavailable for this engine; mute not enabled.";
+		return false;
+	}
+	g_Tf2RecorderSoundThread = GetCurrentThreadId();
+	g_Tf2RecorderSoundsBlocked.store(0);
 	g_Tf2RecorderSoundMute = true;
-	g_Tf2RecorderSoundStatus = "Enabled. Active recorder/owned-entity sounds are muted each frame.";
+	g_Tf2RecorderSoundStatus = "Enabled. New recorder sounds are blocked before playback.";
 	MirvFix_RecorderSoundUpdate();
 	return g_Tf2RecorderSoundMute;
 }
@@ -4344,20 +4514,13 @@ void MirvFix_RecorderSoundUpdate()
 		return;
 	}
 	const int recorder = g_VEngineClient->GetLocalPlayer();
-	std::set<int> sources, owned{-1, recorder}; // SDK SOUND_FROM_LOCAL_PLAYER = -1.
-	for (int i = 0; i < g_Tf2RecorderSoundList.Size; ++i)
-		if (g_Tf2RecorderSoundList.Memory[i].Source > 0 &&
-		    g_Tf2RecorderSoundList.Memory[i].Source != recorder)
-			sources.insert(g_Tf2RecorderSoundList.Memory[i].Source);
-	// Reuse the tools ownership traversal: weapon/viewmodel sounds need not
-	// carry the recorder's own entity index. Never infer ownership by classname.
+	std::set<int> owned{-1, recorder};
 	int count = 0;
-	for (auto entity = tools->FirstEntity(); entity && !sources.empty() && count++ < 8192;
-	     entity = tools->NextEntity(entity))
+	for (auto entity = tools->FirstEntity(); entity && count++ < 8192; entity = tools->NextEntity(entity))
 	{
 		const int index = tools->GetEntIndex(entity);
-		if (!sources.erase(index))
-			continue;
+		if (index <= 0)
+			continue; // Do not alias world/UI audio to a client-only owned entity.
 		auto owner = entity;
 		for (int depth = 0; depth < 16 && owner; ++depth)
 		{
@@ -4369,6 +4532,7 @@ void MirvFix_RecorderSoundUpdate()
 			owner = tools->GetOwnerEntity(owner);
 		}
 	}
+	std::atomic_store(&g_Tf2RecorderSoundTargets, std::make_shared<const std::set<int>>(owned));
 	std::map<int, Tf2MutedSound> active;
 	for (int i = 0; i < g_Tf2RecorderSoundList.Size; ++i)
 	{
@@ -4376,8 +4540,9 @@ void MirvFix_RecorderSoundUpdate()
 		// SDK CHAN_VOICE_BASE..CHAN_USER_BASE-1 belongs to microphone voice chat,
 		// unlike character speech on CHAN_VOICE / CHAN_VOICE2.
 		const bool microphone = sound.Channel >= 8 && sound.Channel < 136;
-		if (microphone || !owned.count(sound.Source) || !std::isfinite(sound.Volume) || sound.Volume < 0 ||
-		    sound.Volume > 1)
+		const bool ambient = sound.Source == -1 && sound.Channel == 6;
+		if (microphone || ambient || !owned.count(sound.Source) || !std::isfinite(sound.Volume) ||
+		    sound.Volume < 0 || sound.Volume > 1)
 		{
 			Tf2RecorderSoundRestore(sound);
 			continue;
@@ -5949,10 +6114,11 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			}
 			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
 				Tier0_Warning("Usage: mirv_fix recorderSounds 0|1|status (0 mutes, 1 restores)\n");
-			Tier0_Msg("Recorder sounds: %s; active muted sounds %zu. %s\n",
+			Tier0_Msg("Recorder sounds: %s; active muted sounds %zu; blocked starts %llu. %s\n",
 				MirvFix_GetRecorderSoundMute() ? "muted" : "normal", g_Tf2MutedSounds.size(),
+				static_cast<unsigned long long>(g_Tf2RecorderSoundsBlocked.load()),
 				MirvFix_RecorderSoundStatus());
-			Tier0_Msg("POV demos only. Active sounds are checked each frame; short sound onsets may still be audible.\n");
+			Tier0_Msg("POV demos only. New recorder sounds are blocked before playback; existing sounds are muted/restored by GUID.\n");
 			return;
 		}
 		// End TF2 recorder sound command.

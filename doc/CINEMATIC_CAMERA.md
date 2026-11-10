@@ -1392,11 +1392,37 @@ with other emitters retain their volumes. It does not reposition sounds, change
 the global mixer, mute microphone voice chat, or modify the demo file. Sounds
 recorded as world/UI emitters cannot reliably be attributed to the recorder.
 
-The engine's active-sound interface is checked once per client frame. A short
-onset can reach the audio device before that check; this is not a sample-accurate
-sound filter. Please test voice lines, firing and footsteps in your POV demo.
-Disabling restores the previous volumes of surviving sounds still owned by the
-mute, including loops. Native volume changes observed while muted become the new
-restore values. Finished sounds are discarded. Ending playback or entering STV
-playback disables the mute; loading during a backward seek temporarily suspends
-checks. It is not saved as a persistent overlay preference.
+New sounds are rejected at the engine's common sound-start function before a
+channel can be queued or mixed. This covers both client-generated and recorded
+network sounds. Stop requests, microphone voice channels and anonymous static
+ambient audio pass through. The hook is resolved and checked against the
+versioned sound interface; if this engine layout is unrecognized, enabling the
+mute fails with a status message. There is no per-frame-only fallback.
+
+Already-playing recorder sounds are silenced by GUID. Disabling restores the
+previous volumes of surviving sounds still owned by the mute. Sounds prevented
+from starting have no channel to restore: rewind/replay to restart any such
+loops after disabling. Native volume changes observed while muted become the
+new restore values. Finished sounds are discarded. Ending playback or entering
+STV playback disables the mute; loading during a backward seek temporarily
+suspends active-channel checks. It is not saved as a persistent overlay preference.
+`status` reports both active muted channels and the number of blocked starts.
+
+## Sequencer file and command controls
+
+Automatic event indexing accepts a name relative to the game directory (for
+example `example.dem`) or prefixed with that directory (`tf/example.dem`), as
+well as an absolute path. A missing file produces a useful status message and
+can still be opened with **Open demo...**.
+
+Click a command marker on the **Commands** timeline row to select it and open
+its command editor. Drag it horizontally to change its tick without moving
+camera keys. Right-click a marker to seek to its tick or use the lead-in.
+Editing or dragging does not execute the command immediately.
+
+In the Campath tab, **Choose path folder...** selects a directory for path and
+collection file dialogs. The folder is displayed and remembered across sessions.
+**Save path as** / **Save all as** choose a new destination; **Save path** /
+**Save all** continue to update their current files. The folder browser also
+supports creating directories, editing the full directory path, and Enter to
+confirm the current directory.

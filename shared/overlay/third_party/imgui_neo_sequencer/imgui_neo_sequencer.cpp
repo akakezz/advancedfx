@@ -1413,7 +1413,25 @@ namespace ImGui
             bounds.Min.x = ImMax(left, x0 - 6);
             bounds.Max.x = ImMin(right, x0 + 6);
         }
-        const bool hover = IsWindowHovered() && IsMouseHoveringRect(bounds.Min, bounds.Max);
+        // Timeline selection owns an active ID while a button is held. Span markers
+        // must still receive hover/clicks in that same window.
+        const bool hover = IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+                           IsMouseHoveringRect(bounds.Min, bounds.Max);
+        // Span markers are part of the existing timeline-row item. Claim its
+        // ID so ImGui does not interpret a marker drag as moving the window.
+        const ImGuiID rowId = context.TimelineStack.back();
+        if (GetActiveID() == rowId && !IsMouseDown(ImGuiMouseButton_Left))
+            ClearActiveID();
+        if (hover)
+        {
+            SetHoveredID(rowId);
+            SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (IsMouseClicked(ImGuiMouseButton_Left))
+            {
+                SetActiveID(rowId, GetCurrentWindow());
+                FocusWindow(GetCurrentWindow());
+            }
+        }
         if (hovered) *hovered = hover;
         const float distance = fabsf(GetIO().MousePos.x - ImClamp(GetIO().MousePos.x, x0, x1));
         if (hover && caption && distance < context.SpanHoverDistance)

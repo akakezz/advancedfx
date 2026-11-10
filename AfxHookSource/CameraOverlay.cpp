@@ -154,6 +154,7 @@ static double g_RecoveryNextSave = 0;
 static std::vector<std::filesystem::path> g_RecoveryCandidates;
 static std::string g_DocumentStatus;
 static void UpdateRecovery(bool force);
+static void CancelCommandMarkerDrag();
 
 bool IsOpen()
 {
@@ -194,6 +195,7 @@ void BeginEdit()
 }
 void FinishEdit()
 {
+	CancelCommandMarkerDrag();
 	if (!CancelEditGesture())
 		g_Hook_VClient_RenderView.m_CamPaths.FinishEdit();
 	UpdateRecovery(false);
@@ -525,6 +527,10 @@ static ImGui::FileBrowser s_campathSaveDialog(ImGuiFileBrowserFlags_EnterNewFile
 											  ImGuiFileBrowserFlags_CloseOnEsc |
 											  ImGuiFileBrowserFlags_EditPathString |
 											  ImGuiFileBrowserFlags_CreateNewDir);
+static ImGui::FileBrowser s_campathFolderDialog(
+	ImGuiFileBrowserFlags_SelectDirectory | ImGuiFileBrowserFlags_ConfirmOnEnter |
+	ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_EditPathString |
+	ImGuiFileBrowserFlags_CreateNewDir);
 static bool s_campathDialogsInit = false;
 static bool g_OpenAll = false, g_SaveAll = false, g_ExportClassic = false;
 static double g_ExportFps = 120;
@@ -548,7 +554,14 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 	std::string key(line, eq - line);
 	std::string val(eq + 1);
 	if (key == "CampathDir")
+	{
 		s->campathDir = val;
+		if (!val.empty())
+		{
+			s_campathOpenDialog.SetDirectory(val);
+			s_campathSaveDialog.SetDirectory(val);
+		}
+	}
 	else if (key == "RecordBrowseDir")
 		s->recordBrowseDir = val;
 	else if (key == "DemoDir")
@@ -3139,6 +3152,8 @@ struct SequencerTimeline
 	bool Categories[4] = {true, true, true, false}, RecorderOnly = false, FilterDirty = true;
 	char Search[128] = {};
 	int SelectedTick = -1;
+	unsigned long long DragCommand = 0;
+	int DragCommandTick = 0, DragMouseTick = 0;
 	unsigned long long SelectedCommand = 0, DraftRevision = ~0ull, DraftId = 0;
 	CommandSystem::TickMarker Draft;
 	char CommandName[129] = {}, CommandBody[16385] = {};
@@ -3155,6 +3170,15 @@ struct SequencerTimeline
 			Cancel->store(true);
 	}
 } g_SequencerTimeline;
+static void CancelCommandMarkerDrag()
+{
+	if (!g_SequencerTimeline.DragCommand)
+		return;
+	g_SequencerTimeline.DragCommand = 0;
+	if (ImGui::GetCurrentContext())
+		ImGui::ClearActiveID();
+}
+
 
 static void StartTimelineIndex(const std::filesystem::path &file)
 {
@@ -3188,7 +3212,10 @@ static void StartTimelineIndex(const std::filesystem::path &file)
 void NotifyDemoPlaybackFile(const char *file)
 {
 	if (file && *file)
+	{
+		CancelCommandMarkerDrag();
 		g_SequencerTimeline.RequestedDemo = file;
+	}
 }
 static void AutoIndexRequestedDemo()
 {
@@ -3209,7 +3236,27 @@ static void AutoIndexRequestedDemo()
 			const char *directory = g_VEngineClient->GetGameDirectory();
 			if (!directory || !*directory)
 				return;
-			file = std::filesystem::path(directory) / file;
+			file = file.lexically_normal();
+			auto game = std::filesystem::absolute(directory).lexically_normal();
+			while (game.filename().empty() && game.parent_path() != game)
+				game = game.parent_path();
+			std::vector<std::filesystem::path> candidates{game / file};
+			// Source/UI may report tf/name.dem instead of name.dem. Avoid tf/tf.
+			if (_stricmp(file.begin()->string().c_str(), game.filename().string().c_str()) == 0)
+				candidates.insert(candidates.begin(), game.parent_path() / file);
+			candidates.push_back(std::filesystem::absolute(file));
+			std::error_code error;
+			auto found = std::find_if(candidates.begin(), candidates.end(), [&](const auto &candidate) {
+				error.clear();
+				return std::filesystem::is_regular_file(candidate, error);
+			});
+			if (found == candidates.end())
+			{
+				state.Status = "Automatic event indexing could not find " + name +
+					" in the game directory: " + game.string() + ". Use Open demo... to select it.";
+				return;
+			}
+			file = *found;
 		}
 		file = std::filesystem::weakly_canonical(file);
 		if (state.Worker.valid() && state.Index.File == file && !state.Cancel->load())
@@ -3293,7 +3340,8 @@ static void DrawSequencerExtraTracks(int visibleStart, int visibleEnd)
 	auto &state = g_SequencerTimeline;
 	state.MarkerContext = false;
 	ImGui::FrameIndexType mouseTick = 0;
-	ImGui::GetNeoSequencerMouseFrame(&mouseTick);
+	const bool haveMouseTick = ImGui::GetNeoSequencerMouseFrame(
+		&mouseTick, ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 	const int buckets = (std::max)(1, (std::min)(2000, int(ImGui::GetContentRegionAvail().x)));
 	auto bucket = [&](int tick) {
 		return int((int64_t(tick) - visibleStart) * buckets /
@@ -3323,6 +3371,9 @@ static void DrawSequencerExtraTracks(int visibleStart, int visibleEnd)
 			{
 				nearest = distance;
 				state.SelectedCommand = marker.Id;
+				state.DragCommand = marker.Id;
+				state.DragCommandTick = marker.Tick;
+				state.DragMouseTick = mouseTick;
 				state.FocusCommands = true;
 				ImGui::NeoCancelSelection();
 			}
@@ -3334,6 +3385,30 @@ static void DrawSequencerExtraTracks(int visibleStart, int visibleEnd)
 				state.MarkerContext = true;
 				state.SelectedCommand = marker.Id;
 				state.FocusCommands = true;
+			}
+		}
+		if (state.DragCommand)
+		{
+			if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+			    !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+				state.DragCommand = 0;
+			else
+			{
+				const auto &markers = g_CommandSystem.GetTickMarkers();
+				auto marker = std::find_if(markers.begin(), markers.end(), [&](const auto &value) {
+					return value.Id == state.DragCommand;
+				});
+				if (marker == markers.end())
+					state.DragCommand = 0;
+				else
+				{
+					auto moved = *marker;
+					moved.Tick = int(std::clamp(int64_t(state.DragCommandTick) + mouseTick - state.DragMouseTick,
+						int64_t(0), int64_t(INT_MAX)));
+					if (haveMouseTick && moved.Tick != marker->Tick)
+						g_CommandSystem.SetTickMarker(moved);
+				}
+				ImGui::NeoCancelSelection();
 			}
 		}
 		ImGui::EndNeoTimeLine();
@@ -4081,6 +4156,7 @@ static void DrawSequencerDetails(int playhead)
 			{
 				state.CommandsFile = file;
 				state.SelectedCommand = 0;
+				CancelCommandMarkerDrag();
 			}
 			loadDialog.ClearSelected();
 		}
@@ -4583,7 +4659,7 @@ void Draw()
 					!MirvFix_SetRecorderSoundMute(muteRecorder))
 					g_DocumentStatus = MirvFix_RecorderSoundStatus();
 				ImGui::TextWrapped("TF2/TF2C POV demos only. Mutes active sounds from the recorder and owned "
-					"entities, including weapons. Short sound onsets may still be audible. "
+					"entities, including weapons. New recorder sounds are blocked before playback. "
 					"Disabling restores surviving sounds; ending playback disables the mute.");
 				bool deathcam = MirvFix_GetPovDeathcam();
 				if (ImGui::Checkbox("Suppress POV deathcam", &deathcam) && g_VEngineClient)
@@ -4625,6 +4701,26 @@ void Draw()
 				g_OpenAll = true;
 				s_campathOpenDialog.SetTitle("Open collection");
 				s_campathOpenDialog.Open();
+			}
+			if (ImGui::Button("Choose path folder..."))
+			{
+				s_campathFolderDialog.SetTitle("Choose path save folder");
+				s_campathFolderDialog.SetDirectory(s_campathSaveDialog.GetDirectory());
+				s_campathFolderDialog.Open();
+			}
+			ImGui::TextWrapped("Path save folder: %s", s_campathSaveDialog.GetDirectory().u8string().c_str());
+			ImGui::TextDisabled("Save as chooses a new file; Save updates the current file.");
+			s_campathFolderDialog.Display();
+			if (s_campathFolderDialog.HasSelected())
+			{
+				auto folder = s_campathFolderDialog.GetSelected();
+				if (s_campathSaveDialog.SetDirectory(folder))
+				{
+					s_campathOpenDialog.SetDirectory(folder);
+					g_OverlayPaths.campathDir = folder.string();
+					ImGui::MarkIniSettingsDirty();
+				}
+				s_campathFolderDialog.ClearSelected();
 			}
 			if (ImGui::Button("Save path"))
 			{
