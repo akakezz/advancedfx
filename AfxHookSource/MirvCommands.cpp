@@ -4254,6 +4254,24 @@ bool Tf2RecorderSoundPov()
 // Stop new sounds before S_StartSound can allocate/queue an audible channel.
 // Its prefix is verified through the versioned engine interface's ambient
 // emitter below. Source and channel precede pointers on both supported ABIs.
+// Native StartSoundParams_t prefix through pitch. In particular, Flags is
+// BEFORE Pitch; normal pitch 100 contains the same bits as stop requests.
+struct Tf2StartSoundPrefix
+{
+	bool StaticSound;
+	int UserData, Source, Channel;
+	void *Sfx;
+	float Origin[3], Direction[3];
+	bool UpdatePositions;
+	float Volume;
+	int SoundLevel, Flags, Pitch;
+};
+static_assert(offsetof(Tf2StartSoundPrefix, Source) == 8, "StartSoundParams_t source ABI");
+static_assert(offsetof(Tf2StartSoundPrefix, Channel) == 12, "StartSoundParams_t channel ABI");
+static_assert(offsetof(Tf2StartSoundPrefix, Flags) == (sizeof(void *) == 8 ? 60 : 56),
+              "StartSoundParams_t flags ABI");
+static_assert(offsetof(Tf2StartSoundPrefix, Pitch) == (sizeof(void *) == 8 ? 64 : 60),
+              "StartSoundParams_t pitch ABI");
 using Tf2StartSound = int(__cdecl *)(void *);
 Tf2StartSound g_Tf2StartSound = nullptr;
 std::shared_ptr<const std::set<int>> g_Tf2RecorderSoundTargets;
@@ -4290,9 +4308,11 @@ int __cdecl Tf2RecorderStartSound(void *params)
 	if (params && targets)
 	{
 		int source, channel, flags;
-		std::memcpy(&source, static_cast<const char *>(params) + 8, sizeof(source));
-		std::memcpy(&channel, static_cast<const char *>(params) + 12, sizeof(channel));
-		std::memcpy(&flags, static_cast<const char *>(params) + (sizeof(void *) == 8 ? 64 : 60),
+		std::memcpy(&source, static_cast<const char *>(params) + offsetof(Tf2StartSoundPrefix, Source),
+		            sizeof(source));
+		std::memcpy(&channel, static_cast<const char *>(params) + offsetof(Tf2StartSoundPrefix, Channel),
+		            sizeof(channel));
+		std::memcpy(&flags, static_cast<const char *>(params) + offsetof(Tf2StartSoundPrefix, Flags),
 		            sizeof(flags));
 		// Always allow stop requests and microphone voice chat. Perform client
 		// entity queries only on the thread that enabled this control; sound
@@ -4340,7 +4360,7 @@ void *Tf2FindStartSound(const void *ambient, bool is64)
 			    !std::memcmp(code + i + 17, "\x06\x00\x00\x00", 4))
 			{
 				for (size_t j = 0; j + 4 < sizeof(code); ++j)
-					if (!std::memcmp(code + j, "\x89\x5c\x24", 3) && code[j + 3] == code[i + 3] + 64)
+					if (!std::memcmp(code + j, "\x89\x44\x24", 3) && code[j + 3] == code[i + 3] + 60)
 						prefix = true; // Ambient flags store verifies the flags offset too.
 			}
 		}
@@ -4352,7 +4372,7 @@ void *Tf2FindStartSound(const void *ambient, bool is64)
 		{
 			for (size_t j = 0; j + 3 < sizeof(code); ++j)
 				if (code[j] == 0x89 && code[j + 1] == 0x45 &&
-				    code[j + 2] == static_cast<unsigned char>(code[i + 2] + 60))
+				    code[j + 2] == static_cast<unsigned char>(code[i + 2] + 56))
 					prefix = true;
 		}
 	}

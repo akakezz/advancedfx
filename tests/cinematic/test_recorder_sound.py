@@ -89,7 +89,7 @@ void ResolverTests(){
   soundCode.clear();auto&code=soundCode[0x1000];code.assign(256,0x90);
   std::vector<unsigned char> prefix=is64?std::vector<unsigned char>{0xc6,0x44,0x24,0x20,1,0xc7,0x44,0x24,0x28,255,255,255,255,0xc7,0x44,0x24,0x2c,6,0,0,0}:std::vector<unsigned char>{0xc6,0x45,0xa4,1,0xc7,0x45,0xac,255,255,255,255,0xc7,0x45,0xb0,6,0,0,0};
   std::copy(prefix.begin(),prefix.end(),code.begin()+16);
-  std::vector<unsigned char> flag=is64?std::vector<unsigned char>{0x89,0x5c,0x24,0x60}:std::vector<unsigned char>{0x89,0x45,0xe0};std::copy(flag.begin(),flag.end(),code.begin()+48);
+  std::vector<unsigned char> flag=is64?std::vector<unsigned char>{0x89,0x44,0x24,0x5c}:std::vector<unsigned char>{0x89,0x45,0xdc};std::copy(flag.begin(),flag.end(),code.begin()+48);
   code[64]=0xe8;int relative=0x2000-(0x1000+69);memcpy(code.data()+65,&relative,4);
   auto&entry=soundCode[0x2000];entry=is64?std::vector<unsigned char>{0x40,0x57,0x48,0x81,0xec,0x60,2,0,0,0x48,0x83,0x79,0x10,0,0x48,0x8b,0xf9,0x75,0xb,0x33,0xc0}:std::vector<unsigned char>{0x55,0x8b,0xec,0x81,0xec,0xc4,1,0,0,0x56,0x8b,0x75,8,0x83,0x7e,0x10,0,0x75,7,0x33,0xc0};
   ResolverCheck(Tf2FindStartSound((void*)0x1000,is64)==(void*)0x2000,"native start resolves through validated relative call on both ABIs");
@@ -109,7 +109,15 @@ struct SoundInterface{void**Vtable=table;}soundInterface;
 bool interfaceAvailable=true,badQuery=false,hookAvailable=true;int queries=0,writes=0,starts=0;
 int Start(void*){++starts;return 77;}
 namespace { bool Tf2InstallRecorderSoundHook(void*){if(!hookAvailable)return false;g_Tf2StartSound=Start;return true;} }
-int Emit(int source,int channel=2,int flags=0,bool ambient=false){char p[96]{};p[0]=ambient;memcpy(p+8,&source,4);memcpy(p+12,&channel,4);memcpy(p+(sizeof(void*)==8?64:60),&flags,4);return Tf2RecorderStartSound(p);}
+// Native emitter layout: flags precede pitch. Populate both, including normal pitch 100.
+int Emit(int source,int channel=2,int flags=0,bool ambient=false,int pitch=100){
+ char p[96]{};p[0]=ambient;memcpy(p+8,&source,4);memcpy(p+12,&channel,4);
+ void*sfx=(void*)0x100;float volume=.8f;int level=75;
+ memcpy(p+16,&sfx,sizeof(sfx));p[sizeof(void*)==8?48:44]=1;
+ memcpy(p+(sizeof(void*)==8?52:48),&volume,4);memcpy(p+(sizeof(void*)==8?56:52),&level,4);
+ memcpy(p+(sizeof(void*)==8?60:56),&flags,4);memcpy(p+(sizeof(void*)==8?64:60),&pitch,4);
+ return Tf2RecorderStartSound(p);
+}
 void Query(void*,Tf2ActiveSoundList&list){
  ++queries;
  if(badQuery){list.Size=-1;return;}
@@ -144,6 +152,10 @@ int main(){try{ResolverTests();ENGINE_CASES
  for(int i=0;i<7;++i)Check(sounds[i].Volume==(i<4?0:.8f),"other player, world and UI untouched");
  Check(sounds[7].Volume==.8f&&sounds[8].Volume==0&&sounds[9].Volume==0&&sounds[10].Volume==.8f,"microphone and anonymous ambient audio retained; character speech muted");
  Check(Emit(1)==0&&Emit(-1)==0&&Emit(3)==0&&Emit(4)==0&&starts==0,"recorder speech, local sounds, weapons and viewmodels never reach native playback");
+ for(int pitch=1;pitch<=255;++pitch)Check(Emit(1,2,0,false,pitch)==0,"recorder starts are blocked regardless of pitch bits");
+ for(int flags:{1,2,8,16,64,128,256,512,1024})Check(Emit(1,2,flags)==0,"non-stop sound flags cannot bypass recorder mute");
+ for(int pitch:{1,64,100,128,255})Check(Emit(1,2,4,false,pitch)==77&&Emit(1,2,32,false,pitch)==77,"stop requests reach native playback regardless of pitch");
+
  Check(Emit(2)==77&&Emit(0)==77&&Emit(-2)==77&&Emit(-1,6,0,true)==77&&Emit(1,8)==77&&Emit(1,2,4)==77&&Emit(1,2,32)==77,"other emitters, anonymous ambient, microphone voice and sound stops pass through");
  soundThread=2;Check(Emit(3)==0&&Emit(0)==77,"worker uses immutable weapon ownership snapshot");soundThread=1;
  Entity newWeapon{5,&player};entities.push_back(&newWeapon);Check(Emit(5)==0,"new weapon is filtered before the next frame publishes ownership");entities.pop_back();
