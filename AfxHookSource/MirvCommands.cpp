@@ -2239,7 +2239,7 @@ static void CampathPreview_PrintHelp()
 CON_COMMAND(mirv_campath, "camera paths")
 {
 	if (args->ArgC() == 1)
-		Tier0_Msg("mirv_campath cache [record|preview|goto|step|rate|pose|projectiles|weapons|cosmetics|models|clear|status|help] - Historical scene navigation.\n");
+		Tier0_Msg("mirv_campath cache [record|preview|goto|step|rate|pose|projectiles|weapons|cosmetics|animation|models|clear|status|help] - Historical scene navigation.\n");
 
 	if (!g_Hook_VClient_RenderView.IsInstalled())
 	{

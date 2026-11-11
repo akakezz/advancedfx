@@ -1582,7 +1582,7 @@ remains 64 MiB. This milestone captures visible networked studio projectiles;
 particles, trails and explosions are not historical projectile models.
 
 The cache stores immutable model names/checksums, bone hierarchy metadata, body
-groups and observed bone matrices. It reuses the game asset through
+groups, recorded bone names and observed transforms. It reuses the game asset through
 `VStudioRender025` / `MDLCache004`; it does not store a new mesh in every frame.
 AGR's existing transform helpers and model/bone conventions are reused without
 starting/stopping AGR or changing recording mode. Bone capture runs for
@@ -1592,17 +1592,41 @@ matrices or missing render interfaces produce an explanatory status and keep
 proxy history available. Source can report its first-person local player as hidden;
 choose a visible player for the initial test.
 
-Preview deliberately displays the nearest complete recorded
-animation pose between samples, moved with the interpolated root transform.
-It preserves bone scale and avoids blending world-space matrices, which would
-stretch the skeleton. It does not yet interpolate individual local bone
-rotations. Model changes and missing pose samples are not bridged with another
-pose. Facial flexes, ragdolls, moving doors/props, particles and
-sounds are not part of this milestone; native life-state/respawn boundaries are still not
-classified. This is a visual preview, not restoration of engine simulation.
+**Smooth cached animation** is enabled by default. Between observed ticks it
+interpolates parent-relative bone rotations using HLAE's quaternion slerp,
+with linear translation and scale, then rebuilds the hierarchy. This preserves
+limb lengths through rotations instead of blending world-space matrices.
+Gear shares the owning player's interpolated merge-enabled bones by recorded
+bone name, so matching hands, weapons and wearables follow the same motion.
+All transforms and relationships come from the cache, including during reverse
+scrubbing; live animation state is not consulted.
 
-Pose payload and a conservative per-frame charge for shared metadata count
-toward **Scene budget MiB**. The counter excludes engine asset memory, allocator
+Disable **Smooth cached animation**, or use these commands, to compare against
+nearest recorded poses without recording again:
+
+```text
+mirv_campath cache animation nearest
+mirv_campath cache animation smooth
+```
+
+`cache rate` retains fractional ticks for smooth playback forwards/backwards.
+Right Ctrl navigation and exact tick entry keep their whole-tick behavior. The
+animation difference is most visible during slow `cache rate` playback or
+sub-tick camera preview; stepping between adjacent recorded ticks shows those
+original samples in both modes.
+
+Capture prepares compact local transforms once per observed pose. Unsupported
+local shear or singular transforms keep their verbatim world matrices and use
+nearest-pose playback. Changes in body groups or scale handedness also use the
+nearest pose. Model changes, missing samples, excessive gaps/travel and owner
+changes retain their existing safeguards. Smoothing does not repair bad demo
+samples or synthesize missing simulation, particles, audio or facial flexes.
+Native life-state/respawn boundaries are still not classified. This remains a
+visual preview, not restoration of engine simulation.
+
+Pose payload and shared model metadata count toward **Scene budget MiB**.
+Each model descriptor is charged once while referenced by retained frames; its
+charge is released when the last such frame is evicted or history is cleared. The counter excludes engine asset memory, allocator
 bookkeeping and temporary published/queued snapshots. Oldest frames are evicted
 as before. Status shows cumulative pose captures/unavailable attempts since the
 last clear, not the count currently retained. A single over-budget frame is

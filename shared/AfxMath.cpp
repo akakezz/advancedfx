@@ -1589,6 +1589,41 @@ Quaternion::Quaternion(double w, double x, double y, double z)
 	Z = z;
 }
 
+Quaternion Quaternion::FromRotationMatrix(const double m[3][3])
+{
+	Quaternion q;
+	const double trace = m[0][0] + m[1][1] + m[2][2];
+	if (trace > 0)
+	{
+		const double s = 2 * std::sqrt(trace + 1);
+		q = Quaternion(s / 4, (m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s);
+	}
+	else
+	{
+		const int i = m[0][0] > m[1][1] ? (m[0][0] > m[2][2] ? 0 : 2) : (m[1][1] > m[2][2] ? 1 : 2);
+		const int j = (i + 1) % 3, k = (i + 2) % 3;
+		const double s = 2 * std::sqrt(1 + m[i][i] - m[j][j] - m[k][k]);
+		double xyz[3];
+		xyz[i] = s / 4;
+		xyz[j] = (m[j][i] + m[i][j]) / s;
+		xyz[k] = (m[k][i] + m[i][k]) / s;
+		q = Quaternion((m[k][j] - m[j][k]) / s, xyz[0], xyz[1], xyz[2]);
+	}
+	return q.Normalized();
+}
+void Quaternion::ToRotationMatrix(double m[3][3]) const
+{
+	const auto q = Normalized();
+	m[0][0] = 1 - 2 * (q.Y * q.Y + q.Z * q.Z);
+	m[0][1] = 2 * (q.X * q.Y - q.Z * q.W);
+	m[0][2] = 2 * (q.X * q.Z + q.Y * q.W);
+	m[1][0] = 2 * (q.X * q.Y + q.Z * q.W);
+	m[1][1] = 1 - 2 * (q.X * q.X + q.Z * q.Z);
+	m[1][2] = 2 * (q.Y * q.Z - q.X * q.W);
+	m[2][0] = 2 * (q.X * q.Z - q.Y * q.W);
+	m[2][1] = 2 * (q.Y * q.Z + q.X * q.W);
+	m[2][2] = 1 - 2 * (q.X * q.X + q.Y * q.Y);
+}
 double Quaternion::Norm() const
 {
     return sqrt(W*W +X*X +Y*Y +Z*Z);

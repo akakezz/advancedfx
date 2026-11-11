@@ -1,10 +1,12 @@
 #pragma once
+#include "AfxMath.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <deque>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -24,18 +26,87 @@ public:
 		std::string Name;
 		std::uint32_t Checksum = 0;
 		std::vector<int> Parents, Flags;
+		std::vector<int> MergeBones;        // Bone-name sort order for Source's merge-enabled bones.
+		std::vector<std::string> BoneNames; // Bone-merged gear uses the same names as its player.
+	};
+	struct Transform
+	{
+		std::array<float, 3> Position{}, Scale{1, 1, 1};
+		std::array<float, 4> Rotation{1, 0, 0, 0}; // HLAE quaternion order: W, X, Y, Z.
+		Afx::Math::Quaternion Quaternion() const
+		{
+			return {Rotation[0], Rotation[1], Rotation[2], Rotation[3]};
+		}
+		Matrix Compose() const
+		{
+			double rotation[3][3];
+			Quaternion().ToRotationMatrix(rotation);
+			Matrix result;
+			for (int r = 0; r < 3; ++r)
+			{
+				for (int c = 0; c < 3; ++c)
+					result[4 * r + c] = float(rotation[r][c] * Scale[c]);
+				result[4 * r + 3] = Position[r];
+			}
+			return result;
+		}
+		static bool Decompose(const Matrix &matrix, Transform &out)
+		{
+			double rotation[3][3];
+			for (int c = 0; c < 3; ++c)
+			{
+				double length = 0;
+				for (int r = 0; r < 3; ++r)
+					length += double(matrix[4 * r + c]) * matrix[4 * r + c];
+				length = std::sqrt(length);
+				if (!std::isfinite(length) || length < 1e-6)
+					return false;
+				out.Scale[c] = float(length);
+				if (!std::isfinite(out.Scale[c]))
+					return false;
+				out.Position[c] = matrix[4 * c + 3];
+				if (!std::isfinite(out.Position[c]))
+					return false;
+				for (int r = 0; r < 3; ++r)
+					rotation[r][c] = matrix[4 * r + c] / length;
+			}
+			// TRS cannot represent shear. Preserve such poses verbatim instead.
+			for (int a = 0; a < 3; ++a)
+				for (int b = a + 1; b < 3; ++b)
+				{
+					double dot = 0;
+					for (int r = 0; r < 3; ++r)
+						dot += rotation[r][a] * rotation[r][b];
+					if (std::abs(dot) > 1e-4)
+						return false;
+				}
+			const double determinant =
+			    rotation[0][0] * (rotation[1][1] * rotation[2][2] - rotation[1][2] * rotation[2][1]) -
+			    rotation[0][1] * (rotation[1][0] * rotation[2][2] - rotation[1][2] * rotation[2][0]) +
+			    rotation[0][2] * (rotation[1][0] * rotation[2][1] - rotation[1][1] * rotation[2][0]);
+			if (determinant < 0)
+			{
+				out.Scale[0] = -out.Scale[0];
+				for (int r = 0; r < 3; ++r)
+					rotation[r][0] = -rotation[r][0];
+			}
+			const auto q = Afx::Math::Quaternion::FromRotationMatrix(rotation);
+			out.Rotation = {float(q.W), float(q.X), float(q.Y), float(q.Z)};
+			return true;
+		}
 	};
 	struct Pose
 	{
 		std::shared_ptr<const Model> ModelInfo;
 		Matrix Root{};
-		std::vector<Matrix> Bones; // Observed world matrices, including model/bone scale.
+		std::vector<Matrix> Bones;    // Verbatim world matrices when local TRS is unsupported.
+		std::vector<Transform> Local; // Parent-relative transforms; root bones relative to Root.
 		int Body = 0;
 	};
 	struct Entity
 	{
 		std::uint64_t Identity = 0; // Caller-supplied stable identity, never just a recycled entity index.
-		std::uint64_t OwnerIdentity = 0; // Stable player identity for attached gear; zero for independent entities.
+		std::uint64_t OwnerIdentity = 0; // Stable player identity for attached gear.
 		int Category = 0; // MirvTf2EntityCategory_t: player=0, projectile=1, weapon=2, cosmetic=3, other=4.
 		float Origin[3]{}, Angles[3]{}, Mins[3]{}, Maxs[3]{};
 		std::shared_ptr<const Pose> ModelPose;
@@ -59,6 +130,7 @@ public:
 	void Clear()
 	{
 		m_Frames.clear();
+		m_Models.clear();
 		m_Bytes = 0;
 	}
 	void SetLimit(size_t bytes)
@@ -104,14 +176,26 @@ public:
 		if (!m_Frames.empty() && frame.DemoTime == m_Frames.back().DemoTime)
 			return false;
 		const size_t bytes = Cost(frame);
-		if (bytes > m_Limit)
-			return false;
+		const auto models = Models(frame);
+		size_t whole = bytes;
+		for (const auto *model : models)
+			whole += ModelCost(*model);
+		if (whole > m_Limit)
+			return false; // A single complete frame must fit.
+		for (const auto *model : models)
+		{
+			auto result = m_Models.emplace(model, ModelUse{0, ModelCost(*model)});
+			if (result.second)
+				m_Bytes += result.first->second.Bytes;
+			++result.first->second.Frames;
+		}
 		m_Bytes += bytes;
 		m_Frames.push_back(std::move(frame));
 		Trim();
 		return true;
 	}
-	bool Sample(double time, Frame &out, double maxGap = .1, double maxTravel = 256) const
+	bool Sample(double time, Frame &out, double maxGap = .1, double maxTravel = 256,
+	            bool smoothAnimation = true) const
 	{
 		out = {};
 		if (!std::isfinite(time) || !std::isfinite(maxGap) || maxGap <= 0 || !std::isfinite(maxTravel) ||
@@ -147,13 +231,7 @@ public:
 			if (distance > maxTravel * maxTravel)
 				continue;
 			Entity entity = a;
-			// Prototype: retain a complete observed pose, never linearly blend
-			// world bone matrices (which collapses rotations and stretches limbs).
-			// The renderer moves this rigid pose with the interpolated root.
-			entity.ModelPose =
-			    a.ModelPose && b->ModelPose && a.ModelPose->ModelInfo == b->ModelPose->ModelInfo
-			        ? (f < .5 ? a.ModelPose : b->ModelPose)
-			        : nullptr;
+			entity.ModelPose = BlendPose(a.ModelPose, b->ModelPose, f, smoothAnimation);
 			for (int i = 0; i < 3; ++i)
 			{
 				entity.Origin[i] += float(f * (b->Origin[i] - a.Origin[i]));
@@ -173,7 +251,8 @@ public:
 			return entity.OwnerIdentity &&
 			       !std::binary_search(owners.begin(), owners.end(), entity.OwnerIdentity);
 		};
-		out.Entities.erase(std::remove_if(out.Entities.begin(), out.Entities.end(), orphan), out.Entities.end());
+		out.Entities.erase(std::remove_if(out.Entities.begin(), out.Entities.end(), orphan),
+		                   out.Entities.end());
 		return true;
 	}
 	static bool ValidPose(const Pose &pose)
@@ -183,8 +262,13 @@ public:
 		const auto &model = *pose.ModelInfo;
 		const size_t count = model.Parents.size();
 		if (model.Name.empty() || model.Name.size() >= 260 || !count || count > MaxBones ||
-		    model.Flags.size() != count || pose.Bones.size() != count)
+		    model.Flags.size() != count || (!model.BoneNames.empty() && model.BoneNames.size() != count) ||
+		    !((pose.Bones.size() == count && pose.Local.empty()) ||
+		      (pose.Local.size() == count && pose.Bones.empty())))
 			return false;
+		for (int i : model.MergeBones)
+			if (i < 0 || size_t(i) >= count || model.BoneNames.size() != count || !(model.Flags[i] & 0x40000))
+				return false;
 		for (float value : pose.Root)
 			if (!std::isfinite(value))
 				return false;
@@ -198,14 +282,90 @@ public:
 		{
 			if (model.Parents[i] < -1 || model.Parents[i] >= int(i))
 				return false;
-			for (float value : pose.Bones[i])
-				if (!std::isfinite(value))
+			if (pose.Local.empty())
+			{
+				for (float value : pose.Bones[i])
+					if (!std::isfinite(value))
+						return false;
+			}
+			else
+			{
+				const auto &t = pose.Local[i];
+				for (int a = 0; a < 3; ++a)
+					if (!std::isfinite(t.Position[a]) || !std::isfinite(t.Scale[a]) ||
+					    std::abs(t.Scale[a]) < 1e-6)
+						return false;
+				double norm = 0;
+				for (float v : t.Rotation)
+				{
+					if (!std::isfinite(v))
+						return false;
+					norm += double(v) * v;
+				}
+				if (std::abs(norm - 1) > 1e-4)
 					return false;
+			}
 		}
 		return true;
 	}
 
 private:
+	static std::shared_ptr<const Pose> BlendPose(const std::shared_ptr<const Pose> &a,
+	                                             const std::shared_ptr<const Pose> &b, double f, bool smooth)
+	{
+		if (!a || !b || a->ModelInfo != b->ModelInfo)
+			return nullptr;
+		const auto &nearest = f < .5 ? a : b;
+		if (!smooth || a == b || a->Body != b->Body || a->Local.empty() || b->Local.size() != a->Local.size())
+			return nearest;
+		// Never blend a reflection through zero scale.
+		for (size_t i = 0; i < a->Local.size(); ++i)
+			for (int c = 0; c < 3; ++c)
+				if (std::signbit(a->Local[i].Scale[c]) != std::signbit(b->Local[i].Scale[c]))
+					return nearest;
+		auto out = std::make_shared<Pose>();
+		out->ModelInfo = a->ModelInfo;
+		out->Root = a->Root;
+		out->Body = a->Body;
+		out->Local.resize(a->Local.size());
+		for (size_t i = 0; i < out->Local.size(); ++i)
+		{
+			const auto &x = a->Local[i], &y = b->Local[i];
+			auto &t = out->Local[i];
+			for (int c = 0; c < 3; ++c)
+			{
+				t.Position[c] = float(double(x.Position[c]) + f * (double(y.Position[c]) - x.Position[c]));
+				t.Scale[c] = float(double(x.Scale[c]) + f * (double(y.Scale[c]) - x.Scale[c]));
+			}
+			auto qy = y.Quaternion();
+			const auto qx = x.Quaternion();
+			if (Afx::Math::DotProduct(qx, qy) < 0)
+				qy = -1.0 * qy;
+			const auto q = qx.Slerp(qy, f).Normalized();
+			t.Rotation = {float(q.W), float(q.X), float(q.Y), float(q.Z)};
+		}
+		return out;
+	}
+	static size_t ModelCost(const Model &model)
+	{
+		size_t bytes =
+		    sizeof(Model) + model.Name.capacity() + 1 +
+		    (model.Parents.capacity() + model.Flags.capacity() + model.MergeBones.capacity()) * sizeof(int) +
+		    model.BoneNames.capacity() * sizeof(std::string);
+		for (const auto &name : model.BoneNames)
+			bytes += name.capacity() + 1;
+		return bytes;
+	}
+	static std::vector<const Model *> Models(const Frame &frame)
+	{
+		std::vector<const Model *> result;
+		for (const auto &entity : frame.Entities)
+			if (entity.ModelPose)
+				result.push_back(entity.ModelPose->ModelInfo.get());
+		std::sort(result.begin(), result.end(), std::less<const Model *>());
+		result.erase(std::unique(result.begin(), result.end()), result.end());
+		return result;
+	}
 	static size_t Cost(const Frame &frame)
 	{
 		size_t result = sizeof(Frame) + frame.Entities.capacity() * sizeof(Entity);
@@ -213,11 +373,8 @@ private:
 			if (entity.ModelPose)
 			{
 				const auto &pose = *entity.ModelPose;
-				const auto &model = *pose.ModelInfo;
-				// Conservatively charge shared model metadata in every frame.
-				result += sizeof(Pose) + pose.Bones.capacity() * sizeof(Matrix) + sizeof(Model) +
-				          model.Name.capacity() + 1 +
-				          (model.Parents.capacity() + model.Flags.capacity()) * sizeof(int);
+				result += sizeof(Pose) + pose.Bones.capacity() * sizeof(Matrix) +
+				          pose.Local.capacity() * sizeof(Transform);
 			}
 		return result;
 	}
@@ -226,9 +383,23 @@ private:
 		while (!m_Frames.empty() && m_Bytes > m_Limit)
 		{
 			m_Bytes -= Cost(m_Frames.front());
+			for (const auto *model : Models(m_Frames.front()))
+			{
+				auto it = m_Models.find(model);
+				if (--it->second.Frames == 0)
+				{
+					m_Bytes -= it->second.Bytes;
+					m_Models.erase(it);
+				}
+			}
 			m_Frames.pop_front();
 		}
 	}
+	struct ModelUse
+	{
+		size_t Frames, Bytes;
+	};
+	std::map<const Model *, ModelUse> m_Models;
 	std::deque<Frame> m_Frames;
 	size_t m_Limit, m_Bytes = 0; // Payload allocation estimate; excludes deque allocator bookkeeping.
 };

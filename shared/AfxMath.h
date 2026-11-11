@@ -218,6 +218,10 @@ double DotProduct(Quaternion a, Quaternion b);
 struct Quaternion
 {
     static Quaternion FromQREulerAngles(QREulerAngles a);
+	// Conventional row-major rotation matrix (column vectors, no scale).
+	static Quaternion FromRotationMatrix(const double matrix[3][3]);
+	void ToRotationMatrix(double matrix[3][3]) const;
+
 
 	double W;
 	double X;

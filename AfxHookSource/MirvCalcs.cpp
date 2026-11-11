@@ -9999,6 +9999,102 @@ private:
 	void *Cache;
 	unsigned short Handle;
 };
+// Convert once per observed pose, using the same inverse/concatenation as AGR.
+// Unsupported shear or singular parent transforms retain the verbatim matrices.
+static void ScenePrepareLocalPose(advancedfx::SceneCache::Pose &pose)
+{
+	using Cache = advancedfx::SceneCache;
+	std::vector<Cache::Transform> local(pose.Bones.size());
+	for (size_t i = 0; i < local.size(); ++i)
+	{
+		if (!(pose.ModelInfo->Flags[i] & SOURCESDK_BONE_USED_BY_ANYTHING))
+			continue;
+		const int parent = pose.ModelInfo->Parents[i];
+		if (parent >= 0 && !(pose.ModelInfo->Flags[parent] & SOURCESDK_BONE_USED_BY_ANYTHING))
+			return;
+		SOURCESDK::matrix3x4_t parentMatrix, inverse, world, relative;
+		const auto &source = parent < 0 ? pose.Root : pose.Bones[parent];
+		std::memcpy(parentMatrix.m_flMatVal, source.data(), sizeof(parentMatrix));
+		std::memcpy(world.m_flMatVal, pose.Bones[i].data(), sizeof(world));
+		if (!CClientTools::InvertMatrix(parentMatrix, inverse))
+			return;
+		SOURCESDK::R_ConcatTransforms(inverse, world, relative);
+		Cache::Matrix matrix;
+		std::memcpy(matrix.data(), relative.m_flMatVal, sizeof(relative));
+		if (!Cache::Transform::Decompose(matrix, local[i]))
+			return;
+	}
+	pose.Local = std::move(local);
+	std::vector<Cache::Matrix>().swap(pose.Bones);
+}
+// No live entity or bone-cache pointers are needed to rebuild a sampled pose.
+static bool SceneBuildMatrices(const advancedfx::SceneCache::Entity &entity,
+                               const advancedfx::SceneCache::Entity *owner, SOURCESDK::matrix3x4_t *out)
+{
+	using Cache = advancedfx::SceneCache;
+	const auto &pose = *entity.ModelPose;
+	SOURCESDK::matrix3x4_t root;
+	SOURCESDK::AngleMatrix(SOURCESDK::QAngle(entity.Angles[0], entity.Angles[1], entity.Angles[2]),
+	                       SOURCESDK::Vector(entity.Origin[0], entity.Origin[1], entity.Origin[2]), root);
+	const size_t count = pose.ModelInfo->Parents.size();
+	if (pose.Local.empty())
+	{
+		SOURCESDK::matrix3x4_t captured, inverse, delta;
+		std::memcpy(captured.m_flMatVal, pose.Root.data(), sizeof(captured));
+		if (!CClientTools::InvertMatrix(captured, inverse))
+			return false;
+		SOURCESDK::R_ConcatTransforms(root, inverse, delta);
+		for (size_t i = 0; i < count; ++i)
+		{
+			SOURCESDK::matrix3x4_t bone;
+			std::memcpy(bone.m_flMatVal, pose.Bones[i].data(), sizeof(bone));
+			SOURCESDK::R_ConcatTransforms(delta, bone, out[i]);
+		}
+	}
+	else
+	{
+		SOURCESDK::matrix3x4_t ownerBones[Cache::MaxBones];
+		const bool merge = owner && owner->Category == 0 && entity.OwnerIdentity == owner->Identity &&
+		                   owner->ModelPose && Cache::ValidPose(*owner->ModelPose) &&
+		                   !pose.ModelInfo->BoneNames.empty() &&
+		                   !owner->ModelPose->ModelInfo->BoneNames.empty() &&
+		                   !owner->ModelPose->ModelInfo->MergeBones.empty() &&
+		                   SceneBuildMatrices(*owner, nullptr, ownerBones);
+		for (size_t i = 0; i < count; ++i)
+		{
+			bool merged = false;
+			if (merge && (pose.ModelInfo->Flags[i] & SOURCESDK_BONE_USED_BY_ANYTHING))
+			{
+				const auto &model = *owner->ModelPose->ModelInfo;
+				const auto &name = pose.ModelInfo->BoneNames[i];
+				const auto found =
+				    std::lower_bound(model.MergeBones.begin(), model.MergeBones.end(), name,
+					                 [&](int index, const std::string &value) {
+					                     return _stricmp(model.BoneNames[index].c_str(), value.c_str()) < 0;
+				                     });
+				if (!name.empty() && name.size() < 63 && found != model.MergeBones.end() &&
+				    !_stricmp(name.c_str(), model.BoneNames[*found].c_str()))
+				{
+					out[i] = ownerBones[*found];
+					merged = true;
+				}
+			}
+			if (merged)
+				continue;
+			const auto matrix = pose.Local[i].Compose();
+			SOURCESDK::matrix3x4_t relative;
+			std::memcpy(relative.m_flMatVal, matrix.data(), sizeof(relative));
+			const int parent = pose.ModelInfo->Parents[i];
+			SOURCESDK::R_ConcatTransforms(parent < 0 ? root : out[parent], relative, out[i]);
+		}
+	}
+	for (size_t i = 0; i < count; ++i)
+		for (const auto &row : out[i].m_flMatVal)
+			for (float v : row)
+				if (!std::isfinite(v))
+					return false;
+	return true;
+}
 // IClientNetworkable::IsDormant is slot 8 in TF2 (CS:GO inserts another method).
 static bool SceneRenderable(int index, CMirvTf2ClientRenderable *&renderable)
 {
@@ -10076,10 +10172,17 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 		for (int i = 0; i < count; ++i)
 		{
 			next->Parents.push_back(names[i].parent);
+			next->BoneNames.emplace_back(names[i].name);
 			int flags;
 			std::memcpy(&flags, header + boneOffset + i * 216 + 160, 4);
 			next->Flags.push_back(flags);
 		}
+		for (int i = 0; i < count; ++i)
+			if ((next->Flags[i] & 0x40000) && !next->BoneNames[i].empty() && next->BoneNames[i].size() < 63)
+				next->MergeBones.push_back(i);
+		std::sort(next->MergeBones.begin(), next->MergeBones.end(), [&](int a, int b) {
+			return _stricmp(next->BoneNames[a].c_str(), next->BoneNames[b].c_str()) < 0;
+		});
 		metadata = std::move(next);
 		models[key] = metadata;
 	}
@@ -10124,11 +10227,13 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 		status = "Nonfinite or invalid pose rejected; proxy bounds retained.";
 		return false;
 	}
+	ScenePrepareLocalPose(*pose);
 	entity.ModelPose = std::move(pose);
 	status = "Capturing " + metadata->Name + ": " + std::to_string(count) + " bones per observed tick.";
 	return true;
 }
-bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status)
+bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
+                            const advancedfx::SceneCache::Entity *owner)
 {
 	const auto pose = entity.ModelPose;
 	if (!pose || !advancedfx::SceneCache::ValidPose(*pose))
@@ -10189,21 +10294,11 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	unsigned int checksum;
 	if (SceneInterfaceCall<bool, unsigned short>(cache, 20, handle) || !info.Hardware ||
 	    !SceneStudioHeader(static_cast<const unsigned char *>(info.Header), count, checksum) ||
-	    checksum != pose->ModelInfo->Checksum || size_t(count) != pose->Bones.size())
+	    checksum != pose->ModelInfo->Checksum || size_t(count) != pose->ModelInfo->Parents.size())
 	{
 		status = "Cached pose does not match the loaded model asset, or hardware data is unavailable.";
 		return false;
 	}
-	SOURCESDK::matrix3x4_t root, capturedRoot, inverse, delta;
-	SOURCESDK::AngleMatrix(SOURCESDK::QAngle(entity.Angles[0], entity.Angles[1], entity.Angles[2]),
-	                       SOURCESDK::Vector(entity.Origin[0], entity.Origin[1], entity.Origin[2]), root);
-	std::memcpy(capturedRoot.m_flMatVal, pose->Root.data(), sizeof(capturedRoot));
-	if (!CClientTools::InvertMatrix(capturedRoot, inverse))
-	{
-		status = "Cached model root is not invertible; model drawing skipped.";
-		return false;
-	}
-	SOURCESDK::R_ConcatTransforms(root, inverse, delta);
 	// Allocate through studio's render context so queued rendering owns the
 	// matrix lifetime. Stack matrices and live renderable pointers are not passed.
 	auto matrices = SceneInterfaceCall<SOURCESDK::matrix3x4_t *, int>(studio, 22, count);
@@ -10212,13 +10307,13 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Studio bone allocation unavailable.";
 		return false;
 	}
-	for (int i = 0; i < count; ++i)
+	const bool built = SceneBuildMatrices(entity, owner, matrices);
+	SceneInterfaceCall<void>(studio, 23); // Source owns the matrices until its queued render finishes.
+	if (!built)
 	{
-		SOURCESDK::matrix3x4_t bone;
-		std::memcpy(bone.m_flMatVal, pose->Bones[i].data(), sizeof(bone));
-		SOURCESDK::R_ConcatTransforms(delta, bone, matrices[i]);
+		status = "Cached bone reconstruction failed; model drawing skipped.";
+		return false;
 	}
-	SceneInterfaceCall<void>(studio, 23); // UnlockBoneMatrices (SDK lifetime ends with render frame).
 	info.Body = pose->Body;
 	void *material = SceneCategoryMaterial(entity.Category);
 	if (material)
@@ -10233,7 +10328,11 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		void *Material;
 		int Type;
 		bool Changed;
-		~RestoreMaterial() { if (Changed) SceneInterfaceCall<void, void *, int>(Studio, 33, Material, Type); }
+		~RestoreMaterial()
+		{
+			if (Changed)
+				SceneInterfaceCall<void, void *, int>(Studio, 33, Material, Type);
+		}
 	} restore{studio, overrideMaterial, overrideType, material != nullptr};
 	const int flags = 0x04 | 0x20 | (material ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
@@ -10248,14 +10347,15 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached model cleanup callback could not be submitted.";
 		return false;
 	}
-	status = material ? "Drawing category-colored cached models." :
-		"Drawing default cached wireframe; category material requires VMaterialSystem082.";
+	status = material ? "Drawing category-colored cached models."
+	                  : "Drawing default cached wireframe; category material requires VMaterialSystem082.";
 	return true;
 }
 void Mirv_Tf2_ReleaseSceneMaterials()
 {
 	for (auto &material : g_SceneMaterials)
-		if (void *value = std::exchange(material, nullptr)) SceneInterfaceCall<void>(value, 13);
+		if (void *value = std::exchange(material, nullptr))
+			SceneInterfaceCall<void>(value, 13);
 }
 // End selected-player scene-pose prototype.
 

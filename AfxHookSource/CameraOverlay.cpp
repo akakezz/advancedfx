@@ -52,6 +52,7 @@ static bool g_SceneRecord = false, g_ScenePreview = false;
 static double g_SceneCursor = 0;
 static bool g_SceneDrivingCamera = false;
 static int g_ScenePoseEntity = 0, g_ScenePoseUser = 0; // -1 captures all player poses.
+static bool g_SceneSmoothAnimation = true;
 static bool g_SceneProjectiles = false, g_SceneWeapons = false, g_SceneCosmetics = false;
 static std::string g_ScenePoseName, g_ScenePoseStatus = "Pose capture disabled.";
 static std::shared_ptr<const std::string> g_SceneModelStatus;
@@ -95,10 +96,10 @@ static bool SceneSelectPosePlayer(int index)
 static ImGui::FrameIndexType g_SequencerFrame = 0;
 static int g_SceneLastTick = -1;
 static int g_SceneScrubRate = 0;
-static double g_SceneScrubRemainder = 0;
 static auto g_SceneScrubLast = std::chrono::steady_clock::now();
 static double SceneTickInterval();
 static void ScenePreviewTick(int tick);
+static void ScenePreviewTime(double time);
 
 static std::shared_ptr<const advancedfx::SceneCache::Frame> g_SceneView;
 static void SceneClearHistory()
@@ -109,7 +110,6 @@ static void SceneClearHistory()
 	g_ScenePoseCaptured = g_ScenePoseFailures = 0;
 	g_SceneLastTick = -1;
 	g_SceneScrubRate = 0;
-	g_SceneScrubRemainder = 0;
 	std::atomic_store(&g_SceneModelStatus, std::shared_ptr<const std::string>{});
 	std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 }
@@ -138,26 +138,21 @@ void SceneCacheFrame(bool capture)
 		if (g_ScenePreview && g_SceneScrubRate && !g_SceneCache.Frames().empty() && g_VEngineClient &&
 		    g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsDrawingLoadingImage())
 		{
-			g_SceneScrubRemainder += g_SceneScrubRate * std::clamp(elapsed, 0.0, .1);
-			int delta = int(g_SceneScrubRemainder);
-			g_SceneScrubRemainder -= delta;
-			if (delta)
-			{
-				int first = int(std::floor(g_SceneCache.Frames().front().DemoTime / SceneTickInterval()));
-				int last = int(std::floor(g_SceneCache.Frames().back().DemoTime / SceneTickInterval()));
-				ScenePreviewTick(
-				    int(std::clamp(int64_t(g_SequencerFrame) + delta, int64_t(first), int64_t(last))));
-			}
+			const double first = g_SceneCache.Frames().front().DemoTime;
+			const double last = g_SceneCache.Frames().back().DemoTime;
+			ScenePreviewTime(std::clamp(g_SceneCursor + g_SceneScrubRate * std::clamp(elapsed, 0.0, .1) *
+			                                                SceneTickInterval(),
+			                            first, last));
 		}
 	}
 	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
 	{
-		if (capture) Mirv_Tf2_ReleaseSceneMaterials();
+		if (capture)
+			Mirv_Tf2_ReleaseSceneMaterials();
 		if (g_ScenePreview)
 			++g_SceneDrawEpoch;
 		g_ScenePreview = false;
 		g_SceneScrubRate = 0;
-		g_SceneScrubRemainder = 0;
 		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 		return;
 	}
@@ -234,7 +229,7 @@ void SceneCacheFrame(bool capture)
 	bool valid = false;
 	if (g_ScenePreview)
 	{
-		valid = g_SceneCache.Sample(g_SceneCursor, frame);
+		valid = g_SceneCache.Sample(g_SceneCursor, frame, .1, 256, g_SceneSmoothAnimation);
 	}
 	std::atomic_store(&g_SceneView,
 	                  valid ? std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame))
@@ -260,8 +255,8 @@ void SceneCacheDrawModels()
 	if (std::none_of(view->Entities.begin(), view->Entities.end(),
 	                 [](const auto &entity) { return bool(entity.ModelPose); }))
 	{
-		SceneModelStatus(
-		    "No model pose at this cursor. Enable player or projectile models and record this interval again.");
+		SceneModelStatus("No model pose at this cursor. Enable player or projectile models and record this "
+		                 "interval again.");
 		return;
 	}
 	std::string status = "No cached model could be submitted.";
@@ -270,7 +265,16 @@ void SceneCacheDrawModels()
 		if (!g_SceneDrawModels.load() || epoch != g_SceneDrawEpoch.load())
 			return;
 		if (entity.ModelPose)
-			Mirv_Tf2_DrawScenePose(entity, status);
+		{
+			const auto found =
+			    std::lower_bound(view->Entities.begin(), view->Entities.end(), entity.OwnerIdentity,
+				                 [](const auto &row, std::uint64_t id) { return row.Identity < id; });
+			const auto owner = entity.OwnerIdentity && found != view->Entities.end() &&
+			                           found->Identity == entity.OwnerIdentity
+			                       ? &*found
+			                       : nullptr;
+			Mirv_Tf2_DrawScenePose(entity, status, owner);
+		}
 	}
 	if (epoch == g_SceneDrawEpoch.load())
 		SceneModelStatus(status);
@@ -278,17 +282,18 @@ void SceneCacheDrawModels()
 static double SceneTickInterval()
 {
 	auto gl = g_Hook_VClient_RenderView.GetGlobals();
-	return gl && gl->interval_per_tick_get() > 0 ? gl->interval_per_tick_get() : 1.0/66.0;
+	return gl && gl->interval_per_tick_get() > 0 ? gl->interval_per_tick_get() : 1.0 / 66.0;
 }
-static void ScenePreviewTick(int tick)
+static void ScenePreviewTime(double time)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	const double interval = SceneTickInterval();
+	const int tick = int(std::floor(time / interval + 1e-9));
 	g_SequencerFrame = tick;
-	g_SceneCursor = tick * interval;
+	g_SceneCursor = time;
 	const auto &frames = g_SceneCache.Frames();
-	if (!frames.empty() && tick >= int(std::floor(frames.front().DemoTime/interval)) &&
-		tick <= int(std::floor(frames.back().DemoTime/interval)))
+	if (!frames.empty() && tick >= int(std::floor(frames.front().DemoTime / interval)) &&
+	    tick <= int(std::floor(frames.back().DemoTime / interval)))
 		g_SceneCursor = std::clamp(g_SceneCursor, frames.front().DemoTime, frames.back().DemoTime);
 	SceneCacheFrame(false);
 	auto view = SceneCacheView();
@@ -299,6 +304,10 @@ static void ScenePreviewTick(int tick)
 		MirvCampathPreview_SetTime(view->ClientTime - path.GetOffset());
 		g_SceneDrivingCamera = driving;
 	}
+}
+static void ScenePreviewTick(int tick)
+{
+	ScenePreviewTime(tick * SceneTickInterval());
 }
 // Native campath navigation retains its exact keyframe time and selection. Map
 // its clock back into recorded scene time without evaluating the camera again.
@@ -348,7 +357,6 @@ void SceneCacheStopScrub()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	g_SceneScrubRate = 0;
-	g_SceneScrubRemainder = 0;
 }
 bool SceneCacheNavigationKey(unsigned int key, bool down)
 {
@@ -768,7 +776,6 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			++g_SceneDrawEpoch;
 			g_ScenePreview = false;
 			g_SceneScrubRate = 0;
-			g_SceneScrubRemainder = 0;
 			SceneCacheFrame(false);
 			ok = true;
 		}
@@ -788,13 +795,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		if (!value)
 		{
 			g_SceneScrubRate = 0;
-			g_SceneScrubRemainder = 0;
 			ok = true;
 		}
 		else if (g_ScenePreview && !g_SceneCache.Frames().empty())
 		{
 			g_SceneScrubRate = value;
-			g_SceneScrubRemainder = 0;
 			g_SceneScrubLast = std::chrono::steady_clock::now();
 			ok = true;
 		}
@@ -812,7 +817,6 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			if (target >= first && target <= last)
 			{
 				g_SceneScrubRate = 0;
-				g_SceneScrubRemainder = 0;
 				g_ScenePreview = true;
 				ScenePreviewTick(int(target));
 				g_SequencerNeedsRefresh = true;
@@ -841,6 +845,15 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			ok = true;
 		}
 	}
+	else if (!_stricmp(op, "animation") && args->ArgC() == 4)
+	{
+		if (!_stricmp(args->ArgV(3), "smooth") || !_stricmp(args->ArgV(3), "nearest"))
+		{
+			g_SceneSmoothAnimation = !_stricmp(args->ArgV(3), "smooth");
+			SceneCacheFrame(false);
+			ok = true;
+		}
+	}
 	else if (!_stricmp(op, "models"))
 	{
 		int enabled;
@@ -865,10 +878,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "mirv_campath cache record 0|1\nmirv_campath cache preview 0|1\nmirv_campath cache goto <demo "
 		    "tick>\nmirv_campath cache step <signed ticks>\nmirv_campath cache rate <-10000..10000 "
 		    "ticks/sec; 0 stops>\nmirv_campath cache pose <all|none|player entity index; 0 disables player "
-			"capture>\n"
+		    "capture>\n"
 		    "mirv_campath cache projectiles 0|1\nmirv_campath cache weapons 0|1\nmirv_campath cache "
-			"cosmetics 0|1\nmirv_campath cache models 0|1\nmirv_campath cache clear\nmirv_campath cache "
-			"status\n"
+		    "cosmetics 0|1\nmirv_campath cache animation smooth|nearest\nmirv_campath cache models "
+			"0|1\nmirv_campath cache clear\nmirv_campath cache "
+		    "status\n"
 		    "Cached keys: Right Ctrl + Left/Right: ticks; Up/Down: seconds; Home/End: retained bounds.\n"
 		    "Unmodified preview keys retain camera keyframe selection and travel.\n");
 		ok = true;
@@ -876,7 +890,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	if (!ok)
 		advancedfx::Warning("Scene cache command rejected. Use preview/record 0|1, goto <demo tick>, step "
 		                    "<signed ticks>, rate <-10000..10000 ticks/sec>, pose <all|none|player index>, "
-		                    "projectiles/weapons/cosmetics 0|1, models "
+		                    "projectiles/weapons/cosmetics 0|1, animation smooth|nearest, models "
 		                    "0|1, clear or status. Navigation "
 		                    "requires recorded bounds and never seeks the demo.\n");
 	advancedfx::Message("Scene cache: record %d, preview %d; rate %d ticks/s; tick %d; %zu frames, %.2f MiB "
@@ -885,10 +899,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	                    g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0,
 	                    SceneCacheView() ? "yes" : "no");
 	advancedfx::Message("Scene pose: player target %d (-1=all), user %d; captured %llu, unavailable %llu; "
-	                    "models %d; projectiles %d; weapons %d; cosmetics %d. %s\n",
+	                    "models %d; projectiles %d; weapons %d; cosmetics %d; animation %s. %s\n",
 	                    g_ScenePoseEntity, g_ScenePoseUser, g_ScenePoseCaptured, g_ScenePoseFailures,
 	                    int(g_SceneDrawModels.load()), int(g_SceneProjectiles), int(g_SceneWeapons),
-	                    int(g_SceneCosmetics), g_ScenePoseStatus.c_str());
+	                    int(g_SceneCosmetics), g_SceneSmoothAnimation ? "smooth" : "nearest",
+	                    g_ScenePoseStatus.c_str());
 	if (g_ScenePreview)
 		if (auto status = std::atomic_load(&g_SceneModelStatus))
 			advancedfx::Message("%s\n", status->c_str());
@@ -4676,6 +4691,8 @@ static void DrawSequencerDetails(int playhead)
 		ImGui::TextColored(ImVec4(1, 210 / 255.f, 70 / 255.f, 1), "Weapons: gold");
 		ImGui::SameLine();
 		ImGui::TextColored(ImVec4(210 / 255.f, 120 / 255.f, 1, 1), "Cosmetics: purple");
+		if (ImGui::Checkbox("Smooth cached animation", &g_SceneSmoothAnimation))
+			SceneCacheFrame(false);
 		bool models = g_SceneDrawModels.load();
 		if (ImGui::Checkbox("Draw cached models", &models))
 		{
@@ -4687,7 +4704,8 @@ static void DrawSequencerDetails(int playhead)
 		                   "capture follows the player selection. "
 		                   "First-person viewmodels, facial flexes, particle trails and historical "
 		                   "simulation are not captured yet. Between ticks, animation uses the "
-		                   "nearest complete pose with interpolated root movement.");
+		                   "local bone rotation, translation and scale interpolation. Unsupported transforms "
+		                   "use nearest recorded poses. Disable Smooth cached animation to compare.");
 		if ((g_ScenePoseEntity || g_SceneProjectiles) && !g_SceneRecord)
 			ImGui::TextDisabled("Enable Record scene history and play forward to capture poses.");
 		ImGui::Text("Pose captures: %llu | Unavailable: %llu", g_ScenePoseCaptured, g_ScenePoseFailures);
@@ -5766,7 +5784,7 @@ void Draw()
 				std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 				++g_SceneDrawEpoch;
 				g_ScenePreview = cached;
-				g_SceneScrubRate=0;g_SceneScrubRemainder=0;
+				g_SceneScrubRate=0;
 				g_SequencerNeedsRefresh = true;
 				if (cached && !g_SceneCache.Frames().empty())
 					s_seqFrame = int(std::floor(g_SceneCache.Frames().back().DemoTime/SceneTickInterval()));
