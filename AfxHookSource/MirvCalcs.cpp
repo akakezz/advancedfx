@@ -7208,6 +7208,25 @@ static int Mirv_Tf2_LabelCategory(const char * name, bool isPlayer)
     return MIRV_TF2_ENTITY_OTHER;
 }
 
+// Share the tools-classname fallback with entity labels. In particular,
+// CTFSniperRifle / CTFMinigun lack "weapon" in their network class name.
+// A temporary tools handle does not enable recording or change AGR mode.
+static int Mirv_Tf2_ToolCategory(SOURCESDK::TF2::IClientTools *iface,
+                                 SOURCESDK::TF2::EntitySearchResult entity, int index, bool isPlayer)
+{
+	auto handle = iface->GetToolHandleForEntityByIndex(index);
+	bool attachedHere = false;
+	if (handle == SOURCESDK::TF2::HTOOLHANDLE_INVALID)
+	{
+		handle = iface->AttachToEntity(entity);
+		attachedHere = handle != SOURCESDK::TF2::HTOOLHANDLE_INVALID;
+	}
+	int category = Mirv_Tf2_LabelCategory(
+	    handle != SOURCESDK::TF2::HTOOLHANDLE_INVALID ? iface->GetClassname(handle) : nullptr, isPlayer);
+	if (attachedHere)
+		iface->DetachFromEntity(entity);
+	return category;
+}
 int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLabels, int maxCount)
 {
 	CClientToolsTf2 * tools = CClientToolsTf2::Instance();
@@ -7246,20 +7265,7 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 			continue;
 
 		MirvTf2EntityLabel_t & label = outLabels[count++];
-		// Tools API classnames require a tool handle. Attach only temporarily when needed.
-        const bool isPlayer = iface->IsPlayer(ent);
-        const char * className = 0;
-        SOURCESDK::TF2::HTOOLHANDLE handle = iface->GetToolHandleForEntityByIndex(index);
-        bool attachedHere = false;
-        if (SOURCESDK::TF2::HTOOLHANDLE_INVALID == handle)
-        {
-            handle = iface->AttachToEntity(ent);
-            attachedHere = SOURCESDK::TF2::HTOOLHANDLE_INVALID != handle;
-        }
-        if (SOURCESDK::TF2::HTOOLHANDLE_INVALID != handle) className = iface->GetClassname(handle);
-        const int category = Mirv_Tf2_LabelCategory(className, isPlayer);
-        if (attachedHere) iface->DetachFromEntity(ent);
-        label.category = category;
+		label.category = Mirv_Tf2_ToolCategory(iface, ent, index, iface->IsPlayer(ent));
 		label.index = index;
 		label.origin[0] = origin[0];
 		label.origin[1] = origin[1];
@@ -10256,7 +10262,8 @@ void Mirv_Tf2_ReleaseSceneMaterials()
 // Scene entity enumeration shares the label classifier, without attaching tool
 // recorders to every projectile. Network class metadata is read through the
 // public IClientNetworkable::GetClientClass slot (2).
-void Mirv_Tf2_CollectSceneEntities(bool projectiles, std::vector<MirvTf2SceneEntity> &out)
+void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics,
+                                   std::vector<MirvTf2SceneEntity> &out)
 {
 	out.clear();
 	auto tools = CClientToolsTf2::Instance();
@@ -10287,14 +10294,48 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, std::vector<MirvTf2SceneEnt
 		}
 		else
 		{
-			if (!projectiles || !renderable->ShouldDraw())
+			if ((!projectiles && !weapons && !cosmetics) || !renderable->ShouldDraw())
 				continue;
 			const void *clientClass = SceneInterfaceCall<const void *>(networkable, 2);
 			const char *name = nullptr;
 			if (clientClass)
 				std::memcpy(&name, static_cast<const char *>(clientClass) + 2 * sizeof(void *), sizeof(name));
-			if (Mirv_Tf2_LabelCategory(name, false) != MIRV_TF2_ENTITY_PROJECTILE)
-				continue;
+			if (name && !std::strcmp(name, "CTFWearableVM"))
+				continue; // First-person arms/wearables.
+			int category = Mirv_Tf2_LabelCategory(name, false);
+			if (category == MIRV_TF2_ENTITY_PROJECTILE)
+			{
+				if (!projectiles)
+					continue;
+			}
+			else
+			{
+				if ((!weapons && !cosmetics) || iface->GetOwningWeaponEntIndex(index) > 0)
+					continue;
+				// Only player-owned third-person gear belongs to this pass.
+				// Inventory weapons fail ShouldDraw; bounded traversal tolerates
+				// nested ownership and malformed/cyclic owner chains.
+				auto owner = object;
+				for (int depth = 0; depth < 8; ++depth)
+				{
+					owner = iface->GetOwnerEntity(owner);
+					if (!owner || owner == object)
+						break;
+					if (!iface->IsPlayer(owner))
+						continue;
+					int user = 0;
+					if (Mirv_Tf2_GetPlayerInfo(iface->GetEntIndex(owner), nullptr, 0, &user) && user > 0)
+						row.Snapshot.OwnerIdentity = static_cast<unsigned int>(user);
+					break;
+				}
+				if (!row.Snapshot.OwnerIdentity)
+					continue;
+				if (category == MIRV_TF2_ENTITY_OTHER)
+					category = Mirv_Tf2_ToolCategory(iface, object, index, false);
+				if (!((category == MIRV_TF2_ENTITY_WEAPON && weapons) ||
+				      (category == MIRV_TF2_ENTITY_COSMETIC && cosmetics)))
+					continue;
+			}
 			std::uint32_t handle = 0xffffffff;
 			const void *reference = unknown->GetRefEHandle();
 			if (reference)
@@ -10303,7 +10344,7 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, std::vector<MirvTf2SceneEnt
 			    (handle & SOURCESDK_TF2_ENT_ENTRY_MASK) != static_cast<unsigned int>(index))
 				continue;
 			row.Snapshot.Identity = (std::uint64_t(1) << 63) | handle;
-			row.Snapshot.Category = MIRV_TF2_ENTITY_PROJECTILE;
+			row.Snapshot.Category = category;
 		}
 		const auto origin = static_cast<const float *>(renderable->GetRenderOrigin());
 		const auto angles = static_cast<const float *>(renderable->GetRenderAngles());
@@ -10322,5 +10363,15 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, std::vector<MirvTf2SceneEnt
 		if (valid)
 			out.push_back(std::move(row));
 	}
+	std::vector<std::uint64_t> owners;
+	for (const auto &row : out)
+		if (row.Snapshot.Category == MIRV_TF2_ENTITY_PLAYER)
+			owners.push_back(row.Snapshot.Identity);
+	std::sort(owners.begin(), owners.end());
+	const auto orphan = [&](const MirvTf2SceneEntity &row) {
+		return row.Snapshot.OwnerIdentity &&
+		       !std::binary_search(owners.begin(), owners.end(), row.Snapshot.OwnerIdentity);
+	};
+	out.erase(std::remove_if(out.begin(), out.end(), orphan), out.end());
 }
 // End scene entity enumeration.

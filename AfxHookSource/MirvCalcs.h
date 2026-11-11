@@ -427,5 +427,6 @@ struct MirvTf2SceneEntity
 	advancedfx::SceneCache::Entity Snapshot;
 };
 // One tools-list traversal per observed tick, with serial-aware projectile identities.
-void Mirv_Tf2_CollectSceneEntities(bool projectiles, std::vector<MirvTf2SceneEntity> &out);
+void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics,
+	std::vector<MirvTf2SceneEntity> &out);
 void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued references remain pinned.

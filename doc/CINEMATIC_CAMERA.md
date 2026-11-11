@@ -1524,16 +1524,18 @@ The built-in Right Ctrl navigation chords remain reserved. Use unreserved keys
 for custom rate bindings; normal preview/editor input ownership still applies.
 Input release or focus handoff stops an active scrub rate.
 
-### Player and projectile model poses
+### Player, projectile and attached model poses
 
 In the sequencer's **Scene Cache** tab, set **Capture player models** to
 **All players**, or choose one player to reduce memory usage. Enable
-**Capture projectile models** if wanted, then **Record scene history** and play
+**Capture projectile models**, **Capture held weapon models**, and
+**Capture cosmetic models** as wanted, then **Record scene history** and play
 forward through the shot. Freeze actual playback, enable **Cached preview**,
 and scrub backward through the covered interval. **Draw cached models** shows
 the recorded wireframe poses with the overlay closed and **Show path** disabled.
 Live models remain visible, so at the latest tick the wireframes can overlap
-them. Players are cyan and projectiles are red. On engines without the verified
+them. Players are cyan, projectiles red, held weapons gold, and cosmetics purple.
+On engines without the verified
 `VMaterialSystem082` interface, model drawing falls back to the default studio
 wireframe; proxy boxes still use the category colors.
 
@@ -1542,6 +1544,8 @@ Console equivalents:
 ```text
 mirv_campath cache pose all
 mirv_campath cache projectiles 1
+mirv_campath cache weapons 1
+mirv_campath cache cosmetics 1
 mirv_campath cache record 1
 // Play forward, then freeze actual demo playback.
 mirv_campath cache record 0
@@ -1552,14 +1556,25 @@ mirv_campath cache status
 
 `mirv_campath cache pose <player entity index>` captures one player's body.
 `pose none` (or `pose 0`) disables player poses while retaining player boxes.
-`projectiles 0` excludes projectiles from future captures.
+`projectiles 0` excludes projectiles from future captures. `weapons 0|1` and
+`cosmetics 0|1` capture visible third-person gear for the selected player, or all
+players in **All players** mode. Both options default off. **None** disables
+player and attached-gear poses together; independent projectile capture can
+remain enabled. Gear options affect future frames and increase memory use.
+Hidden inventory weapons, first-person viewmodels/arms, dropped weapons and
+particle-only cosmetic effects are outside this pass.
 `mirv_campath cache models 0|1` controls model drawing independently of capture.
 Changing capture options affects future frames only; record the interval again
-for missing poses. All-player and projectile preferences persist across demo
+for missing poses. All-player and category preferences persist across demo
 changes. Opening/restarting a demo clears history and any individual player
 target. Individual selection pins the user's ID, and projectile identity includes
 its entity-handle serial number, preventing a recycled slot from connecting two
 projectiles. Missing entities are not interpolated across spawn/despawn gaps.
+Gear records its stable owning-player ID as well as its own serial-aware entity
+handle. Ownership changes interrupt interpolation. Gear whose player snapshot
+cannot be bridged is omitted from the interpolated preview rather than left
+floating. Native `SetupBones` captures the observed bone-merged world pose;
+no live owner/bone pointers are retained or rebound while scrubbing.
 
 More models consume **Scene budget MiB** faster. The UI shows retained span and
 payload usage; raise the budget for a longer interval if needed. The default
@@ -1582,7 +1597,7 @@ animation pose between samples, moved with the interpolated root transform.
 It preserves bone scale and avoids blending world-space matrices, which would
 stretch the skeleton. It does not yet interpolate individual local bone
 rotations. Model changes and missing pose samples are not bridged with another
-pose. Facial flexes, weapons, cosmetics, ragdolls, moving doors/props, particles and
+pose. Facial flexes, ragdolls, moving doors/props, particles and
 sounds are not part of this milestone; native life-state/respawn boundaries are still not
 classified. This is a visual preview, not restoration of engine simulation.
 

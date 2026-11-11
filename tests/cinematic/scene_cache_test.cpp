@@ -62,4 +62,12 @@ int main()
  f.DemoTime=.15;f.Entities={rocket};f.Entities[0].Category=9;assert(!projectiles.Append(f));
  Cache categories;f.DemoTime=0;f.ClientTime=0;f.Entities={rocket};assert(categories.Append(f));
  f.DemoTime=.05;f.ClientTime=.05;f.Entities[0].Category=0;assert(categories.Append(f));assert(categories.Sample(.025,out)&&out.Entities.empty());
+
+ // Gear follows stable owner identity and cannot interpolate across transfers
+ // or remain floating when the parent's movement cannot be bridged.
+ Cache attached;Cache::Frame gearFrame;Cache::Entity owner;owner.Identity=1;Cache::Entity gear;gear.Identity=(1ull<<63)|50;gear.OwnerIdentity=1;gear.Category=2;
+ gearFrame.Entities={owner,gear};assert(attached.Append(gearFrame));gearFrame.DemoTime=.05;gearFrame.ClientTime=.05;gearFrame.Entities[0].Origin[0]=10;gearFrame.Entities[1].Origin[0]=10;assert(attached.Append(gearFrame));
+ assert(attached.Sample(.025,out)&&out.Entities.size()==2&&out.Entities[1].OwnerIdentity==1&&out.Entities[1].Origin[0]==5);
+ gearFrame.DemoTime=.1;gearFrame.ClientTime=.1;gearFrame.Entities[1].OwnerIdentity=2;assert(attached.Append(gearFrame));assert(attached.Sample(.075,out)&&out.Entities.size()==1);
+ attached.Clear();gearFrame.DemoTime=0;gearFrame.ClientTime=0;gearFrame.Entities[1].OwnerIdentity=1;gearFrame.Entities[0].Origin[0]=0;assert(attached.Append(gearFrame));gearFrame.DemoTime=.05;gearFrame.ClientTime=.05;gearFrame.Entities[0].Origin[0]=1000;assert(attached.Append(gearFrame));assert(attached.Sample(.025,out)&&out.Entities.empty());
 }

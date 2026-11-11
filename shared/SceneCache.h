@@ -35,6 +35,7 @@ public:
 	struct Entity
 	{
 		std::uint64_t Identity = 0; // Caller-supplied stable identity, never just a recycled entity index.
+		std::uint64_t OwnerIdentity = 0; // Stable player identity for attached gear; zero for independent entities.
 		int Category = 0; // MirvTf2EntityCategory_t: player=0, projectile=1, weapon=2, cosmetic=3, other=4.
 		float Origin[3]{}, Angles[3]{}, Mins[3]{}, Maxs[3]{};
 		std::shared_ptr<const Pose> ModelPose;
@@ -137,7 +138,8 @@ public:
 			auto b = std::lower_bound(
 			    right->Entities.begin(), right->Entities.end(), a.Identity,
 			    [](const Entity &entity, std::uint64_t identity) { return entity.Identity < identity; });
-			if (b == right->Entities.end() || b->Identity != a.Identity || b->Category != a.Category)
+			if (b == right->Entities.end() || b->Identity != a.Identity || b->Category != a.Category ||
+			    b->OwnerIdentity != a.OwnerIdentity)
 				continue;
 			double distance = 0;
 			for (int i = 0; i < 3; ++i)
@@ -161,6 +163,17 @@ public:
 			}
 			out.Entities.push_back(entity);
 		}
+		// If a player's snapshot cannot be bridged, do not leave its gear
+		// floating at an independently interpolated position.
+		std::vector<std::uint64_t> owners;
+		for (const auto &entity : out.Entities)
+			if (entity.Category == 0)
+				owners.push_back(entity.Identity);
+		const auto orphan = [&](const Entity &entity) {
+			return entity.OwnerIdentity &&
+			       !std::binary_search(owners.begin(), owners.end(), entity.OwnerIdentity);
+		};
+		out.Entities.erase(std::remove_if(out.Entities.begin(), out.Entities.end(), orphan), out.Entities.end());
 		return true;
 	}
 	static bool ValidPose(const Pose &pose)
