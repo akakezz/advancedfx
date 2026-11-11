@@ -1429,29 +1429,30 @@ confirm the current directory.
 
 ## Scene Cache player proof of concept
 
-This experimental first milestone records client-exposed player transforms and
-model bounds. In the **Scene Cache** tab enable **Record scene history**, then
-play forward through a shot. Capture continues with the overlay closed. Pause
-or freeze the actual demo, enable **Preview scene history**, choose **Use latest
-cached frame**, then scrub **Cached demo seconds**. Enable **Show path** and keep
-the active path visible to see cyan cached boxes and yellow heading lines through
-the classic campath renderer. Live models and the current world remain visible.
+Scene caching is part of **HLAE Sequencer**. Open its **Scene Cache** details tab
+and enable **Record scene history**, then play forward through the shot. Capture
+continues with the overlay closed. Pause/freeze actual demo playback, enable
+**Cached preview** above the timeline, and scrub the sequencer playhead or use
+**Go to tick**. These actions preview cached history without seeking the demo.
+**Seek actual demo here** explicitly seeks the real demo to the selected tick.
+The Scene Cache track shows recorded coverage and gaps; its gray marker shows
+actual demo position independently of the cached playhead.
 
-Use **Capture camera at cached time**, the ordinary capture action, or
-`mirv_campath add` to add the current camera pose at the cached client timestamp
-minus the active path offset. Missing coverage rejects capture instead of falling
-back to the real paused demo time. Replacing a selected key retains its time.
-**Follow campath preview time** drives scene history from the existing path
-preview clock and shows no proxies outside its covered interval. These controls
-do not issue demo seeks or replay historical audio.
+Enable **Show path** and keep the active path visible for cyan player boxes and
+yellow heading lines drawn by the classic renderer. Live models remain visible.
+When **Preview path** is active, cached navigation also evaluates the camera path
+using the recorded client timestamp. The separate camera-preview slider is
+available only outside cached mode. Capture actions and `mirv_campath add` use
+cached client time minus path offset; missing coverage rejects capture instead
+of silently using live demo time. Replacing a selected key retains its time.
 
-The default payload budget is 64 MiB; oldest frames are evicted. The displayed
-payload estimate excludes allocator bookkeeping. The first implementation keeps
-one complete player snapshot per observed demo tick; sparse compression,
-projectiles, trajectories and dedicated scrub bindings are still pending.
-Observed user IDs distinguish player connections; respawn/life boundaries and
-client visibility/dormancy gaps are not yet classified, so client-retained stale
-positions can appear. Boxes describe model render bounds rather than animated
-silhouettes. Samples separated by more than 0.1 seconds or 256 units are not
-bridged. Opening/restarting a demo clears history; backward capture begins a new
-interval. This is a planning proxy, not historical game-state restoration.
+Recording, clearing, payload budget and usage statistics live in the sequencer's
+Scene Cache details tab. The default budget is 64 MiB; oldest frames are evicted.
+The payload estimate excludes allocator bookkeeping. This prototype stores one
+player snapshot per observed demo tick. Sparse compression, projectiles,
+trajectories and dedicated scrub bindings remain pending. Dormancy and respawn
+boundaries are not classified yet, so client-retained stale positions can appear.
+Boxes use model bounds rather than animated silhouettes. Samples separated by
+more than 0.1 seconds or 256 units are not bridged. Opening/restarting a demo
+clears history; backward capture begins a new interval. Historical audio and
+simulation state are not restored.

@@ -46,8 +46,9 @@ namespace CameraOverlay
 static std::atomic_bool g_Open{false}, g_MouseLook{false};
 static std::recursive_mutex g_SceneMutex;
 static advancedfx::SceneCache g_SceneCache;
-static bool g_SceneRecord = false, g_ScenePreview = false, g_SceneFollowPath = false;
+static bool g_SceneRecord = false, g_ScenePreview = false;
 static double g_SceneCursor = 0;
+static ImGui::FrameIndexType g_SequencerFrame = 0;
 static int g_SceneLastTick = -1;
 static std::shared_ptr<const advancedfx::SceneCache::Frame> g_SceneView;
 std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView()
@@ -95,30 +96,51 @@ void SceneCacheFrame(bool capture)
 	bool valid = false;
 	if (g_ScenePreview)
 	{
-		if (g_SceneFollowPath && MirvCampathPreview_IsActive())
-		{
-			double client = MirvCampathPreview_GetTime() + g_Hook_VClient_RenderView.m_CamPath.GetOffset();
-			const auto &frames = g_SceneCache.Frames();
-			bool mapped = false;
-			for (size_t i = 1; i < frames.size(); ++i)
-				if (frames[i-1].ClientTime <= client && client <= frames[i].ClientTime &&
-					frames[i].ClientTime > frames[i-1].ClientTime)
-				{
-					mapped = true;
-					g_SceneCursor = frames[i-1].DemoTime + (client-frames[i-1].ClientTime) *
-						(frames[i].DemoTime-frames[i-1].DemoTime)/(frames[i].ClientTime-frames[i-1].ClientTime);
-					break;
-				}
-			if (!mapped)
-			{
-				std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
-				return;
-			}
-		}
 		valid = g_SceneCache.Sample(g_SceneCursor, frame);
 	}
 	std::atomic_store(&g_SceneView, valid ? std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame)) :
 		std::shared_ptr<const advancedfx::SceneCache::Frame>{});
+}
+static double SceneTickInterval()
+{
+	auto gl = g_Hook_VClient_RenderView.GetGlobals();
+	return gl && gl->interval_per_tick_get() > 0 ? gl->interval_per_tick_get() : 1.0/66.0;
+}
+static void ScenePreviewTick(int tick)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	const double interval = SceneTickInterval();
+	g_SequencerFrame = tick;
+	g_SceneCursor = tick * interval;
+	const auto &frames = g_SceneCache.Frames();
+	if (!frames.empty() && tick >= int(std::floor(frames.front().DemoTime/interval)) &&
+		tick <= int(std::floor(frames.back().DemoTime/interval)))
+		g_SceneCursor = std::clamp(g_SceneCursor, frames.front().DemoTime, frames.back().DemoTime);
+	SceneCacheFrame(false);
+	auto view = SceneCacheView();
+	auto &path = g_Hook_VClient_RenderView.m_CamPath;
+	if (view && MirvCampathPreview_IsActive() && path.CanEval())
+		MirvCampathPreview_SetTime(view->ClientTime - path.GetOffset());
+}
+static void DrawSceneCoverage()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (!ImGui::BeginNeoTimelineEx("Scene Cache", nullptr, ImGuiNeoTimelineFlags_None)) return;
+	const auto &frames = g_SceneCache.Frames();
+	const double interval = SceneTickInterval();
+	for (size_t i = 0; i < frames.size();)
+	{
+		size_t last = i;
+		while (last+1 < frames.size() && frames[last+1].DemoTime-frames[last].DemoTime <= .1) ++last;
+		int firstTick = int(std::floor(frames[i].DemoTime/interval));
+		int lastTick = int(std::floor(frames[last].DemoTime/interval));
+		if (lastTick >= firstTick) ImGui::NeoTimelineSpan(firstTick,lastTick,IM_COL32(70,190,220,180),"Recorded scene coverage");
+		i = last+1;
+	}
+	int actualTick = 0;
+	if (g_ScenePreview && GetCurrentDemoTick(actualTick))
+		ImGui::NeoTimelineSpan(actualTick,actualTick,IM_COL32(180,180,180,180),"Actual demo position");
+	ImGui::EndNeoTimeLine();
 }
 static bool g_Docking = true;
 static bool g_CurveKeyDrag = false, g_CancelGesture = false;
@@ -3568,9 +3590,15 @@ static void DrawSequencerSeekContext()
 		ImGui::BeginDisabled(!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
 		                     (state.ContextEvent && !TimelineMatchesDemo()));
 		if (ImGui::MenuItem("Go to"))
-			Afx_GotoDemoTick(state.ContextTick);
+		{
+			if (SceneCachePreviewActive()) ScenePreviewTick(state.ContextTick);
+			else Afx_GotoDemoTick(state.ContextTick);
+		}
 		if (ImGui::MenuItem("Go to with lead-in"))
-			Afx_GotoDemoTick(EventSeekTick(state.ContextTick));
+		{
+			if (SceneCachePreviewActive()) ScenePreviewTick(EventSeekTick(state.ContextTick));
+			else Afx_GotoDemoTick(EventSeekTick(state.ContextTick));
+		}
 		ImGui::EndDisabled();
 		ImGui::SetNextItemWidth(140);
 		ImGui::InputInt("Lead-in (ticks)", &state.EventLeadTicks);
@@ -4194,6 +4222,18 @@ static void DrawSequencerDetails(int playhead)
 	    ImGuiFileBrowserFlags_EnterNewFilename | ImGuiFileBrowserFlags_CreateNewDir);
 	if (!ImGui::BeginTabBar("Sequencer details"))
 		return;
+	if (ImGui::BeginTabItem("Scene Cache"))
+	{
+		std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+		ImGui::Checkbox("Record scene history", &g_SceneRecord);
+		ImGui::TextWrapped("Enable Cached preview above the timeline, then scrub its playhead. Actual demo playback stays independent. Player model bounds are proxies; live models remain visible. Dormancy and respawn boundaries are not yet classified.");
+		if (ImGui::Button("Clear scene history")) { g_SceneCache.Clear(); g_SceneLastTick=-1; SceneCacheFrame(false); }
+		static int budget = 64;
+		if (ImGui::InputInt("Scene budget MiB", &budget)) { budget=std::clamp(budget,1,1024);g_SceneCache.SetLimit(size_t(budget)*1024*1024);SceneCacheFrame(false); }
+		ImGui::Text("%zu frames; %.2f MiB payload",g_SceneCache.Count(),g_SceneCache.Bytes()/1048576.0);
+		if (g_ScenePreview && !SceneCacheView()) ImGui::TextWrapped("No cached coverage at this playhead. Capture is unavailable here.");
+		ImGui::EndTabItem();
+	}
 	if (ImGui::BeginTabItem("Commands", nullptr, state.FocusCommands ? ImGuiTabItemFlags_SetSelected : 0))
 	{
 		state.FocusCommands = false;
@@ -4909,26 +4949,6 @@ void Draw()
 		}
 
 		// Recording tab (Source 1 specific)
-		if (ImGui::BeginTabItem("Scene Cache"))
-		{
-			std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
-			ImGui::TextWrapped("Experimental player proxies. Pause the actual demo before scrubbing. Show path must be enabled for world drawing. Bounds come from client models; live models remain visible. Client visibility gaps and respawns are not yet classified.");
-			ImGui::Checkbox("Record scene history", &g_SceneRecord);
-			ImGui::Checkbox("Preview scene history", &g_ScenePreview);
-			ImGui::Checkbox("Follow campath preview time", &g_SceneFollowPath);
-			if (ImGui::Button("Clear scene history")) { g_SceneCache.Clear(); g_SceneLastTick = -1; }
-			ImGui::Text("%zu frames; %.2f MiB payload", g_SceneCache.Count(), g_SceneCache.Bytes()/1048576.0);
-			static int budget = 64;
-			if (ImGui::InputInt("Scene budget MiB", &budget)) { budget = std::clamp(budget, 1, 1024); g_SceneCache.SetLimit(size_t(budget)*1024*1024); }
-			if (!g_SceneCache.Frames().empty())
-			{
-				double first = g_SceneCache.Frames().front().DemoTime, last = g_SceneCache.Frames().back().DemoTime;
-				ImGui::SliderScalar("Cached demo seconds", ImGuiDataType_Double, &g_SceneCursor, &first, &last, "%.3f");
-				if (ImGui::Button("Use latest cached frame")) g_SceneCursor = last;
-				if (ImGui::Button("Capture camera at cached time")) { g_ScenePreview = true; PreviewCapture(false); }
-			}
-			ImGui::EndTabItem();
-		}
 		if (ImGui::BeginTabItem("Recording"))
 		{
 			ImGui::TextUnformatted(Recording::IsActive() ? "Recording is active" : "Recording is stopped");
@@ -5245,12 +5265,24 @@ void Draw()
 								ImGuiCond_FirstUseEver);
 		if (ImGui::Begin("HLAE Sequencer", &g_ShowSequencer, ImGuiWindowFlags_NoCollapse))
 		{
-			static ImGui::FrameIndexType s_seqFrame = 0;
+			auto &s_seqFrame = g_SequencerFrame;
 			static ImGui::FrameIndexType s_seqStart = 0;
 			static ImGui::FrameIndexType s_seqEnd = 0;
 			static bool s_seqInit = false;
 			static ImGui::FrameIndexType visibleStart = 0, visibleEnd = 0;
 
+			bool cached = SceneCachePreviewActive();
+			if (ImGui::Checkbox("Cached preview", &cached))
+			{
+				std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+				g_ScenePreview = cached;
+				g_SequencerNeedsRefresh = true;
+				if (cached && !g_SceneCache.Frames().empty())
+					s_seqFrame = int(std::floor(g_SceneCache.Frames().back().DemoTime/SceneTickInterval()));
+				ScenePreviewTick(s_seqFrame);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Seek actual demo here")) Afx_GotoDemoTick(s_seqFrame);
 			int curDemoTick = 0;
 			const bool haveDemoTick = GetCurrentDemoTick(curDemoTick);
 			int demoTotalTicks = 0;
@@ -5268,8 +5300,14 @@ void Draw()
 				double curTime = g_MirvTime.GetTime();
 				double demoNow = 0.0;
 				bool haveDemoNow = GetCurrentDemoTime(demoNow);
+					if (SceneCachePreviewActive())
+						if (auto view = SceneCacheView())
+						{ curTime = view->ClientTime; demoNow = view->DemoTime; haveDemoNow = true; }
+
 				auto tick_from_client = [&](double clientTime) -> int {
 					int t = 0;
+						if (SceneCachePreviewActive() && haveDemoNow)
+							return (std::max)(0,int(llround((clientTime-curTime+demoNow)/ipt)));
 					if (!GetDemoTickFromClientTime(curTime, clientTime, t))
 						t = (int)llround(clientTime / ipt);
 					return t < 0 ? 0 : t;
@@ -5320,7 +5358,7 @@ void Draw()
 			float zoomH = ImGui::GetFontSize() * neo.ZoomHeightScale + st.FramePadding.y * 2.0f;
 			float rowLabelH =
 				ImGui::CalcTextSize("Campath").y + st.FramePadding.y * 2.0f + neo.ItemSpacing.y * 2.0f;
-			const float rows = (float)(g_Hook_VClient_RenderView.m_CamPaths.GetCount() + 4);
+			const float rows = (float)(g_Hook_VClient_RenderView.m_CamPaths.GetCount() + 5);
 			float desiredSeqH = topBarH + neo.TopBarSpacing + zoomH + rowLabelH * (std::min)(rows, 6.0f);
 			float minSeqH = ImMax(60.0f, topBarH + neo.TopBarSpacing + zoomH + rowLabelH);
 			float maxSeqHAvail = ImMax(minSeqH, ImMax(55.0f, availY - btnRowH));
@@ -5362,8 +5400,14 @@ void Draw()
 					double curTime = g_MirvTime.GetTime();
 					double demoNow = 0.0;
 					bool haveDemoNow = GetCurrentDemoTime(demoNow);
+					if (SceneCachePreviewActive())
+						if (auto view = SceneCacheView())
+						{ curTime = view->ClientTime; demoNow = view->DemoTime; haveDemoNow = true; }
+
 					auto tick_from_client = [&](double clientTime) -> int {
 						int t = 0;
+						if (SceneCachePreviewActive() && haveDemoNow)
+							return (std::max)(0,int(llround((clientTime-curTime+demoNow)/ipt)));
 						if (!GetDemoTickFromClientTime(curTime, clientTime, t))
 							t = (int)llround(clientTime / ipt);
 						return t < 0 ? 0 : t;
@@ -5773,6 +5817,7 @@ void Draw()
 						}
 						ImGui::EndNeoTimeLine();
 					}
+					DrawSceneCoverage();
 					DrawSequencerExtraTracks(visibleStart, visibleEnd);
 					DrawPlayerRepairTrack(visibleStart, visibleEnd);
 					DrawSequencerSeekContext();
@@ -5835,12 +5880,17 @@ void Draw()
 			}
 			ImGui::SameLine();
 			ImGui::Text("Start: %d  End: %d  Current: %d", (int)s_seqStart, (int)s_seqEnd, (int)s_seqFrame);
-			if (ImGui::SmallButton("Seek to preview"))
+			if (!SceneCachePreviewActive() && ImGui::SmallButton("Seek to preview"))
 				MirvCampathPreview_Seek();
 			ImGui::SameLine();
 			if (ImGui::SmallButton("Insert keyframe at preview"))
 			{
-				if (!g_Hook_VClient_RenderView.m_CamPath.Insert(MirvCampathPreview_GetTime()))
+				auto cachedView = SceneCacheView();
+				const bool cachedMode = SceneCachePreviewActive();
+				const double insertTime = cachedMode && cachedView
+					? cachedView->ClientTime - g_Hook_VClient_RenderView.m_CamPath.GetOffset()
+					: MirvCampathPreview_GetTime();
+				if ((cachedMode && !cachedView) || !g_Hook_VClient_RenderView.m_CamPath.Insert(insertTime))
 					g_DocumentStatus = "Insert requires an unoccupied interior time and Custom or Linear "
 									   "channels. The path was retained.";
 			}
@@ -5867,7 +5917,7 @@ void Draw()
 				position = std::clamp(position, 0.0f, 1.0f);
 				ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
 				ImGui::BeginDisabled(!path.CanEval() || end <= begin);
-				if (ImGui::SliderFloat("##previewcampath", &position, 0, 1, "%.3f"))
+				if (!SceneCachePreviewActive() && ImGui::SliderFloat("##previewcampath", &position, 0, 1, "%.3f"))
 					MirvCampathPreview_SetTime(begin + position * (end - begin));
 				ImGui::EndDisabled();
 				ImGui::TextDisabled("Camera preview: %.3f s | Demo time stays independent",
@@ -5883,10 +5933,13 @@ void Draw()
 			ImGui::SameLine();
 			go |= ImGui::Button("Go");
 			if (go)
-				Afx_GotoDemoTick((std::max)(0, g_SequencerTimeline.GoToTick));
+			{
+				if (SceneCachePreviewActive()) s_seqFrame=(std::max)(0,g_SequencerTimeline.GoToTick);
+				else Afx_GotoDemoTick((std::max)(0,g_SequencerTimeline.GoToTick));
+			}
 			DrawSequencerDetails(int(s_seqFrame));
 
-			// Frame pointer dragging -> demo_gototick
+			// Cached mode routes pointer changes only to the historical preview clock.
 			static bool s_draggingPointer = false;
 			static ImGui::FrameIndexType s_dragStartFrame = 0;
 			const bool pointerMoved = (s_seqFrame != prevFrame);
@@ -5905,14 +5958,21 @@ void Draw()
 			{
 				if (lmbReleased || !lmbDown)
 				{
-					if (s_seqFrame != s_dragStartFrame)
+					if (s_seqFrame != s_dragStartFrame && !SceneCachePreviewActive())
 						Afx_GotoDemoTick((int)s_seqFrame);
 					s_draggingPointer = false;
 				}
 			}
-			else if (haveDemoTick)
+			else if (haveDemoTick && !SceneCachePreviewActive())
 			{
 				s_seqFrame = std::clamp(curDemoTick, int(s_seqStart), int(s_seqEnd));
+			}
+
+			if (SceneCachePreviewActive())
+			{
+				ScenePreviewTick(s_seqFrame);
+				ImGui::TextDisabled("Cached tick %d | Actual demo tick %d",int(s_seqFrame),curDemoTick);
+				if (!SceneCacheView()) ImGui::TextDisabled("No cached coverage at this tick.");
 			}
 
 			ImGui::End();
