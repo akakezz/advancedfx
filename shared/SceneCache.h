@@ -35,9 +35,18 @@ public:
 	struct Entity
 	{
 		std::uint64_t Identity = 0; // Caller-supplied stable identity, never just a recycled entity index.
+		int Category = 0; // MirvTf2EntityCategory_t: player=0, projectile=1, weapon=2, cosmetic=3, other=4.
 		float Origin[3]{}, Angles[3]{}, Mins[3]{}, Maxs[3]{};
 		std::shared_ptr<const Pose> ModelPose;
 	};
+	static constexpr std::array<unsigned char, 3> CategoryColor(int category)
+	{
+		return category == 1   ? std::array<unsigned char, 3>{255, 80, 70}
+		       : category == 2 ? std::array<unsigned char, 3>{255, 210, 70}
+		       : category == 3 ? std::array<unsigned char, 3>{210, 120, 255}
+		       : category == 4 ? std::array<unsigned char, 3>{180, 190, 200}
+		                       : std::array<unsigned char, 3>{80, 220, 255};
+	}
 	struct Frame
 	{
 		double DemoTime = 0, ClientTime = 0;
@@ -74,7 +83,8 @@ public:
 			return false;
 		for (const auto &entity : frame.Entities)
 		{
-			if (!entity.Identity || (entity.ModelPose && !ValidPose(*entity.ModelPose)))
+			if (!entity.Identity || entity.Category < 0 || entity.Category > 4 ||
+			    (entity.ModelPose && !ValidPose(*entity.ModelPose)))
 				return false;
 			for (int i = 0; i < 3; ++i)
 				if (!std::isfinite(entity.Origin[i]) || !std::isfinite(entity.Angles[i]) ||
@@ -127,7 +137,7 @@ public:
 			auto b = std::lower_bound(
 			    right->Entities.begin(), right->Entities.end(), a.Identity,
 			    [](const Entity &entity, std::uint64_t identity) { return entity.Identity < identity; });
-			if (b == right->Entities.end() || b->Identity != a.Identity)
+			if (b == right->Entities.end() || b->Identity != a.Identity || b->Category != a.Category)
 				continue;
 			double distance = 0;
 			for (int i = 0; i < 3; ++i)

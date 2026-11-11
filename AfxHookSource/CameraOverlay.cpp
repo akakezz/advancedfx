@@ -51,7 +51,8 @@ static advancedfx::SceneCache g_SceneCache;
 static bool g_SceneRecord = false, g_ScenePreview = false;
 static double g_SceneCursor = 0;
 static bool g_SceneDrivingCamera = false;
-static int g_ScenePoseEntity = 0, g_ScenePoseUser = 0;
+static int g_ScenePoseEntity = 0, g_ScenePoseUser = 0; // -1 captures all player poses.
+static bool g_SceneProjectiles = false;
 static std::string g_ScenePoseName, g_ScenePoseStatus = "Pose capture disabled.";
 static std::shared_ptr<const std::string> g_SceneModelStatus;
 static void SceneModelStatus(const std::string &value)
@@ -65,6 +66,14 @@ static std::atomic_ullong g_SceneDrawEpoch{0};
 static unsigned long long g_ScenePoseCaptured = 0, g_ScenePoseFailures = 0;
 static bool SceneSelectPosePlayer(int index)
 {
+	if (index == -1)
+	{
+		g_ScenePoseEntity = -1;
+		g_ScenePoseUser = 0;
+		g_ScenePoseName = "All players";
+		g_ScenePoseStatus = "All player poses selected. Record scene history and play forward.";
+		return true;
+	}
 	if (!index)
 	{
 		g_ScenePoseEntity = g_ScenePoseUser = 0;
@@ -143,6 +152,7 @@ void SceneCacheFrame(bool capture)
 	}
 	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
 	{
+		if (capture) Mirv_Tf2_ReleaseSceneMaterials();
 		if (g_ScenePreview)
 			++g_SceneDrawEpoch;
 		g_ScenePreview = false;
@@ -160,28 +170,44 @@ void SceneCacheFrame(bool capture)
 		frame.DemoTime = time;
 		frame.ClientTime = g_MirvTime.GetTime();
 		bool poseTargetSeen = false;
-		for (int index = 1; index <= Mirv_Tf2_GetMaxPlayers(); ++index)
+		std::vector<MirvTf2SceneEntity> entities;
+		Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, entities);
+		unsigned int playerPoses = 0, projectilePoses = 0, failures = 0;
+		std::string lastIssue;
+		for (auto &row : entities)
 		{
-			char name[128];
-			int user = 0;
-			advancedfx::SceneCache::Entity entity;
-			if (!Mirv_Tf2_GetPlayerInfo(index, name, sizeof(name), &user) || user <= 0 ||
-			    !Mirv_Tf2_GetSceneEntity(index, entity.Origin, entity.Angles, entity.Mins, entity.Maxs))
-				continue;
-			entity.Identity = static_cast<unsigned>(user);
-			if (index == g_ScenePoseEntity && user == g_ScenePoseUser)
+			auto &entity = row.Snapshot;
+			const bool player = entity.Category == MIRV_TF2_ENTITY_PLAYER;
+			const bool selected = player && row.Index == g_ScenePoseEntity &&
+				entity.Identity == static_cast<unsigned>(g_ScenePoseUser);
+			poseTargetSeen |= selected;
+			if ((player && (g_ScenePoseEntity == -1 || selected)) ||
+				(entity.Category == MIRV_TF2_ENTITY_PROJECTILE && g_SceneProjectiles))
 			{
-				poseTargetSeen = true;
-				if (Mirv_Tf2_CaptureScenePose(index, entity, g_ScenePoseStatus))
+				std::string status;
+				if (Mirv_Tf2_CaptureScenePose(row.Index, entity, status))
+				{
 					++g_ScenePoseCaptured;
+					if (player) ++playerPoses; else ++projectilePoses;
+				}
 				else
+				{
 					++g_ScenePoseFailures;
+					++failures;
+					lastIssue = std::move(status);
+				}
 			}
 			frame.Entities.push_back(std::move(entity));
 		}
-		if (g_ScenePoseEntity && !poseTargetSeen)
-			g_ScenePoseStatus =
-			    "Selected player is unavailable or its entity slot was reused; no pose captured.";
+		if (g_ScenePoseEntity || g_SceneProjectiles)
+		{
+			g_ScenePoseStatus = "Tick " + std::to_string(tick) + ": " + std::to_string(playerPoses) +
+				" player poses, " + std::to_string(projectilePoses) + " projectile poses; " +
+				std::to_string(failures) + " unavailable.";
+			if (!lastIssue.empty()) g_ScenePoseStatus += " " + lastIssue;
+		}
+		if (g_ScenePoseEntity > 0 && !poseTargetSeen)
+			g_ScenePoseStatus = "Selected player is unavailable or its entity slot was reused; no selected pose captured.";
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
@@ -217,7 +243,7 @@ void SceneCacheDrawModels()
 	                 [](const auto &entity) { return bool(entity.ModelPose); }))
 	{
 		SceneModelStatus(
-		    "No model pose at this cursor. Select a pose player and record this interval again.");
+		    "No model pose at this cursor. Enable player or projectile models and record this interval again.");
 		return;
 	}
 	std::string status = "No cached model could be submitted.";
@@ -779,7 +805,18 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	else if (!_stricmp(op, "pose"))
 	{
 		int entity;
-		ok = integer(entity) && SceneSelectPosePlayer(entity);
+		if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "all")) ok = SceneSelectPosePlayer(-1);
+		else if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "none")) ok = SceneSelectPosePlayer(0);
+		else ok = integer(entity) && entity >= 0 && SceneSelectPosePlayer(entity);
+	}
+	else if (!_stricmp(op, "projectiles"))
+	{
+		int enabled;
+		if (integer(enabled) && (enabled == 0 || enabled == 1))
+		{
+			g_SceneProjectiles = enabled != 0;
+			ok = true;
+		}
 	}
 	else if (!_stricmp(op, "models"))
 	{
@@ -804,8 +841,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		advancedfx::Message(
 		    "mirv_campath cache record 0|1\nmirv_campath cache preview 0|1\nmirv_campath cache goto <demo "
 		    "tick>\nmirv_campath cache step <signed ticks>\nmirv_campath cache rate <-10000..10000 "
-		    "ticks/sec; 0 stops>\nmirv_campath cache pose <player entity index; 0 disables capture>\n"
-		    "mirv_campath cache models 0|1\nmirv_campath cache clear\nmirv_campath cache status\n"
+		    "ticks/sec; 0 stops>\nmirv_campath cache pose <all|none|player entity index; 0 disables player capture>\n"
+		    "mirv_campath cache projectiles 0|1\nmirv_campath cache models 0|1\nmirv_campath cache clear\nmirv_campath cache status\n"
 		    "Cached keys: Right Ctrl + Left/Right: ticks; Up/Down: seconds; Home/End: retained bounds.\n"
 		    "Unmodified preview keys retain camera keyframe selection and travel.\n");
 		ok = true;
@@ -820,9 +857,9 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	                    int(g_SceneRecord), int(g_ScenePreview), g_SceneScrubRate, int(g_SequencerFrame),
 	                    g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0,
 	                    SceneCacheView() ? "yes" : "no");
-	advancedfx::Message("Scene pose: entity %d, user %d; captured %llu, unavailable %llu; models %d. %s\n",
+	advancedfx::Message("Scene pose: player target %d (-1=all), user %d; captured %llu, unavailable %llu; models %d; projectiles %d. %s\n",
 	                    g_ScenePoseEntity, g_ScenePoseUser, g_ScenePoseCaptured, g_ScenePoseFailures,
-	                    int(g_SceneDrawModels.load()), g_ScenePoseStatus.c_str());
+	                    int(g_SceneDrawModels.load()), int(g_SceneProjectiles), g_ScenePoseStatus.c_str());
 	if (g_ScenePreview)
 		if (auto status = std::atomic_load(&g_SceneModelStatus))
 			advancedfx::Message("%s\n", status->c_str());
@@ -3670,9 +3707,12 @@ void NotifyDemoPlaybackFile(const char *file)
 		CancelCommandMarkerDrag();
 		SceneClearHistory();
 		g_ScenePreview = false;
-		g_ScenePoseEntity = g_ScenePoseUser = 0;
-		g_ScenePoseName.clear();
-		g_ScenePoseStatus = "New demo: select the player whose pose should be captured.";
+		if (g_ScenePoseEntity > 0)
+		{
+			g_ScenePoseEntity = g_ScenePoseUser = 0;
+			g_ScenePoseName.clear();
+		}
+		g_ScenePoseStatus = "New demo: record scene history to capture the enabled categories.";
 		g_SequencerTimeline.RequestedDemo = file;
 	}
 }
@@ -4576,10 +4616,11 @@ static void DrawSequencerDetails(int playhead)
 		ImGui::TextDisabled("Cache navigation: Right Ctrl + arrows / Home / End");
 		ImGui::TextWrapped(
 		    "Enable Cached preview above the timeline, then scrub its playhead. Actual demo playback stays "
-			"independent. Live models remain visible. Other players use proxy bounds.");
-		if (ImGui::BeginCombo("Pose capture player (experimental)",
+			"independent. Live models remain visible. Players without a captured pose use proxy bounds.");
+		if (ImGui::BeginCombo("Capture player models",
 		                      g_ScenePoseEntity ? g_ScenePoseName.c_str() : "None (boxes only)"))
 		{
+			if (ImGui::Selectable("All players", g_ScenePoseEntity == -1)) SceneSelectPosePlayer(-1);
 			if (ImGui::Selectable("None (boxes only)", !g_ScenePoseEntity))
 				SceneSelectPosePlayer(0);
 			for (int index = 1; index <= Mirv_Tf2_GetMaxPlayers(); ++index)
@@ -4595,18 +4636,22 @@ static void DrawSequencerDetails(int playhead)
 			}
 			ImGui::EndCombo();
 		}
+		ImGui::Checkbox("Capture projectile models", &g_SceneProjectiles);
+		ImGui::TextColored(ImVec4(80/255.f,220/255.f,1,1), "Players: cyan");
+		ImGui::SameLine();
+		ImGui::TextColored(ImVec4(1,80/255.f,70/255.f,1), "Projectiles: red");
 		bool models = g_SceneDrawModels.load();
-		if (ImGui::Checkbox("Draw cached player models", &models))
+		if (ImGui::Checkbox("Draw cached models", &models))
 		{
 			g_SceneDrawModels.store(models);
 			++g_SceneDrawEpoch;
 			SceneModelStatus(models ? "Cached model drawing enabled." : "Cached model drawing disabled.");
 		}
 		ImGui::TextWrapped(
-		    "Wireframe body poses use TF2's studio renderer, independently of Show path. Weapons, cosmetics, "
-			"facial flexes and historical simulation are not captured yet. Between ticks, animation uses the "
+		    "Wireframe poses use TF2's studio renderer, independently of Show path. Weapons, cosmetics, "
+			"facial flexes, particle trails and historical simulation are not captured yet. Between ticks, animation uses the "
 			"nearest complete pose with interpolated root movement.");
-		if (g_ScenePoseEntity && !g_SceneRecord)
+		if ((g_ScenePoseEntity || g_SceneProjectiles) && !g_SceneRecord)
 			ImGui::TextDisabled("Enable Record scene history and play forward to capture poses.");
 		ImGui::Text("Pose captures: %llu | Unavailable: %llu", g_ScenePoseCaptured, g_ScenePoseFailures);
 		ImGui::TextWrapped("%s", g_ScenePoseStatus.c_str());
@@ -4623,6 +4668,10 @@ static void DrawSequencerDetails(int playhead)
 			SceneCacheFrame(false);
 		}
 		ImGui::Text("%zu frames; %.2f MiB payload", g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0);
+		if (g_SceneCache.Count() > 1) ImGui::Text("Retained span: %.2f seconds (gaps may exist)",
+			g_SceneCache.Frames().back().DemoTime - g_SceneCache.Frames().front().DemoTime);
+		if (g_ScenePoseEntity == -1 || g_SceneProjectiles)
+			ImGui::TextWrapped("More models consume the memory budget faster. Increase Scene budget MiB if the retained interval is too short.");
 		if (g_ScenePreview && !SceneCacheView())
 			ImGui::TextWrapped("No cached coverage at this playhead. Capture is unavailable here.");
 		ImGui::EndTabItem();

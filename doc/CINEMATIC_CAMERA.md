@@ -1427,7 +1427,7 @@ collection file dialogs. The folder is displayed and remembered across sessions.
 supports creating directories, editing the full directory path, and Enter to
 confirm the current directory.
 
-## Scene Cache player proof of concept
+## Scene Cache visual preview
 
 Scene caching is part of **HLAE Sequencer**. Open its **Scene Cache** details tab
 and enable **Record scene history**, then play forward through the shot. Capture
@@ -1439,7 +1439,7 @@ The Scene Cache track shows recorded coverage and gaps; its gray marker shows
 actual demo position independently of the cached playhead.
 
 Enable **Show path** and keep the active path visible for cyan player boxes and
-yellow heading lines drawn by the classic renderer. Selected-player wireframe
+yellow heading lines drawn by the classic renderer. Cached wireframe
 poses use the engine's studio renderer and do not require **Show path**. Live
 models remain visible.
 When **Preview path** is active, cached navigation also evaluates the camera path
@@ -1450,9 +1450,10 @@ of silently using live demo time. Replacing a selected key retains its time.
 
 Recording, clearing, payload budget and usage statistics live in the sequencer's
 Scene Cache details tab. The default budget is 64 MiB; oldest frames are evicted.
-The payload estimate excludes allocator bookkeeping. This prototype stores one
-player snapshot per observed demo tick. Sparse compression, projectiles and
-trajectories remain pending. Dormancy and respawn boundaries are not classified yet, so client-retained stale positions can appear.
+The payload estimate excludes allocator bookkeeping. The cache stores player snapshots and optionally visible projectile snapshots per
+observed demo tick. Dormant entities are omitted. Native respawn boundaries are
+not yet classified; do not assume every historical pose is a valid live state.
+Sparse compression and trajectory guides remain pending.
 Boxes use model bounds rather than animated silhouettes; opt-in body poses are
 described below. Samples separated by
 more than 0.1 seconds or 256 units are not bridged. Opening/restarting a demo
@@ -1523,21 +1524,24 @@ The built-in Right Ctrl navigation chords remain reserved. Use unreserved keys
 for custom rate bindings; normal preview/editor input ownership still applies.
 Input release or focus handoff stops an active scrub rate.
 
-### Selected-player model-pose prototype
+### Player and projectile model poses
 
-In the sequencer's **Scene Cache** tab, choose **Pose capture player
-(experimental)**, enable **Record scene history**, and play forward through the
-shot. Then freeze actual playback, enable **Cached preview**, and scrub backward
-through the recorded interval. **Draw cached player models** displays the
-selected player's recorded body as a wireframe model. This works with the
-overlay closed and does not require **Show path**. At the latest cached tick the
-wireframe can overlap the live player; scrub to an earlier covered tick to see
-the historical pose separately.
+In the sequencer's **Scene Cache** tab, set **Capture player models** to
+**All players**, or choose one player to reduce memory usage. Enable
+**Capture projectile models** if wanted, then **Record scene history** and play
+forward through the shot. Freeze actual playback, enable **Cached preview**,
+and scrub backward through the covered interval. **Draw cached models** shows
+the recorded wireframe poses with the overlay closed and **Show path** disabled.
+Live models remain visible, so at the latest tick the wireframes can overlap
+them. Players are cyan and projectiles are red. On engines without the verified
+`VMaterialSystem082` interface, model drawing falls back to the default studio
+wireframe; proxy boxes still use the category colors.
 
-Console equivalents (replace `5` with the player's current entity index):
+Console equivalents:
 
 ```text
-mirv_campath cache pose 5
+mirv_campath cache pose all
+mirv_campath cache projectiles 1
 mirv_campath cache record 1
 // Play forward, then freeze actual demo playback.
 mirv_campath cache record 0
@@ -1546,26 +1550,34 @@ mirv_campath cache step -66
 mirv_campath cache status
 ```
 
-`mirv_campath cache pose 0` stops capturing poses while keeping recorded poses
-and ordinary box recording available. `mirv_campath cache models 0|1` controls
-model drawing independently of capture. Existing box-only history cannot gain
-poses retroactively; record the shot again after choosing the player. Changing
-the selected player affects future captures only. Selection pins the player's
-user ID as well as its entity index, so a recycled slot cannot silently capture
-somebody else. Opening/restarting a demo clears history and the pose target.
+`mirv_campath cache pose <player entity index>` captures one player's body.
+`pose none` (or `pose 0`) disables player poses while retaining player boxes.
+`projectiles 0` excludes projectiles from future captures.
+`mirv_campath cache models 0|1` controls model drawing independently of capture.
+Changing capture options affects future frames only; record the interval again
+for missing poses. All-player and projectile preferences persist across demo
+changes. Opening/restarting a demo clears history and any individual player
+target. Individual selection pins the user's ID, and projectile identity includes
+its entity-handle serial number, preventing a recycled slot from connecting two
+projectiles. Missing entities are not interpolated across spawn/despawn gaps.
+
+More models consume **Scene budget MiB** faster. The UI shows retained span and
+payload usage; raise the budget for a longer interval if needed. The default
+remains 64 MiB. This milestone captures visible networked studio projectiles;
+particles, trails and explosions are not historical projectile models.
 
 The cache stores immutable model names/checksums, bone hierarchy metadata, body
 groups and observed bone matrices. It reuses the game asset through
 `VStudioRender025` / `MDLCache004`; it does not store a new mesh in every frame.
 AGR's existing transform helpers and model/bone conventions are reused without
-starting/stopping AGR or changing recording mode. Bone capture runs only for
-the chosen player, once per newly observed demo tick, and requests a
+starting/stopping AGR or changing recording mode. Bone capture runs for
+the enabled categories, once per newly observed demo tick, and requests a
 `SetupBones` evaluation. Hidden/dormant players, unsupported headers, invalid
 matrices or missing render interfaces produce an explanatory status and keep
 proxy history available. Source can report its first-person local player as hidden;
 choose a visible player for the initial test.
 
-This first prototype deliberately displays the nearest complete recorded
+Preview deliberately displays the nearest complete recorded
 animation pose between samples, moved with the interpolated root transform.
 It preserves bone scale and avoids blending world-space matrices, which would
 stretch the skeleton. It does not yet interpolate individual local bone
@@ -1585,7 +1597,7 @@ Model submission runs in the existing engine-tools 3D render hook on the engine
 thread. Source's studio-rendering front end then queues its own immutable draw
 state. Calling that front end from a render-worker callback can race normal
 rendering and leak wireframe state onto unrelated entities. HLAE's material
-queue is used only to retire model references and locked studio headers after
+queue is used only to retire model/material references and locked studio headers after
 the queued draw has finished. Bone storage is allocated through Source's render
 context; scene history owns no engine pointers.
 

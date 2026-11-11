@@ -2,6 +2,10 @@
 
 #include "MirvCalcs.h"
 #include "MaterialSystemHooks.h"
+#include <cstdio>
+#include <map>
+#include <tf2/sdk_src/public/vstdlib/IKeyValuesSystem.h>
+#include <l4d2/sdk_src/public/tier0/memalloc.h>
 
 #include "WrpVEngineClient.h"
 #include "WrpConsole.h"
@@ -7182,8 +7186,15 @@ static int Mirv_Tf2_LabelCategory(const char * name, bool isPlayer)
     if (strstr(lower, "wearable") || strstr(lower, "cosmetic") || strstr(lower, "econ_wear") || strstr(lower, "econwear"))
         return MIRV_TF2_ENTITY_COSMETIC;
 
+    // Network class names lack the tools API's tf_weapon_ prefix. Explicit
+    // projectile families win; launcher/flare-gun weapon names stay weapons.
+    if (strstr(lower, "projectile") || strstr(lower, "grenadeproj") || strstr(lower, "merasmusgrenade"))
+        return MIRV_TF2_ENTITY_PROJECTILE;
+
     // A rocket launcher and grenade launcher are weapons, not projectiles.
-    if (strstr(lower, "weapon") || strstr(lower, "tf_weapon") || strstr(lower, "combatweapon"))
+    if (strstr(lower, "weapon") || strstr(lower, "tf_weapon") || strstr(lower, "combatweapon") ||
+        strstr(lower, "launcher") || strstr(lower, "flaregun") || strstr(lower, "crossbow") ||
+        strstr(lower, "compoundbow") || strstr(lower, "rocketpack") || strstr(lower, "ctfcleaver"))
         return MIRV_TF2_ENTITY_WEAPON;
 
     // Explicit projectile families and common TF2 network / entity names.
@@ -9836,6 +9847,114 @@ static_assert(sizeof(SOURCESDK::matrix3x4_t) == sizeof(advancedfx::SceneCache::M
 static_assert(sizeof(SceneStudioInfo) == (sizeof(void *) == 8 ? 496 : 468), "TF2 DrawModelInfo ABI");
 static_assert(offsetof(SceneStudioInfo, Lod) == (sizeof(void *) == 8 ? 48 : 28), "TF2 model LOD ABI");
 static_assert(offsetof(SceneStudioInfo, LightCount) == (sizeof(void *) == 8 ? 140 : 112), "TF2 light ABI");
+// Private, immutable materials avoid mutating the engine's shared debug
+// wireframe material or its color modulation. 082 is the verified TF2 ABI;
+// older engines retain the default studio wireframe and colored proxy bounds.
+static void *g_SceneMaterials[5]{};
+// MaterialSystem082 uses Source 2013's KeyValues layout. The older TF2
+// read-only tool-message adapter contains extra local-table fields, so it
+// cannot construct these shader definitions. Source owns the tree after
+// CreateMaterial; every allocation uses Source's allocators.
+struct SceneMaterialKeyValues
+{
+	int m_iKeyName;
+	char *m_sValue;
+	wchar_t *m_wsValue;
+	union {
+		int Integer;
+		float Float;
+		void *Pointer;
+	} Value;
+	char m_iDataType, EscapeSequences, m_bEvaluateConditionals, Unused;
+	SceneMaterialKeyValues *m_pPeer, *m_pSub, *Chain;
+};
+static_assert(sizeof(SceneMaterialKeyValues) == (sizeof(void *) == 8 ? 64 : 32),
+              "MaterialSystem082 KeyValues ABI");
+static SceneMaterialKeyValues *SceneMaterialKey(const char *name)
+{
+	using KV = SceneMaterialKeyValues;
+	auto system = SOURCESDK::TF2::KeyValuesSystem();
+	if (!system)
+		return nullptr;
+	auto key = static_cast<KV *>(system->AllocKeyValuesMemory(sizeof(KV)));
+	if (!key)
+		return nullptr;
+	std::memset(key, 0, sizeof(KV));
+	key->m_iKeyName = system->GetSymbolForString(name, true);
+	key->m_bEvaluateConditionals = true;
+	return key;
+}
+static void SceneDeleteMaterialKeys(SceneMaterialKeyValues *key)
+{
+	while (key)
+	{
+		auto next = key->m_pPeer;
+		SceneDeleteMaterialKeys(key->m_pSub);
+		if (key->m_sValue)
+			SOURCESDK::L4D2::g_pMemAlloc->Free(key->m_sValue);
+		SOURCESDK::TF2::KeyValuesSystem()->FreeKeyValuesMemory(key);
+		key = next;
+	}
+}
+static bool SceneMaterialString(SceneMaterialKeyValues *root, const char *name, const char *value)
+{
+	auto key = SceneMaterialKey(name);
+	if (!key)
+		return false;
+	const size_t bytes = std::strlen(value) + 1;
+	key->m_sValue = static_cast<char *>(SOURCESDK::L4D2::g_pMemAlloc->IndirectAlloc(bytes));
+	if (!key->m_sValue)
+	{
+		SceneDeleteMaterialKeys(key);
+		return false;
+	}
+	std::memcpy(key->m_sValue, value, bytes);
+	key->m_iDataType = 1; // TYPE_STRING
+	key->m_pPeer = root->m_pSub;
+	root->m_pSub = key;
+	return true;
+}
+static void *SceneCategoryMaterial(int category)
+{
+	if (category < 0 || category >= 5 || !g_AppSystemFactory || !SOURCESDK::L4D2::g_pMemAlloc)
+		return nullptr;
+	if (g_SceneMaterials[category])
+		return g_SceneMaterials[category];
+	void *system = g_AppSystemFactory("VMaterialSystem082", nullptr);
+	if (!system)
+		return nullptr;
+	auto values = SceneMaterialKey("UnlitGeneric");
+	if (!values)
+		return nullptr;
+	bool valid =
+	    SceneMaterialString(values, "$basetexture", "vgui/white_additive") &&
+	    SceneMaterialString(values, "$model", "1") && SceneMaterialString(values, "$wireframe", "1") &&
+	    SceneMaterialString(values, "$vertexcolor", "0") &&
+	    SceneMaterialString(values, "$vertexalpha", "0") && SceneMaterialString(values, "$ignorez", "0");
+	const auto rgb = advancedfx::SceneCache::CategoryColor(category);
+	char color[96], name[96];
+	std::snprintf(color, sizeof(color), "[%.6f %.6f %.6f]", rgb[0] / 255.f, rgb[1] / 255.f, rgb[2] / 255.f);
+	std::snprintf(name, sizeof(name), "__hlae_scene_cache_category_%d_v1", category);
+	valid = valid && SceneMaterialString(values, "$color", color);
+	if (!valid)
+	{
+		SceneDeleteMaterialKeys(values);
+		return nullptr;
+	}
+	// IMaterialSystem082::CreateMaterial consumes KeyValues and returns one
+	// caller reference (verified against TF2). Keep it until an idle demo frame.
+	void *material =
+	    SceneInterfaceCall<void *, const char *, SceneMaterialKeyValues *>(system, 70, name, values);
+	if (!material)
+		return nullptr;
+	if (SceneInterfaceCall<bool>(material, 42))
+	{
+		SceneInterfaceCall<void>(material, 13);
+		return nullptr;
+	}
+	g_SceneMaterials[category] = material;
+	return material;
+}
 // Only resource retirement runs in HLAE's render queue. The studio front end
 // stays on the engine thread; its own queued draw precedes this callback.
 class SceneModelResources : public CMaterialSystemFunctor
@@ -9853,6 +9972,7 @@ public:
 		Retire();
 	}
 	bool HeaderLocked = false;
+	void *Material = nullptr;
 
 private:
 	void Retire()
@@ -9865,6 +9985,7 @@ private:
 		if (HeaderLocked)
 			SceneInterfaceCall<void, unsigned short>(cache, 41, Handle);
 		SceneInterfaceCall<int, unsigned short>(cache, 8, Handle);
+		if (Material) SceneInterfaceCall<void>(Material, 13);
 	}
 	void *Cache;
 	unsigned short Handle;
@@ -9902,7 +10023,7 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 	CMirvTf2ClientRenderable *renderable = nullptr;
 	if (!SceneRenderable(index, renderable))
 	{
-		status = "Selected player is dormant, hidden or unavailable; no pose captured.";
+		status = "Entity is dormant, hidden or unavailable; no pose captured.";
 		return false;
 	}
 	auto info = Mirv_Tf2_GetModelInfo();
@@ -9917,11 +10038,21 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 		return false;
 	}
 	// Metadata is shared across frames of this model; all data is copied out of
-	// the engine. The latest descriptor alone survives eviction/reset.
-	static std::shared_ptr<const Cache::Model> metadata;
-	if (!metadata || metadata->Name != name || metadata->Checksum != checksum ||
-	    metadata->Parents.size() != size_t(count))
+	// the engine. Weak lookup entries do not keep evicted descriptors alive.
+	using ModelKey = std::pair<std::string, unsigned int>;
+	static std::map<ModelKey, std::weak_ptr<const Cache::Model>> models;
+	const ModelKey key{name, checksum};
+	auto found = models.find(key);
+	auto metadata = found == models.end() ? std::shared_ptr<const Cache::Model>{} : found->second.lock();
+	if (!metadata || metadata->Parents.size() != size_t(count))
 	{
+		for (auto it = models.begin(); it != models.end();)
+			if (it->second.expired()) it = models.erase(it); else ++it;
+		if (models.size() >= 256 && models.find(key) == models.end())
+		{
+			status = "Scene model metadata limit reached; proxy retained.";
+			return false;
+		}
 		auto next = std::make_shared<Cache::Model>();
 		next->Name = name;
 		next->Checksum = checksum;
@@ -9941,6 +10072,7 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 			next->Flags.push_back(flags);
 		}
 		metadata = std::move(next);
+		models[key] = metadata;
 	}
 	auto pose = std::make_shared<Cache::Pose>();
 	pose->ModelInfo = metadata;
@@ -10079,7 +10211,22 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	}
 	SceneInterfaceCall<void>(studio, 23); // UnlockBoneMatrices (SDK lifetime ends with render frame).
 	info.Body = pose->Body;
-	constexpr int flags = 0x04 | 0x20 | 0x80; // NO_FLEXES | NO_SHADOWS | WIREFRAME
+	void *material = SceneCategoryMaterial(entity.Category);
+	if (material)
+	{
+		SceneInterfaceCall<void>(material, 12);
+		resources->Material = material;
+		SceneInterfaceCall<void, void *, int>(studio, 33, material, 0);
+	}
+	struct RestoreMaterial
+	{
+		void *Studio;
+		void *Material;
+		int Type;
+		bool Changed;
+		~RestoreMaterial() { if (Changed) SceneInterfaceCall<void, void *, int>(Studio, 33, Material, Type); }
+	} restore{studio, overrideMaterial, overrideType, material != nullptr};
+	const int flags = 0x04 | 0x20 | (material ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
 	                   const SOURCESDK::Vector &, int>(studio, 29, nullptr, info, matrices, nullptr, nullptr,
@@ -10092,7 +10239,85 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached model cleanup callback could not be submitted.";
 		return false;
 	}
-	status = "Drawing cached player model (wireframe, observed animation pose).";
+	status = material ? "Drawing category-colored cached models." :
+		"Drawing default cached wireframe; category material requires VMaterialSystem082.";
 	return true;
 }
+void Mirv_Tf2_ReleaseSceneMaterials()
+{
+	for (auto &material : g_SceneMaterials)
+		if (void *value = std::exchange(material, nullptr)) SceneInterfaceCall<void>(value, 13);
+}
 // End selected-player scene-pose prototype.
+
+// Scene entity enumeration shares the label classifier, without attaching tool
+// recorders to every projectile. Network class metadata is read through the
+// public IClientNetworkable::GetClientClass slot (2).
+void Mirv_Tf2_CollectSceneEntities(bool projectiles, std::vector<MirvTf2SceneEntity> &out)
+{
+	out.clear();
+	auto tools = CClientToolsTf2::Instance();
+	auto iface = tools ? tools->GetClientTools() : nullptr;
+	if (!iface)
+		return;
+	const int players = Mirv_Tf2_GetMaxPlayers();
+	size_t scanned = 0;
+	for (auto object = iface->FirstEntity(); object && scanned++ < 4096; object = iface->NextEntity(object))
+	{
+		const int index = iface->GetEntIndex(object);
+		if (index <= 0 || index >= 2048)
+			continue;
+		auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
+		auto networkable = unknown->GetClientNetworkable();
+		auto renderable = unknown->GetClientRenderable();
+		if (!networkable || !renderable || SceneInterfaceCall<bool>(networkable, 8))
+			continue;
+		MirvTf2SceneEntity row;
+		row.Index = index;
+		if (index <= players && iface->IsPlayer(object))
+		{
+			int user = 0;
+			if (!Mirv_Tf2_GetPlayerInfo(index, nullptr, 0, &user) || user <= 0)
+				continue;
+			row.Snapshot.Identity = static_cast<unsigned int>(user);
+			row.Snapshot.Category = MIRV_TF2_ENTITY_PLAYER;
+		}
+		else
+		{
+			if (!projectiles || !renderable->ShouldDraw())
+				continue;
+			const void *clientClass = SceneInterfaceCall<const void *>(networkable, 2);
+			const char *name = nullptr;
+			if (clientClass)
+				std::memcpy(&name, static_cast<const char *>(clientClass) + 2 * sizeof(void *), sizeof(name));
+			if (Mirv_Tf2_LabelCategory(name, false) != MIRV_TF2_ENTITY_PROJECTILE)
+				continue;
+			std::uint32_t handle = 0xffffffff;
+			const void *reference = unknown->GetRefEHandle();
+			if (reference)
+				std::memcpy(&handle, reference, sizeof(handle));
+			if (handle == 0xffffffff ||
+			    (handle & SOURCESDK_TF2_ENT_ENTRY_MASK) != static_cast<unsigned int>(index))
+				continue;
+			row.Snapshot.Identity = (std::uint64_t(1) << 63) | handle;
+			row.Snapshot.Category = MIRV_TF2_ENTITY_PROJECTILE;
+		}
+		const auto origin = static_cast<const float *>(renderable->GetRenderOrigin());
+		const auto angles = static_cast<const float *>(renderable->GetRenderAngles());
+		if (!origin || !angles)
+			continue;
+		bool valid = true;
+		renderable->GetRenderBounds(row.Snapshot.Mins, row.Snapshot.Maxs);
+		for (int axis = 0; axis < 3; ++axis)
+		{
+			row.Snapshot.Origin[axis] = origin[axis];
+			row.Snapshot.Angles[axis] = angles[axis];
+			valid &= std::isfinite(origin[axis]) && std::isfinite(angles[axis]) &&
+			         std::isfinite(row.Snapshot.Mins[axis]) && std::isfinite(row.Snapshot.Maxs[axis]) &&
+			         row.Snapshot.Mins[axis] <= row.Snapshot.Maxs[axis];
+		}
+		if (valid)
+			out.push_back(std::move(row));
+	}
+}
+// End scene entity enumeration.

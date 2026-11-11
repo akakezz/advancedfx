@@ -51,4 +51,15 @@ int main()
  p.DemoTime=.05;p.ClientTime=100.05;assert(bounded.Append(p)&&bounded.Count()==1&&bounded.Bytes()<=cost);
  Cache::Frame retained=bounded.Frames().front();bounded.Clear();assert(retained.Entities[0].ModelPose->Bones[1][3]==10);
  Cache tiny(cost-1);assert(!tiny.Append(p)&&tiny.Count()==0);
+
+ // Transient identities include the entity handle's serial, not just its slot.
+ Cache projectiles;Cache::Frame f;f.DemoTime=0;f.ClientTime=0;Cache::Entity rocket;
+ rocket.Category=1;rocket.Identity=(1ull<<63)|40;f.Entities={rocket};assert(projectiles.Append(f));
+ f.DemoTime=.05;f.ClientTime=.05;f.Entities[0].Identity=(1ull<<63)|(1<<12)|40;assert(projectiles.Append(f));
+ assert(projectiles.Sample(.025,out)&&out.Entities.empty());
+ f.DemoTime=.1;f.ClientTime=.1;f.Entities.clear();assert(projectiles.Append(f));assert(projectiles.Sample(.075,out)&&out.Entities.empty());
+ assert(Cache::CategoryColor(0)!=Cache::CategoryColor(1));
+ f.DemoTime=.15;f.Entities={rocket};f.Entities[0].Category=9;assert(!projectiles.Append(f));
+ Cache categories;f.DemoTime=0;f.ClientTime=0;f.Entities={rocket};assert(categories.Append(f));
+ f.DemoTime=.05;f.ClientTime=.05;f.Entities[0].Category=0;assert(categories.Append(f));assert(categories.Sample(.025,out)&&out.Entities.empty());
 }

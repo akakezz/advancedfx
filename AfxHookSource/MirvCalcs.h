@@ -420,3 +420,12 @@ bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float 
 bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status);
 // Engine-thread submission only: Source queues the draw; HLAE queues resource retirement.
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status);
+
+struct MirvTf2SceneEntity
+{
+	int Index = -1;
+	advancedfx::SceneCache::Entity Snapshot;
+};
+// One tools-list traversal per observed tick, with serial-aware projectile identities.
+void Mirv_Tf2_CollectSceneEntities(bool projectiles, std::vector<MirvTf2SceneEntity> &out);
+void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued references remain pinned.

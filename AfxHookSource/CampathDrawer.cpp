@@ -939,6 +939,8 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 			m_Device->SetVertexShaderConstantF(48, newCScreenInfo, 1);
 			for (const auto &entity : dynamicPorperties->Scene->Entities)
 			{
+				const auto rgb = advancedfx::SceneCache::CategoryColor(entity.Category);
+				const auto color = D3DCOLOR_RGBA(rgb[0], rgb[1], rgb[2], 255);
 				Vector3 corners[8];
 				for (int i = 0; i < 8; ++i)
 					corners[i] = Vector3(entity.Origin[0] + ((i&1)?entity.Maxs[0]:entity.Mins[0]),
@@ -950,7 +952,7 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 					Vector3(center.X+40*cos(yaw), center.Y+40*sin(yaw), center.Z), D3DCOLOR_RGBA(255,220,80,255));
 				for (int i = 0; i < 8; ++i)
 					for (int axis = 1; axis <= 4; axis *= 2)
-						if (!(i & axis)) AutoSingleLine(corners[i], D3DCOLOR_RGBA(80,220,255,255), corners[i|axis], D3DCOLOR_RGBA(80,220,255,255));
+						if (!(i & axis)) AutoSingleLine(corners[i], color, corners[i|axis], color);
 			}
 			AutoSingleLineFlush();
 		}

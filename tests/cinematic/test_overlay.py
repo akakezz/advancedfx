@@ -111,6 +111,12 @@ bool GetCurrentDemoTick(int&n){n=int(g_MirvTime.Time*66);return true;}bool GetCu
 void* diagnosticObject=nullptr;float diagnosticRender[3]={0,0,0};
 void Mirv_Tf2_ReadDiagnosticFields(int,const void*object,const int*offsets,float*values,int count,float*render){if(object!=diagnosticObject||!object)return;for(int i=0;i<count;++i)if(offsets[i]>=0)std::memcpy(values+i,static_cast<const char*>(object)+offsets[i],sizeof(float));std::copy(diagnosticRender,diagnosticRender+3,render);}
 int repairTestUser=42;int Mirv_Tf2_GetMaxPlayers(){return 1;}bool Mirv_Tf2_GetPlayerInfo(int i,char*b,int n,int*u){snprintf(b,n,"Scout");*u=repairTestUser;return i==1;}
+enum {MIRV_TF2_ENTITY_PLAYER, MIRV_TF2_ENTITY_PROJECTILE};
+struct MirvTf2SceneEntity {int Index=-1;advancedfx::SceneCache::Entity Snapshot;};
+std::vector<MirvTf2SceneEntity> sceneExtraEntities;
+void Mirv_Tf2_CollectSceneEntities(bool projectiles,std::vector<MirvTf2SceneEntity>&out){out.clear();if(sceneEntityAvailable){MirvTf2SceneEntity row;row.Index=1;row.Snapshot.Identity=repairTestUser;for(auto&v:row.Snapshot.Maxs)v=10;out.push_back(row);}for(auto&row:sceneExtraEntities)if(row.Snapshot.Category==0||projectiles)out.push_back(row);}
+void Mirv_Tf2_ReleaseSceneMaterials(){}
+
 constexpr int MIRV_TF2_MAX_BONES=256;
 struct MirvTf2BoneName_t{char name[64];int parent;};
 int diagnosticNameCount=2;int Mirv_Tf2_GetBoneNames(int entity,MirvTf2BoneName_t*out){if(entity!=1)return 0;snprintf(out[0].name,64,"root");snprintf(out[1].name,64,"bip_head");out[0].parent=-1;out[1].parent=0;return diagnosticNameCount;}
@@ -836,12 +842,19 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  ++repairTestUser;g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(scenePoseCaptures==1&&!g_SceneCache.Frames().back().Entities[0].ModelPose,"A reused entity slot cannot capture a different user's pose");--repairTestUser;
  scenePoseCaptureSuccess=false;g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(scenePoseCaptures==2&&!g_SceneCache.Frames().back().Entities[0].ModelPose,"A failed pose capture retains box history without reusing old bones");scenePoseCaptureSuccess=true;
  sceneCommand({"mirv_campath","cache","pose","0"});g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(scenePoseCaptures==2,"Disabling pose capture leaves ordinary history recording active");sceneCommand({"mirv_campath","cache","record","0"});sceneEntityAvailable=false;
+ sceneCommand({"mirv_campath","cache","clear"});sceneCommand({"mirv_campath","cache","pose","all"});check(g_ScenePoseEntity==-1,"All player capture selectable");
+ MirvTf2SceneEntity other;other.Index=2;other.Snapshot.Identity=99;sceneExtraEntities={other};other.Index=40;other.Snapshot.Identity=(1ull<<63)|40;other.Snapshot.Category=1;sceneExtraEntities.push_back(other);sceneEntityAvailable=true;
+ sceneCommand({"mirv_campath","cache","projectiles","1"});sceneCommand({"mirv_campath","cache","record","1"});scenePoseCaptureSuccess=true;g_MirvTime.Time+=SceneTickInterval();int beforeCaptures=scenePoseCaptures;SceneCacheFrame();check(scenePoseCaptures==beforeCaptures+3&&g_SceneCache.Frames().back().Entities.size()==3,"All players and enabled projectiles capture in one observed frame");
+ sceneCommand({"mirv_campath","cache","projectiles","0"});g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(scenePoseCaptures==beforeCaptures+5&&g_SceneCache.Frames().back().Entities.size()==2,"Disabling projectiles removes them from subsequent snapshots");
+ sceneCommand({"mirv_campath","cache","pose","none"});check(g_ScenePoseEntity==0,"None alias disables player poses");sceneCommand({"mirv_campath","cache","record","0"});sceneExtraEntities.clear();sceneEntityAvailable=false;
+
  auto renderFrame=std::make_shared<advancedfx::SceneCache::Frame>();advancedfx::SceneCache::Entity rendered;rendered.Identity=42;rendered.ModelPose=sceneTestPose;renderFrame->Entities.push_back(rendered);std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));
  sceneQueueDeferred=true;SceneCacheDrawModels();check(scenePoseDraws==1&&sceneQueued.empty()&&sceneLastDrawn==sceneTestPose,"Studio front-end submission runs on the engine caller, not a render-worker functor");
  sceneCommand({"mirv_campath","cache","clear"});SceneCacheDrawModels();check(scenePoseDraws==1,"Clearing history prevents further model submissions");
  std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));sceneCommand({"mirv_campath","cache","models","0"});SceneCacheDrawModels();check(scenePoseDraws==1&&sceneQueued.empty(),"Disabled models create no rendering or resource work");
  sceneCommand({"mirv_campath","cache","models","1"});sceneQueueAvailable=false;SceneCacheDrawModels();check(scenePoseDraws==1&&std::atomic_load(&g_SceneModelStatus)->find("queue unavailable")!=std::string::npos,"Unavailable render queue fails safely before studio submission");sceneQueueAvailable=true;
  NotifyDemoPlaybackFile("pose-restart.dem");SceneCacheDrawModels();check(scenePoseDraws==1&&g_ScenePoseEntity==0&&!SceneCacheView(),"Demo restart clears the old player and prevents further old-scene submissions");
+ sceneCommand({"mirv_campath","cache","pose","all"});sceneCommand({"mirv_campath","cache","projectiles","1"});NotifyDemoPlaybackFile("all-restart.dem");check(g_ScenePoseEntity==-1&&g_SceneProjectiles,"Category capture preferences survive a new demo while history is cleared");
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''
