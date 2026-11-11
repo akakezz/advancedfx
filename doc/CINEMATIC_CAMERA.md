@@ -1480,8 +1480,12 @@ demo. Freeze actual playback separately before inspecting history.
 
 With cached preview active, hold **Right Ctrl** for cache navigation:
 **Left/Right** step ticks (including keyboard repeat), **Up/Down** step one demo
-second, and **Home/End** select the retained ends. These chords yield to menus/text
-input. Releasing the chord does not seek the actual demo.
+second, and **Home/End** select the retained ends. With the overlay closed,
+arrows step immediately, then repeat from the preview frame clock after a
+300 ms delay (about 30 steps/second), independently of OS key-repeat messages.
+Releasing either key stops repetition; focus/input handoff and Source menus
+cancel it. Long frame stalls have a bounded catch-up. These chords yield to
+menus/text input. Releasing the chord does not seek the actual demo.
 
 Unmodified keys retain classic path-preview behavior: **Up/Down** jump to and
 select camera keyframes, **Home/End** select the first/last camera key, and
@@ -1577,14 +1581,20 @@ as before. Status shows cumulative pose captures/unavailable attempts since the
 last clear, not the count currently retained. A single over-budget frame is
 rejected rather than exceeding the history budget.
 
-Model drawing uses HLAE's existing material-system render queue. Each draw
-resolves and checks the model, pins/locks its studio data for that draw, and
-allocates bone storage through the studio render context. Scene history owns no
-engine pointers. Clearing history, leaving cached preview, toggling model
-drawing or changing demos invalidates outstanding draws. A current engine
-material override defers the model draw rather than replacing that override.
+Model submission runs in the existing engine-tools 3D render hook on the engine
+thread. Source's studio-rendering front end then queues its own immutable draw
+state. Calling that front end from a render-worker callback can race normal
+rendering and leak wireframe state onto unrelated entities. HLAE's material
+queue is used only to retire model references and locked studio headers after
+the queued draw has finished. Bone storage is allocated through Source's render
+context; scene history owns no engine pointers.
+
+Clearing history, disabling models, leaving cached preview or changing demos
+prevents further submissions. Already submitted Source draws can finish their
+frame safely before their resources are released. A current engine material
+override defers model submission rather than replacing that override.
 
 Validation covers capture failures, cached matrix ownership, model mismatches,
-render-resource cleanup, queue cancellation and payload eviction with fixtures,
+render-resource cleanup, producer/worker thread ownership and payload eviction with fixtures,
 plus x86/x64 compilation. Live TF2/TF2C rendering and performance still require
 in-game testing.

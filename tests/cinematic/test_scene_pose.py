@@ -19,6 +19,8 @@ invert = client[client.index('bool CClientTools::InvertMatrix('):client.index('v
 preamble = r'''
 #include "shared/SceneCache.h"
 #include "shared/AfxMath.h"
+#include "AfxHookSource/MaterialSystemHooks.h"
+#include <thread>
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -39,10 +41,11 @@ struct Fixture {
  unsigned char Header[2048]{};
  bool Dormant=false,Visible=true,Setup=true,Hardware=true,ErrorModel=false,Interfaces=true,Allocate=true;
  void *Override=nullptr;int OverrideType=0;
- int Count=2,Checks=0,SetupCalls=0,DrawCalls=0,Locks=0,Refs=0,Unlocks=0;
+ int Count=2,Checks=0,SetupCalls=0,DrawCalls=0,Locks=0,Refs=0,Unlocks=0,HeaderLocks=0;
+ std::thread::id EngineThread=std::this_thread::get_id();
  int Body=3;float Origin[3]{1,2,3},Angles[3]{};
  SOURCESDK::matrix3x4_t Observed[128]{},Allocated[128]{},Drawn[128]{};
- void *StudioSlots[49]{},*CacheSlots[27]{},*NetworkSlots[9]{};
+ void *StudioSlots[49]{},*CacheSlots[42]{},*NetworkSlots[9]{};
  Object Studio{StudioSlots},Cache{CacheSlots},Network{NetworkSlots};
  void Put(int offset,int value){std::memcpy(Header+offset,&value,4);}
  void InitHeader(){Put(0,0x54534449);Put(4,48);Put(8,123);Put(76,sizeof(Header));Put(156,Count);Put(160,164);for(int i=0;i<Count&&i<8;++i){Put(164+i*216+4,i-1);Put(164+i*216+160,0x400);}}
@@ -59,32 +62,40 @@ struct Globals{float curtime_get(){return 2;}} globals;
 struct View{Globals*GetGlobals(){return &globals;}} g_Hook_VClient_RenderView;
 void*Factory(const char*name,int*){if(!fixture.Interfaces)return nullptr;if(!strcmp(name,"VStudioRender025"))return &fixture.Studio;if(!strcmp(name,"MDLCache004"))return &fixture.Cache;assert(false);return nullptr;}
 auto g_AppSystemFactory=Factory;
+bool queueAvailable=true;
+std::vector<std::unique_ptr<CMaterialSystemFunctor>> retirements;
+bool MaterialSystem_CanExecuteOnRenderThread(){return queueAvailable;}
+bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor*f){assert(std::this_thread::get_id()==fixture.EngineThread);retirements.emplace_back(f);return true;}
+void ConsumeRenderQueue(){std::thread worker([]{for(auto&f:retirements)(*f)();retirements.clear();});worker.join();}
+
 '''
 fixtures = r'''
 namespace {
 bool Dormant(void*){return fixture.Dormant;}
 // Public VStudioRender025 slots: LockBoneMatrices=22, UnlockBoneMatrices=23,
 // DrawModel=29, GetMaterialOverride=47. Slot 48 in TF2 is the concrete destructor.
-void Override(void*,void**material,int*type){*material=fixture.Override;*type=fixture.OverrideType;}
-void Begin(void*){++fixture.Locks;}void End(void*){--fixture.Locks;assert(fixture.Locks==0);}
+void Override(void*,void**material,int*type){assert(std::this_thread::get_id()==fixture.EngineThread);*material=fixture.Override;*type=fixture.OverrideType;}
+void Begin(void*){assert(std::this_thread::get_id()==fixture.EngineThread);++fixture.Locks;}void End(void*){--fixture.Locks;assert(fixture.Locks==0);}
 unsigned short Find(void*,const char*name){assert(!strcmp(name,"models/player/scout.mdl"));++fixture.Refs;return 42;}
-int Release(void*,unsigned short h){assert(h==42&&fixture.Refs==1);return --fixture.Refs;}
-void*Header(void*,unsigned short h){assert(h==42);return fixture.Header;}
+int Release(void*,unsigned short h){assert(h==42&&fixture.Refs>0);return --fixture.Refs;}
+void*Header(void*,unsigned short h){assert(h==42);++fixture.HeaderLocks;return fixture.Header;}
+void UnlockHeader(void*,unsigned short h){assert(h==42&&fixture.HeaderLocks>0);--fixture.HeaderLocks;}
 void*Hardware(void*,unsigned short h){assert(h==42);return fixture.Hardware?&fixture:nullptr;}
 bool Error(void*,unsigned short h){assert(h==42);return fixture.ErrorModel;}
-SOURCESDK::matrix3x4_t*Allocate(void*,int count){assert(count==fixture.Count);return fixture.Allocate?fixture.Allocated:nullptr;}
+SOURCESDK::matrix3x4_t*Allocate(void*,int count){assert(std::this_thread::get_id()==fixture.EngineThread);assert(count==fixture.Count);return fixture.Allocate?fixture.Allocated:nullptr;}
 void Unlock(void*){++fixture.Unlocks;}
 void Draw(void*,void*results,const SceneStudioInfo&info,SOURCESDK::matrix3x4_t*bones,float*flex,float*delayed,const SOURCESDK::Vector&origin,int flags){
+ assert(std::this_thread::get_id()==fixture.EngineThread);
  assert(results==nullptr&&info.Header==fixture.Header&&info.Hardware==&fixture&&info.Body==fixture.Body);
  assert(info.ClientEntity==nullptr&&info.Decals==nullptr&&info.ColorMeshes==nullptr&&info.Lod==0);
- assert(flex==nullptr&&delayed==nullptr&&flags==(0x04|0x20|0x80));assert(fixture.Locks==1&&fixture.Refs==1);
+ assert(flex==nullptr&&delayed==nullptr&&flags==(0x04|0x20|0x80));assert(fixture.Locks==1&&fixture.Refs>=1&&fixture.HeaderLocks==fixture.Refs);
  assert(bones==fixture.Allocated&&fixture.Unlocks>0&&origin.x==20);++fixture.DrawCalls;std::memcpy(fixture.Drawn,bones,sizeof(fixture.Drawn[0])*fixture.Count);
 }
 template<class T>void Slot(void**table,int i,T function){table[i]=reinterpret_cast<void*>(function);}
 }
 int main(){
  Slot(fixture.NetworkSlots,8,Dormant);Slot(fixture.StudioSlots,47,Override);Slot(fixture.StudioSlots,22,Allocate);Slot(fixture.StudioSlots,23,Unlock);Slot(fixture.StudioSlots,29,Draw);
- Slot(fixture.CacheSlots,6,Find);Slot(fixture.CacheSlots,8,Release);Slot(fixture.CacheSlots,10,Header);Slot(fixture.CacheSlots,11,Hardware);Slot(fixture.CacheSlots,20,Error);Slot(fixture.CacheSlots,25,Begin);Slot(fixture.CacheSlots,26,End);
+ Slot(fixture.CacheSlots,6,Find);Slot(fixture.CacheSlots,8,Release);Slot(fixture.CacheSlots,40,Header);Slot(fixture.CacheSlots,41,UnlockHeader);Slot(fixture.CacheSlots,11,Hardware);Slot(fixture.CacheSlots,20,Error);Slot(fixture.CacheSlots,25,Begin);Slot(fixture.CacheSlots,26,End);
  fixture.InitHeader();for(int i=0;i<2;++i){for(int a=0;a<3;++a){fixture.Observed[i][a][a]=2;fixture.Observed[i][a][3]=fixture.Origin[a];}fixture.Observed[i][0][3]+=10+i;}
  using Cache=advancedfx::SceneCache;Cache::Entity entity;entity.Identity=42;std::copy(fixture.Origin,fixture.Origin+3,entity.Origin);
  std::string status;assert(Mirv_Tf2_CaptureScenePose(1,entity,status));auto captured=entity.ModelPose;
@@ -102,17 +113,22 @@ int main(){
  entity.ModelPose=captured;entity.Origin[0]=20;entity.Origin[1]=entity.Origin[2]=0;entity.Angles[1]=90;
  // Rendering must work using cached values alone, even if the source entity is now hidden/unavailable.
  fixture.Visible=false;fixture.Dormant=true;assert(Mirv_Tf2_DrawScenePose(entity,status));
- assert(fixture.DrawCalls==1&&fixture.Refs==0&&fixture.Locks==0);
+ assert(fixture.DrawCalls==1&&fixture.Refs==1&&fixture.HeaderLocks==1&&fixture.Locks==0&&retirements.size()==1);
+ ConsumeRenderQueue();assert(fixture.Refs==0&&fixture.HeaderLocks==0&&fixture.DrawCalls==1);
  assert(std::abs(fixture.Drawn[0][0][3]-20)<1e-5&&std::abs(fixture.Drawn[0][1][3]-10)<1e-5&&std::abs(fixture.Drawn[0][2][3])<1e-5);
  double scale2=0;for(int a=0;a<3;++a)scale2+=fixture.Drawn[0][a][0]*fixture.Drawn[0][a][0];assert(std::abs(scale2-4)<1e-5);assert(captured->Bones[0][3]==11);
+ queueAvailable=false;assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.DrawCalls==1&&fixture.Refs==0&&retirements.empty());queueAvailable=true;
  fixture.Interfaces=false;assert(!Mirv_Tf2_DrawScenePose(entity,status));fixture.Interfaces=true;
- fixture.Override=&fixture;assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0);fixture.Override=nullptr;
- fixture.Hardware=false;assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0);fixture.Hardware=true;
- fixture.Put(8,456);assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0);fixture.Put(8,123);
- fixture.ErrorModel=true;assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0);fixture.ErrorModel=false;
- fixture.Allocate=false;assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0);fixture.Allocate=true;
- fixture.Put(156,129);assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0);fixture.Put(156,2);
- assert(fixture.DrawCalls==1);std::cout<<"TF2 scene pose capture/render fixture checks passed\n";
+ fixture.Override=&fixture;assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0&&fixture.HeaderLocks==0);fixture.Override=nullptr;
+ fixture.Hardware=false;assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0&&fixture.HeaderLocks==0);fixture.Hardware=true;
+ fixture.Put(8,456);assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0&&fixture.HeaderLocks==0);fixture.Put(8,123);
+ fixture.ErrorModel=true;assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0&&fixture.HeaderLocks==0);fixture.ErrorModel=false;
+ fixture.Allocate=false;assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0&&fixture.HeaderLocks==0);fixture.Allocate=true;
+ fixture.Put(156,129);assert(!Mirv_Tf2_DrawScenePose(entity,status)&&fixture.Refs==0&&fixture.Locks==0&&fixture.HeaderLocks==0);fixture.Put(156,2);
+ assert(fixture.DrawCalls==1);
+ assert(Mirv_Tf2_DrawScenePose(entity,status)&&Mirv_Tf2_DrawScenePose(entity,status));assert(fixture.DrawCalls==3&&fixture.Refs==2&&fixture.HeaderLocks==2&&retirements.size()==2);
+ ConsumeRenderQueue();assert(fixture.DrawCalls==3&&fixture.Refs==0&&fixture.HeaderLocks==0&&fixture.Locks==0);
+ std::cout<<"TF2 scene pose capture/render fixture checks passed\n";
 }
 '''
 source = out / 'scene_pose_native.cpp'

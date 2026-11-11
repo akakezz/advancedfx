@@ -92,6 +92,15 @@ private:
     std::atomic_int m_RefCount = 0;
 };
 
+bool MaterialSystem_CanExecuteOnRenderThread() {
+    if(g_pMaterialSystem && AFXADDR_GET(materialsystem_GetRenderCallQueue)) {
+        const auto size = AFXADDR_GET(materialsystem_CFunctor_vtable_size);
+        return g_Old_CMaterialSystem_GetRenderCallQueue &&
+            AFXADDR_GET(materialsystem_CMatCallQueue_QueueFunctor) && (size == 3 || size == 4);
+    }
+    return g_SourceSdkVer == SourceSdkVer_CSSV34;
+}
+
 bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor * pFunctor) {
     if(g_pMaterialSystem && AFXADDR_GET(materialsystem_GetRenderCallQueue)) {
         if(3 == AFXADDR_GET(materialsystem_CFunctor_vtable_size)) {

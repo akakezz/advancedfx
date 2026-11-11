@@ -40,8 +40,8 @@ bool sceneEntityAvailable=false,scenePoseCaptureSuccess=true;int scenePoseCaptur
 std::shared_ptr<const advancedfx::SceneCache::Pose> sceneTestPose;std::shared_ptr<const advancedfx::SceneCache::Pose> sceneLastDrawn;
 bool Mirv_Tf2_GetSceneEntity(int,float*origin,float*angles,float*mins,float*maxs){for(int i=0;i<3;++i){origin[i]=angles[i]=mins[i]=0;maxs[i]=10;}return sceneEntityAvailable;}
 bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&entity,std::string&status){++scenePoseCaptures;if(!scenePoseCaptureSuccess){status="Pose unavailable";return false;}entity.ModelPose=sceneTestPose;status="Pose captured";return true;}
-bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&entity,std::string&status){++scenePoseDraws;sceneLastDrawn=entity.ModelPose;status="Pose drawn";return true;}
 bool sceneQueueAvailable=true,sceneQueueDeferred=false;std::vector<std::unique_ptr<CMaterialSystemFunctor>> sceneQueued;
+bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&entity,std::string&status){if(!sceneQueueAvailable){status="Material-system render queue unavailable";return false;}++scenePoseDraws;sceneLastDrawn=entity.ModelPose;status="Pose drawn";return true;}
 bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor*functor){std::unique_ptr<CMaterialSystemFunctor>owned(functor);if(!sceneQueueAvailable)return false;if(sceneQueueDeferred)sceneQueued.push_back(std::move(owned));else (*owned)();return true;}
 bool MirvFix_GetRecorderSoundMute(){return false;}
 bool MirvFix_SetRecorderSoundMute(bool b){return !b;}
@@ -164,7 +164,7 @@ constexpr UINT WM_KEYDOWN=0x100,WM_KEYUP=0x101,WM_SYSKEYDOWN=0x104,WM_SYSKEYUP=0
 constexpr UINT VK_DELETE=0x2E,VK_F1=0x70,VK_INSERT=0x2D,VK_HOME=0x24,VK_END=0x23,VK_PRIOR=0x21,VK_NEXT=0x22,VK_LEFT=0x25,VK_UP=0x26,VK_RIGHT=0x27,VK_DOWN=0x28,VK_CONTROL=0x11,VK_SHIFT=0x10,VK_RCONTROL=0xA3;
 bool controlHeld=false,shiftHeld=false;
 short GetKeyState(UINT key){return ((key==VK_CONTROL&&controlHeld)||(key==VK_SHIFT&&shiftHeld))?short(0x8000):0;}
-DWORD GetTickCount(){static DWORD tick=0;return tick+=16;}
+DWORD testTick=0;DWORD GetTickCount(){return testTick+=16;}
 struct PreviewClock{bool GetDemoTickFromClientTime(double,double t,int&tick){return ::GetDemoTickFromClientTime(0,t,tick);}}g_MirvCampath_Time;
 #define _stricmp strcasecmp
 std::string fixMessages;
@@ -809,6 +809,23 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  path.SelectAll();path.Clear();path.SetOffset(2);path.Add(8,CamPathValue(0,0,0,0,0,0,90));check(!path.CanEval(),"Single-key path has no evaluable interpolation");MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_END,0);MirvCampathPreview_KeyEvent(WM_KEYUP,VK_END,0);check(selectedOnly(0)&&g_SequencerFrame==300,"Native jump selects and synchronizes a key even without evaluable interpolation");
  sceneCommand({"mirv_campath","cache","preview","0"});check(!SceneCachePreviewActive()&&!SceneCacheView(),"Console can leave cached preview with overlay closed");
 
+ // Closed-overlay cache scrubbing must keep repeating with no further Windows
+ // key-down messages, even while demo time/framecount is frozen.
+ MirvCampathPreview_SetActive(false);MirvCampathPreview_ReleaseKeys();SetOpen(false);g_SceneCache.Clear();
+ for(int i=0;i<=1000;++i){advancedfx::SceneCache::Frame f;f.DemoTime=i*SceneTickInterval();f.ClientTime=20+f.DemoTime;g_SceneCache.Append(f);}
+ g_ScenePreview=true;ScenePreviewTick(500);const size_t beforeHeldCommands=commands.size();
+ MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_RCONTROL,0);MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_LEFT,0);check(g_SequencerFrame==499,"Cache chord still steps immediately on press");
+ MirvCampathPreview_Update();check(g_SequencerFrame==499,"Held cache navigation waits for its repeat delay");
+ testTick+=300;MirvCampathPreview_Update();check(g_SequencerFrame<499,"Cache hold repeats from frame updates without another key-down message");
+ int beforeRepeat=g_SequencerFrame;MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_LEFT,1LL<<30);check(g_SequencerFrame==beforeRepeat,"OS repeat messages cannot double-step or restart the held-key clock");
+ for(int i=0;i<120;++i){testTick+=33;MirvCampathPreview_Update();}check(g_SequencerFrame<beforeRepeat-100&&g_SequencerFrame>0,"Holding cache navigation continues for several seconds inside retained coverage");
+ int beforeStall=g_SequencerFrame;testTick+=3000;MirvCampathPreview_Update();check(g_SequencerFrame>=beforeStall-3,"A render stall cannot create an unbounded held-key jump");
+ MirvCampathPreview_KeyEvent(WM_KEYUP,VK_LEFT,0);int releasedTick=g_SequencerFrame;testTick+=1000;MirvCampathPreview_Update();check(g_SequencerFrame==releasedTick,"Arrow release stops frame-driven cache repeats");
+ MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_RIGHT,0);MirvCampathPreview_KeyEvent(WM_KEYUP,VK_RCONTROL,0);releasedTick=g_SequencerFrame;testTick+=1000;MirvCampathPreview_Update();check(g_SequencerFrame==releasedTick,"Releasing Right Ctrl first also stops held navigation");MirvCampathPreview_KeyEvent(WM_KEYUP,VK_RIGHT,0);
+ MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_RCONTROL,0);MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_DOWN,0);g_Hook_VClient_RenderView.Menu=true;releasedTick=g_SequencerFrame;testTick+=1000;MirvCampathPreview_Update();check(g_SequencerFrame==releasedTick,"Source menus suspend frame-driven cache scrubbing");g_Hook_VClient_RenderView.Menu=false;MirvCampathPreview_ReleaseKeys();testTick+=1000;MirvCampathPreview_Update();check(g_SequencerFrame==releasedTick,"Focus/input handoff clears held repeat state");check(commands.size()==beforeHeldCommands,"Held cache navigation never issues an actual demo seek");
+ MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_RCONTROL,0);MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_LEFT,0);MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_RIGHT,0);int opposingTick=g_SequencerFrame;testTick+=1000;MirvCampathPreview_Update();check(g_SequencerFrame==opposingTick,"Opposing held cache arrows cancel without oscillating scene poses");MirvCampathPreview_KeyEvent(WM_KEYUP,VK_RIGHT,0);testTick+=100;MirvCampathPreview_Update();check(g_SequencerFrame<opposingTick,"Releasing one opposite arrow resumes the remaining held direction");MirvCampathPreview_KeyEvent(WM_KEYUP,VK_LEFT,0);MirvCampathPreview_KeyEvent(WM_KEYUP,VK_RCONTROL,0);
+ path.SelectAll();path.Clear();path.SetOffset(0);path.PositionInterpMethod_set(CamPath::DI_CUSTOM);path.RotationInterpMethod_set(CamPath::QI_CUSTOM);path.FovInterpMethod_set(CamPath::DI_CUSTOM);path.Add(20,CamPathValue(0,0,0,0,0,0,90));path.Add(20+1000*SceneTickInterval(),CamPathValue(100,0,0,0,0,0,90));MirvCampathPreview_SetActive(true);ScenePreviewTick(500);
+ MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_RCONTROL,0);MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_RIGHT,0);for(int i=0;i<60;++i){testTick+=33;MirvCampathPreview_Update();}check(g_SequencerFrame>550&&std::abs(MirvCampathPreview_GetTime()-SceneCacheView()->ClientTime)<1e-8,"Held cached scrubbing survives repeated camera evaluations with path preview active");MirvCampathPreview_KeyEvent(WM_KEYUP,VK_RIGHT,0);MirvCampathPreview_KeyEvent(WM_KEYUP,VK_RCONTROL,0);
  // Selected pose capture shares the ordinary recording path and stable user identity.
  auto poseModel=std::make_shared<advancedfx::SceneCache::Model>();poseModel->Name="models/player/scout.mdl";poseModel->Checksum=1;poseModel->Parents={-1};poseModel->Flags={0x400};
  auto poseData=std::make_shared<advancedfx::SceneCache::Pose>();poseData->ModelInfo=poseModel;poseData->Root[0]=poseData->Root[5]=poseData->Root[10]=1;poseData->Bones={poseData->Root};sceneTestPose=poseData;
@@ -820,12 +837,11 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  scenePoseCaptureSuccess=false;g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(scenePoseCaptures==2&&!g_SceneCache.Frames().back().Entities[0].ModelPose,"A failed pose capture retains box history without reusing old bones");scenePoseCaptureSuccess=true;
  sceneCommand({"mirv_campath","cache","pose","0"});g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(scenePoseCaptures==2,"Disabling pose capture leaves ordinary history recording active");sceneCommand({"mirv_campath","cache","record","0"});sceneEntityAvailable=false;
  auto renderFrame=std::make_shared<advancedfx::SceneCache::Frame>();advancedfx::SceneCache::Entity rendered;rendered.Identity=42;rendered.ModelPose=sceneTestPose;renderFrame->Entities.push_back(rendered);std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));
- sceneQueueDeferred=true;SceneCacheDrawModels();check(scenePoseDraws==0&&sceneQueued.size()==1,"Studio drawing is queued through the existing renderer rather than running on UI/engine threads");
- std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>{});(*sceneQueued.front())();sceneQueued.clear();check(scenePoseDraws==1&&sceneLastDrawn==sceneTestPose,"Queued draw retains an immutable pose after the published cursor changes");
- std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));SceneCacheDrawModels();sceneCommand({"mirv_campath","cache","clear"});(*sceneQueued.front())();sceneQueued.clear();check(scenePoseDraws==1,"Clearing history invalidates pending draws before engine resource access");
- std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));SceneCacheDrawModels();sceneCommand({"mirv_campath","cache","models","0"});(*sceneQueued.front())();sceneQueued.clear();check(scenePoseDraws==1,"Disabling model visualization also suppresses already queued draws");SceneCacheDrawModels();check(sceneQueued.empty(),"Disabled models create no render work");
- sceneCommand({"mirv_campath","cache","models","1"});sceneQueueAvailable=false;SceneCacheDrawModels();check(scenePoseDraws==1&&std::atomic_load(&g_SceneModelStatus)->find("queue unavailable")!=std::string::npos,"Unavailable render queue fails safely and explains why models are not visible");sceneQueueAvailable=true;
- SceneCacheDrawModels();NotifyDemoPlaybackFile("pose-restart.dem");(*sceneQueued.front())();sceneQueued.clear();check(scenePoseDraws==1&&g_ScenePoseEntity==0&&!SceneCacheView(),"Demo restart invalidates queued poses and clears the old player's identity");
+ sceneQueueDeferred=true;SceneCacheDrawModels();check(scenePoseDraws==1&&sceneQueued.empty()&&sceneLastDrawn==sceneTestPose,"Studio front-end submission runs on the engine caller, not a render-worker functor");
+ sceneCommand({"mirv_campath","cache","clear"});SceneCacheDrawModels();check(scenePoseDraws==1,"Clearing history prevents further model submissions");
+ std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));sceneCommand({"mirv_campath","cache","models","0"});SceneCacheDrawModels();check(scenePoseDraws==1&&sceneQueued.empty(),"Disabled models create no rendering or resource work");
+ sceneCommand({"mirv_campath","cache","models","1"});sceneQueueAvailable=false;SceneCacheDrawModels();check(scenePoseDraws==1&&std::atomic_load(&g_SceneModelStatus)->find("queue unavailable")!=std::string::npos,"Unavailable render queue fails safely before studio submission");sceneQueueAvailable=true;
+ NotifyDemoPlaybackFile("pose-restart.dem");SceneCacheDrawModels();check(scenePoseDraws==1&&g_ScenePoseEntity==0&&!SceneCacheView(),"Demo restart clears the old player and prevents further old-scene submissions");
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''

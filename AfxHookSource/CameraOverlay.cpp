@@ -2,7 +2,6 @@
 // MIT license; see shared/overlay/PORTING.md for provenance and scope.
 #include "CameraOverlay.h"
 #include "CampathDrawer.h"
-#include "MaterialSystemHooks.h"
 #include "Gui.h"
 #include "MirvCalcs.h"
 #include "MirvCam.h"
@@ -197,32 +196,8 @@ void SceneCacheFrame(bool capture)
 	                  valid ? std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame))
 	                        : std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 }
-// Use the classic renderer's material-system queue. No engine resource is
-// retained in a UI snapshot; studio/MDL access happens on the drawing thread.
-class SceneCacheModelFunctor : public CMaterialSystemFunctor
-{
-public:
-	SceneCacheModelFunctor(std::shared_ptr<const advancedfx::SceneCache::Frame> frame, unsigned long long epoch)
-	    : m_Frame(std::move(frame)), m_Epoch(epoch)
-	{
-	}
-	void operator()() override
-	{
-		if (!g_SceneDrawModels.load() || m_Epoch != g_SceneDrawEpoch.load())
-			return;
-		std::string status =
-		    "No model pose at this cursor. Select a pose player and record this interval again.";
-		for (const auto &entity : m_Frame->Entities)
-			if (entity.ModelPose)
-				Mirv_Tf2_DrawScenePose(entity, status);
-		if (m_Epoch == g_SceneDrawEpoch.load())
-			SceneModelStatus(status);
-	}
-
-private:
-	std::shared_ptr<const advancedfx::SceneCache::Frame> m_Frame;
-	unsigned long long m_Epoch;
-};
+// IStudioRender is an engine-thread front end: let Source queue its immutable
+// draw state. Calling that front end in a render-worker functor races the game.
 void SceneCacheDrawModels()
 {
 	if (!g_SceneDrawModels.load())
@@ -245,8 +220,16 @@ void SceneCacheDrawModels()
 		    "No model pose at this cursor. Select a pose player and record this interval again.");
 		return;
 	}
-	if (!MaterialSystem_ExecuteOnRenderThread(new SceneCacheModelFunctor(std::move(view), epoch)))
-		SceneModelStatus("Material-system render queue unavailable; cached model drawing skipped.");
+	std::string status = "No cached model could be submitted.";
+	for (const auto &entity : view->Entities)
+	{
+		if (!g_SceneDrawModels.load() || epoch != g_SceneDrawEpoch.load())
+			return;
+		if (entity.ModelPose)
+			Mirv_Tf2_DrawScenePose(entity, status);
+	}
+	if (epoch == g_SceneDrawEpoch.load())
+		SceneModelStatus(status);
 }
 static double SceneTickInterval()
 {

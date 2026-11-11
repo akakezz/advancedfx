@@ -418,4 +418,5 @@ bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float 
 // Opt-in selected-player scene-pose prototype. Does not change AGR recording mode.
 // The cache owns immutable value data only; engine pointers are resolved for each draw.
 bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status);
+// Engine-thread submission only: Source queues the draw; HLAE queues resource retirement.
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status);

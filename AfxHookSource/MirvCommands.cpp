@@ -40,6 +40,7 @@ extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 #include <filesystem>
 #include <fstream>
 #include <climits>
+#include <iterator>
 #include <cerrno>
 #include <stdexcept>
 #include <locale>
@@ -1596,6 +1597,51 @@ static bool g_CampathPreviewToggleHeld = false;
 static bool g_CampathPreviewUndoHeld = false;
 static bool g_CampathPreviewEditHeld[256] = {};
 static bool g_CampathRightCtrlHeld = false, g_CampathRightCtrlChord = false;
+// Drive cache repeats from render updates, independently of Windows' repeat
+// messages. Keep ownership in the existing edit-held table for key-up handoff.
+struct CampathCacheNavigationKey
+{
+	UINT Key;
+	DWORD NextRepeat;
+	bool Armed;
+};
+static CampathCacheNavigationKey g_CampathCacheNavigation[] = {
+    {VK_LEFT, 0, false}, {VK_RIGHT, 0, false}, {VK_UP, 0, false}, {VK_DOWN, 0, false}};
+static void CampathPreview_StopCachedNavigation()
+{
+	for (auto &key : g_CampathCacheNavigation)
+		key.Armed = false;
+}
+static void CampathPreview_UpdateCachedNavigation()
+{
+	if (!g_CampathRightCtrlHeld || !AfxHookSource::CameraOverlay::SceneCachePreviewActive() ||
+	    g_Hook_VClient_RenderView.IsMenuActive())
+	{
+		CampathPreview_StopCachedNavigation();
+		return;
+	}
+	const DWORD now = GetTickCount();
+	for (size_t index = 0; index < std::size(g_CampathCacheNavigation); ++index)
+	{
+		auto &key = g_CampathCacheNavigation[index];
+		const auto &opposite = g_CampathCacheNavigation[index ^ 1];
+		if (!key.Armed || !g_CampathPreviewEditHeld[key.Key])
+			continue;
+		if (opposite.Armed && g_CampathPreviewEditHeld[opposite.Key])
+		{
+			key.NextRepeat = now + 33;
+			continue;
+		}
+		const int32_t elapsed = static_cast<int32_t>(now - key.NextRepeat);
+		if (elapsed < 0)
+			continue;
+		const int steps = (std::min)(3, 1 + elapsed / 33);
+		for (int i = 0; i < steps; ++i)
+			AfxHookSource::CameraOverlay::SceneCacheNavigationKey(key.Key, true);
+		// Catch up short gaps, but never burst through an entire stalled frame.
+		key.NextRepeat = elapsed >= 99 ? now + 33 : key.NextRepeat + steps * 33;
+	}
+}
 static int g_CampathSeekMode = 0, g_CampathSeekTarget = -1, g_CampathSeekFrom = 0,
 		   g_CampathSeekPendingMode = 0;
 static double g_CampathSeekScale = 0, g_CampathSeekPendingScale = 0;
@@ -1871,6 +1917,7 @@ void MirvCampathPreview_Update()
 		historyFrame = g_MirvTime.GetFrameCount();
 		AfxHookSource::CameraOverlay::UpdateHistory();
 	}
+	CampathPreview_UpdateCachedNavigation();
 	if (!g_CampathPreviewActive)
 		return;
 
@@ -2001,6 +2048,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 	if (up && rightCtrl && g_CampathRightCtrlHeld)
 	{
 		g_CampathRightCtrlHeld = false;
+		CampathPreview_StopCachedNavigation();
 		if (!g_CampathRightCtrlChord && g_CampathPreviewActive && !g_Hook_VClient_RenderView.IsMenuActive())
 			MirvCampathPreview_Seek();
 		return true;
@@ -2045,11 +2093,20 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 	}
 
 	if (g_CampathRightCtrlHeld &&
-		AfxHookSource::CameraOverlay::SceneCacheNavigationKey(static_cast<unsigned int>(key), down))
+		AfxHookSource::CameraOverlay::SceneCacheNavigationKey(static_cast<unsigned int>(key), false))
 	{
 		CampathPreview_StopTravel();
-		if (down && key < 256)
+		if (down && key < 256 && !g_CampathPreviewEditHeld[key])
+		{
 			g_CampathPreviewEditHeld[key] = true;
+			AfxHookSource::CameraOverlay::SceneCacheNavigationKey(static_cast<unsigned int>(key), true);
+			for (auto &held : g_CampathCacheNavigation)
+				if (held.Key == key)
+				{
+					held.NextRepeat = GetTickCount() + 300;
+					held.Armed = true;
+				}
+		}
 		return true;
 	}
 	// Keep repeats owned until key-up, even if Right Ctrl was released first.
@@ -2147,6 +2204,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 
 void MirvCampathPreview_ReleaseKeys()
 {
+	CampathPreview_StopCachedNavigation();
 	AfxHookSource::CameraOverlay::SceneCacheStopScrub();
 	CampathPreview_StopTravel();
 	g_CampathPreviewToggleHeld = false;

@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "MirvCalcs.h"
+#include "MaterialSystemHooks.h"
 
 #include "WrpVEngineClient.h"
 #include "WrpConsole.h"
@@ -9830,10 +9831,44 @@ struct SceneStudioInfo
 	int LightCount = 0;
 	float LightDescriptors[4][22]{}; // Source LightDesc_t: 88 bytes, 4-byte alignment.
 };
-static_assert(sizeof(SOURCESDK::matrix3x4_t) == sizeof(advancedfx::SceneCache::Matrix), "TF2 bone matrix ABI");
+static_assert(sizeof(SOURCESDK::matrix3x4_t) == sizeof(advancedfx::SceneCache::Matrix),
+              "TF2 bone matrix ABI");
 static_assert(sizeof(SceneStudioInfo) == (sizeof(void *) == 8 ? 496 : 468), "TF2 DrawModelInfo ABI");
 static_assert(offsetof(SceneStudioInfo, Lod) == (sizeof(void *) == 8 ? 48 : 28), "TF2 model LOD ABI");
 static_assert(offsetof(SceneStudioInfo, LightCount) == (sizeof(void *) == 8 ? 140 : 112), "TF2 light ABI");
+// Only resource retirement runs in HLAE's render queue. The studio front end
+// stays on the engine thread; its own queued draw precedes this callback.
+class SceneModelResources : public CMaterialSystemFunctor
+{
+public:
+	SceneModelResources(void *cache, unsigned short handle) : Cache(cache), Handle(handle)
+	{
+	}
+	~SceneModelResources() override
+	{
+		Retire();
+	}
+	void operator()() override
+	{
+		Retire();
+	}
+	bool HeaderLocked = false;
+
+private:
+	void Retire()
+	{
+		// Retire at callback execution, even if the queue retains the functor
+		// object longer. Destruction also covers errors before submission.
+		void *cache = std::exchange(Cache, nullptr);
+		if (!cache)
+			return;
+		if (HeaderLocked)
+			SceneInterfaceCall<void, unsigned short>(cache, 41, Handle);
+		SceneInterfaceCall<int, unsigned short>(cache, 8, Handle);
+	}
+	void *Cache;
+	unsigned short Handle;
+};
 // IClientNetworkable::IsDormant is slot 8 in TF2 (CS:GO inserts another method).
 static bool SceneRenderable(int index, CMirvTf2ClientRenderable *&renderable)
 {
@@ -9965,9 +10000,14 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Source render interfaces unavailable.";
 		return false;
 	}
-	// Deliberately accept only the SDK interfaces we have verified. FindMDL pins
-	// data for this draw; BeginLock prevents eviction during studio access. Never
-	// keep native resources in a UI/render-thread snapshot or across demo loads.
+	// This function runs on the engine thread, just like Source's own model
+	// submission. IStudioRender snapshots its state for queued drawing. HLAE's
+	// render queue is used only to retire pinned resources after that draw.
+	if (!MaterialSystem_CanExecuteOnRenderThread())
+	{
+		status = "Material-system render queue unavailable; cached model submission skipped.";
+		return false;
+	}
 	void *studio = g_AppSystemFactory("VStudioRender025", nullptr);
 	void *cache = g_AppSystemFactory("MDLCache004", nullptr);
 	if (!studio || !cache)
@@ -9999,17 +10039,10 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached model asset could not be resolved.";
 		return false;
 	}
-	struct Release
-	{
-		void *Cache;
-		unsigned short Handle;
-		~Release()
-		{
-			SceneInterfaceCall<int, unsigned short>(Cache, 8, Handle);
-		}
-	} release{cache, handle};
+	auto resources = std::make_unique<SceneModelResources>(cache, handle);
 	SceneStudioInfo info;
-	info.Header = SceneInterfaceCall<void *, unsigned short>(cache, 10, handle);
+	info.Header = SceneInterfaceCall<void *, unsigned short>(cache, 40, handle); // LockStudioHdr
+	resources->HeaderLocked = info.Header != nullptr;
 	info.Hardware = SceneInterfaceCall<void *, unsigned short>(cache, 11, handle);
 	int count;
 	unsigned int checksum;
@@ -10051,6 +10084,14 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
 	                   const SOURCESDK::Vector &, int>(studio, 29, nullptr, info, matrices, nullptr, nullptr,
 	                                                   origin, flags);
+	// The capability check above and this enqueue run on the same engine thread;
+	// the material-system hook remains stable for this submission. The helper
+	// owns/deletes the callback on both success and failure.
+	if (!MaterialSystem_ExecuteOnRenderThread(resources.release()))
+	{
+		status = "Cached model cleanup callback could not be submitted.";
+		return false;
+	}
 	status = "Drawing cached player model (wireframe, observed animation pose).";
 	return true;
 }
