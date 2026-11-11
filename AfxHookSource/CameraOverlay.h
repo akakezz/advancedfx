@@ -13,6 +13,7 @@ void SetMouseLook(bool value);
 void Initialize();
 void Draw();
 void SceneCacheFrame(bool capture = true);
+void SceneCacheDrawModels();
 void SceneCacheConsole(advancedfx::ICommandArgs *args);
 bool SceneCacheNavigationKey(unsigned int key, bool down);
 void SceneCacheStopScrub();

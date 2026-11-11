@@ -9803,3 +9803,255 @@ bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float 
 	renderable->GetRenderBounds(mins, maxs);
 	return true;
 }
+
+// Selected-player scene-pose prototype. The layout below is the public Source
+// SDK 2013 ABI, not the CS:GO VStudioRender026 layout. No live entity pointers,
+// studio headers, hardware-data pointers or cache handles enter scene history.
+namespace
+{
+template <typename R, typename... Args> R SceneInterfaceCall(void *object, size_t slot, Args... args)
+{
+#ifdef _WIN64
+	using Fn = R (*)(void *, Args...);
+#else
+	using Fn = R(__thiscall *)(void *, Args...);
+#endif
+	return reinterpret_cast<Fn>((*static_cast<void ***>(object))[slot])(object, args...);
+}
+struct SceneStudioInfo
+{
+	void *Header = nullptr, *Hardware = nullptr, *Decals = nullptr;
+	int Skin = 0, Body = 0, Hitbox = 0;
+	void *ClientEntity = nullptr;
+	int Lod = 0;
+	void *ColorMeshes = nullptr;
+	bool StaticLighting = false;
+	float AmbientCube[6][3]{};
+	int LightCount = 0;
+	float LightDescriptors[4][22]{}; // Source LightDesc_t: 88 bytes, 4-byte alignment.
+};
+static_assert(sizeof(SOURCESDK::matrix3x4_t) == sizeof(advancedfx::SceneCache::Matrix), "TF2 bone matrix ABI");
+static_assert(sizeof(SceneStudioInfo) == (sizeof(void *) == 8 ? 496 : 468), "TF2 DrawModelInfo ABI");
+static_assert(offsetof(SceneStudioInfo, Lod) == (sizeof(void *) == 8 ? 48 : 28), "TF2 model LOD ABI");
+static_assert(offsetof(SceneStudioInfo, LightCount) == (sizeof(void *) == 8 ? 140 : 112), "TF2 light ABI");
+// IClientNetworkable::IsDormant is slot 8 in TF2 (CS:GO inserts another method).
+static bool SceneRenderable(int index, CMirvTf2ClientRenderable *&renderable)
+{
+	auto entity = Mirv_Tf2_DiagnosticEntity(index);
+	auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(entity);
+	void *networkable = unknown ? unknown->GetClientNetworkable() : nullptr;
+	renderable = unknown ? unknown->GetClientRenderable() : nullptr;
+	return networkable && renderable && !SceneInterfaceCall<bool>(networkable, 8) && renderable->ShouldDraw();
+}
+// Validate the same on-disk studio header used by AGR/bone-name inspection.
+static bool SceneStudioHeader(const unsigned char *header, int &count, unsigned int &checksum)
+{
+	if (!header)
+		return false;
+	int id, version, length, boneOffset;
+	std::memcpy(&id, header, 4);
+	std::memcpy(&version, header + 4, 4);
+	std::memcpy(&checksum, header + 8, 4);
+	std::memcpy(&length, header + 76, 4);
+	std::memcpy(&count, header + 156, 4);
+	std::memcpy(&boneOffset, header + 160, 4);
+	return id == 0x54534449 && version >= 44 && version <= 49 && length >= 164 && count > 0 &&
+	       count <= int(advancedfx::SceneCache::MaxBones) && boneOffset >= 164 &&
+	       int64_t(boneOffset) + int64_t(count) * 216 <= length;
+}
+} // namespace
+bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status)
+{
+	using Cache = advancedfx::SceneCache;
+	entity.ModelPose.reset();
+	CMirvTf2ClientRenderable *renderable = nullptr;
+	if (!SceneRenderable(index, renderable))
+	{
+		status = "Selected player is dormant, hidden or unavailable; no pose captured.";
+		return false;
+	}
+	auto info = Mirv_Tf2_GetModelInfo();
+	const void *model = renderable->GetModel();
+	const char *name = info && model ? info->GetModelName(model) : nullptr;
+	auto header = info && model ? static_cast<const unsigned char *>(info->GetStudiomodel(model)) : nullptr;
+	int count;
+	unsigned int checksum;
+	if (!name || std::strlen(name) >= 260 || !SceneStudioHeader(header, count, checksum))
+	{
+		status = "Selected model has no supported studio header (maximum 128 bones).";
+		return false;
+	}
+	// Metadata is shared across frames of this model; all data is copied out of
+	// the engine. The latest descriptor alone survives eviction/reset.
+	static std::shared_ptr<const Cache::Model> metadata;
+	if (!metadata || metadata->Name != name || metadata->Checksum != checksum ||
+	    metadata->Parents.size() != size_t(count))
+	{
+		auto next = std::make_shared<Cache::Model>();
+		next->Name = name;
+		next->Checksum = checksum;
+		MirvTf2BoneName_t names[MIRV_TF2_MAX_BONES];
+		if (Mirv_Tf2_ReadBoneNames(header, names) != count)
+		{
+			status = "Selected model has an invalid bone hierarchy.";
+			return false;
+		}
+		int boneOffset;
+		std::memcpy(&boneOffset, header + 160, 4);
+		for (int i = 0; i < count; ++i)
+		{
+			next->Parents.push_back(names[i].parent);
+			int flags;
+			std::memcpy(&flags, header + boneOffset + i * 216 + 160, 4);
+			next->Flags.push_back(flags);
+		}
+		metadata = std::move(next);
+	}
+	auto pose = std::make_shared<Cache::Pose>();
+	pose->ModelInfo = metadata;
+	pose->Body = renderable->GetBody();
+	// Use the existing Source/AGR transform helpers. Unused bones are identity,
+	// exactly as in AGR; SetupBones fills the bones used by the studio renderer.
+	alignas(16) SOURCESDK::matrix3x4_t bones[MIRV_TF2_MAX_BONES]{};
+	auto globals = g_Hook_VClient_RenderView.GetGlobals();
+	if (!globals || !renderable->SetupBones(bones, MIRV_TF2_MAX_BONES, SOURCESDK_BONE_USED_BY_ANYTHING,
+	                                        globals->curtime_get()))
+	{
+		status = "SetupBones did not provide a pose; proxy bounds retained.";
+		return false;
+	}
+	SOURCESDK::matrix3x4_t root;
+	SOURCESDK::AngleMatrix(SOURCESDK::QAngle(entity.Angles[0], entity.Angles[1], entity.Angles[2]),
+	                       SOURCESDK::Vector(entity.Origin[0], entity.Origin[1], entity.Origin[2]), root);
+	std::memcpy(pose->Root.data(), root.m_flMatVal, sizeof(root));
+	pose->Bones.resize(count);
+	for (int i = 0; i < count; ++i)
+	{
+		if (!(metadata->Flags[i] & SOURCESDK_BONE_USED_BY_ANYTHING))
+		{
+			std::memset(bones[i].m_flMatVal, 0, sizeof(bones[i]));
+			for (int axis = 0; axis < 3; ++axis)
+				bones[i][axis][axis] = 1;
+		}
+		const auto &matrix = bones[i].m_flMatVal;
+		const double axisLength2 = double(matrix[0][0]) * matrix[0][0] + double(matrix[1][0]) * matrix[1][0] +
+		                           double(matrix[2][0]) * matrix[2][0];
+		if (axisLength2 < 1e-12)
+		{
+			status = "Required bone matrix is unavailable; proxy bounds retained.";
+			return false;
+		}
+		std::memcpy(pose->Bones[i].data(), bones[i].m_flMatVal, sizeof(bones[i]));
+	}
+	if (!Cache::ValidPose(*pose))
+	{
+		status = "Nonfinite or invalid pose rejected; proxy bounds retained.";
+		return false;
+	}
+	entity.ModelPose = std::move(pose);
+	status = "Capturing " + metadata->Name + ": " + std::to_string(count) + " bones per observed tick.";
+	return true;
+}
+bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status)
+{
+	const auto pose = entity.ModelPose;
+	if (!pose || !advancedfx::SceneCache::ValidPose(*pose))
+	{
+		status = "Cached model pose is unavailable or invalid.";
+		return false;
+	}
+	if (!g_AppSystemFactory)
+	{
+		status = "Source render interfaces unavailable.";
+		return false;
+	}
+	// Deliberately accept only the SDK interfaces we have verified. FindMDL pins
+	// data for this draw; BeginLock prevents eviction during studio access. Never
+	// keep native resources in a UI/render-thread snapshot or across demo loads.
+	void *studio = g_AppSystemFactory("VStudioRender025", nullptr);
+	void *cache = g_AppSystemFactory("MDLCache004", nullptr);
+	if (!studio || !cache)
+	{
+		status = "VStudioRender025 / MDLCache004 unavailable; cached boxes remain usable.";
+		return false;
+	}
+	void *overrideMaterial = nullptr;
+	int overrideType = 0;
+	SceneInterfaceCall<void, void **, int *>(studio, 47, &overrideMaterial, &overrideType);
+	if (overrideMaterial || overrideType != 0)
+	{
+		status = "Cached model deferred during an engine material override.";
+		return false;
+	}
+	SceneInterfaceCall<void>(cache, 25); // IMDLCache::BeginLock
+	struct Unlock
+	{
+		void *Cache;
+		~Unlock()
+		{
+			SceneInterfaceCall<void>(Cache, 26);
+		}
+	} unlock{cache};
+	const auto handle =
+	    SceneInterfaceCall<unsigned short, const char *>(cache, 6, pose->ModelInfo->Name.c_str());
+	if (handle == 0xffff)
+	{
+		status = "Cached model asset could not be resolved.";
+		return false;
+	}
+	struct Release
+	{
+		void *Cache;
+		unsigned short Handle;
+		~Release()
+		{
+			SceneInterfaceCall<int, unsigned short>(Cache, 8, Handle);
+		}
+	} release{cache, handle};
+	SceneStudioInfo info;
+	info.Header = SceneInterfaceCall<void *, unsigned short>(cache, 10, handle);
+	info.Hardware = SceneInterfaceCall<void *, unsigned short>(cache, 11, handle);
+	int count;
+	unsigned int checksum;
+	if (SceneInterfaceCall<bool, unsigned short>(cache, 20, handle) || !info.Hardware ||
+	    !SceneStudioHeader(static_cast<const unsigned char *>(info.Header), count, checksum) ||
+	    checksum != pose->ModelInfo->Checksum || size_t(count) != pose->Bones.size())
+	{
+		status = "Cached pose does not match the loaded model asset, or hardware data is unavailable.";
+		return false;
+	}
+	SOURCESDK::matrix3x4_t root, capturedRoot, inverse, delta;
+	SOURCESDK::AngleMatrix(SOURCESDK::QAngle(entity.Angles[0], entity.Angles[1], entity.Angles[2]),
+	                       SOURCESDK::Vector(entity.Origin[0], entity.Origin[1], entity.Origin[2]), root);
+	std::memcpy(capturedRoot.m_flMatVal, pose->Root.data(), sizeof(capturedRoot));
+	if (!CClientTools::InvertMatrix(capturedRoot, inverse))
+	{
+		status = "Cached model root is not invertible; model drawing skipped.";
+		return false;
+	}
+	SOURCESDK::R_ConcatTransforms(root, inverse, delta);
+	// Allocate through studio's render context so queued rendering owns the
+	// matrix lifetime. Stack matrices and live renderable pointers are not passed.
+	auto matrices = SceneInterfaceCall<SOURCESDK::matrix3x4_t *, int>(studio, 22, count);
+	if (!matrices)
+	{
+		status = "Studio bone allocation unavailable.";
+		return false;
+	}
+	for (int i = 0; i < count; ++i)
+	{
+		SOURCESDK::matrix3x4_t bone;
+		std::memcpy(bone.m_flMatVal, pose->Bones[i].data(), sizeof(bone));
+		SOURCESDK::R_ConcatTransforms(delta, bone, matrices[i]);
+	}
+	SceneInterfaceCall<void>(studio, 23); // UnlockBoneMatrices (SDK lifetime ends with render frame).
+	info.Body = pose->Body;
+	constexpr int flags = 0x04 | 0x20 | 0x80; // NO_FLEXES | NO_SHADOWS | WIREFRAME
+	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
+	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
+	                   const SOURCESDK::Vector &, int>(studio, 29, nullptr, info, matrices, nullptr, nullptr,
+	                                                   origin, flags);
+	status = "Drawing cached player model (wireframe, observed animation pose).";
+	return true;
+}
+// End selected-player scene-pose prototype.

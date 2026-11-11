@@ -5,6 +5,8 @@
 #include "WrpConsole.h"
 
 #include <list>
+#include <string>
+#include <shared/SceneCache.h>
 
 void CalcSmooth(double deltaT, double targetPos, double & lastPos, double & lastVel, double LimitVelocity, double LimitAcceleration);
 
@@ -412,3 +414,8 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 
 
 bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float mins[3], float maxs[3]);
+
+// Opt-in selected-player scene-pose prototype. Does not change AGR recording mode.
+// The cache owns immutable value data only; engine pointers are resolved for each draw.
+bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status);
+bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status);

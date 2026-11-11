@@ -1439,7 +1439,9 @@ The Scene Cache track shows recorded coverage and gaps; its gray marker shows
 actual demo position independently of the cached playhead.
 
 Enable **Show path** and keep the active path visible for cyan player boxes and
-yellow heading lines drawn by the classic renderer. Live models remain visible.
+yellow heading lines drawn by the classic renderer. Selected-player wireframe
+poses use the engine's studio renderer and do not require **Show path**. Live
+models remain visible.
 When **Preview path** is active, cached navigation also evaluates the camera path
 using the recorded client timestamp. The separate camera-preview slider is
 available only outside cached mode. Capture actions and `mirv_campath add` use
@@ -1451,7 +1453,8 @@ Scene Cache details tab. The default budget is 64 MiB; oldest frames are evicted
 The payload estimate excludes allocator bookkeeping. This prototype stores one
 player snapshot per observed demo tick. Sparse compression, projectiles and
 trajectories remain pending. Dormancy and respawn boundaries are not classified yet, so client-retained stale positions can appear.
-Boxes use model bounds rather than animated silhouettes. Samples separated by
+Boxes use model bounds rather than animated silhouettes; opt-in body poses are
+described below. Samples separated by
 more than 0.1 seconds or 256 units are not bridged. Opening/restarting a demo
 clears history; backward capture begins a new interval. Historical audio and
 simulation state are not restored.
@@ -1516,12 +1519,72 @@ The built-in Right Ctrl navigation chords remain reserved. Use unreserved keys
 for custom rate bindings; normal preview/editor input ownership still applies.
 Input release or focus handoff stops an active scrub rate.
 
-### Model-pose follow-up
+### Selected-player model-pose prototype
 
-Model playback is not implemented yet. The existing TF2 AGR path supplies model
-identity, visibility, root transforms and bone matrices with parent/flag metadata.
-It does not contain a reusable in-game mesh renderer. The next selected-player
-experiment should reuse that capture knowledge and Source's studio renderer,
-rather than duplicating mesh geometry per frame. Recording-mode ownership must
-coexist with AGR; starting scene capture must not stop or replace an AGR session.
-Animated-pose interpolation must respect bone hierarchy and model/life boundaries.
+In the sequencer's **Scene Cache** tab, choose **Pose capture player
+(experimental)**, enable **Record scene history**, and play forward through the
+shot. Then freeze actual playback, enable **Cached preview**, and scrub backward
+through the recorded interval. **Draw cached player models** displays the
+selected player's recorded body as a wireframe model. This works with the
+overlay closed and does not require **Show path**. At the latest cached tick the
+wireframe can overlap the live player; scrub to an earlier covered tick to see
+the historical pose separately.
+
+Console equivalents (replace `5` with the player's current entity index):
+
+```text
+mirv_campath cache pose 5
+mirv_campath cache record 1
+// Play forward, then freeze actual demo playback.
+mirv_campath cache record 0
+mirv_campath cache preview 1
+mirv_campath cache step -66
+mirv_campath cache status
+```
+
+`mirv_campath cache pose 0` stops capturing poses while keeping recorded poses
+and ordinary box recording available. `mirv_campath cache models 0|1` controls
+model drawing independently of capture. Existing box-only history cannot gain
+poses retroactively; record the shot again after choosing the player. Changing
+the selected player affects future captures only. Selection pins the player's
+user ID as well as its entity index, so a recycled slot cannot silently capture
+somebody else. Opening/restarting a demo clears history and the pose target.
+
+The cache stores immutable model names/checksums, bone hierarchy metadata, body
+groups and observed bone matrices. It reuses the game asset through
+`VStudioRender025` / `MDLCache004`; it does not store a new mesh in every frame.
+AGR's existing transform helpers and model/bone conventions are reused without
+starting/stopping AGR or changing recording mode. Bone capture runs only for
+the chosen player, once per newly observed demo tick, and requests a
+`SetupBones` evaluation. Hidden/dormant players, unsupported headers, invalid
+matrices or missing render interfaces produce an explanatory status and keep
+proxy history available. Source can report its first-person local player as hidden;
+choose a visible player for the initial test.
+
+This first prototype deliberately displays the nearest complete recorded
+animation pose between samples, moved with the interpolated root transform.
+It preserves bone scale and avoids blending world-space matrices, which would
+stretch the skeleton. It does not yet interpolate individual local bone
+rotations. Model changes and missing pose samples are not bridged with another
+pose. Facial flexes, weapons, cosmetics, ragdolls, moving doors/props, particles and
+sounds are not part of this milestone; native life-state/respawn boundaries are still not
+classified. This is a visual preview, not restoration of engine simulation.
+
+Pose payload and a conservative per-frame charge for shared metadata count
+toward **Scene budget MiB**. The counter excludes engine asset memory, allocator
+bookkeeping and temporary published/queued snapshots. Oldest frames are evicted
+as before. Status shows cumulative pose captures/unavailable attempts since the
+last clear, not the count currently retained. A single over-budget frame is
+rejected rather than exceeding the history budget.
+
+Model drawing uses HLAE's existing material-system render queue. Each draw
+resolves and checks the model, pins/locks its studio data for that draw, and
+allocates bone storage through the studio render context. Scene history owns no
+engine pointers. Clearing history, leaving cached preview, toggling model
+drawing or changing demos invalidates outstanding draws. A current engine
+material override defers the model draw rather than replacing that override.
+
+Validation covers capture failures, cached matrix ownership, model mismatches,
+render-resource cleanup, queue cancellation and payload eviction with fixtures,
+plus x86/x64 compilation. Live TF2/TF2C rendering and performance still require
+in-game testing.

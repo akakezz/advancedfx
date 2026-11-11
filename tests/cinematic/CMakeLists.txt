@@ -22,3 +22,12 @@ if(NOT MSVC)
     target_compile_options(sequencer_tests PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/msvc_crt_compat.h)
 endif()
 add_test(NAME sequencer_core COMMAND sequencer_tests)
+
+add_executable(scene_cache_tests scene_cache_test.cpp)
+target_include_directories(scene_cache_tests PRIVATE ../..)
+add_test(NAME scene_cache_core COMMAND scene_cache_tests)
+
+if(UNIX)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME scene_pose_native COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_scene_pose.py" --build-dir "${CMAKE_CURRENT_BINARY_DIR}/scene-pose-native")
+endif()

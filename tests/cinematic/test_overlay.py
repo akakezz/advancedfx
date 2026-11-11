@@ -35,7 +35,14 @@ preamble=r'''
 #include "shared/PlayerRepair.h"
 void MirvFix_PlayerRepairNewDemo(const char*);
 void MirvFix_PlayerAngleTraceEnd();
-bool Mirv_Tf2_GetSceneEntity(int,float*,float*,float*,float*){return false;}
+#include "AfxHookSource/MaterialSystemHooks.h"
+bool sceneEntityAvailable=false,scenePoseCaptureSuccess=true;int scenePoseCaptures=0,scenePoseDraws=0;
+std::shared_ptr<const advancedfx::SceneCache::Pose> sceneTestPose;std::shared_ptr<const advancedfx::SceneCache::Pose> sceneLastDrawn;
+bool Mirv_Tf2_GetSceneEntity(int,float*origin,float*angles,float*mins,float*maxs){for(int i=0;i<3;++i){origin[i]=angles[i]=mins[i]=0;maxs[i]=10;}return sceneEntityAvailable;}
+bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&entity,std::string&status){++scenePoseCaptures;if(!scenePoseCaptureSuccess){status="Pose unavailable";return false;}entity.ModelPose=sceneTestPose;status="Pose captured";return true;}
+bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&entity,std::string&status){++scenePoseDraws;sceneLastDrawn=entity.ModelPose;status="Pose drawn";return true;}
+bool sceneQueueAvailable=true,sceneQueueDeferred=false;std::vector<std::unique_ptr<CMaterialSystemFunctor>> sceneQueued;
+bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor*functor){std::unique_ptr<CMaterialSystemFunctor>owned(functor);if(!sceneQueueAvailable)return false;if(sceneQueueDeferred)sceneQueued.push_back(std::move(owned));else (*owned)();return true;}
 bool MirvFix_GetRecorderSoundMute(){return false;}
 bool MirvFix_SetRecorderSoundMute(bool b){return !b;}
 const char*MirvFix_RecorderSoundStatus(){return "Unavailable in UI harness";}
@@ -801,6 +808,24 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  path.PositionInterpMethod_set(CamPath::DI_CUBIC);MirvCampathPreview_SetTime(8);MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_UP,0);MirvCampathPreview_KeyEvent(WM_KEYUP,VK_UP,0);check(selectedOnly(1)&&g_SequencerFrame==301,"Cubic path key jump also selects and synchronizes the cached scene");
  path.SelectAll();path.Clear();path.SetOffset(2);path.Add(8,CamPathValue(0,0,0,0,0,0,90));check(!path.CanEval(),"Single-key path has no evaluable interpolation");MirvCampathPreview_KeyEvent(WM_KEYDOWN,VK_END,0);MirvCampathPreview_KeyEvent(WM_KEYUP,VK_END,0);check(selectedOnly(0)&&g_SequencerFrame==300,"Native jump selects and synchronizes a key even without evaluable interpolation");
  sceneCommand({"mirv_campath","cache","preview","0"});check(!SceneCachePreviewActive()&&!SceneCacheView(),"Console can leave cached preview with overlay closed");
+
+ // Selected pose capture shares the ordinary recording path and stable user identity.
+ auto poseModel=std::make_shared<advancedfx::SceneCache::Model>();poseModel->Name="models/player/scout.mdl";poseModel->Checksum=1;poseModel->Parents={-1};poseModel->Flags={0x400};
+ auto poseData=std::make_shared<advancedfx::SceneCache::Pose>();poseData->ModelInfo=poseModel;poseData->Root[0]=poseData->Root[5]=poseData->Root[10]=1;poseData->Bones={poseData->Root};sceneTestPose=poseData;
+ MirvCampathPreview_SetActive(false);sceneCommand({"mirv_campath","cache","clear"});sceneCommand({"mirv_campath","cache","pose","1"});check(g_ScenePoseEntity==1&&g_ScenePoseUser==repairTestUser,"Console pose selection pins player user id, not just entity index");
+ sceneCommand({"mirv_campath","cache","pose","999"});check(g_ScenePoseEntity==1,"Invalid pose target preserves the existing selection");
+ sceneCommand({"mirv_campath","cache","record","1"});sceneEntityAvailable=true;SceneCacheFrame();check(scenePoseCaptures==1&&g_SceneCache.Count()==1&&g_SceneCache.Frames().back().Entities[0].ModelPose==poseData,"Background recording captures only the selected player's immutable pose");
+ SceneCacheFrame();check(scenePoseCaptures==1,"Duplicate native frames at the same demo tick do not evaluate bones again");
+ ++repairTestUser;g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(scenePoseCaptures==1&&!g_SceneCache.Frames().back().Entities[0].ModelPose,"A reused entity slot cannot capture a different user's pose");--repairTestUser;
+ scenePoseCaptureSuccess=false;g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(scenePoseCaptures==2&&!g_SceneCache.Frames().back().Entities[0].ModelPose,"A failed pose capture retains box history without reusing old bones");scenePoseCaptureSuccess=true;
+ sceneCommand({"mirv_campath","cache","pose","0"});g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(scenePoseCaptures==2,"Disabling pose capture leaves ordinary history recording active");sceneCommand({"mirv_campath","cache","record","0"});sceneEntityAvailable=false;
+ auto renderFrame=std::make_shared<advancedfx::SceneCache::Frame>();advancedfx::SceneCache::Entity rendered;rendered.Identity=42;rendered.ModelPose=sceneTestPose;renderFrame->Entities.push_back(rendered);std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));
+ sceneQueueDeferred=true;SceneCacheDrawModels();check(scenePoseDraws==0&&sceneQueued.size()==1,"Studio drawing is queued through the existing renderer rather than running on UI/engine threads");
+ std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>{});(*sceneQueued.front())();sceneQueued.clear();check(scenePoseDraws==1&&sceneLastDrawn==sceneTestPose,"Queued draw retains an immutable pose after the published cursor changes");
+ std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));SceneCacheDrawModels();sceneCommand({"mirv_campath","cache","clear"});(*sceneQueued.front())();sceneQueued.clear();check(scenePoseDraws==1,"Clearing history invalidates pending draws before engine resource access");
+ std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));SceneCacheDrawModels();sceneCommand({"mirv_campath","cache","models","0"});(*sceneQueued.front())();sceneQueued.clear();check(scenePoseDraws==1,"Disabling model visualization also suppresses already queued draws");SceneCacheDrawModels();check(sceneQueued.empty(),"Disabled models create no render work");
+ sceneCommand({"mirv_campath","cache","models","1"});sceneQueueAvailable=false;SceneCacheDrawModels();check(scenePoseDraws==1&&std::atomic_load(&g_SceneModelStatus)->find("queue unavailable")!=std::string::npos,"Unavailable render queue fails safely and explains why models are not visible");sceneQueueAvailable=true;
+ SceneCacheDrawModels();NotifyDemoPlaybackFile("pose-restart.dem");(*sceneQueued.front())();sceneQueued.clear();check(scenePoseDraws==1&&g_ScenePoseEntity==0&&!SceneCacheView(),"Demo restart invalidates queued poses and clears the old player's identity");
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''

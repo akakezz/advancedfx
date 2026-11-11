@@ -2,6 +2,7 @@
 // MIT license; see shared/overlay/PORTING.md for provenance and scope.
 #include "CameraOverlay.h"
 #include "CampathDrawer.h"
+#include "MaterialSystemHooks.h"
 #include "Gui.h"
 #include "MirvCalcs.h"
 #include "MirvCam.h"
@@ -51,6 +52,38 @@ static advancedfx::SceneCache g_SceneCache;
 static bool g_SceneRecord = false, g_ScenePreview = false;
 static double g_SceneCursor = 0;
 static bool g_SceneDrivingCamera = false;
+static int g_ScenePoseEntity = 0, g_ScenePoseUser = 0;
+static std::string g_ScenePoseName, g_ScenePoseStatus = "Pose capture disabled.";
+static std::shared_ptr<const std::string> g_SceneModelStatus;
+static void SceneModelStatus(const std::string &value)
+{
+	auto previous = std::atomic_load(&g_SceneModelStatus);
+	if (!previous || *previous != value)
+		std::atomic_store(&g_SceneModelStatus, std::make_shared<const std::string>(value));
+}
+static std::atomic_bool g_SceneDrawModels{true};
+static std::atomic_ullong g_SceneDrawEpoch{0};
+static unsigned long long g_ScenePoseCaptured = 0, g_ScenePoseFailures = 0;
+static bool SceneSelectPosePlayer(int index)
+{
+	if (!index)
+	{
+		g_ScenePoseEntity = g_ScenePoseUser = 0;
+		g_ScenePoseName.clear();
+		g_ScenePoseStatus = "Pose capture disabled; retained poses can still be previewed.";
+		return true;
+	}
+	char name[128];
+	int user = 0;
+	if (index < 1 || index > Mirv_Tf2_GetMaxPlayers() ||
+	    !Mirv_Tf2_GetPlayerInfo(index, name, sizeof(name), &user) || user <= 0)
+		return false;
+	g_ScenePoseEntity = index;
+	g_ScenePoseUser = user;
+	g_ScenePoseName = name;
+	g_ScenePoseStatus = "Target selected. Record scene history and play forward to capture its model pose.";
+	return true;
+}
 static ImGui::FrameIndexType g_SequencerFrame = 0;
 static int g_SceneLastTick = -1;
 static int g_SceneScrubRate = 0;
@@ -60,6 +93,18 @@ static double SceneTickInterval();
 static void ScenePreviewTick(int tick);
 
 static std::shared_ptr<const advancedfx::SceneCache::Frame> g_SceneView;
+static void SceneClearHistory()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	++g_SceneDrawEpoch;
+	g_SceneCache.Clear();
+	g_ScenePoseCaptured = g_ScenePoseFailures = 0;
+	g_SceneLastTick = -1;
+	g_SceneScrubRate = 0;
+	g_SceneScrubRemainder = 0;
+	std::atomic_store(&g_SceneModelStatus, std::shared_ptr<const std::string>{});
+	std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
+}
 std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView()
 {
 	return std::atomic_load(&g_SceneView);
@@ -99,6 +144,8 @@ void SceneCacheFrame(bool capture)
 	}
 	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
 	{
+		if (g_ScenePreview)
+			++g_SceneDrawEpoch;
 		g_ScenePreview = false;
 		g_SceneScrubRate = 0;
 		g_SceneScrubRemainder = 0;
@@ -108,9 +155,12 @@ void SceneCacheFrame(bool capture)
 	if (capture && g_SceneRecord && !g_VEngineClient->IsSkippingDemo() && GetCurrentDemoTick(tick) &&
 	    GetCurrentDemoTime(time) && tick != g_SceneLastTick)
 	{
+		if (g_SceneLastTick >= 0 && tick < g_SceneLastTick)
+			++g_SceneDrawEpoch;
 		advancedfx::SceneCache::Frame frame;
 		frame.DemoTime = time;
 		frame.ClientTime = g_MirvTime.GetTime();
+		bool poseTargetSeen = false;
 		for (int index = 1; index <= Mirv_Tf2_GetMaxPlayers(); ++index)
 		{
 			char name[128];
@@ -120,9 +170,21 @@ void SceneCacheFrame(bool capture)
 			    !Mirv_Tf2_GetSceneEntity(index, entity.Origin, entity.Angles, entity.Mins, entity.Maxs))
 				continue;
 			entity.Identity = static_cast<unsigned>(user);
-			frame.Entities.push_back(entity);
+			if (index == g_ScenePoseEntity && user == g_ScenePoseUser)
+			{
+				poseTargetSeen = true;
+				if (Mirv_Tf2_CaptureScenePose(index, entity, g_ScenePoseStatus))
+					++g_ScenePoseCaptured;
+				else
+					++g_ScenePoseFailures;
+			}
+			frame.Entities.push_back(std::move(entity));
 		}
-		g_SceneCache.Append(std::move(frame));
+		if (g_ScenePoseEntity && !poseTargetSeen)
+			g_ScenePoseStatus =
+			    "Selected player is unavailable or its entity slot was reused; no pose captured.";
+		if (!g_SceneCache.Append(std::move(frame)))
+			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
 	}
 	advancedfx::SceneCache::Frame frame;
@@ -134,6 +196,57 @@ void SceneCacheFrame(bool capture)
 	std::atomic_store(&g_SceneView,
 	                  valid ? std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame))
 	                        : std::shared_ptr<const advancedfx::SceneCache::Frame>{});
+}
+// Use the classic renderer's material-system queue. No engine resource is
+// retained in a UI snapshot; studio/MDL access happens on the drawing thread.
+class SceneCacheModelFunctor : public CMaterialSystemFunctor
+{
+public:
+	SceneCacheModelFunctor(std::shared_ptr<const advancedfx::SceneCache::Frame> frame, unsigned long long epoch)
+	    : m_Frame(std::move(frame)), m_Epoch(epoch)
+	{
+	}
+	void operator()() override
+	{
+		if (!g_SceneDrawModels.load() || m_Epoch != g_SceneDrawEpoch.load())
+			return;
+		std::string status =
+		    "No model pose at this cursor. Select a pose player and record this interval again.";
+		for (const auto &entity : m_Frame->Entities)
+			if (entity.ModelPose)
+				Mirv_Tf2_DrawScenePose(entity, status);
+		if (m_Epoch == g_SceneDrawEpoch.load())
+			SceneModelStatus(status);
+	}
+
+private:
+	std::shared_ptr<const advancedfx::SceneCache::Frame> m_Frame;
+	unsigned long long m_Epoch;
+};
+void SceneCacheDrawModels()
+{
+	if (!g_SceneDrawModels.load())
+		return;
+	std::shared_ptr<const advancedfx::SceneCache::Frame> view;
+	unsigned long long epoch;
+	{
+		// Read the frame and its invalidation epoch together. Release the lock
+		// before queueing: render-thread callbacks must never wait on UI state.
+		std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+		view = SceneCacheView();
+		epoch = g_SceneDrawEpoch.load();
+	}
+	if (!view)
+		return;
+	if (std::none_of(view->Entities.begin(), view->Entities.end(),
+	                 [](const auto &entity) { return bool(entity.ModelPose); }))
+	{
+		SceneModelStatus(
+		    "No model pose at this cursor. Select a pose player and record this interval again.");
+		return;
+	}
+	if (!MaterialSystem_ExecuteOnRenderThread(new SceneCacheModelFunctor(std::move(view), epoch)))
+		SceneModelStatus("Material-system render queue unavailable; cached model drawing skipped.");
 }
 static double SceneTickInterval()
 {
@@ -625,6 +738,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	{
 		if (!value)
 		{
+			++g_SceneDrawEpoch;
 			g_ScenePreview = false;
 			g_SceneScrubRate = 0;
 			g_SceneScrubRemainder = 0;
@@ -679,13 +793,25 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			}
 		}
 	}
+	else if (!_stricmp(op, "pose"))
+	{
+		int entity;
+		ok = integer(entity) && SceneSelectPosePlayer(entity);
+	}
+	else if (!_stricmp(op, "models"))
+	{
+		int enabled;
+		if (integer(enabled) && (enabled == 0 || enabled == 1))
+		{
+			if (g_SceneDrawModels.exchange(enabled != 0) != (enabled != 0))
+				++g_SceneDrawEpoch;
+			SceneModelStatus(enabled ? "Cached model drawing enabled." : "Cached model drawing disabled.");
+			ok = true;
+		}
+	}
 	else if (!_stricmp(op, "clear") && args->ArgC() == 3)
 	{
-		g_SceneCache.Clear();
-		g_SceneLastTick = -1;
-		g_SceneScrubRate = 0;
-		g_SceneScrubRemainder = 0;
-		SceneCacheFrame(false);
+		SceneClearHistory();
 		ok = true;
 	}
 	else if (!_stricmp(op, "status") && args->ArgC() <= 3)
@@ -694,27 +820,34 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	{
 		advancedfx::Message(
 		    "mirv_campath cache record 0|1\nmirv_campath cache preview 0|1\nmirv_campath cache goto <demo "
-			"tick>\nmirv_campath cache step <signed ticks>\nmirv_campath cache rate <-10000..10000 "
-			"ticks/sec; 0 stops>\nmirv_campath cache clear\nmirv_campath cache status\n"
-			"Cached keys: Right Ctrl + Left/Right: ticks; Up/Down: seconds; Home/End: retained bounds.\n"
-			"Unmodified preview keys retain camera keyframe selection and travel.\n");
+		    "tick>\nmirv_campath cache step <signed ticks>\nmirv_campath cache rate <-10000..10000 "
+		    "ticks/sec; 0 stops>\nmirv_campath cache pose <player entity index; 0 disables capture>\n"
+		    "mirv_campath cache models 0|1\nmirv_campath cache clear\nmirv_campath cache status\n"
+		    "Cached keys: Right Ctrl + Left/Right: ticks; Up/Down: seconds; Home/End: retained bounds.\n"
+		    "Unmodified preview keys retain camera keyframe selection and travel.\n");
 		ok = true;
 	}
 	if (!ok)
 		advancedfx::Warning("Scene cache command rejected. Use preview/record 0|1, goto <demo tick>, step "
-		                    "<signed ticks>, rate <-10000..10000 ticks/sec>, clear or status. Navigation "
+		                    "<signed ticks>, rate <-10000..10000 ticks/sec>, pose <player index|0>, models "
+		                    "0|1, clear or status. Navigation "
 		                    "requires recorded bounds and never seeks the demo.\n");
 	advancedfx::Message("Scene cache: record %d, preview %d; rate %d ticks/s; tick %d; %zu frames, %.2f MiB "
 	                    "payload; coverage at cursor %s.\n",
 	                    int(g_SceneRecord), int(g_ScenePreview), g_SceneScrubRate, int(g_SequencerFrame),
 	                    g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0,
 	                    SceneCacheView() ? "yes" : "no");
+	advancedfx::Message("Scene pose: entity %d, user %d; captured %llu, unavailable %llu; models %d. %s\n",
+	                    g_ScenePoseEntity, g_ScenePoseUser, g_ScenePoseCaptured, g_ScenePoseFailures,
+	                    int(g_SceneDrawModels.load()), g_ScenePoseStatus.c_str());
+	if (g_ScenePreview)
+		if (auto status = std::atomic_load(&g_SceneModelStatus))
+			advancedfx::Message("%s\n", status->c_str());
 	if (!g_SceneCache.Frames().empty())
 		advancedfx::Message("Cached tick bounds: %d .. %d (gaps may exist).\n",
 		                    int(std::floor(g_SceneCache.Frames().front().DemoTime / SceneTickInterval())),
 		                    int(std::floor(g_SceneCache.Frames().back().DemoTime / SceneTickInterval())));
 }
-
 static bool g_ShowCurveEditor = false, g_FocusGraph = false;
 static float g_CurvePadding = 26.0f;
 static float g_CurveValueScale = 1.0f;
@@ -3552,8 +3685,11 @@ void NotifyDemoPlaybackFile(const char *file)
 	if (file && *file)
 	{
 		CancelCommandMarkerDrag();
-		g_SceneCache.Clear(); g_SceneLastTick = -1; g_ScenePreview = false; g_SceneScrubRate=0;g_SceneScrubRemainder=0;
-		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
+		SceneClearHistory();
+		g_ScenePreview = false;
+		g_ScenePoseEntity = g_ScenePoseUser = 0;
+		g_ScenePoseName.clear();
+		g_ScenePoseStatus = "New demo: select the player whose pose should be captured.";
 		g_SequencerTimeline.RequestedDemo = file;
 	}
 }
@@ -4455,12 +4591,57 @@ static void DrawSequencerDetails(int playhead)
 		std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 		ImGui::Checkbox("Record scene history", &g_SceneRecord);
 		ImGui::TextDisabled("Cache navigation: Right Ctrl + arrows / Home / End");
-		ImGui::TextWrapped("Enable Cached preview above the timeline, then scrub its playhead. Actual demo playback stays independent. Player model bounds are proxies; live models remain visible. Dormancy and respawn boundaries are not yet classified.");
-		if (ImGui::Button("Clear scene history")) { g_SceneCache.Clear(); g_SceneLastTick=-1; g_SceneScrubRate=0;g_SceneScrubRemainder=0;SceneCacheFrame(false); }
+		ImGui::TextWrapped(
+		    "Enable Cached preview above the timeline, then scrub its playhead. Actual demo playback stays "
+			"independent. Live models remain visible. Other players use proxy bounds.");
+		if (ImGui::BeginCombo("Pose capture player (experimental)",
+		                      g_ScenePoseEntity ? g_ScenePoseName.c_str() : "None (boxes only)"))
+		{
+			if (ImGui::Selectable("None (boxes only)", !g_ScenePoseEntity))
+				SceneSelectPosePlayer(0);
+			for (int index = 1; index <= Mirv_Tf2_GetMaxPlayers(); ++index)
+			{
+				char name[128];
+				int user = 0;
+				if (!Mirv_Tf2_GetPlayerInfo(index, name, sizeof(name), &user) || user <= 0)
+					continue;
+				ImGui::PushID(index);
+				if (ImGui::Selectable(name, index == g_ScenePoseEntity && user == g_ScenePoseUser))
+					SceneSelectPosePlayer(index);
+				ImGui::PopID();
+			}
+			ImGui::EndCombo();
+		}
+		bool models = g_SceneDrawModels.load();
+		if (ImGui::Checkbox("Draw cached player models", &models))
+		{
+			g_SceneDrawModels.store(models);
+			++g_SceneDrawEpoch;
+			SceneModelStatus(models ? "Cached model drawing enabled." : "Cached model drawing disabled.");
+		}
+		ImGui::TextWrapped(
+		    "Wireframe body poses use TF2's studio renderer, independently of Show path. Weapons, cosmetics, "
+			"facial flexes and historical simulation are not captured yet. Between ticks, animation uses the "
+			"nearest complete pose with interpolated root movement.");
+		if (g_ScenePoseEntity && !g_SceneRecord)
+			ImGui::TextDisabled("Enable Record scene history and play forward to capture poses.");
+		ImGui::Text("Pose captures: %llu | Unavailable: %llu", g_ScenePoseCaptured, g_ScenePoseFailures);
+		ImGui::TextWrapped("%s", g_ScenePoseStatus.c_str());
+		if (g_ScenePreview)
+			if (auto status = std::atomic_load(&g_SceneModelStatus))
+				ImGui::TextWrapped("%s", status->c_str());
+		if (ImGui::Button("Clear scene history"))
+			SceneClearHistory();
 		static int budget = 64;
-		if (ImGui::InputInt("Scene budget MiB", &budget)) { budget=std::clamp(budget,1,1024);g_SceneCache.SetLimit(size_t(budget)*1024*1024);SceneCacheFrame(false); }
-		ImGui::Text("%zu frames; %.2f MiB payload",g_SceneCache.Count(),g_SceneCache.Bytes()/1048576.0);
-		if (g_ScenePreview && !SceneCacheView()) ImGui::TextWrapped("No cached coverage at this playhead. Capture is unavailable here.");
+		if (ImGui::InputInt("Scene budget MiB", &budget))
+		{
+			budget = std::clamp(budget, 1, 1024);
+			g_SceneCache.SetLimit(size_t(budget) * 1024 * 1024);
+			SceneCacheFrame(false);
+		}
+		ImGui::Text("%zu frames; %.2f MiB payload", g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0);
+		if (g_ScenePreview && !SceneCacheView())
+			ImGui::TextWrapped("No cached coverage at this playhead. Capture is unavailable here.");
 		ImGui::EndTabItem();
 	}
 	if (ImGui::BeginTabItem("Commands", nullptr, state.FocusCommands ? ImGuiTabItemFlags_SetSelected : 0))
@@ -5514,6 +5695,7 @@ void Draw()
 			if (ImGui::Checkbox("Cached preview", &cached))
 			{
 				std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+				++g_SceneDrawEpoch;
 				g_ScenePreview = cached;
 				g_SceneScrubRate=0;g_SceneScrubRemainder=0;
 				g_SequencerNeedsRefresh = true;
