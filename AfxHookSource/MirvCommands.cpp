@@ -2159,6 +2159,12 @@ CON_COMMAND(mirv_campath, "camera paths")
 		return;
 	}
 
+	if (args->ArgC() == 2 && !_stricmp(args->ArgV(1), "add") &&
+		AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+	{
+		AfxHookSource::CameraOverlay::PreviewCapture(false);
+		return;
+	}
 	// Capture before the first mutation, including console-only editing sessions.
 	struct EditScope
 	{

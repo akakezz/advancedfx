@@ -947,6 +947,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 	case SOURCESDK::TF2::FRAME_RENDER_START:
 		MirvFix_PlayerAngleTraceFrame(1);
 		MirvFix_RecorderSoundUpdate();
+		AfxHookSource::CameraOverlay::SceneCacheFrame();
 		break;
 	case SOURCESDK::TF2::FRAME_RENDER_END:
 		MirvFix_PlayerAngleTraceFrame(2);

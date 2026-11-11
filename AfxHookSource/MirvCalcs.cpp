@@ -9789,3 +9789,17 @@ void MirvCalcs_LevelInitPreEntity()
 	MirvCameraCollisionReset();
 	++g_LevelInitCount;
 }
+
+bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float mins[3], float maxs[3])
+{
+	auto entity = Mirv_Tf2_DiagnosticEntity(index);
+	auto renderable = entity ? reinterpret_cast<CMirvTf2ClientUnknown *>(entity)->GetClientRenderable() : nullptr;
+	if (!renderable || !renderable->GetModel()) return false;
+	auto o = renderable->GetRenderOrigin();
+	auto a = renderable->GetRenderAngles();
+	if (!o || !a) return false;
+	std::memcpy(origin, o, 3*sizeof(float));
+	std::memcpy(angles, a, 3*sizeof(float));
+	renderable->GetRenderBounds(mins, maxs);
+	return true;
+}

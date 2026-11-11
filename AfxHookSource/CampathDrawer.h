@@ -9,6 +9,7 @@
 #include <list>
 #include <atomic>
 #include "Gui.h"
+#include "CameraOverlay.h"
 #include <vector>
 #include <string>
 #include <cmath>
@@ -92,6 +93,7 @@ private:
 	class CDynamicProperties {
 	public:
 	  CDynamicProperties(CCampathDrawer *drawer, CamPath *path, const std::string &name);
+	  std::shared_ptr<const advancedfx::SceneCache::Frame> Scene;
 	  struct Text
 	  {
 		  CamPathValue Anchor;

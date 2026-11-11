@@ -306,6 +306,8 @@ void CCampathDrawer::End() {
 CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, CamPath *path,
 													   const std::string &name)
 {
+	if (path == &g_Hook_VClient_RenderView.m_CamPath)
+		Scene = AfxHookSource::CameraOverlay::SceneCacheView();
 	m_CurTime = g_MirvTime.GetTime() - path->GetOffset();
 	m_InCampath =
 		1 <= path->GetSize() && path->GetLowerBound() <= m_CurTime && m_CurTime <= path->GetUpperBound();
@@ -931,6 +933,27 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 
 		m_Device->SetFVF(CCampathDrawer_VertexFVF);
 
+		if (dynamicPorperties->Scene)
+		{
+			newCScreenInfo[2] = 2;
+			m_Device->SetVertexShaderConstantF(48, newCScreenInfo, 1);
+			for (const auto &entity : dynamicPorperties->Scene->Entities)
+			{
+				Vector3 corners[8];
+				for (int i = 0; i < 8; ++i)
+					corners[i] = Vector3(entity.Origin[0] + ((i&1)?entity.Maxs[0]:entity.Mins[0]),
+						entity.Origin[1] + ((i&2)?entity.Maxs[1]:entity.Mins[1]),
+						entity.Origin[2] + ((i&4)?entity.Maxs[2]:entity.Mins[2]));
+				const double yaw = entity.Angles[1] * M_PI / 180.0;
+				Vector3 center(entity.Origin[0], entity.Origin[1], entity.Origin[2]+60);
+				AutoSingleLine(center, D3DCOLOR_RGBA(255,220,80,255),
+					Vector3(center.X+40*cos(yaw), center.Y+40*sin(yaw), center.Z), D3DCOLOR_RGBA(255,220,80,255));
+				for (int i = 0; i < 8; ++i)
+					for (int axis = 1; axis <= 4; axis *= 2)
+						if (!(i & axis)) AutoSingleLine(corners[i], D3DCOLOR_RGBA(80,220,255,255), corners[i|axis], D3DCOLOR_RGBA(80,220,255,255));
+			}
+			AutoSingleLineFlush();
+		}
 		// Draw trajectory:
 		if(2 <= lessDynamicProperties->GetKeyframesSize() && lessDynamicProperties->GetCampathCanEval())
 		{

@@ -410,3 +410,5 @@ struct MirvTf2EntityLabel_t
 /// <returns>Number of entities collected.</returns>
 int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLabels, int maxCount);
 
+
+bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float mins[3], float maxs[3]);

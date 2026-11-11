@@ -1,4 +1,6 @@
 #pragma once
+#include <shared/SceneCache.h>
+#include <memory>
 namespace AfxHookSource
 {
 namespace CameraOverlay
@@ -9,6 +11,10 @@ bool IsMouseLook();
 void SetMouseLook(bool value);
 void Initialize();
 void Draw();
+void SceneCacheFrame(bool capture = true);
+bool SceneCachePreviewActive();
+std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView();
+double EditingClientTime(double liveTime);
 // Called on the engine thread for playdemo/timedemo; indexing starts outside the command callback.
 void NotifyDemoPlaybackFile(const char *file);
 // Shared by the overlay and native mirv_campath / preview commands.

@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <mutex>
 #include <future>
 #include <cctype>
 #include <shared/CommandSystem.h>
@@ -43,6 +44,82 @@ namespace AfxHookSource
 namespace CameraOverlay
 {
 static std::atomic_bool g_Open{false}, g_MouseLook{false};
+static std::recursive_mutex g_SceneMutex;
+static advancedfx::SceneCache g_SceneCache;
+static bool g_SceneRecord = false, g_ScenePreview = false, g_SceneFollowPath = false;
+static double g_SceneCursor = 0;
+static int g_SceneLastTick = -1;
+static std::shared_ptr<const advancedfx::SceneCache::Frame> g_SceneView;
+std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView()
+{
+	return std::atomic_load(&g_SceneView);
+}
+bool SceneCachePreviewActive() { std::lock_guard<std::recursive_mutex> lock(g_SceneMutex); return g_ScenePreview; }
+double EditingClientTime(double liveTime)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (!g_ScenePreview) return liveTime;
+	auto view = SceneCacheView();
+	return view ? view->ClientTime : liveTime;
+}
+void SceneCacheFrame(bool capture)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	int tick;
+	double time;
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
+	{
+		g_ScenePreview = false;
+		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
+		return;
+	}
+	if (capture && g_SceneRecord && !g_VEngineClient->IsSkippingDemo() && GetCurrentDemoTick(tick) &&
+		GetCurrentDemoTime(time) && tick != g_SceneLastTick)
+	{
+		advancedfx::SceneCache::Frame frame;
+		frame.DemoTime = time;
+		frame.ClientTime = g_MirvTime.GetTime();
+		for (int index = 1; index <= Mirv_Tf2_GetMaxPlayers(); ++index)
+		{
+			char name[128]; int user = 0;
+			advancedfx::SceneCache::Entity entity;
+			if (!Mirv_Tf2_GetPlayerInfo(index, name, sizeof(name), &user) || user <= 0 ||
+				!Mirv_Tf2_GetSceneEntity(index, entity.Origin, entity.Angles, entity.Mins, entity.Maxs)) continue;
+			entity.Identity = static_cast<unsigned>(user);
+			frame.Entities.push_back(entity);
+		}
+		g_SceneCache.Append(std::move(frame));
+		g_SceneLastTick = tick;
+	}
+	advancedfx::SceneCache::Frame frame;
+	bool valid = false;
+	if (g_ScenePreview)
+	{
+		if (g_SceneFollowPath && MirvCampathPreview_IsActive())
+		{
+			double client = MirvCampathPreview_GetTime() + g_Hook_VClient_RenderView.m_CamPath.GetOffset();
+			const auto &frames = g_SceneCache.Frames();
+			bool mapped = false;
+			for (size_t i = 1; i < frames.size(); ++i)
+				if (frames[i-1].ClientTime <= client && client <= frames[i].ClientTime &&
+					frames[i].ClientTime > frames[i-1].ClientTime)
+				{
+					mapped = true;
+					g_SceneCursor = frames[i-1].DemoTime + (client-frames[i-1].ClientTime) *
+						(frames[i].DemoTime-frames[i-1].DemoTime)/(frames[i].ClientTime-frames[i-1].ClientTime);
+					break;
+				}
+			if (!mapped)
+			{
+				std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
+				return;
+			}
+		}
+		valid = g_SceneCache.Sample(g_SceneCursor, frame);
+	}
+	std::atomic_store(&g_SceneView, valid ? std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame)) :
+		std::shared_ptr<const advancedfx::SceneCache::Frame>{});
+}
 static bool g_Docking = true;
 static bool g_CurveKeyDrag = false, g_CancelGesture = false;
 static std::unique_ptr<CamPathCollection::State> g_GestureStart;
@@ -634,6 +711,16 @@ static void PathChanged(void *)
 }
 bool PreviewCapture(bool replace)
 {
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (g_ScenePreview)
+	{
+		SceneCacheFrame(false);
+		if (!SceneCacheView())
+		{
+			g_DocumentStatus = "Cached time has no coverage. Choose a recorded frame before capture.";
+			return false;
+		}
+	}
 	CancelEditGesture();
 	BeginEdit();
 	auto &path = g_Hook_VClient_RenderView.m_CamPath;
@@ -670,7 +757,7 @@ bool PreviewCapture(bool replace)
 			path.RotationInterpMethod_set(CamPath::QI_CUSTOM);
 			path.FovInterpMethod_set(CamPath::DI_CUSTOM);
 		}
-		ok = path.AddPose(g_MirvTime.GetTime() - path.GetOffset(), pose);
+		ok = path.AddPose(EditingClientTime(g_MirvTime.GetTime()) - path.GetOffset(), pose);
 	}
 	if (!ok)
 	{
@@ -3211,9 +3298,12 @@ static void StartTimelineIndex(const std::filesystem::path &file)
 }
 void NotifyDemoPlaybackFile(const char *file)
 {
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	if (file && *file)
 	{
 		CancelCommandMarkerDrag();
+		g_SceneCache.Clear(); g_SceneLastTick = -1; g_ScenePreview = false;
+		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 		g_SequencerTimeline.RequestedDemo = file;
 	}
 }
@@ -4819,6 +4909,26 @@ void Draw()
 		}
 
 		// Recording tab (Source 1 specific)
+		if (ImGui::BeginTabItem("Scene Cache"))
+		{
+			std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+			ImGui::TextWrapped("Experimental player proxies. Pause the actual demo before scrubbing. Show path must be enabled for world drawing. Bounds come from client models; live models remain visible. Client visibility gaps and respawns are not yet classified.");
+			ImGui::Checkbox("Record scene history", &g_SceneRecord);
+			ImGui::Checkbox("Preview scene history", &g_ScenePreview);
+			ImGui::Checkbox("Follow campath preview time", &g_SceneFollowPath);
+			if (ImGui::Button("Clear scene history")) { g_SceneCache.Clear(); g_SceneLastTick = -1; }
+			ImGui::Text("%zu frames; %.2f MiB payload", g_SceneCache.Count(), g_SceneCache.Bytes()/1048576.0);
+			static int budget = 64;
+			if (ImGui::InputInt("Scene budget MiB", &budget)) { budget = std::clamp(budget, 1, 1024); g_SceneCache.SetLimit(size_t(budget)*1024*1024); }
+			if (!g_SceneCache.Frames().empty())
+			{
+				double first = g_SceneCache.Frames().front().DemoTime, last = g_SceneCache.Frames().back().DemoTime;
+				ImGui::SliderScalar("Cached demo seconds", ImGuiDataType_Double, &g_SceneCursor, &first, &last, "%.3f");
+				if (ImGui::Button("Use latest cached frame")) g_SceneCursor = last;
+				if (ImGui::Button("Capture camera at cached time")) { g_ScenePreview = true; PreviewCapture(false); }
+			}
+			ImGui::EndTabItem();
+		}
 		if (ImGui::BeginTabItem("Recording"))
 		{
 			ImGui::TextUnformatted(Recording::IsActive() ? "Recording is active" : "Recording is stopped");
