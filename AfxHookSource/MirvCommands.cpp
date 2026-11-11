@@ -1790,7 +1790,7 @@ static bool CampathPreview_Enter()
 
 	if (!g_CampathPreviewActive)
 	{
-		const double t = (double)g_MirvTime.GetTime() - path.GetOffset();
+		const double t = AfxHookSource::CameraOverlay::EditingClientTime(g_MirvTime.GetTime()) - path.GetOffset();
 		g_CampathPreviewTime = t < path.GetLowerBound() ? path.GetLowerBound() : (t > path.GetUpperBound() ? path.GetUpperBound() : t);
 	}
 
@@ -1843,7 +1843,11 @@ bool MirvCampathPreview_SetTime(double time)
 		return false;
 	g_CampathPreviewTime = time;
 	CampathPreview_StopTravel();
-	return CampathPreview_SetCamera();
+	const bool result = CampathPreview_SetCamera();
+	if (result)
+		AfxHookSource::CameraOverlay::SceneCacheFollowCameraTime(
+			g_CampathPreviewTime + g_Hook_VClient_RenderView.m_CamPath.GetOffset());
+	return result;
 }
 bool MirvCampathPreview_Seek()
 {
@@ -1900,6 +1904,7 @@ void MirvCampathPreview_Update()
 		return;
 	}
 
+	const double previousTime = g_CampathPreviewTime;
 	// RenderView can run more than once per game frame.
 	const int frame = g_MirvTime.GetFrameCount();
 	if (frame != g_CampathPreviewFrame)
@@ -1927,6 +1932,8 @@ void MirvCampathPreview_Update()
 	}
 
 	CampathPreview_SetCamera();
+	if (g_CampathPreviewTime != previousTime)
+		AfxHookSource::CameraOverlay::SceneCacheFollowCameraTime(g_CampathPreviewTime + path.GetOffset());
 }
 
 static bool CampathPreview_GotoIndex(int index)
@@ -1943,9 +1950,11 @@ static bool CampathPreview_GotoIndex(int index)
 	if (!CampathPreview_SetCamera())
 		return false;
 
+	AfxHookSource::CameraOverlay::SceneCacheStopScrub();
 	// Keep the selected keyframe editable through HLAE's regular campath commands.
 	path.SelectNone();
 	path.SelectAdd((size_t)index, (size_t)index);
+	AfxHookSource::CameraOverlay::SceneCacheFollowCameraTime(g_CampathPreviewTime + path.GetOffset());
 	return true;
 }
 
@@ -2035,9 +2044,18 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		return true;
 	}
 
-	if (AfxHookSource::CameraOverlay::SceneCacheNavigationKey(static_cast<unsigned int>(key), down))
+	if (g_CampathRightCtrlHeld &&
+		AfxHookSource::CameraOverlay::SceneCacheNavigationKey(static_cast<unsigned int>(key), down))
+	{
+		CampathPreview_StopTravel();
+		if (down && key < 256)
+			g_CampathPreviewEditHeld[key] = true;
 		return true;
-	if (!g_CampathPreviewActive)
+	}
+	// Keep repeats owned until key-up, even if Right Ctrl was released first.
+	if (down && key < 256 && g_CampathPreviewEditHeld[key])
+		return true;
+	if (!g_CampathPreviewActive && !AfxHookSource::CameraOverlay::SceneCachePreviewActive())
 		return false;
 	if (rightCtrl)
 	{
@@ -2048,6 +2066,9 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		}
 		return true;
 	}
+
+	if (!g_CampathPreviewActive)
+		return false;
 
 	if (key == 'Z' && (g_CampathPreviewUndoHeld || (down && (GetKeyState(VK_CONTROL) & 0x8000))))
 	{
@@ -2086,6 +2107,9 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 	if (key != VK_LEFT && key != VK_RIGHT && key != VK_UP && key != VK_DOWN
 		&& key != VK_HOME && key != VK_END)
 		return false;
+
+	if (down)
+		AfxHookSource::CameraOverlay::SceneCacheStopScrub();
 
 	if (key == VK_LEFT || key == VK_RIGHT)
 	{

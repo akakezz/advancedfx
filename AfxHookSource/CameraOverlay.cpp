@@ -50,6 +50,7 @@ static std::recursive_mutex g_SceneMutex;
 static advancedfx::SceneCache g_SceneCache;
 static bool g_SceneRecord = false, g_ScenePreview = false;
 static double g_SceneCursor = 0;
+static bool g_SceneDrivingCamera = false;
 static ImGui::FrameIndexType g_SequencerFrame = 0;
 static int g_SceneLastTick = -1;
 static int g_SceneScrubRate = 0;
@@ -153,7 +154,55 @@ static void ScenePreviewTick(int tick)
 	auto view = SceneCacheView();
 	auto &path = g_Hook_VClient_RenderView.m_CamPath;
 	if (view && MirvCampathPreview_IsActive() && path.CanEval())
+	{
+		const bool driving = std::exchange(g_SceneDrivingCamera, true);
 		MirvCampathPreview_SetTime(view->ClientTime - path.GetOffset());
+		g_SceneDrivingCamera = driving;
+	}
+}
+// Native campath navigation retains its exact keyframe time and selection. Map
+// its clock back into recorded scene time without evaluating the camera again.
+void SceneCacheFollowCameraTime(double clientTime)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	const auto &frames = g_SceneCache.Frames();
+	if (!g_ScenePreview || g_SceneDrivingCamera || frames.empty() || !std::isfinite(clientTime))
+		return;
+	const auto current = SceneCacheView();
+	if (current && current->ClientTime == clientTime)
+		return;
+	const auto *nearest = &frames.front();
+	double demoTime = 0;
+	bool mapped = false;
+	for (size_t i = 0; i < frames.size(); ++i)
+	{
+		const auto &a = frames[i];
+		if (std::abs(a.ClientTime - clientTime) < std::abs(nearest->ClientTime - clientTime))
+			nearest = &a;
+		if (a.ClientTime == clientTime)
+		{
+			demoTime = a.DemoTime;
+			mapped = true;
+			break;
+		}
+		if (i + 1 == frames.size())
+			continue;
+		const auto &b = frames[i + 1];
+		if (a.ClientTime < clientTime && clientTime < b.ClientTime)
+		{
+			const double f = (clientTime - a.ClientTime) / (b.ClientTime - a.ClientTime);
+			demoTime = a.DemoTime + f * (b.DemoTime - a.DemoTime);
+			mapped = true;
+			break;
+		}
+	}
+	// Outside recorded coverage, keep the requested cursor but publish no scene;
+	// never clamp the camera to a different key or use the live playback clock.
+	if (!mapped)
+		demoTime = nearest->DemoTime + clientTime - nearest->ClientTime;
+	g_SceneCursor = demoTime;
+	g_SequencerFrame = int(std::clamp(std::round(demoTime / SceneTickInterval()), 0.0, double(INT_MAX)));
+	SceneCacheFrame(false);
 }
 void SceneCacheStopScrub()
 {
@@ -646,7 +695,9 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		advancedfx::Message(
 		    "mirv_campath cache record 0|1\nmirv_campath cache preview 0|1\nmirv_campath cache goto <demo "
 			"tick>\nmirv_campath cache step <signed ticks>\nmirv_campath cache rate <-10000..10000 "
-			"ticks/sec; 0 stops>\nmirv_campath cache clear\nmirv_campath cache status\n");
+			"ticks/sec; 0 stops>\nmirv_campath cache clear\nmirv_campath cache status\n"
+			"Cached keys: Right Ctrl + Left/Right: ticks; Up/Down: seconds; Home/End: retained bounds.\n"
+			"Unmodified preview keys retain camera keyframe selection and travel.\n");
 		ok = true;
 	}
 	if (!ok)
@@ -4403,6 +4454,7 @@ static void DrawSequencerDetails(int playhead)
 	{
 		std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 		ImGui::Checkbox("Record scene history", &g_SceneRecord);
+		ImGui::TextDisabled("Cache navigation: Right Ctrl + arrows / Home / End");
 		ImGui::TextWrapped("Enable Cached preview above the timeline, then scrub its playhead. Actual demo playback stays independent. Player model bounds are proxies; live models remain visible. Dormancy and respawn boundaries are not yet classified.");
 		if (ImGui::Button("Clear scene history")) { g_SceneCache.Clear(); g_SceneLastTick=-1; g_SceneScrubRate=0;g_SceneScrubRemainder=0;SceneCacheFrame(false); }
 		static int budget = 64;
@@ -4721,6 +4773,15 @@ void Draw()
 	if (!ImGui::GetIO().WantTextInput && !g_CancelGesture &&
 		!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
 	{
+		if (g_GraphRightCtrlHeld && !IsMouseLook() && !g_Hook_VClient_RenderView.IsSourceUiActive())
+		{
+			const ImGuiKey arrows[] = {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_UpArrow,
+			                          ImGuiKey_DownArrow, ImGuiKey_Home, ImGuiKey_End};
+			const unsigned int keys[] = {VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_HOME, VK_END};
+			for (size_t i = 0; i < 6; ++i)
+				if (ImGui::IsKeyPressed(arrows[i]))
+					SceneCacheNavigationKey(keys[i], true);
+		}
 		if (ImGui::IsKeyPressed(ImGuiKey_E, false))
 			PreviewCapture(ImGui::GetIO().KeyShift);
 		if (ImGui::IsKeyPressed(ImGuiKey_Delete, false))
@@ -6149,7 +6210,8 @@ void Draw()
 
 			if (SceneCachePreviewActive())
 			{
-				ScenePreviewTick(s_seqFrame);
+				if (pointerMoved)
+					ScenePreviewTick(s_seqFrame);
 				ImGui::TextDisabled("Cached tick %d | Actual demo tick %d",int(s_seqFrame),curDemoTick);
 				if (!SceneCacheView()) ImGui::TextDisabled("No cached coverage at this tick.");
 			}

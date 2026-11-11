@@ -1449,9 +1449,8 @@ of silently using live demo time. Replacing a selected key retains its time.
 Recording, clearing, payload budget and usage statistics live in the sequencer's
 Scene Cache details tab. The default budget is 64 MiB; oldest frames are evicted.
 The payload estimate excludes allocator bookkeeping. This prototype stores one
-player snapshot per observed demo tick. Sparse compression, projectiles,
-trajectories and dedicated scrub bindings remain pending. Dormancy and respawn
-boundaries are not classified yet, so client-retained stale positions can appear.
+player snapshot per observed demo tick. Sparse compression, projectiles and
+trajectories remain pending. Dormancy and respawn boundaries are not classified yet, so client-retained stale positions can appear.
 Boxes use model bounds rather than animated silhouettes. Samples separated by
 more than 0.1 seconds or 256 units are not bridged. Opening/restarting a demo
 clears history; backward capture begins a new interval. Historical audio and
@@ -1476,9 +1475,17 @@ coverage. `step` clamps to the retained ends. Repeated `preview 1` keeps the
 current cached playhead. These commands do not pause, resume or seek the actual
 demo. Freeze actual playback separately before inspecting history.
 
-With cached preview active, **Left/Right** step ticks (including keyboard repeat),
-**Up/Down** step one demo second, and **Home/End** select the retained ends. These
-keys take priority over classic path-preview navigation and yield to menus/text input.
+With cached preview active, hold **Right Ctrl** for cache navigation:
+**Left/Right** step ticks (including keyboard repeat), **Up/Down** step one demo
+second, and **Home/End** select the retained ends. These chords yield to menus/text
+input. Releasing the chord does not seek the actual demo.
+
+Unmodified keys retain classic path-preview behavior: **Up/Down** jump to and
+select camera keyframes, **Home/End** select the first/last camera key, and
+**Left/Right** travel along the camera path. Camera navigation also updates the
+cached scene playhead using recorded timestamps. Jumps preserve exact keyframe
+times, including sub-tick times; outside retained coverage no cached entities
+are shown.
 
 Equivalent single-step Source bindings, when HLAE does not own keyboard input:
 
@@ -1505,9 +1512,9 @@ a demo stops it as well. Frame stalls do not cause an unbounded cursor jump.
 Bindings are examples and replace whatever actions those keys currently have.
 
 
-The built-in cached arrows remain reserved. Use unreserved keys for custom rate
-bindings; normal preview/editor input ownership still applies. Input release or
-focus handoff stops an active scrub rate.
+The built-in Right Ctrl navigation chords remain reserved. Use unreserved keys
+for custom rate bindings; normal preview/editor input ownership still applies.
+Input release or focus handoff stops an active scrub rate.
 
 ### Model-pose follow-up
 
