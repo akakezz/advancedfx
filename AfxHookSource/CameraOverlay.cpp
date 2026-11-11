@@ -8,6 +8,8 @@
 #include "MirvTime.h"
 #include "RenderView.h"
 #include "WrpVEngineClient.h"
+#include <cerrno>
+#include <climits>
 #include "hlaeFolder.h"
 #include "stdafx.h"
 #include <algorithm>
@@ -50,6 +52,12 @@ static bool g_SceneRecord = false, g_ScenePreview = false;
 static double g_SceneCursor = 0;
 static ImGui::FrameIndexType g_SequencerFrame = 0;
 static int g_SceneLastTick = -1;
+static int g_SceneScrubRate = 0;
+static double g_SceneScrubRemainder = 0;
+static auto g_SceneScrubLast = std::chrono::steady_clock::now();
+static double SceneTickInterval();
+static void ScenePreviewTick(int tick);
+
 static std::shared_ptr<const advancedfx::SceneCache::Frame> g_SceneView;
 std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView()
 {
@@ -68,24 +76,48 @@ void SceneCacheFrame(bool capture)
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	int tick;
 	double time;
+	if (capture)
+	{
+		auto now = std::chrono::steady_clock::now();
+		double elapsed = std::chrono::duration<double>(now - g_SceneScrubLast).count();
+		g_SceneScrubLast = now;
+		if (g_ScenePreview && g_SceneScrubRate && !g_SceneCache.Frames().empty() && g_VEngineClient &&
+		    g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsDrawingLoadingImage())
+		{
+			g_SceneScrubRemainder += g_SceneScrubRate * std::clamp(elapsed, 0.0, .1);
+			int delta = int(g_SceneScrubRemainder);
+			g_SceneScrubRemainder -= delta;
+			if (delta)
+			{
+				int first = int(std::floor(g_SceneCache.Frames().front().DemoTime / SceneTickInterval()));
+				int last = int(std::floor(g_SceneCache.Frames().back().DemoTime / SceneTickInterval()));
+				ScenePreviewTick(
+				    int(std::clamp(int64_t(g_SequencerFrame) + delta, int64_t(first), int64_t(last))));
+			}
+		}
+	}
 	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
 	{
 		g_ScenePreview = false;
+		g_SceneScrubRate = 0;
+		g_SceneScrubRemainder = 0;
 		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 		return;
 	}
 	if (capture && g_SceneRecord && !g_VEngineClient->IsSkippingDemo() && GetCurrentDemoTick(tick) &&
-		GetCurrentDemoTime(time) && tick != g_SceneLastTick)
+	    GetCurrentDemoTime(time) && tick != g_SceneLastTick)
 	{
 		advancedfx::SceneCache::Frame frame;
 		frame.DemoTime = time;
 		frame.ClientTime = g_MirvTime.GetTime();
 		for (int index = 1; index <= Mirv_Tf2_GetMaxPlayers(); ++index)
 		{
-			char name[128]; int user = 0;
+			char name[128];
+			int user = 0;
 			advancedfx::SceneCache::Entity entity;
 			if (!Mirv_Tf2_GetPlayerInfo(index, name, sizeof(name), &user) || user <= 0 ||
-				!Mirv_Tf2_GetSceneEntity(index, entity.Origin, entity.Angles, entity.Mins, entity.Maxs)) continue;
+			    !Mirv_Tf2_GetSceneEntity(index, entity.Origin, entity.Angles, entity.Mins, entity.Maxs))
+				continue;
 			entity.Identity = static_cast<unsigned>(user);
 			frame.Entities.push_back(entity);
 		}
@@ -98,8 +130,9 @@ void SceneCacheFrame(bool capture)
 	{
 		valid = g_SceneCache.Sample(g_SceneCursor, frame);
 	}
-	std::atomic_store(&g_SceneView, valid ? std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame)) :
-		std::shared_ptr<const advancedfx::SceneCache::Frame>{});
+	std::atomic_store(&g_SceneView,
+	                  valid ? std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame))
+	                        : std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 }
 static double SceneTickInterval()
 {
@@ -121,6 +154,36 @@ static void ScenePreviewTick(int tick)
 	auto &path = g_Hook_VClient_RenderView.m_CamPath;
 	if (view && MirvCampathPreview_IsActive() && path.CanEval())
 		MirvCampathPreview_SetTime(view->ClientTime - path.GetOffset());
+}
+void SceneCacheStopScrub()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	g_SceneScrubRate = 0;
+	g_SceneScrubRemainder = 0;
+}
+bool SceneCacheNavigationKey(unsigned int key, bool down)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (!g_ScenePreview || (key != VK_LEFT && key != VK_RIGHT && key != VK_UP && key != VK_DOWN &&
+	                        key != VK_HOME && key != VK_END))
+		return false;
+	if (down && !g_SceneCache.Frames().empty())
+	{
+		SceneCacheStopScrub();
+		int first = int(std::floor(g_SceneCache.Frames().front().DemoTime / SceneTickInterval()));
+		int last = int(std::floor(g_SceneCache.Frames().back().DemoTime / SceneTickInterval()));
+		int64_t target = g_SequencerFrame;
+		if (key == VK_HOME)
+			target = first;
+		else if (key == VK_END)
+			target = last;
+		else if (key == VK_LEFT || key == VK_RIGHT)
+			target += key == VK_LEFT ? -1 : 1;
+		else
+			target += (key == VK_DOWN ? -1 : 1) * int64_t(std::llround(1 / SceneTickInterval()));
+		ScenePreviewTick(int(std::clamp(target, int64_t(first), int64_t(last))));
+	}
+	return true;
 }
 static void DrawSceneCoverage()
 {
@@ -487,6 +550,120 @@ static ImGuizmo::MODE g_GizmoMode = ImGuizmo::LOCAL;
 
 // Sequencer/curve editor shared state (parity with DX11)
 static bool g_SequencerNeedsRefresh = false;
+void SceneCacheConsole(advancedfx::ICommandArgs *args)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	const char *op = args->ArgC() > 2 ? args->ArgV(2) : "status";
+	auto integer = [&](int &value) {
+		if (args->ArgC() != 4)
+			return false;
+		char *end = nullptr;
+		errno = 0;
+		long long parsed = std::strtoll(args->ArgV(3), &end, 10);
+		if (end == args->ArgV(3) || *end || errno == ERANGE || parsed < INT_MIN || parsed > INT_MAX)
+			return false;
+		value = int(parsed);
+		return true;
+	};
+	int value = 0;
+	bool ok = false;
+	if (!_stricmp(op, "record") && integer(value) && (value == 0 || value == 1))
+	{
+		g_SceneRecord = value != 0;
+		ok = true;
+	}
+	else if (!_stricmp(op, "preview") && integer(value) && (value == 0 || value == 1))
+	{
+		if (!value)
+		{
+			g_ScenePreview = false;
+			g_SceneScrubRate = 0;
+			g_SceneScrubRemainder = 0;
+			SceneCacheFrame(false);
+			ok = true;
+		}
+		else if (!g_SceneCache.Frames().empty() && g_VEngineClient && g_VEngineClient->IsPlayingDemo())
+		{
+			bool wasActive = g_ScenePreview;
+			g_ScenePreview = true;
+			ScenePreviewTick(
+			    wasActive ? int(g_SequencerFrame)
+				          : int(std::floor(g_SceneCache.Frames().back().DemoTime / SceneTickInterval())));
+			ok = true;
+		}
+		g_SequencerNeedsRefresh = true;
+	}
+	else if (!_stricmp(op, "rate") && integer(value) && value >= -10000 && value <= 10000)
+	{
+		if (!value)
+		{
+			g_SceneScrubRate = 0;
+			g_SceneScrubRemainder = 0;
+			ok = true;
+		}
+		else if (g_ScenePreview && !g_SceneCache.Frames().empty())
+		{
+			g_SceneScrubRate = value;
+			g_SceneScrubRemainder = 0;
+			g_SceneScrubLast = std::chrono::steady_clock::now();
+			ok = true;
+		}
+	}
+	else if ((!_stricmp(op, "goto") || !_stricmp(op, "step")) && integer(value))
+	{
+		const auto &frames = g_SceneCache.Frames();
+		if (!frames.empty() && g_VEngineClient && g_VEngineClient->IsPlayingDemo())
+		{
+			int64_t target = !_stricmp(op, "step") ? int64_t(g_SequencerFrame) + value : value;
+			int first = int(std::floor(frames.front().DemoTime / SceneTickInterval()));
+			int last = int(std::floor(frames.back().DemoTime / SceneTickInterval()));
+			if (!_stricmp(op, "step"))
+				target = std::clamp(target, int64_t(first), int64_t(last));
+			if (target >= first && target <= last)
+			{
+				g_SceneScrubRate = 0;
+				g_SceneScrubRemainder = 0;
+				g_ScenePreview = true;
+				ScenePreviewTick(int(target));
+				g_SequencerNeedsRefresh = true;
+				ok = true;
+			}
+		}
+	}
+	else if (!_stricmp(op, "clear") && args->ArgC() == 3)
+	{
+		g_SceneCache.Clear();
+		g_SceneLastTick = -1;
+		g_SceneScrubRate = 0;
+		g_SceneScrubRemainder = 0;
+		SceneCacheFrame(false);
+		ok = true;
+	}
+	else if (!_stricmp(op, "status") && args->ArgC() <= 3)
+		ok = true;
+	else if (!_stricmp(op, "help") && args->ArgC() == 3)
+	{
+		advancedfx::Message(
+		    "mirv_campath cache record 0|1\nmirv_campath cache preview 0|1\nmirv_campath cache goto <demo "
+			"tick>\nmirv_campath cache step <signed ticks>\nmirv_campath cache rate <-10000..10000 "
+			"ticks/sec; 0 stops>\nmirv_campath cache clear\nmirv_campath cache status\n");
+		ok = true;
+	}
+	if (!ok)
+		advancedfx::Warning("Scene cache command rejected. Use preview/record 0|1, goto <demo tick>, step "
+		                    "<signed ticks>, rate <-10000..10000 ticks/sec>, clear or status. Navigation "
+		                    "requires recorded bounds and never seeks the demo.\n");
+	advancedfx::Message("Scene cache: record %d, preview %d; rate %d ticks/s; tick %d; %zu frames, %.2f MiB "
+	                    "payload; coverage at cursor %s.\n",
+	                    int(g_SceneRecord), int(g_ScenePreview), g_SceneScrubRate, int(g_SequencerFrame),
+	                    g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0,
+	                    SceneCacheView() ? "yes" : "no");
+	if (!g_SceneCache.Frames().empty())
+		advancedfx::Message("Cached tick bounds: %d .. %d (gaps may exist).\n",
+		                    int(std::floor(g_SceneCache.Frames().front().DemoTime / SceneTickInterval())),
+		                    int(std::floor(g_SceneCache.Frames().back().DemoTime / SceneTickInterval())));
+}
+
 static bool g_ShowCurveEditor = false, g_FocusGraph = false;
 static float g_CurvePadding = 26.0f;
 static float g_CurveValueScale = 1.0f;
@@ -3324,7 +3501,7 @@ void NotifyDemoPlaybackFile(const char *file)
 	if (file && *file)
 	{
 		CancelCommandMarkerDrag();
-		g_SceneCache.Clear(); g_SceneLastTick = -1; g_ScenePreview = false;
+		g_SceneCache.Clear(); g_SceneLastTick = -1; g_ScenePreview = false; g_SceneScrubRate=0;g_SceneScrubRemainder=0;
 		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 		g_SequencerTimeline.RequestedDemo = file;
 	}
@@ -4227,7 +4404,7 @@ static void DrawSequencerDetails(int playhead)
 		std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 		ImGui::Checkbox("Record scene history", &g_SceneRecord);
 		ImGui::TextWrapped("Enable Cached preview above the timeline, then scrub its playhead. Actual demo playback stays independent. Player model bounds are proxies; live models remain visible. Dormancy and respawn boundaries are not yet classified.");
-		if (ImGui::Button("Clear scene history")) { g_SceneCache.Clear(); g_SceneLastTick=-1; SceneCacheFrame(false); }
+		if (ImGui::Button("Clear scene history")) { g_SceneCache.Clear(); g_SceneLastTick=-1; g_SceneScrubRate=0;g_SceneScrubRemainder=0;SceneCacheFrame(false); }
 		static int budget = 64;
 		if (ImGui::InputInt("Scene budget MiB", &budget)) { budget=std::clamp(budget,1,1024);g_SceneCache.SetLimit(size_t(budget)*1024*1024);SceneCacheFrame(false); }
 		ImGui::Text("%zu frames; %.2f MiB payload",g_SceneCache.Count(),g_SceneCache.Bytes()/1048576.0);
@@ -5260,6 +5437,7 @@ void Draw()
 	// Sequencer window (ImGui Neo Sequencer) – Source1 port of DX11 implementation
 	if (g_ShowSequencer)
 	{
+		std::lock_guard<std::recursive_mutex> sceneLock(g_SceneMutex);
 		ImGui::SetNextWindowSize(ImVec2(900, 520), ImGuiCond_FirstUseEver);
 		ImGui::SetNextWindowPos(ImVec2(20, (std::max)(380.0f, ImGui::GetIO().DisplaySize.y - 560)),
 								ImGuiCond_FirstUseEver);
@@ -5276,6 +5454,7 @@ void Draw()
 			{
 				std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 				g_ScenePreview = cached;
+				g_SceneScrubRate=0;g_SceneScrubRemainder=0;
 				g_SequencerNeedsRefresh = true;
 				if (cached && !g_SceneCache.Frames().empty())
 					s_seqFrame = int(std::floor(g_SceneCache.Frames().back().DemoTime/SceneTickInterval()));

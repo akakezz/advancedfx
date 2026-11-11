@@ -1456,3 +1456,65 @@ Boxes use model bounds rather than animated silhouettes. Samples separated by
 more than 0.1 seconds or 256 units are not bridged. Opening/restarting a demo
 clears history; backward capture begins a new interval. Historical audio and
 simulation state are not restored.
+
+### Cached navigation commands and binds
+
+These commands use the sequencer playhead and work with the overlay closed:
+
+```text
+mirv_campath cache record 1
+mirv_campath cache preview 1
+mirv_campath cache goto 90000
+mirv_campath cache step -1
+mirv_campath cache step 1
+mirv_campath cache status
+mirv_campath cache preview 0
+```
+
+`goto` requires a tick inside the retained bounds; gaps can still have no scene
+coverage. `step` clamps to the retained ends. Repeated `preview 1` keeps the
+current cached playhead. These commands do not pause, resume or seek the actual
+demo. Freeze actual playback separately before inspecting history.
+
+With cached preview active, **Left/Right** step ticks (including keyboard repeat),
+**Up/Down** step one demo second, and **Home/End** select the retained ends. These
+keys take priority over classic path-preview navigation and yield to menus/text input.
+
+Equivalent single-step Source bindings, when HLAE does not own keyboard input:
+
+```text
+bind LEFTARROW "mirv_campath cache step -1"
+bind RIGHTARROW "mirv_campath cache step 1"
+```
+
+For continuous scrubbing, first enable cached preview, then use ordinary Source
+press/release aliases. Here 66 ticks/second is the scrub speed, independent of
+actual demo timescale:
+
+```text
+alias +cache_back "mirv_campath cache rate -66"
+alias -cache_back "mirv_campath cache rate 0"
+alias +cache_forward "mirv_campath cache rate 66"
+alias -cache_forward "mirv_campath cache rate 0"
+bind F6 +cache_back
+bind F7 +cache_forward
+```
+
+`rate 0` stops scrubbing. Disabling cached preview, clearing history or restarting
+a demo stops it as well. Frame stalls do not cause an unbounded cursor jump.
+Bindings are examples and replace whatever actions those keys currently have.
+
+
+The built-in cached arrows remain reserved. Use unreserved keys for custom rate
+bindings; normal preview/editor input ownership still applies. Input release or
+focus handoff stops an active scrub rate.
+
+### Model-pose follow-up
+
+Model playback is not implemented yet. The existing TF2 AGR path supplies model
+identity, visibility, root transforms and bone matrices with parent/flag metadata.
+It does not contain a reusable in-game mesh renderer. The next selected-player
+experiment should reuse that capture knowledge and Source's studio renderer,
+rather than duplicating mesh geometry per frame. Recording-mode ownership must
+coexist with AGR; starting scene capture must not stop or replace an AGR session.
+Animated-pose interpolation must respect bone hierarchy and model/life boundaries.

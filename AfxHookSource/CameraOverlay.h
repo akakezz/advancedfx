@@ -1,6 +1,7 @@
 #pragma once
 #include <shared/SceneCache.h>
 #include <memory>
+namespace advancedfx { class ICommandArgs; }
 namespace AfxHookSource
 {
 namespace CameraOverlay
@@ -12,6 +13,9 @@ void SetMouseLook(bool value);
 void Initialize();
 void Draw();
 void SceneCacheFrame(bool capture = true);
+void SceneCacheConsole(advancedfx::ICommandArgs *args);
+bool SceneCacheNavigationKey(unsigned int key, bool down);
+void SceneCacheStopScrub();
 bool SceneCachePreviewActive();
 std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView();
 double EditingClientTime(double liveTime);

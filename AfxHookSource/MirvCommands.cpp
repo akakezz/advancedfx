@@ -2035,6 +2035,8 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		return true;
 	}
 
+	if (AfxHookSource::CameraOverlay::SceneCacheNavigationKey(static_cast<unsigned int>(key), down))
+		return true;
 	if (!g_CampathPreviewActive)
 		return false;
 	if (rightCtrl)
@@ -2121,6 +2123,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 
 void MirvCampathPreview_ReleaseKeys()
 {
+	AfxHookSource::CameraOverlay::SceneCacheStopScrub();
 	CampathPreview_StopTravel();
 	g_CampathPreviewToggleHeld = false;
 	g_CampathPreviewUndoHeld = false;
@@ -2153,12 +2156,20 @@ static void CampathPreview_PrintHelp()
 
 CON_COMMAND(mirv_campath, "camera paths")
 {
+	if (args->ArgC() == 1)
+		Tier0_Msg("mirv_campath cache [record|preview|goto|step|rate|clear|status|help] - Historical scene navigation.\n");
+
 	if (!g_Hook_VClient_RenderView.IsInstalled())
 	{
 		Tier0_Warning("Error: Hook not installed.\n");
 		return;
 	}
 
+	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "cache"))
+	{
+		AfxHookSource::CameraOverlay::SceneCacheConsole(args);
+		return;
+	}
 	if (args->ArgC() == 2 && !_stricmp(args->ArgV(1), "add") &&
 		AfxHookSource::CameraOverlay::SceneCachePreviewActive())
 	{
