@@ -1605,6 +1605,8 @@ Clearing history, disabling models, leaving cached preview or changing demos
 prevents further submissions. Already submitted Source draws can finish their
 frame safely before their resources are released. A current engine material
 override defers model submission rather than replacing that override.
+Category colors use the shader's `$color2` model tint: Source's studio renderer
+replaces `$color` with its per-draw modulation, so `$color` alone renders white.
 
 Validation covers capture failures, cached matrix ownership, model mismatches,
 render-resource cleanup, producer/worker thread ownership and payload eviction with fixtures,

@@ -9934,8 +9934,11 @@ static void *SceneCategoryMaterial(int category)
 	const auto rgb = advancedfx::SceneCache::CategoryColor(category);
 	char color[96], name[96];
 	std::snprintf(color, sizeof(color), "[%.6f %.6f %.6f]", rgb[0] / 255.f, rgb[1] / 255.f, rgb[2] / 255.f);
-	std::snprintf(name, sizeof(name), "__hlae_scene_cache_category_%d_v1", category);
-	valid = valid && SceneMaterialString(values, "$color", color);
+	std::snprintf(name, sizeof(name), "__hlae_scene_cache_category_%d_v2", category);
+	// Studio overwrites IMaterial's $color with its per-draw modulation
+	// (normally white). $color2 is the shader's independent model tint and
+	// survives that update, including when Source executes the draw later.
+	valid = valid && SceneMaterialString(values, "$color2", color);
 	if (!valid)
 	{
 		SceneDeleteMaterialKeys(values);

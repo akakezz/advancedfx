@@ -55,8 +55,8 @@ struct Fixture {
  SOURCESDK::matrix3x4_t Observed[128]{},Allocated[128]{},Drawn[128]{};
  void *StudioSlots[49]{},*CacheSlots[42]{},*NetworkSlots[9]{};
  Object Studio{StudioSlots},Cache{CacheSlots},Network{NetworkSlots};
- bool MaterialInterface=true;void*MaterialSlots[43]{},*MaterialSystemSlots[71]{};Object MaterialSystem{MaterialSystemSlots};
- struct Material: Object {int Refs=0;std::string Color;};Material Materials[5];int MaterialCount=0;
+ std::array<float,3> DrawColor{};bool MaterialInterface=true;void*MaterialSlots[43]{},*MaterialSystemSlots[71]{};Object MaterialSystem{MaterialSystemSlots};
+ struct Material: Object {int Refs=0;std::string Color;std::array<float,3> Modulation{1,1,1},Tint{1,1,1};};Material Materials[5];int MaterialCount=0;
 
  void Put(int offset,int value){std::memcpy(Header+offset,&value,4);}
  void InitHeader(){Put(0,0x54534449);Put(4,48);Put(8,123);Put(76,sizeof(Header));Put(156,Count);Put(160,164);for(int i=0;i<Count&&i<8;++i){Put(164+i*216+4,i-1);Put(164+i*216+160,0x400);}}
@@ -89,7 +89,15 @@ bool MaterialError(void*){return false;}
 void*CreateMaterial(void*,const char*,SceneMaterialKeyValues*values){
  auto&m=fixture.Materials[fixture.MaterialCount++];m.Vtable=fixture.MaterialSlots;m.Refs=1;
  assert(values->m_iKeyName==SOURCESDK::TF2::keySystem.Names.at("UnlitGeneric"));
- auto key=values->m_pSub;for(;key;key=key->m_pPeer)if(key->m_iKeyName==SOURCESDK::TF2::keySystem.Names.at("$color"))m.Color=key->m_sValue;
+ // Parse the shader's separate modulation and persistent model-tint parameters.
+ int color= SOURCESDK::TF2::keySystem.GetSymbolForString("$color",true);
+ int color2=SOURCESDK::TF2::keySystem.GetSymbolForString("$color2",true);
+ for(auto key=values->m_pSub;key;key=key->m_pPeer){
+  if(key->m_iKeyName==color||key->m_iKeyName==color2){
+   m.Color=key->m_sValue;auto&rgb=key->m_iKeyName==color?m.Modulation:m.Tint;
+   assert(std::sscanf(key->m_sValue,"[%f %f %f]",&rgb[0],&rgb[1],&rgb[2])==3);
+  }
+ }
  assert(!m.Color.empty());SceneDeleteMaterialKeys(values);return &m;
 }
 bool Dormant(void*){return fixture.Dormant;}
@@ -110,6 +118,10 @@ void Draw(void*,void*results,const SceneStudioInfo&info,SOURCESDK::matrix3x4_t*b
  assert(results==nullptr&&info.Header==fixture.Header&&info.Hardware==&fixture&&info.Body==fixture.Body);
  assert(info.ClientEntity==nullptr&&info.Decals==nullptr&&info.ColorMeshes==nullptr&&info.Lod==0);
  assert(flex==nullptr&&delayed==nullptr&&flags==(0x04|0x20|(fixture.Override?0:0x80)));assert(fixture.Locks==1&&fixture.Refs>=1&&fixture.HeaderLocks==fixture.Refs);
+ // Match Source's studio draw: ColorModulate replaces $color, even on
+ // an override material, before the shader multiplies it by $color2.
+ if(fixture.Override){auto&m=*static_cast<Fixture::Material*>(fixture.Override);m.Modulation={1,1,1};for(int i=0;i<3;++i)fixture.DrawColor[i]=m.Modulation[i]*m.Tint[i];}
+ else fixture.DrawColor={1,1,1};
  assert(bones==fixture.Allocated&&fixture.Unlocks>0&&origin.x==20);++fixture.DrawCalls;std::memcpy(fixture.Drawn,bones,sizeof(fixture.Drawn[0])*fixture.Count);
 }
 template<class T>void Slot(void**table,int i,T function){table[i]=reinterpret_cast<void*>(function);}
@@ -136,6 +148,7 @@ int main(){
  entity.ModelPose=captured;entity.Origin[0]=20;entity.Origin[1]=entity.Origin[2]=0;entity.Angles[1]=90;
  // Rendering must work using cached values alone, even if the source entity is now hidden/unavailable.
  fixture.Visible=false;fixture.Dormant=true;assert(Mirv_Tf2_DrawScenePose(entity,status));
+ auto expectColor=[](int category){const auto rgb=Cache::CategoryColor(category);for(int i=0;i<3;++i)assert(std::abs(fixture.DrawColor[i]-rgb[i]/255.f)<1e-5);};expectColor(0);
  assert(fixture.DrawCalls==1&&fixture.Refs==1&&fixture.HeaderLocks==1&&fixture.Locks==0&&retirements.size()==1);
  ConsumeRenderQueue();assert(fixture.Refs==0&&fixture.HeaderLocks==0&&fixture.DrawCalls==1);assert(fixture.MaterialCount==1&&fixture.Materials[0].Refs==1&&!fixture.Override&&SOURCESDK::TF2::keySystem.Allocations==0);
  assert(std::abs(fixture.Drawn[0][0][3]-20)<1e-5&&std::abs(fixture.Drawn[0][1][3]-10)<1e-5&&std::abs(fixture.Drawn[0][2][3])<1e-5);
@@ -152,7 +165,7 @@ int main(){
  assert(Mirv_Tf2_DrawScenePose(entity,status)&&Mirv_Tf2_DrawScenePose(entity,status));assert(fixture.DrawCalls==3&&fixture.Refs==2&&fixture.HeaderLocks==2&&retirements.size()==2);
  ConsumeRenderQueue();assert(fixture.DrawCalls==3&&fixture.Refs==0&&fixture.HeaderLocks==0&&fixture.Locks==0);
  // Different categories own different immutable materials; the Source override is restored.
- entity.Category=1;assert(Mirv_Tf2_DrawScenePose(entity,status));assert(fixture.MaterialCount==2&&!fixture.Override&&fixture.Materials[1].Refs==2&&fixture.Materials[0].Color!=fixture.Materials[1].Color);
+ entity.Category=1;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(1);assert(fixture.MaterialCount==2&&!fixture.Override&&fixture.Materials[1].Refs==2&&fixture.Materials[0].Color!=fixture.Materials[1].Color);
  Mirv_Tf2_ReleaseSceneMaterials();assert(fixture.Materials[0].Refs==0&&fixture.Materials[1].Refs==1);ConsumeRenderQueue();assert(fixture.Materials[1].Refs==0);
  fixture.MaterialInterface=false;assert(Mirv_Tf2_DrawScenePose(entity,status)&&!fixture.Override);ConsumeRenderQueue();fixture.MaterialInterface=true;
  assert(SOURCESDK::TF2::keySystem.Allocations==0);
