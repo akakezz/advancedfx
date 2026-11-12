@@ -5,6 +5,7 @@
 // - Maybe handle RawInput mouse buttons in drag mode (so the game doesn't see them, but currently it doesn't care about them anyway.).
 
 #include "Gui.h"
+#include "CameraOverlay.h"
 
 #ifndef AFX_ENABLE_GUI
 #define AFX_ENABLE_GUI 0
@@ -12,7 +13,6 @@
 
 #if AFX_ENABLE_GUI
 
-#include "CameraOverlay.h"
 #include "CampathDrawer.h"
 #include "RenderView.h"
 #include <imgui.h>
@@ -855,6 +855,7 @@ void DllProcessDetach(void)
 
 bool On_Direct3DDevice9_Init(void* hwnd, IDirect3DDevice9* device)
 {
+	CameraOverlay::SceneCacheDevicePresent(false);
 	if (!IsSupported())
 		return false;
 
@@ -929,6 +930,7 @@ void DoFrame()
 
 void On_Direct3DDevice9_Shutdown()
 {
+	CameraOverlay::SceneCacheDevicePresent(false);
 	if (!IsSupported())
 		return;
 
@@ -955,6 +957,7 @@ void On_Direct3DDevice9_EndScene()
 
 void On_Direct3DDevice9_Present(bool deviceLost)
 {
+	CameraOverlay::SceneCacheDevicePresent(!deviceLost);
 	if (!IsSupported())
 		return;
 
@@ -963,14 +966,17 @@ void On_Direct3DDevice9_Present(bool deviceLost)
 
 void On_Direct3DDevice9_Reset_Before()
 {
+	CameraOverlay::SceneCacheDevicePresent(false);
 	if (!IsSupported())
 		return;
 
 	DX9_InvalidateDeviceObjects();
 }
 
-void On_Direct3DDevice9_Reset_After()
+void On_Direct3DDevice9_Reset_After(bool success)
 {
+	if (!success)
+		return;
 	if (!IsSupported())
 		return;
 
@@ -1111,11 +1117,13 @@ bool OnGameFrameRenderEnd()
 
 bool On_Direct3DDevice9_Init(void* hwnd, IDirect3DDevice9* device)
 {
+	CameraOverlay::SceneCacheDevicePresent(false);
 	return false;
 }
 
 void On_Direct3DDevice9_Shutdown()
 {
+	CameraOverlay::SceneCacheDevicePresent(false);
 
 }
 
@@ -1126,16 +1134,20 @@ void On_Direct3DDevice9_EndScene()
 
 void On_Direct3DDevice9_Present(bool deviceLost)
 {
+	CameraOverlay::SceneCacheDevicePresent(!deviceLost);
 
 }
 
 void On_Direct3DDevice9_Reset_Before()
 {
+	CameraOverlay::SceneCacheDevicePresent(false);
 
 }
 
-void On_Direct3DDevice9_Reset_After()
+void On_Direct3DDevice9_Reset_After(bool success)
 {
+	if (!success)
+		return;
 
 }
 

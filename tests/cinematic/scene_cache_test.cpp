@@ -53,6 +53,18 @@ int main()
  Cache::Frame retained=bounded.Frames().front();bounded.Clear();assert(retained.Entities[0].ModelPose->Bones[1][3]==10);
  Cache tiny(cost-1);assert(!tiny.Append(p)&&tiny.Count()==0);
 
+ // Exact pose reuse charges shared allocations once and never crosses ownership/model boundaries.
+ Cache reuse;Cache::Frame repeated;p.DemoTime=0;p.ClientTime=0;p.Entities[0].ModelPose=pose;p.Entities[0].OwnerIdentity=0;assert(reuse.Append(p));auto firstPose=reuse.Frames().front().Entities[0].ModelPose;size_t firstBytes=reuse.Bytes();
+ auto copy=std::make_shared<Cache::Pose>(*pose);p.DemoTime=.05;p.ClientTime=.05;p.Entities[0].ModelPose=copy;assert(reuse.Append(p));assert(reuse.PoseCount()==1&&reuse.ReusedPoses()==1&&reuse.Frames().back().Entities[0].ModelPose==firstPose);assert(reuse.Bytes()-firstBytes<sizeof(Cache::Pose));
+ copy=std::make_shared<Cache::Pose>(*pose);copy->Bones[0][3]+=.001f;p.DemoTime=.1;p.ClientTime=.1;p.Entities[0].ModelPose=copy;assert(reuse.Append(p)&&reuse.PoseCount()==2);assert(reuse.Frames().back().Entities[0].ModelPose==copy);
+ copy=std::make_shared<Cache::Pose>(*copy);p.DemoTime=.15;p.ClientTime=.15;p.Entities[0].OwnerIdentity=2;p.Entities[0].ModelPose=copy;assert(reuse.Append(p)&&reuse.PoseCount()==3);assert(reuse.ReusedPoses()==1);
+ copy=std::make_shared<Cache::Pose>(*copy);copy->Root[3]+=1;p.DemoTime=.2;p.ClientTime=.2;p.Entities[0].ModelPose=copy;assert(reuse.Append(p)&&reuse.PoseCount()==4);
+ auto allocated=reuse.AllocatedBytes();assert(allocated==reuse.Bytes());auto revision=reuse.Revision();reuse.SetLimit(firstBytes);assert(reuse.Bytes()<=firstBytes&&reuse.PoseCount()==1&&reuse.AllocatedBytes()==allocated&&reuse.Revision()>revision);reuse.Clear();assert(!reuse.PoseCount()&&!reuse.Bytes()&&!reuse.AllocatedBytes()&&!reuse.ReusedPoses());
+ // Per-bone exception values and local tangents are part of equality, too.
+ Cache localReuse;auto l=std::make_shared<Cache::Pose>();l->ModelInfo=model;l->Root=identity;l->Local.resize(2);p.DemoTime=0;p.ClientTime=0;p.Entities[0].ModelPose=l;assert(localReuse.Append(p));auto lc=std::make_shared<Cache::Pose>(*l);lc->Local[1].Position[0]=.01f;p.DemoTime=.05;p.ClientTime=.05;p.Entities[0].ModelPose=lc;assert(localReuse.Append(p)&&localReuse.PoseCount()==2);
+ auto fixedPose=std::make_shared<Cache::Pose>(*lc);Cache::FixedBone reuseFixed;reuseFixed.Index=1;reuseFixed.Value=identity;fixedPose->Fixed.push_back(reuseFixed);p.DemoTime=.1;p.ClientTime=.1;p.Entities[0].ModelPose=fixedPose;assert(localReuse.Append(p)&&localReuse.PoseCount()==3);auto fixedCopy=std::make_shared<Cache::Pose>(*fixedPose);fixedCopy->Fixed[0].Value[3]=.01f;p.DemoTime=.15;p.ClientTime=.15;p.Entities[0].ModelPose=fixedCopy;assert(localReuse.Append(p)&&localReuse.PoseCount()==4);
+ fixedCopy=std::make_shared<Cache::Pose>(*fixedCopy);fixedCopy->Body++;p.DemoTime=.2;p.ClientTime=.2;p.Entities[0].ModelPose=fixedCopy;assert(localReuse.Append(p)&&localReuse.PoseCount()==5);fixedCopy=std::make_shared<Cache::Pose>(*fixedCopy);p.DemoTime=.25;p.ClientTime=.25;p.Entities[0].Category=1;p.Entities[0].ModelPose=fixedCopy;assert(localReuse.Append(p)&&localReuse.PoseCount()==6);
+
  // Transient identities include the entity handle's serial, not just its slot.
  Cache projectiles;Cache::Frame f;f.DemoTime=0;f.ClientTime=0;Cache::Entity rocket;
  rocket.Category=1;rocket.Identity=(1ull<<63)|40;f.Entities={rocket};assert(projectiles.Append(f));

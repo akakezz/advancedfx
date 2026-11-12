@@ -39,7 +39,7 @@ void On_Direct3DDevice9_Shutdown();
 void On_Direct3DDevice9_EndScene();
 void On_Direct3DDevice9_Present(bool deviceLost);
 void On_Direct3DDevice9_Reset_Before();
-void On_Direct3DDevice9_Reset_After();
+void On_Direct3DDevice9_Reset_After(bool success);
 
 
 } // namespace Gui {

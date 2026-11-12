@@ -14,6 +14,8 @@ void Initialize();
 void Draw();
 void SceneCacheFrame(bool capture = true);
 void SceneCacheDrawModels();
+void SceneCacheFocus(bool focused);
+void SceneCacheDevicePresent(bool success);
 void SceneCacheConsole(advancedfx::ICommandArgs *args);
 bool SceneCacheNavigationKey(unsigned int key, bool down);
 void SceneCacheStopScrub();

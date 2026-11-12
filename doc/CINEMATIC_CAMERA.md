@@ -1643,8 +1643,11 @@ Native life-state/respawn boundaries are still not classified. This remains a
 visual preview, not restoration of engine simulation.
 
 Pose payload and shared model metadata count toward **Scene budget MiB**.
-Each model descriptor is charged once while referenced by retained frames; its
-charge is released when the last such frame is evicted or history is cleared. The counter excludes engine asset memory, allocator
+Each model descriptor and each unique pose allocation is charged once while
+referenced by retained frames; its charge is released when the last such frame
+is evicted or history is cleared. Exactly unchanged poses from the same stable
+entity, category and owner share storage across adjacent recorded ticks. Changed
+roots, bones, body groups and per-bone exceptions remain separate. The counter excludes engine asset memory, allocator
 bookkeeping and temporary published/queued snapshots. Oldest frames are evicted
 as before. Status shows cumulative pose captures/unavailable attempts since the
 last clear, not the count currently retained. A single over-budget frame is
@@ -1654,9 +1657,11 @@ Model submission runs in the existing engine-tools 3D render hook on the engine
 thread. Source's studio-rendering front end then queues its own immutable draw
 state. Calling that front end from a render-worker callback can race normal
 rendering and leak wireframe state onto unrelated entities. HLAE's material
-queue is used only to retire model/material references and locked studio headers after
-the queued draw has finished. Bone storage is allocated through Source's render
-context; scene history owns no engine pointers.
+queue only signals when a draw has finished (or its callback was discarded).
+The engine thread then releases model/material references and locked studio
+headers. At most 512 cached model draws can await retirement; if Source's queue
+falls behind, new cached submissions are deferred. Bone storage is allocated
+through Source's render context; scene history owns no engine pointers.
 
 Clearing history, disabling models, leaving cached preview or changing demos
 prevents further submissions. Already submitted Source draws can finish their
@@ -1669,3 +1674,39 @@ Validation covers capture failures, cached matrix ownership, model mismatches,
 render-resource cleanup, producer/worker thread ownership and payload eviction with fixtures,
 plus x86/x64 compilation. Live TF2/TF2C rendering and performance still require
 in-game testing.
+
+### Bounded capture and render lifecycle
+
+**Sequencer → Scene Cache → Capture tick range** enables inclusive start/end
+ticks. Set them directly or from the playhead, press **Record range**, then play
+the actual demo from before the start. Capture waits for the start and stops
+at/past the end. Seeking past the end stops capture without inventing skipped
+samples. It does not start playback or seek for you. A newly opened demo clears
+its old range and stops bounded capture; ordinary unbounded recording remains
+available.
+
+```text
+mirv_campath cache range 1000 2000
+mirv_campath cache record 1
+// Play the actual demo through the range.
+mirv_campath cache range off
+```
+
+The Scene Cache tab reports capture last/mean/peak milliseconds, unique retained
+poses and cumulative unchanged-pose reuse. Record a short representative sample
+to see observed payload growth, estimated duration within the memory budget and
+an estimate for the chosen range. These are estimates of retained CPU payload,
+not total game memory. More active players/projectiles or changed capture
+categories can alter the result. Oldest frames still evict at the memory limit;
+a selected range is not a promise to retain everything within it.
+
+While the cached cursor, history revision and animation mode are unchanged, the
+published CPU sample is reused. Engine-thread retirement polling continues even
+when preview or model drawing is disabled. Cached model submission suspends on
+window focus loss, failed presents, device reset and shutdown, and waits for a
+successful present plus two stable engine frames before resuming. Cached history
+is preserved. Failed resets no longer recreate the overlay's device objects.
+`mirv_campath cache status` includes pending/peak cached draws and focus/device
+readiness to help diagnose delayed failures. The safeguards have fixture coverage;
+live TF2 windowed idle/alt-tab testing is still required to verify the reported
+crash is resolved.

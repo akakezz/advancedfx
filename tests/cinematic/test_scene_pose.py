@@ -21,6 +21,7 @@ preamble = r'''
 #include "shared/AfxMath.h"
 #include "AfxHookSource/MaterialSystemHooks.h"
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr);
+void Mirv_Tf2_SceneRenderFrame();
 #include <thread>
 #include <cassert>
 #include <cstring>
@@ -78,14 +79,14 @@ bool queueAvailable=true;
 std::vector<std::unique_ptr<CMaterialSystemFunctor>> retirements;
 bool MaterialSystem_CanExecuteOnRenderThread(){return queueAvailable;}
 bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor*f){assert(std::this_thread::get_id()==fixture.EngineThread);retirements.emplace_back(f);return true;}
-void ConsumeRenderQueue(){std::thread worker([]{for(auto&f:retirements)(*f)();retirements.clear();});worker.join();}
+void ConsumeRenderQueue(bool drain=true,bool discard=false){std::thread worker([&]{if(!discard)for(auto&f:retirements)(*f)();retirements.clear();});worker.join();if(drain)Mirv_Tf2_SceneRenderFrame();}
 
 '''
 fixtures = r'''
 namespace {
 void SetOverride(void*,void*material,int type){assert(std::this_thread::get_id()==fixture.EngineThread);fixture.Override=material;fixture.OverrideType=type;}
 void MaterialInc(void*p){++static_cast<Fixture::Material*>(p)->Refs;}
-void MaterialDec(void*p){auto&m=*static_cast<Fixture::Material*>(p);assert(m.Refs>0);--m.Refs;}
+void MaterialDec(void*p){assert(std::this_thread::get_id()==fixture.EngineThread);auto&m=*static_cast<Fixture::Material*>(p);assert(m.Refs>0);--m.Refs;}
 bool MaterialError(void*){return false;}
 void*CreateMaterial(void*,const char*,SceneMaterialKeyValues*values){
  auto&m=fixture.Materials[fixture.MaterialCount++];m.Vtable=fixture.MaterialSlots;m.Refs=1;
@@ -107,9 +108,9 @@ bool Dormant(void*){return fixture.Dormant;}
 void Override(void*,void**material,int*type){assert(std::this_thread::get_id()==fixture.EngineThread);*material=fixture.Override;*type=fixture.OverrideType;}
 void Begin(void*){assert(std::this_thread::get_id()==fixture.EngineThread);++fixture.Locks;}void End(void*){--fixture.Locks;assert(fixture.Locks==0);}
 unsigned short Find(void*,const char*name){assert(!strcmp(name,"models/player/scout.mdl"));++fixture.Refs;return 42;}
-int Release(void*,unsigned short h){assert(h==42&&fixture.Refs>0);return --fixture.Refs;}
+int Release(void*,unsigned short h){assert(std::this_thread::get_id()==fixture.EngineThread);assert(h==42&&fixture.Refs>0);return --fixture.Refs;}
 void*Header(void*,unsigned short h){assert(h==42);++fixture.HeaderLocks;return fixture.Header;}
-void UnlockHeader(void*,unsigned short h){assert(h==42&&fixture.HeaderLocks>0);--fixture.HeaderLocks;}
+void UnlockHeader(void*,unsigned short h){assert(std::this_thread::get_id()==fixture.EngineThread);assert(h==42&&fixture.HeaderLocks>0);--fixture.HeaderLocks;}
 void*Hardware(void*,unsigned short h){assert(h==42);return fixture.Hardware?&fixture:nullptr;}
 bool Error(void*,unsigned short h){assert(h==42);return fixture.ErrorModel;}
 SOURCESDK::matrix3x4_t*Allocate(void*,int count){assert(std::this_thread::get_id()==fixture.EngineThread);assert(count==fixture.Count);return fixture.Allocate?fixture.Allocated:nullptr;}
@@ -169,6 +170,14 @@ int main(){
  entity.Category=1;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(1);assert(fixture.MaterialCount==2&&!fixture.Override&&fixture.Materials[1].Refs==2&&fixture.Materials[0].Color!=fixture.Materials[1].Color);
  Mirv_Tf2_ReleaseSceneMaterials();assert(fixture.Materials[0].Refs==0&&fixture.Materials[1].Refs==1);ConsumeRenderQueue();assert(fixture.Materials[1].Refs==0);
  fixture.MaterialInterface=false;assert(Mirv_Tf2_DrawScenePose(entity,status)&&!fixture.Override);ConsumeRenderQueue();fixture.MaterialInterface=true;
+ // A slow or discarded render queue retains ownership without unbounded growth.
+ for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
+ assert(!Mirv_Tf2_DrawScenePose(entity,status));unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);assert(pending==SceneMaxOutstanding&&peak==SceneMaxOutstanding);
+ ConsumeRenderQueue(false,true);assert(fixture.Refs==int(SceneMaxOutstanding)&&fixture.HeaderLocks==int(SceneMaxOutstanding));
+ Mirv_Tf2_SceneRenderFrame();Mirv_Tf2_SceneRenderStatus(pending,peak);assert(!pending&&!fixture.Refs&&!fixture.HeaderLocks);
+ assert(Mirv_Tf2_DrawScenePose(entity,status));ConsumeRenderQueue(false);assert(fixture.Refs==1&&fixture.HeaderLocks==1);Mirv_Tf2_SceneRenderFrame();assert(!fixture.Refs&&!fixture.HeaderLocks);
+ // Repeated idle draws return to the same live resource baseline.
+ for(int frame=0;frame<100;++frame){for(int model=0;model<32;++model)assert(Mirv_Tf2_DrawScenePose(entity,status));ConsumeRenderQueue();assert(!fixture.Refs&&!fixture.HeaderLocks&&!fixture.Override);}
  entity.Category=2;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(2);entity.Category=3;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(3);assert(!fixture.Override);ConsumeRenderQueue();Mirv_Tf2_ReleaseSceneMaterials();for(int i=0;i<fixture.MaterialCount;++i)assert(fixture.Materials[i].Refs==0);
  assert(SOURCESDK::TF2::keySystem.Allocations==0);
  // Reconstruct a locally interpolated skeleton and bone-merged gear using

@@ -2361,6 +2361,13 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	__in LPARAM lParam
 )
 {
+	// Publish focus changes even when the overlay consumes the window message.
+	if (uMsg == WM_KILLFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) ||
+	    (uMsg == WM_ACTIVATEAPP && !wParam))
+		AfxHookSource::CameraOverlay::SceneCacheFocus(false);
+	else if (uMsg == WM_SETFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) != WA_INACTIVE) ||
+	         (uMsg == WM_ACTIVATEAPP && wParam))
+		AfxHookSource::CameraOverlay::SceneCacheFocus(true);
 	// Clear held preview keys before GUI input handling can consume focus changes.
 	if (uMsg == WM_KILLFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE))
 	{

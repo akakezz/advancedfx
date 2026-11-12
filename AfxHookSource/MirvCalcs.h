@@ -431,3 +431,7 @@ struct MirvTf2SceneEntity
 void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics,
 	std::vector<MirvTf2SceneEntity> &out);
 void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued references remain pinned.
+
+// Engine-thread polling; worker callbacks never call MDL/material APIs.
+void Mirv_Tf2_SceneRenderFrame();
+void Mirv_Tf2_SceneRenderStatus(unsigned &outstanding, unsigned &peak);

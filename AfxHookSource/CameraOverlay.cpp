@@ -64,6 +64,34 @@ static void SceneModelStatus(const std::string &value)
 }
 static std::atomic_bool g_SceneDrawModels{true};
 static std::atomic_ullong g_SceneDrawEpoch{0};
+
+// Window/device callbacks only publish state; engine resources stay on the engine thread.
+static std::atomic_bool g_SceneFocused{true}, g_SceneDeviceReady{false};
+static std::atomic_ullong g_SceneLifecycleEpoch{0};
+static unsigned long long g_SceneReadyEpoch = 0;
+static unsigned g_SceneReadyFrames = 0;
+void SceneCacheFocus(bool focused)
+{
+	if (g_SceneFocused.exchange(focused) != focused)
+	{
+		++g_SceneLifecycleEpoch;
+		++g_SceneDrawEpoch;
+	}
+}
+void SceneCacheDevicePresent(bool success)
+{
+	if (g_SceneDeviceReady.exchange(success) != success)
+	{
+		++g_SceneLifecycleEpoch;
+		++g_SceneDrawEpoch;
+	}
+}
+static bool SceneCanDrawModels()
+{
+	return g_SceneFocused.load() && g_SceneDeviceReady.load() &&
+	       g_SceneReadyEpoch == g_SceneLifecycleEpoch.load() && g_SceneReadyFrames >= 2;
+}
+
 static unsigned long long g_ScenePoseCaptured = 0, g_ScenePoseFailures = 0;
 static bool SceneSelectPosePlayer(int index)
 {
@@ -95,6 +123,38 @@ static bool SceneSelectPosePlayer(int index)
 }
 static ImGui::FrameIndexType g_SequencerFrame = 0;
 static int g_SceneLastTick = -1;
+static bool g_SceneRangeEnabled = false;
+static int g_SceneRangeFirst = 0, g_SceneRangeLast = 660;
+static unsigned long long g_SceneCaptureFrames = 0;
+static double g_SceneCaptureMs = 0, g_SceneCaptureTotalMs = 0, g_SceneCapturePeakMs = 0;
+static double g_SceneCaptureFirstTime = 0, g_SceneCaptureLastTime = 0;
+static void SceneResetProfile()
+{
+	g_SceneCaptureFrames = 0;
+	g_SceneCaptureMs = g_SceneCaptureTotalMs = g_SceneCapturePeakMs = 0;
+	g_SceneCaptureFirstTime = g_SceneCaptureLastTime = 0;
+}
+static bool SceneCaptureTick(int tick)
+{
+	if (g_SceneRangeEnabled)
+	{
+		if (g_SceneRangeFirst < 0 || g_SceneRangeLast < g_SceneRangeFirst)
+		{
+			g_SceneRecord = false;
+			g_ScenePoseStatus = "Invalid capture range: end must be at or after start.";
+			return false;
+		}
+		if (tick > g_SceneRangeLast)
+		{
+			g_SceneRecord = false;
+			g_ScenePoseStatus = "Capture range passed; recording stopped. Only observed ticks were retained.";
+			return false;
+		}
+		if (tick < g_SceneRangeFirst)
+			return false;
+	}
+	return tick != g_SceneLastTick;
+}
 static int g_SceneScrubRate = 0;
 static auto g_SceneScrubLast = std::chrono::steady_clock::now();
 static double SceneTickInterval();
@@ -102,12 +162,17 @@ static void ScenePreviewTick(int tick);
 static void ScenePreviewTime(double time);
 
 static std::shared_ptr<const advancedfx::SceneCache::Frame> g_SceneView;
+static bool g_SceneSampleReady = false, g_SceneSampleSmooth = false, g_SceneSamplePreview = false;
+static std::uint64_t g_SceneSampleRevision = 0;
+static double g_SceneSampleCursor = 0;
 static void SceneClearHistory()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	++g_SceneDrawEpoch;
+	g_SceneSampleReady = false;
 	g_SceneCache.Clear();
 	g_ScenePoseCaptured = g_ScenePoseFailures = 0;
+	SceneResetProfile();
 	g_SceneLastTick = -1;
 	g_SceneScrubRate = 0;
 	std::atomic_store(&g_SceneModelStatus, std::shared_ptr<const std::string>{});
@@ -128,6 +193,20 @@ double EditingClientTime(double liveTime)
 void SceneCacheFrame(bool capture)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (capture)
+	{
+		Mirv_Tf2_SceneRenderFrame();
+		const auto epoch = g_SceneLifecycleEpoch.load();
+		if (g_SceneReadyEpoch != epoch)
+		{
+			g_SceneReadyEpoch = epoch;
+			g_SceneReadyFrames = 0;
+		}
+		if (g_SceneFocused.load() && g_SceneDeviceReady.load())
+			g_SceneReadyFrames = (std::min)(g_SceneReadyFrames + 1, 2u);
+		else
+			g_SceneReadyFrames = 0;
+	}
 	int tick;
 	double time;
 	if (capture)
@@ -151,16 +230,21 @@ void SceneCacheFrame(bool capture)
 			Mirv_Tf2_ReleaseSceneMaterials();
 		if (g_ScenePreview)
 			++g_SceneDrawEpoch;
+		g_SceneSampleReady = false;
 		g_ScenePreview = false;
 		g_SceneScrubRate = 0;
 		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 		return;
 	}
-	if (capture && g_SceneRecord && !g_VEngineClient->IsSkippingDemo() && GetCurrentDemoTick(tick) &&
-	    GetCurrentDemoTime(time) && tick != g_SceneLastTick)
+	if (capture && g_SceneDeviceReady.load() && g_SceneRecord && !g_VEngineClient->IsSkippingDemo() &&
+	    GetCurrentDemoTick(tick) && GetCurrentDemoTime(time) && SceneCaptureTick(tick))
 	{
+		const auto captureStart = std::chrono::steady_clock::now();
 		if (g_SceneLastTick >= 0 && tick < g_SceneLastTick)
+		{
 			++g_SceneDrawEpoch;
+			SceneResetProfile();
+		}
 		advancedfx::SceneCache::Frame frame;
 		frame.DemoTime = time;
 		frame.ClientTime = g_MirvTime.GetTime();
@@ -224,7 +308,30 @@ void SceneCacheFrame(bool capture)
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
+		g_SceneCaptureMs =
+		    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - captureStart)
+		        .count();
+		g_SceneCaptureTotalMs += g_SceneCaptureMs;
+		g_SceneCapturePeakMs = (std::max)(g_SceneCapturePeakMs, g_SceneCaptureMs);
+		if (!g_SceneCaptureFrames++)
+			g_SceneCaptureFirstTime = time;
+		g_SceneCaptureLastTime = time;
+		if (g_SceneRangeEnabled && tick == g_SceneRangeLast)
+		{
+			g_SceneRecord = false;
+			g_ScenePoseStatus += " Capture range complete; recording stopped.";
+		}
 	}
+	// Reuse the published sample when idle; capture and render retirement above still run.
+	if (g_SceneSampleReady && g_SceneSampleRevision == g_SceneCache.Revision() &&
+	    g_SceneSampleCursor == g_SceneCursor && g_SceneSampleSmooth == g_SceneSmoothAnimation &&
+	    g_SceneSamplePreview == g_ScenePreview)
+		return;
+	g_SceneSampleReady = true;
+	g_SceneSampleRevision = g_SceneCache.Revision();
+	g_SceneSampleCursor = g_SceneCursor;
+	g_SceneSampleSmooth = g_SceneSmoothAnimation;
+	g_SceneSamplePreview = g_ScenePreview;
 	advancedfx::SceneCache::Frame frame;
 	bool valid = false;
 	if (g_ScenePreview)
@@ -239,7 +346,7 @@ void SceneCacheFrame(bool capture)
 // draw state. Calling that front end in a render-worker functor races the game.
 void SceneCacheDrawModels()
 {
-	if (!g_SceneDrawModels.load())
+	if (!g_SceneDrawModels.load() || !SceneCanDrawModels())
 		return;
 	std::shared_ptr<const advancedfx::SceneCache::Frame> view;
 	unsigned long long epoch;
@@ -262,7 +369,7 @@ void SceneCacheDrawModels()
 	std::string status = "No cached model could be submitted.";
 	for (const auto &entity : view->Entities)
 	{
-		if (!g_SceneDrawModels.load() || epoch != g_SceneDrawEpoch.load())
+		if (!g_SceneDrawModels.load() || !SceneCanDrawModels() || epoch != g_SceneDrawEpoch.load())
 			return;
 		if (entity.ModelPose)
 		{
@@ -806,23 +913,41 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	const char *op = args->ArgC() > 2 ? args->ArgV(2) : "status";
-	auto integer = [&](int &value) {
-		if (args->ArgC() != 4)
+	auto parseInteger = [&](int index, int &value) {
+		if (args->ArgC() <= index)
 			return false;
 		char *end = nullptr;
 		errno = 0;
-		long long parsed = std::strtoll(args->ArgV(3), &end, 10);
-		if (end == args->ArgV(3) || *end || errno == ERANGE || parsed < INT_MIN || parsed > INT_MAX)
+		long long parsed = std::strtoll(args->ArgV(index), &end, 10);
+		if (end == args->ArgV(index) || *end || errno == ERANGE || parsed < INT_MIN || parsed > INT_MAX)
 			return false;
 		value = int(parsed);
 		return true;
 	};
+	auto integer = [&](int &value) { return args->ArgC() == 4 && parseInteger(3, value); };
 	int value = 0;
 	bool ok = false;
 	if (!_stricmp(op, "record") && integer(value) && (value == 0 || value == 1))
 	{
 		g_SceneRecord = value != 0;
 		ok = true;
+	}
+	else if (!_stricmp(op, "range"))
+	{
+		int first, last;
+		if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "off"))
+		{
+			g_SceneRangeEnabled = false;
+			ok = true;
+		}
+		else if (args->ArgC() == 5 && parseInteger(3, first) && parseInteger(4, last) && first >= 0 &&
+		         last >= first)
+		{
+			g_SceneRangeFirst = first;
+			g_SceneRangeLast = last;
+			g_SceneRangeEnabled = true;
+			ok = true;
+		}
 	}
 	else if (!_stricmp(op, "preview") && integer(value) && (value == 0 || value == 1))
 	{
@@ -930,13 +1055,14 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	else if (!_stricmp(op, "help") && args->ArgC() == 3)
 	{
 		advancedfx::Message(
-		    "mirv_campath cache record 0|1\nmirv_campath cache preview 0|1\nmirv_campath cache goto <demo "
+		    "mirv_campath cache range <start tick> <end tick>|off\nmirv_campath cache record "
+		    "0|1\nmirv_campath cache preview 0|1\nmirv_campath cache goto <demo "
 		    "tick>\nmirv_campath cache step <signed ticks>\nmirv_campath cache rate <-10000..10000 "
 		    "ticks/sec; 0 stops>\nmirv_campath cache pose <all|none|player entity index; 0 disables player "
 		    "capture>\n"
 		    "mirv_campath cache projectiles 0|1\nmirv_campath cache weapons 0|1\nmirv_campath cache "
 		    "cosmetics 0|1\nmirv_campath cache animation smooth|nearest\nmirv_campath cache models "
-			"0|1\nmirv_campath cache clear\nmirv_campath cache "
+		    "0|1\nmirv_campath cache clear\nmirv_campath cache "
 		    "status\n"
 		    "Cached keys: Right Ctrl + Left/Right: ticks; Up/Down: seconds; Home/End: retained bounds.\n"
 		    "Unmodified preview keys retain camera keyframe selection and travel.\n");
@@ -946,7 +1072,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		advancedfx::Warning("Scene cache command rejected. Use preview/record 0|1, goto <demo tick>, step "
 		                    "<signed ticks>, rate <-10000..10000 ticks/sec>, pose <all|none|player index>, "
 		                    "projectiles/weapons/cosmetics 0|1, animation smooth|nearest, models "
-		                    "0|1, clear or status. Navigation "
+		                    "0|1, range <start tick> <end tick>|off, clear or status. Navigation "
 		                    "requires recorded bounds and never seeks the demo.\n");
 	advancedfx::Message("Scene cache: record %d, preview %d; rate %d ticks/s; tick %d; %zu frames, %.2f MiB "
 	                    "payload; coverage at cursor %s.\n",
@@ -959,11 +1085,24 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	                    int(g_SceneDrawModels.load()), int(g_SceneProjectiles), int(g_SceneWeapons),
 	                    int(g_SceneCosmetics), g_SceneSmoothAnimation ? "smooth" : "nearest",
 	                    g_ScenePoseStatus.c_str());
+	if (g_SceneRangeEnabled)
+		advancedfx::Message("Capture range: %d .. %d inclusive%s.\n", g_SceneRangeFirst, g_SceneRangeLast,
+		                    g_SceneRecord ? " (armed)" : " (stopped)");
+	advancedfx::Message(
+	    "Capture cost: last %.3f ms, mean %.3f ms, peak %.3f ms over %llu observed frames; "
+	    "%zu unique retained poses, %zu unchanged poses reused.\n",
+	    g_SceneCaptureMs, g_SceneCaptureFrames ? g_SceneCaptureTotalMs / g_SceneCaptureFrames : 0,
+	    g_SceneCapturePeakMs, g_SceneCaptureFrames, g_SceneCache.PoseCount(), g_SceneCache.ReusedPoses());
 	if (g_ScenePreview)
 		if (auto status = std::atomic_load(&g_SceneModelStatus))
 			advancedfx::Message("%s\n", status->c_str());
 	if (!_stricmp(op, "status"))
 	{
+		unsigned pending = 0, peak = 0;
+		Mirv_Tf2_SceneRenderStatus(pending, peak);
+		advancedfx::Message(
+		    "Cached render: pending %u, peak %u; focus %d, device ready %d, drawing ready %d.\n", pending,
+		    peak, int(g_SceneFocused.load()), int(g_SceneDeviceReady.load()), int(SceneCanDrawModels()));
 		if (auto view = SceneCacheView())
 		{
 			advancedfx::Message("Scene animation at tick %.3f (%s):\n", g_SceneCursor / SceneTickInterval(),
@@ -3815,6 +3954,9 @@ void NotifyDemoPlaybackFile(const char *file)
 	{
 		CancelCommandMarkerDrag();
 		SceneClearHistory();
+		if (g_SceneRangeEnabled)
+			g_SceneRecord = false;
+		g_SceneRangeEnabled = false;
 		g_ScenePreview = false;
 		if (g_ScenePoseEntity > 0)
 		{
@@ -4722,6 +4864,27 @@ static void DrawSequencerDetails(int playhead)
 	{
 		std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 		ImGui::Checkbox("Record scene history", &g_SceneRecord);
+		ImGui::Checkbox("Capture tick range", &g_SceneRangeEnabled);
+		if (g_SceneRangeEnabled)
+		{
+			ImGui::InputInt("Capture start tick", &g_SceneRangeFirst);
+			ImGui::SameLine();
+			if (ImGui::Button("Start at playhead"))
+				g_SceneRangeFirst = playhead;
+			ImGui::InputInt("Capture end tick", &g_SceneRangeLast);
+			ImGui::SameLine();
+			if (ImGui::Button("End at playhead"))
+				g_SceneRangeLast = playhead;
+			const bool validRange = g_SceneRangeFirst >= 0 && g_SceneRangeLast >= g_SceneRangeFirst;
+			ImGui::BeginDisabled(!validRange);
+			if (ImGui::Button("Record range"))
+				g_SceneRecord = true;
+			ImGui::EndDisabled();
+			if (!validRange)
+				ImGui::TextDisabled("Start must be nonnegative; end must be at or after start.");
+			ImGui::TextWrapped("Play from before the range. Capture starts at its first observed tick and "
+			                   "stops automatically at/past its end. This does not seek or start the demo.");
+		}
 		ImGui::TextDisabled("Cache navigation: Right Ctrl + arrows / Home / End");
 		ImGui::TextWrapped(
 		    "Enable Cached preview above the timeline, then scrub its playhead. Actual demo playback stays "
@@ -4774,6 +4937,33 @@ static void DrawSequencerDetails(int playhead)
 		if ((g_ScenePoseEntity || g_SceneProjectiles) && !g_SceneRecord)
 			ImGui::TextDisabled("Enable Record scene history and play forward to capture poses.");
 		ImGui::Text("Pose captures: %llu | Unavailable: %llu", g_ScenePoseCaptured, g_ScenePoseFailures);
+		ImGui::Text("Capture ms: last %.3f | mean %.3f | peak %.3f (%llu frames)", g_SceneCaptureMs,
+		            g_SceneCaptureFrames ? g_SceneCaptureTotalMs / g_SceneCaptureFrames : 0,
+		            g_SceneCapturePeakMs, g_SceneCaptureFrames);
+		ImGui::Text("Unique retained poses: %zu | Unchanged poses reused: %zu", g_SceneCache.PoseCount(),
+		            g_SceneCache.ReusedPoses());
+		const double observedSpan = g_SceneCaptureLastTime - g_SceneCaptureFirstTime;
+		if (g_SceneCaptureFrames > 1 && observedSpan > 0)
+		{
+			const double growth = g_SceneCache.AllocatedBytes() / (observedSpan + SceneTickInterval());
+			if (growth > 0)
+			{
+				ImGui::Text("Observed growth: %.2f MiB/s | budget fits roughly %.1f seconds",
+				            growth / 1048576.0, g_SceneCache.Limit() / growth);
+				if (g_SceneRangeEnabled && g_SceneRangeFirst >= 0 && g_SceneRangeLast >= g_SceneRangeFirst)
+					ImGui::Text("Range payload estimate: %.2f MiB",
+					            (double(g_SceneRangeLast) - g_SceneRangeFirst + 1) * SceneTickInterval() *
+					                growth / 1048576.0);
+				ImGui::TextDisabled("Estimate from observed capture; scene activity changes memory needs.");
+			}
+		}
+		else
+			ImGui::TextDisabled("Record a short sample to estimate memory for longer captures.");
+		unsigned pending = 0, peak = 0;
+		Mirv_Tf2_SceneRenderStatus(pending, peak);
+		ImGui::Text("Pending cached draws: %u (peak %u)", pending, peak);
+		if (!SceneCanDrawModels())
+			ImGui::TextDisabled("Cached model drawing suspended during focus/device recovery.");
 		if (ImGui::TreeNode("Animation diagnostics"))
 		{
 			ImGui::Text("Cached tick %.3f", g_SceneCursor / SceneTickInterval());

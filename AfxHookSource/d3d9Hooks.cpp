@@ -4861,7 +4861,7 @@ public:
 			if (m_InitialState) m_InitialState->Capture();
 		}
 
-		AfxHookSource::Gui::On_Direct3DDevice9_Reset_After();
+		AfxHookSource::Gui::On_Direct3DDevice9_Reset_After(SUCCEEDED(hResult));
 
 		g_AfxStreams.DrawingThread_DeviceRestored();
 	}
@@ -4904,7 +4904,7 @@ public:
 
 	void Afx_Present_After(HRESULT hResult)
 	{
-		AfxHookSource::Gui::On_Direct3DDevice9_Present(hResult == D3DERR_DEVICELOST);
+		AfxHookSource::Gui::On_Direct3DDevice9_Present(FAILED(hResult));
 
 #ifndef _WIN64
 #ifdef AFX_MIRV_PGL

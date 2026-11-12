@@ -155,16 +155,40 @@ public:
 	explicit SceneCache(size_t limit = 64 * 1024 * 1024) : m_Limit(limit)
 	{
 	}
+	std::uint64_t Revision() const
+	{
+		return m_Revision;
+	}
 	void Clear()
 	{
+		++m_Revision;
 		m_Frames.clear();
 		m_Models.clear();
+		m_Poses.clear();
+		m_ReusedPoses = m_AllocatedBytes = 0;
 		m_Bytes = 0;
 	}
 	void SetLimit(size_t bytes)
 	{
+		++m_Revision;
 		m_Limit = bytes;
 		Trim();
+	}
+	size_t PoseCount() const
+	{
+		return m_Poses.size();
+	}
+	size_t ReusedPoses() const
+	{
+		return m_ReusedPoses;
+	}
+	size_t AllocatedBytes() const
+	{
+		return m_AllocatedBytes;
+	}
+	size_t Limit() const
+	{
+		return m_Limit;
 	}
 	size_t Bytes() const
 	{
@@ -203,13 +227,41 @@ public:
 			Clear();
 		if (!m_Frames.empty() && frame.DemoTime == m_Frames.back().DemoTime)
 			return false;
+		// Share only exactly equal recorded poses from the same stable entity/owner.
+		// No quantization: small animation changes must remain observable.
+		size_t reused = 0;
+		if (!m_Frames.empty())
+			for (auto &entity : frame.Entities)
+			{
+				const auto &last = m_Frames.back().Entities;
+				auto it = std::lower_bound(last.begin(), last.end(), entity.Identity,
+				                           [](const Entity &a, std::uint64_t id) { return a.Identity < id; });
+				if (it != last.end() && it->Identity == entity.Identity && it->Category == entity.Category &&
+				    it->OwnerIdentity == entity.OwnerIdentity && entity.ModelPose && it->ModelPose &&
+				    SamePose(*entity.ModelPose, *it->ModelPose))
+				{
+					entity.ModelPose = it->ModelPose;
+					++reused;
+				}
+			}
 		const size_t bytes = Cost(frame);
 		const auto models = Models(frame);
+		const auto poses = Poses(frame);
 		size_t whole = bytes;
 		for (const auto *model : models)
 			whole += ModelCost(*model);
+		for (const auto *pose : poses)
+			whole += PoseCost(*pose);
 		if (whole > m_Limit)
 			return false; // A single complete frame must fit.
+		const size_t before = m_Bytes;
+		for (const auto *pose : poses)
+		{
+			auto result = m_Poses.emplace(pose, ModelUse{0, PoseCost(*pose)});
+			if (result.second)
+				m_Bytes += result.first->second.Bytes;
+			++result.first->second.Frames;
+		}
 		for (const auto *model : models)
 		{
 			auto result = m_Models.emplace(model, ModelUse{0, ModelCost(*model)});
@@ -218,6 +270,9 @@ public:
 			++result.first->second.Frames;
 		}
 		m_Bytes += bytes;
+		m_AllocatedBytes += m_Bytes - before;
+		m_ReusedPoses += reused;
+		++m_Revision;
 		m_Frames.push_back(std::move(frame));
 		Trim();
 		return true;
@@ -419,24 +474,54 @@ private:
 		result.erase(std::unique(result.begin(), result.end()), result.end());
 		return result;
 	}
-	static size_t Cost(const Frame &frame)
+	static bool SamePose(const Pose &a, const Pose &b)
 	{
-		size_t result = sizeof(Frame) + frame.Entities.capacity() * sizeof(Entity);
+		if (a.ModelInfo != b.ModelInfo || a.Root != b.Root || a.Body != b.Body || a.Bones != b.Bones ||
+		    a.Local.size() != b.Local.size() || a.Fixed.size() != b.Fixed.size())
+			return false;
+		for (size_t i = 0; i < a.Local.size(); ++i)
+			if (a.Local[i].Position != b.Local[i].Position || a.Local[i].Rotation != b.Local[i].Rotation ||
+			    a.Local[i].Scale != b.Local[i].Scale)
+				return false;
+		for (size_t i = 0; i < a.Fixed.size(); ++i)
+			if (a.Fixed[i].Index != b.Fixed[i].Index || a.Fixed[i].World != b.Fixed[i].World ||
+			    a.Fixed[i].Reason != b.Fixed[i].Reason || a.Fixed[i].Value != b.Fixed[i].Value)
+				return false;
+		return true;
+	}
+	static std::vector<const Pose *> Poses(const Frame &frame)
+	{
+		std::vector<const Pose *> result;
 		for (const auto &entity : frame.Entities)
 			if (entity.ModelPose)
-			{
-				const auto &pose = *entity.ModelPose;
-				result += sizeof(Pose) + pose.Bones.capacity() * sizeof(Matrix) +
-				          pose.Local.capacity() * sizeof(Transform) +
-				          pose.Fixed.capacity() * sizeof(FixedBone);
-			}
+				result.push_back(entity.ModelPose.get());
+		std::sort(result.begin(), result.end(), std::less<const Pose *>());
+		result.erase(std::unique(result.begin(), result.end()), result.end());
 		return result;
+	}
+	static size_t PoseCost(const Pose &pose)
+	{
+		return sizeof(Pose) + pose.Bones.capacity() * sizeof(Matrix) +
+		       pose.Local.capacity() * sizeof(Transform) + pose.Fixed.capacity() * sizeof(FixedBone);
+	}
+	static size_t Cost(const Frame &frame)
+	{
+		return sizeof(Frame) + frame.Entities.capacity() * sizeof(Entity);
 	}
 	void Trim()
 	{
 		while (!m_Frames.empty() && m_Bytes > m_Limit)
 		{
 			m_Bytes -= Cost(m_Frames.front());
+			for (const auto *pose : Poses(m_Frames.front()))
+			{
+				auto it = m_Poses.find(pose);
+				if (--it->second.Frames == 0)
+				{
+					m_Bytes -= it->second.Bytes;
+					m_Poses.erase(it);
+				}
+			}
 			for (const auto *model : Models(m_Frames.front()))
 			{
 				auto it = m_Models.find(model);
@@ -454,7 +539,10 @@ private:
 		size_t Frames, Bytes;
 	};
 	std::map<const Model *, ModelUse> m_Models;
+	std::map<const Pose *, ModelUse> m_Poses;
+	size_t m_ReusedPoses = 0, m_AllocatedBytes = 0;
 	std::deque<Frame> m_Frames;
+	std::uint64_t m_Revision = 0;
 	size_t m_Limit, m_Bytes = 0; // Payload allocation estimate; excludes deque allocator bookkeeping.
 };
 } // namespace advancedfx

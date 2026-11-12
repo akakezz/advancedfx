@@ -9964,40 +9964,75 @@ static void *SceneCategoryMaterial(int category)
 	g_SceneMaterials[category] = material;
 	return material;
 }
-// Only resource retirement runs in HLAE's render queue. The studio front end
-// stays on the engine thread; its own queued draw precedes this callback.
+// The render queue only signals completion. MDL/material APIs are retired
+// on the engine thread, including when Source discards callbacks on reset.
+struct SceneRetirement
+{
+	void *Cache;
+	unsigned short Handle;
+	bool HeaderLocked = false;
+	void *Material = nullptr;
+	SceneRetirement *Next = nullptr;
+};
+static std::atomic<SceneRetirement *> g_SceneCompleted{nullptr};
+static std::atomic<unsigned> g_SceneOutstanding{0}, g_SceneOutstandingPeak{0};
+static constexpr unsigned SceneMaxOutstanding = 512;
+static void SceneReleaseResources(SceneRetirement *data)
+{
+	if (data->HeaderLocked)
+		SceneInterfaceCall<void, unsigned short>(data->Cache, 41, data->Handle);
+	SceneInterfaceCall<int, unsigned short>(data->Cache, 8, data->Handle);
+	if (data->Material)
+		SceneInterfaceCall<void>(data->Material, 13);
+	delete data;
+}
 class SceneModelResources : public CMaterialSystemFunctor
 {
 public:
-	SceneModelResources(void *cache, unsigned short handle) : Cache(cache), Handle(handle)
+	SceneModelResources(void *cache, unsigned short handle) : Data(new SceneRetirement{cache, handle})
 	{
 	}
 	~SceneModelResources() override
 	{
-		Retire();
+		Complete();
+	}
+	SceneRetirement &State()
+	{
+		return *Data.load();
+	}
+	void Submit()
+	{
+		Submitted = true;
+		unsigned count = ++g_SceneOutstanding, peak = g_SceneOutstandingPeak.load();
+		while (count > peak && !g_SceneOutstandingPeak.compare_exchange_weak(peak, count))
+		{
+		}
 	}
 	void operator()() override
 	{
-		Retire();
+		Complete();
 	}
-	bool HeaderLocked = false;
-	void *Material = nullptr;
 
 private:
-	void Retire()
+	void Complete()
 	{
-		// Retire at callback execution, even if the queue retains the functor
-		// object longer. Destruction also covers errors before submission.
-		void *cache = std::exchange(Cache, nullptr);
-		if (!cache)
+		auto data = Data.exchange(nullptr);
+		if (!data)
 			return;
-		if (HeaderLocked)
-			SceneInterfaceCall<void, unsigned short>(cache, 41, Handle);
-		SceneInterfaceCall<int, unsigned short>(cache, 8, Handle);
-		if (Material) SceneInterfaceCall<void>(Material, 13);
+		if (!Submitted)
+		{
+			SceneReleaseResources(data);
+			return;
+		} // Pre-draw errors, on engine thread.
+		auto head = g_SceneCompleted.load(std::memory_order_relaxed);
+		do
+		{
+			data->Next = head;
+		} while (!g_SceneCompleted.compare_exchange_weak(head, data, std::memory_order_release,
+		                                                 std::memory_order_relaxed));
 	}
-	void *Cache;
-	unsigned short Handle;
+	std::atomic<SceneRetirement *> Data;
+	bool Submitted = false;
 };
 // Convert once per observed pose, using the same inverse/concatenation as AGR.
 // Unsupported bones retain their own verbatim matrices; the remaining bones can still blend.
@@ -10274,6 +10309,13 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
                             const advancedfx::SceneCache::Entity *owner)
 {
+	Mirv_Tf2_SceneRenderFrame();
+	if (g_SceneOutstanding.load() >= SceneMaxOutstanding)
+	{
+		status = "Cached model render queue is behind; submission deferred.";
+		return false;
+	}
+
 	const auto pose = entity.ModelPose;
 	if (!pose || !advancedfx::SceneCache::ValidPose(*pose))
 	{
@@ -10327,7 +10369,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	auto resources = std::make_unique<SceneModelResources>(cache, handle);
 	SceneStudioInfo info;
 	info.Header = SceneInterfaceCall<void *, unsigned short>(cache, 40, handle); // LockStudioHdr
-	resources->HeaderLocked = info.Header != nullptr;
+	resources->State().HeaderLocked = info.Header != nullptr;
 	info.Hardware = SceneInterfaceCall<void *, unsigned short>(cache, 11, handle);
 	int count;
 	unsigned int checksum;
@@ -10358,7 +10400,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	if (material)
 	{
 		SceneInterfaceCall<void>(material, 12);
-		resources->Material = material;
+		resources->State().Material = material;
 		SceneInterfaceCall<void, void *, int>(studio, 33, material, 0);
 	}
 	struct RestoreMaterial
@@ -10375,6 +10417,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	} restore{studio, overrideMaterial, overrideType, material != nullptr};
 	const int flags = 0x04 | 0x20 | (material ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
+	resources->Submit();
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
 	                   const SOURCESDK::Vector &, int>(studio, 29, nullptr, info, matrices, nullptr, nullptr,
 	                                                   origin, flags);
@@ -10389,6 +10432,22 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	status = material ? "Drawing category-colored cached models."
 	                  : "Drawing default cached wireframe; category material requires VMaterialSystem082.";
 	return true;
+}
+void Mirv_Tf2_SceneRenderFrame()
+{
+	auto data = g_SceneCompleted.exchange(nullptr, std::memory_order_acquire);
+	while (data)
+	{
+		auto next = data->Next;
+		SceneReleaseResources(data);
+		--g_SceneOutstanding;
+		data = next;
+	}
+}
+void Mirv_Tf2_SceneRenderStatus(unsigned &outstanding, unsigned &peak)
+{
+	outstanding = g_SceneOutstanding.load();
+	peak = g_SceneOutstandingPeak.load();
 }
 void Mirv_Tf2_ReleaseSceneMaterials()
 {
