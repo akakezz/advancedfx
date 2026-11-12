@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 
 #include "SourceInterfaces.h"
 
@@ -291,6 +292,11 @@ int Mirv_Tf2_GetMaxPlayers(void);
 bool Mirv_Tf2_GetPlayerInfo(int entityIndex, char * outName, int outNameSize, int * outUserId);
 
 /// <returns>true on success. Origin and angles (pitch, yaw, roll) of the entity.</returns>
+// Engine-thread helpers: existing network indices and HLAE-assigned client addresses.
+std::uintptr_t Mirv_Tf2_AttachToolEntity(const void *entity, bool &attachedHere);
+unsigned int Mirv_Tf2_EntityHandle(const void *entity);
+int Mirv_Tf2_EntityAddress(const void *entity);
+unsigned int Mirv_Tf2_HandleForAddress(int slot);
 bool Mirv_Tf2_GetEntityOriginAngles(int entityIndex, float outOrigin[3], float outAngles[3]);
 
 /// <param name="outBones">Array of MIRV_TF2_MAX_BONES elements.</param>

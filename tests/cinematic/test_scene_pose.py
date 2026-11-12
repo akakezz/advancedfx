@@ -296,6 +296,7 @@ struct Tools {void*FirstEntity(){return objects.empty()?nullptr:objects[0];}void
  int Attaches=0,Detaches=0;
  void*GetOwnerEntity(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Owner;}
  int GetOwningWeaponEntIndex(int i){for(auto*p:objects)if(p->Index==i)return p->ViewWeapon;return 0;}
+ int GetNumRecordables(){int n=0;for(auto*p:objects)if(p->ToolAttached)++n;return n;}std::uintptr_t GetRecordable(int i){for(auto*p:objects)if(p->ToolAttached&&i--==0)return reinterpret_cast<std::uintptr_t>(p);return 0;}
  std::uintptr_t GetToolHandleForEntityByIndex(int i){for(auto*p:objects)if(int(p->Handle&4095)==i&&p->ToolAttached)return reinterpret_cast<std::uintptr_t>(p);return 0;}
  std::uintptr_t AttachToEntity(void*p){++Attaches;static_cast<CMirvTf2ClientUnknown*>(p)->ToolAttached=true;return reinterpret_cast<std::uintptr_t>(p);}
  void DetachFromEntity(void*p){++Detaches;static_cast<CMirvTf2ClientUnknown*>(p)->ToolAttached=false;}
@@ -310,7 +311,7 @@ bool Mirv_Tf2_ScenePlayerVisible(const void*object,const void*){auto*p=static_ca
 int Mirv_Tf2_GetMaxPlayers(){return 32;}
 bool Mirv_Tf2_GetPlayerInfo(int i,char*,int,int*u){for(auto*p:objects)if(p->Index==i){*u=p->User;return true;}return false;}
 template<typename R,typename...Args>R SceneInterfaceCall(void*p,size_t slot,Args...args){return reinterpret_cast<R(*)(void*,Args...)>((*static_cast<void***>(p))[slot])(p,args...);}
-'''+classifier+collector+r'''
+'''+calcs[calcs.index('std::uintptr_t Mirv_Tf2_AttachToolEntity('):calcs.index('int Mirv_Tf2_EntityAddress(')]+classifier+collector+r'''
 int main(){
  slots[2]=reinterpret_cast<void*>(Class);slots[8]=reinterpret_cast<void*>(Dormant);
  CMirvTf2ClientUnknown player,rocket;rocket.Index=40;rocket.Handle=(2<<12)|40;rocket.Player=false;objects={&player,&rocket};
@@ -494,5 +495,41 @@ if args.sanitize:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-p
 result=subprocess.run(command,capture_output=True,text=True);(out/'line-build.log').write_text(result.stdout+result.stderr)
 if result.returncode:print(result.stderr[-6500:]);raise SystemExit(result.returncode)
 result=subprocess.run([str(out/'scene_line_batch')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
+print(result.stdout+result.stderr)
+if result.returncode:raise SystemExit(result.returncode)
+
+# Shared numeric client addresses must not depend on a particular handle bit layout.
+identity=calcs[calcs.index('// TF2 entity slot identifiers'):calcs.index('// End TF2 entity slot identifiers.')]
+labels=calcs[calcs.index('int Mirv_Tf2_CollectEntityLabels('):calcs.index('IMirvVecAngCalc * CMirvVecAngCalcs::NewTf2EntityIndexCalc',calcs.index('int Mirv_Tf2_CollectEntityLabels('))]
+identity_fixture=r'''
+#include <algorithm>
+#include <map>
+#include <cstdint>
+#include <set>
+#include <vector>
+#include <limits>
+#include <cstring>
+#include <cmath>
+#include <cassert>
+#include <iostream>
+int g_LevelInitCount=0;
+struct CMirvTf2ClientRenderable {bool Visible=true;float Origin[3]{1,2,3};bool ShouldDraw(){return Visible;}const void*GetRenderOrigin(){return Origin;}void GetRenderBoundsWorldspace(float*a,float*b){for(int i=0;i<3;++i){a[i]=0;b[i]=4;}}};
+struct CMirvTf2ClientUnknown {unsigned int Handle=0xffffffffu;int Index=-1;bool Player=false;CMirvTf2ClientRenderable Render;const void*GetRefEHandle()const{return &Handle;}auto GetClientRenderable(){return &Render;}};
+std::vector<CMirvTf2ClientUnknown*>objects;
+struct Tools {std::uintptr_t AttachToEntity(void*){return 0;}int GetNumRecordables(){return 0;}std::uintptr_t GetRecordable(int){return 0;}void*FirstEntity(){return objects.empty()?nullptr:objects.front();}void*NextEntity(void*p){for(size_t i=0;i<objects.size();++i)if(objects[i]==p)return i+1<objects.size()?objects[i+1]:nullptr;return nullptr;}int GetEntIndex(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Index;}bool IsPlayer(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Player;}} tools;
+struct CClientToolsTf2 {static auto Instance(){static CClientToolsTf2 singleton;return &singleton;}auto GetClientTools(){return &tools;}};
+namespace SOURCESDK{namespace TF2{using IClientTools=Tools;using HTOOLHANDLE=std::uintptr_t;constexpr std::uintptr_t HTOOLHANDLE_INVALID=0;}}
+struct MirvTf2EntityLabel_t {int category,index;float origin[3];};
+int Mirv_Tf2_ToolCategory(Tools*,void*p,int,bool player){return player?0:4;}
+bool Mirv_IsUsableBound(float v){return std::isfinite(v);}
+'''+identity+labels+r'''
+int main(){CMirvTf2ClientUnknown player,gib,other;player.Index=5;player.Player=true;player.Handle=(1u<<16)|5;gib.Handle=(3u<<12)|2050;other.Handle=(7u<<16)|5000;objects={&player,&gib,&other};assert(Mirv_Tf2_EntityAddress(&player)==5);int a=Mirv_Tf2_EntityAddress(&gib),b=Mirv_Tf2_EntityAddress(&other);assert(a>=2048&&b>a);assert(Mirv_Tf2_HandleForAddress(a)==gib.Handle&&Mirv_Tf2_HandleForAddress(b)==other.Handle);assert(Mirv_Tf2_EntityAddress(&gib)==a);MirvTf2EntityLabel_t found[8];assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[1].index==a&&found[2].index==b);assert(Mirv_Tf2_CollectEntityLabels(true,found,8)==1&&found[0].index==5);unsigned int old=gib.Handle;gib.Handle+=(1u<<12);assert(Mirv_Tf2_HandleForAddress(a)==0xffffffffu);int replacement=Mirv_Tf2_EntityAddress(&gib);assert(replacement!=a&&Mirv_Tf2_HandleForAddress(replacement)==gib.Handle);gib.Render.Visible=false;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==2);gib.Handle=0xffffffffu;assert(Mirv_Tf2_EntityAddress(&gib)==-1);objects={&player,&other};assert(Mirv_Tf2_HandleForAddress(b)==other.Handle);++g_LevelInitCount;assert(Mirv_Tf2_HandleForAddress(b)==0xffffffffu);assert(Mirv_Tf2_EntityAddress(&other)==2048);std::cout<<"Client entity address and label checks passed\n";}
+'''
+source=out/'client_entity_address.cpp';source.write_text(identity_fixture)
+command=['g++','-std=c++17','-O1','-g',str(source),'-o',str(out/'client_entity_address')]
+if args.sanitize:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
+result=subprocess.run(command,capture_output=True,text=True);(out/'identity-build.log').write_text(result.stdout+result.stderr)
+if result.returncode:print(result.stderr[-6500:]);raise SystemExit(result.returncode)
+result=subprocess.run([str(out/'client_entity_address')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
 print(result.stdout+result.stderr)
 if result.returncode:raise SystemExit(result.returncode)

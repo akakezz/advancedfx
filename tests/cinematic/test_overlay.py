@@ -1226,11 +1226,12 @@ void AttachedFollowTests(){
 # Exercise the actual attachment orientation/capture code with deterministic entity poses.
 mode_source=(root/'AfxHookSource/MirvCalcs.cpp').read_text()
 mode_class=mode_source[mode_source.index('class CMirvVecAngTf2EntityIndexCalc'):mode_source.index('#ifndef _WIN64\nclass CMirvVecAngHandleAttachmentCalc')]
+mode_class=mode_class.replace('private:', 'public:', 1)
 mode_class=mode_class.replace('Mirv_Tf2_GetBoneNames(m_EntityIndex, names)', 'TestBoneNames(m_EntityIndex, names)')
 mode_class=mode_class[:mode_class.index('\tSOURCESDK::TF2::IClientTools * GetTools(')]+r"""
  SOURCESDK::TF2::IClientTools*GetTools(){return &tools;}
  bool GetBase(SOURCESDK::TF2::IClientTools*,SOURCESDK::Vector&pos,float base[3][3],SOURCESDK::QAngle&raw,SOURCESDK::QAngle&facing,bool&ok){
-  if(!poseValid||!BindModel((void*)2,poseModel))return false;pos=modelBonePositions.empty()||m_BoneIndex<0?pose:modelBonePositions.at(m_BoneIndex);raw=m_BoneIndex<0?entityAngles:boneAngles;facing=entityAngles;ok=true;
+  if((m_EntityIndex>=2048&&!Matches(&tools,(void*)1))||!poseValid||!BindModel((void*)2,poseModel))return false;pos=modelBonePositions.empty()||m_BoneIndex<0?pose:modelBonePositions.at(m_BoneIndex);raw=m_BoneIndex<0?entityAngles:boneAngles;facing=entityAngles;ok=true;
   Mirv_AngleMatrix3(raw.x,raw.y,raw.z,base);m_AnchorEntity=(void*)2;
   m_AnchorRoot[0]=m_AnchorRoot[1]=m_AnchorRoot[2]=0;return true;
  }
@@ -1243,11 +1244,12 @@ mode_class=mode_class[:body]+'{ return false; }'+mode_class[end:]
 mode_math=mode_source[mode_source.index('static void Mirv_AngleMatrix3('):mode_source.index('class CMirvVecAngTf2EntityIndexCalc')]
 mode_preamble=r"""
 namespace AttachmentModeTest {
-namespace SOURCESDK {struct Vector{float x=0,y=0,z=0;};using QAngle=Vector;namespace TF2{using IClientTools=::SOURCESDK::TF2::IClientTools;}}
+namespace SOURCESDK {struct Vector{float x=0,y=0,z=0;};using QAngle=Vector;namespace TF2{using IClientTools=::SOURCESDK::TF2::IClientTools;using EntitySearchResult=void*;}}
 struct CMirvVecAngCalc{CMirvVecAngCalc(const char*){}virtual void Console_PrintBegin(){}};
 struct View{double LastCameraAngles[3]={12,37,-8};}g_Hook_VClient_RenderView;
 SOURCESDK::TF2::IClientTools tools;
 int g_LevelInitCount=0;const void*poseModel=(void*)1;
+unsigned int currentClientHandle=0xffffffffu;unsigned int Mirv_Tf2_EntityHandle(const void*){return currentClientHandle;}unsigned int Mirv_Tf2_HandleForAddress(int){return currentClientHandle;}
 std::vector<std::string> boneNames={"root","bip_head"};
 std::vector<SOURCESDK::Vector> modelBonePositions;
 int TestBoneNames(int,MirvTf2BoneName_t*out){for(size_t i=0;i<boneNames.size();++i)snprintf(out[i].name,64,"%s",boneNames[i].c_str());return int(boneNames.size());}
@@ -1261,6 +1263,10 @@ while depth:
 mode_offset='struct Offset {float m_OffsetForwad=-60,m_OffsetLeft=0,m_OffsetUp=8,m_OffsetForwardRot=0,m_OffseLeftRot=0,m_OffsetUpRot=0;'+offset_source[start:end].replace('CMirvCam::ApplyOffset','ApplyOffset')+'};\n'
 mode_tests=r"""
 void Run(){
+ currentClientHandle=(3u<<12)|2050;CMirvVecAngTf2EntityIndexCalc gib(nullptr,2050,-1,MIRV_TF2_BONEMODE_ENTITY);check(gib.Matches(&tools,(void*)1),"Client attachment pins the complete handle at construction");currentClientHandle+=(1u<<12);check(!gib.Matches(&tools,(void*)1),"Recycled client slots cannot redirect an existing attachment");CMirvVecAngTf2EntityIndexCalc replacement(nullptr,2050,-1,MIRV_TF2_BONEMODE_ENTITY);check(replacement.Matches(&tools,(void*)1),"Explicit reattachment accepts the replacement serial");++g_LevelInitCount;check(!replacement.Matches(&tools,(void*)1),"Demo level changes invalidate client attachments even if a handle repeats");currentClientHandle=0xffffffffu;CMirvVecAngTf2EntityIndexCalc missing(nullptr,2050,-1,MIRV_TF2_BONEMODE_ENTITY);currentClientHandle=(9u<<12)|2050;check(!missing.Matches(&tools,(void*)1),"Initially absent client targets never latch onto later spawns");
+
+ for(int mode:{MIRV_TF2_BONEMODE_BONE,MIRV_TF2_BONEMODE_ENTITY,MIRV_TF2_BONEMODE_ALIGNED,MIRV_TF2_BONEMODE_WORLD}){
+ currentClientHandle=(3u<<12)|2050;CMirvVecAngTf2EntityIndexCalc movingGib(nullptr,2050,1,mode);SOURCESDK::Vector gp;SOURCESDK::QAngle ga;check(movingGib.CalcVecAng(gp,ga)&&std::isfinite(ga.x)&&std::abs(gp.z-pose.z)<.001,"Client attachment evaluates bone poses in every attach mode");double co[3]={gp.x+10,gp.y+5,gp.z+7},ca[3]={0,45,0};float captured[3];check(movingGib.CaptureCamera(co,ca,captured),"Client attachment supports existing capture framing");pose.x+=10;check(movingGib.CalcVecAng(gp,ga)&&std::abs(gp.x-(co[0]+10))<.001,"Captured gib camera translates with its target");pose.x-=10;currentClientHandle+=(1u<<12);check(!movingGib.CalcVecAng(gp,ga),"Gib camera stops evaluating a reused client slot");}
  SOURCESDK::Vector position;SOURCESDK::QAngle angles;float offset[3];
  CMirvVecAngTf2EntityIndexCalc camera(nullptr,2,1,MIRV_TF2_BONEMODE_WORLD);
  check(camera.CalcVecAng(position,angles)&&std::abs(angles.x-12)<.001&&std::abs(angles.y-37)<.001&&std::abs(angles.z+8)<.001,"World mode starts with the current camera heading instead of entity or bone angles");

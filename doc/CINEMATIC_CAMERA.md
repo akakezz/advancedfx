@@ -1965,3 +1965,40 @@ renderer fixture covering 16,384 segments submits 49 draw calls rather than
 16,384 while preserving the original line quads. This measures submission count,
 not TF2 frame rate. Trail preparation also merges sorted entity identities once
 per snapshot pair instead of repeating a binary search for each entity.
+
+
+### Attaching to client-only gibs
+
+The existing **mirv_drawentities**, **mirv_listentities**, **mirv_listbones** and
+**mirv_cam attach** commands now share numeric addresses for client-only
+entities. Networked indices keep their existing meaning. Client-only IDs start
+at 2048 and are assigned by HLAE; they are not decoded engine slot numbers.
+Their display category remains **Other**.
+
+While the gib is alive in actual demo playback:
+
+```text
+mirv_drawentities filter other 1
+mirv_drawentities enabled 1
+mirv_listentities sort=distance
+// Substitute the gib's displayed number:
+mirv_cam attach 2050
+mirv_listbones 2050
+// Existing bone/offset/capture syntax remains available:
+mirv_cam attach 2050 0
+mirv_cam attach capture
+mirv_cam attach clear
+```
+
+Attachment pins the complete entity handle and demo-level generation. Deleting
+the gib, reusing its slot, or reloading the demo invalidates that target rather
+than following another object. Reattach explicitly after a reload. IDs are
+session-local and may differ in another playback; they are not suitable as
+permanent identifiers in saved scripts. Cached-only historical entities are not
+live attachment targets.
+
+The address resolver avoids depending on legacy/current Source handle bit
+layouts. Existing tool attachments (including AGR recording) are preserved when
+listing, classifying, or reading a client's pose. Other index-based commands,
+such as aim targeting, have not yet been extended to these client-only IDs.
+Viewmodel-specific categorization/visibility remains separate work.

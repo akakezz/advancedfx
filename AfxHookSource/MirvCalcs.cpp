@@ -2019,6 +2019,106 @@ public:
 	virtual CMirvTf2ClientRenderable * GetClientRenderable() = 0;
 };
 
+// TF2 entity slot identifiers include HLAE addresses for client-only objects.
+// Addresses start at 2048 and do not decode version-dependent handle bit fields.
+// The handle's serial must be retained by long-lived consumers to reject reuse.
+unsigned int Mirv_Tf2_EntityHandle(const void *entity)
+{
+	unsigned int handle = 0xffffffffu;
+	if (entity)
+	{
+		const auto reference = reinterpret_cast<const CMirvTf2ClientUnknown *>(entity)->GetRefEHandle();
+		if (reference)
+			std::memcpy(&handle, reference, sizeof(handle));
+	}
+	return handle;
+}
+namespace
+{
+struct Tf2ClientAddresses
+{
+	int Level = -1, Next = 2048;
+	std::map<unsigned int, int> Addresses;
+};
+Tf2ClientAddresses &Tf2Addresses()
+{
+	static Tf2ClientAddresses state;
+	if (state.Level != g_LevelInitCount)
+	{
+		state.Level = g_LevelInitCount;
+		state.Next = 2048;
+		state.Addresses.clear();
+	}
+	return state;
+}
+} // namespace
+std::uintptr_t Mirv_Tf2_AttachToolEntity(const void *entity, bool &attachedHere)
+{
+	attachedHere = false;
+	auto tools = CClientToolsTf2::Instance();
+	auto iface = tools ? tools->GetClientTools() : nullptr;
+	if (!iface || !entity)
+		return SOURCESDK::TF2::HTOOLHANDLE_INVALID;
+	const int count = iface->GetNumRecordables();
+	if (count < 0 || count > 16384)
+		return SOURCESDK::TF2::HTOOLHANDLE_INVALID;
+	std::vector<std::uintptr_t> existing;
+	existing.reserve(size_t(count));
+	for (int i = 0; i < count; ++i)
+		existing.push_back(iface->GetRecordable(i));
+	const auto handle = iface->AttachToEntity(const_cast<void *>(entity));
+	attachedHere = handle != SOURCESDK::TF2::HTOOLHANDLE_INVALID &&
+	               std::find(existing.begin(), existing.end(), handle) == existing.end();
+	return handle;
+}
+int Mirv_Tf2_EntityAddress(const void *entity)
+{
+	auto tools = CClientToolsTf2::Instance();
+	auto iface = tools ? tools->GetClientTools() : nullptr;
+	if (!iface || !entity)
+		return -1;
+	const int nativeIndex = iface->GetEntIndex(const_cast<void *>(entity));
+	if (nativeIndex >= 0 && nativeIndex < 2048)
+		return nativeIndex;
+	const auto handle = Mirv_Tf2_EntityHandle(entity);
+	if (handle == 0xffffffffu)
+		return -1;
+	auto &state = Tf2Addresses();
+	auto found = state.Addresses.find(handle);
+	if (found != state.Addresses.end())
+		return found->second;
+	if (state.Next == std::numeric_limits<int>::max())
+		return -1;
+	if (state.Addresses.size() >= 16384)
+	{
+		std::set<unsigned int> live;
+		for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+			live.insert(Mirv_Tf2_EntityHandle(ent));
+		for (auto it = state.Addresses.begin(); it != state.Addresses.end();)
+			if (!live.count(it->first))
+				it = state.Addresses.erase(it);
+			else
+				++it;
+	}
+	const int address = state.Next++;
+	state.Addresses.emplace(handle, address);
+	return address;
+}
+unsigned int Mirv_Tf2_HandleForAddress(int slot)
+{
+	if (slot < 2048)
+		return 0xffffffffu;
+	auto tools = CClientToolsTf2::Instance();
+	auto iface = tools ? tools->GetClientTools() : nullptr;
+	if (iface)
+		for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+			if ((iface->GetEntIndex(ent) < 0 || iface->GetEntIndex(ent) >= 2048) &&
+			    Mirv_Tf2_EntityAddress(ent) == slot)
+				return Mirv_Tf2_EntityHandle(ent);
+	return 0xffffffffu;
+}
+// End TF2 entity slot identifiers.
+
 // Orientation helpers for TF2 bone cameras. Same conventions as the Source SDK's mathlib
 // (matrix columns are forward, left, up; angles are pitch, yaw, roll in degrees).
 
@@ -2131,6 +2231,11 @@ public:
 		, m_Calibrated(false)
 		, m_Captured(false)
 	{
+		if (entityIndex >= 2048)
+		{
+			m_ClientHandle = Mirv_Tf2_HandleForAddress(entityIndex);
+			m_TargetLevel = g_LevelInitCount;
+		}
 		memset(m_Fix, 0, sizeof(m_Fix));
 		memset(m_Offset, 0, sizeof(m_Offset));
 		if (m_BoneIndex >= 0)
@@ -2303,7 +2408,7 @@ public:
 
 		for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
 		{
-			if (iface->GetEntIndex(ent) != m_EntityIndex)
+			if (!Matches(iface, ent))
 				continue;
 
 			SOURCESDK::Vector absOrigin;
@@ -2330,6 +2435,15 @@ public:
 	}
 
 private:
+	unsigned int m_ClientHandle = 0xffffffffu;
+	int m_TargetLevel = -1;
+	bool Matches(SOURCESDK::TF2::IClientTools *iface, SOURCESDK::TF2::EntitySearchResult entity) const
+	{
+		if (m_EntityIndex < 2048)
+			return iface->GetEntIndex(entity) == m_EntityIndex;
+		return m_ClientHandle != 0xffffffffu && m_TargetLevel == g_LevelInitCount &&
+		       Mirv_Tf2_EntityHandle(entity) == m_ClientHandle;
+	}
 	bool m_AnchorValid = false;
 	double m_Anchor[3] = {}, m_AnchorRoot[3] = {};
 	void *m_AnchorEntity = nullptr;
@@ -2396,8 +2510,8 @@ private:
 		CClientToolsTf2 * tools = CClientToolsTf2::Instance();
 		SOURCESDK::TF2::IClientTools * iface = tools ? tools->GetClientTools() : 0;
 
-		// Only networked entities (index 0 .. 2047) can be looked up by index.
-		if (!iface || m_EntityIndex < 0 || m_EntityIndex >= 2048)
+		// Network indices and client-only handle slots share the numeric command surface.
+		if (!iface || m_EntityIndex < 0)
 			return 0;
 
 		return iface;
@@ -2405,7 +2519,9 @@ private:
 
 	bool CalcEntity(SOURCESDK::TF2::IClientTools * iface, SOURCESDK::Vector & outVector, SOURCESDK::QAngle & outAngles)
 	{
-		SOURCESDK::TF2::HTOOLHANDLE hHandle = iface->GetToolHandleForEntityByIndex(m_EntityIndex);
+		SOURCESDK::TF2::HTOOLHANDLE hHandle =
+		    (m_EntityIndex < 2048 ? iface->GetToolHandleForEntityByIndex(m_EntityIndex)
+			                      : SOURCESDK::TF2::HTOOLHANDLE_INVALID);
 		SOURCESDK::TF2::EntitySearchResult attachedEntity = 0;
 
 		if (SOURCESDK::TF2::HTOOLHANDLE_INVALID == hHandle)
@@ -2413,10 +2529,11 @@ private:
 			// Attach temporarily if the game has not assigned a tool handle.
 			for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
 			{
-				if (iface->GetEntIndex(ent) == m_EntityIndex)
+				if (Matches(iface, ent))
 				{
-					hHandle = iface->AttachToEntity(ent);
-					if (SOURCESDK::TF2::HTOOLHANDLE_INVALID != hHandle)
+					bool attachedHere = false;
+					hHandle = Mirv_Tf2_AttachToolEntity(ent, attachedHere);
+					if (attachedHere)
 						attachedEntity = ent;
 					break;
 				}
@@ -2456,7 +2573,7 @@ private:
 
 		for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
 		{
-			if (iface->GetEntIndex(ent) != m_EntityIndex)
+			if (!Matches(iface, ent))
 				continue;
 
 			SOURCESDK::Vector absOrigin;
@@ -5487,7 +5604,7 @@ bool Mirv_Tf2_GetBones(int entityIndex, MirvTf2Bone_t * outBones, int & outCount
 	CClientToolsTf2 * tools = CClientToolsTf2::Instance();
 	SOURCESDK::TF2::IClientTools * iface = tools ? tools->GetClientTools() : 0;
 
-	if (!iface || entityIndex < 0 || 2048 <= entityIndex)
+	if (!iface || entityIndex < 0)
 		return false;
 
 	WrpGlobals * gl = g_Hook_VClient_RenderView.GetGlobals();
@@ -5496,7 +5613,7 @@ bool Mirv_Tf2_GetBones(int entityIndex, MirvTf2Bone_t * outBones, int & outCount
 
 	for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
 	{
-		if (iface->GetEntIndex(ent) != entityIndex)
+		if ((entityIndex < 2048 ? iface->GetEntIndex(ent) : Mirv_Tf2_EntityAddress(ent)) != entityIndex)
 			continue;
 
 		CMirvTf2ClientUnknown * unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
@@ -6671,12 +6788,12 @@ int Mirv_Tf2_GetBoneNames(int entityIndex, MirvTf2BoneName_t * outNames)
 	CClientToolsTf2 * tools = CClientToolsTf2::Instance();
 	SOURCESDK::TF2::IClientTools * iface = tools ? tools->GetClientTools() : 0;
 
-	if (!modelInfo || !iface || entityIndex < 0 || 2048 <= entityIndex)
+	if (!modelInfo || !iface || entityIndex < 0)
 		return 0;
 
 	for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
 	{
-		if (iface->GetEntIndex(ent) != entityIndex)
+		if ((entityIndex < 2048 ? iface->GetEntIndex(ent) : Mirv_Tf2_EntityAddress(ent)) != entityIndex)
 			continue;
 
 		CMirvTf2ClientUnknown * unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
@@ -7232,12 +7349,13 @@ static int Mirv_Tf2_ToolCategory(SOURCESDK::TF2::IClientTools *iface,
                                  SOURCESDK::TF2::EntitySearchResult entity, int index, bool isPlayer,
                                  bool scene = false)
 {
-	auto handle = iface->GetToolHandleForEntityByIndex(index);
+	auto handle = iface->GetEntIndex(entity) >= 0 && iface->GetEntIndex(entity) < 2048
+	                  ? iface->GetToolHandleForEntityByIndex(index)
+	                  : SOURCESDK::TF2::HTOOLHANDLE_INVALID;
 	bool attachedHere = false;
 	if (handle == SOURCESDK::TF2::HTOOLHANDLE_INVALID)
 	{
-		handle = iface->AttachToEntity(entity);
-		attachedHere = handle != SOURCESDK::TF2::HTOOLHANDLE_INVALID;
+		handle = Mirv_Tf2_AttachToolEntity(entity, attachedHere);
 	}
 	int category = Mirv_Tf2_LabelCategory(
 	    handle != SOURCESDK::TF2::HTOOLHANDLE_INVALID ? iface->GetClassname(handle) : nullptr, isPlayer,
@@ -7258,10 +7376,11 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 
 	for (auto ent = iface->FirstEntity(); ent && count < maxCount; ent = iface->NextEntity(ent))
 	{
-		const int index = iface->GetEntIndex(ent);
+		const int nativeIndex = iface->GetEntIndex(ent);
+		const int index = nativeIndex >= 0 && nativeIndex < 2048 ? nativeIndex : Mirv_Tf2_EntityAddress(ent);
 
-		// Index 0 is the world, only networked entities have an index that can be used elsewhere.
-		if (index < 1 || 2048 <= index)
+		// Exclude the world and invalid handles; client slots are addressable too.
+		if (index < 1)
 			continue;
 
 		if (playersOnly && !iface->IsPlayer(ent))

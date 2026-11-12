@@ -3172,10 +3172,11 @@ static void mirv_listentities_tf2(IWrpCommandArgs * args)
 
 	for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
 	{
-		const int idx = iface->GetEntIndex(ent);
+		const int nativeIndex = iface->GetEntIndex(ent);
+		const int idx = nativeIndex >= 0 && nativeIndex < 2048 ? nativeIndex : Mirv_Tf2_EntityAddress(ent);
 
-		// Only networked entities can be addressed by index (e.g. with mirv_aim entityIndex).
-		if (idx < 0 || idx >= 2048)
+		// Include client slots for attachment; not every index-based command supports them.
+		if (idx < 0)
 			continue;
 
 		const bool isPlayer = iface->IsPlayer(ent);
@@ -3186,12 +3187,12 @@ static void mirv_listentities_tf2(IWrpCommandArgs * args)
 		// Entities only have a tool handle while the client is in recording mode.
 		// Otherwise attach temporarily and detach again afterwards, so listing has no lasting effect.
 		bool attachedHere = false;
-		SOURCESDK::TF2::HTOOLHANDLE hHandle = iface->GetToolHandleForEntityByIndex(idx);
+		SOURCESDK::TF2::HTOOLHANDLE hHandle =
+		    idx < 2048 ? iface->GetToolHandleForEntityByIndex(idx) : SOURCESDK::TF2::HTOOLHANDLE_INVALID;
 
 		if (SOURCESDK::TF2::HTOOLHANDLE_INVALID == hHandle)
 		{
-			hHandle = iface->AttachToEntity(ent);
-			attachedHere = SOURCESDK::TF2::HTOOLHANDLE_INVALID != hHandle;
+			hHandle = Mirv_Tf2_AttachToolEntity(ent, attachedHere);
 		}
 
 		if (SOURCESDK::TF2::HTOOLHANDLE_INVALID != hHandle)
@@ -3773,20 +3774,26 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
 	}
 
 	Tier0_Msg(
-		"Usage:\n"
-		"mirv_drawentities enabled 0|1 - Draw the entity index above entities (nearest ones are drawn on top).\n"
-		"mirv_drawentities filter <all|players|projectiles|weapons|cosmetics|other> 0|1 - Toggle categories (all on by default).\n"
-		"mirv_drawentities height <fUnits> - Vertical offset from the entity anchor (default 0).\n"
-		"mirv_drawentities size <fPixels> - Digit height in pixels (default 32).\n"
-		"mirv_drawentities maxDistance <fUnits> - Only entities up to this distance from the camera, 0: no limit (default).\n"
-		"mirv_drawentities maxLabels <iCount> - At most this many labels, the nearest ones (default 64).\n"
-		"mirv_drawentities color <category> <red> <green> <blue> - RGB color for players/projectiles/weapons/cosmetics/other (0-255).\n"
-		"mirv_drawentities stackLabels 0|1 - 0: exact entity anchor, 1: world-aware stacking (default).\n"
-        "mirv_drawentities stackWorldDistance <fUnits> - Maximum 3D distance for stacking (default 32).\n"
-		"mirv_drawentities viewCheck 0|1 - 1 (default): Only draw on the main view (not i.e. the 3D skybox).\n"
-		"mirv_drawentities status - Print what the drawer is doing, for troubleshooting.\n"
-		"The index can be used with mirv_cam attach, mirv_listbones and so on. The labels are part of the game's picture, so they show up in recordings too: turn them off before recording.\n"
-	);
+	    "Usage:\n"
+	    "mirv_drawentities enabled 0|1 - Draw the entity index above entities (nearest ones are drawn on "
+	    "top).\n"
+	    "mirv_drawentities filter <all|players|projectiles|weapons|cosmetics|other> 0|1 - Toggle categories "
+	    "(all on by default).\n"
+	    "mirv_drawentities height <fUnits> - Vertical offset from the entity anchor (default 0).\n"
+	    "mirv_drawentities size <fPixels> - Digit height in pixels (default 32).\n"
+	    "mirv_drawentities maxDistance <fUnits> - Only entities up to this distance from the camera, 0: no "
+	    "limit (default).\n"
+	    "mirv_drawentities maxLabels <iCount> - At most this many labels, the nearest ones (default 64).\n"
+	    "mirv_drawentities color <category> <red> <green> <blue> - RGB color for "
+	    "players/projectiles/weapons/cosmetics/other (0-255).\n"
+	    "mirv_drawentities stackLabels 0|1 - 0: exact entity anchor, 1: world-aware stacking (default).\n"
+	    "mirv_drawentities stackWorldDistance <fUnits> - Maximum 3D distance for stacking (default 32).\n"
+	    "mirv_drawentities viewCheck 0|1 - 1 (default): Only draw on the main view (not i.e. the 3D "
+	    "skybox).\n"
+	    "mirv_drawentities status - Print what the drawer is doing, for troubleshooting.\n"
+	    "The displayed number can be used with mirv_cam attach and mirv_listbones. Client-only IDs are "
+	    "session-local. The labels are part of the game's picture, so they show up in recordings too: turn "
+	    "them off before recording.\n");
 }
 
 #ifndef _WIN64

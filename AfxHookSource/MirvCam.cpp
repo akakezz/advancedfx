@@ -10,10 +10,12 @@
 
 #include <shared/AfxMath.h>
 
-#include <string>
 #include <algorithm>
+#include <climits>
+#include <cstdlib>
 #include <ctype.h>
 #include <stdlib.h>
+#include <string>
 
 // How mirv_cam attach gets the angles when a bone is used.
 static int g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ALIGNED;
@@ -734,7 +736,14 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 
 				if (numeric)
 				{
-					entityIndex = atoi(target);
+					char *end = nullptr;
+					const long slot = std::strtol(target, &end, 10);
+					if (end == target || *end || slot < 0 || slot >= INT_MAX)
+					{
+						Tier0_Warning("Entity address must be a non-negative integer below INT_MAX.\n");
+						return;
+					}
+					entityIndex = int(slot);
 				}
 				else
 				{
@@ -778,12 +787,18 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 					}
 				}
 
-				if (entityIndex < 0 || 2048 <= entityIndex)
+				if (entityIndex < 0)
 				{
 					Tier0_Warning("Entity index %i is out of range.\n", entityIndex);
 					return;
 				}
 
+				if (entityIndex >= 2048 && Mirv_Tf2_HandleForAddress(entityIndex) == 0xffffffffu)
+				{
+					Tier0_Warning("Client entity ID %i is unavailable; see mirv_listentities.\n",
+					              entityIndex);
+					return;
+				}
 				int boneIndex = -1;
 
 				if (4 <= argc && !Mirv_Tf2_ParseBoneArg(entityIndex, args->ArgV(3), boneIndex))

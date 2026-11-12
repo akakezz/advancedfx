@@ -231,8 +231,8 @@ void CEntityIndexDrawer::OnPostRenderAllTools_EngineThread(void)
 
 	++m_StatMainViewCalls;
 
-	static MirvTf2EntityLabel_t found[2048];
-	const int numFound = Mirv_Tf2_CollectEntityLabels(false, found, 2048);
+	static MirvTf2EntityLabel_t found[8192];
+	const int numFound = Mirv_Tf2_CollectEntityLabels(false, found, 8192);
 
 	m_StatLastFound = numFound;
 
