@@ -1535,7 +1535,7 @@ and scrub backward through the covered interval. **Draw cached models** shows
 the recorded wireframe poses with the overlay closed and **Show path** disabled.
 Live models remain visible, so at the latest tick the wireframes can overlap
 them. Players are cyan, projectiles red, held weapons green, cosmetics purple,
-ragdolls green, and gibs orange.
+ragdolls gray, and gibs orange.
 On engines without the verified
 `VMaterialSystem082` interface, model drawing falls back to the default studio
 wireframe; proxy boxes still use the category colors.
@@ -1729,7 +1729,7 @@ mirv_campath cache record 0
 mirv_campath cache preview 1
 ```
 
-Ragdolls draw green; gibs draw orange. `cache status` reports their capture
+Ragdolls draw gray; gibs draw orange. `cache status` reports their capture
 settings and observed pose counts. This records visible model poses produced by
 the game, including client-only objects whose public entity index is -1.
 Transient identity uses the entity handle's slot **and serial**, so different

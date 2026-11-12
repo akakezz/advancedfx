@@ -147,7 +147,7 @@ public:
 		       : category == 2 ? std::array<unsigned char, 3>{70, 235, 140}
 		       : category == 3 ? std::array<unsigned char, 3>{210, 120, 255}
 		       : category == 4 ? std::array<unsigned char, 3>{180, 190, 200}
-		       : category == 5 ? std::array<unsigned char, 3>{100, 240, 140}
+		       : category == 5 ? std::array<unsigned char, 3>{180, 190, 200}
 		       : category == 6 ? std::array<unsigned char, 3>{255, 145, 65}
 		                       : std::array<unsigned char, 3>{80, 220, 255};
 	}

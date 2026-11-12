@@ -4943,7 +4943,7 @@ static void DrawSequencerDetails(int playhead)
 		ImGui::TextColored(ImVec4(70 / 255.f, 235 / 255.f, 140 / 255.f, 1), "Weapons: green");
 		ImGui::SameLine();
 		ImGui::TextColored(ImVec4(210 / 255.f, 120 / 255.f, 1, 1), "Cosmetics: purple");
-		ImGui::TextColored(ImVec4(100 / 255.f, 240 / 255.f, 140 / 255.f, 1), "Ragdolls: green");
+		ImGui::TextColored(ImVec4(180 / 255.f, 190 / 255.f, 200 / 255.f, 1), "Ragdolls: gray");
 		ImGui::SameLine();
 		ImGui::TextColored(ImVec4(1, 145 / 255.f, 65 / 255.f, 1), "Gibs: orange");
 		if (ImGui::Checkbox("Smooth cached animation", &g_SceneSmoothAnimation))
