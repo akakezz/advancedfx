@@ -4341,6 +4341,7 @@ struct Tf2MutedSound
 	float Volume;
 };
 bool g_Tf2RecorderSoundMute = false;
+std::atomic_bool g_Tf2RecorderMuteArmed{false};
 void *g_Tf2RecorderSound = nullptr;
 Tf2ActiveSoundList g_Tf2RecorderSoundList;
 std::map<int, Tf2MutedSound> g_Tf2MutedSounds;
@@ -4406,7 +4407,8 @@ bool Tf2RecorderSoundOwned(int source, int recorder)
 int __cdecl Tf2RecorderStartSound(void *params)
 {
 	auto targets = std::atomic_load(&g_Tf2RecorderSoundTargets);
-	if (params && targets)
+	if (params &&
+	    (targets || (g_Tf2RecorderMuteArmed.load() && GetCurrentThreadId() == g_Tf2RecorderSoundThread)))
 	{
 		int source, channel, flags;
 		std::memcpy(&source, static_cast<const char *>(params) + offsetof(Tf2StartSoundPrefix, Source),
@@ -4418,7 +4420,7 @@ int __cdecl Tf2RecorderStartSound(void *params)
 		// Always allow stop requests and microphone voice chat. Perform client
 		// entity queries only on the thread that enabled this control; sound
 		// workers use the immutable ownership snapshot published each frame.
-		bool owned = targets->count(source) != 0;
+		bool owned = targets && targets->count(source) != 0;
 		if (GetCurrentThreadId() == g_Tf2RecorderSoundThread)
 			owned = Tf2RecorderSoundPov() && Tf2RecorderSoundOwned(source, g_VEngineClient->GetLocalPlayer());
 		// Anonymous static ambient sounds also use source -1; they are not
@@ -4557,6 +4559,19 @@ void Tf2RecorderSoundRestore(const Tf2ActiveSound &sound)
 		Tf2RecorderSoundVolume(sound.Guid, found->second.Volume);
 }
 } // namespace
+bool MirvFix_ArmRecorderSoundMute(bool enabled)
+{
+	g_Tf2RecorderMuteArmed.store(enabled);
+	if (!enabled)
+		return true;
+	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
+		return false;
+	void *sound = g_AppSystemFactory ? g_AppSystemFactory("IEngineSoundClient003", nullptr) : nullptr;
+	if (!sound || !Tf2InstallRecorderSoundHook(sound))
+		return false;
+	g_Tf2RecorderSoundThread = GetCurrentThreadId();
+	return true;
+}
 bool MirvFix_GetRecorderSoundMute()
 {
 	return g_Tf2RecorderSoundMute;
@@ -6340,6 +6355,10 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			{
 				if (!MirvFix_SetRecorderSoundMute(!std::strcmp(args->ArgV(2), "0")))
 					Tier0_Warning("Recorder sound mute could not be enabled.\n");
+				else
+					AfxHookSource::CameraOverlay::RememberDemoFixPreference(
+					    AfxHookSource::CameraOverlay::DemoFixPreference::RecorderMute,
+					    !std::strcmp(args->ArgV(2), "0"));
 			}
 			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
 				Tier0_Warning("Usage: mirv_fix recorderSounds 0|1|status (0 mutes, 1 restores)\n");
@@ -6358,6 +6377,10 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			{
 				if (!MirvFix_SetPovDeathcam(!std::strcmp(args->ArgV(2), "1")))
 					Tier0_Warning("POV deathcam fix unavailable: requires TF2/TF2C VClient017 observer receive tables and a successful proxy hook.\n");
+				else
+					AfxHookSource::CameraOverlay::RememberDemoFixPreference(
+					    AfxHookSource::CameraOverlay::DemoFixPreference::Deathcam,
+					    !std::strcmp(args->ArgV(2), "1"));
 			}
 			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
 				Tier0_Warning("Usage: mirv_fix povDeathcam 0|1|status\n");
@@ -6486,6 +6509,9 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			{
 				if (!MirvFix_SetPlayerInterpolation(-1))
 					Tier0_Warning("Could not restore interpolation settings.\n");
+				else
+					AfxHookSource::CameraOverlay::RememberDemoFixPreference(
+					    AfxHookSource::CameraOverlay::DemoFixPreference::PlayerInterpolation, -1);
 				MirvFix_PrintPlayerInterpolationStatus();
 				return;
 			}
@@ -6495,7 +6521,10 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				double seconds = std::strtod(args->ArgV(2), &end);
 				if (end == args->ArgV(2) || *end || !MirvFix_SetPlayerInterpolation(seconds))
 					Tier0_Warning("Interpolation edit rejected. Requires a TF2 demo, writable interpolation "
-								  "cvars and 0.001..1 seconds. Existing settings retained.\n");
+					              "cvars and 0.001..1 seconds. Existing settings retained.\n");
+				else
+					AfxHookSource::CameraOverlay::RememberDemoFixPreference(
+					    AfxHookSource::CameraOverlay::DemoFixPreference::PlayerInterpolation, seconds);
 				MirvFix_PrintPlayerInterpolationStatus();
 				return;
 			}

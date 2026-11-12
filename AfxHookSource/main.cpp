@@ -924,7 +924,10 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 	 SOURCESDK::TF2::ClientFrameStage_t curStage)
 {
 	if (curStage == SOURCESDK::TF2::FRAME_START)
+	{
 		MirvFix_Update();
+		AfxHookSource::CameraOverlay::PreferencesFrame();
+	}
 	switch (curStage)
 	{
 	case SOURCESDK::TF2::FRAME_RENDER_START:

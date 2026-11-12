@@ -19,6 +19,8 @@ resolver=code[code.index('void *Tf2FindStartSound('):code.index('bool Tf2Install
 code=code[:platform_a]+'bool Tf2InstallRecorderSoundHook(void *);\n'+code[platform_b:]
 command = native[native.index('// TF2 recorder sound command.'):native.index('// End TF2 recorder sound command.')]
 preamble = r'''
+DEMO_FIX_PREFERENCE_ENUM
+namespace AfxHookSource{namespace CameraOverlay{void RememberDemoFixPreference(DemoFixPreference,double){}}}
 #include <algorithm>
 #include <atomic>
 #include <memory>
@@ -135,6 +137,8 @@ void Call(std::initializer_list<const char*> words){struct Args{std::vector<cons
 int main(){try{ResolverTests();ENGINE_CASES
  table[16]=(void*)Volume;table[17]=(void*)Query;
  Check(!MirvFix_GetRecorderSoundMute(),"default off");
+ Check(MirvFix_ArmRecorderSoundMute(true),"saved preference prepares the verified hook before activation");Check(!MirvFix_GetRecorderSoundMute()&&Emit(1)==0&&Emit(3)==0,"armed preference suppresses first POV recorder/owned-weapon onsets before per-frame activation");Check(Emit(1,8)==77&&Emit(-1,6,0,true)==77&&Emit(1,2,32)==77,"arming preserves microphone voice, ambient and stop requests");engine.Hltv=true;Check(Emit(1)==77,"armed preference never mutes STV");engine.Hltv=false;engine.Playing=false;Check(Emit(1)==77,"armed preference never mutes live play");engine.Playing=true;MirvFix_ArmRecorderSoundMute(false);Check(Emit(1)==77,"disarming immediately restores starts");starts=0;
+
  MirvFix_RecorderSoundUpdate();Check(queries==0,"disabled has no queries");
  engine.Hltv=true;Check(!MirvFix_SetRecorderSoundMute(true),"STV rejected");engine.Hltv=false;
  engine.Playing=false;Check(!MirvFix_SetRecorderSoundMute(true),"live play rejected");engine.Playing=true;
@@ -229,6 +233,9 @@ with tempfile.TemporaryDirectory(prefix='hlae-recorder-sound-') as temp:
             image_file = out/f'engine{arch}.image'
             image_file.write_bytes(image)
             engine_cases.append(f'RunEngineCase({json.dumps(str(image_file))}, {base}ull, {ambient}ull, {str(arch==64).lower()});')
+    preference_header = (root / 'AfxHookSource/CameraOverlay.h').read_text()
+    preference_enum = preference_header[preference_header.index('enum class DemoFixPreference'):].split(';', 1)[0] + ';'
+    preamble = preamble.replace('DEMO_FIX_PREFERENCE_ENUM', 'namespace AfxHookSource{namespace CameraOverlay{' + preference_enum + '}}')
     source.write_text(preamble + code + resolver_test + test.replace('ENGINE_CASES', ''.join(engine_cases)))
-    subprocess.run(['g++', '-std=c++17', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer', str(source), '-o', str(out/'recorder_sound')], check=True)
+    subprocess.run(['g++', '-std=c++17', '-g', '-I', str(root), '-fsanitize=address,undefined', '-fno-omit-frame-pointer', str(source), '-o', str(out/'recorder_sound')], check=True)
     subprocess.run([str(out/'recorder_sound')], check=True)

@@ -51,12 +51,19 @@ static advancedfx::SceneCache g_SceneCache;
 static bool g_SceneRecord = false, g_ScenePreview = false;
 static double g_SceneCursor = 0;
 static bool g_SceneDrivingCamera = false;
-static int g_ScenePoseEntity = 0, g_ScenePoseUser = 0; // -1 captures all player poses.
+static bool g_ScenePlayerModels = false, g_ScenePlayerFilter = false;
+struct ScenePlayerSelection
+{
+	int Index;
+	std::string Name;
+};
+static std::map<int, ScenePlayerSelection>
+    g_ScenePlayers; // Demo-local user ID -> identity, never only a slot.
 static bool g_SceneSmoothAnimation = true;
 static bool g_SceneProjectiles = false, g_SceneWeapons = false, g_SceneCosmetics = false;
 static bool g_SceneRagdolls = false, g_SceneGibs = false;
 static bool g_SceneBuildings = false, g_SceneProps = false;
-static std::string g_ScenePoseName, g_ScenePoseStatus = "Pose capture disabled.";
+static std::string g_ScenePoseStatus = "Pose capture disabled.";
 static std::shared_ptr<const std::string> g_SceneModelStatus;
 static void SceneModelStatus(const std::string &value)
 {
@@ -95,32 +102,39 @@ static bool SceneCanDrawModels()
 }
 
 static unsigned long long g_ScenePoseCaptured = 0, g_ScenePoseFailures = 0;
-static bool SceneSelectPosePlayer(int index)
+static bool SceneResolvePlayer(int index, int &user, ScenePlayerSelection &selection)
 {
-	if (index == -1)
-	{
-		g_ScenePoseEntity = -1;
-		g_ScenePoseUser = 0;
-		g_ScenePoseName = "All players";
-		g_ScenePoseStatus = "All player poses selected. Record scene history and play forward.";
-		return true;
-	}
-	if (!index)
-	{
-		g_ScenePoseEntity = g_ScenePoseUser = 0;
-		g_ScenePoseName.clear();
-		g_ScenePoseStatus = "Pose capture disabled; retained poses can still be previewed.";
-		return true;
-	}
 	char name[128];
-	int user = 0;
 	if (index < 1 || index > Mirv_Tf2_GetMaxPlayers() ||
 	    !Mirv_Tf2_GetPlayerInfo(index, name, sizeof(name), &user) || user <= 0)
 		return false;
-	g_ScenePoseEntity = index;
-	g_ScenePoseUser = user;
-	g_ScenePoseName = name;
-	g_ScenePoseStatus = "Target selected. Record scene history and play forward to capture its model pose.";
+	selection = {index, name};
+	return true;
+}
+static bool ScenePlayerMatches(std::uint64_t user, int index = -1)
+{
+	if (!g_ScenePlayerFilter)
+		return true;
+	auto found = g_ScenePlayers.find(int(user));
+	return found != g_ScenePlayers.end() && (index < 0 || found->second.Index == index);
+}
+static bool SceneSelectPosePlayer(int index)
+{
+	std::map<int, ScenePlayerSelection> selected;
+	if (index > 0)
+	{
+		int user;
+		ScenePlayerSelection player;
+		if (!SceneResolvePlayer(index, user, player))
+			return false;
+		selected.emplace(user, std::move(player));
+	}
+	else if (index < -1)
+		return false;
+	g_ScenePlayerModels = index != 0;
+	g_ScenePlayerFilter = index > 0;
+	g_ScenePlayers = std::move(selected);
+	g_ScenePoseStatus = "Capture preferences updated; changes affect future frames.";
 	return true;
 }
 static ImGui::FrameIndexType g_SequencerFrame = 0;
@@ -250,7 +264,7 @@ void SceneCacheFrame(bool capture)
 		advancedfx::SceneCache::Frame frame;
 		frame.DemoTime = time;
 		frame.ClientTime = g_MirvTime.GetTime();
-		bool poseTargetSeen = false;
+		size_t selectedSeen = 0;
 		std::vector<MirvTf2SceneEntity> entities;
 		Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls,
 		                              g_SceneGibs, g_SceneBuildings, g_SceneProps, entities);
@@ -261,16 +275,17 @@ void SceneCacheFrame(bool capture)
 		{
 			auto &entity = row.Snapshot;
 			const bool player = entity.Category == MIRV_TF2_ENTITY_PLAYER;
-			const bool selected = player && row.Index == g_ScenePoseEntity &&
-			                      entity.Identity == static_cast<unsigned>(g_ScenePoseUser);
-			poseTargetSeen |= selected;
+			const bool selected = player && ScenePlayerMatches(entity.Identity, row.Index);
+			selectedSeen += selected;
+			if (player && !selected)
+				continue; // A restrictive filter also excludes unselected player proxies.
 			const bool gear =
 			    entity.Category == MIRV_TF2_ENTITY_WEAPON || entity.Category == MIRV_TF2_ENTITY_COSMETIC;
-			if (gear &&
-			    !(entity.OwnerIdentity == 0 || (entity.OwnerIdentity >> 63) || g_ScenePoseEntity <= 0 ||
-			      (g_ScenePoseEntity > 0 && entity.OwnerIdentity == static_cast<unsigned>(g_ScenePoseUser))))
+			if (gear && entity.OwnerIdentity && !(entity.OwnerIdentity >> 63) &&
+			    !ScenePlayerMatches(entity.OwnerIdentity))
 				continue;
-			if ((player && (g_ScenePoseEntity == -1 || selected)) ||
+
+			if ((player && g_ScenePlayerModels && selected) ||
 			    (entity.Category == MIRV_TF2_ENTITY_PROJECTILE && g_SceneProjectiles) || gear ||
 			    (entity.Category == MIRV_TF2_ENTITY_RAGDOLL && g_SceneRagdolls) ||
 			    (entity.Category == MIRV_TF2_ENTITY_GIB && g_SceneGibs) ||
@@ -307,7 +322,7 @@ void SceneCacheFrame(bool capture)
 			}
 			frame.Entities.push_back(std::move(entity));
 		}
-		if (g_ScenePoseEntity || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneBuildings ||
+		if (g_ScenePlayerModels || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneBuildings ||
 		    g_SceneProps || g_SceneWeapons || g_SceneCosmetics)
 		{
 			g_ScenePoseStatus =
@@ -320,9 +335,9 @@ void SceneCacheFrame(bool capture)
 			if (!lastIssue.empty())
 				g_ScenePoseStatus += " " + lastIssue;
 		}
-		if (g_ScenePoseEntity > 0 && !poseTargetSeen)
-			g_ScenePoseStatus =
-			    "Selected player is unavailable or its entity slot was reused; no selected pose captured.";
+		if (g_ScenePlayerFilter && g_ScenePlayerModels && selectedSeen < g_ScenePlayers.size())
+			g_ScenePoseStatus += " " + std::to_string(selectedSeen) + "/" +
+			                     std::to_string(g_ScenePlayers.size()) + " selected players available.";
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
@@ -694,6 +709,7 @@ static std::vector<std::filesystem::path> g_RecoveryCandidates;
 static std::string g_DocumentStatus;
 static void UpdateRecovery(bool force);
 static void CancelCommandMarkerDrag();
+static void SaveOverlayPreferences();
 
 bool IsOpen()
 {
@@ -701,6 +717,7 @@ bool IsOpen()
 }
 void SetOpen(bool value)
 {
+	const bool wasOpen = g_Open.load();
 	if (!value)
 	{
 		FinishEdit();
@@ -713,6 +730,8 @@ void SetOpen(bool value)
 		g_MouseLook = false;
 	if (!value)
 		UpdateRecovery(true);
+	if (wasOpen && !value)
+		SaveOverlayPreferences();
 }
 bool IsMouseLook()
 {
@@ -1022,14 +1041,71 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			}
 		}
 	}
-	else if (!_stricmp(op, "players"))
+	else if (!_stricmp(op, "players") || !_stricmp(op, "filter"))
 	{
-		int entity;
-		if (args->ArgC() == 3 && !_stricmp(args->ArgV(2), "all"))
-			ok = SceneSelectPosePlayer(-1);
-		else if (args->ArgC() == 3 && !_stricmp(args->ArgV(2), "none"))
-			ok = SceneSelectPosePlayer(0);
-		else ok = integer(entity) && entity >= 0 && SceneSelectPosePlayer(entity);
+		const bool bodies = !_stricmp(op, "players");
+		const char *mode = args->ArgC() > 2 ? args->ArgV(2) : "list";
+		if (!bodies && args->ArgC() == 2)
+		{
+			advancedfx::Message(
+			    "Filter: %s; %zu selected. Use mirv_cache filter all|none|set|add|remove <indices...>.\n",
+			    g_ScenePlayerFilter ? "selected players" : "all players", g_ScenePlayers.size());
+			return;
+		}
+		if (args->ArgC() == 3 &&
+		    (!_stricmp(mode, "all") || !_stricmp(mode, "none") || (bodies && !strcmp(mode, "0"))))
+		{
+			if (bodies)
+				SceneSelectPosePlayer(!_stricmp(mode, "all") ? -1 : 0);
+			else
+			{
+				g_ScenePlayerFilter = _stricmp(mode, "all") != 0;
+				g_ScenePlayers.clear();
+			}
+			ok = true;
+		}
+		else
+		{
+			const bool set = bodies || !_stricmp(mode, "set"), add = !bodies && !_stricmp(mode, "add"),
+			           remove = !bodies && !_stricmp(mode, "remove");
+			const int first = bodies ? 2 : 3;
+			std::map<int, ScenePlayerSelection> selected;
+			bool valid = (set || add || remove) && args->ArgC() > first && args->ArgC() - first <= 128;
+			for (int arg = first; valid && arg < args->ArgC(); ++arg)
+			{
+				int index, user;
+				ScenePlayerSelection player;
+				valid = parseInteger(arg, index) && SceneResolvePlayer(index, user, player);
+				if (valid)
+					selected.emplace(user, std::move(player));
+			}
+			if (valid)
+			{
+				if (!set && !g_ScenePlayerFilter)
+				{
+					g_ScenePlayers.clear();
+					for (int index = 1; index <= Mirv_Tf2_GetMaxPlayers(); ++index)
+					{
+						int user;
+						ScenePlayerSelection player;
+						if (SceneResolvePlayer(index, user, player))
+							g_ScenePlayers.emplace(user, std::move(player));
+					}
+				}
+				if (set)
+					g_ScenePlayers = std::move(selected);
+				else
+					for (const auto &entry : selected)
+						if (add)
+							g_ScenePlayers[entry.first] = entry.second;
+						else
+							g_ScenePlayers.erase(entry.first);
+				g_ScenePlayerFilter = true;
+				if (bodies)
+					g_ScenePlayerModels = true;
+				ok = true;
+			}
+		}
 	}
 	else if (!_stricmp(op, "projectiles") || !_stricmp(op, "weapons") || !_stricmp(op, "cosmetics") ||
 	         !_stricmp(op, "ragdolls") || !_stricmp(op, "gibs") || !_stricmp(op, "buildings") ||
@@ -1087,8 +1163,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		advancedfx::Message(
 		    "Scene cache commands:\n"
 		    "  mirv_cache record <0|1> - Record while the actual demo plays forward.\n"
-		    "  mirv_cache players <all|none|entity index> - Player bodies; optional individual-player "
-		    "scope.\n"
+		    "  mirv_cache players <all|none|indices...> - Player model capture.\n"
+		    "  mirv_cache filter <all|none|set|add|remove> [indices...] - Body/held-gear scope.\n"
 		    "  mirv_cache <projectiles|weapons|cosmetics|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache range <start tick> <end tick>|off - Inclusive capture bounds.\n"
 		    "  mirv_cache clear - Clear recorded history.\n"
@@ -1112,12 +1188,17 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	                    g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0,
 	                    SceneCacheView() ? "yes" : "no");
 	if (_stricmp(op, "status"))
+	{
+		if (ImGui::GetCurrentContext())
+			ImGui::MarkIniSettingsDirty();
 		return;
+	}
 
-	advancedfx::Message("Scene pose: player target %d (-1=all), user %d; captured %llu, unavailable %llu; "
+	advancedfx::Message("Scene pose: players %d; filter %s (%zu selected); captured %llu, unavailable %llu; "
 	                    "models %d; projectiles %d; weapons %d; cosmetics %d; ragdolls %d; gibs %d; "
 	                    "buildings %d; props %d; animation %s. %s\n",
-	                    g_ScenePoseEntity, g_ScenePoseUser, g_ScenePoseCaptured, g_ScenePoseFailures,
+	                    int(g_ScenePlayerModels), g_ScenePlayerFilter ? "selected" : "all",
+	                    g_ScenePlayers.size(), g_ScenePoseCaptured, g_ScenePoseFailures,
 	                    int(g_SceneDrawModels.load()), int(g_SceneProjectiles), int(g_SceneWeapons),
 	                    int(g_SceneCosmetics), int(g_SceneRagdolls), int(g_SceneGibs), int(g_SceneBuildings),
 	                    int(g_SceneProps), g_SceneSmoothAnimation ? "smooth" : "nearest",
@@ -1300,6 +1381,78 @@ static bool s_campathDialogsInit = false;
 static bool g_OpenAll = false, g_SaveAll = false, g_ExportClassic = false;
 static double g_ExportFps = 120;
 
+// Preferences share the existing ImGui settings file. Demo identities and running
+// operations deliberately stay in memory; saved fixes are armed only for compatible demos.
+static bool g_OverlayPreferencesReady = false;
+static bool g_DemoMute = false, g_DemoDeathcam = false, g_DemoSmooth = false;
+static double g_DemoInterpolation = .1;
+static auto g_DemoFixAttempt = std::chrono::steady_clock::time_point{};
+static std::pair<unsigned, size_t> g_OverlayPreferenceStamp{};
+static std::pair<unsigned, size_t> OverlayPreferenceStamp()
+{
+	unsigned bits = 0, bit = 0;
+	for (bool value : {g_ScenePlayerModels, g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics,
+	                   g_SceneRagdolls, g_SceneGibs, g_SceneBuildings, g_SceneProps, g_SceneSmoothAnimation,
+	                   g_SceneDrawModels.load(), g_ShowSequencer, g_ShowCameraControl, g_ShowCurveEditor,
+	                   g_ShowGizmo, g_DemoMute, g_DemoDeathcam, g_DemoSmooth})
+	{
+		if (value)
+			bits |= 1u << bit;
+		++bit;
+	}
+	return {bits, g_SceneCache.Limit()};
+}
+static void CheckOverlayPreferences()
+{
+	if (!g_OverlayPreferencesReady || !ImGui::GetCurrentContext())
+		return;
+	const auto stamp = OverlayPreferenceStamp();
+	if (stamp != g_OverlayPreferenceStamp)
+	{
+		g_OverlayPreferenceStamp = stamp;
+		ImGui::MarkIniSettingsDirty();
+	}
+}
+void RememberDemoFixPreference(DemoFixPreference setting, double value)
+{
+	if (setting == DemoFixPreference::RecorderMute)
+	{
+		g_DemoMute = value != 0;
+		if (!g_DemoMute)
+			MirvFix_ArmRecorderSoundMute(false);
+	}
+	else if (setting == DemoFixPreference::Deathcam)
+		g_DemoDeathcam = value != 0;
+	else
+	{
+		g_DemoSmooth = value >= .001 && value <= 1 && std::isfinite(value);
+		if (g_DemoSmooth)
+			g_DemoInterpolation = value;
+	}
+	g_DemoFixAttempt = {};
+	if (ImGui::GetCurrentContext())
+		ImGui::MarkIniSettingsDirty();
+}
+void PreferencesFrame()
+{
+	if (!g_OverlayPreferencesReady)
+		return;
+	CheckOverlayPreferences();
+	const auto now = std::chrono::steady_clock::now();
+	if (now - g_DemoFixAttempt < std::chrono::seconds(1))
+		return;
+	g_DemoFixAttempt = now;
+	MirvFix_ArmRecorderSoundMute(g_DemoMute);
+	if (g_DemoDeathcam && !MirvFix_GetPovDeathcam())
+		MirvFix_SetPovDeathcam(true);
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || g_VEngineClient->IsDrawingLoadingImage())
+		return;
+	if (g_DemoMute && !g_VEngineClient->IsHLTV() && !MirvFix_GetRecorderSoundMute())
+		MirvFix_SetRecorderSoundMute(true);
+	if (g_DemoSmooth && MirvFix_PlayerInterpolationAvailable() &&
+	    std::abs(MirvFix_GetPlayerInterpolation() - g_DemoInterpolation) > 1e-6)
+		MirvFix_SetPlayerInterpolation(g_DemoInterpolation);
+}
 // Persisted overlay paths in imgui.ini
 struct OverlayPathsSettings
 {
@@ -1318,6 +1471,68 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		return;
 	std::string key(line, eq - line);
 	std::string val(eq + 1);
+	bool *option = nullptr;
+	if (key == "CachePlayers")
+		option = &g_ScenePlayerModels;
+	if (key == "CacheProjectiles")
+		option = &g_SceneProjectiles;
+	if (key == "CacheWeapons")
+		option = &g_SceneWeapons;
+	if (key == "CacheCosmetics")
+		option = &g_SceneCosmetics;
+	if (key == "CacheRagdolls")
+		option = &g_SceneRagdolls;
+	if (key == "CacheGibs")
+		option = &g_SceneGibs;
+	if (key == "CacheBuildings")
+		option = &g_SceneBuildings;
+	if (key == "CacheProps")
+		option = &g_SceneProps;
+	if (key == "CacheSmooth")
+		option = &g_SceneSmoothAnimation;
+	if (key == "ShowSequencer")
+		option = &g_ShowSequencer;
+	if (key == "ShowCameraControl")
+		option = &g_ShowCameraControl;
+	if (key == "ShowCurveEditor")
+		option = &g_ShowCurveEditor;
+	if (key == "ShowGizmo")
+		option = &g_ShowGizmo;
+	if (key == "FixRecorderMute")
+		option = &g_DemoMute;
+	if (key == "FixDeathcam")
+		option = &g_DemoDeathcam;
+	if (key == "FixSmoothMovement")
+		option = &g_DemoSmooth;
+	if (option)
+	{
+		if (val == "0" || val == "1")
+			*option = val == "1";
+		return;
+	}
+	if (key == "CacheModels")
+	{
+		if (val == "0" || val == "1")
+			g_SceneDrawModels.store(val == "1");
+		return;
+	}
+	if (key == "CacheBudgetMiB")
+	{
+		char *end = nullptr;
+		errno = 0;
+		const auto budget = std::strtol(val.c_str(), &end, 10);
+		if (!errno && end != val.c_str() && !*end && budget >= 1 && budget <= 1024)
+			g_SceneCache.SetLimit(size_t(budget) * 1048576);
+		return;
+	}
+	if (key == "FixInterpolationSeconds")
+	{
+		char *end = nullptr;
+		const double seconds = std::strtod(val.c_str(), &end);
+		if (end != val.c_str() && !*end && std::isfinite(seconds) && seconds >= .001 && seconds <= 1)
+			g_DemoInterpolation = seconds;
+		return;
+	}
 	if (key == "CampathDir")
 	{
 		s->campathDir = val;
@@ -1376,6 +1591,35 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 					 MirvCampathPreview_GetSeekScale());
 	out_buf->appendf("Autosave=%d\nAutosaveSeconds=%.3f\n", g_Autosave ? 1 : 0, g_AutosaveSeconds);
 	out_buf->appendf("UiScale=%.3f\nFont=%d\nDocking=%d\n\n", g_UiScale, g_FontChoice, g_Docking ? 1 : 0);
+	out_buf->appendf("CachePlayers=%d\n", int(g_ScenePlayerModels));
+	out_buf->appendf("CacheProjectiles=%d\n", int(g_SceneProjectiles));
+	out_buf->appendf("CacheWeapons=%d\n", int(g_SceneWeapons));
+	out_buf->appendf("CacheCosmetics=%d\n", int(g_SceneCosmetics));
+	out_buf->appendf("CacheRagdolls=%d\n", int(g_SceneRagdolls));
+	out_buf->appendf("CacheGibs=%d\n", int(g_SceneGibs));
+	out_buf->appendf("CacheBuildings=%d\n", int(g_SceneBuildings));
+	out_buf->appendf("CacheProps=%d\n", int(g_SceneProps));
+	out_buf->appendf("CacheSmooth=%d\n", int(g_SceneSmoothAnimation));
+	out_buf->appendf("CacheModels=%d\n", int(g_SceneDrawModels.load()));
+	out_buf->appendf("ShowSequencer=%d\n", int(g_ShowSequencer));
+	out_buf->appendf("ShowCameraControl=%d\n", int(g_ShowCameraControl));
+	out_buf->appendf("ShowCurveEditor=%d\n", int(g_ShowCurveEditor));
+	out_buf->appendf("ShowGizmo=%d\n", int(g_ShowGizmo));
+	out_buf->appendf("FixRecorderMute=%d\n", int(g_DemoMute));
+	out_buf->appendf("FixDeathcam=%d\n", int(g_DemoDeathcam));
+	out_buf->appendf("FixSmoothMovement=%d\n", int(g_DemoSmooth));
+	out_buf->appendf("CacheBudgetMiB=%zu\nFixInterpolationSeconds=%.6f\n\n", g_SceneCache.Limit() / 1048576,
+	                 g_DemoInterpolation);
+}
+
+static void SaveOverlayPreferences()
+{
+	if (!g_OverlayPreferencesReady || !ImGui::GetCurrentContext())
+		return;
+	CheckOverlayPreferences();
+	const char *file = ImGui::GetIO().IniFilename;
+	if (file && *file)
+		ImGui::SaveIniSettingsToDisk(file);
 }
 
 static void PathChanged(void *)
@@ -2746,6 +2990,8 @@ void Initialize()
 	ImGui::AddSettingsHandler(&ini);
 	if (io.IniFilename)
 		ImGui::LoadIniSettingsFromDisk(io.IniFilename);
+	g_OverlayPreferenceStamp = OverlayPreferenceStamp();
+	g_OverlayPreferencesReady = true;
 	io.FontGlobalScale = g_UiScale;
 	ImFont *choices[] = {g_FontDefault, g_FontMono, g_FontSans, g_FontSilly};
 	io.FontDefault = choices[g_FontChoice] ? choices[g_FontChoice] : g_FontDefault;
@@ -3995,11 +4241,10 @@ void NotifyDemoPlaybackFile(const char *file)
 			g_SceneRecord = false;
 		g_SceneRangeEnabled = false;
 		g_ScenePreview = false;
-		if (g_ScenePoseEntity > 0)
-		{
-			g_ScenePoseEntity = g_ScenePoseUser = 0;
-			g_ScenePoseName.clear();
-		}
+		if (g_ScenePlayerFilter)
+			g_ScenePlayerModels = false;
+		g_ScenePlayerFilter = false;
+		g_ScenePlayers.clear();
 		g_ScenePoseStatus = "New demo: record scene history to capture the enabled categories.";
 		g_SequencerTimeline.RequestedDemo = file;
 	}
@@ -4908,12 +5153,12 @@ static void DrawSceneCacheMenu(int playhead)
 		ImGui::TextDisabled("Choose categories; checked colors match the preview.");
 		if (ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
 		{
-			bool players = g_ScenePoseEntity != 0;
+			bool players = g_ScenePlayerModels;
 			ImGui::TableNextColumn();
 			if (SceneCategoryCheckbox("Player models", players, 0,
 			                          "Full player bodies; defaults to all players. Off retains lightweight "
 			                          "player bounds. Optional filtering also scopes held gear."))
-				SceneSelectPosePlayer(players ? -1 : 0);
+				g_ScenePlayerModels = players;
 			ImGui::TableNextColumn();
 			SceneCategoryCheckbox("Projectiles", g_SceneProjectiles, 1,
 			                      "Visible projectile models; no particle trails.");
@@ -4940,27 +5185,59 @@ static void DrawSceneCacheMenu(int playhead)
 			    "Model-based doors, payloads, intelligence and props. Brush doors currently use bounds.");
 			ImGui::EndTable();
 		}
-		if (g_ScenePoseEntity && ImGui::TreeNode("Player filter (optional)"))
+		if ((g_ScenePlayerModels || g_SceneWeapons || g_SceneCosmetics) &&
+		    ImGui::TreeNode("Player filter (optional)"))
 		{
-			if (ImGui::BeginCombo("Player scope", g_ScenePoseName.c_str()))
+			ImGui::Checkbox("Only selected players", &g_ScenePlayerFilter);
+			ImGui::TextWrapped("Applies to player bodies and held gear. Other categories are independent. "
+			                   "Selection belongs to the current demo.");
+			if (g_ScenePlayerFilter)
 			{
-				if (ImGui::Selectable("All players", g_ScenePoseEntity == -1))
-					SceneSelectPosePlayer(-1);
+				static ImGuiTextFilter search;
+				search.Draw("Find player");
+				std::map<int, ScenePlayerSelection> shown;
 				for (int index = 1; index <= Mirv_Tf2_GetMaxPlayers(); ++index)
 				{
-					char name[128];
-					int user = 0;
-					if (!Mirv_Tf2_GetPlayerInfo(index, name, sizeof(name), &user) || user <= 0)
-						continue;
-					ImGui::PushID(index);
-					if (ImGui::Selectable(name, index == g_ScenePoseEntity && user == g_ScenePoseUser))
-						SceneSelectPosePlayer(index);
-					ImGui::PopID();
+					int user;
+					ScenePlayerSelection player;
+					if (SceneResolvePlayer(index, user, player) && search.PassFilter(player.Name.c_str()))
+						shown.emplace(user, std::move(player));
 				}
-				ImGui::EndCombo();
+				if (ImGui::Button("Select shown"))
+					for (const auto &entry : shown)
+						g_ScenePlayers[entry.first] = entry.second;
+				ImGui::SameLine();
+				if (ImGui::Button("Clear selection"))
+					g_ScenePlayers.clear();
+				ImGui::SameLine();
+				if (ImGui::Button("Invert shown"))
+					for (const auto &entry : shown)
+						if (g_ScenePlayers.count(entry.first))
+							g_ScenePlayers.erase(entry.first);
+						else
+							g_ScenePlayers.emplace(entry);
+				if (ImGui::BeginChild("Scene player list", ImVec2(0, 150), true))
+				{
+					for (const auto &entry : shown)
+					{
+						ImGui::PushID(entry.first);
+						bool selected = g_ScenePlayers.count(entry.first) != 0;
+						std::string label =
+						    entry.second.Name + " (" + std::to_string(entry.second.Index) + ")";
+						if (ImGui::Checkbox(label.c_str(), &selected))
+							if (selected)
+								g_ScenePlayers[entry.first] = entry.second;
+							else
+								g_ScenePlayers.erase(entry.first);
+						ImGui::PopID();
+					}
+				}
+				ImGui::EndChild();
+				ImGui::Text("%zu selected", g_ScenePlayers.size());
+				if (g_ScenePlayers.empty())
+					ImGui::TextDisabled(
+					    "No player bodies or held gear will be captured until you select players.");
 			}
-			ImGui::TextWrapped("Only player bodies and held gear use this filter. Loose items, corpses, "
-			                   "projectiles, buildings and props use their own category toggles.");
 			ImGui::TreePop();
 		}
 		ImGui::Checkbox("Capture tick range", &g_SceneRangeEnabled);
@@ -5345,6 +5622,7 @@ static void DrawSequencerDetails(int playhead)
 
 void Draw()
 {
+	CheckOverlayPreferences();
 	PollTimelineIndex();
 	AutoIndexRequestedDemo();
 	if (!g_Open)
@@ -5656,36 +5934,56 @@ void Draw()
 
 			if (ImGui::CollapsingHeader("Demo fixes"))
 			{
-				bool muteRecorder = MirvFix_GetRecorderSoundMute();
-				if (ImGui::Checkbox("Mute recorder sounds", &muteRecorder) &&
-					!MirvFix_SetRecorderSoundMute(muteRecorder))
-					g_DocumentStatus = MirvFix_RecorderSoundStatus();
-				ImGui::TextWrapped("TF2/TF2C POV demos only. Mutes active sounds from the recorder and owned "
-					"entities, including weapons. New recorder sounds are blocked before playback. "
-					"Disabling restores surviving sounds; ending playback disables the mute.");
-				bool deathcam = MirvFix_GetPovDeathcam();
-				if (ImGui::Checkbox("Suppress POV deathcam", &deathcam) && g_VEngineClient)
-					g_VEngineClient->ClientCmd_Unrestricted(deathcam ? "mirv_fix povDeathcam 1" : "mirv_fix povDeathcam 0");
-				ImGui::TextWrapped("Enable before the recorder dies. Keeps death/freeze camera effects from "
-					"freezing HLAE's view or selecting the freeze-cam sound mixer. Applies only to TF2/TF2C POV demos.");
-				static double interpolation = .1;
-				bool active = MirvFix_GetPlayerInterpolation() >= 0;
-				if (active)
-					interpolation = MirvFix_GetPlayerInterpolation();
-				ImGui::BeginDisabled(!active && !MirvFix_PlayerInterpolationAvailable());
-				if (ImGui::Checkbox("Smooth player movement", &active) &&
-					!MirvFix_SetPlayerInterpolation(active ? interpolation : -1))
-					g_DocumentStatus =
-						"Player interpolation is unavailable or the engine rejected its settings.";
-				if (ImGui::InputDouble("Player interpolation (seconds)", &interpolation, 0, 0, "%.3f") &&
-					active && !MirvFix_SetPlayerInterpolation(interpolation))
-					g_DocumentStatus = "Use 0.001..1 seconds; existing interpolation settings retained.";
-				ImGui::EndDisabled();
+				bool muteRecorder = g_DemoMute;
+				if (ImGui::Checkbox("Mute recorder sounds", &muteRecorder))
+				{
+					RememberDemoFixPreference(DemoFixPreference::RecorderMute, muteRecorder);
+					MirvFix_SetRecorderSoundMute(muteRecorder);
+				}
+				if (g_DemoMute && !MirvFix_GetRecorderSoundMute())
+					ImGui::TextDisabled("Saved; waiting for compatible POV playback.");
+				ImGui::TextWrapped(
+				    "TF2/TF2C POV only. Blocks new recorder/owned-weapon sounds before playback and mutes "
+					"surviving sounds. The preference remains enabled for subsequent demos.");
+				bool deathcam = g_DemoDeathcam;
+				if (ImGui::Checkbox("Suppress POV deathcam", &deathcam))
+				{
+					RememberDemoFixPreference(DemoFixPreference::Deathcam, deathcam);
+					MirvFix_SetPovDeathcam(deathcam);
+				}
+				if (g_DemoDeathcam && !MirvFix_GetPovDeathcam())
+					ImGui::TextDisabled("Saved; waiting for the TF2/TF2C client hooks.");
+				ImGui::TextWrapped("Prevents POV death/freeze camera effects from freezing the HLAE view or "
+				                   "selecting the freeze-cam sound mixer. Enable before death.");
+				bool active = g_DemoSmooth;
+				if (ImGui::Checkbox("Smooth player movement", &active))
+				{
+					RememberDemoFixPreference(DemoFixPreference::PlayerInterpolation,
+					                          active ? g_DemoInterpolation : -1);
+					MirvFix_SetPlayerInterpolation(active ? g_DemoInterpolation : -1);
+				}
+				double interpolation = g_DemoInterpolation;
+				if (ImGui::InputDouble("Player interpolation (seconds)", &interpolation, 0, 0, "%.3f"))
+				{
+					if (std::isfinite(interpolation) && interpolation >= .001 && interpolation <= 1)
+					{
+						g_DemoInterpolation = interpolation;
+						g_DemoFixAttempt = {};
+						ImGui::MarkIniSettingsDirty();
+						if (g_DemoSmooth)
+							MirvFix_SetPlayerInterpolation(interpolation);
+					}
+					else
+						g_DocumentStatus =
+						    "Use 0.001..1 seconds; existing interpolation preference retained.";
+				}
+				if (g_DemoSmooth && MirvFix_GetPlayerInterpolation() < 0)
+					ImGui::TextDisabled("Saved; waiting for compatible demo playback.");
 				if (ImGui::Button("Interpolation status") && g_VEngineClient)
 					g_VEngineClient->ClientCmd_Unrestricted("mirv_fix playerInterpolation status");
-				ImGui::TextWrapped("Uses TF2's existing movement interpolation. Adds presentation delay; it "
-								   "cannot add missing snapshots or fix limb-animation glitches. Restores "
-								   "settings when the demo ends. Default suggestion: 0.1 seconds.");
+				ImGui::TextWrapped("Adds presentation delay using TF2 interpolation; cannot reconstruct "
+				                   "missing snapshots. Native settings restore when playback ends; the saved "
+				                   "preference applies to the next demo.");
 			}
 
 			auto &path = g_Hook_VClient_RenderView.m_CamPath;

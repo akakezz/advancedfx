@@ -11,6 +11,14 @@ void SetOpen(bool value);
 bool IsMouseLook();
 void SetMouseLook(bool value);
 void Initialize();
+enum class DemoFixPreference
+{
+	RecorderMute,
+	Deathcam,
+	PlayerInterpolation
+};
+void RememberDemoFixPreference(DemoFixPreference setting, double value);
+void PreferencesFrame(); // Engine FRAME_START, including when the overlay is closed.
 void Draw();
 void SceneCacheFrame(bool capture = true);
 void SceneCacheDrawModels();

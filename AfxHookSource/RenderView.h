@@ -163,6 +163,8 @@ private:
 // TF2 demo controls, shared by the console and overlay.
 bool MirvFix_GetRecorderSoundMute();
 bool MirvFix_SetRecorderSoundMute(bool enabled);
+bool MirvFix_ArmRecorderSoundMute(
+    bool enabled); // Prepare the existing pre-playback hook for a saved preference.
 const char *MirvFix_RecorderSoundStatus();
 void MirvFix_RecorderSoundUpdate();
 bool MirvFix_PlayerInterpolationAvailable();

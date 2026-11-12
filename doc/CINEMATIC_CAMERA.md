@@ -1528,7 +1528,7 @@ Input release or focus handoff stops an active scrub rate.
 
 In the sequencer's **Scene Cache → Capture** section, enable **Player models**
 (default scope: all players). **Player filter (optional)** can narrow player
-bodies and held gear to one player. Enable **Projectiles**, **Weapons**,
+bodies and held gear to any set of players. Enable **Projectiles**, **Weapons**,
 **Cosmetics** and the other categories as wanted, then **Start recording** and play
 forward through the shot. Freeze actual playback, enable **Cached preview**,
 and scrub backward through the covered interval. **Draw cached models** shows
@@ -1555,14 +1555,15 @@ mirv_cache step -66
 mirv_cache status
 ```
 
-`mirv_cache players <player entity index>` captures one player's body.
+`mirv_cache players <indices...>` enables body capture for one or more player
+entity indices, for example `mirv_cache players 1 4 7`.
 `mirv_cache players none` (or `players 0`) disables player poses while
 retaining player boxes.
 `projectiles 0` excludes projectiles from future captures. `weapons 0|1` and
 `cosmetics 0|1` capture visible third-person gear for the selected player, or all
 players in **All players** mode. Loose weapons/cosmetics capture independently
 of that player selection, including when **Player models** is off. Held gear
-is unfiltered when player-body capture is off. Both options default off.
+uses the player filter even with body capture off. Both options default off.
 Corpse-attached gear requires its ragdoll to be captured. Gear options affect
 future frames and increase memory use. Hidden inventory weapons, first-person
 viewmodels/arms and particle-only cosmetic effects are outside this pass.
@@ -1826,7 +1827,7 @@ category marks use their preview colors; color customization is deferred.
 Player filtering remains an optional memory-saving scope for player bodies and
 held gear. It does not select the whole scene. Enabling Players defaults to all
 players; with player-body capture off, weapon/cosmetic capture stays available
-and unfiltered. Corpses, loose items, projectiles, buildings and props remain
+and keeps the selected-player scope. Corpses, loose items, projectiles, buildings and props remain
 independent categories.
 
 Scene caching now has its own **`mirv_cache`** command. Replace the old
@@ -1835,3 +1836,46 @@ Scene caching now has its own **`mirv_cache`** command. Replace the old
 in the campath tree. `mirv_cache` / `mirv_cache help` prints concise syntax;
 `mirv_cache status` prints detailed diagnostics. Other successful commands print
 one summary rather than dumping all diagnostics.
+
+
+### Multiple-player filtering
+
+Expand **Player filter (optional)** and enable **Only selected players**. Check
+as many players as wanted; **Find player** filters the list by name. **Select
+shown** and **Invert shown** affect matching rows, while **Clear selection**
+clears the entire set. An empty selected-player set captures no player bodies
+or held gear. Disable **Only selected players** to return to all players.
+The filter affects future recordings, not previously cached frames.
+
+```text
+mirv_cache players 1 4 7
+mirv_cache filter add 2 3
+mirv_cache filter remove 4
+mirv_cache filter set 1 7
+mirv_cache filter none
+mirv_cache filter all
+```
+
+`filter` edits body/held-gear scope independently of body capture. `players none`
+disables body capture and restores all-player scope. Adding/removing from all
+players first snapshots the current player list. Selections pin demo-local user
+IDs and clear on a different/restarted demo; filtered body capture then turns off
+so another player cannot inherit an old selection.
+
+### Saved overlay preferences
+
+The existing **AfxHookSource_imgui.ini** in the HLAE directory now also saves:
+
+- Scene Cache capture categories, animation smoothing, model visibility and memory budget.
+- Sequencer, camera control, graph editor and gizmo window visibility, alongside ImGui layout.
+- Demo fixes: recorder muting, POV deathcam suppression, smooth player movement and interpolation delay.
+
+Preferences save through ImGui's normal timer and immediately when closing the
+overlay. Demo fixes remain selected between demos and apply when compatible
+TF2/TF2C playback becomes available. Recorder muting prepares the existing
+sound-start filter before activating the per-frame mute. Native interpolation
+settings still restore when demo playback ends.
+
+Recording, cached preview, tick ranges, player identities, repair samples and
+other running operations are not saved globally. Demo-specific path and repair
+files continue using their existing save/load workflow.
