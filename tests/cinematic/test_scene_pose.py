@@ -360,4 +360,52 @@ if result.returncode:
     raise SystemExit(result.returncode)
 result = subprocess.run([str(out/'scene_entities_native')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
 print(result.stdout+result.stderr)
+if result.returncode: raise SystemExit(result.returncode)
+# Exercise the actual dispatcher independently of Direct3D: scene fallbacks must
+# survive Show path being off or the active path being hidden, without duplication.
+drawer=(root/'AfxHookSource/CampathDrawer.cpp').read_text()
+dispatch=drawer[drawer.index('void CCampathDrawer::OnPostRenderAllTools_EngineThread()'):drawer.index('void CCampathDrawer::OnPostRenderAllTools_DrawingThread(')]
+proxy_fixture=r'''
+#include "shared/SceneCache.h"
+#include <cassert>
+#include <string>
+#include <iostream>
+struct CamPath {};
+struct Paths {
+ struct Entry{unsigned long long Id;std::shared_ptr<const int>Data;};struct State{std::vector<Entry>Paths;};
+ CamPath Path[2];bool Visible[2]{true,false};size_t GetActive(){return 0;}size_t GetCount(){return 2;}bool IsVisible(size_t i){return Visible[i];}CamPath*GetPath(size_t i){return &Path[i];}std::string GetName(size_t){return "path";}State CaptureState(){return {{{1,{}},{2,{}}}};}
+};
+struct View {CamPath m_CamPath;Paths m_CamPaths;}g_Hook_VClient_RenderView;
+namespace AfxHookSource{namespace CameraOverlay{std::shared_ptr<const advancedfx::SceneCache::Frame>view;auto SceneCacheView(){return view;}}}
+std::vector<int>g_WorldLabelCells;
+struct CCampathDrawer{
+ struct CLessDynamicProperties{int Refs=0;CLessDynamicProperties(CCampathDrawer*,CamPath*,CLessDynamicProperties* = nullptr){}void AddRef(){++Refs;}void Release(){if(!--Refs)delete this;}};
+ struct CCampathDrawerFunctor{bool SceneOnly;CLessDynamicProperties*Props;CCampathDrawerFunctor(CCampathDrawer*,CamPath*,const std::string&,CLessDynamicProperties*p,bool only=false):SceneOnly(only),Props(p){p->AddRef();}~CCampathDrawerFunctor(){Props->Release();}};
+ struct CachedPath{unsigned long long Id;std::shared_ptr<const int>State;CLessDynamicProperties*Properties;};
+ bool m_Draw=false,m_PropertiesDirty=true;CLessDynamicProperties*m_LessDynamicProperties=nullptr,*m_SceneProperties=nullptr;std::vector<CachedPath>m_OtherPaths;
+ ~CCampathDrawer(){if(m_LessDynamicProperties)m_LessDynamicProperties->Release();if(m_SceneProperties)m_SceneProperties->Release();for(auto&p:m_OtherPaths)if(p.Properties)p.Properties->Release();}
+ void OnPostRenderAllTools_EngineThread();
+};
+std::vector<std::unique_ptr<CCampathDrawer::CCampathDrawerFunctor>>queued;
+bool MaterialSystem_ExecuteOnRenderThread(CCampathDrawer::CCampathDrawerFunctor*f){queued.emplace_back(f);return true;}
+'''+dispatch+r'''
+int main(){
+ using Cache=advancedfx::SceneCache;using namespace AfxHookSource::CameraOverlay;
+ CCampathDrawer drawer;auto snapshot=std::make_shared<Cache::Frame>();Cache::Entity door;door.Category=8;door.Identity=1;snapshot->Entities={door};view=snapshot;
+ drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&queued[0]->SceneOnly);auto emptyProps=queued[0]->Props;queued.clear();drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&queued[0]->Props==emptyProps);queued.clear();
+ g_Hook_VClient_RenderView.m_CamPaths.Visible[0]=false;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&queued[0]->SceneOnly);queued.clear();
+ drawer.m_Draw=true;g_Hook_VClient_RenderView.m_CamPaths.Visible[1]=true;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==2&&queued[0]->SceneOnly&&!queued[1]->SceneOnly);queued.clear();
+ g_Hook_VClient_RenderView.m_CamPaths.Visible[0]=true;g_Hook_VClient_RenderView.m_CamPaths.Visible[1]=false;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&!queued[0]->SceneOnly);queued.clear();
+ drawer.m_Draw=false;auto meshes=std::make_shared<Cache::Frame>(*snapshot);meshes->Entities[0].ModelPose=std::make_shared<Cache::Pose>();view=meshes;drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());view.reset();drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());
+ std::cout<<"Scene proxy dispatch checks passed\n";
+}
+'''
+source=out/'scene_proxy_dispatch.cpp';source.write_text(proxy_fixture)
+command=['g++','-std=c++17','-O0','-g','-Dabstract=','-I'+str(root),str(source),'-o',str(out/'scene_proxy_dispatch')]
+if args.sanitize:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
+result=subprocess.run(command,capture_output=True,text=True)
+(out/'proxy-build.log').write_text(result.stdout+result.stderr)
+if result.returncode:print(result.stderr[-6500:]);raise SystemExit(result.returncode)
+result=subprocess.run([str(out/'scene_proxy_dispatch')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
+print(result.stdout+result.stderr)
 raise SystemExit(result.returncode)

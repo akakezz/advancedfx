@@ -114,6 +114,8 @@ CCampathDrawer::~CCampathDrawer()
 	if(m_VertexShader) m_VertexShader->Release();
 	if (m_LessDynamicProperties)
 		m_LessDynamicProperties->Release();
+	if (m_SceneProperties)
+		m_SceneProperties->Release();
 	for (auto &entry : m_OtherPaths)
 		if (entry.Properties)
 			entry.Properties->Release();
@@ -304,8 +306,9 @@ void CCampathDrawer::End() {
 #define ValToUCCondInv(value,invert) ((invert) ? 0xFF -(unsigned char)(value) : (unsigned char)(value) )
 
 CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, CamPath *path,
-													   const std::string &name)
+                                                       const std::string &name, bool sceneOnly)
 {
+	SceneOnly = sceneOnly;
 	if (path == &g_Hook_VClient_RenderView.m_CamPath)
 		Scene = AfxHookSource::CameraOverlay::SceneCacheView();
 	m_CurTime = g_MirvTime.GetTime() - path->GetOffset();
@@ -405,6 +408,14 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 
 		m_PlaneUp = Vector3(planeU[0] - plane0[0], planeU[1] - plane0[1], planeU[2] - plane0[2]);
 		m_PlaneUp.Normalize();		
+	}
+
+	if (sceneOnly)
+	{
+		m_InCampath = false;
+		m_DrawKeyFrameIndex = 0;
+		m_DrawKeyframeAxis = m_DrawKeyframeCam = false;
+		return; // Proxy-only snapshots need no path labels, indices or camera evaluation.
 	}
 
 	auto place = [&](const CamPathValue &anchor, float base, float width) -> float
@@ -580,11 +591,28 @@ void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
 	// Actually we are often called twice per frame , once after 3d skybox
 	// and once after world is drawn, maybe we will be even called more times.
 
-	if(!m_Draw)
+	const auto scene = AfxHookSource::CameraOverlay::SceneCacheView();
+	const bool proxies = scene && std::any_of(scene->Entities.begin(), scene->Entities.end(),
+	                                          [](const auto &entity) { return !entity.ModelPose; });
+	if (!m_Draw && !proxies)
 		return;
 
 	g_WorldLabelCells.clear();
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	if (proxies && (!m_Draw || !paths.IsVisible(paths.GetActive())))
+	{
+		if (!m_SceneProperties)
+		{
+			static CamPath emptyPath;
+			m_SceneProperties = new CLessDynamicProperties(this, &emptyPath);
+			m_SceneProperties->AddRef();
+		}
+		MaterialSystem_ExecuteOnRenderThread(new CCampathDrawerFunctor(
+		    this, &g_Hook_VClient_RenderView.m_CamPath, "", m_SceneProperties, true));
+	}
+	if (!m_Draw)
+		return;
+
 	if (paths.IsVisible(paths.GetActive()))
 	{
 		if (!m_LessDynamicProperties || m_PropertiesDirty)
@@ -939,6 +967,8 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 			m_Device->SetVertexShaderConstantF(48, newCScreenInfo, 1);
 			for (const auto &entity : dynamicPorperties->Scene->Entities)
 			{
+				if (dynamicPorperties->SceneOnly && entity.ModelPose)
+					continue;
 				const auto rgb = advancedfx::SceneCache::CategoryColor(entity.Category);
 				const auto color = D3DCOLOR_RGBA(rgb[0], rgb[1], rgb[2], 255);
 				Vector3 corners[8];

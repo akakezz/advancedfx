@@ -1806,3 +1806,9 @@ payload budget, pose reuse and profiling controls apply. `cache status` reports
 the new category settings and pose counts; brush/unsupported models appear as
 proxy fallbacks rather than successful studio poses. In-game TF2/TF2C testing is
 still required, particularly for custom objectives and brush doors.
+
+Fallback scene proxies render with **Cached preview** even when **Show path** is
+off or the editing path is hidden. This uses the existing campath line renderer
+with an empty path snapshot: no path labels, keys or camera glyphs are enabled.
+When the visible active path already submits scene bounds, no second fallback
+pass is queued. A model-only scene needs no independent proxy pass.

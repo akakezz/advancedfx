@@ -92,14 +92,16 @@ private:
 
 	class CDynamicProperties {
 	public:
-	  CDynamicProperties(CCampathDrawer *drawer, CamPath *path, const std::string &name);
-	  std::shared_ptr<const advancedfx::SceneCache::Frame> Scene;
-	  struct Text
-	  {
-		  CamPathValue Anchor;
-		  float Height;
-		  std::vector<AfxHookSource::Gui::WorldGlyph> Glyphs;
-	  };
+		CDynamicProperties(CCampathDrawer *drawer, CamPath *path, const std::string &name,
+		                   bool sceneOnly = false);
+		std::shared_ptr<const advancedfx::SceneCache::Frame> Scene;
+		bool SceneOnly = false;
+		struct Text
+		{
+			CamPathValue Anchor;
+			float Height;
+			std::vector<AfxHookSource::Gui::WorldGlyph> Glyphs;
+		};
 	  std::vector<Text> Labels;
 	  std::vector<float> IndexRows;
 
@@ -263,13 +265,13 @@ private:
 
 	class CCampathDrawerFunctor : public CMaterialSystemFunctor {
 	public:
-	  CCampathDrawerFunctor(CCampathDrawer *drawer, CamPath *path, const std::string &name,
-							CLessDynamicProperties *properties)
-	  {
-		  m_DynamicProperties = new CDynamicProperties(drawer, path, name);
-		  m_LessDynamicProperties = properties;
-		  m_LessDynamicProperties->AddRef();
-	  }
+		CCampathDrawerFunctor(CCampathDrawer *drawer, CamPath *path, const std::string &name,
+		                      CLessDynamicProperties *properties, bool sceneOnly = false)
+		{
+			m_DynamicProperties = new CDynamicProperties(drawer, path, name, sceneOnly);
+			m_LessDynamicProperties = properties;
+			m_LessDynamicProperties->AddRef();
+		}
 
 		virtual ~CCampathDrawerFunctor() {
 			m_LessDynamicProperties->Release();
@@ -308,6 +310,7 @@ private:
 	IAfxPixelShader* m_DrawTextureShader = nullptr;
 
 	CLessDynamicProperties *m_LessDynamicProperties = nullptr;
+	CLessDynamicProperties *m_SceneProperties = nullptr;
 	bool m_PropertiesDirty = true;
 	bool m_DrawNames = true, m_DrawHolds = true, m_DrawDurations = true;
 
