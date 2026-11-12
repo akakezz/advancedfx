@@ -7426,6 +7426,57 @@ static bool Mirv_Tf2_GibLabelAnchor(CMirvTf2ClientRenderable *renderable, float 
 		}
 		any = true;
 	};
+	// Rigid break-model pieces select a bodygroup from a shared studio model.
+	// Whole-model hitboxes/bones can surround invisible pieces. Prefer the
+	// selected meshes' model-space centers, transformed through the root bind pose.
+	if (length >= 240 && renderable->GetBody() >= 0)
+	{
+		int parts, partIndex;
+		std::memcpy(&parts, hdr + 232, 4);
+		std::memcpy(&partIndex, hdr + 236, 4);
+		if (parts > 0 && parts <= 128 && partIndex >= 240 &&
+		    std::int64_t(partIndex) + parts * 16 <= length)
+			for (int part = 0; part < parts; ++part)
+			{
+				const auto descriptor = hdr + partIndex + part * 16;
+				int models, base, modelIndex;
+				std::memcpy(&models, descriptor + 4, 4);
+				std::memcpy(&base, descriptor + 8, 4);
+				std::memcpy(&modelIndex, descriptor + 12, 4);
+				if (models <= 0 || models > 256 || base <= 0 || modelIndex < 16)
+					continue;
+				const std::int64_t selected = partIndex + part * 16LL + modelIndex +
+				    ((renderable->GetBody() / base) % models) * 148LL;
+				if (selected + 148 > length)
+					continue;
+				int meshes, meshIndex;
+				std::memcpy(&meshes, hdr + selected + 72, 4);
+				std::memcpy(&meshIndex, hdr + selected + 76, 4);
+				if (meshes <= 0 || meshes > 256 || meshIndex < 148 ||
+				    selected + meshIndex + meshes * 116LL > length)
+					continue;
+				for (int mesh = 0; mesh < meshes; ++mesh)
+				{
+					float center[3], local[3];
+					std::memcpy(center, hdr + selected + meshIndex + mesh * 116 + 36, 12);
+					for (int r = 0; r < 3; ++r)
+					{
+						float bind[4];
+						std::memcpy(bind, hdr + boneIndex + 96 + r * 16, 16);
+						local[r] = bind[3];
+						for (int c = 0; c < 3; ++c)
+							local[r] += bind[c] * center[c];
+					}
+					add(0, local);
+				}
+			}
+	}
+	if (any)
+	{
+		for (int a = 0; a < 3; ++a)
+			out[a] = (lo[a] + hi[a]) * .5f;
+		return true;
+	}
 	// SDK studiohdr hitbox sets (12-byte descriptors, 68-byte boxes).
 	if (length >= 180)
 	{
@@ -7527,9 +7578,10 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 
 		MirvTf2EntityLabel_t & label = outLabels[count++];
 		label.category = Mirv_Tf2_ToolCategory(iface, ent, index, iface->IsPlayer(ent));
-		if ((nativeIndex < 0 || nativeIndex >= 2048) && Mirv_Tf2_LabelDebris(unknown))
+		if (label.category != MIRV_TF2_ENTITY_COSMETIC &&
+		    (nativeIndex < 0 || nativeIndex >= 2048) && Mirv_Tf2_LabelDebris(unknown))
 			label.category = 5;
-		if (label.category != MIRV_TF2_ENTITY_PLAYER)
+		if (label.category != MIRV_TF2_ENTITY_PLAYER && label.category != MIRV_TF2_ENTITY_COSMETIC)
 		{
 			auto info = Mirv_Tf2_GetModelInfo();
 			const auto model = renderable->GetModel();

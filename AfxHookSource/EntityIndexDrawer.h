@@ -92,7 +92,7 @@ public:
 	{
 		float worldToScreen[4][4] = {};
 		float size = 32.0f;
-		float gibSize = 16.0f;
+		float gibSize = 20.0f;
 		bool stackLabels = true;
 		float stackWorldDistance = 32.0f;
 		uint32_t colors[6] = {0xFF42C8FFu, 0xFFFF6A55u, 0xFF46EB8Cu, 0xFFCE80FFu, 0xFFFFE600u, 0xFFFFE600u};
@@ -110,7 +110,7 @@ private:
 	bool m_CategoryFilter[6] = {true, true, true, true, true, true};
 	float m_Height = 0.0f;
 	float m_Size = 32.0f;
-	float m_GibSize = 16.0f;
+	float m_GibSize = 20.0f;
 	float m_MaxDistance = 0.0f;
 	int m_MaxLabels = 64;
 	int m_CategoryColors[6][3] = {{66, 200, 255},  {255, 106, 85}, {70, 235, 140},

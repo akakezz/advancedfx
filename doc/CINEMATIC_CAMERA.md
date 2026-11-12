@@ -2006,7 +2006,9 @@ Viewmodel-specific categorization/visibility remains separate work.
 
 ### Gib entity labels
 
-Gib labels prefer transformed studio hitboxes, followed by the used leaf bones
+Rigid gib labels prefer the active bodygroup mesh centers transformed through
+the root bind pose. This avoids anchoring to invisible pieces in a shared model.
+Fallbacks are transformed studio hitboxes, followed by the used leaf bones
 of the observed pose. World render bounds remain a fallback when pose data is
 unavailable. This avoids relying on pivots and surrounding bounds that may
 still describe the original character rather than its detached piece.
@@ -2015,16 +2017,17 @@ Attachment origins and bone transforms are unaffected.
 ```text
 mirv_drawentities filter gibs 0
 mirv_drawentities filter gibs 1
-mirv_drawentities gibSize 16
+mirv_drawentities gibSize 20
 ```
 
-Gib digits default to 16 pixels (other labels default to 32). `gibSize` accepts
+Gib digits default to 20 pixels (other labels default to 32). `gibSize` accepts
 6–200 pixels and is independent of `mirv_drawentities size`. Label stacking uses
 the corresponding label's dimensions. The existing category color command also
 accepts `gibs`.
 
 
-Generic break-model debris uses the same **gibs** category and `gibSize` setting
+Identified cosmetics retain their cosmetic category, even with a debris collision
+group. Other generic break-model debris uses the same **gibs** category and `gibSize` setting
 as player gibs. TF2 creates projectile fragments as client physics props; their
 standard debris collision groups (1–3) are read through validated receive-table
 metadata. Recognition also covers gib class names, gib directories and model
