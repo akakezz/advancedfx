@@ -1534,7 +1534,7 @@ forward through the shot. Freeze actual playback, enable **Cached preview**,
 and scrub backward through the covered interval. **Draw cached models** shows
 the recorded wireframe poses with the overlay closed and **Show path** disabled.
 Live models remain visible, so at the latest tick the wireframes can overlap
-them. Players are cyan, projectiles red, held weapons gold, cosmetics purple,
+them. Players are cyan, projectiles red, held weapons green, cosmetics purple,
 ragdolls green, and gibs orange.
 On engines without the verified
 `VMaterialSystem082` interface, model drawing falls back to the default studio

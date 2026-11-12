@@ -4940,7 +4940,7 @@ static void DrawSequencerDetails(int playhead)
 		ImGui::TextColored(ImVec4(80 / 255.f, 220 / 255.f, 1, 1), "Players: cyan");
 		ImGui::SameLine();
 		ImGui::TextColored(ImVec4(1, 80 / 255.f, 70 / 255.f, 1), "Projectiles: red");
-		ImGui::TextColored(ImVec4(1, 210 / 255.f, 70 / 255.f, 1), "Weapons: gold");
+		ImGui::TextColored(ImVec4(70 / 255.f, 235 / 255.f, 140 / 255.f, 1), "Weapons: green");
 		ImGui::SameLine();
 		ImGui::TextColored(ImVec4(210 / 255.f, 120 / 255.f, 1, 1), "Cosmetics: purple");
 		ImGui::TextColored(ImVec4(100 / 255.f, 240 / 255.f, 140 / 255.f, 1), "Ragdolls: green");
