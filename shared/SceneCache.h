@@ -360,15 +360,17 @@ public:
 			const double gap = b.DemoTime - a.DemoTime;
 			if (gap <= 0 || gap > .1 || b.DemoTime < start)
 				return;
+			auto next = b.Entities.begin();
 			for (const auto &entity : a.Entities)
 			{
 				if (++inspected > 250000 || segments >= maxTrails || lines.size() >= maxLines)
 					return;
 				if (!options.TrailCategories[entity.Category])
 					continue;
-				auto next =
-				    std::lower_bound(b.Entities.begin(), b.Entities.end(), entity.Identity,
-					                 [](const Entity &e, std::uint64_t id) { return e.Identity < id; });
+				// Both snapshots are identity-sorted. Merge once instead of searching
+				// the same destination array again for each observed entity.
+				while (next != b.Entities.end() && next->Identity < entity.Identity)
+					++next;
 				if (next == b.Entities.end() || next->Identity != entity.Identity ||
 				    next->Category != entity.Category || next->OwnerIdentity != entity.OwnerIdentity)
 					continue;

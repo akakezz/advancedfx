@@ -30,7 +30,7 @@ extern bool GetDemoTickFromClientTime(double, double, int &);
 extern bool GetCurrentDemoTime(double &);
 
 /// <remarks>Must be at least 4.</remarks>
-const UINT c_VertexBufferVertexCount = 200;
+const UINT c_VertexBufferVertexCount = 2048;
 
 const FLOAT c_CampathCrossRadius = 36.0f;
 const FLOAT c_CampathCrossPixelWidth = 4.0f;
@@ -178,42 +178,33 @@ void CCampathDrawer::AutoPolyLineFlush()
 
 void CCampathDrawer::AutoSingleLine(Vector3 from, DWORD colorFrom, Vector3 to, DWORD colorTo)
 {
-	// make sure we have space for another line:
-	if(c_VertexBufferVertexCount < m_VertexBufferVertexCount+4)
+	// Join independent quads with degenerate triangles. Their complete vertex
+	// attributes are copied so the line shader cannot turn a join into geometry.
+	if (c_VertexBufferVertexCount < m_VertexBufferVertexCount + (m_VertexBufferVertexCount ? 6 : 4))
 		AutoSingleLineFlush();
-
-	if(!m_LockedVertexBuffer)
+	if (!m_LockedVertexBuffer && !LockVertexBuffer())
+		return;
+	Vertex *out = m_LockedVertexBuffer + m_VertexBufferVertexCount;
+	const bool join = m_VertexBufferVertexCount != 0;
+	Vertex *quad = out + (join ? 2 : 0);
+	BuildSingleLine(from, to, quad);
+	BuildSingleLine(colorFrom, colorTo, quad);
+	if (join)
 	{
-		bool locked = LockVertexBuffer();
-		if(!locked)
-			return;
+		out[0] = out[-1];
+		out[1] = quad[0];
 	}
-
-	Vertex * curBuf = &(m_LockedVertexBuffer[m_VertexBufferVertexCount]);
-	BuildSingleLine(from, to, curBuf);
-	BuildSingleLine(colorFrom, colorTo, curBuf);
-	m_VertexBufferVertexCount += 4;
+	m_VertexBufferVertexCount += join ? 6 : 4;
 }
 
 void CCampathDrawer::AutoSingleLineFlush()
 {
-	if(!m_LockedVertexBuffer)
+	if (!m_LockedVertexBuffer)
 		return;
-
 	UnlockVertexBuffer();
-
 	m_Device->SetStreamSource(0, m_VertexBuffer, 0, sizeof(Vertex));
-
-	UINT startVertex = 0;
-	UINT lineCount = m_VertexBufferVertexCount / 4;
-	for(UINT i=0; i<lineCount; ++i)
-	{
-		// Draw line:
-		m_Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, startVertex, 2);
-
-		startVertex += 4;
-	}
-
+	if (m_VertexBufferVertexCount >= 4)
+		m_Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, m_VertexBufferVertexCount - 2);
 	m_VertexBufferVertexCount = 0;
 }
 
@@ -1308,7 +1299,8 @@ bool CCampathDrawer::LockVertexBuffer()
 {
 	if(m_VertexBuffer)
 	{
-		if(!SUCCEEDED(m_VertexBuffer->Lock(0, c_VertexBufferVertexCount * sizeof(Vertex), (void **)&m_LockedVertexBuffer, 0)))
+		if (!SUCCEEDED(m_VertexBuffer->Lock(0, c_VertexBufferVertexCount * sizeof(Vertex),
+		                                    (void **)&m_LockedVertexBuffer, D3DLOCK_DISCARD)))
 		{
 			m_LockedVertexBuffer = 0;
 			return false;
@@ -1318,14 +1310,9 @@ bool CCampathDrawer::LockVertexBuffer()
 
 	UnlockVertexBuffer();
 
-	if(!SUCCEEDED(m_Device->CreateVertexBuffer(
-		c_VertexBufferVertexCount * sizeof(Vertex),
-		D3DUSAGE_WRITEONLY,
-		CCampathDrawer_VertexFVF,
-		D3DPOOL_DEFAULT,
-		&m_VertexBuffer,
-		NULL
-	)))
+	if (!SUCCEEDED(m_Device->CreateVertexBuffer(
+	        c_VertexBufferVertexCount * sizeof(Vertex), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+	        CCampathDrawer_VertexFVF, D3DPOOL_DEFAULT, &m_VertexBuffer, NULL)))
 	{
 		if(m_VertexBuffer) m_VertexBuffer->Release();
 		m_VertexBuffer = 0;
@@ -1334,7 +1321,8 @@ bool CCampathDrawer::LockVertexBuffer()
 
 	if(m_VertexBuffer)
 	{
-		if(!SUCCEEDED(m_VertexBuffer->Lock(0, c_VertexBufferVertexCount * sizeof(Vertex), (void **)&m_LockedVertexBuffer, 0)))
+		if (!SUCCEEDED(m_VertexBuffer->Lock(0, c_VertexBufferVertexCount * sizeof(Vertex),
+		                                    (void **)&m_LockedVertexBuffer, D3DLOCK_DISCARD)))
 		{
 			m_LockedVertexBuffer = 0;
 			return 0;
@@ -1356,6 +1344,9 @@ void CCampathDrawer::UnlockVertexBuffer()
 
 void CCampathDrawer::UnloadVertexBuffer()
 {
+	UnlockVertexBuffer();
+	m_VertexBufferVertexCount = 0;
+	m_LockedVertexBuffer = nullptr;
 	if(m_VertexBuffer) { m_VertexBuffer->Release(); m_VertexBuffer = 0; }
 }
 

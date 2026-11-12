@@ -5325,6 +5325,23 @@ static bool SceneCategoryCheckbox(const char *label, bool &value, int category, 
 		ImGui::SetTooltip("%s", hint);
 	return changed;
 }
+
+static constexpr const char *SceneCategoryNames[] = {"Players",   "Projectiles", "Weapons",
+                                                     "Cosmetics", "Other",       "Ragdolls",
+                                                     "Gibs",      "Buildings",   "Props / objectives"};
+static void SceneCategoryFilters(std::array<bool, advancedfx::SceneCache::CategoryCount> &values,
+                                 const char *hint)
+{
+	if (ImGui::BeginTable("Category filters", 3, ImGuiTableFlags_SizingStretchSame))
+	{
+		for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
+		{
+			ImGui::TableNextColumn();
+			SceneCategoryCheckbox(SceneCategoryNames[i], values[i], i, hint);
+		}
+		ImGui::EndTable();
+	}
+}
 static void DrawSceneCacheMenu(int playhead)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
@@ -5455,8 +5472,7 @@ static void DrawSceneCacheMenu(int playhead)
 	}
 	if (ImGui::CollapsingHeader("Preview", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::TextWrapped("Enable Cached preview above the timeline, then scrub its playhead. Right Ctrl + "
-		                   "arrows / Home / End also navigate retained history.");
+		ImGui::TextDisabled("Scrub cached history with the playhead or Right Ctrl + arrows / Home / End.");
 		if (ImGui::Checkbox("Smooth cached animation", &g_SceneSmoothAnimation))
 			SceneCacheFrame(false);
 		bool models = g_SceneDrawModels.load();
@@ -5470,17 +5486,13 @@ static void DrawSceneCacheMenu(int playhead)
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
 		if (g_SceneDrawing.Bounds && ImGui::TreeNode("Bounding box filters"))
 		{
-			const char *names[] = {"Players",  "Projectiles", "Weapons",   "Cosmetics",         "Other",
-			                       "Ragdolls", "Gibs",        "Buildings", "Props / objectives"};
 			ImGui::PushID("Cached bounds filters");
 			if (ImGui::Button("All categories"))
 				g_SceneDrawing.BoundCategories.fill(true);
 			ImGui::SameLine();
 			if (ImGui::Button("No categories"))
 				g_SceneDrawing.BoundCategories.fill(false);
-			for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
-				SceneCategoryCheckbox(names[i], g_SceneDrawing.BoundCategories[i], i,
-				                      "Show bounds for this category.");
+			SceneCategoryFilters(g_SceneDrawing.BoundCategories, "Show bounds for this category.");
 			ImGui::Checkbox("Only entities without cached meshes", &g_SceneDrawing.BoundsMissingOnly);
 			ImGui::Checkbox("Only selected cached entities", &g_SceneDrawing.BoundsSelectedOnly);
 			if (g_SceneDrawing.BoundsSelectedOnly)
@@ -5498,7 +5510,7 @@ static void DrawSceneCacheMenu(int playhead)
 							    (g_SceneDrawing.BoundsMissingOnly && entity.ModelPose))
 								continue;
 							const std::string id = std::to_string(entity.Identity);
-							std::string label = std::string(names[entity.Category]) +
+							std::string label = std::string(SceneCategoryNames[entity.Category]) +
 							                    (entity.Category == 0 ? " | user " : " | entity ") +
 							                    std::to_string(entity.Category == 0 ? entity.Identity
 							                                                        : entity.Identity & 4095);
@@ -5545,26 +5557,24 @@ static void DrawSceneCacheMenu(int playhead)
 				g_SceneDrawing.TrailSeconds = seconds;
 			if (ImGui::TreeNode("Trail categories"))
 			{
-				const char *names[] = {"Players",  "Projectiles", "Weapons",   "Cosmetics",         "Other",
-				                       "Ragdolls", "Gibs",        "Buildings", "Props / objectives"};
 				ImGui::PushID("Scene trail categories");
 				if (ImGui::Button("All"))
 					g_SceneDrawing.TrailCategories.fill(true);
 				ImGui::SameLine();
 				if (ImGui::Button("None"))
 					g_SceneDrawing.TrailCategories.fill(false);
-				for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
-					SceneCategoryCheckbox(names[i], g_SceneDrawing.TrailCategories[i], i,
-					                      "Draw retained movement for this category.");
+				SceneCategoryFilters(g_SceneDrawing.TrailCategories,
+				                     "Draw retained movement for this category.");
 				ImGui::PopID();
 				ImGui::TreePop();
 			}
 			ImGui::TextWrapped("Trails show the retained movement before the cached cursor and fade with "
 			                   "age. Missing samples, teleports and identity changes break the trail.");
 		}
-		ImGui::TextWrapped("Live models remain visible. Brush entities use recorded surface wireframes when "
-		                   "the map BSP is available. Bounds are optional and independent of Show path. "
-		                   "Particles, audio and simulation are not cached.");
+		ImGui::TextDisabled("Visual preview only; live models remain visible.");
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Brush wireframes require readable BSP geometry. Bounds are independent of "
+			                  "Show path.\nParticles, audio and simulation are not cached.");
 
 		if (g_ScenePreview && !SceneCacheView())
 			ImGui::TextDisabled("No recorded coverage at this playhead.");

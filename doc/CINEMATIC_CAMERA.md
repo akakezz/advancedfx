@@ -1952,3 +1952,16 @@ Category/missing-mesh preferences persist. Individual identities are tied to
 this cache and clear with history. While an individual filter is active, bounds
 save disabled for the next session, preventing the missing selection from
 accidentally drawing boxes on every entity.
+
+
+### Preview performance cleanup
+
+Bounds and trail category filters use a compact three-column layout. Additional
+preview explanations are available on hover.
+
+The existing line renderer batches independent segments into triangle strips
+and uses dynamic discard buffers to avoid waiting on previous submissions. A
+renderer fixture covering 16,384 segments submits 49 draw calls rather than
+16,384 while preserving the original line quads. This measures submission count,
+not TF2 frame rate. Trail preparation also merges sorted entity identities once
+per snapshot pair instead of repeating a binary search for each entity.

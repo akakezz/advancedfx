@@ -454,4 +454,45 @@ result=subprocess.run(command,capture_output=True,text=True)
 if result.returncode:print(result.stderr[-6500:]);raise SystemExit(result.returncode)
 result=subprocess.run([str(out/'scene_proxy_dispatch')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
 print(result.stdout+result.stderr)
-raise SystemExit(result.returncode)
+if result.returncode:raise SystemExit(result.returncode)
+
+# Exercise the actual shared line renderer: batching must preserve independent
+# quads, flush boundaries, failed locks and reset cleanup without stray joins.
+import re
+def line_function(marker):
+    a=drawer.index(marker);b=drawer.index('{',a);end=b+1;depth=1
+    while depth:
+        if drawer[end]=='{':depth+=1
+        if drawer[end]=='}':depth-=1
+        end+=1
+    return drawer[a:end]
+line_methods='\n'.join(line_function(name) for name in [
+    'void CCampathDrawer::AutoSingleLine(', 'void CCampathDrawer::AutoSingleLineFlush()',
+    'void CCampathDrawer::BuildSingleLine(Vector3', 'void CCampathDrawer::BuildSingleLine(DWORD',
+    'void CCampathDrawer::UnloadVertexBuffer()'])
+line_capacity=re.search(r'c_VertexBufferVertexCount = (\d+)',drawer)[1]
+line_fixture=r'''#include "shared/AfxMath.h"
+#include <vector>
+#include <array>
+#include <cassert>
+#include <cstring>
+#include <iostream>
+using Vector3=Afx::Math::Vector3;using DWORD=unsigned int;using UINT=unsigned int;
+constexpr int D3DPT_TRIANGLESTRIP=5;
+struct Vertex{float x,y,z;DWORD diffuse;float t0u,t0v,t0w,t1u,t1v,t1w,t2u,t2v,t2w;};
+static constexpr UINT c_VertexBufferVertexCount=CAPACITY;
+struct Buffer{int Releases=0;void Release(){++Releases;}};
+struct Device{std::array<Vertex,c_VertexBufferVertexCount>*Vertices=nullptr;size_t Calls=0,Triangles=0;void SetStreamSource(int,void*,int,size_t){};void DrawPrimitive(int type,UINT start,UINT count){assert(type==D3DPT_TRIANGLESTRIP&&count>=2&&start+count+2<=Vertices->size());++Calls;auto equal=[](const Vertex&a,const Vertex&b){return !std::memcmp(&a,&b,sizeof(Vertex));};for(UINT i=0;i<count;++i){const auto&a=(*Vertices)[start+i],&b=(*Vertices)[start+i+1],&c=(*Vertices)[start+i+2];if(equal(a,b)||equal(a,c)||equal(b,c))continue;assert(a.diffuse==b.diffuse&&a.diffuse==c.diffuse);++Triangles;}}};
+struct CCampathDrawer{Device* m_Device;Buffer Resource;Buffer*m_VertexBuffer=nullptr;UINT m_VertexBufferVertexCount=0;Vertex*m_LockedVertexBuffer=nullptr;std::array<Vertex,c_VertexBufferVertexCount>Data{};bool AllowLock=true;CCampathDrawer(Device&d):m_Device(&d){d.Vertices=&Data;}bool LockVertexBuffer(){if(!AllowLock)return false;m_VertexBuffer=&Resource;m_LockedVertexBuffer=Data.data();return true;}void UnlockVertexBuffer(){m_LockedVertexBuffer=nullptr;}void UnloadVertexBuffer();void AutoSingleLine(Vector3,DWORD,Vector3,DWORD);void AutoSingleLineFlush();void BuildSingleLine(Vector3,Vector3,Vertex*);void BuildSingleLine(DWORD,DWORD,Vertex*);};
+IMPLEMENTATION
+int main(){Device device;CCampathDrawer draw(device);draw.AutoSingleLineFlush();assert(device.Calls==0);for(int i=0;i<16384;++i)draw.AutoSingleLine(Vector3(i,0,0),DWORD(i+1),Vector3(i+1,1,0),DWORD(i+1));draw.AutoSingleLineFlush();assert(device.Triangles==32768);std::cout<<device.Calls<<" draw calls for 16384 independent lines\n";assert(device.Calls==49);draw.AutoSingleLine(Vector3(0,0,0),1,Vector3(1,0,0),1);draw.UnloadVertexBuffer();assert(!draw.m_VertexBufferVertexCount&&!draw.m_LockedVertexBuffer&&!draw.m_VertexBuffer&&draw.Resource.Releases==1);
+Device failed;CCampathDrawer unavailable(failed);unavailable.AllowLock=false;unavailable.AutoSingleLine(Vector3(0,0,0),1,Vector3(1,1,0),1);unavailable.AutoSingleLineFlush();assert(!failed.Calls&&!unavailable.m_VertexBufferVertexCount);unavailable.AllowLock=true;unavailable.AutoSingleLine(Vector3(0,0,0),1,Vector3(1,1,0),1);unavailable.AutoSingleLineFlush();assert(failed.Calls==1&&failed.Triangles==2);}
+'''
+source=out/'scene_line_batch.cpp';source.write_text(line_fixture.replace('CAPACITY',line_capacity).replace('IMPLEMENTATION',line_methods))
+command=['g++','-std=c++17','-O1','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),str(source),str(root/'shared/AfxMath.cpp'),'-o',str(out/'scene_line_batch')]
+if args.sanitize:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
+result=subprocess.run(command,capture_output=True,text=True);(out/'line-build.log').write_text(result.stdout+result.stderr)
+if result.returncode:print(result.stderr[-6500:]);raise SystemExit(result.returncode)
+result=subprocess.run([str(out/'scene_line_batch')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
+print(result.stdout+result.stderr)
+if result.returncode:raise SystemExit(result.returncode)
