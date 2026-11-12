@@ -291,12 +291,17 @@ public:
 	struct DrawingOptions
 	{
 		bool Bounds = false, Meshes = true, Trails = false;
+		bool BoundsMissingOnly = false, BoundsSelectedOnly = false;
+		std::array<bool, CategoryCount> BoundCategories{true, true, true, true, true, true, true, true, true};
+		std::set<std::uint64_t> BoundEntities; // Cache-local identities; never persisted globally.
 		std::array<bool, CategoryCount> TrailCategories{true, true, true, true, true, true, true, true, true};
 		double TrailSeconds = 2;
 		bool operator==(const DrawingOptions &b) const
 		{
 			return Bounds == b.Bounds && Meshes == b.Meshes && Trails == b.Trails &&
-			       TrailCategories == b.TrailCategories && TrailSeconds == b.TrailSeconds;
+			       TrailCategories == b.TrailCategories && TrailSeconds == b.TrailSeconds &&
+			       BoundsMissingOnly == b.BoundsMissingOnly && BoundsSelectedOnly == b.BoundsSelectedOnly &&
+			       BoundCategories == b.BoundCategories && BoundEntities == b.BoundEntities;
 		}
 	};
 	std::vector<Line> Drawing(const Frame &frame, const DrawingOptions &options) const
@@ -330,7 +335,10 @@ public:
 					lines.push_back({point(edge[0]), point(edge[1]), entity.Category});
 				}
 			}
-			if (options.Bounds && lines.size() + 12 <= maxLines)
+			if (options.Bounds && options.BoundCategories[entity.Category] &&
+			    (!options.BoundsMissingOnly || !entity.ModelPose) &&
+			    (!options.BoundsSelectedOnly || options.BoundEntities.count(entity.Identity)) &&
+			    lines.size() + 12 <= maxLines)
 			{
 				const auto corners = BoundsCorners(entity);
 				for (int i = 0; i < 8; ++i)

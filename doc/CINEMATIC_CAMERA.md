@@ -1923,3 +1923,32 @@ Drawing uses a bounded, immutable line batch shared with the campath renderer;
 idle cursors reuse it. Limits of 65,536 total lines and 16,384 trail segments
 bound work on dense/long captures, so exceptionally dense previews may truncate
 some lines. Color customization remains deferred.
+
+
+### Bounding box filters
+
+Enable **Draw cached bounds**, then expand **Bounding box filters**. Category
+checkboxes control which types receive boxes. **Only entities without cached
+meshes** is useful for unsupported custom-map geometry.
+
+For a single door, enable **Only selected cached entities**, find it in the
+cached-cursor list and check its row. The list shows category, entity slot and
+model name where available; hover for the stable identity and world-space box
+center. Category and missing-mesh restrictions still apply. This changes drawing
+only, so existing history does not need re-recording.
+
+```text
+mirv_cache bounds all 0
+mirv_cache bounds props 1
+mirv_cache bounds missing 1
+mirv_cache bounds 1
+// Optional exact scope, using stable identities shown by the picker tooltip:
+mirv_cache bounds entities <identity...>
+mirv_cache bounds entities none
+mirv_cache bounds entities all
+```
+
+Category/missing-mesh preferences persist. Individual identities are tied to
+this cache and clear with history. While an individual filter is active, bounds
+save disabled for the next session, preventing the missing selection from
+accidentally drawing boxes on every entity.

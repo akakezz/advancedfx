@@ -188,6 +188,7 @@ static void SceneClearHistory()
 	++g_SceneDrawEpoch;
 	g_SceneSampleReady = false;
 	g_SceneCache.Clear();
+	g_SceneDrawing.BoundEntities.clear();
 	g_ScenePoseCaptured = g_ScenePoseFailures = 0;
 	SceneResetProfile();
 	g_SceneLastTick = -1;
@@ -1178,11 +1179,62 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		}
 	}
 
-	else if (!_stricmp(op, "bounds") && integer(value) && (value == 0 || value == 1))
+	else if (!_stricmp(op, "bounds"))
 	{
-		g_SceneDrawing.Bounds = value != 0;
-		ok = true;
+		if (integer(value) && (value == 0 || value == 1))
+		{
+			g_SceneDrawing.Bounds = value != 0;
+			ok = true;
+		}
+		else if (args->ArgC() == 4 && _stricmp(args->ArgV(2), "entities") && parseInteger(3, value) &&
+		         (value == 0 || value == 1))
+		{
+			if (!_stricmp(args->ArgV(2), "missing"))
+			{
+				g_SceneDrawing.BoundsMissingOnly = value != 0;
+				ok = true;
+			}
+			const char *names[] = {"players",  "projectiles", "weapons",   "cosmetics", "other",
+			                       "ragdolls", "gibs",        "buildings", "props"};
+			for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
+				if (!_stricmp(args->ArgV(2), names[i]) || !_stricmp(args->ArgV(2), "all"))
+				{
+					g_SceneDrawing.BoundCategories[i] = value != 0;
+					ok = true;
+				}
+		}
+		else if (args->ArgC() >= 4 && !_stricmp(args->ArgV(2), "entities"))
+		{
+			if (args->ArgC() == 4 && (!_stricmp(args->ArgV(3), "all") || !_stricmp(args->ArgV(3), "none")))
+			{
+				g_SceneDrawing.BoundsSelectedOnly = _stricmp(args->ArgV(3), "all") != 0;
+				g_SceneDrawing.BoundEntities.clear();
+				ok = true;
+			}
+			else
+			{
+				std::set<std::uint64_t> selected;
+				bool valid = args->ArgC() <= 131;
+				for (int i = 3; valid && i < args->ArgC(); ++i)
+				{
+					const char *word = args->ArgV(i);
+					char *end = nullptr;
+					errno = 0;
+					auto id = std::strtoull(word, &end, 10);
+					valid = *word >= '0' && *word <= '9' && end != word && !*end && !errno && id;
+					if (valid)
+						selected.insert(id);
+				}
+				if (valid)
+				{
+					g_SceneDrawing.BoundsSelectedOnly = true;
+					g_SceneDrawing.BoundEntities = std::move(selected);
+					ok = true;
+				}
+			}
+		}
 	}
+
 	else if (!_stricmp(op, "trails"))
 	{
 		if (args->ArgC() == 3 && integer(value) && (value == 0 || value == 1))
@@ -1245,9 +1297,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache rate <-10000..10000> - Cached ticks/sec; 0 stops.\n"
 		    "  mirv_cache animation <smooth|nearest>\n"
 		    "  mirv_cache models <0|1> | bounds <0|1>\n"
+		    "  mirv_cache bounds <category|all|missing> <0|1>\n"
+		    "  mirv_cache bounds entities <all|none|stable identities...>\n"
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
-			"<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
+		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
@@ -1462,32 +1516,45 @@ static bool g_OverlayPreferencesReady = false;
 static bool g_DemoMute = false, g_DemoDeathcam = false, g_DemoSmooth = false;
 static double g_DemoInterpolation = .1;
 static auto g_DemoFixAttempt = std::chrono::steady_clock::time_point{};
-static std::pair<unsigned, size_t> g_OverlayPreferenceStamp{};
+static std::pair<std::uint64_t, size_t> g_OverlayPreferenceStamp{};
 static double g_SavedTrailSeconds = 2;
-static std::pair<unsigned, size_t> OverlayPreferenceStamp()
+static std::pair<std::uint64_t, size_t> OverlayPreferenceStamp()
 {
-	unsigned bits = 0, bit = 0;
+	std::uint64_t bits = 0;
+	unsigned bit = 0;
 	for (bool value : {g_ScenePlayerModels, g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics,
 	                   g_SceneRagdolls, g_SceneGibs, g_SceneBuildings, g_SceneProps, g_SceneSmoothAnimation,
 	                   g_SceneDrawModels.load(), g_ShowSequencer, g_ShowCameraControl, g_ShowCurveEditor,
 	                   g_ShowGizmo, g_DemoMute, g_DemoDeathcam, g_DemoSmooth})
 	{
 		if (value)
-			bits |= 1u << bit;
+			bits |= 1ull << bit;
 		++bit;
 	}
 	for (bool value : g_SceneDrawing.TrailCategories)
 	{
 		if (value)
-			bits |= 1u << bit;
+			bits |= 1ull << bit;
 		++bit;
 	}
 	if (g_SceneDrawing.Bounds)
-		bits |= 1u << bit++;
+		bits |= 1ull << bit++;
 	else
 		++bit;
 	if (g_SceneDrawing.Trails)
-		bits |= 1u << bit;
+		bits |= 1ull << bit;
+	++bit;
+	for (bool value : g_SceneDrawing.BoundCategories)
+	{
+		if (value)
+			bits |= 1ull << bit;
+		++bit;
+	}
+	if (g_SceneDrawing.BoundsMissingOnly)
+		bits |= 1ull << bit;
+	++bit;
+	if (g_SceneDrawing.BoundsSelectedOnly)
+		bits |= 1ull << bit;
 	return {bits, g_SceneCache.Limit()};
 }
 static void CheckOverlayPreferences()
@@ -1570,6 +1637,11 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		return;
 	}
 	bool *option = nullptr;
+	if (key == "CacheBoundsMissingOnly")
+		option = &g_SceneDrawing.BoundsMissingOnly;
+	for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
+		if (key == "CacheBoundCategory" + std::to_string(i))
+			option = &g_SceneDrawing.BoundCategories[i];
 	if (key == "CacheBounds")
 		option = &g_SceneDrawing.Bounds;
 	if (key == "CacheTrails")
@@ -1706,10 +1778,14 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("CacheProps=%d\n", int(g_SceneProps));
 	out_buf->appendf("CacheSmooth=%d\n", int(g_SceneSmoothAnimation));
 	out_buf->appendf("CacheModels=%d\n", int(g_SceneDrawModels.load()));
-	out_buf->appendf("CacheBounds=%d\nCacheTrails=%d\nCacheTrailSeconds=%.3f\n", int(g_SceneDrawing.Bounds),
+	out_buf->appendf("CacheBounds=%d\nCacheTrails=%d\nCacheTrailSeconds=%.3f\n",
+	                 int(g_SceneDrawing.Bounds && !g_SceneDrawing.BoundsSelectedOnly),
 	                 int(g_SceneDrawing.Trails), g_SceneDrawing.TrailSeconds);
 	for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
 		out_buf->appendf("CacheTrailCategory%d=%d\n", i, int(g_SceneDrawing.TrailCategories[i]));
+	out_buf->appendf("CacheBoundsMissingOnly=%d\n", int(g_SceneDrawing.BoundsMissingOnly));
+	for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
+		out_buf->appendf("CacheBoundCategory%d=%d\n", i, int(g_SceneDrawing.BoundCategories[i]));
 	out_buf->appendf("ShowSequencer=%d\n", int(g_ShowSequencer));
 	out_buf->appendf("ShowCameraControl=%d\n", int(g_ShowCameraControl));
 	out_buf->appendf("ShowCurveEditor=%d\n", int(g_ShowCurveEditor));
@@ -5392,6 +5468,74 @@ static void DrawSceneCacheMenu(int playhead)
 		}
 
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
+		if (g_SceneDrawing.Bounds && ImGui::TreeNode("Bounding box filters"))
+		{
+			const char *names[] = {"Players",  "Projectiles", "Weapons",   "Cosmetics",         "Other",
+			                       "Ragdolls", "Gibs",        "Buildings", "Props / objectives"};
+			ImGui::PushID("Cached bounds filters");
+			if (ImGui::Button("All categories"))
+				g_SceneDrawing.BoundCategories.fill(true);
+			ImGui::SameLine();
+			if (ImGui::Button("No categories"))
+				g_SceneDrawing.BoundCategories.fill(false);
+			for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
+				SceneCategoryCheckbox(names[i], g_SceneDrawing.BoundCategories[i], i,
+				                      "Show bounds for this category.");
+			ImGui::Checkbox("Only entities without cached meshes", &g_SceneDrawing.BoundsMissingOnly);
+			ImGui::Checkbox("Only selected cached entities", &g_SceneDrawing.BoundsSelectedOnly);
+			if (g_SceneDrawing.BoundsSelectedOnly)
+			{
+				static ImGuiTextFilter search;
+				search.Draw("Find cached entity");
+				if (ImGui::Button("Clear entity selection"))
+					g_SceneDrawing.BoundEntities.clear();
+				if (auto view = SceneCacheView())
+				{
+					if (ImGui::BeginChild("Bounds entity list", ImVec2(0, 180), true))
+						for (const auto &entity : view->Entities)
+						{
+							if (!g_SceneDrawing.BoundCategories[entity.Category] ||
+							    (g_SceneDrawing.BoundsMissingOnly && entity.ModelPose))
+								continue;
+							const std::string id = std::to_string(entity.Identity);
+							std::string label = std::string(names[entity.Category]) +
+							                    (entity.Category == 0 ? " | user " : " | entity ") +
+							                    std::to_string(entity.Category == 0 ? entity.Identity
+							                                                        : entity.Identity & 4095);
+							if (entity.ModelPose)
+								label += " | " + entity.ModelPose->ModelInfo->Name;
+							if (!search.PassFilter(label.c_str()))
+								continue;
+							ImGui::PushID(id.c_str());
+							bool selected = g_SceneDrawing.BoundEntities.count(entity.Identity) != 0;
+							if (ImGui::Checkbox(label.c_str(), &selected))
+								if (selected)
+									g_SceneDrawing.BoundEntities.insert(entity.Identity);
+								else
+									g_SceneDrawing.BoundEntities.erase(entity.Identity);
+							if (ImGui::IsItemHovered())
+							{
+								const auto corners = advancedfx::SceneCache::BoundsCorners(entity);
+								ImGui::SetTooltip("Stable identity: %s\nBounds center: %.1f %.1f %.1f",
+								                  id.c_str(), (corners[0][0] + corners[7][0]) * .5,
+								                  (corners[0][1] + corners[7][1]) * .5,
+								                  (corners[0][2] + corners[7][2]) * .5);
+							}
+							ImGui::PopID();
+						}
+					ImGui::EndChild();
+				}
+				else
+					ImGui::TextDisabled("Enable cached preview to list entities at the cursor.");
+				ImGui::Text("%zu selected", g_SceneDrawing.BoundEntities.size());
+				ImGui::TextWrapped(
+				    "Selections belong to this cache and clear with its history. Bounds do not restore "
+					"enabled next session while this individual filter is in use.");
+			}
+			ImGui::PopID();
+			ImGui::TreePop();
+		}
+
 		ImGui::Checkbox("Movement trails", &g_SceneDrawing.Trails);
 		if (g_SceneDrawing.Trails)
 		{
