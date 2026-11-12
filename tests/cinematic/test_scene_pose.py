@@ -5,6 +5,7 @@ import argparse, os, subprocess, tempfile
 parser = argparse.ArgumentParser()
 parser.add_argument('--build-dir', type=Path, default=Path(tempfile.gettempdir()) / 'hlae-scene-pose-tests')
 parser.add_argument('--sanitize', action='store_true')
+parser.add_argument('--windows-abi-compiler', type=Path, help='Optional Zig compiler for real MSVC ABI probes')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[2]
 out = args.build_dir.resolve()
@@ -160,6 +161,7 @@ struct BrushFileSystemFixture : SceneBaseFileSystem
  void Seek(void*,int at,int mode)override{assert(at>=0&&mode==0);At=size_t(at);}
  unsigned int Tell(void*)override{return unsigned(At);}
  unsigned int Size(void*)override{return unsigned(Data.size());}
+ unsigned int Size(const char*,const char*)override{assert(false&&"filename overload must not serve handle queries");return 0;}
 };
 int main(){
  Slot(fixture.MaterialSystemSlots,70,CreateMaterial);Slot(fixture.MaterialSlots,12,MaterialInc);Slot(fixture.MaterialSlots,13,MaterialDec);Slot(fixture.MaterialSlots,42,MaterialError);Slot(fixture.StudioSlots,33,SetOverride);
@@ -573,3 +575,18 @@ if result.returncode:print(result.stderr[-6500:]);raise SystemExit(result.return
 result=subprocess.run([str(out/'gib_label_layout')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
 print(result.stdout+result.stderr)
 if result.returncode:raise SystemExit(result.returncode)
+
+# Compile the production interface under Microsoft's ABI; native fixtures alone
+# cannot detect MSVC's different ordering of overloaded virtual methods.
+if args.windows_abi_compiler:
+    begin = calcs.index('class SceneBaseFileSystem\n')
+    end = calcs.index('\n};', begin) + 3
+    probe = out / 'filesystem_msvc_abi.cpp'
+    probe.write_text(calcs[begin:end] + '\nunsigned Probe(SceneBaseFileSystem*f,void*h){return f->Size(h); }\n')
+    for arch, offset in [('x86_64', 56), ('x86', 28)]:
+        assembly = out / (arch + '-filesystem_msvc_abi.s')
+        subprocess.run([str(args.windows_abi_compiler), 'c++', '-target', arch + '-windows-msvc',
+                        '-O1', '-g0', '-S', str(probe), '-o', str(assembly)], check=True)
+        import re
+        assert re.search(r'\b' + str(offset) + r'\(', assembly.read_text()), assembly.read_text()
+    print('Real MSVC x86/x64 filesystem Size(handle) slot checks passed')

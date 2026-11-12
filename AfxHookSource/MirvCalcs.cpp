@@ -10695,6 +10695,9 @@ public:
 	virtual void Seek(void *, int, int) = 0;
 	virtual unsigned int Tell(void *) = 0;
 	virtual unsigned int Size(void *) = 0;
+	// Preserve both SDK overloads: MSVC groups/reverses overloaded virtuals.
+	// Omitting this one sends Size(handle) to the filename overload on Windows.
+	virtual unsigned int Size(const char *, const char *) = 0;
 };
 static std::shared_ptr<const advancedfx::SceneCache::Model> SceneBrushModel(const char *name)
 {
@@ -10845,7 +10848,7 @@ static bool Mirv_Tf2_ReadGibVertexFile(const char *name, std::vector<unsigned ch
 	} close{fs, file};
 	unsigned size = fs->Size(file);
 	if (size < 64 || size > 64 * 1024 * 1024)
-		return fail("VVD file size is outside 64 bytes..64 MiB");
+		return fail(("VVD file size " + std::to_string(size) + " is outside 64 bytes..64 MiB").c_str());
 	bytes.resize(size);
 	if (fs->Read(bytes.data(), int(size), file) != int(size))
 		return fail("Short read while loading VVD");
