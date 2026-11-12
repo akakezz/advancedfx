@@ -1597,16 +1597,16 @@ static bool g_CampathPreviewToggleHeld = false;
 static bool g_CampathPreviewUndoHeld = false;
 static bool g_CampathPreviewEditHeld[256] = {};
 static bool g_CampathRightCtrlHeld = false, g_CampathRightCtrlChord = false;
-// Drive cache repeats from render updates, independently of Windows' repeat
+// Drive cached scrubbing from frame updates, independently of Windows' repeat
 // messages. Keep ownership in the existing edit-held table for key-up handoff.
 struct CampathCacheNavigationKey
 {
 	UINT Key;
-	DWORD NextRepeat;
+	DWORD StartAt, LastUpdate;
 	bool Armed;
 };
 static CampathCacheNavigationKey g_CampathCacheNavigation[] = {
-    {VK_LEFT, 0, false}, {VK_RIGHT, 0, false}, {VK_UP, 0, false}, {VK_DOWN, 0, false}};
+    {VK_LEFT, 0, 0, false}, {VK_RIGHT, 0, 0, false}, {VK_UP, 0, 0, false}, {VK_DOWN, 0, 0, false}};
 static void CampathPreview_StopCachedNavigation()
 {
 	for (auto &key : g_CampathCacheNavigation)
@@ -1629,17 +1629,16 @@ static void CampathPreview_UpdateCachedNavigation()
 			continue;
 		if (opposite.Armed && g_CampathPreviewEditHeld[opposite.Key])
 		{
-			key.NextRepeat = now + 33;
+			key.StartAt = now;
+			key.LastUpdate = now;
 			continue;
 		}
-		const int32_t elapsed = static_cast<int32_t>(now - key.NextRepeat);
+		const int32_t elapsed = static_cast<int32_t>(now - key.StartAt);
 		if (elapsed < 0)
 			continue;
-		const int steps = (std::min)(3, 1 + elapsed / 33);
-		for (int i = 0; i < steps; ++i)
-			AfxHookSource::CameraOverlay::SceneCacheNavigationKey(key.Key, true);
-		// Catch up short gaps, but never burst through an entire stalled frame.
-		key.NextRepeat = elapsed >= 99 ? now + 33 : key.NextRepeat + steps * 33;
+		const DWORD milliseconds = (std::min)(DWORD(100), now - key.LastUpdate);
+		key.LastUpdate = now;
+		AfxHookSource::CameraOverlay::SceneCacheScrubKey(key.Key, milliseconds * .001);
 	}
 }
 static int g_CampathSeekMode = 0, g_CampathSeekTarget = -1, g_CampathSeekFrom = 0,
@@ -2103,7 +2102,8 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 			for (auto &held : g_CampathCacheNavigation)
 				if (held.Key == key)
 				{
-					held.NextRepeat = GetTickCount() + 300;
+					held.StartAt = GetTickCount() + 300;
+					held.LastUpdate = held.StartAt;
 					held.Armed = true;
 				}
 		}

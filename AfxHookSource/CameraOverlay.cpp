@@ -279,6 +279,43 @@ void SceneCacheDrawModels()
 	if (epoch == g_SceneDrawEpoch.load())
 		SceneModelStatus(status);
 }
+// Diagnostics report the actual sampled representation, not just the toggle.
+static std::string SceneAnimationSummary(const advancedfx::SceneCache::Entity &entity)
+{
+	if (!entity.ModelPose)
+		return "Player/entity " + std::to_string(entity.Identity) + ": no cached model pose (bounds only)";
+	const auto &pose = *entity.ModelPose;
+	std::string text =
+	    (entity.Category == 0 ? "Player user " : "Entity handle ") +
+	    std::to_string(entity.Category == 0 ? entity.Identity : (entity.Identity & 0xffffffff)) + " | " +
+	    pose.ModelInfo->Name + ": ";
+	if (pose.Local.empty())
+		text += "world-only pose (nearest); capture a fresh interval";
+	else if (pose.BlendFraction < 0)
+		text += "recorded/nearest pose; " + std::to_string(pose.Fixed.size()) + " preserved bone exceptions";
+	else
+	{
+		char fraction[32];
+		std::snprintf(fraction, sizeof(fraction), "%.3f", pose.BlendFraction);
+		text += "blend " + std::string(fraction) + "; " + std::to_string(pose.BlendedBones) + " blended, " +
+		        std::to_string(pose.HeldBones) + " preserved bones";
+	}
+	if (pose.BlendFraction >= 0 && pose.HeldBones > pose.Fixed.size())
+		text += "\n  Additional preserved bones cross an adjacent exception or scale-handedness boundary.";
+	for (size_t i = 0; i < std::min(size_t(8), pose.Fixed.size()); ++i)
+	{
+		const auto &fixed = pose.Fixed[i];
+		text += "\n  Bone " + std::to_string(fixed.Index);
+		if (!pose.ModelInfo->BoneNames.empty() && !pose.ModelInfo->BoneNames[fixed.Index].empty())
+			text += " (" + pose.ModelInfo->BoneNames[fixed.Index] + ")";
+		text += ": ";
+		text += advancedfx::SceneCache::FallbackName(fixed.Reason);
+		text += fixed.World ? "; recorded world transform" : "; recorded parent-relative transform";
+	}
+	if (pose.Fixed.size() > 8)
+		text += "\n  More preserved bones: " + std::to_string(pose.Fixed.size() - 8);
+	return text;
+}
 static double SceneTickInterval()
 {
 	auto gl = g_Hook_VClient_RenderView.GetGlobals();
@@ -380,6 +417,24 @@ bool SceneCacheNavigationKey(unsigned int key, bool down)
 			target += (key == VK_DOWN ? -1 : 1) * int64_t(std::llround(1 / SceneTickInterval()));
 		ScenePreviewTick(int(std::clamp(target, int64_t(first), int64_t(last))));
 	}
+	return true;
+}
+// Frame-driven held-key scrubbing keeps a fractional cache cursor. Taps still
+// use SceneCacheNavigationKey and land on exact recorded demo ticks.
+bool SceneCacheScrubKey(unsigned int key, double seconds)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (!g_ScenePreview || g_SceneCache.Frames().empty() || !std::isfinite(seconds) || seconds <= 0 ||
+	    (key != VK_LEFT && key != VK_RIGHT && key != VK_UP && key != VK_DOWN))
+		return false;
+	const double interval = SceneTickInterval();
+	const double step = (key == VK_LEFT    ? -1
+	                     : key == VK_RIGHT ? 1
+	                                       : (key == VK_UP ? 1 : -1) * std::llround(1 / interval));
+	SceneCacheStopScrub();
+	ScenePreviewTime(std::clamp(g_SceneCursor + step * std::min(seconds, .1) / .033 * interval,
+	                            g_SceneCache.Frames().front().DemoTime,
+	                            g_SceneCache.Frames().back().DemoTime));
 	return true;
 }
 static void DrawSceneCoverage()
@@ -907,6 +962,16 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	if (g_ScenePreview)
 		if (auto status = std::atomic_load(&g_SceneModelStatus))
 			advancedfx::Message("%s\n", status->c_str());
+	if (!_stricmp(op, "status"))
+	{
+		if (auto view = SceneCacheView())
+		{
+			advancedfx::Message("Scene animation at tick %.3f (%s):\n", g_SceneCursor / SceneTickInterval(),
+			                    g_SceneSmoothAnimation ? "smooth" : "nearest");
+			for (const auto &entity : view->Entities)
+				advancedfx::Message("%s\n", SceneAnimationSummary(entity).c_str());
+		}
+	}
 	if (!g_SceneCache.Frames().empty())
 		advancedfx::Message("Cached tick bounds: %d .. %d (gaps may exist).\n",
 		                    int(std::floor(g_SceneCache.Frames().front().DemoTime / SceneTickInterval())),
@@ -4709,6 +4774,18 @@ static void DrawSequencerDetails(int playhead)
 		if ((g_ScenePoseEntity || g_SceneProjectiles) && !g_SceneRecord)
 			ImGui::TextDisabled("Enable Record scene history and play forward to capture poses.");
 		ImGui::Text("Pose captures: %llu | Unavailable: %llu", g_ScenePoseCaptured, g_ScenePoseFailures);
+		if (ImGui::TreeNode("Animation diagnostics"))
+		{
+			ImGui::Text("Cached tick %.3f", g_SceneCursor / SceneTickInterval());
+			if (auto view = SceneCacheView())
+			{
+				for (const auto &entity : view->Entities)
+					ImGui::TextWrapped("%s", SceneAnimationSummary(entity).c_str());
+			}
+			else
+				ImGui::TextDisabled("Enable cached preview at a recorded interval.");
+			ImGui::TreePop();
+		}
 		ImGui::TextWrapped("%s", g_ScenePoseStatus.c_str());
 		if (g_ScenePreview)
 			if (auto status = std::atomic_load(&g_SceneModelStatus))
@@ -5044,11 +5121,19 @@ void Draw()
 		if (g_GraphRightCtrlHeld && !IsMouseLook() && !g_Hook_VClient_RenderView.IsSourceUiActive())
 		{
 			const ImGuiKey arrows[] = {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_UpArrow,
-			                          ImGuiKey_DownArrow, ImGuiKey_Home, ImGuiKey_End};
+			                           ImGuiKey_DownArrow, ImGuiKey_Home,       ImGuiKey_End};
 			const unsigned int keys[] = {VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_HOME, VK_END};
 			for (size_t i = 0; i < 6; ++i)
-				if (ImGui::IsKeyPressed(arrows[i]))
+			{
+				if (ImGui::IsKeyPressed(arrows[i], false))
 					SceneCacheNavigationKey(keys[i], true);
+				if (i < 4 && ImGui::IsKeyDown(arrows[i]) && !ImGui::IsKeyDown(arrows[i ^ 1]))
+				{
+					const double held = ImGui::GetKeyData(arrows[i])->DownDuration - .3;
+					if (held > 0)
+						SceneCacheScrubKey(keys[i], std::min(double(ImGui::GetIO().DeltaTime), held));
+				}
+			}
 		}
 		if (ImGui::IsKeyPressed(ImGuiKey_E, false))
 			PreviewCapture(ImGui::GetIO().KeyShift);
@@ -5799,6 +5884,7 @@ void Draw()
 				if (auto *demo = g_VEngineClient->GetDemoInfoEx())
 					demoTotalTicks = demo->GetDemoPlaybackTotalTicks();
 			ImGui::FrameIndexType prevFrame = s_seqFrame;
+			bool fractionalPointerHandled=false;
 
 			// Initial content bounds (max campath tick)
 			if (!s_seqInit)
@@ -5889,6 +5975,17 @@ void Draw()
 											 seqFlags))
 				{
 					ImGui::GetNeoSequencerView(&visibleStart, &visibleEnd);
+					if (SceneCachePreviewActive())
+					{
+						double tick;
+						if (ImGui::GetNeoSequencerPlayheadDrag(&tick))
+						{
+							SceneCacheStopScrub();
+							ScenePreviewTime(tick * SceneTickInterval());
+							fractionalPointerHandled = true;
+						}
+						ImGui::SetNeoSequencerPlayhead(g_SceneCursor / SceneTickInterval(), s_seqFrame);
+					}
 					if (g_CancelGesture)
 						ImGui::NeoCancelSelection();
 					auto &document = g_Hook_VClient_RenderView.m_CamPaths;
@@ -6479,10 +6576,12 @@ void Draw()
 
 			if (SceneCachePreviewActive())
 			{
-				if (pointerMoved)
+				if (pointerMoved && !fractionalPointerHandled)
 					ScenePreviewTick(s_seqFrame);
-				ImGui::TextDisabled("Cached tick %d | Actual demo tick %d",int(s_seqFrame),curDemoTick);
-				if (!SceneCacheView()) ImGui::TextDisabled("No cached coverage at this tick.");
+				ImGui::TextDisabled("Cached tick %.3f | Actual demo tick %d",
+				                    g_SceneCursor / SceneTickInterval(), curDemoTick);
+				if (!SceneCacheView())
+					ImGui::TextDisabled("No cached coverage at this tick.");
 			}
 
 			ImGui::End();

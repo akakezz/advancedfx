@@ -1593,7 +1593,8 @@ proxy history available. Source can report its first-person local player as hidd
 choose a visible player for the initial test.
 
 **Smooth cached animation** is enabled by default. Between observed ticks it
-interpolates parent-relative bone rotations using HLAE's quaternion slerp,
+interpolates parent-relative bone rotations using Source's normalized quaternion
+blend for animation frames (shortest-sign alignment, linear blend, normalization),
 with linear translation and scale, then rebuilds the hierarchy. This preserves
 limb lengths through rotations instead of blending world-space matrices.
 Gear shares the owning player's interpolated merge-enabled bones by recorded
@@ -1610,17 +1611,34 @@ mirv_campath cache animation smooth
 ```
 
 `cache rate` retains fractional ticks for smooth playback forwards/backwards.
-Right Ctrl navigation and exact tick entry keep their whole-tick behavior. The
-animation difference is most visible during slow `cache rate` playback or
-sub-tick camera preview; stepping between adjacent recorded ticks shows those
-original samples in both modes.
+Right Ctrl + Left/Right taps still step by one tick; Up/Down taps step by a
+second. Holding an arrow after the initial 300 ms delay advances continuously
+at the previous repeat speed, including fractional ticks. Opposite arrows
+cancel, and release/menu/focus handoff stops held scrubbing. This works with
+the overlay open or closed. Playhead dragging in cached mode also retains
+fractional ticks and draws the pointer at that position; release preserves the
+fractional time. Exact tick entry and camera-key selection remain discrete.
+Normal demo seeking keeps its existing behavior; authored keyframe times are
+unchanged.
+Stepping directly between recorded ticks still displays the original samples
+in both animation modes.
 
 Capture prepares compact local transforms once per observed pose. Unsupported
-local shear or singular transforms keep their verbatim world matrices and use
-nearest-pose playback. Changes in body groups or scale handedness also use the
-nearest pose. Model changes, missing samples, excessive gaps/travel and owner
+local shear, missing parents or singular parent transforms preserve only the
+affected bones. The supported bones continue blending. Parent-relative
+exceptions follow the interpolated parent; a bone without a usable parent
+keeps its recorded world transform, retargeted with the entity's root. Scale
+handedness changes also preserve only that bone. Body-group values switch
+at the nearer sample without disabling skeleton interpolation. Model changes, missing samples, excessive gaps/travel and owner
 changes retain their existing safeguards. Smoothing does not repair bad demo
 samples or synthesize missing simulation, particles, audio or facial flexes.
+Use **Scene Cache → Animation diagnostics** or `mirv_campath cache status`
+while slow scrubbing to inspect each model's actual blend weight, blended and
+preserved bone counts, and exception bone names/reasons. A recorded/nearest
+pose at a whole tick is expected. A world-only pose requires a fresh capture.
+Exceptions are limited to their affected bones; the diagnostics do not claim
+that every model has the same amount of supported interpolation.
+
 Native life-state/respawn boundaries are still not classified. This remains a
 visual preview, not restoration of engine simulation.
 

@@ -10000,31 +10000,56 @@ private:
 	unsigned short Handle;
 };
 // Convert once per observed pose, using the same inverse/concatenation as AGR.
-// Unsupported shear or singular parent transforms retain the verbatim matrices.
+// Unsupported bones retain their own verbatim matrices; the remaining bones can still blend.
 static void ScenePrepareLocalPose(advancedfx::SceneCache::Pose &pose)
 {
 	using Cache = advancedfx::SceneCache;
 	std::vector<Cache::Transform> local(pose.Bones.size());
+	std::vector<Cache::FixedBone> fixed;
 	for (size_t i = 0; i < local.size(); ++i)
 	{
 		if (!(pose.ModelInfo->Flags[i] & SOURCESDK_BONE_USED_BY_ANYTHING))
 			continue;
 		const int parent = pose.ModelInfo->Parents[i];
+		Cache::FixedBone fallback;
+		fallback.Index = int(i);
+		fallback.Value = pose.Bones[i];
+		fallback.World = true;
 		if (parent >= 0 && !(pose.ModelInfo->Flags[parent] & SOURCESDK_BONE_USED_BY_ANYTHING))
-			return;
+		{
+			fallback.Reason = Cache::BoneFallback::MissingParent;
+			fixed.push_back(fallback);
+			continue;
+		}
 		SOURCESDK::matrix3x4_t parentMatrix, inverse, world, relative;
 		const auto &source = parent < 0 ? pose.Root : pose.Bones[parent];
 		std::memcpy(parentMatrix.m_flMatVal, source.data(), sizeof(parentMatrix));
 		std::memcpy(world.m_flMatVal, pose.Bones[i].data(), sizeof(world));
 		if (!CClientTools::InvertMatrix(parentMatrix, inverse))
-			return;
+		{
+			fallback.Reason = Cache::BoneFallback::SingularParent;
+			fixed.push_back(fallback);
+			continue;
+		}
 		SOURCESDK::R_ConcatTransforms(inverse, world, relative);
 		Cache::Matrix matrix;
 		std::memcpy(matrix.data(), relative.m_flMatVal, sizeof(relative));
+		if (!std::all_of(matrix.begin(), matrix.end(), [](float value) { return std::isfinite(value); }))
+		{
+			fallback.Reason = Cache::BoneFallback::SingularParent;
+			fixed.push_back(fallback);
+			continue;
+		}
 		if (!Cache::Transform::Decompose(matrix, local[i]))
-			return;
+		{
+			fallback.Value = matrix;
+			fallback.World = false;
+			fixed.push_back(fallback);
+			local[i] = Cache::Transform{};
+		}
 	}
 	pose.Local = std::move(local);
+	pose.Fixed = std::move(fixed);
 	std::vector<Cache::Matrix>().swap(pose.Bones);
 }
 // No live entity or bone-cache pointers are needed to rebuild a sampled pose.
@@ -10060,8 +10085,21 @@ static bool SceneBuildMatrices(const advancedfx::SceneCache::Entity &entity,
 		                   !owner->ModelPose->ModelInfo->BoneNames.empty() &&
 		                   !owner->ModelPose->ModelInfo->MergeBones.empty() &&
 		                   SceneBuildMatrices(*owner, nullptr, ownerBones);
+		SOURCESDK::matrix3x4_t delta;
+		if (std::any_of(pose.Fixed.begin(), pose.Fixed.end(), [](const auto &bone) { return bone.World; }))
+		{
+			SOURCESDK::matrix3x4_t captured, inverse;
+			std::memcpy(captured.m_flMatVal, pose.Root.data(), sizeof(captured));
+			if (!CClientTools::InvertMatrix(captured, inverse))
+				return false;
+			SOURCESDK::R_ConcatTransforms(root, inverse, delta);
+		}
+		size_t fixedIndex = 0;
 		for (size_t i = 0; i < count; ++i)
 		{
+			const auto *fixed = fixedIndex < pose.Fixed.size() && pose.Fixed[fixedIndex].Index == int(i)
+			                        ? &pose.Fixed[fixedIndex++]
+			                        : nullptr;
 			bool merged = false;
 			if (merge && (pose.ModelInfo->Flags[i] & SOURCESDK_BONE_USED_BY_ANYTHING))
 			{
@@ -10081,11 +10119,12 @@ static bool SceneBuildMatrices(const advancedfx::SceneCache::Entity &entity,
 			}
 			if (merged)
 				continue;
-			const auto matrix = pose.Local[i].Compose();
+			const auto matrix = fixed ? fixed->Value : pose.Local[i].Compose();
 			SOURCESDK::matrix3x4_t relative;
 			std::memcpy(relative.m_flMatVal, matrix.data(), sizeof(relative));
 			const int parent = pose.ModelInfo->Parents[i];
-			SOURCESDK::R_ConcatTransforms(parent < 0 ? root : out[parent], relative, out[i]);
+			SOURCESDK::R_ConcatTransforms(fixed && fixed->World ? delta : (parent < 0 ? root : out[parent]),
+			                              relative, out[i]);
 		}
 	}
 	for (size_t i = 0; i < count; ++i)

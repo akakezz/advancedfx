@@ -17,6 +17,7 @@ void SceneCacheDrawModels();
 void SceneCacheConsole(advancedfx::ICommandArgs *args);
 bool SceneCacheNavigationKey(unsigned int key, bool down);
 void SceneCacheStopScrub();
+bool SceneCacheScrubKey(unsigned int key, double seconds);
 void SceneCacheFollowCameraTime(double clientTime);
 bool SceneCachePreviewActive();
 std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView();

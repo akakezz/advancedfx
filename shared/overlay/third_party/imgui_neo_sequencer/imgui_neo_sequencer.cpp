@@ -11,6 +11,7 @@
 #include <math.h>
 #include <string>
 #include <cfloat>
+#include <cmath>
 
 namespace ImGui
 {
@@ -72,6 +73,8 @@ namespace ImGui
         ImVector<ImGuiID> GroupStack;
 
         FrameIndexType CurrentFrame = 0;
+        double DisplayFrame = 0, DragFrame = 0;
+        bool DragFrameChanged = false;
         bool HoldingCurrentFrame = false; // Are we draging current frame?
         ImVec4 CurrentFrameColor; // Color of current frame, we have to save it because we render on EndNeoSequencer, but process at BeginneoSequencer
 
@@ -201,23 +204,28 @@ namespace ImGui
     }
 
     // Dont pull frame from context, its used for dragging
-    static ImRect getCurrentFrameBB(FrameIndexType frame, ImGuiNeoSequencerInternalData& context)
+    static ImRect getCurrentFrameBB(double frame, ImGuiNeoSequencerInternalData& context)
     {
         const auto& imStyle = GetStyle();
         const auto width = style.CurrentFramePointerSize * GetIO().FontGlobalScale;
-        const auto cursor =
-                context.TopBarStartCursor + ImVec2{context.ValuesWidth + imStyle.FramePadding.x - width / 2.0f, 0};
-        const auto currentFrameCursor = cursor + ImVec2{getKeyframePositionX(frame, context), 0};
+        const auto cursor = context.TopBarStartCursor +
+                            ImVec2{context.ValuesWidth + imStyle.FramePadding.x - width / 2.0f, 0};
+        const auto currentFrameCursor =
+            cursor +
+            ImVec2{float((frame - context.OffsetFrame - context.StartFrame) * getPerFrameWidth(context)), 0};
 
         float pointerHeight = style.CurrentFramePointerSize * 2.5f;
-        ImRect rect{currentFrameCursor, currentFrameCursor + ImVec2{width, pointerHeight * GetIO().FontGlobalScale}};
+        ImRect rect{currentFrameCursor,
+                    currentFrameCursor + ImVec2{width, pointerHeight * GetIO().FontGlobalScale}};
 
         return rect;
     }
 
     static void processCurrentFrame(FrameIndexType* frame, ImGuiNeoSequencerInternalData& context)
     {
-        auto pointerRect = getCurrentFrameBB(*frame, context);
+        context.DragFrameChanged = false;
+        auto pointerRect = getCurrentFrameBB(
+            *frame == context.CurrentFrame ? context.DisplayFrame : double(*frame), context);
         pointerRect.Min -= ImVec2{2.0f, 2.0f};
         pointerRect.Max += ImVec2{2.0f, 2.0f};
 
@@ -225,38 +233,47 @@ namespace ImGui
 
         const auto timelineXmin = context.TopBarStartCursor.x + context.ValuesWidth + imStyle.FramePadding.x;
 
-        const ImVec2 timelineXRange = {
-                timelineXmin, //min
-                timelineXmin + context.Size.x - context.ValuesWidth
-        };
+        const ImVec2 timelineXRange = {timelineXmin, // min
+                                       timelineXmin + context.Size.x - context.ValuesWidth};
 
-        const auto hovered = ItemHoverable(pointerRect, GetCurrentWindow()->GetID("##_top_selector_neo"), ImGuiItemFlags_None);
+        const auto hovered =
+            ItemHoverable(pointerRect, GetCurrentWindow()->GetID("##_top_selector_neo"), ImGuiItemFlags_None);
 
         context.CurrentFrameColor = GetStyleNeoSequencerColorVec4(ImGuiNeoSequencerCol_FramePointer);
 
         if (hovered && !context.HoldingZoomSlider)
         {
-            context.CurrentFrameColor = GetStyleNeoSequencerColorVec4(ImGuiNeoSequencerCol_FramePointerHovered);
+            context.CurrentFrameColor =
+                GetStyleNeoSequencerColorVec4(ImGuiNeoSequencerCol_FramePointerHovered);
         }
 
         if (context.HoldingCurrentFrame)
         {
-            if (IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
+            if (IsMouseDragging(ImGuiMouseButton_Left, 0.0f) && getWorkTimelineWidth(context) > 0)
             {
                 const auto mousePosX = GetMousePos().x;
-                const auto v = mousePosX - timelineXRange.x;// Subtract min
+                const auto v = mousePosX - timelineXRange.x; // Subtract min
 
-                const auto normalized = v / getWorkTimelineWidth(context); //Divide by width to remap to 0 - 1 range
+                const auto normalized =
+                    v / getWorkTimelineWidth(context); // Divide by width to remap to 0 - 1 range
 
                 const auto clamped = ImClamp(normalized, 0.0f, 1.0f);
 
-                const auto viewSize = (float) (context.EndFrame - context.StartFrame) / context.Zoom;
+                const auto viewSize = (float)(context.EndFrame - context.StartFrame) / context.Zoom;
 
-                const auto frameViewVal = (float) context.StartFrame + (clamped * (float) viewSize);
+                const auto frameViewVal = (float)context.StartFrame + (clamped * (float)viewSize);
 
-                const auto finalFrame = (FrameIndexType) round(frameViewVal) + context.OffsetFrame;
+                const double firstVisible = double(context.StartFrame) + context.OffsetFrame;
+                const double lastVisible =
+                    ImMin(double(context.EndFrame),
+                          firstVisible + double(context.EndFrame - context.StartFrame) / context.Zoom);
+                context.DragFrame =
+                    ImClamp(firstVisible + double(v) / getPerFrameWidth(context), firstVisible, lastVisible);
+                context.DragFrameChanged = true;
+                const auto finalFrame = (FrameIndexType)round(frameViewVal) + context.OffsetFrame;
 
-                context.CurrentFrameColor = GetStyleNeoSequencerColorVec4(ImGuiNeoSequencerCol_FramePointerPressed);
+                context.CurrentFrameColor =
+                    GetStyleNeoSequencerColorVec4(ImGuiNeoSequencerCol_FramePointerPressed);
 
                 *frame = finalFrame;
             }
@@ -268,13 +285,16 @@ namespace ImGui
             }
         }
 
-        if (hovered && IsMouseDown(ImGuiMouseButton_Left) && !context.HoldingCurrentFrame && !context.HoldingZoomSlider)
+        if (hovered && IsMouseDown(ImGuiMouseButton_Left) && !context.HoldingCurrentFrame &&
+            !context.HoldingZoomSlider)
         {
             context.HoldingCurrentFrame = true;
-            context.CurrentFrameColor = GetStyleNeoSequencerColorVec4(ImGuiNeoSequencerCol_FramePointerPressed);
+            context.CurrentFrameColor =
+                GetStyleNeoSequencerColorVec4(ImGuiNeoSequencerCol_FramePointerPressed);
         }
 
         context.CurrentFrame = *frame;
+        context.DisplayFrame = *frame;
     }
 
     static void finishPreviousTimeline(ImGuiNeoSequencerInternalData& context)
@@ -546,7 +566,7 @@ namespace ImGui
 
     static void renderCurrentFrame(ImGuiNeoSequencerInternalData& context)
     {
-        const auto bb = getCurrentFrameBB(context.CurrentFrame, context);
+        const auto bb = getCurrentFrameBB(context.DisplayFrame, context);
 
         const auto drawList = ImGui::GetWindowDrawList();
 
@@ -1354,6 +1374,25 @@ namespace ImGui
         else if (!selected && found)
             context.Selection.find_erase(id);
         context.IsLastKeyframeSelected = selected;
+    }
+
+    bool GetNeoSequencerPlayheadDrag(double* frame)
+    {
+        IM_ASSERT(inSequencer);
+        const auto& context = sequencerData.at(currentSequencer);
+        if (!frame || !context.DragFrameChanged || !std::isfinite(context.DragFrame))
+            return false;
+        *frame = ImClamp(context.DragFrame, double(context.StartFrame), double(context.EndFrame));
+        return true;
+    }
+    void SetNeoSequencerPlayhead(double frame, FrameIndexType reference)
+    {
+        IM_ASSERT(inSequencer);
+        auto& context = sequencerData.at(currentSequencer);
+        if (!std::isfinite(frame))
+            return;
+        context.DisplayFrame = ImClamp(frame, double(context.StartFrame), double(context.EndFrame));
+        context.CurrentFrame = reference;
     }
 
     bool GetNeoSequencerMouseFrame(FrameIndexType *frame, ImGuiHoveredFlags hoverFlags)

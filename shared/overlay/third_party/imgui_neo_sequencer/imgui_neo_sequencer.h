@@ -110,6 +110,8 @@ namespace ImGui {
     IMGUI_API void GetNeoSequencerView(FrameIndexType *startFrame, FrameIndexType *endFrame); // Inside Begin/End.
     IMGUI_API bool GetNeoTimelineMouseFrame(FrameIndexType *frame); // Current timeline row.
     IMGUI_API bool GetNeoSequencerMouseFrame(FrameIndexType *frame, ImGuiHoveredFlags hoverFlags = 0); // Timeline/ruler only, inside Begin/End.
+    IMGUI_API bool GetNeoSequencerPlayheadDrag(double *frame); // Fractional pointer drag; inside Begin/End.
+    IMGUI_API void SetNeoSequencerPlayhead(double frame, FrameIndexType reference); // Display a fractional playhead; keyframes stay integer.
     IMGUI_API void SetNextNeoSequencerFit(); // Fit full range on next BeginNeoSequencer.
     IMGUI_API void EndNeoSequencer(); //Call only when BeginNeoSequencer() returns true!!
 

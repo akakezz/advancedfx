@@ -70,7 +70,7 @@ public:
 				for (int r = 0; r < 3; ++r)
 					rotation[r][c] = matrix[4 * r + c] / length;
 			}
-			// TRS cannot represent shear. Preserve such poses verbatim instead.
+			// TRS cannot represent shear. Preserve such bone transforms verbatim instead.
 			for (int a = 0; a < 3; ++a)
 				for (int b = a + 1; b < 3; ++b)
 				{
@@ -95,12 +95,40 @@ public:
 			return true;
 		}
 	};
+	enum class BoneFallback
+	{
+		UnsupportedTransform,
+		MissingParent,
+		SingularParent
+	};
+	struct FixedBone
+	{
+		int Index = 0;
+		bool World = false;
+		BoneFallback Reason = BoneFallback::UnsupportedTransform;
+		Matrix Value{};
+	};
+	static const char *FallbackName(BoneFallback reason)
+	{
+		switch (reason)
+		{
+		case BoneFallback::MissingParent:
+			return "parent bone unavailable";
+		case BoneFallback::SingularParent:
+			return "singular or unstable parent transform";
+		default:
+			return "local transform cannot be represented as rotation/translation/scale";
+		}
+	}
 	struct Pose
 	{
 		std::shared_ptr<const Model> ModelInfo;
 		Matrix Root{};
-		std::vector<Matrix> Bones;    // Verbatim world matrices when local TRS is unsupported.
+		std::vector<Matrix> Bones;    // Optional complete world-matrix pose (nearest-only).
 		std::vector<Transform> Local; // Parent-relative transforms; root bones relative to Root.
+		std::vector<FixedBone> Fixed; // Sparse exceptions, sorted by bone index; preserved per bone.
+		float BlendFraction = -1;     // Negative means an original/nearest pose.
+		unsigned short BlendedBones = 0, HeldBones = 0;
 		int Body = 0;
 	};
 	struct Entity
@@ -269,6 +297,16 @@ public:
 		for (int i : model.MergeBones)
 			if (i < 0 || size_t(i) >= count || model.BoneNames.size() != count || !(model.Flags[i] & 0x40000))
 				return false;
+		int previous = -1;
+		for (const auto &fixed : pose.Fixed)
+		{
+			if (pose.Local.empty() || fixed.Index <= previous || fixed.Index >= int(count))
+				return false;
+			previous = fixed.Index;
+			for (float value : fixed.Value)
+				if (!std::isfinite(value))
+					return false;
+		}
 		for (float value : pose.Root)
 			if (!std::isfinite(value))
 				return false;
@@ -316,22 +354,35 @@ private:
 		if (!a || !b || a->ModelInfo != b->ModelInfo)
 			return nullptr;
 		const auto &nearest = f < .5 ? a : b;
-		if (!smooth || a == b || a->Body != b->Body || a->Local.empty() || b->Local.size() != a->Local.size())
+		if (!smooth || a == b || a->Local.empty() || b->Local.size() != a->Local.size())
 			return nearest;
-		// Never blend a reflection through zero scale.
-		for (size_t i = 0; i < a->Local.size(); ++i)
-			for (int c = 0; c < 3; ++c)
-				if (std::signbit(a->Local[i].Scale[c]) != std::signbit(b->Local[i].Scale[c]))
-					return nearest;
 		auto out = std::make_shared<Pose>();
 		out->ModelInfo = a->ModelInfo;
-		out->Root = a->Root;
-		out->Body = a->Body;
+		out->Root = nearest->Root;
+		out->Body = nearest->Body;
+		out->BlendFraction = float(f);
 		out->Local.resize(a->Local.size());
+		size_t ai = 0, bi = 0;
 		for (size_t i = 0; i < out->Local.size(); ++i)
 		{
 			const auto &x = a->Local[i], &y = b->Local[i];
 			auto &t = out->Local[i];
+			const auto *af = ai < a->Fixed.size() && a->Fixed[ai].Index == int(i) ? &a->Fixed[ai++] : nullptr;
+			const auto *bf = bi < b->Fixed.size() && b->Fixed[bi].Index == int(i) ? &b->Fixed[bi++] : nullptr;
+			bool reflected = false;
+			for (int c = 0; c < 3; ++c)
+				reflected |= std::signbit(x.Scale[c]) != std::signbit(y.Scale[c]);
+			if (af || bf || reflected)
+			{
+				t = f < .5 ? x : y;
+				if (a->ModelInfo->Flags[i] & 0x7ff00)
+					++out->HeldBones;
+				if (const auto *fixed = f < .5 ? af : bf)
+					out->Fixed.push_back(*fixed);
+				continue;
+			}
+			if (a->ModelInfo->Flags[i] & 0x7ff00)
+				++out->BlendedBones;
 			for (int c = 0; c < 3; ++c)
 			{
 				t.Position[c] = float(double(x.Position[c]) + f * (double(y.Position[c]) - x.Position[c]));
@@ -341,7 +392,9 @@ private:
 			const auto qx = x.Quaternion();
 			if (Afx::Math::DotProduct(qx, qy) < 0)
 				qy = -1.0 * qy;
-			const auto q = qx.Slerp(qy, f).Normalized();
+			// Source's QuaternionBlend aligns signs, linearly blends, then
+			// normalizes when interpolating animation frames (bone_setup.cpp).
+			const auto q = ((1 - f) * qx + f * qy).Normalized();
 			t.Rotation = {float(q.W), float(q.X), float(q.Y), float(q.Z)};
 		}
 		return out;
@@ -374,7 +427,8 @@ private:
 			{
 				const auto &pose = *entity.ModelPose;
 				result += sizeof(Pose) + pose.Bones.capacity() * sizeof(Matrix) +
-				          pose.Local.capacity() * sizeof(Transform);
+				          pose.Local.capacity() * sizeof(Transform) +
+				          pose.Fixed.capacity() * sizeof(FixedBone);
 			}
 		return result;
 	}

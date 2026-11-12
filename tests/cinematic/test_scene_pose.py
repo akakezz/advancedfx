@@ -185,7 +185,11 @@ int main(){
  double childLength=0;for(int r=0;r<3;++r)childLength+=std::pow(gearOut[1][r][3]-gearOut[0][r][3],2);assert(std::abs(childLength-4)<1e-5);
  gear.OwnerIdentity=8;assert(SceneBuildMatrices(gear,&owner,gearOut)&&gearOut[0][0][3]==200);gear.OwnerIdentity=7;
  // A shear cannot be represented as TRS and must survive verbatim.
- Cache::Pose sheared;sheared.ModelInfo=skeleton;sheared.Root=ownerPose->Root;Cache::Matrix shear=sheared.Root;shear[1]=.3f;sheared.Bones={shear,shear};ScenePrepareLocalPose(sheared);assert(sheared.Local.empty()&&sheared.Bones[0]==shear);
+ Cache::Pose sheared;sheared.ModelInfo=skeleton;sheared.Root=ownerPose->Root;Cache::Matrix shear=sheared.Root;shear[1]=.3f;sheared.Bones={shear,shear};ScenePrepareLocalPose(sheared);assert(sheared.Local.size()==2&&sheared.Bones.empty()&&sheared.Fixed.size()==1&&sheared.Fixed[0].Index==0&&sheared.Fixed[0].Value==shear&&Cache::ValidPose(sheared));
+ // Relative shear is retained while its descendants reconstruct normally.
+ Cache::Entity mixedEntity;mixedEntity.ModelPose=std::make_shared<Cache::Pose>(sheared);SOURCESDK::matrix3x4_t mixedOut[128];assert(SceneBuildMatrices(mixedEntity,nullptr,mixedOut));for(int r=0;r<3;++r)for(int c=0;c<4;++c)assert(std::abs(mixedOut[0][r][c]-shear[r*4+c])<1e-5);
+ // Singular-parent exceptions retain world space and follow root retargeting.
+ Cache::Pose singular;singular.ModelInfo=skeleton;singular.Root=ownerPose->Root;Cache::Matrix zero=singular.Root;zero[5]=0;singular.Bones={zero,ownerPose->Root};ScenePrepareLocalPose(singular);assert(singular.Fixed.size()==2&&singular.Fixed[1].World&&singular.Fixed[1].Reason==Cache::BoneFallback::SingularParent&&Cache::ValidPose(singular));mixedEntity.ModelPose=std::make_shared<Cache::Pose>(singular);mixedEntity.Origin[0]=25;assert(SceneBuildMatrices(mixedEntity,nullptr,mixedOut)&&mixedOut[1][0][3]==25);
  std::cout<<"TF2 scene pose capture/render fixture checks passed\n";
 }
 '''

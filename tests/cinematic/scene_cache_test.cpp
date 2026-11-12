@@ -90,7 +90,7 @@ int main()
  assert(animated.Sample(.025,out,.1,256,false)&&out.Entities[0].ModelPose==localB);assert(animated.Sample(0,out)&&out.Entities[0].ModelPose==localA);
  auto invalid=std::make_shared<Cache::Pose>(*localA);invalid->Local[0].Rotation={0,0,0,0};assert(!Cache::ValidPose(*invalid));invalid->Local[0]=Cache::Transform{};invalid->Local[0].Scale[0]=0;assert(!Cache::ValidPose(*invalid));invalid->Local[0]=Cache::Transform{};invalid->Local[0].Position[0]=NAN;assert(!Cache::ValidPose(*invalid));
  auto opposite=std::make_shared<Cache::Pose>(*localA);opposite->Local[0].Rotation={-1,0,0,0};localFrame.DemoTime=.1;localFrame.ClientTime=.1;localFrame.Entities[0].ModelPose=opposite;assert(animated.Append(localFrame));assert(animated.Sample(.075,out)&&Cache::ValidPose(*out.Entities[0].ModelPose));
- opposite=std::make_shared<Cache::Pose>(*localA);opposite->Local[0].Scale[0]=-1;localFrame.DemoTime=.15;localFrame.ClientTime=.15;localFrame.Entities[0].ModelPose=opposite;assert(animated.Append(localFrame));assert(animated.Sample(.125,out)&&out.Entities[0].ModelPose==opposite); // Reflection change uses nearest.
+ opposite=std::make_shared<Cache::Pose>(*localA);opposite->Local[0].Scale[0]=-1;localFrame.DemoTime=.15;localFrame.ClientTime=.15;localFrame.Entities[0].ModelPose=opposite;assert(animated.Append(localFrame));assert(animated.Sample(.125,out)&&out.Entities[0].ModelPose->Local[0].Scale[0]==-1&&out.Entities[0].ModelPose->HeldBones==1&&out.Entities[0].ModelPose->BlendedBones==1); // Only the reflected bone uses nearest.
 
  // Retention releases a model's metadata only after its final referencing frame.
  Cache accounting,onlyLast;Cache::Frame modelFrame;modelFrame.Entities={entity};modelFrame.Entities[0].ModelPose=pose;assert(accounting.Append(modelFrame));
@@ -98,5 +98,17 @@ int main()
 
  Cache wrap;auto wrapA=std::make_shared<Cache::Pose>(*localA),wrapB=std::make_shared<Cache::Pose>(*localA);auto qa=Afx::Math::Quaternion::FromQREulerAngles({0,179*3.141592653589793/180,0}),qb=Afx::Math::Quaternion::FromQREulerAngles({0,-179*3.141592653589793/180,0});wrapA->Local[0].Rotation={float(qa.W),float(qa.X),float(qa.Y),float(qa.Z)};wrapB->Local[0].Rotation={float(qb.W),float(qb.X),float(qb.Y),float(qb.Z)};modelFrame.DemoTime=0;modelFrame.Entities[0].ModelPose=wrapA;assert(wrap.Append(modelFrame));modelFrame.DemoTime=.05;modelFrame.Entities[0].ModelPose=wrapB;assert(wrap.Append(modelFrame));assert(wrap.Sample(.025,out));auto midpoint=out.Entities[0].ModelPose->Local[0].Compose();assert(std::abs(midpoint[0]+1)<1e-5&&std::abs(midpoint[4])<1e-5);
 
- auto bodyChange=std::make_shared<Cache::Pose>(*opposite);bodyChange->Body=3;localFrame.DemoTime=.2;localFrame.ClientTime=.2;localFrame.Entities[0].ModelPose=bodyChange;assert(animated.Append(localFrame));assert(animated.Sample(.19,out)&&out.Entities[0].ModelPose==bodyChange);
+ auto bodyChange=std::make_shared<Cache::Pose>(*opposite);bodyChange->Body=3;localFrame.DemoTime=.2;localFrame.ClientTime=.2;localFrame.Entities[0].ModelPose=bodyChange;assert(animated.Append(localFrame));assert(animated.Sample(.19,out)&&out.Entities[0].ModelPose->Body==3&&out.Entities[0].ModelPose->BlendedBones==2);
+
+ // One unsupported child does not freeze its supported, rotating parent.
+ auto mixedA=std::make_shared<Cache::Pose>(*localA),mixedB=std::make_shared<Cache::Pose>(*localB);mixedB->Local[0].Scale={1,1,1};
+ Cache::FixedBone fixed;fixed.Index=1;fixed.Value=identity;fixed.Value[1]=.3f;fixed.Value[3]=10;mixedA->Fixed={fixed};fixed.Value[3]=20;mixedB->Fixed={fixed};
+ Cache mixed;modelFrame.DemoTime=0;modelFrame.Entities[0].ModelPose=mixedA;assert(mixed.Append(modelFrame));modelFrame.DemoTime=.05;modelFrame.Entities[0].ModelPose=mixedB;assert(mixed.Append(modelFrame));
+ assert(mixed.Sample(.0125,out));auto partial=out.Entities[0].ModelPose;assert(partial->BlendedBones==1&&partial->HeldBones==1&&partial->Fixed.size()==1&&partial->Fixed[0].Value[3]==10&&Cache::ValidPose(*partial));
+ // Reference result of Source QuaternionBlend(identity, yaw90, .25).
+ auto sourceBlend=partial->Local[0].Compose();assert(std::abs(sourceBlend[0]-.929788301)<1e-6&&std::abs(sourceBlend[4]-.368094710)<1e-6);
+ assert(mixed.Sample(.04,out)&&out.Entities[0].ModelPose->Fixed[0].Value[3]==20);
+ // A bone can enter/leave fallback without disabling the rest of the rig.
+ mixedB=std::make_shared<Cache::Pose>(*mixedB);mixedB->Fixed.clear();modelFrame.DemoTime=.1;modelFrame.Entities[0].ModelPose=mixedB;assert(mixed.Append(modelFrame));assert(mixed.Sample(.09,out)&&out.Entities[0].ModelPose->Fixed.empty()&&out.Entities[0].ModelPose->HeldBones==1&&out.Entities[0].ModelPose->BlendedBones==1);
+ auto invalidFixed=std::make_shared<Cache::Pose>(*mixedA);invalidFixed->Fixed.push_back(invalidFixed->Fixed[0]);assert(!Cache::ValidPose(*invalidFixed));invalidFixed->Fixed.resize(1);invalidFixed->Fixed[0].Index=128;assert(!Cache::ValidPose(*invalidFixed));
 }
