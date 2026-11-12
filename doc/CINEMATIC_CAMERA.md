@@ -2047,3 +2047,9 @@ prints its model, bodygroup, debris flag, render origin/angles, local and world
 bounds, computed gib anchor, and available bone matrices. It does not alter the
 entity. Use the numeric label currently shown in the scene; client-only addresses
 are level-local.
+
+`debugLabel` reports a specific vertex-loading or validation failure when the
+geometry anchor is unavailable. It retries a cached failed load once per explicit
+diagnostic request; drawing does not retry files every frame. Model reads query
+the app-system registry first, then the loaded filesystem module's public
+`VBaseFileSystem011` factory, preserving GAME search paths and VPK access.

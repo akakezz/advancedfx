@@ -7381,9 +7381,11 @@ static bool Mirv_Tf2_LabelDebris(CMirvTf2ClientUnknown *object)
 }
 // Pose-space anchors avoid stale model pivots and oversized surrounding bounds.
 // VVD vertices retain the visible piece's offset from the model pivot.
-static bool Mirv_Tf2_ReadGibVertexFile(const char *name, std::vector<unsigned char> &bytes);
+static bool Mirv_Tf2_ReadGibVertexFile(const char *name, std::vector<unsigned char> &bytes,
+                                       std::string &failure);
 static bool Mirv_Tf2_GibVertexAnchor(CMirvTf2ClientRenderable *renderable, const unsigned char *hdr,
-                                     int boneCount, const SOURCESDK::matrix3x4_t *bones, float out[3])
+                                     int boneCount, const SOURCESDK::matrix3x4_t *bones, float out[3],
+                                     std::string *failure = nullptr)
 {
 	struct Contribution
 	{
@@ -7393,6 +7395,7 @@ static bool Mirv_Tf2_GibVertexAnchor(CMirvTf2ClientRenderable *renderable, const
 	{
 		std::vector<Contribution> Bones;
 		int Vertices = 0;
+		std::string Failure;
 	};
 	static std::map<std::string, Entry> entries;
 	auto info = Mirv_Tf2_GetModelInfo();
@@ -7408,13 +7411,23 @@ static bool Mirv_Tf2_GibVertexAnchor(CMirvTf2ClientRenderable *renderable, const
 	if (entries.size() >= 128 && !entries.count(key))
 		entries.clear();
 	auto found = entries.find(key);
+	// Explicit diagnostics retry a failed load; drawing never retries every frame.
+	if (failure && found != entries.end() && !found->second.Vertices)
+	{
+		entries.erase(found);
+		found = entries.end();
+	}
 	if (found == entries.end())
 	{
 		Entry entry;
 		entry.Bones.resize(boneCount);
+		auto fail = [&](const char *reason) {
+			entry.Failure = reason;
+			return false;
+		};
 		auto parse = [&]() -> bool {
 			std::vector<unsigned char> bytes;
-			if (!Mirv_Tf2_ReadGibVertexFile(name, bytes) || bytes.size() < 64)
+			if (!Mirv_Tf2_ReadGibVertexFile(name, bytes, entry.Failure) || bytes.size() < 64)
 				return false;
 			auto integer = [&](size_t at) {
 				int v;
@@ -7423,27 +7436,27 @@ static bool Mirv_Tf2_GibVertexAnchor(CMirvTf2ClientRenderable *renderable, const
 			};
 			if (integer(0) != 0x56534449 || integer(4) != 4 || integer(8) != checksum || integer(12) < 1 ||
 			    integer(12) > 8)
-				return false;
+				return fail("VVD header ID/version/checksum/LOD mismatch");
 			int vertices = integer(16), fixups = integer(48), fixStart = integer(52), data = integer(56);
 			if (vertices <= 0 || vertices > 1000000 || data < 64 ||
 			    std::uint64_t(data) + vertices * 48ULL > bytes.size() || fixups < 0 || fixups > 1000000)
-				return false;
+				return fail("Invalid VVD vertex count, size or data offset");
 			std::vector<int> order;
 			if (fixups)
 			{
 				if (fixStart < 64 || std::uint64_t(fixStart) + fixups * 12ULL > bytes.size())
-					return false;
+					return fail("Invalid VVD fixup table bounds");
 				for (int i = 0; i < fixups; ++i)
 				{
 					int at = fixStart + i * 12, source = integer(at + 4), n = integer(at + 8);
 					if (integer(at) < 0 || source < 0 || n < 0 || source > vertices - n ||
 					    order.size() + n > size_t(vertices))
-						return false;
+						return fail("Invalid VVD fixup range");
 					for (int j = 0; j < n; ++j)
 						order.push_back(source + j);
 				}
 				if (order.size() != size_t(vertices))
-					return false;
+					return fail("VVD fixup total does not match LOD0 vertex count");
 			}
 			auto mdlInt = [&](size_t at) {
 				int v;
@@ -7451,23 +7464,23 @@ static bool Mirv_Tf2_GibVertexAnchor(CMirvTf2ClientRenderable *renderable, const
 				return v;
 			};
 			if (length < 240)
-				return false;
+				return fail("Studio header too short");
 			int parts = mdlInt(232), partStart = mdlInt(236);
 			if (parts < 1 || parts > 128 || partStart < 240 || std::int64_t(partStart) + parts * 16 > length)
-				return false;
+				return fail("Invalid studio bodypart table");
 			for (int part = 0; part < parts; ++part)
 			{
 				int at = partStart + part * 16, models = mdlInt(at + 4), base = mdlInt(at + 8),
 				    offset = mdlInt(at + 12);
 				if (models < 1 || models > 256 || base <= 0 || offset < 16)
-					return false;
+					return fail("Invalid bodypart model count/base/offset");
 				std::int64_t model =
 				    at + std::int64_t(offset) + ((renderable->GetBody() / base) % models) * 148LL;
 				if (model + 148 > length)
-					return false;
+					return fail("Selected studio model outside header");
 				int n = mdlInt(size_t(model) + 80), first = mdlInt(size_t(model) + 84);
 				if (n < 0 || first < 0 || first % 48 || first / 48 > vertices - n)
-					return false;
+					return fail("Invalid selected model vertex count/index");
 				for (int i = 0; i < n; ++i)
 				{
 					int index = first / 48 + i;
@@ -7478,10 +7491,10 @@ static bool Mirv_Tf2_GibVertexAnchor(CMirvTf2ClientRenderable *renderable, const
 					std::memcpy(point, vertex + 16, 12);
 					for (float v : point)
 						if (!std::isfinite(v) || std::abs(v) > 1048576)
-							return false;
+							return fail("Nonfinite or out-of-range vertex position");
 					int weights = vertex[15];
 					if (weights < 1 || weights > 3)
-						return false;
+						return fail("Invalid vertex bone-weight count");
 					double total = 0;
 					for (int w = 0; w < weights; ++w)
 					{
@@ -7489,7 +7502,7 @@ static bool Mirv_Tf2_GibVertexAnchor(CMirvTf2ClientRenderable *renderable, const
 						float weight;
 						std::memcpy(&weight, vertex + w * 4, 4);
 						if (bone >= boneCount || !std::isfinite(weight) || weight < 0 || weight > 1)
-							return false;
+							return fail("Invalid bone index or weight");
 						total += weight;
 						auto &result = entry.Bones[bone];
 						result.Weight += weight;
@@ -7501,16 +7514,16 @@ static bool Mirv_Tf2_GibVertexAnchor(CMirvTf2ClientRenderable *renderable, const
 							for (int c = 0; c < 3; ++c)
 								local += bind[c] * point[c];
 							if (!std::isfinite(local))
-								return false;
+								return fail("Nonfinite bind-transformed vertex");
 							result.Point[r] += weight * local;
 						}
 					}
 					if (std::abs(total - 1) > .01)
-						return false;
+						return fail("Vertex weights do not sum to one");
 					++entry.Vertices;
 				}
 			}
-			return entry.Vertices > 0;
+			return entry.Vertices > 0 || fail("Selected bodygroup contains no vertices");
 		};
 		if (!parse())
 		{
@@ -7520,6 +7533,8 @@ static bool Mirv_Tf2_GibVertexAnchor(CMirvTf2ClientRenderable *renderable, const
 		found = entries.emplace(key, std::move(entry)).first;
 	}
 	const auto &entry = found->second;
+	if (failure)
+		*failure = entry.Failure;
 	if (!entry.Vertices || entry.Bones.size() != size_t(boneCount))
 		return false;
 	double result[3]{};
@@ -10787,18 +10802,38 @@ static std::shared_ptr<const advancedfx::SceneCache::Model> SceneBrushModel(cons
 	return result;
 }
 } // namespace
-static bool Mirv_Tf2_ReadGibVertexFile(const char *name, std::vector<unsigned char> &bytes)
+static bool Mirv_Tf2_ReadGibVertexFile(const char *name, std::vector<unsigned char> &bytes,
+                                       std::string &failure)
 {
+	auto fail = [&](const char *reason) {
+		failure = reason;
+		return false;
+	};
 	std::string path = name ? name : "";
 	if (path.size() < 4 || path.substr(path.size() - 4) != ".mdl")
-		return false;
+		return fail("Model name does not end in .mdl");
 	path.replace(path.size() - 4, 4, ".vvd");
 	auto fs = g_AppSystemFactory
 	              ? static_cast<SceneBaseFileSystem *>(g_AppSystemFactory("VBaseFileSystem011", nullptr))
 	              : nullptr;
+#ifdef _WIN32
+	// The app-system registry need not expose the base filesystem interface.
+	// Query the already loaded filesystem module's public factory as a fallback.
+	if (!fs)
+	{
+		auto module = GetModuleHandleW(L"filesystem_stdio.dll");
+		using Factory = void *(__cdecl *)(const char *, int *);
+		auto factory =
+		    module ? reinterpret_cast<Factory>(GetProcAddress(module, "CreateInterface")) : nullptr;
+		if (factory)
+			fs = static_cast<SceneBaseFileSystem *>(factory("VBaseFileSystem011", nullptr));
+	}
+#endif
+	if (!fs)
+		return fail("VBaseFileSystem011 unavailable from app registry and filesystem module");
 	void *file = fs ? fs->Open(path.c_str(), "rb", "GAME") : nullptr;
 	if (!file)
-		return false;
+		return fail("Could not open the model VVD through GAME search paths (including VPKs)");
 	struct Close
 	{
 		SceneBaseFileSystem *Fs;
@@ -10810,9 +10845,12 @@ static bool Mirv_Tf2_ReadGibVertexFile(const char *name, std::vector<unsigned ch
 	} close{fs, file};
 	unsigned size = fs->Size(file);
 	if (size < 64 || size > 64 * 1024 * 1024)
-		return false;
+		return fail("VVD file size is outside 64 bytes..64 MiB");
 	bytes.resize(size);
-	return fs->Read(bytes.data(), int(size), file) == int(size);
+	if (fs->Read(bytes.data(), int(size), file) != int(size))
+		return fail("Short read while loading VVD");
+	failure.clear();
+	return true;
 }
 bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status,
                                void *observedObject)
@@ -11373,7 +11411,8 @@ void Mirv_Tf2_DebugEntityLabel(int address)
 			int count = hdr ? Mirv_Tf2_ReadBoneNames(hdr, names) : 0;
 			auto globals = g_Hook_VClient_RenderView.GetGlobals();
 			SOURCESDK::matrix3x4_t bones[MIRV_TF2_MAX_BONES]{};
-			const bool posed = count > 0 && globals &&
+			const bool posed =
+			    count > 0 && globals &&
 			    renderable->SetupBones(bones, MIRV_TF2_MAX_BONES, 0x7ff00, globals->curtime_get());
 			if (posed)
 				for (int i = 0; i < count; ++i)
@@ -11384,8 +11423,17 @@ void Mirv_Tf2_DebugEntityLabel(int address)
 						          bones[i][r][3]);
 				}
 			if (posed)
+			{
+				std::string failure;
+				const bool available =
+				    Mirv_Tf2_GibVertexAnchor(renderable, hdr, count, bones, anchor, &failure);
 				Tier0_Msg("  Vertex geometry anchor: %s\n",
-				    Mirv_Tf2_GibVertexAnchor(renderable, hdr, count, bones, anchor) ? "available" : "unavailable (using fallback)");
+				          available ? "available" : "unavailable (using fallback)");
+				if (!available)
+					Tier0_Msg("  Vertex failure: %s\n", failure.c_str());
+				else
+					vector("vertex anchor", anchor);
+			}
 			return;
 		}
 	Tier0_Msg("Label address %i is unavailable.\n", address);
