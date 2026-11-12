@@ -30,6 +30,7 @@ void Mirv_Tf2_SceneRenderFrame();
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <cfloat>
 #include <map>
 #include <cstdio>
 #include <cstdlib>
@@ -164,6 +165,7 @@ int main(){
  Slot(fixture.NetworkSlots,8,Dormant);Slot(fixture.StudioSlots,47,Override);Slot(fixture.StudioSlots,22,Allocate);Slot(fixture.StudioSlots,23,Unlock);Slot(fixture.StudioSlots,29,Draw);
  Slot(fixture.CacheSlots,6,Find);Slot(fixture.CacheSlots,8,Release);Slot(fixture.CacheSlots,40,Header);Slot(fixture.CacheSlots,41,UnlockHeader);Slot(fixture.CacheSlots,11,Hardware);Slot(fixture.CacheSlots,20,Error);Slot(fixture.CacheSlots,25,Begin);Slot(fixture.CacheSlots,26,End);
  fixture.InitHeader();for(int i=0;i<2;++i){for(int a=0;a<3;++a){fixture.Observed[i][a][a]=2;fixture.Observed[i][a][3]=fixture.Origin[a];}fixture.Observed[i][0][3]+=10+i;}
+ float labelAnchor[3];int savedSetups=fixture.SetupCalls;assert(Mirv_Tf2_GibLabelAnchor(&renderable,labelAnchor)&&labelAnchor[0]==12&&labelAnchor[2]==3);fixture.Put(172,1);fixture.Put(176,1040);fixture.Put(1044,1);fixture.Put(1048,12);fixture.Put(1052,1);float hitbox[6]={0,0,0,2,2,2};std::memcpy(fixture.Header+1060,hitbox,24);assert(Mirv_Tf2_GibLabelAnchor(&renderable,labelAnchor)&&labelAnchor[0]==14&&labelAnchor[1]==4&&labelAnchor[2]==7);fixture.Put(1048,999999);assert(Mirv_Tf2_GibLabelAnchor(&renderable,labelAnchor)&&labelAnchor[0]==12);fixture.Put(172,0);fixture.Setup=false;assert(!Mirv_Tf2_GibLabelAnchor(&renderable,labelAnchor));fixture.Setup=true;fixture.SetupCalls=savedSetups;
  using Cache=advancedfx::SceneCache;Cache::Entity entity;entity.Identity=42;std::copy(fixture.Origin,fixture.Origin+3,entity.Origin);
  std::string status;assert(Mirv_Tf2_CaptureScenePose(1,entity,status));auto captured=entity.ModelPose;
  assert(captured&&captured->Body==3&&captured->Local.size()==2&&captured->Bones.empty()&&captured->ModelInfo->Parents[1]==0);
@@ -244,7 +246,8 @@ int main(){
 }
 '''
 source = out / 'scene_pose_native.cpp'
-source.write_text(preamble + '\nnamespace SOURCESDK {\n' + math + '\n}\n' + invert + reader + adapter + fixtures)
+gib_anchor=calcs[calcs.index('static bool Mirv_Tf2_GibLabelAnchor('):calcs.index('int Mirv_Tf2_CollectEntityLabels(')]
+source.write_text(preamble + '\nnamespace SOURCESDK {\n' + math + '\n}\n' + invert + reader + gib_anchor + adapter + fixtures)
 command = ['g++', '-std=c++17', '-O0', '-g', '-Dabstract=', '-include', str(root / 'tests/cinematic/msvc_crt_compat.h'), '-I'+str(root), '-I'+str(root/'AfxHookSource'), str(source), str(root / 'shared/AfxMath.cpp'), '-o', str(out/'scene_pose_native')]
 if args.sanitize:
     command[1:1] = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
@@ -259,7 +262,7 @@ if result.returncode:
     raise SystemExit(result.returncode)
 # Exercise the real entity enumeration and its reused classifier separately.
 collector = calcs[calcs.index('// Scene entity enumeration shares'):calcs.index('// End scene entity enumeration.')]
-classifier = calcs[calcs.index('static int Mirv_Tf2_LabelCategory('):calcs.index('int Mirv_Tf2_CollectEntityLabels(')]
+classifier = calcs[calcs.index('static int Mirv_Tf2_LabelCategory('):calcs.index('static bool Mirv_Tf2_LabelDebris(')]
 collector_source = r'''
 #include "shared/SceneCache.h"
 #include <cassert>
@@ -508,23 +511,25 @@ identity_fixture=r'''
 #include <set>
 #include <vector>
 #include <limits>
+#include <cfloat>
 #include <cstring>
 #include <cmath>
 #include <cassert>
 #include <iostream>
 int g_LevelInitCount=0;
-struct CMirvTf2ClientRenderable {const char*ModelName=nullptr;const void*GetModel(){return ModelName;}bool Visible=true;float Origin[3]{1,2,3};bool ShouldDraw(){return Visible;}const void*GetRenderOrigin(){return Origin;}void GetRenderBoundsWorldspace(float*a,float*b){for(int i=0;i<3;++i){a[i]=0;b[i]=4;}}};
-struct CMirvTf2ClientUnknown {unsigned int Handle=0xffffffffu;int Index=-1,LabelCategory=4;bool Player=false;CMirvTf2ClientRenderable Render;const void*GetRefEHandle()const{return &Handle;}auto GetClientRenderable(){return &Render;}};
+struct CMirvTf2ClientRenderable {bool Posed=false;const char*ModelName=nullptr;const void*GetModel(){return ModelName;}bool Visible=true;float Origin[3]{1,2,3};bool ShouldDraw(){return Visible;}const void*GetRenderOrigin(){return Origin;}void GetRenderBoundsWorldspace(float*a,float*b){for(int i=0;i<3;++i){a[i]=0;b[i]=4;}}};
+struct CMirvTf2ClientUnknown {unsigned int Handle=0xffffffffu;int Index=-1,LabelCategory=4;bool Player=false,Debris=false;CMirvTf2ClientRenderable Render;const void*GetRefEHandle()const{return &Handle;}auto GetClientRenderable(){return &Render;}};
 std::vector<CMirvTf2ClientUnknown*>objects;
 struct Tools {std::uintptr_t AttachToEntity(void*){return 0;}int GetNumRecordables(){return 0;}std::uintptr_t GetRecordable(int){return 0;}void*FirstEntity(){return objects.empty()?nullptr:objects.front();}void*NextEntity(void*p){for(size_t i=0;i<objects.size();++i)if(objects[i]==p)return i+1<objects.size()?objects[i+1]:nullptr;return nullptr;}int GetEntIndex(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Index;}bool IsPlayer(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Player;}} tools;
 struct CClientToolsTf2 {static auto Instance(){static CClientToolsTf2 singleton;return &singleton;}auto GetClientTools(){return &tools;}};
 namespace SOURCESDK{namespace TF2{using IClientTools=Tools;using HTOOLHANDLE=std::uintptr_t;constexpr std::uintptr_t HTOOLHANDLE_INVALID=0;}}
 struct MirvTf2EntityLabel_t {int category,index;float origin[3];};
-constexpr int MIRV_TF2_ENTITY_OTHER=4;struct LabelModelInfo{const char*GetModelName(const void*m){return static_cast<const char*>(m);}}labelModelInfo;auto*Mirv_Tf2_GetModelInfo(){return &labelModelInfo;}
+constexpr int MIRV_TF2_ENTITY_OTHER=4,MIRV_TF2_ENTITY_PLAYER=0;struct LabelModelInfo{const char*GetModelName(const void*m){return static_cast<const char*>(m);}}labelModelInfo;auto*Mirv_Tf2_GetModelInfo(){return &labelModelInfo;}
+bool Mirv_Tf2_LabelDebris(CMirvTf2ClientUnknown*p){return p->Debris;}bool Mirv_Tf2_GibLabelAnchor(CMirvTf2ClientRenderable*r,float*out){if(!r->Posed)return false;out[0]=10;out[1]=20;out[2]=30;return true;}
 int Mirv_Tf2_ToolCategory(Tools*,void*p,int,bool player){return player?0:static_cast<CMirvTf2ClientUnknown*>(p)->LabelCategory;}
 bool Mirv_IsUsableBound(float v){return std::isfinite(v);}
 '''+identity+labels+r'''
-int main(){CMirvTf2ClientUnknown player,gib,other;player.Index=5;player.Player=true;player.Handle=(1u<<16)|5;gib.LabelCategory=5;gib.Handle=(3u<<12)|2050;other.Handle=(7u<<16)|5000;objects={&player,&gib,&other};assert(Mirv_Tf2_EntityAddress(&player)==5);int a=Mirv_Tf2_EntityAddress(&gib),b=Mirv_Tf2_EntityAddress(&other);assert(a>=2048&&b>a);assert(Mirv_Tf2_HandleForAddress(a)==gib.Handle&&Mirv_Tf2_HandleForAddress(b)==other.Handle);assert(Mirv_Tf2_EntityAddress(&gib)==a);MirvTf2EntityLabel_t found[8];assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[1].index==a&&found[2].index==b);other.Render.ModelName="models/player/GIBS/head.mdl";assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[2].category==5&&found[2].origin[0]==2);other.Render.ModelName=nullptr;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3);assert(found[1].category==5&&found[1].origin[0]==2&&found[1].origin[1]==2&&found[1].origin[2]==4&&found[2].origin[0]==1);assert(Mirv_Tf2_CollectEntityLabels(true,found,8)==1&&found[0].index==5);unsigned int old=gib.Handle;gib.Handle+=(1u<<12);assert(Mirv_Tf2_HandleForAddress(a)==0xffffffffu);int replacement=Mirv_Tf2_EntityAddress(&gib);assert(replacement!=a&&Mirv_Tf2_HandleForAddress(replacement)==gib.Handle);gib.Render.Visible=false;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==2);gib.Handle=0xffffffffu;assert(Mirv_Tf2_EntityAddress(&gib)==-1);objects={&player,&other};assert(Mirv_Tf2_HandleForAddress(b)==other.Handle);++g_LevelInitCount;assert(Mirv_Tf2_HandleForAddress(b)==0xffffffffu);assert(Mirv_Tf2_EntityAddress(&other)==2048);std::cout<<"Client entity address and label checks passed\n";}
+int main(){CMirvTf2ClientUnknown player,gib,other;player.Index=5;player.Player=true;player.Handle=(1u<<16)|5;gib.LabelCategory=5;gib.Handle=(3u<<12)|2050;other.Handle=(7u<<16)|5000;objects={&player,&gib,&other};assert(Mirv_Tf2_EntityAddress(&player)==5);int a=Mirv_Tf2_EntityAddress(&gib),b=Mirv_Tf2_EntityAddress(&other);assert(a>=2048&&b>a);assert(Mirv_Tf2_HandleForAddress(a)==gib.Handle&&Mirv_Tf2_HandleForAddress(b)==other.Handle);assert(Mirv_Tf2_EntityAddress(&gib)==a);MirvTf2EntityLabel_t found[8];assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[1].index==a&&found[2].index==b);other.LabelCategory=3;other.Render.ModelName="models/hats/c_gibus.mdl";assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[2].category==3);other.LabelCategory=1;other.Render.ModelName="models/weapons/sticky_piece.mdl";other.Debris=true;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[2].category==5);other.Debris=false;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[2].category==1);other.Render.ModelName="models/weapons/stickybomb_gib1.mdl";assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[2].category==5);other.LabelCategory=4;other.Render.ModelName="models/player/GIBS/head.mdl";assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[2].category==5&&found[2].origin[0]==2);other.Render.ModelName=nullptr;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3);gib.Render.Posed=true;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[1].origin[0]==10&&found[1].origin[1]==20&&found[1].origin[2]==30);gib.Render.Posed=false;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3);assert(found[1].category==5&&found[1].origin[0]==2&&found[1].origin[1]==2&&found[1].origin[2]==4&&found[2].origin[0]==1);assert(Mirv_Tf2_CollectEntityLabels(true,found,8)==1&&found[0].index==5);unsigned int old=gib.Handle;gib.Handle+=(1u<<12);assert(Mirv_Tf2_HandleForAddress(a)==0xffffffffu);int replacement=Mirv_Tf2_EntityAddress(&gib);assert(replacement!=a&&Mirv_Tf2_HandleForAddress(replacement)==gib.Handle);gib.Render.Visible=false;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==2);gib.Handle=0xffffffffu;assert(Mirv_Tf2_EntityAddress(&gib)==-1);objects={&player,&other};assert(Mirv_Tf2_HandleForAddress(b)==other.Handle);++g_LevelInitCount;assert(Mirv_Tf2_HandleForAddress(b)==0xffffffffu);assert(Mirv_Tf2_EntityAddress(&other)==2048);std::cout<<"Client entity address and label checks passed\n";}
 '''
 source=out/'client_entity_address.cpp';source.write_text(identity_fixture)
 command=['g++','-std=c++17','-O1','-g',str(source),'-o',str(out/'client_entity_address')]

@@ -2006,9 +2006,10 @@ Viewmodel-specific categorization/visibility remains separate work.
 
 ### Gib entity labels
 
-Gib labels use the top-center of the engine's world render bounds, instead of
-preferring the model pivot with a loose 32-unit margin. This addresses detached
-pieces whose visible geometry is offset from the character's original origin.
+Gib labels prefer transformed studio hitboxes, followed by the used leaf bones
+of the observed pose. World render bounds remain a fallback when pose data is
+unavailable. This avoids relying on pivots and surrounding bounds that may
+still describe the original character rather than its detached piece.
 Attachment origins and bone transforms are unaffected.
 
 ```text
@@ -2021,3 +2022,15 @@ Gib digits default to 16 pixels (other labels default to 32). `gibSize` accepts
 6–200 pixels and is independent of `mirv_drawentities size`. Label stacking uses
 the corresponding label's dimensions. The existing category color command also
 accepts `gibs`.
+
+
+Generic break-model debris uses the same **gibs** category and `gibSize` setting
+as player gibs. TF2 creates projectile fragments as client physics props; their
+standard debris collision groups (1–3) are read through validated receive-table
+metadata. Recognition also covers gib class names, gib directories and model
+names containing `_gib`/`gib_`, even when the original class was categorized as
+a weapon or projectile. Live projectiles with their normal collision group and
+model keep their existing category.
+
+Reference: Valve SDK `tf_weapon_grenade_pipebomb.cpp::CreatePipebombGibs` and
+`physpropclientside.cpp::BreakModelCreateSingle` (the CheapBreakModel path).

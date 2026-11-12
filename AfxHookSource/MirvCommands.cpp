@@ -4982,7 +4982,7 @@ namespace
 {
 struct ScenePlayerFields
 {
-	int Life = -1, Effects = -1, Team = -1, MoveParent = -1;
+	int Life = -1, Effects = -1, Team = -1, MoveParent = -1, CollisionGroup = -1;
 };
 static std::map<const Tf2FixRecvTable *, ScenePlayerFields> g_ScenePlayerFields;
 static ScenePlayerFields SceneFindPlayerFields(const Tf2FixRecvTable *table)
@@ -5010,6 +5010,8 @@ static ScenePlayerFields SceneFindPlayerFields(const Tf2FixRecvTable *table)
 				fields.Effects = offset + prop.Offset;
 			if (fields.Team < 0 && !std::strcmp(prop.Name, "m_iTeamNum"))
 				fields.Team = offset + prop.Offset;
+			if (fields.CollisionGroup < 0 && !std::strcmp(prop.Name, "m_CollisionGroup"))
+				fields.CollisionGroup = offset + prop.Offset;
 			if (fields.MoveParent < 0 && !std::strcmp(prop.Name, "moveparent"))
 				fields.MoveParent = offset + prop.Offset;
 		}
@@ -5042,6 +5044,20 @@ bool Mirv_Tf2_SceneEntityVisible(const void *object, const void *clientClass)
 	int effects;
 	std::memcpy(&effects, static_cast<const unsigned char *>(object) + offset, sizeof(effects));
 	return !(effects & 0x20); // EF_NODRAW applies to loose gear/debris as well as players.
+}
+bool Mirv_Tf2_SceneDebris(const void *object, const void *clientClass)
+{
+	if (!object || !clientClass)
+		return false;
+	const auto table = static_cast<const Tf2FixClientClass *>(clientClass)->Table;
+	if (!table)
+		return false;
+	const int offset = SceneFieldsForTable(table).CollisionGroup;
+	if (offset < 0)
+		return false;
+	int group;
+	std::memcpy(&group, static_cast<const unsigned char *>(object) + offset, sizeof(group));
+	return group >= 1 && group <= 3; // DEBRIS, DEBRIS_TRIGGER, INTERACTIVE_DEBRIS.
 }
 bool Mirv_Tf2_SceneMoveParent(const void *object, const void *clientClass, std::uint32_t &parent)
 {

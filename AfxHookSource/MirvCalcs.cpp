@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cfloat>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -7365,6 +7366,127 @@ static int Mirv_Tf2_ToolCategory(SOURCESDK::TF2::IClientTools *iface,
 		iface->DetachFromEntity(entity);
 	return category;
 }
+static bool Mirv_Tf2_LabelDebris(CMirvTf2ClientUnknown *object)
+{
+	const auto networkable = object->GetClientNetworkable();
+	if (!networkable)
+		return false;
+#ifdef _WIN64
+	using ClassFn = void *(*)(void *);
+#else
+	using ClassFn = void *(__thiscall *)(void *);
+#endif
+	const auto clientClass = reinterpret_cast<ClassFn>((*static_cast<void ***>(networkable))[2])(networkable);
+	return Mirv_Tf2_SceneDebris(object, clientClass);
+}
+// Pose-space anchors avoid stale model pivots and oversized surrounding bounds.
+static bool Mirv_Tf2_GibLabelAnchor(CMirvTf2ClientRenderable *renderable, float out[3])
+{
+	auto info = Mirv_Tf2_GetModelInfo();
+	const auto model = renderable->GetModel();
+	const auto hdr =
+	    info && model ? static_cast<const unsigned char *>(info->GetStudiomodel(model)) : nullptr;
+	if (!hdr)
+		return false;
+	MirvTf2BoneName_t names[MIRV_TF2_MAX_BONES];
+	const int count = Mirv_Tf2_ReadBoneNames(hdr, names);
+	if (count <= 0)
+		return false;
+	int length, boneIndex;
+	std::memcpy(&length, hdr + 76, 4);
+	std::memcpy(&boneIndex, hdr + 160, 4);
+	auto globals = g_Hook_VClient_RenderView.GetGlobals();
+	if (!globals)
+		return false;
+	SOURCESDK::matrix3x4_t bones[MIRV_TF2_MAX_BONES];
+	for (auto &bone : bones)
+		for (int r = 0; r < 3; ++r)
+			for (int c = 0; c < 4; ++c)
+				bone[r][c] = std::numeric_limits<float>::quiet_NaN();
+	if (!renderable->SetupBones(bones, MIRV_TF2_MAX_BONES, 0x7ff00, globals->curtime_get()))
+		return false;
+	float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+	bool any = false;
+	auto add = [&](int bone, const float *point) {
+		if (bone < 0 || bone >= count)
+			return;
+		float world[3];
+		for (int r = 0; r < 3; ++r)
+		{
+			world[r] = bones[bone][r][3];
+			for (int c = 0; c < 3; ++c)
+				world[r] += bones[bone][r][c] * point[c];
+			if (!std::isfinite(world[r]) || std::abs(world[r]) > 1048576)
+				return;
+		}
+		for (int r = 0; r < 3; ++r)
+		{
+			lo[r] = (std::min)(lo[r], world[r]);
+			hi[r] = (std::max)(hi[r], world[r]);
+		}
+		any = true;
+	};
+	// SDK studiohdr hitbox sets (12-byte descriptors, 68-byte boxes).
+	if (length >= 180)
+	{
+		int sets, offset;
+		std::memcpy(&sets, hdr + 172, 4);
+		std::memcpy(&offset, hdr + 176, 4);
+		if (sets > 0 && sets <= 128 && offset >= 180 && std::int64_t(offset) + 12 <= length)
+		{
+			int n, boxes;
+			std::memcpy(&n, hdr + offset + 4, 4);
+			std::memcpy(&boxes, hdr + offset + 8, 4);
+			const std::int64_t start = std::int64_t(offset) + boxes;
+			if (n > 0 && n <= 256 && boxes >= 12 && start + std::int64_t(n) * 68 <= length)
+				for (int i = 0; i < n; ++i)
+				{
+					const auto box = hdr + start + i * 68;
+					int bone;
+					float mins[3], maxs[3];
+					std::memcpy(&bone, box, 4);
+					std::memcpy(mins, box + 8, 12);
+					std::memcpy(maxs, box + 20, 12);
+					bool valid = true;
+					for (int a = 0; a < 3; ++a)
+						valid &= std::isfinite(mins[a]) && std::isfinite(maxs[a]) && mins[a] <= maxs[a];
+					if (!valid)
+						continue;
+					for (int corner = 0; corner < 8; ++corner)
+					{
+						float point[3];
+						for (int a = 0; a < 3; ++a)
+							point[a] = corner & (1 << a) ? maxs[a] : mins[a];
+						add(bone, point);
+					}
+				}
+		}
+	}
+	if (!any)
+	{
+		bool used[MIRV_TF2_MAX_BONES]{}, parent[MIRV_TF2_MAX_BONES]{};
+		for (int i = 0; i < count; ++i)
+		{
+			int flags;
+			std::memcpy(&flags, hdr + boneIndex + i * 216 + 160, 4);
+			used[i] = (flags & 0x400) != 0;
+		}
+		for (int i = 0; i < count; ++i)
+			if (used[i] && names[i].parent >= 0 && names[i].parent < count)
+				parent[names[i].parent] = true;
+		const float zero[3]{};
+		for (int i = 0; i < count; ++i)
+			if (used[i] && !parent[i])
+				add(i, zero);
+	}
+	if (!any)
+		return false;
+	out[0] = (lo[0] + hi[0]) * .5f;
+	out[1] = (lo[1] + hi[1]) * .5f;
+	out[2] = hi[2];
+	return true;
+}
+
 int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLabels, int maxCount)
 {
 	CClientToolsTf2 * tools = CClientToolsTf2::Instance();
@@ -7405,7 +7527,9 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 
 		MirvTf2EntityLabel_t & label = outLabels[count++];
 		label.category = Mirv_Tf2_ToolCategory(iface, ent, index, iface->IsPlayer(ent));
-		if (label.category == MIRV_TF2_ENTITY_OTHER)
+		if ((nativeIndex < 0 || nativeIndex >= 2048) && Mirv_Tf2_LabelDebris(unknown))
+			label.category = 5;
+		if (label.category != MIRV_TF2_ENTITY_PLAYER)
 		{
 			auto info = Mirv_Tf2_GetModelInfo();
 			const auto model = renderable->GetModel();
@@ -7417,11 +7541,23 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 				for (; name[n] && n + 1 < sizeof(lower); ++n)
 					lower[n] = char(tolower(static_cast<unsigned char>(name[n])));
 				lower[n] = 0;
-				if (strstr(lower, "/gibs/") || strstr(lower, "\\gibs\\"))
+				bool gibName = strstr(lower, "/gibs/") || strstr(lower, "\\gibs\\") || strstr(lower, "gib_");
+				for (const char *mark = strstr(lower, "_gib"); mark && !gibName;
+				     mark = strstr(mark + 1, "_gib"))
+				{
+					const char *suffix = mark + 4;
+					if (*suffix == 's')
+						++suffix;
+					gibName =
+					    !*suffix || *suffix == '_' || *suffix == '.' || (*suffix >= '0' && *suffix <= '9');
+				}
+				if (gibName)
 					label.category = 5;
 			}
 		}
 
+		float posedAnchor[3];
+		const bool posedGib = label.category == 5 && Mirv_Tf2_GibLabelAnchor(renderable, posedAnchor);
 		label.index = index;
 		label.origin[0] = origin[0];
 		label.origin[1] = origin[1];
@@ -7465,6 +7601,8 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 				label.origin[2] = maxs[2];
 			}
 		}
+		if (posedGib)
+			std::copy(posedAnchor, posedAnchor + 3, label.origin);
 	}
 
 	return count;

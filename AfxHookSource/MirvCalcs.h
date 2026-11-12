@@ -426,6 +426,7 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float mins[3], float maxs[3]);
 
 // Read-only TF2 receive-table visibility; no repair/capture hooks are installed.
+bool Mirv_Tf2_SceneDebris(const void *object, const void *clientClass);
 bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass);
 bool Mirv_Tf2_SceneEntityVisible(const void *object, const void *clientClass);
 bool Mirv_Tf2_SceneMoveParent(const void *object, const void *clientClass, std::uint32_t &parent);
