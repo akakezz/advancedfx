@@ -242,7 +242,7 @@ void*slots[9]{};
 const void*Class(void*p){return &static_cast<Network*>(p)->Class;}
 bool Dormant(void*p){return static_cast<Network*>(p)->Dormant;}
 struct CMirvTf2ClientRenderable {const char*ModelName="models/props/crate.mdl";const void*GetModel(){return ModelName;}bool Visible=true;float Origin[3]{},Angles[3]{};bool ShouldDraw(){return Visible;}const void*GetRenderOrigin(){return Origin;}const void*GetRenderAngles(){return Angles;}void GetRenderBounds(float*a,float*b){for(int i=0;i<3;++i){a[i]=-1;b[i]=1;}};};
-struct CMirvTf2ClientUnknown {int Index=1,User=42,ViewWeapon=0;bool Player=true,ToolAttached=false,HasNetwork=true;const char*ToolClass=nullptr;CMirvTf2ClientUnknown*Owner=nullptr;std::uint32_t Handle=1;Network Net{slots};CMirvTf2ClientRenderable Render;void*GetClientNetworkable(){return HasNetwork?&Net:nullptr;}auto*GetClientRenderable(){return &Render;}const void*GetRefEHandle(){return &Handle;}};
+struct CMirvTf2ClientUnknown {int Index=1,User=42,ViewWeapon=0;bool Player=true,ToolAttached=false,HasNetwork=true,Alive=true,NoDraw=false;const char*ToolClass=nullptr;CMirvTf2ClientUnknown*Owner=nullptr;std::uint32_t Handle=1;Network Net{slots};CMirvTf2ClientRenderable Render;void*GetClientNetworkable(){return HasNetwork?&Net:nullptr;}auto*GetClientRenderable(){return &Render;}const void*GetRefEHandle(){return &Handle;}};
 std::vector<CMirvTf2ClientUnknown*> objects;
 struct Tools {void*FirstEntity(){return objects.empty()?nullptr:objects[0];}void*NextEntity(void*p){auto it=std::find(objects.begin(),objects.end(),p);return it==objects.end()||++it==objects.end()?nullptr:*it;}int GetEntIndex(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Index;}bool IsPlayer(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Player;}
  int Attaches=0,Detaches=0;
@@ -256,6 +256,7 @@ struct Tools {void*FirstEntity(){return objects.empty()?nullptr:objects[0];}void
 namespace SOURCESDK {namespace TF2 {using IClientTools=::Tools;using EntitySearchResult=void*;}}
 struct CClientToolsTf2 {static CClientToolsTf2*Instance(){static CClientToolsTf2 i;return &i;}Tools*GetClientTools(){return &tools;}};
 struct ModelInfo{const char*GetModelName(const void*model){return static_cast<const char*>(model);}} modelInfo;ModelInfo*Mirv_Tf2_GetModelInfo(){return &modelInfo;}
+bool Mirv_Tf2_ScenePlayerVisible(const void*object,const void*){auto*p=static_cast<const CMirvTf2ClientUnknown*>(object);return p->Alive&&!p->NoDraw;}
 int Mirv_Tf2_GetMaxPlayers(){return 32;}
 bool Mirv_Tf2_GetPlayerInfo(int i,char*,int,int*u){for(auto*p:objects)if(p->Index==i){*u=p->User;return true;}return false;}
 template<typename R,typename...Args>R SceneInterfaceCall(void*p,size_t slot,Args...args){return reinterpret_cast<R(*)(void*,Args...)>((*static_cast<void***>(p))[slot])(p,args...);}
@@ -289,12 +290,20 @@ int main(){
  hat.Owner=&player;Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.size()==4&&out[2].Snapshot.OwnerIdentity==42); // Nested owner resolves to player.
  weapon.Owner=nullptr;Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.size()==3&&out.back().Index==51); // Dropped gear is outside this pass.
  weapon.Owner=&player;weapon.ToolAttached=true;int detaches=tools.Detaches;Mirv_Tf2_CollectSceneEntities(false,true,false,false,false,out);assert(out.size()==3&&weapon.ToolAttached&&tools.Detaches==detaches);weapon.ToolAttached=false;
+ // Player bodies and attached gear end at death/hidden state; spawned corpse remains independent.
+ objects={&player,&weapon,&hat};player.Alive=false;Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.empty());player.Alive=true;
+ player.NoDraw=true;Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.empty());player.NoDraw=false;
+ player.Render.Visible=false;Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.empty());player.Render.Visible=true;
+ Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.size()==3); // Respawn/visibility return, original player and gear can capture again.
  // Networked ragdolls, client-only gibs and model-path fallback; no player owner is required.
  CMirvTf2ClientUnknown corpse,gib,fragment,prop;
  corpse.Player=false;corpse.Index=60;corpse.Handle=(8<<12)|60;corpse.Net.Class.Name="CTFRagdoll";
  gib.Player=false;gib.Index=-1;gib.Handle=(9<<12)|2050;gib.HasNetwork=false;gib.ToolClass="class C_Gib";
  fragment.Player=false;fragment.Index=-1;fragment.Handle=(10<<12)|2051;fragment.HasNetwork=false;fragment.ToolClass="class C_PhysPropClientside";fragment.Render.ModelName="MODELS\\PLAYER\\GIBS\\heavygib001.mdl";
  prop.Player=false;prop.Index=-1;prop.Handle=(11<<12)|2052;prop.HasNetwork=false;prop.ToolClass="class C_PhysPropClientside";
+ objects={&player,&weapon,&hat,&corpse,&gib,&fragment};player.Alive=false;
+ Mirv_Tf2_CollectSceneEntities(false,true,true,true,true,out);assert(out.size()==3);for(auto&row:out)assert(row.Snapshot.Category==5||row.Snapshot.Category==6); // Death replaces the body/gear with independent debris.
+ player.Alive=true;Mirv_Tf2_CollectSceneEntities(false,true,true,true,true,out);assert(out.size()==6); // Respawn does not remove an older corpse.
  objects={&corpse,&gib,&fragment,&prop};
  Mirv_Tf2_CollectSceneEntities(false,false,false,false,false,out);assert(out.empty());
  Mirv_Tf2_CollectSceneEntities(false,false,false,true,false,out);assert(out.size()==1&&out[0].Snapshot.Category==5&&out[0].ObservedObject==&corpse);

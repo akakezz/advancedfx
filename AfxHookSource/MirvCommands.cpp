@@ -4928,8 +4928,86 @@ Tf2FixRecvProp *Tf2FindObserverMode(Tf2FixRecvTable *table, std::set<Tf2FixRecvT
 }
 } // namespace
 
+// Read-only visibility metadata for scene capture. Reuse the verified receive-table
+// layout above; this neither installs repair proxies nor changes gameplay state.
+namespace
+{
+struct ScenePlayerFields
+{
+	int Life = -1, Effects = -1, Team = -1;
+};
+static std::map<const Tf2FixRecvTable *, ScenePlayerFields> g_ScenePlayerFields;
+static ScenePlayerFields SceneFindPlayerFields(const Tf2FixRecvTable *table)
+{
+	ScenePlayerFields fields;
+	int offset = 0;
+	std::set<const Tf2FixRecvTable *> visited;
+	for (int depth = 0; table && depth < 64 && visited.insert(table).second; ++depth)
+	{
+		if (table->Count < 0 || table->Count > 4096 || (table->Count && !table->Props))
+			return {};
+		const Tf2FixRecvProp *base = nullptr;
+		for (int i = 0; i < table->Count; ++i)
+		{
+			const auto &prop = table->Props[i];
+			if (!prop.Name || prop.Offset < 0 || prop.Offset > 65532 - offset)
+				continue;
+			if (prop.Type == 6 && !std::strcmp(prop.Name, "baseclass"))
+				base = &prop;
+			if (prop.Type != 0)
+				continue;
+			if (fields.Life < 0 && !std::strcmp(prop.Name, "m_lifeState"))
+				fields.Life = offset + prop.Offset;
+			if (fields.Effects < 0 && !std::strcmp(prop.Name, "m_fEffects"))
+				fields.Effects = offset + prop.Offset;
+			if (fields.Team < 0 && !std::strcmp(prop.Name, "m_iTeamNum"))
+				fields.Team = offset + prop.Offset;
+		}
+		if (!base)
+			break;
+		offset += base->Offset;
+		table = base->Table;
+	}
+	return fields;
+}
+} // namespace
+bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass)
+{
+	if (!object || !clientClass)
+		return true; // Unknown metadata: retain the normal render checks.
+	const auto table = static_cast<const Tf2FixClientClass *>(clientClass)->Table;
+	if (!table)
+		return true;
+	auto found = g_ScenePlayerFields.find(table);
+	if (found == g_ScenePlayerFields.end())
+	{
+		if (g_ScenePlayerFields.size() >= 256)
+			g_ScenePlayerFields.clear();
+		found = g_ScenePlayerFields.emplace(table, SceneFindPlayerFields(table)).first;
+	}
+	const auto &fields = found->second;
+	const auto bytes = static_cast<const unsigned char *>(object);
+	if (fields.Life >= 0 && bytes[fields.Life] != 0)
+		return false; // LIFE_ALIVE = 0; life state is a byte.
+	int value;
+	if (fields.Effects >= 0)
+	{
+		std::memcpy(&value, bytes + fields.Effects, sizeof(value));
+		if (value & 0x20)
+			return false; // EF_NODRAW
+	}
+	if (fields.Team >= 0)
+	{
+		std::memcpy(&value, bytes + fields.Team, sizeof(value));
+		if (value <= 1)
+			return false; // Unassigned / spectator.
+	}
+	return true;
+}
+
 void MirvFix_InitializeTf2Client(void *client)
 {
+	g_ScenePlayerFields.clear();
 	g_Tf2FixClient = client;
 }
 bool MirvFix_GetPovDeathcam()

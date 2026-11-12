@@ -424,6 +424,15 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
 
 
 
+ { // Scene visibility reads byte-sized life state and inherited property offsets without repair hooks.
+ struct VisibilityPlayer {unsigned char Padding[8]{};unsigned char Life=0,Pad[3]{};int Effects=0,Team=2;} player;
+ Tf2FixRecvProp fields[3]{};fields[0].Name="m_lifeState";fields[0].Type=0;fields[0].Offset=0;fields[1].Name="m_fEffects";fields[1].Type=0;fields[1].Offset=4;fields[2].Name="m_iTeamNum";fields[2].Type=0;fields[2].Offset=8;
+ Tf2FixRecvTable base{};base.Name="DT_BasePlayer";base.Props=fields;base.Count=3;Tf2FixRecvProp inherited{};inherited.Name="baseclass";inherited.Type=6;inherited.Offset=8;inherited.Table=&base;Tf2FixRecvTable derived{};derived.Name="DT_TFPlayer";derived.Count=1;derived.Props=&inherited;Tf2FixClientClass schema{};schema.Table=&derived;
+ MirvFix_InitializeTf2Client(nullptr);check(Mirv_Tf2_ScenePlayerVisible(&player,&schema),"Alive player passes read-only cache visibility");player.Pad[0]=255;check(Mirv_Tf2_ScenePlayerVisible(&player,&schema),"Life state is read as a byte without adjacent storage");
+ for(unsigned char life:{1,2,3}){player.Life=life;check(!Mirv_Tf2_ScenePlayerVisible(&player,&schema),"Dead/dying player cannot leave a cached body");}player.Life=0;player.Effects=0x20;check(!Mirv_Tf2_ScenePlayerVisible(&player,&schema),"EF_NODRAW hides a cached player even if ShouldDraw returns true");player.Effects=0x8;check(Mirv_Tf2_ScenePlayerVisible(&player,&schema),"Unrelated effects do not hide players");player.Team=1;check(!Mirv_Tf2_ScenePlayerVisible(&player,&schema),"Spectator body is omitted");player.Team=3;check(Mirv_Tf2_ScenePlayerVisible(&player,&schema),"Respawn restores capture visibility");
+ check(Mirv_Tf2_ScenePlayerVisible(&player,nullptr),"Missing schema retains native render visibility fallback");MirvFix_InitializeTf2Client(nullptr);fields[0].Offset=70000;fields[1].Offset=-1;fields[2].Offset=70000;player.Life=2;check(Mirv_Tf2_ScenePlayerVisible(&player,&schema),"Invalid offsets are never dereferenced");MirvFix_InitializeTf2Client(nullptr);inherited.Table=&derived;check(Mirv_Tf2_ScenePlayerVisible(&player,&schema),"Cyclic base-table metadata is bounded");MirvFix_InitializeTf2Client(nullptr);
+ }
+
  { // Real receive-table discovery, proxy controller and command body; fake OS detour transaction only.
  bool wasHltv=engine.Hltv;engine.Hltv=false;void*vf[9]{};vf[8]=(void*)PovGetClasses;void**iface=vf;
  Tf2FixRecvProp property{};property.Name="m_iObserverMode";property.Type=0;property.Proxy=PovOriginal;

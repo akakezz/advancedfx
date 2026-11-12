@@ -1745,3 +1745,13 @@ simulation are not cached. Hidden/dormant networked entities are skipped; models
 that cannot supply a supported studio pose retain proxy bounds. Live models
 remain visible alongside cached preview. TF2 in-game coverage still needs testing,
 especially client-only gibs and unusual/custom death effects.
+
+Player history now excludes dead/dying, spectator and `EF_NODRAW` bodies using
+read-only receive-table metadata, in addition to the normal render checks.
+Attached player gear is omitted when its owning player is not retained, rather
+than leaving it suspended at the death pose. Ragdolls and gibs keep their own
+serial-bearing identities and observed lifetimes; a respawn does not delete an
+older corpse. This does not infer ownership from corpse proximity or suppress
+an alive player just because a corpse appears (important for feigned deaths).
+Clear history and record the interval again to replace previously captured
+floating bodies; the visibility checks do not rewrite old cached frames.

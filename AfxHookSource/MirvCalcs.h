@@ -417,6 +417,8 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 
 bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float mins[3], float maxs[3]);
 
+// Read-only TF2 receive-table visibility; no repair/capture hooks are installed.
+bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass);
 // Opt-in scene-pose capture, including observed client-only debris. Does not change AGR recording mode.
 // The cache owns immutable value data only; engine pointers are resolved for each draw.
 bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status,

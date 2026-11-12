@@ -10511,6 +10511,10 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 		row.ObservedObject = object;
 		if (networked && index <= players && iface->IsPlayer(object))
 		{
+			const auto clientClass = SceneInterfaceCall<const void *>(networkable, 2);
+			if (!renderable->ShouldDraw() || !Mirv_Tf2_ScenePlayerVisible(object, clientClass))
+				continue; // Death leaves a valid player entity behind its separate ragdoll/gibs.
+
 			int user = 0;
 			if (!Mirv_Tf2_GetPlayerInfo(index, nullptr, 0, &user) || user <= 0)
 				continue;
