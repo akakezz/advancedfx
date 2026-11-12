@@ -1771,3 +1771,38 @@ Loose items are captured for the enabled category regardless of player selection
 this does not infer which player originally dropped a newly spawned object.
 Custom models outside recognized class/model paths may need another classifier
 rule. Clear and recapture existing history to include previously omitted drops.
+
+### Buildings, props and objectives
+
+Enable **Capture building models** and **Capture prop / objective models** in
+**Sequencer → Scene Cache**, then record forward through the interval again.
+Both default off and operate independently of player selection.
+
+```text
+mirv_campath cache buildings 1
+mirv_campath cache props 1
+```
+
+Buildings draw yellow: sentries, dispensers, teleporters, sappers and recognized
+building variants. Props/objectives draw blue: visible studio-model entities
+such as model-based doors, payload carts, intelligence, pickups and dynamic or
+physics props. Construction/body-group changes and animated parts use the same
+observed pose capture as players; destruction/removal ends that entity's history.
+Building gibs remain in the separate orange gib category. Object identity still
+includes the handle serial, so destroyed/rebuilt objects cannot blend together.
+Parented gear/objectives can use retained player, corpse, building or prop hosts.
+Missing required hosts remain subject to the orphan filter.
+
+**Brush doors/moving BSP entities use recorded, rotated proxy bounds**, not a
+wireframe of their brush mesh. Their positions, angles and bounds can be scrubbed,
+but this milestone does not copy BSP surfaces or restore engine collision/physics.
+Unsupported studio poses also retain proxy bounds. Proxy corners now rotate in
+the entity's local frame, including rotating doors. Static world geometry/static
+prop-manager geometry is not duplicated; it remains the live map. Sprites,
+particles and first-person viewmodels stay outside this capture pass.
+
+More entities increase capture cost and memory use. The existing capture range,
+payload budget, pose reuse and profiling controls apply. `cache status` reports
+the new category settings and pose counts; brush/unsupported models appear as
+proxy fallbacks rather than successful studio poses. In-game TF2/TF2C testing is
+still required, particularly for custom objectives and brush doors.

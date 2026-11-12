@@ -19,7 +19,7 @@ namespace advancedfx
 class SceneCache
 {
 public:
-	static constexpr int CategoryCount = 7; // Existing categories 0..4, ragdolls 5, gibs 6.
+	static constexpr int CategoryCount = 9; // Existing categories 0..6, buildings 7, props 8.
 	static constexpr size_t MaxBones = 128; // TF2 / Source SDK 2013 studio limit.
 	using Matrix = std::array<float, 12>;
 	struct Model
@@ -138,10 +138,26 @@ public:
 		std::uint64_t OwnerIdentity =
 		    0;            // Stable player/corpse identity for attached gear; 0 for loose items.
 		int Category = 0; // MirvTf2EntityCategory_t: player=0, projectile=1, weapon=2, cosmetic=3, other=4,
-		                  // ragdoll=5, gib=6.
+		                  // ragdoll=5, gib=6, building=7, prop=8.
 		float Origin[3]{}, Angles[3]{}, Mins[3]{}, Maxs[3]{};
 		std::shared_ptr<const Pose> ModelPose;
 	};
+	static std::array<std::array<double, 3>, 8> BoundsCorners(const Entity &entity)
+	{
+		double rotation[3][3];
+		const auto angles = Afx::Math::QREulerAngles::FromQEulerAngles(
+		    {entity.Angles[0], entity.Angles[1], entity.Angles[2]});
+		Afx::Math::Quaternion::FromQREulerAngles(angles).ToRotationMatrix(rotation);
+		std::array<std::array<double, 3>, 8> corners;
+		for (int i = 0; i < 8; ++i)
+			for (int r = 0; r < 3; ++r)
+			{
+				corners[i][r] = entity.Origin[r];
+				for (int c = 0; c < 3; ++c)
+					corners[i][r] += rotation[r][c] * ((i & (1 << c)) ? entity.Maxs[c] : entity.Mins[c]);
+			}
+		return corners;
+	}
 	static constexpr std::array<unsigned char, 3> CategoryColor(int category)
 	{
 		return category == 1   ? std::array<unsigned char, 3>{255, 80, 70}
@@ -150,6 +166,8 @@ public:
 		       : category == 4 ? std::array<unsigned char, 3>{180, 190, 200}
 		       : category == 5 ? std::array<unsigned char, 3>{180, 190, 200}
 		       : category == 6 ? std::array<unsigned char, 3>{255, 145, 65}
+		       : category == 7 ? std::array<unsigned char, 3>{255, 210, 70}
+		       : category == 8 ? std::array<unsigned char, 3>{120, 155, 255}
 		                       : std::array<unsigned char, 3>{80, 220, 255};
 	}
 	struct Frame
@@ -333,7 +351,7 @@ public:
 		// floating at an independently interpolated position.
 		std::vector<std::uint64_t> owners;
 		for (const auto &entity : out.Entities)
-			if (entity.Category == 0 || entity.Category == 5)
+			if (entity.Category == 0 || entity.Category == 5 || entity.Category == 7 || entity.Category == 8)
 				owners.push_back(entity.Identity);
 		const auto orphan = [&](const Entity &entity) {
 			return entity.OwnerIdentity &&

@@ -398,6 +398,8 @@ enum MirvTf2EntityCategory_t
  MIRV_TF2_ENTITY_OTHER = 4,
  MIRV_TF2_ENTITY_RAGDOLL = 5,
  MIRV_TF2_ENTITY_GIB = 6,
+ MIRV_TF2_ENTITY_BUILDING = 7,
+ MIRV_TF2_ENTITY_PROP = 8,
  MIRV_TF2_ENTITY_CATEGORY_COUNT = advancedfx::SceneCache::CategoryCount
 };
 
@@ -438,7 +440,7 @@ struct MirvTf2SceneEntity
 	advancedfx::SceneCache::Entity Snapshot;
 };
 // One tools-list traversal per observed tick, with serial-aware transient identities.
-void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs,
+void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs, bool buildings, bool props,
 	std::vector<MirvTf2SceneEntity> &out);
 void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued references remain pinned.
 

@@ -55,6 +55,7 @@ static int g_ScenePoseEntity = 0, g_ScenePoseUser = 0; // -1 captures all player
 static bool g_SceneSmoothAnimation = true;
 static bool g_SceneProjectiles = false, g_SceneWeapons = false, g_SceneCosmetics = false;
 static bool g_SceneRagdolls = false, g_SceneGibs = false;
+static bool g_SceneBuildings = false, g_SceneProps = false;
 static std::string g_ScenePoseName, g_ScenePoseStatus = "Pose capture disabled.";
 static std::shared_ptr<const std::string> g_SceneModelStatus;
 static void SceneModelStatus(const std::string &value)
@@ -252,9 +253,9 @@ void SceneCacheFrame(bool capture)
 		bool poseTargetSeen = false;
 		std::vector<MirvTf2SceneEntity> entities;
 		Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls,
-		                              g_SceneGibs, entities);
+		                              g_SceneGibs, g_SceneBuildings, g_SceneProps, entities);
 		unsigned int playerPoses = 0, projectilePoses = 0, weaponPoses = 0, cosmeticPoses = 0, failures = 0;
-		unsigned int ragdollPoses = 0, gibPoses = 0;
+		unsigned int ragdollPoses = 0, gibPoses = 0, buildingPoses = 0, propPoses = 0;
 		std::string lastIssue;
 		for (auto &row : entities)
 		{
@@ -272,7 +273,9 @@ void SceneCacheFrame(bool capture)
 			if ((player && (g_ScenePoseEntity == -1 || selected)) ||
 			    (entity.Category == MIRV_TF2_ENTITY_PROJECTILE && g_SceneProjectiles) || gear ||
 			    (entity.Category == MIRV_TF2_ENTITY_RAGDOLL && g_SceneRagdolls) ||
-			    (entity.Category == MIRV_TF2_ENTITY_GIB && g_SceneGibs))
+			    (entity.Category == MIRV_TF2_ENTITY_GIB && g_SceneGibs) ||
+			    (entity.Category == MIRV_TF2_ENTITY_BUILDING && g_SceneBuildings) ||
+			    (entity.Category == MIRV_TF2_ENTITY_PROP && g_SceneProps))
 			{
 				std::string status;
 				if (Mirv_Tf2_CaptureScenePose(row.Index, entity, status, row.ObservedObject))
@@ -288,6 +291,10 @@ void SceneCacheFrame(bool capture)
 						++ragdollPoses;
 					else if (entity.Category == MIRV_TF2_ENTITY_GIB)
 						++gibPoses;
+					else if (entity.Category == MIRV_TF2_ENTITY_BUILDING)
+						++buildingPoses;
+					else if (entity.Category == MIRV_TF2_ENTITY_PROP)
+						++propPoses;
 					else
 						++projectilePoses;
 				}
@@ -300,15 +307,16 @@ void SceneCacheFrame(bool capture)
 			}
 			frame.Entities.push_back(std::move(entity));
 		}
-		if (g_ScenePoseEntity || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneWeapons ||
-		    g_SceneCosmetics)
+		if (g_ScenePoseEntity || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneBuildings ||
+		    g_SceneProps || g_SceneWeapons || g_SceneCosmetics)
 		{
-			g_ScenePoseStatus = "Tick " + std::to_string(tick) + ": " + std::to_string(playerPoses) +
-			                    " player poses, " + std::to_string(projectilePoses) + " projectile poses, " +
-			                    std::to_string(weaponPoses) + " weapon poses, " +
-			                    std::to_string(cosmeticPoses) + " cosmetic poses, " +
-			                    std::to_string(ragdollPoses) + " ragdoll poses, " + std::to_string(gibPoses) +
-			                    " gib poses; " + std::to_string(failures) + " unavailable.";
+			g_ScenePoseStatus =
+			    "Tick " + std::to_string(tick) + ": " + std::to_string(playerPoses) + " player poses, " +
+			    std::to_string(projectilePoses) + " projectile poses, " + std::to_string(weaponPoses) +
+			    " weapon poses, " + std::to_string(cosmeticPoses) + " cosmetic poses, " +
+			    std::to_string(ragdollPoses) + " ragdoll poses, " + std::to_string(gibPoses) +
+			    " gib poses, " + std::to_string(buildingPoses) + " building poses, " +
+			    std::to_string(propPoses) + " prop poses; " + std::to_string(failures) + " unavailable.";
 			if (!lastIssue.empty())
 				g_ScenePoseStatus += " " + lastIssue;
 		}
@@ -372,8 +380,8 @@ void SceneCacheDrawModels()
 	if (std::none_of(view->Entities.begin(), view->Entities.end(),
 	                 [](const auto &entity) { return bool(entity.ModelPose); }))
 	{
-		SceneModelStatus("No model pose at this cursor. Enable player or projectile models and record this "
-		                 "interval again.");
+		SceneModelStatus("No studio pose at this cursor. Enable a model category and record this interval "
+		                 "again. Brush models use proxy bounds.");
 		return;
 	}
 	std::string status = "No cached model could be submitted.";
@@ -1022,7 +1030,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		else ok = integer(entity) && entity >= 0 && SceneSelectPosePlayer(entity);
 	}
 	else if (!_stricmp(op, "projectiles") || !_stricmp(op, "weapons") || !_stricmp(op, "cosmetics") ||
-	         !_stricmp(op, "ragdolls") || !_stricmp(op, "gibs"))
+	         !_stricmp(op, "ragdolls") || !_stricmp(op, "gibs") || !_stricmp(op, "buildings") ||
+	         !_stricmp(op, "props"))
 	{
 		int enabled;
 		if (integer(enabled) && (enabled == 0 || enabled == 1))
@@ -1035,6 +1044,10 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 				g_SceneRagdolls = enabled != 0;
 			else if (!_stricmp(op, "gibs"))
 				g_SceneGibs = enabled != 0;
+			else if (!_stricmp(op, "buildings"))
+				g_SceneBuildings = enabled != 0;
+			else if (!_stricmp(op, "props"))
+				g_SceneProps = enabled != 0;
 			else
 				g_SceneProjectiles = enabled != 0;
 			ok = true;
@@ -1077,7 +1090,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "capture>\n"
 		    "mirv_campath cache projectiles 0|1\nmirv_campath cache weapons 0|1\nmirv_campath cache "
 		    "cosmetics 0|1\nmirv_campath cache ragdolls 0|1\nmirv_campath cache gibs 0|1\nmirv_campath cache "
-			"animation smooth|nearest\nmirv_campath cache models "
+		    "buildings 0|1\nmirv_campath cache props 0|1\nmirv_campath cache animation "
+			"smooth|nearest\nmirv_campath cache models "
 		    "0|1\nmirv_campath cache clear\nmirv_campath cache "
 		    "status\n"
 		    "Cached keys: Right Ctrl + Left/Right: ticks; Up/Down: seconds; Home/End: retained bounds.\n"
@@ -1085,24 +1099,25 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		ok = true;
 	}
 	if (!ok)
-		advancedfx::Warning(
-		    "Scene cache command rejected. Use preview/record 0|1, goto <demo tick>, step "
-		    "<signed ticks>, rate <-10000..10000 ticks/sec>, pose <all|none|player index>, "
-		    "projectiles/weapons/cosmetics/ragdolls/gibs 0|1, animation smooth|nearest, models "
-		    "0|1, range <start tick> <end tick>|off, clear or status. Navigation "
-		    "requires recorded bounds and never seeks the demo.\n");
+		advancedfx::Warning("Scene cache command rejected. Use preview/record 0|1, goto <demo tick>, step "
+		                    "<signed ticks>, rate <-10000..10000 ticks/sec>, pose <all|none|player index>, "
+		                    "projectiles/weapons/cosmetics/ragdolls/gibs/buildings/props 0|1, animation "
+		                    "smooth|nearest, models "
+		                    "0|1, range <start tick> <end tick>|off, clear or status. Navigation "
+		                    "requires recorded bounds and never seeks the demo.\n");
 	advancedfx::Message("Scene cache: record %d, preview %d; rate %d ticks/s; tick %d; %zu frames, %.2f MiB "
 	                    "payload; coverage at cursor %s.\n",
 	                    int(g_SceneRecord), int(g_ScenePreview), g_SceneScrubRate, int(g_SequencerFrame),
 	                    g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0,
 	                    SceneCacheView() ? "yes" : "no");
-	advancedfx::Message(
-	    "Scene pose: player target %d (-1=all), user %d; captured %llu, unavailable %llu; "
-	    "models %d; projectiles %d; weapons %d; cosmetics %d; ragdolls %d; gibs %d; animation %s. %s\n",
-	    g_ScenePoseEntity, g_ScenePoseUser, g_ScenePoseCaptured, g_ScenePoseFailures,
-	    int(g_SceneDrawModels.load()), int(g_SceneProjectiles), int(g_SceneWeapons), int(g_SceneCosmetics),
-	    int(g_SceneRagdolls), int(g_SceneGibs), g_SceneSmoothAnimation ? "smooth" : "nearest",
-	    g_ScenePoseStatus.c_str());
+	advancedfx::Message("Scene pose: player target %d (-1=all), user %d; captured %llu, unavailable %llu; "
+	                    "models %d; projectiles %d; weapons %d; cosmetics %d; ragdolls %d; gibs %d; "
+	                    "buildings %d; props %d; animation %s. %s\n",
+	                    g_ScenePoseEntity, g_ScenePoseUser, g_ScenePoseCaptured, g_ScenePoseFailures,
+	                    int(g_SceneDrawModels.load()), int(g_SceneProjectiles), int(g_SceneWeapons),
+	                    int(g_SceneCosmetics), int(g_SceneRagdolls), int(g_SceneGibs), int(g_SceneBuildings),
+	                    int(g_SceneProps), g_SceneSmoothAnimation ? "smooth" : "nearest",
+	                    g_ScenePoseStatus.c_str());
 	if (g_SceneRangeEnabled)
 		advancedfx::Message("Capture range: %d .. %d inclusive%s.\n", g_SceneRangeFirst, g_SceneRangeLast,
 		                    g_SceneRecord ? " (armed)" : " (stopped)");
@@ -4931,6 +4946,12 @@ static void DrawSequencerDetails(int playhead)
 		ImGui::Checkbox("Capture cosmetic models", &g_SceneCosmetics);
 		ImGui::Checkbox("Capture ragdoll models", &g_SceneRagdolls);
 		ImGui::Checkbox("Capture gib models", &g_SceneGibs);
+		ImGui::Checkbox("Capture building models", &g_SceneBuildings);
+		ImGui::Checkbox("Capture prop / objective models", &g_SceneProps);
+		if (g_SceneBuildings || g_SceneProps)
+			ImGui::TextWrapped("Captures visible sentries, dispensers, teleporters and model-based "
+			                   "doors/carts/intelligence. Brush doors use recorded, rotated proxy bounds. "
+			                   "Static world geometry is not duplicated.");
 		if (g_SceneRagdolls || g_SceneGibs)
 			ImGui::TextWrapped(
 			    "Captures visible corpses/gibs independently of player selection. Only observed "
@@ -4947,6 +4968,9 @@ static void DrawSequencerDetails(int playhead)
 		ImGui::TextColored(ImVec4(180 / 255.f, 190 / 255.f, 200 / 255.f, 1), "Ragdolls: gray");
 		ImGui::SameLine();
 		ImGui::TextColored(ImVec4(1, 145 / 255.f, 65 / 255.f, 1), "Gibs: orange");
+		ImGui::TextColored(ImVec4(1, 210 / 255.f, 70 / 255.f, 1), "Buildings: yellow");
+		ImGui::SameLine();
+		ImGui::TextColored(ImVec4(120 / 255.f, 155 / 255.f, 1, 1), "Props/objectives: blue");
 		if (ImGui::Checkbox("Smooth cached animation", &g_SceneSmoothAnimation))
 			SceneCacheFrame(false);
 		bool models = g_SceneDrawModels.load();
@@ -4962,8 +4986,8 @@ static void DrawSequencerDetails(int playhead)
 		                   "simulation are not captured yet. Between ticks, animation uses the "
 		                   "local bone rotation, translation and scale interpolation. Unsupported transforms "
 		                   "use nearest recorded poses. Disable Smooth cached animation to compare.");
-		if ((g_ScenePoseEntity || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneWeapons ||
-		     g_SceneCosmetics) &&
+		if ((g_ScenePoseEntity || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneBuildings ||
+		     g_SceneProps || g_SceneWeapons || g_SceneCosmetics) &&
 		    !g_SceneRecord)
 			ImGui::TextDisabled("Enable Record scene history and play forward to capture poses.");
 		ImGui::Text("Pose captures: %llu | Unavailable: %llu", g_ScenePoseCaptured, g_ScenePoseFailures);
@@ -5023,7 +5047,7 @@ static void DrawSequencerDetails(int playhead)
 		if (g_SceneCache.Count() > 1) ImGui::Text("Retained span: %.2f seconds (gaps may exist)",
 			g_SceneCache.Frames().back().DemoTime - g_SceneCache.Frames().front().DemoTime);
 		if (g_ScenePoseEntity == -1 || g_SceneProjectiles || g_SceneWeapons || g_SceneCosmetics ||
-		    g_SceneRagdolls || g_SceneGibs)
+		    g_SceneRagdolls || g_SceneGibs || g_SceneBuildings || g_SceneProps)
 			ImGui::TextWrapped("More models consume the memory budget faster. Increase Scene budget MiB if the retained interval is too short.");
 		if (g_ScenePreview && !SceneCacheView())
 			ImGui::TextWrapped("No cached coverage at this playhead. Capture is unavailable here.");

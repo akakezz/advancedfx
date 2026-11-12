@@ -942,10 +942,9 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 				const auto rgb = advancedfx::SceneCache::CategoryColor(entity.Category);
 				const auto color = D3DCOLOR_RGBA(rgb[0], rgb[1], rgb[2], 255);
 				Vector3 corners[8];
+				const auto bounds = advancedfx::SceneCache::BoundsCorners(entity);
 				for (int i = 0; i < 8; ++i)
-					corners[i] = Vector3(entity.Origin[0] + ((i&1)?entity.Maxs[0]:entity.Mins[0]),
-						entity.Origin[1] + ((i&2)?entity.Maxs[1]:entity.Mins[1]),
-						entity.Origin[2] + ((i&4)?entity.Maxs[2]:entity.Mins[2]));
+					corners[i] = Vector3(bounds[i][0], bounds[i][1], bounds[i][2]);
 				const double yaw = entity.Angles[1] * M_PI / 180.0;
 				Vector3 center(entity.Origin[0], entity.Origin[1], entity.Origin[2]+60);
 				AutoSingleLine(center, D3DCOLOR_RGBA(255,220,80,255),

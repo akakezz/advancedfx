@@ -6561,7 +6561,7 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 
 // Minimal IVModelInfo (public Source SDK interface "VModelInfoClient006") up to GetStudiomodel.
 // The declarations mirror the SDK's IVModelInfo in order (including the overloads), so the compiler
-// lays out the vtable like the game's. Only GetModelName and GetStudiomodel are used.
+// lays out the vtable like the game's. GetModelName, GetModelType and GetStudiomodel are used.
 class CMirvTf2ModelInfo
 {
 public:
@@ -7183,7 +7183,15 @@ static int Mirv_Tf2_LabelCategory(const char *name, bool isPlayer, bool scene = 
         lower[n] = (char)tolower((unsigned char)name[n]);
     lower[n] = '\0';
 
-	// Keep existing mirv_drawentities categories unchanged; debris categories are cache-only.
+	// Keep existing mirv_drawentities categories unchanged; extended categories are cache-only.
+	if (scene && (strstr(lower, "viewmodel") || strstr(lower, "view_model") || strstr(lower, "wearablevm")))
+		return -1; // Never capture first-person arms/weapons as ordinary props.
+	if (scene &&
+	    (strstr(lower, "objectsentrygun") || strstr(lower, "objectdispenser") ||
+	     strstr(lower, "objectteleporter") || strstr(lower, "objectsapper") ||
+	     strstr(lower, "objectcartdispenser") || strstr(lower, "baseobject") || !strncmp(lower, "obj_", 4)))
+		return MIRV_TF2_ENTITY_BUILDING;
+
 	if (scene && strstr(lower, "ragdoll"))
 		return MIRV_TF2_ENTITY_RAGDOLL;
 	if (scene && (strstr(lower, "c_gib") || strstr(lower, "c_tfgib") || strstr(lower, "ctfgib") ||
@@ -10126,7 +10134,9 @@ static bool SceneBuildMatrices(const advancedfx::SceneCache::Entity &entity,
 		SOURCESDK::matrix3x4_t ownerBones[Cache::MaxBones];
 		const bool merge =
 		    owner &&
-		    (owner->Category == MIRV_TF2_ENTITY_PLAYER || owner->Category == MIRV_TF2_ENTITY_RAGDOLL) &&
+		    (owner->Category == MIRV_TF2_ENTITY_PLAYER || owner->Category == MIRV_TF2_ENTITY_RAGDOLL ||
+			 owner->Category == MIRV_TF2_ENTITY_BUILDING || owner->Category == MIRV_TF2_ENTITY_PROP) &&
+		    (entity.Category == MIRV_TF2_ENTITY_WEAPON || entity.Category == MIRV_TF2_ENTITY_COSMETIC) &&
 		    entity.OwnerIdentity == owner->Identity && owner->ModelPose &&
 		    Cache::ValidPose(*owner->ModelPose) && !pose.ModelInfo->BoneNames.empty() &&
 		    !owner->ModelPose->ModelInfo->BoneNames.empty() &&
@@ -10235,6 +10245,11 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 	auto info = Mirv_Tf2_GetModelInfo();
 	const void *model = renderable->GetModel();
 	const char *name = info && model ? info->GetModelName(model) : nullptr;
+	if (info && model && info->GetModelType(model) == 1) // mod_brush (doors / moving BSP entities).
+	{
+		status = "Brush model uses recorded, rotated proxy bounds; studio mesh capture is unavailable.";
+		return false;
+	}
 	auto header = info && model ? static_cast<const unsigned char *>(info->GetStudiomodel(model)) : nullptr;
 	int count;
 	unsigned int checksum;
@@ -10488,7 +10503,7 @@ void Mirv_Tf2_ReleaseSceneMaterials()
 // recorders to every projectile. Network class metadata is read through the
 // public IClientNetworkable::GetClientClass slot (2).
 void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs,
-                                   std::vector<MirvTf2SceneEntity> &out)
+                                   bool buildings, bool props, std::vector<MirvTf2SceneEntity> &out)
 {
 	out.clear();
 	auto tools = CClientToolsTf2::Instance();
@@ -10500,7 +10515,8 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 	for (auto object = iface->FirstEntity(); object && scanned++ < 4096; object = iface->NextEntity(object))
 	{
 		const int index = iface->GetEntIndex(object);
-		if (index == 0 || ((index < 0 || index >= 2048) && !ragdolls && !gibs && !weapons && !cosmetics))
+		if (index == 0 || ((index < 0 || index >= 2048) && !ragdolls && !gibs && !weapons && !cosmetics &&
+		                   !buildings && !props))
 			continue;
 		auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
 		auto networkable = unknown->GetClientNetworkable();
@@ -10525,7 +10541,10 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 		}
 		else
 		{
-			if ((!projectiles && !weapons && !cosmetics && !ragdolls && !gibs) || !renderable->ShouldDraw())
+			if ((!projectiles && !weapons && !cosmetics && !ragdolls && !gibs && !buildings && !props) ||
+			    !renderable->ShouldDraw())
+				continue;
+			if (networked && iface->GetOwningWeaponEntIndex(index) > 0)
 				continue;
 			std::uint32_t handle = 0xffffffff;
 			const void *reference = unknown->GetRefEHandle();
@@ -10544,6 +10563,10 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 			if (name && !std::strcmp(name, "CTFWearableVM"))
 				continue; // First-person arms/wearables.
 			int category = Mirv_Tf2_LabelCategory(name, false, true);
+			if (networked && category == MIRV_TF2_ENTITY_OTHER && name &&
+			    (!strncmp(name, "CTF", 3) || !strncmp(name, "C_TF", 4)))
+				category = Mirv_Tf2_ToolCategory(iface, object, index, false, true);
+
 			if (!networked)
 			{
 				// A client-only entity has entindex -1, but its serial-bearing
@@ -10552,9 +10575,11 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 				                                 false, true);
 			}
 			bool looseModel = false;
-			if ((gibs || weapons || cosmetics) && category == MIRV_TF2_ENTITY_OTHER)
+			if (category < 0)
+				continue;
+			if ((gibs || weapons || cosmetics || buildings || props) && category == MIRV_TF2_ENTITY_OTHER)
 			{
-				// Some break-model gibs report only C_BaseAnimating/physics classes.
+				// Generic dynamic/physics classes need a model-based category fallback.
 				auto info = Mirv_Tf2_GetModelInfo();
 				const void *model = renderable->GetModel();
 				const char *modelName = info && model ? info->GetModelName(model) : nullptr;
@@ -10573,14 +10598,25 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 						category = MIRV_TF2_ENTITY_WEAPON;
 					else if (strstr(path, "/player/items/") || strstr(path, "/bots/items/"))
 						category = MIRV_TF2_ENTITY_COSMETIC;
+					else if (strstr(path, "/buildables/"))
+						category = MIRV_TF2_ENTITY_BUILDING;
+					else if (props && (info->GetModelType(model) == 1 || info->GetModelType(model) == 3))
+						category = MIRV_TF2_ENTITY_PROP; // Brush or studio model; no sprites/particles/world.
 					looseModel = !networked &&
 					             (category == MIRV_TF2_ENTITY_WEAPON || category == MIRV_TF2_ENTITY_COSMETIC);
 				}
 			}
 			if (!networked && category != MIRV_TF2_ENTITY_RAGDOLL && category != MIRV_TF2_ENTITY_GIB &&
-			    category != MIRV_TF2_ENTITY_WEAPON && category != MIRV_TF2_ENTITY_COSMETIC)
+			    category != MIRV_TF2_ENTITY_WEAPON && category != MIRV_TF2_ENTITY_COSMETIC &&
+			    category != MIRV_TF2_ENTITY_BUILDING && category != MIRV_TF2_ENTITY_PROP)
 				continue; // Unrecognized client-only props stay outside this pass.
-			if (category == MIRV_TF2_ENTITY_RAGDOLL || category == MIRV_TF2_ENTITY_GIB)
+			if (category == MIRV_TF2_ENTITY_BUILDING || category == MIRV_TF2_ENTITY_PROP)
+			{
+				if (!(category == MIRV_TF2_ENTITY_BUILDING ? buildings : props))
+					continue;
+				row.HasMoveParent = Mirv_Tf2_SceneMoveParent(object, clientClass, row.MoveParent);
+			}
+			else if (category == MIRV_TF2_ENTITY_RAGDOLL || category == MIRV_TF2_ENTITY_GIB)
 			{
 				if (!(category == MIRV_TF2_ENTITY_RAGDOLL ? ragdolls : gibs))
 					continue;
@@ -10654,7 +10690,9 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 	std::vector<std::uint64_t> owners;
 	for (const auto &row : out)
 		if (row.Snapshot.Category == MIRV_TF2_ENTITY_PLAYER ||
-		    row.Snapshot.Category == MIRV_TF2_ENTITY_RAGDOLL)
+		    row.Snapshot.Category == MIRV_TF2_ENTITY_RAGDOLL ||
+		    row.Snapshot.Category == MIRV_TF2_ENTITY_BUILDING ||
+		    row.Snapshot.Category == MIRV_TF2_ENTITY_PROP)
 		{
 			owners.push_back(row.Snapshot.Identity);
 			std::uint32_t handle = 0xffffffff;
