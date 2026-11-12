@@ -2037,3 +2037,9 @@ model keep their existing category.
 
 Reference: Valve SDK `tf_weapon_grenade_pipebomb.cpp::CreatePipebombGibs` and
 `physpropclientside.cpp::BreakModelCreateSingle` (the CheapBreakModel path).
+
+For a misplaced live entity label, `mirv_drawentities debugLabel <address>`
+prints its model, bodygroup, debris flag, render origin/angles, local and world
+bounds, computed gib anchor, and available bone matrices. It does not alter the
+entity. Use the numeric label currently shown in the scene; client-only addresses
+are level-local.

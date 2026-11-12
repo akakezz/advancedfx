@@ -3648,6 +3648,16 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
 				Tier0_Msg("  %s: %i\n", names[i], g_EntityIndexDrawer.Filter_get(i) ? 1 : 0);
 			return;
         }
+		else if (0 == _stricmp("debugLabel", arg1))
+		{
+			char *end = nullptr;
+			const long address = argc == 3 ? std::strtol(args->ArgV(2), &end, 10) : -1;
+			if (argc == 3 && end != args->ArgV(2) && !*end && address > 0 && address <= INT_MAX)
+				Mirv_Tf2_DebugEntityLabel(int(address));
+			else
+				Tier0_Msg("mirv_drawentities debugLabel <entity label address> - Print live TF2 label transforms.\n");
+			return;
+		}
 		else if (0 == _stricmp("gibSize", arg1))
 		{
 			if (argc == 3)
@@ -3660,7 +3670,7 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
 					Tier0_Warning("Gib label size must be 6..200 pixels.\n");
 				return;
 			}
-			Tier0_Msg("mirv_drawentities gibSize <pixels> - Current: %.1f (default 16).\n",
+			Tier0_Msg("mirv_drawentities gibSize <pixels> - Current: %.1f (default 20).\n",
 			          g_EntityIndexDrawer.GibSize_get());
 			return;
 		}
@@ -3684,7 +3694,7 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
 			}
 
 			Tier0_Msg(
-			    "mirv_drawentities gibSize <pixels> - Gib digit height (default 16), independent of size.\n"
+			    "mirv_drawentities gibSize <pixels> - Gib digit height (default 20), independent of size.\n"
 			    "mirv_drawentities size <fPixels> - Current value: %f\n",
 			    g_EntityIndexDrawer.Size_get());
 			return;
@@ -3803,7 +3813,7 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
 		"categories "
 	    "(all on by default).\n"
 	    "mirv_drawentities height <fUnits> - Vertical offset from the entity anchor (default 0).\n"
-	    "mirv_drawentities gibSize <pixels> - Gib digit height (default 16), independent of size.\n"
+	    "mirv_drawentities gibSize <pixels> - Gib digit height (default 20), independent of size.\n"
 	    "mirv_drawentities size <fPixels> - Digit height in pixels (default 32).\n"
 	    "mirv_drawentities maxDistance <fUnits> - Only entities up to this distance from the camera, 0: no "
 	    "limit (default).\n"

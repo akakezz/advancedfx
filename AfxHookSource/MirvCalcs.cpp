@@ -11190,3 +11190,57 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 	out.erase(std::remove_if(out.begin(), out.end(), orphan), out.end());
 }
 // End scene entity enumeration.
+
+// Inspect a live label address without changing its pose or attachment.
+void Mirv_Tf2_DebugEntityLabel(int address)
+{
+	auto tools = CClientToolsTf2::Instance();
+	auto iface = tools ? tools->GetClientTools() : nullptr;
+	if (iface)
+		for (auto ent = iface->FirstEntity(); ent; ent = iface->NextEntity(ent))
+		{
+			auto object = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
+			if (Mirv_Tf2_EntityAddress(object) != address)
+				continue;
+			auto renderable = object->GetClientRenderable();
+			if (!renderable)
+				break;
+			auto info = Mirv_Tf2_GetModelInfo();
+			const auto model = renderable->GetModel();
+			const auto hdr =
+			    info && model ? static_cast<const unsigned char *>(info->GetStudiomodel(model)) : nullptr;
+			const char *name = info && model ? info->GetModelName(model) : nullptr;
+			Tier0_Msg("Label %i: model %s; body %i; debris %i\n", address, name ? name : "<none>",
+			          renderable->GetBody(), Mirv_Tf2_LabelDebris(object));
+			auto vector = [](const char *name, const float *v) {
+				if (v)
+					Tier0_Msg("  %s: %.6f %.6f %.6f\n", name, v[0], v[1], v[2]);
+			};
+			vector("render origin", static_cast<const float *>(renderable->GetRenderOrigin()));
+			vector("render angles", static_cast<const float *>(renderable->GetRenderAngles()));
+			float mins[3], maxs[3], anchor[3];
+			renderable->GetRenderBounds(mins, maxs);
+			vector("local bounds min", mins);
+			vector("local bounds max", maxs);
+			renderable->GetRenderBoundsWorldspace(mins, maxs);
+			vector("world bounds min", mins);
+			vector("world bounds max", maxs);
+			if (Mirv_Tf2_GibLabelAnchor(renderable, anchor))
+				vector("computed gib anchor", anchor);
+			MirvTf2BoneName_t names[MIRV_TF2_MAX_BONES];
+			int count = hdr ? Mirv_Tf2_ReadBoneNames(hdr, names) : 0;
+			auto globals = g_Hook_VClient_RenderView.GetGlobals();
+			SOURCESDK::matrix3x4_t bones[MIRV_TF2_MAX_BONES]{};
+			if (count > 0 && globals &&
+			    renderable->SetupBones(bones, MIRV_TF2_MAX_BONES, 0x7ff00, globals->curtime_get()))
+				for (int i = 0; i < count; ++i)
+				{
+					Tier0_Msg("  bone %i %s parent %i\n", i, names[i].name, names[i].parent);
+					for (int r = 0; r < 3; ++r)
+						Tier0_Msg("    %.6f %.6f %.6f %.6f\n", bones[i][r][0], bones[i][r][1], bones[i][r][2],
+						          bones[i][r][3]);
+				}
+			return;
+		}
+	Tier0_Msg("Label address %i is unavailable.\n", address);
+}

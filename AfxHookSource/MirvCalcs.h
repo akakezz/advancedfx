@@ -454,3 +454,5 @@ void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued r
 // Engine-thread polling; worker callbacks never call MDL/material APIs.
 void Mirv_Tf2_SceneRenderFrame();
 void Mirv_Tf2_SceneRenderStatus(unsigned &outstanding, unsigned &peak);
+
+void Mirv_Tf2_DebugEntityLabel(int address);
