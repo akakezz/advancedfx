@@ -167,7 +167,7 @@ void CEntityIndexDrawer::EndDevice(void)
 
 void CEntityIndexDrawer::CategoryColor_set(int category, int r, int g, int b)
 {
-	if (category < 0 || 5 <= category)
+	if (category < 0 || 6 <= category)
 		return;
 
 	const int values[3] = { r, g, b };
@@ -177,7 +177,7 @@ void CEntityIndexDrawer::CategoryColor_set(int category, int r, int g, int b)
 
 void CEntityIndexDrawer::CategoryColor_get(int category, int & r, int & g, int & b) const
 {
-	if (category < 0 || 5 <= category)
+	if (category < 0 || 6 <= category)
 		category = 4;
 
 	r = m_CategoryColors[category][0];
@@ -250,7 +250,7 @@ void CEntityIndexDrawer::OnPostRenderAllTools_EngineThread(void)
 	for (int i = 0; i < numFound; ++i)
 	{
 		const int category = found[i].category;
-		if (category < 0 || category >= 5 || !m_CategoryFilter[category])
+		if (category < 0 || category >= 6 || !m_CategoryFilter[category])
 			continue;
 		const double dx = found[i].origin[0] - camX;
 		const double dy = found[i].origin[1] - camY;
@@ -282,9 +282,10 @@ void CEntityIndexDrawer::OnPostRenderAllTools_EngineThread(void)
 		return;
 
 	data.size = m_Size;
+	data.gibSize = m_GibSize;
 	data.stackLabels = m_StackLabels;
 	data.stackWorldDistance = m_StackWorldDistance;
-	for (int category = 0; category < 5; ++category)
+	for (int category = 0; category < 6; ++category)
 		data.colors[category] = 0xFF000000u | ((uint32_t)m_CategoryColors[category][0] << 16) | ((uint32_t)m_CategoryColors[category][1] << 8) | (uint32_t)m_CategoryColors[category][2];
 
 	data.labels.reserve(candidates.size());
@@ -313,7 +314,6 @@ void CEntityIndexDrawer::OnPostRenderAllTools_DrawingThread(const DrawData & dat
 	};
 	std::vector<ScreenLabel> labels;
 	labels.reserve(data.labels.size());
-	const float glyphWidth = 0.5f * data.size;
 
 	for (size_t i = 0; i < data.labels.size(); ++i)
 	{
@@ -327,8 +327,9 @@ void CEntityIndexDrawer::OnPostRenderAllTools_DrawingThread(const DrawData & dat
 		int digits = 1;
 		for (int n = label.index; n >= 10; n /= 10)
 			++digits;
-		float w = digits * glyphWidth;
-		labels.push_back({ &label, x, y, x - 0.5f*w, y-data.size, x+0.5f*w, y });
+		const float size = label.category == 5 ? data.gibSize : data.size;
+		float w = digits * 0.5f * size;
+		labels.push_back({&label, x, y, x - 0.5f * w, y - size, x + 0.5f * w, y});
 	}
 	if (labels.empty())
 		return;
@@ -348,10 +349,11 @@ void CEntityIndexDrawer::OnPostRenderAllTools_DrawingThread(const DrawData & dat
 		for (size_t i = 0; i < labels.size(); ++i)
 		{
 			ScreenLabel candidate = labels[i];
-			const float step = data.size + 5.0f;
+			const float step = candidate.bottom - candidate.top + 5.0f;
 			for (size_t attempt = 0; attempt <= placed.size(); ++attempt)
 			{
 				bool overlap = false;
+				float shift = step;
 				for (size_t j = 0; j < placed.size(); ++j)
 				{
 					const ScreenLabel & other = placed[j];
@@ -366,14 +368,15 @@ void CEntityIndexDrawer::OnPostRenderAllTools_DrawingThread(const DrawData & dat
 						candidate.top < other.bottom && other.top < candidate.bottom)
 					{
 						overlap = true;
+						shift = (std::max)(step, candidate.bottom - other.top + 5.0f);
 						break;
 					}
 				}
 				if (!overlap)
 					break;
-				candidate.y -= step;
-				candidate.top -= step;
-				candidate.bottom -= step;
+				candidate.y -= shift;
+				candidate.top -= shift;
+				candidate.bottom -= shift;
 			}
 			placed.push_back(candidate);
 		}
@@ -444,10 +447,10 @@ void CEntityIndexDrawer::OnPostRenderAllTools_DrawingThread(const DrawData & dat
 	{
 		const ScreenLabel & label = labels[i];
 		int cat = label.label->category;
-		if (cat < 0 || cat >= 5)
+		if (cat < 0 || cat >= 6)
 			cat = 4;
 		EntityIndex_DrawNumber(device, label.label->index, label.x, label.y,
-			data.size, data.colors[cat]);
+		                       cat == 5 ? data.gibSize : data.size, data.colors[cat]);
 	}
 	AfxD3D9EndCleanState();
 }

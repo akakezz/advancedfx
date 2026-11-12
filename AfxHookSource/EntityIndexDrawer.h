@@ -18,10 +18,21 @@ public:
 	bool Enabled_get(void) { return m_Enabled; }
 	void Enabled_set(bool value) { m_Enabled = value; }
 
-	// Category indices: player, projectile, weapon, cosmetic, other.
-	bool Filter_get(int category) const { return 0 <= category && category < 5 && m_CategoryFilter[category]; }
-	void Filter_set(int category, bool value) { if (0 <= category && category < 5) m_CategoryFilter[category] = value; }
-	void FilterAll_set(bool value) { for (int i = 0; i < 5; ++i) m_CategoryFilter[i] = value; }
+	// Label categories: player, projectile, weapon, cosmetic, other, gib.
+	bool Filter_get(int category) const
+	{
+		return 0 <= category && category < 6 && m_CategoryFilter[category];
+	}
+	void Filter_set(int category, bool value)
+	{
+		if (0 <= category && category < 6)
+			m_CategoryFilter[category] = value;
+	}
+	void FilterAll_set(bool value)
+	{
+		for (int i = 0; i < 6; ++i)
+			m_CategoryFilter[i] = value;
+	}
 
 	/// <summary>Vertical offset from the label anchor in world units.</summary>
 	float Height_get(void) { return m_Height; }
@@ -30,6 +41,15 @@ public:
 	/// <summary>Height of the digits in pixels.</summary>
 	float Size_get(void) { return m_Size; }
 	void Size_set(float value) { m_Size = value < 6.0f ? 6.0f : (200.0f < value ? 200.0f : value); }
+
+	float GibSize_get(void) const
+	{
+		return m_GibSize;
+	}
+	void GibSize_set(float value)
+	{
+		m_GibSize = value < 6 ? 6 : (value > 200 ? 200 : value);
+	}
 
 	/// <summary>0 means no limit.</summary>
 	float MaxDistance_get(void) { return m_MaxDistance; }
@@ -72,9 +92,10 @@ public:
 	{
 		float worldToScreen[4][4] = {};
 		float size = 32.0f;
+		float gibSize = 16.0f;
 		bool stackLabels = true;
 		float stackWorldDistance = 32.0f;
-		uint32_t colors[5] = { 0xFF42C8FFu, 0xFFFF6A55u, 0xFF46EB8Cu, 0xFFCE80FFu, 0xFFFFE600u };
+		uint32_t colors[6] = {0xFF42C8FFu, 0xFFFF6A55u, 0xFF46EB8Cu, 0xFFCE80FFu, 0xFFFFE600u, 0xFFFFE600u};
 		std::vector<Label> labels;
 	};
 
@@ -86,12 +107,14 @@ private:
 	IDirect3DTexture9 * m_DigitsTexture = nullptr;
 
 	bool m_Enabled = false;
-	bool m_CategoryFilter[5] = { true, true, true, true, true };
+	bool m_CategoryFilter[6] = {true, true, true, true, true, true};
 	float m_Height = 0.0f;
 	float m_Size = 32.0f;
+	float m_GibSize = 16.0f;
 	float m_MaxDistance = 0.0f;
 	int m_MaxLabels = 64;
-	int m_CategoryColors[5][3] = { {66,200,255}, {255,106,85}, {70,235,140}, {206,128,255}, {255,230,0} };
+	int m_CategoryColors[6][3] = {{66, 200, 255},  {255, 106, 85}, {70, 235, 140},
+	                              {206, 128, 255}, {255, 230, 0},  {255, 230, 0}};
 	bool m_ViewCheck = true;
 	bool m_StackLabels = true;
 	float m_StackWorldDistance = 32.0f;

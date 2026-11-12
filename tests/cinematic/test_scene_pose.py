@@ -365,7 +365,7 @@ int main(){
  gib.Handle=0xffffffff;fragment.Render.Visible=false;Mirv_Tf2_CollectSceneEntities(false,false,false,true,true,false,false,out);assert(out.size()==1);gib.Handle=(9<<12)|2050;fragment.Render.Visible=true;
  corpse.Net.Dormant=true;Mirv_Tf2_CollectSceneEntities(false,false,false,true,false,false,false,out);assert(out.empty());corpse.Net.Dormant=false;
  for(auto name:{"class C_TFRagdoll","CTFRagdoll","prop_ragdoll"})assert(Mirv_Tf2_LabelCategory(name,false,true)==5&&Mirv_Tf2_LabelCategory(name,false)==4);
- for(auto name:{"class C_Gib","CTFGib","class C_TFGib","gib","tf_gib"})assert(Mirv_Tf2_LabelCategory(name,false,true)==6&&Mirv_Tf2_LabelCategory(name,false)==4);
+ for(auto name:{"class C_Gib","CTFGib","class C_TFGib","CTFHeadGib","C_TFHeadGib","gib","tf_gib"})assert(Mirv_Tf2_LabelCategory(name,false,true)==6&&Mirv_Tf2_LabelCategory(name,false)==5);
  // Dropped weapons / cosmetics survive gameplay ownership, and corpse-parented gear follows the corpse.
  objects={&player,&weapon,&hat,&corpse};weapon.ParentKnown=hat.ParentKnown=true;player.Alive=false;weapon.MoveParent=hat.MoveParent=0xffffffff;
  Mirv_Tf2_CollectSceneEntities(false,true,true,true,false,false,false,out);assert(out.size()==3&&out[0].Snapshot.Category==2&&!out[0].Snapshot.OwnerIdentity&&out[1].Snapshot.Category==3&&!out[1].Snapshot.OwnerIdentity);
@@ -513,17 +513,18 @@ identity_fixture=r'''
 #include <cassert>
 #include <iostream>
 int g_LevelInitCount=0;
-struct CMirvTf2ClientRenderable {bool Visible=true;float Origin[3]{1,2,3};bool ShouldDraw(){return Visible;}const void*GetRenderOrigin(){return Origin;}void GetRenderBoundsWorldspace(float*a,float*b){for(int i=0;i<3;++i){a[i]=0;b[i]=4;}}};
-struct CMirvTf2ClientUnknown {unsigned int Handle=0xffffffffu;int Index=-1;bool Player=false;CMirvTf2ClientRenderable Render;const void*GetRefEHandle()const{return &Handle;}auto GetClientRenderable(){return &Render;}};
+struct CMirvTf2ClientRenderable {const char*ModelName=nullptr;const void*GetModel(){return ModelName;}bool Visible=true;float Origin[3]{1,2,3};bool ShouldDraw(){return Visible;}const void*GetRenderOrigin(){return Origin;}void GetRenderBoundsWorldspace(float*a,float*b){for(int i=0;i<3;++i){a[i]=0;b[i]=4;}}};
+struct CMirvTf2ClientUnknown {unsigned int Handle=0xffffffffu;int Index=-1,LabelCategory=4;bool Player=false;CMirvTf2ClientRenderable Render;const void*GetRefEHandle()const{return &Handle;}auto GetClientRenderable(){return &Render;}};
 std::vector<CMirvTf2ClientUnknown*>objects;
 struct Tools {std::uintptr_t AttachToEntity(void*){return 0;}int GetNumRecordables(){return 0;}std::uintptr_t GetRecordable(int){return 0;}void*FirstEntity(){return objects.empty()?nullptr:objects.front();}void*NextEntity(void*p){for(size_t i=0;i<objects.size();++i)if(objects[i]==p)return i+1<objects.size()?objects[i+1]:nullptr;return nullptr;}int GetEntIndex(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Index;}bool IsPlayer(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Player;}} tools;
 struct CClientToolsTf2 {static auto Instance(){static CClientToolsTf2 singleton;return &singleton;}auto GetClientTools(){return &tools;}};
 namespace SOURCESDK{namespace TF2{using IClientTools=Tools;using HTOOLHANDLE=std::uintptr_t;constexpr std::uintptr_t HTOOLHANDLE_INVALID=0;}}
 struct MirvTf2EntityLabel_t {int category,index;float origin[3];};
-int Mirv_Tf2_ToolCategory(Tools*,void*p,int,bool player){return player?0:4;}
+constexpr int MIRV_TF2_ENTITY_OTHER=4;struct LabelModelInfo{const char*GetModelName(const void*m){return static_cast<const char*>(m);}}labelModelInfo;auto*Mirv_Tf2_GetModelInfo(){return &labelModelInfo;}
+int Mirv_Tf2_ToolCategory(Tools*,void*p,int,bool player){return player?0:static_cast<CMirvTf2ClientUnknown*>(p)->LabelCategory;}
 bool Mirv_IsUsableBound(float v){return std::isfinite(v);}
 '''+identity+labels+r'''
-int main(){CMirvTf2ClientUnknown player,gib,other;player.Index=5;player.Player=true;player.Handle=(1u<<16)|5;gib.Handle=(3u<<12)|2050;other.Handle=(7u<<16)|5000;objects={&player,&gib,&other};assert(Mirv_Tf2_EntityAddress(&player)==5);int a=Mirv_Tf2_EntityAddress(&gib),b=Mirv_Tf2_EntityAddress(&other);assert(a>=2048&&b>a);assert(Mirv_Tf2_HandleForAddress(a)==gib.Handle&&Mirv_Tf2_HandleForAddress(b)==other.Handle);assert(Mirv_Tf2_EntityAddress(&gib)==a);MirvTf2EntityLabel_t found[8];assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[1].index==a&&found[2].index==b);assert(Mirv_Tf2_CollectEntityLabels(true,found,8)==1&&found[0].index==5);unsigned int old=gib.Handle;gib.Handle+=(1u<<12);assert(Mirv_Tf2_HandleForAddress(a)==0xffffffffu);int replacement=Mirv_Tf2_EntityAddress(&gib);assert(replacement!=a&&Mirv_Tf2_HandleForAddress(replacement)==gib.Handle);gib.Render.Visible=false;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==2);gib.Handle=0xffffffffu;assert(Mirv_Tf2_EntityAddress(&gib)==-1);objects={&player,&other};assert(Mirv_Tf2_HandleForAddress(b)==other.Handle);++g_LevelInitCount;assert(Mirv_Tf2_HandleForAddress(b)==0xffffffffu);assert(Mirv_Tf2_EntityAddress(&other)==2048);std::cout<<"Client entity address and label checks passed\n";}
+int main(){CMirvTf2ClientUnknown player,gib,other;player.Index=5;player.Player=true;player.Handle=(1u<<16)|5;gib.LabelCategory=5;gib.Handle=(3u<<12)|2050;other.Handle=(7u<<16)|5000;objects={&player,&gib,&other};assert(Mirv_Tf2_EntityAddress(&player)==5);int a=Mirv_Tf2_EntityAddress(&gib),b=Mirv_Tf2_EntityAddress(&other);assert(a>=2048&&b>a);assert(Mirv_Tf2_HandleForAddress(a)==gib.Handle&&Mirv_Tf2_HandleForAddress(b)==other.Handle);assert(Mirv_Tf2_EntityAddress(&gib)==a);MirvTf2EntityLabel_t found[8];assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[1].index==a&&found[2].index==b);other.Render.ModelName="models/player/GIBS/head.mdl";assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3&&found[2].category==5&&found[2].origin[0]==2);other.Render.ModelName=nullptr;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==3);assert(found[1].category==5&&found[1].origin[0]==2&&found[1].origin[1]==2&&found[1].origin[2]==4&&found[2].origin[0]==1);assert(Mirv_Tf2_CollectEntityLabels(true,found,8)==1&&found[0].index==5);unsigned int old=gib.Handle;gib.Handle+=(1u<<12);assert(Mirv_Tf2_HandleForAddress(a)==0xffffffffu);int replacement=Mirv_Tf2_EntityAddress(&gib);assert(replacement!=a&&Mirv_Tf2_HandleForAddress(replacement)==gib.Handle);gib.Render.Visible=false;assert(Mirv_Tf2_CollectEntityLabels(false,found,8)==2);gib.Handle=0xffffffffu;assert(Mirv_Tf2_EntityAddress(&gib)==-1);objects={&player,&other};assert(Mirv_Tf2_HandleForAddress(b)==other.Handle);++g_LevelInitCount;assert(Mirv_Tf2_HandleForAddress(b)==0xffffffffu);assert(Mirv_Tf2_EntityAddress(&other)==2048);std::cout<<"Client entity address and label checks passed\n";}
 '''
 source=out/'client_entity_address.cpp';source.write_text(identity_fixture)
 command=['g++','-std=c++17','-O1','-g',str(source),'-o',str(out/'client_entity_address')]
@@ -531,5 +532,37 @@ if args.sanitize:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-p
 result=subprocess.run(command,capture_output=True,text=True);(out/'identity-build.log').write_text(result.stdout+result.stderr)
 if result.returncode:print(result.stderr[-6500:]);raise SystemExit(result.returncode)
 result=subprocess.run([str(out/'client_entity_address')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
+print(result.stdout+result.stderr)
+if result.returncode:raise SystemExit(result.returncode)
+
+# Actual label layout with mixed digit sizes, including extreme user settings.
+entity_drawer=(root/'AfxHookSource/EntityIndexDrawer.cpp').read_text()
+def entity_function(marker):
+    a=entity_drawer.index(marker);b=entity_drawer.index('{',a);end=b+1;depth=1
+    while depth:
+        depth+=(entity_drawer[end]=='{')-(entity_drawer[end]=='}');end+=1
+    return entity_drawer[a:end]
+layout=entity_drawer[entity_drawer.index('\tstruct ScreenLabel'):entity_drawer.index('\t// Reuse the campath digit texture.')].replace('return;','return {};')
+(out/'d3d9.h').write_text('class IDirect3DDevice9;class IDirect3DTexture9;\n')
+label_test=r'''
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <cmath>
+#include <iostream>
+#include "AfxHookSource/EntityIndexDrawer.h"
+'''+entity_function('static bool EntityIndex_Project(')+entity_function('void CEntityIndexDrawer::CategoryColor_set(')+entity_function('void CEntityIndexDrawer::CategoryColor_get(')+r'''
+std::vector<std::array<float,6>> Layout(const CEntityIndexDrawer::DrawData&data){using Label=CEntityIndexDrawer::Label;struct{unsigned X=0,Y=0,Width=1000,Height=1000;}vp;
+'''+layout+r'''
+ std::vector<std::array<float,6>> result;for(const auto&item:labels)result.push_back({item.left,item.top,item.right,item.bottom,item.y,float(item.label->category)});return result;}
+int main(){CEntityIndexDrawer drawer;assert(drawer.Size_get()==32&&drawer.GibSize_get()==16);drawer.FilterAll_set(false);drawer.Filter_set(5,true);assert(drawer.Filter_get(5)&&!drawer.Filter_get(4));drawer.Size_set(48);assert(drawer.GibSize_get()==16);drawer.GibSize_set(12);assert(drawer.Size_get()==48);drawer.GibSize_set(1);assert(drawer.GibSize_get()==6);drawer.GibSize_set(500);assert(drawer.GibSize_get()==200);drawer.CategoryColor_set(5,10,20,30);int r,g,b;drawer.CategoryColor_get(5,r,g,b);assert(r==10&&g==20&&b==30);drawer.CategoryColor_get(4,r,g,b);assert(r==255&&g==230&&b==0);
+ CEntityIndexDrawer::DrawData data;data.worldToScreen[0][0]=data.worldToScreen[1][1]=data.worldToScreen[3][3]=1;data.labels={{1,4,0,0,0},{2048,5,0,0,0}};data.stackLabels=false;auto plain=Layout(data);assert(plain.size()==2&&plain[0][3]-plain[0][1]==32&&plain[1][3]-plain[1][1]==16&&plain[0][4]==plain[1][4]);data.stackLabels=true;auto stacked=Layout(data);assert(stacked[1][3]<stacked[0][1]);data.size=200;data.gibSize=6;stacked=Layout(data);assert(stacked[1][3]<stacked[0][1]);data.labels[1].z=100;auto separate=Layout(data);assert(separate[0][4]==separate[1][4]);std::cout<<"Gib filter, size and mixed-label layout checks passed\n";}
+'''
+source=out/'gib_label_layout.cpp';source.write_text(label_test)
+command=['g++','-std=c++17','-O1','-g','-I'+str(out),'-I'+str(root),str(source),'-o',str(out/'gib_label_layout')]
+if args.sanitize:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
+result=subprocess.run(command,capture_output=True,text=True);(out/'gib-layout-build.log').write_text(result.stdout+result.stderr)
+if result.returncode:print(result.stderr[-6500:]);raise SystemExit(result.returncode)
+result=subprocess.run([str(out/'gib_label_layout')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
 print(result.stdout+result.stderr)
 if result.returncode:raise SystemExit(result.returncode)

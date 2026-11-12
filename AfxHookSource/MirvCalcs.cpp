@@ -7313,9 +7313,10 @@ static int Mirv_Tf2_LabelCategory(const char *name, bool isPlayer, bool scene = 
 
 	if (scene && strstr(lower, "ragdoll"))
 		return MIRV_TF2_ENTITY_RAGDOLL;
-	if (scene && (strstr(lower, "c_gib") || strstr(lower, "c_tfgib") || strstr(lower, "ctfgib") ||
-	              !strcmp(lower, "gib") || !strcmp(lower, "tf_gib")))
-		return MIRV_TF2_ENTITY_GIB;
+	if (strstr(lower, "c_gib") || strstr(lower, "c_tfgib") || strstr(lower, "ctfgib") ||
+	    strstr(lower, "headgib") || strstr(lower, "head_gib") || !strcmp(lower, "gib") ||
+	    !strcmp(lower, "tf_gib"))
+		return scene ? MIRV_TF2_ENTITY_GIB : 5; // Label category 5 is gibs; scene category 5 is ragdolls.
 
 	if (strstr(lower, "wearable") || strstr(lower, "cosmetic") || strstr(lower, "econ_wear") || strstr(lower, "econwear"))
         return MIRV_TF2_ENTITY_COSMETIC;
@@ -7404,6 +7405,23 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 
 		MirvTf2EntityLabel_t & label = outLabels[count++];
 		label.category = Mirv_Tf2_ToolCategory(iface, ent, index, iface->IsPlayer(ent));
+		if (label.category == MIRV_TF2_ENTITY_OTHER)
+		{
+			auto info = Mirv_Tf2_GetModelInfo();
+			const auto model = renderable->GetModel();
+			const char *name = info && model ? info->GetModelName(model) : nullptr;
+			if (name)
+			{
+				char lower[260];
+				size_t n = 0;
+				for (; name[n] && n + 1 < sizeof(lower); ++n)
+					lower[n] = char(tolower(static_cast<unsigned char>(name[n])));
+				lower[n] = 0;
+				if (strstr(lower, "/gibs/") || strstr(lower, "\\gibs\\"))
+					label.category = 5;
+			}
+		}
+
 		label.index = index;
 		label.origin[0] = origin[0];
 		label.origin[1] = origin[1];
@@ -7438,7 +7456,9 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 				mins[1] - 32.0f <= origin[1] && origin[1] <= maxs[1] + 32.0f &&
 				mins[2] - 32.0f <= origin[2] && origin[2] <= maxs[2] + 32.0f;
 
-			if (!originInsideBounds)
+			// Gib origins may retain a character/model pivot far from their visible piece.
+			// Use the engine's world render bounds even when the pivot passes the loose margin.
+			if (label.category == 5 || !originInsideBounds)
 			{
 				label.origin[0] = 0.5f * (mins[0] + maxs[0]);
 				label.origin[1] = 0.5f * (mins[1] + maxs[1]);

@@ -1973,12 +1973,12 @@ The existing **mirv_drawentities**, **mirv_listentities**, **mirv_listbones** an
 **mirv_cam attach** commands now share numeric addresses for client-only
 entities. Networked indices keep their existing meaning. Client-only IDs start
 at 2048 and are assigned by HLAE; they are not decoded engine slot numbers.
-Their display category remains **Other**.
+Their display category is **Gibs**, independently filterable from **Other**.
 
 While the gib is alive in actual demo playback:
 
 ```text
-mirv_drawentities filter other 1
+mirv_drawentities filter gibs 1
 mirv_drawentities enabled 1
 mirv_listentities sort=distance
 // Substitute the gib's displayed number:
@@ -2002,3 +2002,22 @@ layouts. Existing tool attachments (including AGR recording) are preserved when
 listing, classifying, or reading a client's pose. Other index-based commands,
 such as aim targeting, have not yet been extended to these client-only IDs.
 Viewmodel-specific categorization/visibility remains separate work.
+
+
+### Gib entity labels
+
+Gib labels use the top-center of the engine's world render bounds, instead of
+preferring the model pivot with a loose 32-unit margin. This addresses detached
+pieces whose visible geometry is offset from the character's original origin.
+Attachment origins and bone transforms are unaffected.
+
+```text
+mirv_drawentities filter gibs 0
+mirv_drawentities filter gibs 1
+mirv_drawentities gibSize 16
+```
+
+Gib digits default to 16 pixels (other labels default to 32). `gibSize` accepts
+6–200 pixels and is independent of `mirv_drawentities size`. Label stacking uses
+the corresponding label's dimensions. The existing category color command also
+accepts `gibs`.
