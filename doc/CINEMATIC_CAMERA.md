@@ -1430,7 +1430,7 @@ confirm the current directory.
 ## Scene Cache visual preview
 
 Scene caching is part of **HLAE Sequencer**. Open its **Scene Cache** details tab
-and enable **Record scene history**, then play forward through the shot. Capture
+and press **Start recording**, then play forward through the shot. Capture
 continues with the overlay closed. Pause/freeze actual demo playback, enable
 **Cached preview** above the timeline, and scrub the sequencer playhead or use
 **Go to tick**. These actions preview cached history without seeking the demo.
@@ -1465,13 +1465,13 @@ simulation state are not restored.
 These commands use the sequencer playhead and work with the overlay closed:
 
 ```text
-mirv_campath cache record 1
-mirv_campath cache preview 1
-mirv_campath cache goto 90000
-mirv_campath cache step -1
-mirv_campath cache step 1
-mirv_campath cache status
-mirv_campath cache preview 0
+mirv_cache record 1
+mirv_cache preview 1
+mirv_cache goto 90000
+mirv_cache step -1
+mirv_cache step 1
+mirv_cache status
+mirv_cache preview 0
 ```
 
 `goto` requires a tick inside the retained bounds; gaps can still have no scene
@@ -1498,8 +1498,8 @@ are shown.
 Equivalent single-step Source bindings, when HLAE does not own keyboard input:
 
 ```text
-bind LEFTARROW "mirv_campath cache step -1"
-bind RIGHTARROW "mirv_campath cache step 1"
+bind LEFTARROW "mirv_cache step -1"
+bind RIGHTARROW "mirv_cache step 1"
 ```
 
 For continuous scrubbing, first enable cached preview, then use ordinary Source
@@ -1507,10 +1507,10 @@ press/release aliases. Here 66 ticks/second is the scrub speed, independent of
 actual demo timescale:
 
 ```text
-alias +cache_back "mirv_campath cache rate -66"
-alias -cache_back "mirv_campath cache rate 0"
-alias +cache_forward "mirv_campath cache rate 66"
-alias -cache_forward "mirv_campath cache rate 0"
+alias +cache_back "mirv_cache rate -66"
+alias -cache_back "mirv_cache rate 0"
+alias +cache_forward "mirv_cache rate 66"
+alias -cache_forward "mirv_cache rate 0"
 bind F6 +cache_back
 bind F7 +cache_forward
 ```
@@ -1526,10 +1526,10 @@ Input release or focus handoff stops an active scrub rate.
 
 ### Player, projectile and attached model poses
 
-In the sequencer's **Scene Cache** tab, set **Capture player models** to
-**All players**, or choose one player to reduce memory usage. Enable
-**Capture projectile models**, **Capture weapon models**, and
-**Capture cosmetic models** as wanted, then **Record scene history** and play
+In the sequencer's **Scene Cache → Capture** section, enable **Player models**
+(default scope: all players). **Player filter (optional)** can narrow player
+bodies and held gear to one player. Enable **Projectiles**, **Weapons**,
+**Cosmetics** and the other categories as wanted, then **Start recording** and play
 forward through the shot. Freeze actual playback, enable **Cached preview**,
 and scrub backward through the covered interval. **Draw cached models** shows
 the recorded wireframe poses with the overlay closed and **Show path** disabled.
@@ -1543,28 +1543,30 @@ wireframe; proxy boxes still use the category colors.
 Console equivalents:
 
 ```text
-mirv_campath cache pose all
-mirv_campath cache projectiles 1
-mirv_campath cache weapons 1
-mirv_campath cache cosmetics 1
-mirv_campath cache record 1
+mirv_cache players all
+mirv_cache projectiles 1
+mirv_cache weapons 1
+mirv_cache cosmetics 1
+mirv_cache record 1
 // Play forward, then freeze actual demo playback.
-mirv_campath cache record 0
-mirv_campath cache preview 1
-mirv_campath cache step -66
-mirv_campath cache status
+mirv_cache record 0
+mirv_cache preview 1
+mirv_cache step -66
+mirv_cache status
 ```
 
-`mirv_campath cache pose <player entity index>` captures one player's body.
-`pose none` (or `pose 0`) disables player poses while retaining player boxes.
+`mirv_cache players <player entity index>` captures one player's body.
+`mirv_cache players none` (or `players 0`) disables player poses while
+retaining player boxes.
 `projectiles 0` excludes projectiles from future captures. `weapons 0|1` and
 `cosmetics 0|1` capture visible third-person gear for the selected player, or all
 players in **All players** mode. Loose weapons/cosmetics capture independently
-of that player selection, including in **None** mode. Both options default off.
+of that player selection, including when **Player models** is off. Held gear
+is unfiltered when player-body capture is off. Both options default off.
 Corpse-attached gear requires its ragdoll to be captured. Gear options affect
 future frames and increase memory use. Hidden inventory weapons, first-person
 viewmodels/arms and particle-only cosmetic effects are outside this pass.
-`mirv_campath cache models 0|1` controls model drawing independently of capture.
+`mirv_cache models 0|1` controls model drawing independently of capture.
 Changing capture options affects future frames only; record the interval again
 for missing poses. All-player and category preferences persist across demo
 changes. Opening/restarting a demo clears history and any individual player
@@ -1607,8 +1609,8 @@ Disable **Smooth cached animation**, or use these commands, to compare against
 nearest recorded poses without recording again:
 
 ```text
-mirv_campath cache animation nearest
-mirv_campath cache animation smooth
+mirv_cache animation nearest
+mirv_cache animation smooth
 ```
 
 `cache rate` retains fractional ticks for smooth playback forwards/backwards.
@@ -1633,7 +1635,7 @@ handedness changes also preserve only that bone. Body-group values switch
 at the nearer sample without disabling skeleton interpolation. Model changes, missing samples, excessive gaps/travel and owner
 changes retain their existing safeguards. Smoothing does not repair bad demo
 samples or synthesize missing simulation, particles, audio or facial flexes.
-Use **Scene Cache → Animation diagnostics** or `mirv_campath cache status`
+Use **Scene Cache → Diagnostics → Animation diagnostics** or `mirv_cache status`
 while slow scrubbing to inspect each model's actual blend weight, blended and
 preserved bone counts, and exception bone names/reasons. A recorded/nearest
 pose at a whole tick is expected. A world-only pose requires a fresh capture.
@@ -1679,7 +1681,7 @@ in-game testing.
 ### Bounded capture and render lifecycle
 
 **Sequencer → Scene Cache → Capture tick range** enables inclusive start/end
-ticks. Set them directly or from the playhead, press **Record range**, then play
+ticks. Set them directly or from the playhead, press **Start recording**, then play
 the actual demo from before the start. Capture waits for the start and stops
 at/past the end. Seeking past the end stops capture without inventing skipped
 samples. It does not start playback or seek for you. A newly opened demo clears
@@ -1687,10 +1689,10 @@ its old range and stops bounded capture; ordinary unbounded recording remains
 available.
 
 ```text
-mirv_campath cache range 1000 2000
-mirv_campath cache record 1
+mirv_cache range 1000 2000
+mirv_cache record 1
 // Play the actual demo through the range.
-mirv_campath cache range off
+mirv_cache range off
 ```
 
 The Scene Cache tab reports capture last/mean/peak milliseconds, unique retained
@@ -1707,26 +1709,26 @@ when preview or model drawing is disabled. Cached model submission suspends on
 window focus loss, failed presents, device reset and shutdown, and waits for a
 successful present plus two stable engine frames before resuming. Cached history
 is preserved. Failed resets no longer recreate the overlay's device objects.
-`mirv_campath cache status` includes pending/peak cached draws and focus/device
+`mirv_cache status` includes pending/peak cached draws and focus/device
 readiness to help diagnose delayed failures. The safeguards have fixture coverage;
 live TF2 windowed idle/alt-tab testing is still required to verify the reported
 crash is resolved.
 
 ### Ragdolls and gibs
 
-In **Sequencer → Scene Cache**, enable **Capture ragdoll models** and/or
-**Capture gib models** before recording. They are separate, opt-in categories
+In **Sequencer → Scene Cache**, enable **Ragdolls** and/or
+**Gibs** before recording. They are separate, opt-in categories
 and do not require a selected player. Record forward through a death/explosion,
 stop recording, then enable **Cached preview** and scrub the retained interval.
 Existing smooth animation, memory budget and capture-range controls apply.
 
 ```text
-mirv_campath cache ragdolls 1
-mirv_campath cache gibs 1
-mirv_campath cache record 1
+mirv_cache ragdolls 1
+mirv_cache gibs 1
+mirv_cache record 1
 // Play forward through the event, then:
-mirv_campath cache record 0
-mirv_campath cache preview 1
+mirv_cache record 0
+mirv_cache preview 1
 ```
 
 Ragdolls draw gray; gibs draw orange. `cache status` reports their capture
@@ -1758,7 +1760,7 @@ floating bodies; the visibility checks do not rewrite old cached frames.
 
 ### Dropped weapons and cosmetics
 
-**Capture weapon models** and **Capture cosmetic models** also capture visible
+**Weapons** and **Cosmetics** also capture visible
 loose items, including recognized client-only physics props using weapon or
 player-item model paths. A dropped object can retain gameplay ownership; the
 read-only `moveparent` receive property identifies whether it is actually still
@@ -1774,13 +1776,13 @@ rule. Clear and recapture existing history to include previously omitted drops.
 
 ### Buildings, props and objectives
 
-Enable **Capture building models** and **Capture prop / objective models** in
+Enable **Buildings** and **Props / objectives** in
 **Sequencer → Scene Cache**, then record forward through the interval again.
 Both default off and operate independently of player selection.
 
 ```text
-mirv_campath cache buildings 1
-mirv_campath cache props 1
+mirv_cache buildings 1
+mirv_cache props 1
 ```
 
 Buildings draw yellow: sentries, dispensers, teleporters, sappers and recognized
@@ -1812,3 +1814,24 @@ off or the editing path is hidden. This uses the existing campath line renderer
 with an empty path snapshot: no path labels, keys or camera glyphs are enabled.
 When the visible active path already submits scene bounds, no second fallback
 pass is queued. A model-only scene needs no independent proxy pass.
+
+### Scene Cache menu and console command
+
+The menu has four sections: **Capture** (categories, optional player filter,
+tick range, Start/Stop and Clear), **Preview** (smoothing and model display),
+**Memory** (budget and estimates), and **Diagnostics** (capture cost, model
+status and animation details). Memory/Diagnostics start collapsed. Checked
+category marks use their preview colors; color customization is deferred.
+
+Player filtering remains an optional memory-saving scope for player bodies and
+held gear. It does not select the whole scene. Enabling Players defaults to all
+players; with player-body capture off, weapon/cosmetic capture stays available
+and unfiltered. Corpses, loose items, projectiles, buildings and props remain
+independent categories.
+
+Scene caching now has its own **`mirv_cache`** command. Replace the old
+`mirv_campath cache` prefix in binds/scripts with `mirv_cache`, and use
+`players` instead of the old `pose` subcommand. No compatibility alias remains
+in the campath tree. `mirv_cache` / `mirv_cache help` prints concise syntax;
+`mirv_cache status` prints detailed diagnostics. Other successful commands print
+one summary rather than dumping all diagnostics.

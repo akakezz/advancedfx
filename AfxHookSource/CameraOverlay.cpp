@@ -267,7 +267,7 @@ void SceneCacheFrame(bool capture)
 			const bool gear =
 			    entity.Category == MIRV_TF2_ENTITY_WEAPON || entity.Category == MIRV_TF2_ENTITY_COSMETIC;
 			if (gear &&
-			    !(entity.OwnerIdentity == 0 || (entity.OwnerIdentity >> 63) || g_ScenePoseEntity == -1 ||
+			    !(entity.OwnerIdentity == 0 || (entity.OwnerIdentity >> 63) || g_ScenePoseEntity <= 0 ||
 			      (g_ScenePoseEntity > 0 && entity.OwnerIdentity == static_cast<unsigned>(g_ScenePoseUser))))
 				continue;
 			if ((player && (g_ScenePoseEntity == -1 || selected)) ||
@@ -930,7 +930,7 @@ static bool g_SequencerNeedsRefresh = false;
 void SceneCacheConsole(advancedfx::ICommandArgs *args)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
-	const char *op = args->ArgC() > 2 ? args->ArgV(2) : "status";
+	const char *op = args->ArgC() > 1 ? args->ArgV(1) : "help";
 	auto parseInteger = [&](int index, int &value) {
 		if (args->ArgC() <= index)
 			return false;
@@ -942,7 +942,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		value = int(parsed);
 		return true;
 	};
-	auto integer = [&](int &value) { return args->ArgC() == 4 && parseInteger(3, value); };
+	auto integer = [&](int &value) { return args->ArgC() == 3 && parseInteger(2, value); };
 	int value = 0;
 	bool ok = false;
 	if (!_stricmp(op, "record") && integer(value) && (value == 0 || value == 1))
@@ -953,12 +953,12 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	else if (!_stricmp(op, "range"))
 	{
 		int first, last;
-		if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "off"))
+		if (args->ArgC() == 3 && !_stricmp(args->ArgV(2), "off"))
 		{
 			g_SceneRangeEnabled = false;
 			ok = true;
 		}
-		else if (args->ArgC() == 5 && parseInteger(3, first) && parseInteger(4, last) && first >= 0 &&
+		else if (args->ArgC() == 4 && parseInteger(2, first) && parseInteger(3, last) && first >= 0 &&
 		         last >= first)
 		{
 			g_SceneRangeFirst = first;
@@ -1022,11 +1022,13 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			}
 		}
 	}
-	else if (!_stricmp(op, "pose"))
+	else if (!_stricmp(op, "players"))
 	{
 		int entity;
-		if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "all")) ok = SceneSelectPosePlayer(-1);
-		else if (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "none")) ok = SceneSelectPosePlayer(0);
+		if (args->ArgC() == 3 && !_stricmp(args->ArgV(2), "all"))
+			ok = SceneSelectPosePlayer(-1);
+		else if (args->ArgC() == 3 && !_stricmp(args->ArgV(2), "none"))
+			ok = SceneSelectPosePlayer(0);
 		else ok = integer(entity) && entity >= 0 && SceneSelectPosePlayer(entity);
 	}
 	else if (!_stricmp(op, "projectiles") || !_stricmp(op, "weapons") || !_stricmp(op, "cosmetics") ||
@@ -1053,11 +1055,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			ok = true;
 		}
 	}
-	else if (!_stricmp(op, "animation") && args->ArgC() == 4)
+	else if (!_stricmp(op, "animation") && args->ArgC() == 3)
 	{
-		if (!_stricmp(args->ArgV(3), "smooth") || !_stricmp(args->ArgV(3), "nearest"))
+		if (!_stricmp(args->ArgV(2), "smooth") || !_stricmp(args->ArgV(2), "nearest"))
 		{
-			g_SceneSmoothAnimation = !_stricmp(args->ArgV(3), "smooth");
+			g_SceneSmoothAnimation = !_stricmp(args->ArgV(2), "smooth");
 			SceneCacheFrame(false);
 			ok = true;
 		}
@@ -1073,43 +1075,45 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			ok = true;
 		}
 	}
-	else if (!_stricmp(op, "clear") && args->ArgC() == 3)
+	else if (!_stricmp(op, "clear") && args->ArgC() == 2)
 	{
 		SceneClearHistory();
 		ok = true;
 	}
-	else if (!_stricmp(op, "status") && args->ArgC() <= 3)
+	else if (!_stricmp(op, "status") && args->ArgC() <= 2)
 		ok = true;
-	else if (!_stricmp(op, "help") && args->ArgC() == 3)
+	else if (!_stricmp(op, "help") && args->ArgC() <= 2)
 	{
 		advancedfx::Message(
-		    "mirv_campath cache range <start tick> <end tick>|off\nmirv_campath cache record "
-		    "0|1\nmirv_campath cache preview 0|1\nmirv_campath cache goto <demo "
-		    "tick>\nmirv_campath cache step <signed ticks>\nmirv_campath cache rate <-10000..10000 "
-		    "ticks/sec; 0 stops>\nmirv_campath cache pose <all|none|player entity index; 0 disables player "
-		    "capture>\n"
-		    "mirv_campath cache projectiles 0|1\nmirv_campath cache weapons 0|1\nmirv_campath cache "
-		    "cosmetics 0|1\nmirv_campath cache ragdolls 0|1\nmirv_campath cache gibs 0|1\nmirv_campath cache "
-		    "buildings 0|1\nmirv_campath cache props 0|1\nmirv_campath cache animation "
-			"smooth|nearest\nmirv_campath cache models "
-		    "0|1\nmirv_campath cache clear\nmirv_campath cache "
-		    "status\n"
-		    "Cached keys: Right Ctrl + Left/Right: ticks; Up/Down: seconds; Home/End: retained bounds.\n"
-		    "Unmodified preview keys retain camera keyframe selection and travel.\n");
-		ok = true;
+		    "Scene cache commands:\n"
+		    "  mirv_cache record <0|1> - Record while the actual demo plays forward.\n"
+		    "  mirv_cache players <all|none|entity index> - Player bodies; optional individual-player "
+		    "scope.\n"
+		    "  mirv_cache <projectiles|weapons|cosmetics|ragdolls|gibs|buildings|props> <0|1>\n"
+		    "  mirv_cache range <start tick> <end tick>|off - Inclusive capture bounds.\n"
+		    "  mirv_cache clear - Clear recorded history.\n"
+		    "  mirv_cache preview <0|1> - Preview retained history without seeking the demo.\n"
+		    "  mirv_cache goto <tick> | step <signed ticks>\n"
+		    "  mirv_cache rate <-10000..10000> - Cached ticks/sec; 0 stops.\n"
+		    "  mirv_cache animation <smooth|nearest>\n"
+		    "  mirv_cache models <0|1>\n"
+		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
+		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
+		return;
 	}
 	if (!ok)
-		advancedfx::Warning("Scene cache command rejected. Use preview/record 0|1, goto <demo tick>, step "
-		                    "<signed ticks>, rate <-10000..10000 ticks/sec>, pose <all|none|player index>, "
-		                    "projectiles/weapons/cosmetics/ragdolls/gibs/buildings/props 0|1, animation "
-		                    "smooth|nearest, models "
-		                    "0|1, range <start tick> <end tick>|off, clear or status. Navigation "
-		                    "requires recorded bounds and never seeks the demo.\n");
+	{
+		advancedfx::Warning("Scene cache command rejected. Use mirv_cache help for syntax.\n");
+		return;
+	}
 	advancedfx::Message("Scene cache: record %d, preview %d; rate %d ticks/s; tick %d; %zu frames, %.2f MiB "
 	                    "payload; coverage at cursor %s.\n",
 	                    int(g_SceneRecord), int(g_ScenePreview), g_SceneScrubRate, int(g_SequencerFrame),
 	                    g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0,
 	                    SceneCacheView() ? "yes" : "no");
+	if (_stricmp(op, "status"))
+		return;
+
 	advancedfx::Message("Scene pose: player target %d (-1=all), user %d; captured %llu, unavailable %llu; "
 	                    "models %d; projectiles %d; weapons %d; cosmetics %d; ragdolls %d; gibs %d; "
 	                    "buildings %d; props %d; animation %s. %s\n",
@@ -4881,22 +4885,84 @@ static void DrawPlayerRepairEditor(int playhead)
 	DrawPlayerAngleDiagnostic(playhead);
 	ImGui::EndTabItem();
 }
-static void DrawSequencerDetails(int playhead)
+static bool SceneCategoryCheckbox(const char *label, bool &value, int category, const char *hint)
 {
-	auto &state = g_SequencerTimeline;
-	static ImGui::FileBrowser indexDialog(ImGuiFileBrowserFlags_CloseOnEsc |
-	                                      ImGuiFileBrowserFlags_EditPathString);
-	static ImGui::FileBrowser loadDialog(ImGuiFileBrowserFlags_CloseOnEsc |
-	                                     ImGuiFileBrowserFlags_EditPathString);
-	static ImGui::FileBrowser saveDialog(
-	    ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_EditPathString |
-	    ImGuiFileBrowserFlags_EnterNewFilename | ImGuiFileBrowserFlags_CreateNewDir);
-	if (!ImGui::BeginTabBar("Sequencer details"))
-		return;
-	if (ImGui::BeginTabItem("Scene Cache"))
+	const auto rgb = advancedfx::SceneCache::CategoryColor(category);
+	ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(rgb[0] / 255.f, rgb[1] / 255.f, rgb[2] / 255.f, 1));
+	const bool changed = ImGui::Checkbox(label, &value);
+	ImGui::PopStyleColor();
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", hint);
+	return changed;
+}
+static void DrawSceneCacheMenu(int playhead)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	ImGui::Text("%s | %zu frames | %.2f MiB", g_SceneRecord ? "Recording / armed" : "Stopped",
+	            g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0);
+	if (g_SceneCache.Count() > 1)
+		ImGui::TextDisabled("Retained: %.2f seconds (gaps may exist)",
+		                    g_SceneCache.Frames().back().DemoTime - g_SceneCache.Frames().front().DemoTime);
+	if (ImGui::CollapsingHeader("Capture", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
-		ImGui::Checkbox("Record scene history", &g_SceneRecord);
+		ImGui::TextDisabled("Choose categories; checked colors match the preview.");
+		if (ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
+		{
+			bool players = g_ScenePoseEntity != 0;
+			ImGui::TableNextColumn();
+			if (SceneCategoryCheckbox("Player models", players, 0,
+			                          "Full player bodies; defaults to all players. Off retains lightweight "
+			                          "player bounds. Optional filtering also scopes held gear."))
+				SceneSelectPosePlayer(players ? -1 : 0);
+			ImGui::TableNextColumn();
+			SceneCategoryCheckbox("Projectiles", g_SceneProjectiles, 1,
+			                      "Visible projectile models; no particle trails.");
+			ImGui::TableNextColumn();
+			SceneCategoryCheckbox(
+			    "Weapons", g_SceneWeapons, 2,
+			    "Held and dropped weapons. Loose items capture independently of player filtering.");
+			ImGui::TableNextColumn();
+			SceneCategoryCheckbox(
+			    "Cosmetics", g_SceneCosmetics, 3,
+			    "Worn and dropped cosmetics. Corpse-attached items require their host to be captured.");
+			ImGui::TableNextColumn();
+			SceneCategoryCheckbox("Ragdolls", g_SceneRagdolls, 5,
+			                      "All visible ragdoll models; independent of player filtering.");
+			ImGui::TableNextColumn();
+			SceneCategoryCheckbox("Gibs", g_SceneGibs, 6,
+			                      "Recognized model-based gibs; independent of player filtering.");
+			ImGui::TableNextColumn();
+			SceneCategoryCheckbox("Buildings", g_SceneBuildings, 7,
+			                      "Sentries, dispensers, teleporters and sappers.");
+			ImGui::TableNextColumn();
+			SceneCategoryCheckbox(
+			    "Props / objectives", g_SceneProps, 8,
+			    "Model-based doors, payloads, intelligence and props. Brush doors currently use bounds.");
+			ImGui::EndTable();
+		}
+		if (g_ScenePoseEntity && ImGui::TreeNode("Player filter (optional)"))
+		{
+			if (ImGui::BeginCombo("Player scope", g_ScenePoseName.c_str()))
+			{
+				if (ImGui::Selectable("All players", g_ScenePoseEntity == -1))
+					SceneSelectPosePlayer(-1);
+				for (int index = 1; index <= Mirv_Tf2_GetMaxPlayers(); ++index)
+				{
+					char name[128];
+					int user = 0;
+					if (!Mirv_Tf2_GetPlayerInfo(index, name, sizeof(name), &user) || user <= 0)
+						continue;
+					ImGui::PushID(index);
+					if (ImGui::Selectable(name, index == g_ScenePoseEntity && user == g_ScenePoseUser))
+						SceneSelectPosePlayer(index);
+					ImGui::PopID();
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::TextWrapped("Only player bodies and held gear use this filter. Loose items, corpses, "
+			                   "projectiles, buildings and props use their own category toggles.");
+			ImGui::TreePop();
+		}
 		ImGui::Checkbox("Capture tick range", &g_SceneRangeEnabled);
 		if (g_SceneRangeEnabled)
 		{
@@ -4909,68 +4975,27 @@ static void DrawSequencerDetails(int playhead)
 			if (ImGui::Button("End at playhead"))
 				g_SceneRangeLast = playhead;
 			const bool validRange = g_SceneRangeFirst >= 0 && g_SceneRangeLast >= g_SceneRangeFirst;
-			ImGui::BeginDisabled(!validRange);
-			if (ImGui::Button("Record range"))
-				g_SceneRecord = true;
-			ImGui::EndDisabled();
+
 			if (!validRange)
 				ImGui::TextDisabled("Start must be nonnegative; end must be at or after start.");
 			ImGui::TextWrapped("Play from before the range. Capture starts at its first observed tick and "
 			                   "stops automatically at/past its end. This does not seek or start the demo.");
 		}
-		ImGui::TextDisabled("Cache navigation: Right Ctrl + arrows / Home / End");
-		ImGui::TextWrapped(
-		    "Enable Cached preview above the timeline, then scrub its playhead. Actual demo playback stays "
-			"independent. Live models remain visible. Players without a captured pose use proxy bounds.");
-		if (ImGui::BeginCombo("Capture player models",
-		                      g_ScenePoseEntity ? g_ScenePoseName.c_str() : "None (boxes only)"))
-		{
-			if (ImGui::Selectable("All players", g_ScenePoseEntity == -1)) SceneSelectPosePlayer(-1);
-			if (ImGui::Selectable("None (boxes only)", !g_ScenePoseEntity))
-				SceneSelectPosePlayer(0);
-			for (int index = 1; index <= Mirv_Tf2_GetMaxPlayers(); ++index)
-			{
-				char name[128];
-				int user = 0;
-				if (!Mirv_Tf2_GetPlayerInfo(index, name, sizeof(name), &user) || user <= 0)
-					continue;
-				ImGui::PushID(index);
-				if (ImGui::Selectable(name, index == g_ScenePoseEntity && user == g_ScenePoseUser))
-					SceneSelectPosePlayer(index);
-				ImGui::PopID();
-			}
-			ImGui::EndCombo();
-		}
-		ImGui::Checkbox("Capture projectile models", &g_SceneProjectiles);
-		ImGui::Checkbox("Capture weapon models", &g_SceneWeapons);
-		ImGui::Checkbox("Capture cosmetic models", &g_SceneCosmetics);
-		ImGui::Checkbox("Capture ragdoll models", &g_SceneRagdolls);
-		ImGui::Checkbox("Capture gib models", &g_SceneGibs);
-		ImGui::Checkbox("Capture building models", &g_SceneBuildings);
-		ImGui::Checkbox("Capture prop / objective models", &g_SceneProps);
-		if (g_SceneBuildings || g_SceneProps)
-			ImGui::TextWrapped("Captures visible sentries, dispensers, teleporters and model-based "
-			                   "doors/carts/intelligence. Brush doors use recorded, rotated proxy bounds. "
-			                   "Static world geometry is not duplicated.");
-		if (g_SceneRagdolls || g_SceneGibs)
-			ImGui::TextWrapped(
-			    "Captures visible corpses/gibs independently of player selection. Only observed "
-			    "poses are retained; physics, blood particles and dissolve effects are not replayed.");
-		if (g_SceneWeapons || g_SceneCosmetics)
-			ImGui::TextWrapped("Player selection filters held gear. Loose weapons/cosmetics are captured "
-			                   "independently; corpse-attached gear requires its ragdoll to be captured.");
-		ImGui::TextColored(ImVec4(80 / 255.f, 220 / 255.f, 1, 1), "Players: cyan");
+		const bool validRange =
+		    !g_SceneRangeEnabled || (g_SceneRangeFirst >= 0 && g_SceneRangeLast >= g_SceneRangeFirst);
+		ImGui::BeginDisabled(!g_SceneRecord && !validRange);
+		if (ImGui::Button(g_SceneRecord ? "Stop recording" : "Start recording"))
+			g_SceneRecord = !g_SceneRecord;
+		ImGui::EndDisabled();
 		ImGui::SameLine();
-		ImGui::TextColored(ImVec4(1, 80 / 255.f, 70 / 255.f, 1), "Projectiles: red");
-		ImGui::TextColored(ImVec4(70 / 255.f, 235 / 255.f, 140 / 255.f, 1), "Weapons: green");
-		ImGui::SameLine();
-		ImGui::TextColored(ImVec4(210 / 255.f, 120 / 255.f, 1, 1), "Cosmetics: purple");
-		ImGui::TextColored(ImVec4(180 / 255.f, 190 / 255.f, 200 / 255.f, 1), "Ragdolls: gray");
-		ImGui::SameLine();
-		ImGui::TextColored(ImVec4(1, 145 / 255.f, 65 / 255.f, 1), "Gibs: orange");
-		ImGui::TextColored(ImVec4(1, 210 / 255.f, 70 / 255.f, 1), "Buildings: yellow");
-		ImGui::SameLine();
-		ImGui::TextColored(ImVec4(120 / 255.f, 155 / 255.f, 1, 1), "Props/objectives: blue");
+		if (ImGui::Button("Clear history"))
+			SceneClearHistory();
+		ImGui::TextDisabled("Play the actual demo forward to capture. Settings affect future frames.");
+	}
+	if (ImGui::CollapsingHeader("Preview", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		ImGui::TextWrapped("Enable Cached preview above the timeline, then scrub its playhead. Right Ctrl + "
+		                   "arrows / Home / End also navigate retained history.");
 		if (ImGui::Checkbox("Smooth cached animation", &g_SceneSmoothAnimation))
 			SceneCacheFrame(false);
 		bool models = g_SceneDrawModels.load();
@@ -4980,22 +5005,22 @@ static void DrawSequencerDetails(int playhead)
 			++g_SceneDrawEpoch;
 			SceneModelStatus(models ? "Cached model drawing enabled." : "Cached model drawing disabled.");
 		}
-		ImGui::TextWrapped("Wireframe poses use TF2's studio renderer, independently of Show path. Gear "
-		                   "capture includes loose items and follows player selection for held items. "
-		                   "First-person viewmodels, facial flexes, particle trails and historical "
-		                   "simulation are not captured yet. Between ticks, animation uses the "
-		                   "local bone rotation, translation and scale interpolation. Unsupported transforms "
-		                   "use nearest recorded poses. Disable Smooth cached animation to compare.");
-		if ((g_ScenePoseEntity || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneBuildings ||
-		     g_SceneProps || g_SceneWeapons || g_SceneCosmetics) &&
-		    !g_SceneRecord)
-			ImGui::TextDisabled("Enable Record scene history and play forward to capture poses.");
-		ImGui::Text("Pose captures: %llu | Unavailable: %llu", g_ScenePoseCaptured, g_ScenePoseFailures);
-		ImGui::Text("Capture ms: last %.3f | mean %.3f | peak %.3f (%llu frames)", g_SceneCaptureMs,
-		            g_SceneCaptureFrames ? g_SceneCaptureTotalMs / g_SceneCaptureFrames : 0,
-		            g_SceneCapturePeakMs, g_SceneCaptureFrames);
-		ImGui::Text("Unique retained poses: %zu | Unchanged poses reused: %zu", g_SceneCache.PoseCount(),
-		            g_SceneCache.ReusedPoses());
+		ImGui::TextWrapped("Live models remain visible. Brush doors use proxy bounds; particles, audio and "
+		                   "simulation are not cached.");
+		if (g_ScenePreview && !SceneCacheView())
+			ImGui::TextDisabled("No recorded coverage at this playhead.");
+	}
+	if (ImGui::CollapsingHeader("Memory"))
+	{
+		int budget = int(g_SceneCache.Limit() / 1048576);
+		if (ImGui::InputInt("Scene budget MiB", &budget))
+		{
+			budget = std::clamp(budget, 1, 1024);
+			g_SceneCache.SetLimit(size_t(budget) * 1048576);
+			SceneCacheFrame(false);
+		}
+		ImGui::TextWrapped(
+		    "Oldest frames are evicted at the budget. More categories and longer captures need more memory.");
 		const double observedSpan = g_SceneCaptureLastTime - g_SceneCaptureFirstTime;
 		if (g_SceneCaptureFrames > 1 && observedSpan > 0)
 		{
@@ -5013,6 +5038,15 @@ static void DrawSequencerDetails(int playhead)
 		}
 		else
 			ImGui::TextDisabled("Record a short sample to estimate memory for longer captures.");
+	}
+	if (ImGui::CollapsingHeader("Diagnostics"))
+	{
+		ImGui::Text("Pose captures: %llu | Unavailable: %llu", g_ScenePoseCaptured, g_ScenePoseFailures);
+		ImGui::Text("Capture ms: last %.3f | mean %.3f | peak %.3f (%llu frames)", g_SceneCaptureMs,
+		            g_SceneCaptureFrames ? g_SceneCaptureTotalMs / g_SceneCaptureFrames : 0,
+		            g_SceneCapturePeakMs, g_SceneCaptureFrames);
+		ImGui::Text("Unique retained poses: %zu | Unchanged poses reused: %zu", g_SceneCache.PoseCount(),
+		            g_SceneCache.ReusedPoses());
 		unsigned pending = 0, peak = 0;
 		Mirv_Tf2_SceneRenderStatus(pending, peak);
 		ImGui::Text("Pending cached draws: %u (peak %u)", pending, peak);
@@ -5034,23 +5068,25 @@ static void DrawSequencerDetails(int playhead)
 		if (g_ScenePreview)
 			if (auto status = std::atomic_load(&g_SceneModelStatus))
 				ImGui::TextWrapped("%s", status->c_str());
-		if (ImGui::Button("Clear scene history"))
-			SceneClearHistory();
-		static int budget = 64;
-		if (ImGui::InputInt("Scene budget MiB", &budget))
-		{
-			budget = std::clamp(budget, 1, 1024);
-			g_SceneCache.SetLimit(size_t(budget) * 1024 * 1024);
-			SceneCacheFrame(false);
-		}
-		ImGui::Text("%zu frames; %.2f MiB payload", g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0);
-		if (g_SceneCache.Count() > 1) ImGui::Text("Retained span: %.2f seconds (gaps may exist)",
-			g_SceneCache.Frames().back().DemoTime - g_SceneCache.Frames().front().DemoTime);
-		if (g_ScenePoseEntity == -1 || g_SceneProjectiles || g_SceneWeapons || g_SceneCosmetics ||
-		    g_SceneRagdolls || g_SceneGibs || g_SceneBuildings || g_SceneProps)
-			ImGui::TextWrapped("More models consume the memory budget faster. Increase Scene budget MiB if the retained interval is too short.");
-		if (g_ScenePreview && !SceneCacheView())
-			ImGui::TextWrapped("No cached coverage at this playhead. Capture is unavailable here.");
+	}
+	ImGui::TextDisabled("Console: mirv_cache help");
+}
+
+static void DrawSequencerDetails(int playhead)
+{
+	auto &state = g_SequencerTimeline;
+	static ImGui::FileBrowser indexDialog(ImGuiFileBrowserFlags_CloseOnEsc |
+	                                      ImGuiFileBrowserFlags_EditPathString);
+	static ImGui::FileBrowser loadDialog(ImGuiFileBrowserFlags_CloseOnEsc |
+	                                     ImGuiFileBrowserFlags_EditPathString);
+	static ImGui::FileBrowser saveDialog(
+	    ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_EditPathString |
+	    ImGuiFileBrowserFlags_EnterNewFilename | ImGuiFileBrowserFlags_CreateNewDir);
+	if (!ImGui::BeginTabBar("Sequencer details"))
+		return;
+	if (ImGui::BeginTabItem("Scene Cache"))
+	{
+		DrawSceneCacheMenu(playhead);
 		ImGui::EndTabItem();
 	}
 	if (ImGui::BeginTabItem("Commands", nullptr, state.FocusCommands ? ImGuiTabItemFlags_SetSelected : 0))

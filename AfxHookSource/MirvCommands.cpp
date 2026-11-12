@@ -2236,22 +2236,24 @@ static void CampathPreview_PrintHelp()
 		"HOME/END jump without seeking the demo (unless assigned as toggleKey); use preview seek to seek.\n");
 }
 
+CON_COMMAND(mirv_cache, "Record and preview historical scene poses")
+{
+	if (args->ArgC() > 1 && _stricmp(args->ArgV(1), "help") && !g_Hook_VClient_RenderView.IsInstalled())
+	{
+		Tier0_Warning("Error: Hook not installed.\n");
+		return;
+	}
+	AfxHookSource::CameraOverlay::SceneCacheConsole(args);
+}
+
 CON_COMMAND(mirv_campath, "camera paths")
 {
-	if (args->ArgC() == 1)
-		Tier0_Msg("mirv_campath cache [record|preview|goto|step|rate|pose|projectiles|weapons|cosmetics|animation|models|clear|status|help] - Historical scene navigation.\n");
-
 	if (!g_Hook_VClient_RenderView.IsInstalled())
 	{
 		Tier0_Warning("Error: Hook not installed.\n");
 		return;
 	}
 
-	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "cache"))
-	{
-		AfxHookSource::CameraOverlay::SceneCacheConsole(args);
-		return;
-	}
 	if (args->ArgC() == 2 && !_stricmp(args->ArgV(1), "add") &&
 		AfxHookSource::CameraOverlay::SceneCachePreviewActive())
 	{
