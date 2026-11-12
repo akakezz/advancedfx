@@ -4934,7 +4934,7 @@ namespace
 {
 struct ScenePlayerFields
 {
-	int Life = -1, Effects = -1, Team = -1;
+	int Life = -1, Effects = -1, Team = -1, MoveParent = -1;
 };
 static std::map<const Tf2FixRecvTable *, ScenePlayerFields> g_ScenePlayerFields;
 static ScenePlayerFields SceneFindPlayerFields(const Tf2FixRecvTable *table)
@@ -4962,6 +4962,8 @@ static ScenePlayerFields SceneFindPlayerFields(const Tf2FixRecvTable *table)
 				fields.Effects = offset + prop.Offset;
 			if (fields.Team < 0 && !std::strcmp(prop.Name, "m_iTeamNum"))
 				fields.Team = offset + prop.Offset;
+			if (fields.MoveParent < 0 && !std::strcmp(prop.Name, "moveparent"))
+				fields.MoveParent = offset + prop.Offset;
 		}
 		if (!base)
 			break;
@@ -4971,13 +4973,8 @@ static ScenePlayerFields SceneFindPlayerFields(const Tf2FixRecvTable *table)
 	return fields;
 }
 } // namespace
-bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass)
+static const ScenePlayerFields &SceneFieldsForTable(const Tf2FixRecvTable *table)
 {
-	if (!object || !clientClass)
-		return true; // Unknown metadata: retain the normal render checks.
-	const auto table = static_cast<const Tf2FixClientClass *>(clientClass)->Table;
-	if (!table)
-		return true;
 	auto found = g_ScenePlayerFields.find(table);
 	if (found == g_ScenePlayerFields.end())
 	{
@@ -4985,7 +4982,40 @@ bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass)
 			g_ScenePlayerFields.clear();
 		found = g_ScenePlayerFields.emplace(table, SceneFindPlayerFields(table)).first;
 	}
-	const auto &fields = found->second;
+	return found->second;
+}
+bool Mirv_Tf2_SceneEntityVisible(const void *object, const void *clientClass)
+{
+	if (!object || !clientClass) return true;
+	const auto table = static_cast<const Tf2FixClientClass *>(clientClass)->Table;
+	if (!table) return true;
+	const int offset = SceneFieldsForTable(table).Effects;
+	if (offset < 0) return true;
+	int effects;
+	std::memcpy(&effects, static_cast<const unsigned char *>(object) + offset, sizeof(effects));
+	return !(effects & 0x20); // EF_NODRAW applies to loose gear/debris as well as players.
+}
+bool Mirv_Tf2_SceneMoveParent(const void *object, const void *clientClass, std::uint32_t &parent)
+{
+	if (!object || !clientClass)
+		return false;
+	const auto table = static_cast<const Tf2FixClientClass *>(clientClass)->Table;
+	if (!table)
+		return false;
+	const int offset = SceneFieldsForTable(table).MoveParent;
+	if (offset < 0)
+		return false;
+	std::memcpy(&parent, static_cast<const unsigned char *>(object) + offset, sizeof(parent));
+	return true;
+}
+bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass)
+{
+	if (!object || !clientClass)
+		return true; // Unknown metadata: retain the normal render checks.
+	const auto table = static_cast<const Tf2FixClientClass *>(clientClass)->Table;
+	if (!table)
+		return true;
+	const auto &fields = SceneFieldsForTable(table);
 	const auto bytes = static_cast<const unsigned char *>(object);
 	if (fields.Life >= 0 && bytes[fields.Life] != 0)
 		return false; // LIFE_ALIVE = 0; life state is a byte.

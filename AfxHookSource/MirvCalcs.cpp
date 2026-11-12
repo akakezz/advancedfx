@@ -10124,12 +10124,14 @@ static bool SceneBuildMatrices(const advancedfx::SceneCache::Entity &entity,
 	else
 	{
 		SOURCESDK::matrix3x4_t ownerBones[Cache::MaxBones];
-		const bool merge = owner && owner->Category == 0 && entity.OwnerIdentity == owner->Identity &&
-		                   owner->ModelPose && Cache::ValidPose(*owner->ModelPose) &&
-		                   !pose.ModelInfo->BoneNames.empty() &&
-		                   !owner->ModelPose->ModelInfo->BoneNames.empty() &&
-		                   !owner->ModelPose->ModelInfo->MergeBones.empty() &&
-		                   SceneBuildMatrices(*owner, nullptr, ownerBones);
+		const bool merge =
+		    owner &&
+		    (owner->Category == MIRV_TF2_ENTITY_PLAYER || owner->Category == MIRV_TF2_ENTITY_RAGDOLL) &&
+		    entity.OwnerIdentity == owner->Identity && owner->ModelPose &&
+		    Cache::ValidPose(*owner->ModelPose) && !pose.ModelInfo->BoneNames.empty() &&
+		    !owner->ModelPose->ModelInfo->BoneNames.empty() &&
+		    !owner->ModelPose->ModelInfo->MergeBones.empty() &&
+		    SceneBuildMatrices(*owner, nullptr, ownerBones);
 		SOURCESDK::matrix3x4_t delta;
 		if (std::any_of(pose.Fixed.begin(), pose.Fixed.end(), [](const auto &bone) { return bone.World; }))
 		{
@@ -10498,7 +10500,7 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 	for (auto object = iface->FirstEntity(); object && scanned++ < 4096; object = iface->NextEntity(object))
 	{
 		const int index = iface->GetEntIndex(object);
-		if (index == 0 || ((index < 0 || index >= 2048) && !ragdolls && !gibs))
+		if (index == 0 || ((index < 0 || index >= 2048) && !ragdolls && !gibs && !weapons && !cosmetics))
 			continue;
 		auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
 		auto networkable = unknown->GetClientNetworkable();
@@ -10532,7 +10534,10 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 			if (handle == 0xffffffff || !(handle & SOURCESDK_TF2_ENT_ENTRY_MASK) ||
 			    (networked && (handle & SOURCESDK_TF2_ENT_ENTRY_MASK) != static_cast<unsigned>(index)))
 				continue;
-			const void *clientClass = networked ? SceneInterfaceCall<const void *>(networkable, 2) : nullptr;
+			const void *clientClass =
+			    networkable ? SceneInterfaceCall<const void *>(networkable, 2) : nullptr;
+			if (!Mirv_Tf2_SceneEntityVisible(object, clientClass))
+				continue;
 			const char *name = nullptr;
 			if (clientClass)
 				std::memcpy(&name, static_cast<const char *>(clientClass) + 2 * sizeof(void *), sizeof(name));
@@ -10546,7 +10551,8 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 				category = Mirv_Tf2_ToolCategory(iface, object, int(handle & SOURCESDK_TF2_ENT_ENTRY_MASK),
 				                                 false, true);
 			}
-			if (gibs && category == MIRV_TF2_ENTITY_OTHER)
+			bool looseModel = false;
+			if ((gibs || weapons || cosmetics) && category == MIRV_TF2_ENTITY_OTHER)
 			{
 				// Some break-model gibs report only C_BaseAnimating/physics classes.
 				auto info = Mirv_Tf2_GetModelInfo();
@@ -10563,10 +10569,17 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 					path[i] = 0;
 					if (strstr(path, "/gibs/"))
 						category = MIRV_TF2_ENTITY_GIB;
+					else if (strstr(path, "/weapons/"))
+						category = MIRV_TF2_ENTITY_WEAPON;
+					else if (strstr(path, "/player/items/") || strstr(path, "/bots/items/"))
+						category = MIRV_TF2_ENTITY_COSMETIC;
+					looseModel = !networked &&
+					             (category == MIRV_TF2_ENTITY_WEAPON || category == MIRV_TF2_ENTITY_COSMETIC);
 				}
 			}
-			if (!networked && category != MIRV_TF2_ENTITY_RAGDOLL && category != MIRV_TF2_ENTITY_GIB)
-				continue; // Client-only weapons/props are outside this pass.
+			if (!networked && category != MIRV_TF2_ENTITY_RAGDOLL && category != MIRV_TF2_ENTITY_GIB &&
+			    category != MIRV_TF2_ENTITY_WEAPON && category != MIRV_TF2_ENTITY_COSMETIC)
+				continue; // Unrecognized client-only props stay outside this pass.
 			if (category == MIRV_TF2_ENTITY_RAGDOLL || category == MIRV_TF2_ENTITY_GIB)
 			{
 				if (!(category == MIRV_TF2_ENTITY_RAGDOLL ? ragdolls : gibs))
@@ -10581,24 +10594,36 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 			{
 				if ((!weapons && !cosmetics) || iface->GetOwningWeaponEntIndex(index) > 0)
 					continue;
-				// Only player-owned third-person gear belongs to this pass.
+				// Visible third-person gear may be held, corpse-attached or loose.
 				// Inventory weapons fail ShouldDraw; bounded traversal tolerates
 				// nested ownership and malformed/cyclic owner chains.
+				row.HasMoveParent = Mirv_Tf2_SceneMoveParent(object, clientClass, row.MoveParent);
+				bool resolved = looseModel;
 				auto owner = object;
-				for (int depth = 0; depth < 8; ++depth)
+				for (int depth = 0; !resolved && depth < 8; ++depth)
 				{
 					owner = iface->GetOwnerEntity(owner);
-					if (!owner || owner == object)
+					if (!owner)
+					{
+						resolved = true;
+						break;
+					}
+					if (owner == object)
 						break;
 					if (!iface->IsPlayer(owner))
 						continue;
 					int user = 0;
-					if (Mirv_Tf2_GetPlayerInfo(iface->GetEntIndex(owner), nullptr, 0, &user) && user > 0)
+					resolved =
+					    Mirv_Tf2_GetPlayerInfo(iface->GetEntIndex(owner), nullptr, 0, &user) && user > 0;
+					if (resolved)
 						row.Snapshot.OwnerIdentity = static_cast<unsigned int>(user);
 					break;
 				}
-				if (!row.Snapshot.OwnerIdentity)
-					continue;
+				if (!resolved)
+					continue; // Cyclic/unbounded owner chain.
+				if (row.HasMoveParent &&
+				    (row.MoveParent == 0xffffffff || !(row.MoveParent & SOURCESDK_TF2_ENT_ENTRY_MASK)))
+					row.Snapshot.OwnerIdentity = 0; // Detached even if gameplay ownership is retained.
 				if (category == MIRV_TF2_ENTITY_OTHER)
 					category = Mirv_Tf2_ToolCategory(iface, object, index, false);
 				if (!((category == MIRV_TF2_ENTITY_WEAPON && weapons) ||
@@ -10625,10 +10650,30 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 		if (valid)
 			out.push_back(std::move(row));
 	}
+	std::map<std::uint32_t, std::uint64_t> attachmentHosts;
 	std::vector<std::uint64_t> owners;
 	for (const auto &row : out)
-		if (row.Snapshot.Category == MIRV_TF2_ENTITY_PLAYER)
+		if (row.Snapshot.Category == MIRV_TF2_ENTITY_PLAYER ||
+		    row.Snapshot.Category == MIRV_TF2_ENTITY_RAGDOLL)
+		{
 			owners.push_back(row.Snapshot.Identity);
+			std::uint32_t handle = 0xffffffff;
+			const void *reference =
+			    reinterpret_cast<CMirvTf2ClientUnknown *>(row.ObservedObject)->GetRefEHandle();
+			if (reference)
+				std::memcpy(&handle, reference, sizeof(handle));
+			if (handle != 0xffffffff)
+				attachmentHosts.emplace(handle, row.Snapshot.Identity);
+		}
+	for (auto &row : out)
+		if (row.HasMoveParent)
+			if (auto parent = attachmentHosts.find(row.MoveParent); parent != attachmentHosts.end())
+				row.Snapshot.OwnerIdentity = parent->second;
+			else if (!row.Snapshot.OwnerIdentity && row.MoveParent != 0xffffffff &&
+			         (row.MoveParent & SOURCESDK_TF2_ENT_ENTRY_MASK))
+				row.Snapshot.OwnerIdentity =
+				    (std::uint64_t(1) << 63) |
+				    row.MoveParent; // Unretained attachment host: orphan filter suppresses it.
 	std::sort(owners.begin(), owners.end());
 	const auto orphan = [&](const MirvTf2SceneEntity &row) {
 		return row.Snapshot.OwnerIdentity &&

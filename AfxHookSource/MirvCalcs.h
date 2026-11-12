@@ -419,6 +419,8 @@ bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float 
 
 // Read-only TF2 receive-table visibility; no repair/capture hooks are installed.
 bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass);
+bool Mirv_Tf2_SceneEntityVisible(const void *object, const void *clientClass);
+bool Mirv_Tf2_SceneMoveParent(const void *object, const void *clientClass, std::uint32_t &parent);
 // Opt-in scene-pose capture, including observed client-only debris. Does not change AGR recording mode.
 // The cache owns immutable value data only; engine pointers are resolved for each draw.
 bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status,
@@ -431,6 +433,8 @@ struct MirvTf2SceneEntity
 {
 	int Index = -1;
 	void *ObservedObject = nullptr; // Engine-thread capture only; never stored in history.
+	bool HasMoveParent = false;
+	std::uint32_t MoveParent = 0xffffffff; // Temporary attachment metadata, not history.
 	advancedfx::SceneCache::Entity Snapshot;
 };
 // One tools-list traversal per observed tick, with serial-aware transient identities.

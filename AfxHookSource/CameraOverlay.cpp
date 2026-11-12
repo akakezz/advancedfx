@@ -251,9 +251,8 @@ void SceneCacheFrame(bool capture)
 		frame.ClientTime = g_MirvTime.GetTime();
 		bool poseTargetSeen = false;
 		std::vector<MirvTf2SceneEntity> entities;
-		Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, g_ScenePoseEntity && g_SceneWeapons,
-		                              g_ScenePoseEntity && g_SceneCosmetics, g_SceneRagdolls, g_SceneGibs,
-		                              entities);
+		Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls,
+		                              g_SceneGibs, entities);
 		unsigned int playerPoses = 0, projectilePoses = 0, weaponPoses = 0, cosmeticPoses = 0, failures = 0;
 		unsigned int ragdollPoses = 0, gibPoses = 0;
 		std::string lastIssue;
@@ -267,7 +266,7 @@ void SceneCacheFrame(bool capture)
 			const bool gear =
 			    entity.Category == MIRV_TF2_ENTITY_WEAPON || entity.Category == MIRV_TF2_ENTITY_COSMETIC;
 			if (gear &&
-			    !(g_ScenePoseEntity == -1 ||
+			    !(entity.OwnerIdentity == 0 || (entity.OwnerIdentity >> 63) || g_ScenePoseEntity == -1 ||
 			      (g_ScenePoseEntity > 0 && entity.OwnerIdentity == static_cast<unsigned>(g_ScenePoseUser))))
 				continue;
 			if ((player && (g_ScenePoseEntity == -1 || selected)) ||
@@ -301,7 +300,8 @@ void SceneCacheFrame(bool capture)
 			}
 			frame.Entities.push_back(std::move(entity));
 		}
-		if (g_ScenePoseEntity || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs)
+		if (g_ScenePoseEntity || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneWeapons ||
+		    g_SceneCosmetics)
 		{
 			g_ScenePoseStatus = "Tick " + std::to_string(tick) + ": " + std::to_string(playerPoses) +
 			                    " player poses, " + std::to_string(projectilePoses) + " projectile poses, " +
@@ -4927,7 +4927,7 @@ static void DrawSequencerDetails(int playhead)
 			ImGui::EndCombo();
 		}
 		ImGui::Checkbox("Capture projectile models", &g_SceneProjectiles);
-		ImGui::Checkbox("Capture held weapon models", &g_SceneWeapons);
+		ImGui::Checkbox("Capture weapon models", &g_SceneWeapons);
 		ImGui::Checkbox("Capture cosmetic models", &g_SceneCosmetics);
 		ImGui::Checkbox("Capture ragdoll models", &g_SceneRagdolls);
 		ImGui::Checkbox("Capture gib models", &g_SceneGibs);
@@ -4935,8 +4935,9 @@ static void DrawSequencerDetails(int playhead)
 			ImGui::TextWrapped(
 			    "Captures visible corpses/gibs independently of player selection. Only observed "
 			    "poses are retained; physics, blood particles and dissolve effects are not replayed.");
-		if ((g_SceneWeapons || g_SceneCosmetics) && !g_ScenePoseEntity)
-			ImGui::TextDisabled("Choose one player or All players to capture their gear.");
+		if (g_SceneWeapons || g_SceneCosmetics)
+			ImGui::TextWrapped("Player selection filters held gear. Loose weapons/cosmetics are captured "
+			                   "independently; corpse-attached gear requires its ragdoll to be captured.");
 		ImGui::TextColored(ImVec4(80 / 255.f, 220 / 255.f, 1, 1), "Players: cyan");
 		ImGui::SameLine();
 		ImGui::TextColored(ImVec4(1, 80 / 255.f, 70 / 255.f, 1), "Projectiles: red");
@@ -4956,12 +4957,14 @@ static void DrawSequencerDetails(int playhead)
 			SceneModelStatus(models ? "Cached model drawing enabled." : "Cached model drawing disabled.");
 		}
 		ImGui::TextWrapped("Wireframe poses use TF2's studio renderer, independently of Show path. Gear "
-		                   "capture follows the player selection. "
+		                   "capture includes loose items and follows player selection for held items. "
 		                   "First-person viewmodels, facial flexes, particle trails and historical "
 		                   "simulation are not captured yet. Between ticks, animation uses the "
 		                   "local bone rotation, translation and scale interpolation. Unsupported transforms "
 		                   "use nearest recorded poses. Disable Smooth cached animation to compare.");
-		if ((g_ScenePoseEntity || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs) && !g_SceneRecord)
+		if ((g_ScenePoseEntity || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneWeapons ||
+		     g_SceneCosmetics) &&
+		    !g_SceneRecord)
 			ImGui::TextDisabled("Enable Record scene history and play forward to capture poses.");
 		ImGui::Text("Pose captures: %llu | Unavailable: %llu", g_ScenePoseCaptured, g_ScenePoseFailures);
 		ImGui::Text("Capture ms: last %.3f | mean %.3f | peak %.3f (%llu frames)", g_SceneCaptureMs,

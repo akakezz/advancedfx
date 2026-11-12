@@ -1528,13 +1528,13 @@ Input release or focus handoff stops an active scrub rate.
 
 In the sequencer's **Scene Cache** tab, set **Capture player models** to
 **All players**, or choose one player to reduce memory usage. Enable
-**Capture projectile models**, **Capture held weapon models**, and
+**Capture projectile models**, **Capture weapon models**, and
 **Capture cosmetic models** as wanted, then **Record scene history** and play
 forward through the shot. Freeze actual playback, enable **Cached preview**,
 and scrub backward through the covered interval. **Draw cached models** shows
 the recorded wireframe poses with the overlay closed and **Show path** disabled.
 Live models remain visible, so at the latest tick the wireframes can overlap
-them. Players are cyan, projectiles red, held weapons green, cosmetics purple,
+them. Players are cyan, projectiles red, weapons green, cosmetics purple,
 ragdolls gray, and gibs orange.
 On engines without the verified
 `VMaterialSystem082` interface, model drawing falls back to the default studio
@@ -1559,11 +1559,11 @@ mirv_campath cache status
 `pose none` (or `pose 0`) disables player poses while retaining player boxes.
 `projectiles 0` excludes projectiles from future captures. `weapons 0|1` and
 `cosmetics 0|1` capture visible third-person gear for the selected player, or all
-players in **All players** mode. Both options default off. **None** disables
-player and attached-gear poses together; independent projectile capture can
-remain enabled. Gear options affect future frames and increase memory use.
-Hidden inventory weapons, first-person viewmodels/arms, dropped weapons and
-particle-only cosmetic effects are outside this pass.
+players in **All players** mode. Loose weapons/cosmetics capture independently
+of that player selection, including in **None** mode. Both options default off.
+Corpse-attached gear requires its ragdoll to be captured. Gear options affect
+future frames and increase memory use. Hidden inventory weapons, first-person
+viewmodels/arms and particle-only cosmetic effects are outside this pass.
 `mirv_campath cache models 0|1` controls model drawing independently of capture.
 Changing capture options affects future frames only; record the interval again
 for missing poses. All-player and category preferences persist across demo
@@ -1755,3 +1755,19 @@ older corpse. This does not infer ownership from corpse proximity or suppress
 an alive player just because a corpse appears (important for feigned deaths).
 Clear history and record the interval again to replace previously captured
 floating bodies; the visibility checks do not rewrite old cached frames.
+
+### Dropped weapons and cosmetics
+
+**Capture weapon models** and **Capture cosmetic models** also capture visible
+loose items, including recognized client-only physics props using weapon or
+player-item model paths. A dropped object can retain gameplay ownership; the
+read-only `moveparent` receive property identifies whether it is actually still
+attached. Detached items use independent cached poses. Items parented to a
+captured ragdoll use that corpse's recorded bone hierarchy, and disappear from
+preview if the required attachment host is unavailable. Hidden gear remaining
+attached to a dead player is still excluded.
+
+Loose items are captured for the enabled category regardless of player selection;
+this does not infer which player originally dropped a newly spawned object.
+Custom models outside recognized class/model paths may need another classifier
+rule. Clear and recapture existing history to include previously omitted drops.

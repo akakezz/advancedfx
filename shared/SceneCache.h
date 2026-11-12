@@ -135,7 +135,8 @@ public:
 	struct Entity
 	{
 		std::uint64_t Identity = 0; // Caller-supplied stable identity, never just a recycled entity index.
-		std::uint64_t OwnerIdentity = 0; // Stable player identity for attached gear.
+		std::uint64_t OwnerIdentity =
+		    0;            // Stable player/corpse identity for attached gear; 0 for loose items.
 		int Category = 0; // MirvTf2EntityCategory_t: player=0, projectile=1, weapon=2, cosmetic=3, other=4,
 		                  // ragdoll=5, gib=6.
 		float Origin[3]{}, Angles[3]{}, Mins[3]{}, Maxs[3]{};
@@ -332,7 +333,7 @@ public:
 		// floating at an independently interpolated position.
 		std::vector<std::uint64_t> owners;
 		for (const auto &entity : out.Entities)
-			if (entity.Category == 0)
+			if (entity.Category == 0 || entity.Category == 5)
 				owners.push_back(entity.Identity);
 		const auto orphan = [&](const Entity &entity) {
 			return entity.OwnerIdentity &&

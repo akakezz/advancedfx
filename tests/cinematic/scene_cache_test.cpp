@@ -134,4 +134,7 @@ int main()
   assert(Cache::CategoryColor(debrisCategory)!=Cache::CategoryColor(0)&&Cache::CategoryColor(5)!=Cache::CategoryColor(6));
  }
 
+ // A corpse can be the retained bone-merge host; its disappearance also removes gear.
+ {Cache corpseGear;Cache::Frame frame;Cache::Entity corpse;corpse.Category=5;corpse.Identity=(1ull<<63)|(3<<12)|50;Cache::Entity hat;hat.Category=3;hat.Identity=(1ull<<63)|(4<<12)|51;hat.OwnerIdentity=corpse.Identity;frame.Entities={corpse,hat};assert(corpseGear.Append(frame));frame.DemoTime=.05;frame.ClientTime=.05;frame.Entities[0].Origin[0]=10;frame.Entities[1].Origin[0]=10;assert(corpseGear.Append(frame));assert(corpseGear.Sample(.025,out)&&out.Entities.size()==2);frame.DemoTime=.1;frame.ClientTime=.1;frame.Entities.erase(frame.Entities.begin());assert(corpseGear.Append(frame));assert(corpseGear.Sample(.075,out)&&out.Entities.empty());}
+
 }
