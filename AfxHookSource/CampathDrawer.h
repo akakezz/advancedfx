@@ -94,7 +94,7 @@ private:
 	public:
 		CDynamicProperties(CCampathDrawer *drawer, CamPath *path, const std::string &name,
 		                   bool sceneOnly = false);
-		std::shared_ptr<const advancedfx::SceneCache::Frame> Scene;
+		std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneLines;
 		bool SceneOnly = false;
 		struct Text
 		{

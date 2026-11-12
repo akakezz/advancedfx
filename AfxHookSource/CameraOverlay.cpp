@@ -72,6 +72,7 @@ static void SceneModelStatus(const std::string &value)
 		std::atomic_store(&g_SceneModelStatus, std::make_shared<const std::string>(value));
 }
 static std::atomic_bool g_SceneDrawModels{true};
+static advancedfx::SceneCache::DrawingOptions g_SceneDrawing;
 static std::atomic_ullong g_SceneDrawEpoch{0};
 
 // Window/device callbacks only publish state; engine resources stay on the engine thread.
@@ -377,6 +378,33 @@ void SceneCacheFrame(bool capture)
 }
 // IStudioRender is an engine-thread front end: let Source queue its immutable
 // draw state. Calling that front end in a render-worker functor races the game.
+
+std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	static std::shared_ptr<const advancedfx::SceneCache::Frame> last;
+	static advancedfx::SceneCache::DrawingOptions previous;
+	static std::uint64_t revision = ~0ull;
+	static std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> lines;
+	const auto view = SceneCacheView();
+	if (!view || !SceneCanDrawModels())
+	{
+		last.reset();
+		lines.reset();
+		return {};
+	}
+	auto options = g_SceneDrawing;
+	options.Meshes = g_SceneDrawModels.load();
+	if (last != view || !(previous == options) || revision != g_SceneCache.Revision())
+	{
+		last = view;
+		previous = options;
+		revision = g_SceneCache.Revision();
+		lines = std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(
+		    g_SceneCache.Drawing(*view, options));
+	}
+	return lines;
+}
 void SceneCacheDrawModels()
 {
 	if (!g_SceneDrawModels.load() || !SceneCanDrawModels())
@@ -392,11 +420,16 @@ void SceneCacheDrawModels()
 	}
 	if (!view)
 		return;
-	if (std::none_of(view->Entities.begin(), view->Entities.end(),
-	                 [](const auto &entity) { return bool(entity.ModelPose); }))
+	if (std::none_of(view->Entities.begin(), view->Entities.end(), [](const auto &entity) {
+		    return entity.ModelPose && entity.ModelPose->ModelInfo->WireEdges.empty();
+	    }))
 	{
-		SceneModelStatus("No studio pose at this cursor. Enable a model category and record this interval "
-		                 "again. Brush models use proxy bounds.");
+		const bool brush = std::any_of(view->Entities.begin(), view->Entities.end(), [](const auto &entity) {
+			return entity.ModelPose && !entity.ModelPose->ModelInfo->WireEdges.empty();
+		});
+		SceneModelStatus(brush ? "Drawing cached brush meshes through the shared line renderer."
+		                       : "No cached mesh at this cursor. Enable a model category and record this "
+		                         "interval again. Optional bounds remain available.");
 		return;
 	}
 	std::string status = "No cached model could be submitted.";
@@ -404,7 +437,7 @@ void SceneCacheDrawModels()
 	{
 		if (!g_SceneDrawModels.load() || !SceneCanDrawModels() || epoch != g_SceneDrawEpoch.load())
 			return;
-		if (entity.ModelPose)
+		if (entity.ModelPose && entity.ModelPose->ModelInfo->WireEdges.empty())
 		{
 			const auto found =
 			    std::lower_bound(view->Entities.begin(), view->Entities.end(), entity.OwnerIdentity,
@@ -425,6 +458,10 @@ static std::string SceneAnimationSummary(const advancedfx::SceneCache::Entity &e
 	if (!entity.ModelPose)
 		return "Player/entity " + std::to_string(entity.Identity) + ": no cached model pose (bounds only)";
 	const auto &pose = *entity.ModelPose;
+	if (!pose.ModelInfo->WireEdges.empty())
+		return "Brush mesh " + pose.ModelInfo->Name + ": " +
+		       std::to_string(pose.ModelInfo->WireVertices.size()) + " vertices, " +
+		       std::to_string(pose.ModelInfo->WireEdges.size()) + " wire edges.";
 	std::string text =
 	    (entity.Category == 0 ? "Player user " : "Entity handle ") +
 	    std::to_string(entity.Category == 0 ? entity.Identity : (entity.Identity & 0xffffffff)) + " | " +
@@ -1140,6 +1177,41 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			ok = true;
 		}
 	}
+
+	else if (!_stricmp(op, "bounds") && integer(value) && (value == 0 || value == 1))
+	{
+		g_SceneDrawing.Bounds = value != 0;
+		ok = true;
+	}
+	else if (!_stricmp(op, "trails"))
+	{
+		if (args->ArgC() == 3 && integer(value) && (value == 0 || value == 1))
+		{
+			g_SceneDrawing.Trails = value != 0;
+			ok = true;
+		}
+		else if (args->ArgC() == 4 && !_stricmp(args->ArgV(2), "seconds"))
+		{
+			char *end = nullptr;
+			const double seconds = std::strtod(args->ArgV(3), &end);
+			if (end != args->ArgV(3) && !*end && std::isfinite(seconds) && seconds >= .05 && seconds <= 30)
+			{
+				g_SceneDrawing.TrailSeconds = seconds;
+				ok = true;
+			}
+		}
+		else if (args->ArgC() == 4 && parseInteger(3, value) && (value == 0 || value == 1))
+		{
+			const char *categories[] = {"players",  "projectiles", "weapons",   "cosmetics", "other",
+			                            "ragdolls", "gibs",        "buildings", "props"};
+			for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
+				if (!_stricmp(args->ArgV(2), categories[i]) || !_stricmp(args->ArgV(2), "all"))
+				{
+					g_SceneDrawing.TrailCategories[i] = value != 0;
+					ok = true;
+				}
+		}
+	}
 	else if (!_stricmp(op, "models"))
 	{
 		int enabled;
@@ -1172,7 +1244,10 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache goto <tick> | step <signed ticks>\n"
 		    "  mirv_cache rate <-10000..10000> - Cached ticks/sec; 0 stops.\n"
 		    "  mirv_cache animation <smooth|nearest>\n"
-		    "  mirv_cache models <0|1>\n"
+		    "  mirv_cache models <0|1> | bounds <0|1>\n"
+		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
+		    "  mirv_cache trails "
+			"<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
@@ -1388,6 +1463,7 @@ static bool g_DemoMute = false, g_DemoDeathcam = false, g_DemoSmooth = false;
 static double g_DemoInterpolation = .1;
 static auto g_DemoFixAttempt = std::chrono::steady_clock::time_point{};
 static std::pair<unsigned, size_t> g_OverlayPreferenceStamp{};
+static double g_SavedTrailSeconds = 2;
 static std::pair<unsigned, size_t> OverlayPreferenceStamp()
 {
 	unsigned bits = 0, bit = 0;
@@ -1400,6 +1476,18 @@ static std::pair<unsigned, size_t> OverlayPreferenceStamp()
 			bits |= 1u << bit;
 		++bit;
 	}
+	for (bool value : g_SceneDrawing.TrailCategories)
+	{
+		if (value)
+			bits |= 1u << bit;
+		++bit;
+	}
+	if (g_SceneDrawing.Bounds)
+		bits |= 1u << bit++;
+	else
+		++bit;
+	if (g_SceneDrawing.Trails)
+		bits |= 1u << bit;
 	return {bits, g_SceneCache.Limit()};
 }
 static void CheckOverlayPreferences()
@@ -1407,9 +1495,10 @@ static void CheckOverlayPreferences()
 	if (!g_OverlayPreferencesReady || !ImGui::GetCurrentContext())
 		return;
 	const auto stamp = OverlayPreferenceStamp();
-	if (stamp != g_OverlayPreferenceStamp)
+	if (stamp != g_OverlayPreferenceStamp || g_SavedTrailSeconds != g_SceneDrawing.TrailSeconds)
 	{
 		g_OverlayPreferenceStamp = stamp;
+		g_SavedTrailSeconds = g_SceneDrawing.TrailSeconds;
 		ImGui::MarkIniSettingsDirty();
 	}
 }
@@ -1471,7 +1560,23 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		return;
 	std::string key(line, eq - line);
 	std::string val(eq + 1);
+
+	if (key == "CacheTrailSeconds")
+	{
+		char *end = nullptr;
+		const double seconds = std::strtod(val.c_str(), &end);
+		if (end != val.c_str() && !*end && std::isfinite(seconds) && seconds >= .05 && seconds <= 30)
+			g_SceneDrawing.TrailSeconds = seconds;
+		return;
+	}
 	bool *option = nullptr;
+	if (key == "CacheBounds")
+		option = &g_SceneDrawing.Bounds;
+	if (key == "CacheTrails")
+		option = &g_SceneDrawing.Trails;
+	for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
+		if (key == "CacheTrailCategory" + std::to_string(i))
+			option = &g_SceneDrawing.TrailCategories[i];
 	if (key == "CachePlayers")
 		option = &g_ScenePlayerModels;
 	if (key == "CacheProjectiles")
@@ -1601,6 +1706,10 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("CacheProps=%d\n", int(g_SceneProps));
 	out_buf->appendf("CacheSmooth=%d\n", int(g_SceneSmoothAnimation));
 	out_buf->appendf("CacheModels=%d\n", int(g_SceneDrawModels.load()));
+	out_buf->appendf("CacheBounds=%d\nCacheTrails=%d\nCacheTrailSeconds=%.3f\n", int(g_SceneDrawing.Bounds),
+	                 int(g_SceneDrawing.Trails), g_SceneDrawing.TrailSeconds);
+	for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
+		out_buf->appendf("CacheTrailCategory%d=%d\n", i, int(g_SceneDrawing.TrailCategories[i]));
 	out_buf->appendf("ShowSequencer=%d\n", int(g_ShowSequencer));
 	out_buf->appendf("ShowCameraControl=%d\n", int(g_ShowCameraControl));
 	out_buf->appendf("ShowCurveEditor=%d\n", int(g_ShowCurveEditor));
@@ -5180,9 +5289,8 @@ static void DrawSceneCacheMenu(int playhead)
 			SceneCategoryCheckbox("Buildings", g_SceneBuildings, 7,
 			                      "Sentries, dispensers, teleporters and sappers.");
 			ImGui::TableNextColumn();
-			SceneCategoryCheckbox(
-			    "Props / objectives", g_SceneProps, 8,
-			    "Model-based doors, payloads, intelligence and props. Brush doors currently use bounds.");
+			SceneCategoryCheckbox("Props / objectives", g_SceneProps, 8,
+			                      "Doors, payloads, intelligence and props, including brush surface meshes.");
 			ImGui::EndTable();
 		}
 		if ((g_ScenePlayerModels || g_SceneWeapons || g_SceneCosmetics) &&
@@ -5282,8 +5390,38 @@ static void DrawSceneCacheMenu(int playhead)
 			++g_SceneDrawEpoch;
 			SceneModelStatus(models ? "Cached model drawing enabled." : "Cached model drawing disabled.");
 		}
-		ImGui::TextWrapped("Live models remain visible. Brush doors use proxy bounds; particles, audio and "
-		                   "simulation are not cached.");
+
+		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
+		ImGui::Checkbox("Movement trails", &g_SceneDrawing.Trails);
+		if (g_SceneDrawing.Trails)
+		{
+			double seconds = g_SceneDrawing.TrailSeconds;
+			if (ImGui::InputDouble("Trail duration (seconds)", &seconds, 0, 0, "%.2f") &&
+			    std::isfinite(seconds) && seconds >= .05 && seconds <= 30)
+				g_SceneDrawing.TrailSeconds = seconds;
+			if (ImGui::TreeNode("Trail categories"))
+			{
+				const char *names[] = {"Players",  "Projectiles", "Weapons",   "Cosmetics",         "Other",
+				                       "Ragdolls", "Gibs",        "Buildings", "Props / objectives"};
+				ImGui::PushID("Scene trail categories");
+				if (ImGui::Button("All"))
+					g_SceneDrawing.TrailCategories.fill(true);
+				ImGui::SameLine();
+				if (ImGui::Button("None"))
+					g_SceneDrawing.TrailCategories.fill(false);
+				for (int i = 0; i < advancedfx::SceneCache::CategoryCount; ++i)
+					SceneCategoryCheckbox(names[i], g_SceneDrawing.TrailCategories[i], i,
+					                      "Draw retained movement for this category.");
+				ImGui::PopID();
+				ImGui::TreePop();
+			}
+			ImGui::TextWrapped("Trails show the retained movement before the cached cursor and fade with "
+			                   "age. Missing samples, teleports and identity changes break the trail.");
+		}
+		ImGui::TextWrapped("Live models remain visible. Brush entities use recorded surface wireframes when "
+		                   "the map BSP is available. Bounds are optional and independent of Show path. "
+		                   "Particles, audio and simulation are not cached.");
+
 		if (g_ScenePreview && !SceneCacheView())
 			ImGui::TextDisabled("No recorded coverage at this playhead.");
 	}

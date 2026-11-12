@@ -310,7 +310,7 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 {
 	SceneOnly = sceneOnly;
 	if (path == &g_Hook_VClient_RenderView.m_CamPath)
-		Scene = AfxHookSource::CameraOverlay::SceneCacheView();
+		SceneLines = AfxHookSource::CameraOverlay::SceneCacheLines();
 	m_CurTime = g_MirvTime.GetTime() - path->GetOffset();
 	m_InCampath =
 		1 <= path->GetSize() && path->GetLowerBound() <= m_CurTime && m_CurTime <= path->GetUpperBound();
@@ -591,15 +591,14 @@ void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
 	// Actually we are often called twice per frame , once after 3d skybox
 	// and once after world is drawn, maybe we will be even called more times.
 
-	const auto scene = AfxHookSource::CameraOverlay::SceneCacheView();
-	const bool proxies = scene && std::any_of(scene->Entities.begin(), scene->Entities.end(),
-	                                          [](const auto &entity) { return !entity.ModelPose; });
-	if (!m_Draw && !proxies)
+	const auto scene = AfxHookSource::CameraOverlay::SceneCacheLines();
+	const bool sceneDrawing = scene && !scene->empty();
+	if (!m_Draw && !sceneDrawing)
 		return;
 
 	g_WorldLabelCells.clear();
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
-	if (proxies && (!m_Draw || !paths.IsVisible(paths.GetActive())))
+	if (sceneDrawing && (!m_Draw || !paths.IsVisible(paths.GetActive())))
 	{
 		if (!m_SceneProperties)
 		{
@@ -961,27 +960,16 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 
 		m_Device->SetFVF(CCampathDrawer_VertexFVF);
 
-		if (dynamicPorperties->Scene)
+		if (dynamicPorperties->SceneLines)
 		{
 			newCScreenInfo[2] = 2;
 			m_Device->SetVertexShaderConstantF(48, newCScreenInfo, 1);
-			for (const auto &entity : dynamicPorperties->Scene->Entities)
+			for (const auto &line : *dynamicPorperties->SceneLines)
 			{
-				if (dynamicPorperties->SceneOnly && entity.ModelPose)
-					continue;
-				const auto rgb = advancedfx::SceneCache::CategoryColor(entity.Category);
-				const auto color = D3DCOLOR_RGBA(rgb[0], rgb[1], rgb[2], 255);
-				Vector3 corners[8];
-				const auto bounds = advancedfx::SceneCache::BoundsCorners(entity);
-				for (int i = 0; i < 8; ++i)
-					corners[i] = Vector3(bounds[i][0], bounds[i][1], bounds[i][2]);
-				const double yaw = entity.Angles[1] * M_PI / 180.0;
-				Vector3 center(entity.Origin[0], entity.Origin[1], entity.Origin[2]+60);
-				AutoSingleLine(center, D3DCOLOR_RGBA(255,220,80,255),
-					Vector3(center.X+40*cos(yaw), center.Y+40*sin(yaw), center.Z), D3DCOLOR_RGBA(255,220,80,255));
-				for (int i = 0; i < 8; ++i)
-					for (int axis = 1; axis <= 4; axis *= 2)
-						if (!(i & axis)) AutoSingleLine(corners[i], color, corners[i|axis], color);
+				const auto rgb = advancedfx::SceneCache::CategoryColor(line.Category);
+				const auto color = D3DCOLOR_RGBA(rgb[0], rgb[1], rgb[2], line.Alpha);
+				AutoSingleLine(Vector3(line.A[0], line.A[1], line.A[2]), color,
+				               Vector3(line.B[0], line.B[1], line.B[2]), color);
 			}
 			AutoSingleLineFlush();
 		}

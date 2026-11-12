@@ -24,6 +24,8 @@ bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&,std::string&,
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr);
 void Mirv_Tf2_SceneRenderFrame();
 #include <thread>
+#include <filesystem>
+#include <fstream>
 #include <cassert>
 #include <cstring>
 #include <iostream>
@@ -52,7 +54,7 @@ struct Object {void**Vtable;};
 struct Fixture {
  unsigned char Header[2048]{};
  int ModelType=3;bool Dormant=false,Visible=true,Setup=true,Hardware=true,ErrorModel=false,Interfaces=true,Allocate=true;
- void *Override=nullptr;int OverrideType=0;
+ void *Override=nullptr;int OverrideType=0;void*FileSystem=nullptr;
  int Count=2,Checks=0,SetupCalls=0,DrawCalls=0,Locks=0,Refs=0,Unlocks=0,HeaderLocks=0;
  std::thread::id EngineThread=std::this_thread::get_id();
  std::string ModelName="models/player/scout.mdl";int Body=3;float Origin[3]{1,2,3},Angles[3]{};
@@ -65,6 +67,20 @@ struct Fixture {
  void Put(int offset,int value){std::memcpy(Header+offset,&value,4);}
  void InitHeader(){Put(0,0x54534449);Put(4,48);Put(8,123);Put(76,sizeof(Header));Put(156,Count);Put(160,164);for(int i=0;i<Count&&i<8;++i){Put(164+i*216+4,i-1);Put(164+i*216+160,0x400);}}
 } fixture;
+
+static std::vector<unsigned char> BrushFixture()
+{
+ std::vector<unsigned char> data(1036);auto put=[&](size_t at,const void*p,size_t n){std::memcpy(data.data()+at,p,n);};
+ auto integer=[&](size_t at,int v){put(at,&v,4);};integer(0,0x50534256);integer(4,20);integer(1032,17);
+ auto lump=[&](int id,size_t bytes,int version){size_t at=data.size();data.resize(at+bytes);integer(8+id*16,int(at));integer(12+id*16,int(bytes));integer(16+id*16,version);return at;};
+ size_t verts=lump(3,48,0);float positions[12]={0,0,0,2,0,0,2,2,0,0,2,0};put(verts,positions,sizeof(positions));
+ size_t edges=lump(12,16,0);unsigned short indices[8]={0,1,1,2,3,2,3,0};put(edges,indices,sizeof(indices));
+ size_t surf=lump(13,16,0);int directed[4]={0,1,-2,3};put(surf,directed,sizeof(directed));
+ size_t faces=lump(7,56,1);short count=4;put(faces+8,&count,2);
+ size_t models=lump(14,96,0);integer(models+48+44,1);
+ return data;
+}
+
 struct CMirvTf2ClientRenderable {
  const void*GetModel(){return &fixture;}bool ShouldDraw(){return fixture.Visible;}int GetBody(){return fixture.Body;}
  bool SetupBones(SOURCESDK::matrix3x4_t*out,int maximum,int mask,float){++fixture.SetupCalls;assert(maximum==128&&mask==0x7ff00);if(!fixture.Setup)return false;std::memcpy(out,fixture.Observed,sizeof(fixture.Observed));return true;}
@@ -75,8 +91,9 @@ struct ModelInfo {int GetModelType(const void*){return fixture.ModelType;}const 
 ModelInfo*Mirv_Tf2_GetModelInfo(){return &modelInfo;}
 struct Globals{float curtime_get(){return 2;}} globals;
 struct View{Globals*GetGlobals(){return &globals;}} g_Hook_VClient_RenderView;
-void*Factory(const char*name,int*){if(!fixture.Interfaces)return nullptr;if(!strcmp(name,"VStudioRender025"))return &fixture.Studio;if(!strcmp(name,"MDLCache004"))return &fixture.Cache;if(!strcmp(name,"VMaterialSystem082"))return fixture.MaterialInterface?&fixture.MaterialSystem:nullptr;assert(false);return nullptr;}
+void*Factory(const char*name,int*){if(!fixture.Interfaces)return nullptr;if(!strcmp(name,"VStudioRender025"))return &fixture.Studio;if(!strcmp(name,"MDLCache004"))return &fixture.Cache;if(!strcmp(name,"VMaterialSystem082"))return fixture.MaterialInterface?&fixture.MaterialSystem:nullptr;if(!strcmp(name,"VBaseFileSystem011"))return fixture.FileSystem;assert(false);return nullptr;}
 auto g_AppSystemFactory=Factory;
+struct BrushEngine {std::string Level,Directory;const char*GetLevelName(){return Level.c_str();}const char*GetGameDirectory(){return Directory.c_str();}} brushEngine;auto*g_VEngineClient=&brushEngine;
 bool queueAvailable=true;
 std::vector<std::unique_ptr<CMaterialSystemFunctor>> retirements;
 bool MaterialSystem_CanExecuteOnRenderThread(){return queueAvailable;}
@@ -130,6 +147,18 @@ void Draw(void*,void*results,const SceneStudioInfo&info,SOURCESDK::matrix3x4_t*b
 }
 template<class T>void Slot(void**table,int i,T function){table[i]=reinterpret_cast<void*>(function);}
 }
+
+struct BrushFileSystemFixture : SceneBaseFileSystem
+{
+ std::vector<unsigned char> Data;size_t At=0;int Opens=0,Closes=0;
+ int Read(void*out,int n,void*)override{if(n<0||At>Data.size()||size_t(n)>Data.size()-At)return 0;std::memcpy(out,Data.data()+At,n);At+=n;return n;}
+ int Write(const void*,int,void*)override{return 0;}
+ void*Open(const char*,const char*options,const char*path)override{assert(!strcmp(options,"rb")&&!strcmp(path,"GAME"));++Opens;At=0;return this;}
+ void Close(void*handle)override{assert(handle==this);++Closes;}
+ void Seek(void*,int at,int mode)override{assert(at>=0&&mode==0);At=size_t(at);}
+ unsigned int Tell(void*)override{return unsigned(At);}
+ unsigned int Size(void*)override{return unsigned(Data.size());}
+};
 int main(){
  Slot(fixture.MaterialSystemSlots,70,CreateMaterial);Slot(fixture.MaterialSlots,12,MaterialInc);Slot(fixture.MaterialSlots,13,MaterialDec);Slot(fixture.MaterialSlots,42,MaterialError);Slot(fixture.StudioSlots,33,SetOverride);
  Slot(fixture.NetworkSlots,8,Dormant);Slot(fixture.StudioSlots,47,Override);Slot(fixture.StudioSlots,22,Allocate);Slot(fixture.StudioSlots,23,Unlock);Slot(fixture.StudioSlots,29,Draw);
@@ -202,6 +231,9 @@ int main(){
  // Singular-parent exceptions retain world space and follow root retargeting.
  Cache::Pose singular;singular.ModelInfo=skeleton;singular.Root=ownerPose->Root;Cache::Matrix zero=singular.Root;zero[5]=0;singular.Bones={zero,ownerPose->Root};ScenePrepareLocalPose(singular);assert(singular.Fixed.size()==2&&singular.Fixed[1].World&&singular.Fixed[1].Reason==Cache::BoneFallback::SingularParent&&Cache::ValidPose(singular));mixedEntity.ModelPose=std::make_shared<Cache::Pose>(singular);mixedEntity.Origin[0]=25;assert(SceneBuildMatrices(mixedEntity,nullptr,mixedOut)&&mixedOut[1][0][3]==25);
  fixture.Visible=true;fixture.Dormant=false;fixture.ModelType=1;int brushSetups=fixture.SetupCalls;assert(!Mirv_Tf2_CaptureScenePose(1,entity,status)&&fixture.SetupCalls==brushSetups&&status.find("Brush model")!=std::string::npos);fixture.ModelType=3;
+ // Brush capture reads file geometry once and never calls studio SetupBones.
+ auto brushBsp=BrushFixture();auto brushDir=std::filesystem::temp_directory_path()/"hlae-scene-brush-fixture";std::filesystem::create_directories(brushDir/"maps");auto brushPath=brushDir/"maps/test.bsp";{std::ofstream output(brushPath,std::ios::binary);output.write(reinterpret_cast<const char*>(brushBsp.data()),brushBsp.size());}
+ brushEngine.Directory=brushDir.string();brushEngine.Level="maps/test.bsp";fixture.ModelType=1;fixture.ModelName="*1";assert(Mirv_Tf2_CaptureScenePose(1,entity,status)&&fixture.SetupCalls==brushSetups&&entity.ModelPose->ModelInfo->WireEdges.size()==5&&Cache::ValidPose(*entity.ModelPose));auto brushMetadata=entity.ModelPose->ModelInfo;std::filesystem::remove(brushPath);assert(Mirv_Tf2_CaptureScenePose(1,entity,status)&&entity.ModelPose->ModelInfo==brushMetadata);assert(!Mirv_Tf2_DrawScenePose(entity,status));BrushFileSystemFixture brushFs;brushFs.Data=brushBsp;fixture.FileSystem=&brushFs;brushEngine.Level="maps/test-fs.bsp";assert(Mirv_Tf2_CaptureScenePose(1,entity,status)&&brushFs.Opens==1&&brushFs.Closes==1&&entity.ModelPose->ModelInfo->WireEdges.size()==5);auto fsMetadata=entity.ModelPose->ModelInfo;assert(Mirv_Tf2_CaptureScenePose(1,entity,status)&&brushFs.Opens==1&&entity.ModelPose->ModelInfo==fsMetadata);fixture.FileSystem=nullptr;std::filesystem::remove_all(brushDir);fixture.ModelType=3;fixture.ModelName="models/player/scout.mdl";
  // Client-only gibs can have no networkable and share entindex -1. Capture uses the observed object.
  unknown.HasNetwork=false;fixture.Visible=true;fixture.Dormant=true;entity.Identity=(1ull<<63)|unknown.Handle;entity.Category=6;
  assert(Mirv_Tf2_CaptureScenePose(-1,entity,status,&unknown)&&entity.ModelPose&&Cache::ValidPose(*entity.ModelPose));
@@ -243,6 +275,20 @@ struct Network {void**Vtable;bool Dormant=false;ClassInfo Class;};
 void*slots[9]{};
 const void*Class(void*p){return &static_cast<Network*>(p)->Class;}
 bool Dormant(void*p){return static_cast<Network*>(p)->Dormant;}
+
+static std::vector<unsigned char> BrushFixture()
+{
+ std::vector<unsigned char> data(1036);auto put=[&](size_t at,const void*p,size_t n){std::memcpy(data.data()+at,p,n);};
+ auto integer=[&](size_t at,int v){put(at,&v,4);};integer(0,0x50534256);integer(4,20);integer(1032,17);
+ auto lump=[&](int id,size_t bytes,int version){size_t at=data.size();data.resize(at+bytes);integer(8+id*16,int(at));integer(12+id*16,int(bytes));integer(16+id*16,version);return at;};
+ size_t verts=lump(3,48,0);float positions[12]={0,0,0,2,0,0,2,2,0,0,2,0};put(verts,positions,sizeof(positions));
+ size_t edges=lump(12,16,0);unsigned short indices[8]={0,1,1,2,3,2,3,0};put(edges,indices,sizeof(indices));
+ size_t surf=lump(13,16,0);int directed[4]={0,1,-2,3};put(surf,directed,sizeof(directed));
+ size_t faces=lump(7,56,1);short count=4;put(faces+8,&count,2);
+ size_t models=lump(14,96,0);integer(models+48+44,1);
+ return data;
+}
+
 struct CMirvTf2ClientRenderable {const char*ModelName="models/props/crate.mdl";const void*GetModel(){return ModelName;}bool Visible=true;float Origin[3]{},Angles[3]{};bool ShouldDraw(){return Visible;}const void*GetRenderOrigin(){return Origin;}const void*GetRenderAngles(){return Angles;}void GetRenderBounds(float*a,float*b){for(int i=0;i<3;++i){a[i]=-1;b[i]=1;}};};
 struct CMirvTf2ClientUnknown {int Index=1,User=42,ViewWeapon=0;bool Player=true,ToolAttached=false,HasNetwork=true,Alive=true,NoDraw=false,ParentKnown=false;std::uint32_t MoveParent=0xffffffff;const char*ToolClass=nullptr;CMirvTf2ClientUnknown*Owner=nullptr;std::uint32_t Handle=1;Network Net{slots};CMirvTf2ClientRenderable Render;void*GetClientNetworkable(){return HasNetwork?&Net:nullptr;}auto*GetClientRenderable(){return &Render;}const void*GetRefEHandle(){return &Handle;}};
 std::vector<CMirvTf2ClientUnknown*> objects;
@@ -376,7 +422,7 @@ struct Paths {
  CamPath Path[2];bool Visible[2]{true,false};size_t GetActive(){return 0;}size_t GetCount(){return 2;}bool IsVisible(size_t i){return Visible[i];}CamPath*GetPath(size_t i){return &Path[i];}std::string GetName(size_t){return "path";}State CaptureState(){return {{{1,{}},{2,{}}}};}
 };
 struct View {CamPath m_CamPath;Paths m_CamPaths;}g_Hook_VClient_RenderView;
-namespace AfxHookSource{namespace CameraOverlay{std::shared_ptr<const advancedfx::SceneCache::Frame>view;auto SceneCacheView(){return view;}}}
+namespace AfxHookSource{namespace CameraOverlay{std::shared_ptr<const advancedfx::SceneCache::Frame>view;bool bounds=false;std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> overrideLines;auto SceneCacheLines(){if(overrideLines)return overrideLines;if(!view||!bounds)return std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>>{};static advancedfx::SceneCache cache;advancedfx::SceneCache::DrawingOptions options;options.Bounds=bounds;options.Meshes=false;return std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(cache.Drawing(*view,options));}}}
 std::vector<int>g_WorldLabelCells;
 struct CCampathDrawer{
  struct CLessDynamicProperties{int Refs=0;CLessDynamicProperties(CCampathDrawer*,CamPath*,CLessDynamicProperties* = nullptr){}void AddRef(){++Refs;}void Release(){if(!--Refs)delete this;}};
@@ -391,17 +437,17 @@ bool MaterialSystem_ExecuteOnRenderThread(CCampathDrawer::CCampathDrawerFunctor*
 '''+dispatch+r'''
 int main(){
  using Cache=advancedfx::SceneCache;using namespace AfxHookSource::CameraOverlay;
- CCampathDrawer drawer;auto snapshot=std::make_shared<Cache::Frame>();Cache::Entity door;door.Category=8;door.Identity=1;snapshot->Entities={door};view=snapshot;
+ CCampathDrawer drawer;auto snapshot=std::make_shared<Cache::Frame>();Cache::Entity door;door.Category=8;door.Identity=1;snapshot->Entities={door};view=snapshot;drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());bounds=true;
  drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&queued[0]->SceneOnly);auto emptyProps=queued[0]->Props;queued.clear();drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&queued[0]->Props==emptyProps);queued.clear();
  g_Hook_VClient_RenderView.m_CamPaths.Visible[0]=false;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&queued[0]->SceneOnly);queued.clear();
  drawer.m_Draw=true;g_Hook_VClient_RenderView.m_CamPaths.Visible[1]=true;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==2&&queued[0]->SceneOnly&&!queued[1]->SceneOnly);queued.clear();
  g_Hook_VClient_RenderView.m_CamPaths.Visible[0]=true;g_Hook_VClient_RenderView.m_CamPaths.Visible[1]=false;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&!queued[0]->SceneOnly);queued.clear();
- drawer.m_Draw=false;auto meshes=std::make_shared<Cache::Frame>(*snapshot);meshes->Entities[0].ModelPose=std::make_shared<Cache::Pose>();view=meshes;drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());view.reset();drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());
+ drawer.m_Draw=false;bounds=false;auto meshes=std::make_shared<Cache::Frame>(*snapshot);meshes->Entities[0].ModelPose=std::make_shared<Cache::Pose>();view=meshes;drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());view.reset();drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());auto lines=std::make_shared<std::vector<Cache::Line>>();lines->push_back({{0,0,0},{1,1,1},8});overrideLines=lines;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&queued[0]->SceneOnly);queued.clear();
  std::cout<<"Scene proxy dispatch checks passed\n";
 }
 '''
 source=out/'scene_proxy_dispatch.cpp';source.write_text(proxy_fixture)
-command=['g++','-std=c++17','-O0','-g','-Dabstract=','-I'+str(root),str(source),'-o',str(out/'scene_proxy_dispatch')]
+command=['g++','-std=c++17','-O0','-g','-Dabstract=','-I'+str(root),'-I'+str(root/'AfxHookSource'),str(source),str(root/'shared/AfxMath.cpp'),'-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-o',str(out/'scene_proxy_dispatch')]
 if args.sanitize:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 result=subprocess.run(command,capture_output=True,text=True)
 (out/'proxy-build.log').write_text(result.stdout+result.stderr)

@@ -4,10 +4,13 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <deque>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,10 +29,113 @@ public:
 	{
 		std::string Name;
 		std::uint32_t Checksum = 0;
+		std::vector<std::array<float, 3>> WireVertices; // BSP submodel vertices, shared across frames.
+		std::vector<std::array<unsigned int, 2>> WireEdges;
 		std::vector<int> Parents, Flags;
 		std::vector<int> MergeBones;        // Bone-name sort order for Source's merge-enabled bones.
 		std::vector<std::string> BoneNames; // Bone-merged gear uses the same names as its player.
 	};
+
+	// Public Source BSP format (SDK 2013): read only the selected submodel's
+	// faces. No BSP pointers or engine mesh buffers survive this operation.
+	static std::shared_ptr<const Model> ReadBrushModel(
+	    const std::string &name, int index, size_t fileSize,
+	    const std::function<bool(size_t, void *, size_t)> &read)
+	{
+		if (index <= 0 || index > 4096 || fileSize < 1036)
+			return {};
+		std::array<std::int32_t, 259> header{};
+		if (!read(0, header.data(), sizeof(header)) || header[0] != 0x50534256 || header[1] < 19 ||
+		    header[1] > 21)
+			return {};
+		struct Lump
+		{
+			size_t Offset, Count, Stride;
+		};
+		auto lump = [&](int id, size_t stride, Lump &out) {
+			const auto *p = &header[2 + 4 * id];
+			if (p[0] < 1036 || p[1] < 0 || p[3] != 0 || size_t(p[0]) > fileSize ||
+			    size_t(p[1]) > fileSize - size_t(p[0]) || size_t(p[1]) % stride)
+				return false;
+			out = {size_t(p[0]), size_t(p[1]) / stride, stride};
+			return true;
+		};
+		Lump models, faces, surfedges, edges, vertices;
+		const int faceLump = header[2 + 4 * 58 + 1] > 0 ? 58 : 7;
+		if (!lump(14, 48, models) || !lump(faceLump, 56, faces) || !lump(13, 4, surfedges) ||
+		    !lump(12, 4, edges) || !lump(3, 12, vertices) || size_t(index) >= models.Count ||
+		    vertices.Count > 65536 || header[2 + 4 * faceLump + 2] != 1)
+			return {};
+		auto row = [&](const Lump &l, size_t i, void *out, size_t size) {
+			return i < l.Count && size <= l.Stride && read(l.Offset + i * l.Stride, out, size);
+		};
+		std::array<std::int32_t, 12> model{};
+		if (!row(models, size_t(index), model.data(), 48) || model[10] < 0 || model[11] <= 0 ||
+		    model[11] > 8192 || size_t(model[10]) > faces.Count ||
+		    size_t(model[11]) > faces.Count - size_t(model[10]))
+			return {};
+		auto result = std::make_shared<Model>();
+		result->Name = name;
+		result->Checksum = std::uint32_t(header[258]);
+		result->Parents = {-1};
+		result->Flags = {0};
+		std::map<unsigned short, unsigned int> vertexMap;
+		std::set<std::array<unsigned int, 2>> uniqueEdges;
+		size_t inspected = 0;
+		for (int f = 0; f < model[11]; ++f)
+		{
+			std::array<unsigned char, 56> face{};
+			if (!row(faces, size_t(model[10] + f), face.data(), face.size()))
+				return {};
+			std::int32_t first;
+			std::int16_t count;
+			std::memcpy(&first, face.data() + 4, 4);
+			std::memcpy(&count, face.data() + 8, 2);
+			if (first < 0 || count < 3 || count > 512 || size_t(first) > surfedges.Count ||
+			    size_t(count) > surfedges.Count - size_t(first) || (inspected += count) > 262144)
+				return {};
+			std::vector<unsigned int> polygon;
+			for (int i = 0; i < count; ++i)
+			{
+				std::int32_t directed;
+				std::array<unsigned short, 2> edge;
+				if (!row(surfedges, size_t(first + i), &directed, 4))
+					return {};
+				const auto edgeIndex = size_t(directed < 0 ? -std::int64_t(directed) : directed);
+				if (!row(edges, edgeIndex, edge.data(), 4))
+					return {};
+				const auto vertexIndex = edge[directed < 0 ? 1 : 0];
+				auto found = vertexMap.find(vertexIndex);
+				if (found == vertexMap.end())
+				{
+					std::array<float, 3> vertex;
+					if (!row(vertices, vertexIndex, vertex.data(), 12))
+						return {};
+					for (float v : vertex)
+						if (!std::isfinite(v) || std::abs(v) > 1048576)
+							return {};
+					found = vertexMap.emplace(vertexIndex, unsigned(result->WireVertices.size())).first;
+					result->WireVertices.push_back(vertex);
+				}
+				polygon.push_back(found->second);
+			}
+			// Fan triangulation matches the planar, convex faces emitted by VBSP.
+			for (size_t i = 1; i + 1 < polygon.size(); ++i)
+				for (auto pair : {std::array<unsigned int, 2>{polygon[0], polygon[i]},
+				                  std::array<unsigned int, 2>{polygon[i], polygon[i + 1]},
+				                  std::array<unsigned int, 2>{polygon[i + 1], polygon[0]}})
+				{
+					if (pair[1] < pair[0])
+						std::swap(pair[0], pair[1]);
+					if (pair[0] != pair[1])
+						uniqueEdges.insert(pair);
+				}
+			if (uniqueEdges.size() > 196608)
+				return {};
+		}
+		result->WireEdges.assign(uniqueEdges.begin(), uniqueEdges.end());
+		return result->WireEdges.empty() ? std::shared_ptr<const Model>{} : result;
+	}
 	struct Transform
 	{
 		std::array<float, 3> Position{}, Scale{1, 1, 1};
@@ -175,6 +281,118 @@ public:
 		double DemoTime = 0, ClientTime = 0;
 		std::vector<Entity> Entities;
 	};
+
+	struct Line
+	{
+		std::array<double, 3> A, B;
+		int Category;
+		unsigned char Alpha = 255;
+	};
+	struct DrawingOptions
+	{
+		bool Bounds = false, Meshes = true, Trails = false;
+		std::array<bool, CategoryCount> TrailCategories{true, true, true, true, true, true, true, true, true};
+		double TrailSeconds = 2;
+		bool operator==(const DrawingOptions &b) const
+		{
+			return Bounds == b.Bounds && Meshes == b.Meshes && Trails == b.Trails &&
+			       TrailCategories == b.TrailCategories && TrailSeconds == b.TrailSeconds;
+		}
+	};
+	std::vector<Line> Drawing(const Frame &frame, const DrawingOptions &options) const
+	{
+		constexpr size_t maxLines = 65536, maxTrails = 16384;
+		std::vector<Line> lines;
+		for (const auto &entity : frame.Entities)
+		{
+			if (options.Meshes && entity.ModelPose && !entity.ModelPose->ModelInfo->WireEdges.empty())
+			{
+				const auto &model = *entity.ModelPose->ModelInfo;
+				double rotation[3][3];
+				Afx::Math::Quaternion::FromQREulerAngles(
+				    Afx::Math::QREulerAngles::FromQEulerAngles(
+				        {entity.Angles[0], entity.Angles[1], entity.Angles[2]}))
+				    .ToRotationMatrix(rotation);
+				auto point = [&](unsigned int index) {
+					std::array<double, 3> p;
+					for (int r = 0; r < 3; ++r)
+					{
+						p[r] = entity.Origin[r];
+						for (int c = 0; c < 3; ++c)
+							p[r] += rotation[r][c] * model.WireVertices[index][c];
+					}
+					return p;
+				};
+				for (const auto &edge : model.WireEdges)
+				{
+					if (lines.size() >= maxLines)
+						break;
+					lines.push_back({point(edge[0]), point(edge[1]), entity.Category});
+				}
+			}
+			if (options.Bounds && lines.size() + 12 <= maxLines)
+			{
+				const auto corners = BoundsCorners(entity);
+				for (int i = 0; i < 8; ++i)
+					for (int axis : {1, 2, 4})
+						if (!(i & axis))
+							lines.push_back({corners[i], corners[i | axis], entity.Category, 160});
+			}
+		}
+		if (!options.Trails || !std::isfinite(options.TrailSeconds) || options.TrailSeconds < .05 ||
+		    options.TrailSeconds > 30 || m_Frames.empty())
+			return lines;
+		const double start = frame.DemoTime - options.TrailSeconds;
+		auto it = std::lower_bound(m_Frames.begin(), m_Frames.end(), start,
+		                           [](const Frame &a, double t) { return a.DemoTime < t; });
+		if (it != m_Frames.begin())
+			--it;
+		size_t segments = 0, inspected = 0;
+		auto connect = [&](const Frame &a, const Frame &b) {
+			const double gap = b.DemoTime - a.DemoTime;
+			if (gap <= 0 || gap > .1 || b.DemoTime < start)
+				return;
+			for (const auto &entity : a.Entities)
+			{
+				if (++inspected > 250000 || segments >= maxTrails || lines.size() >= maxLines)
+					return;
+				if (!options.TrailCategories[entity.Category])
+					continue;
+				auto next =
+				    std::lower_bound(b.Entities.begin(), b.Entities.end(), entity.Identity,
+					                 [](const Entity &e, std::uint64_t id) { return e.Identity < id; });
+				if (next == b.Entities.end() || next->Identity != entity.Identity ||
+				    next->Category != entity.Category || next->OwnerIdentity != entity.OwnerIdentity)
+					continue;
+				double distance = 0;
+				Line line{{}, {}, entity.Category};
+				for (int c = 0; c < 3; ++c)
+				{
+					line.A[c] = entity.Origin[c];
+					line.B[c] = next->Origin[c];
+					distance += (line.B[c] - line.A[c]) * (line.B[c] - line.A[c]);
+				}
+				if (distance < .0001 || distance > 256 * 256)
+					continue;
+				if (a.DemoTime < start)
+					for (int c = 0; c < 3; ++c)
+						line.A[c] += (start - a.DemoTime) / gap * (line.B[c] - line.A[c]);
+				line.Alpha = static_cast<unsigned char>(
+				    40 + 200 * std::clamp((b.DemoTime - start) / options.TrailSeconds, 0.0, 1.0));
+				lines.push_back(line);
+				++segments;
+			}
+		};
+		for (; it != m_Frames.end() && it->DemoTime < frame.DemoTime && segments < maxTrails &&
+		       inspected <= 250000 && lines.size() < maxLines;
+		     ++it)
+		{
+			auto next = std::next(it);
+			connect(*it, next != m_Frames.end() && next->DemoTime <= frame.DemoTime ? *next : frame);
+		}
+		return lines;
+	}
+
 	explicit SceneCache(size_t limit = 64 * 1024 * 1024) : m_Limit(limit)
 	{
 	}
@@ -372,6 +590,17 @@ public:
 		    !((pose.Bones.size() == count && pose.Local.empty()) ||
 		      (pose.Local.size() == count && pose.Bones.empty())))
 			return false;
+		if (model.WireVertices.empty() != model.WireEdges.empty() || model.WireVertices.size() > 65536 ||
+		    model.WireEdges.size() > 196608)
+			return false;
+		for (const auto &v : model.WireVertices)
+			for (float a : v)
+				if (!std::isfinite(a))
+					return false;
+		for (const auto &edge : model.WireEdges)
+			for (auto i : edge)
+				if (i >= model.WireVertices.size())
+					return false;
 		for (int i : model.MergeBones)
 			if (i < 0 || size_t(i) >= count || model.BoneNames.size() != count || !(model.Flags[i] & 0x40000))
 				return false;
@@ -481,6 +710,8 @@ private:
 	{
 		size_t bytes =
 		    sizeof(Model) + model.Name.capacity() + 1 +
+		    model.WireVertices.capacity() * sizeof(std::array<float, 3>) +
+		    model.WireEdges.capacity() * sizeof(std::array<unsigned int, 2>) +
 		    (model.Parents.capacity() + model.Flags.capacity() + model.MergeBones.capacity()) * sizeof(int) +
 		    model.BoneNames.capacity() * sizeof(std::string);
 		for (const auto &name : model.BoneNames)

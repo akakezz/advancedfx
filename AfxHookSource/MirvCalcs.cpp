@@ -24,10 +24,12 @@
 
 #include <algorithm>
 #include <atomic>
-#include <mutex>
-#include <shared/AfxDetours.h>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <shared/AfxDetours.h>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -10219,6 +10221,128 @@ static bool SceneStudioHeader(const unsigned char *header, int &count, unsigned 
 	       int64_t(boneOffset) + int64_t(count) * 216 <= length;
 }
 } // namespace
+
+namespace
+{
+// IBaseFileSystem, public Source SDK VBaseFileSystem011. Query the base
+// interface rather than guessing a multiple-inheritance IFileSystem offset.
+class SceneBaseFileSystem
+{
+public:
+	virtual int Read(void *, int, void *) = 0;
+	virtual int Write(const void *, int, void *) = 0;
+	virtual void *Open(const char *, const char *, const char *) = 0;
+	virtual void Close(void *) = 0;
+	virtual void Seek(void *, int, int) = 0;
+	virtual unsigned int Tell(void *) = 0;
+	virtual unsigned int Size(void *) = 0;
+};
+static std::shared_ptr<const advancedfx::SceneCache::Model> SceneBrushModel(const char *name)
+{
+	using Cache = advancedfx::SceneCache;
+	if (!name || name[0] != '*' || !g_VEngineClient)
+		return {};
+	char *end = nullptr;
+	const long index = std::strtol(name + 1, &end, 10);
+	if (end == name + 1 || *end || index <= 0 || index > 4096)
+		return {};
+	const char *levelName = g_VEngineClient->GetLevelName();
+	const char *gameDirectory = g_VEngineClient->GetGameDirectory();
+	if (!levelName || !*levelName || !gameDirectory)
+		return {};
+	const std::string level = levelName;
+	const std::string mapKey = std::string(gameDirectory) + "/" + level;
+	static std::string lastMap;
+	static std::map<int, std::weak_ptr<const Cache::Model>> models;
+	static std::set<int> failed;
+	if (lastMap != mapKey)
+	{
+		lastMap = mapKey;
+		models.clear();
+		failed.clear();
+	}
+	if (auto existing = models[int(index)].lock())
+		return existing;
+	if (failed.count(int(index)))
+		return {};
+	auto fs = g_AppSystemFactory
+	              ? static_cast<SceneBaseFileSystem *>(g_AppSystemFactory("VBaseFileSystem011", nullptr))
+	              : nullptr;
+	void *handle = fs ? fs->Open(level.c_str(), "rb", "GAME") : nullptr;
+	struct CloseFile
+	{
+		SceneBaseFileSystem *Fs;
+		void *Handle;
+		~CloseFile()
+		{
+			if (Handle)
+				Fs->Close(Handle);
+		}
+	} close{fs, handle};
+	std::ifstream file;
+	size_t size = 0;
+	if (handle)
+		size = fs->Size(handle);
+	else
+	{
+		file.open(std::filesystem::path(gameDirectory) / std::filesystem::path(level),
+		          std::ios::binary | std::ios::ate);
+		if (file && file.tellg() > 0)
+			size = size_t(file.tellg());
+	}
+	if (size < 1036 || size > 0x7fffffff)
+	{
+		failed.insert(int(index));
+		return {};
+	}
+	// Small block cache bounds temporary memory to 4 MiB and avoids a file seek
+	// per vertex. It is discarded after extracting the immutable model edges.
+	std::map<size_t, std::vector<unsigned char>> blocks;
+	auto read = [&](size_t at, void *out, size_t length) {
+		if (at > size || length > size - at)
+			return false;
+		auto bytes = static_cast<unsigned char *>(out);
+		while (length)
+		{
+			const size_t block = at / 65536, offset = at % 65536;
+			auto found = blocks.find(block);
+			if (found == blocks.end())
+			{
+				if (blocks.size() >= 64)
+					blocks.clear();
+				std::vector<unsigned char> data((std::min)(size_t(65536), size - block * 65536));
+				if (handle)
+				{
+					fs->Seek(handle, int(block * 65536), 0);
+					if (fs->Read(data.data(), int(data.size()), handle) != int(data.size()))
+						return false;
+				}
+				else
+				{
+					file.clear();
+					file.seekg(std::streamoff(block * 65536));
+					if (!file.read(reinterpret_cast<char *>(data.data()), std::streamsize(data.size())))
+						return false;
+				}
+				found = blocks.emplace(block, std::move(data)).first;
+			}
+			const size_t count = (std::min)(length, found->second.size() - offset);
+			std::memcpy(bytes, found->second.data() + offset, count);
+			bytes += count;
+			at += count;
+			length -= count;
+		}
+		return true;
+	};
+	const std::string modelName = level + name;
+	auto result = modelName.size() < 260 ? Cache::ReadBrushModel(modelName, int(index), size, read) : nullptr;
+	if (result)
+		models[int(index)] = result;
+	else
+		failed.insert(int(index));
+	return result;
+}
+} // namespace
 bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status,
                                void *observedObject)
 {
@@ -10247,8 +10371,20 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 	const char *name = info && model ? info->GetModelName(model) : nullptr;
 	if (info && model && info->GetModelType(model) == 1) // mod_brush (doors / moving BSP entities).
 	{
-		status = "Brush model uses recorded, rotated proxy bounds; studio mesh capture is unavailable.";
-		return false;
+		auto metadata = SceneBrushModel(name);
+		if (!metadata)
+		{
+			status = "Brush model mesh unavailable: map BSP missing, compressed or unsupported; optional "
+			         "bounds retained.";
+			return false;
+		}
+		auto pose = std::make_shared<Cache::Pose>();
+		pose->ModelInfo = metadata;
+		pose->Root[0] = pose->Root[5] = pose->Root[10] = 1;
+		pose->Local.resize(1); // Shared immutable geometry; placement uses recorded entity origin/angles.
+		entity.ModelPose = std::move(pose);
+		status = "Captured brush surface wireframe mesh.";
+		return true;
 	}
 	auto header = info && model ? static_cast<const unsigned char *>(info->GetStudiomodel(model)) : nullptr;
 	int count;
@@ -10362,6 +10498,11 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	if (!pose || !advancedfx::SceneCache::ValidPose(*pose))
 	{
 		status = "Cached model pose is unavailable or invalid.";
+		return false;
+	}
+	if (!entity.ModelPose->ModelInfo->WireEdges.empty())
+	{
+		status = "Brush mesh is drawn by the shared line renderer.";
 		return false;
 	}
 	if (!g_AppSystemFactory)

@@ -22,6 +22,7 @@ void PreferencesFrame(); // Engine FRAME_START, including when the overlay is cl
 void Draw();
 void SceneCacheFrame(bool capture = true);
 void SceneCacheDrawModels();
+std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines();
 void SceneCacheFocus(bool focused);
 void SceneCacheDevicePresent(bool success);
 void SceneCacheConsole(advancedfx::ICommandArgs *args);

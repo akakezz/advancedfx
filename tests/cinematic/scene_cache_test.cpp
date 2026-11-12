@@ -1,6 +1,20 @@
 #include "shared/SceneCache.h"
 #include <cassert>
 #include <limits>
+
+static std::vector<unsigned char> BrushFixture()
+{
+ std::vector<unsigned char> data(1036);auto put=[&](size_t at,const void*p,size_t n){std::memcpy(data.data()+at,p,n);};
+ auto integer=[&](size_t at,int v){put(at,&v,4);};integer(0,0x50534256);integer(4,20);integer(1032,17);
+ auto lump=[&](int id,size_t bytes,int version){size_t at=data.size();data.resize(at+bytes);integer(8+id*16,int(at));integer(12+id*16,int(bytes));integer(16+id*16,version);return at;};
+ size_t verts=lump(3,48,0);float positions[12]={0,0,0,2,0,0,2,2,0,0,2,0};put(verts,positions,sizeof(positions));
+ size_t edges=lump(12,16,0);unsigned short indices[8]={0,1,1,2,3,2,3,0};put(edges,indices,sizeof(indices));
+ size_t surf=lump(13,16,0);int directed[4]={0,1,-2,3};put(surf,directed,sizeof(directed));
+ size_t faces=lump(7,56,1);short count=4;put(faces+8,&count,2);
+ size_t models=lump(14,96,0);integer(models+48+44,1);
+ return data;
+}
+
 int main()
 {
  using Cache=advancedfx::SceneCache;
@@ -140,5 +154,32 @@ int main()
  // Brush-door proxy bounds remain in the recorded entity's local frame, then rotate into world space.
  {Cache::Entity door;door.Category=8;door.Origin[0]=10;door.Origin[1]=20;door.Origin[2]=30;door.Mins[0]=-1;door.Mins[1]=-2;door.Mins[2]=-3;door.Maxs[0]=1;door.Maxs[1]=2;door.Maxs[2]=3;door.Angles[1]=90;auto corners=Cache::BoundsCorners(door);assert(std::abs(corners[7][0]-8)<1e-8&&std::abs(corners[7][1]-21)<1e-8&&std::abs(corners[7][2]-33)<1e-8);door.Angles[1]=0;corners=Cache::BoundsCorners(door);assert(corners[0][0]==9&&corners[0][1]==18&&corners[0][2]==27);}
  for(int hostCategory:{7,8}){Cache objects;Cache::Frame f;Cache::Entity host;host.Category=hostCategory;host.Identity=(1ull<<63)|(10<<12)|100;Cache::Entity attachedItem;attachedItem.Category=8;attachedItem.Identity=(1ull<<63)|(11<<12)|101;attachedItem.OwnerIdentity=host.Identity;f.Entities={host,attachedItem};assert(objects.Append(f));f.DemoTime=.05;f.ClientTime=.05;f.Entities[0].Origin[0]=10;f.Entities[1].Origin[0]=10;assert(objects.Append(f));assert(objects.Sample(.025,out)&&out.Entities.size()==2&&out.Entities[0].Origin[0]==5);f.DemoTime=.1;f.ClientTime=.1;f.Entities.erase(f.Entities.begin());assert(objects.Append(f));assert(objects.Sample(.075,out)&&out.Entities.empty());}
+
+ // Parse actual BSP face/surfedge winding into a triangulated wireframe.
+ auto bsp=BrushFixture();auto read=[&](size_t at,void*out,size_t n){if(at>bsp.size()||n>bsp.size()-at)return false;std::memcpy(out,bsp.data()+at,n);return true;};
+ auto brush=Cache::ReadBrushModel("maps/test.bsp*1",1,bsp.size(),read);assert(brush&&brush->WireVertices.size()==4&&brush->WireEdges.size()==5&&brush->Checksum==17);
+ assert(!Cache::ReadBrushModel("world",0,bsp.size(),read));assert(!Cache::ReadBrushModel("missing",2,bsp.size(),read));
+ auto validBsp=bsp;int invalidOffset=-1;std::memcpy(bsp.data()+8+14*16,&invalidOffset,4);assert(!Cache::ReadBrushModel("bad",1,bsp.size(),read));bsp=validBsp;
+ int compressed=100;std::memcpy(bsp.data()+20+3*16,&compressed,4);assert(!Cache::ReadBrushModel("compressed",1,bsp.size(),read));bsp=validBsp;
+ int vertexOffset;std::memcpy(&vertexOffset,bsp.data()+8+3*16,4);float nan=std::numeric_limits<float>::quiet_NaN();std::memcpy(bsp.data()+vertexOffset,&nan,4);assert(!Cache::ReadBrushModel("bad vertex",1,bsp.size(),read));bsp=validBsp;
+ // Every truncation rejects safely, without trusting directory offsets/counts.
+ for(size_t size=0;size<bsp.size();size+=7)assert(!Cache::ReadBrushModel("truncated",1,size,read));
+ auto brushPose=std::make_shared<Cache::Pose>();brushPose->ModelInfo=brush;brushPose->Root=identity;brushPose->Local.resize(1);assert(Cache::ValidPose(*brushPose));
+ Cache brushCache;Cache::Frame brushFrame;brushFrame.Entities.resize(1);auto&door=brushFrame.Entities[0];door.Identity=201;door.Category=8;door.Origin[0]=10;door.Angles[1]=90;door.ModelPose=brushPose;assert(brushCache.Append(brushFrame));
+ Cache::DrawingOptions draw;assert(!draw.Bounds&&!draw.Trails);auto meshLines=brushCache.Drawing(brushFrame,draw);assert(meshLines.size()==5);for(const auto&line:meshLines){assert(line.Category==8);assert(line.A[0]>=7.999&&line.A[0]<=10.001&&line.A[1]>=-.001&&line.A[1]<=2.001);}
+ draw.Bounds=true;assert(brushCache.Drawing(brushFrame,draw).size()==17);draw.Meshes=false;assert(brushCache.Drawing(brushFrame,draw).size()==12);draw.Bounds=false;assert(brushCache.Drawing(brushFrame,draw).empty());
+ const auto meshBytes=brushCache.Bytes();brushCache.SetLimit(1);assert(brushCache.Count()==0&&brushCache.Bytes()==0&&meshBytes>brush->WireVertices.size()*12+brush->WireEdges.size()*8);
+ // Trail geometry is independent of campaths/models and covers fractional cursors.
+ Cache trails;Cache::Frame moving;moving.Entities.resize(2);moving.Entities[0].Identity=1;moving.Entities[1].Identity=2;moving.Entities[1].Category=1;
+ for(int i=0;i<=10;++i){moving.DemoTime=moving.ClientTime=i*.015;moving.Entities[0].Origin[0]=i;moving.Entities[1].Origin[1]=i*2;assert(trails.Append(moving));}
+ Cache::Frame fractional;assert(trails.Sample(.1275,fractional));Cache::DrawingOptions trailOptions;trailOptions.Meshes=false;trailOptions.Trails=true;trailOptions.TrailSeconds=.1;auto trailLines=trails.Drawing(fractional,trailOptions);assert(trailLines.size()==16);assert(std::abs(trailLines.back().B[1]-17)<1e-5);for(const auto&line:trailLines)assert(line.Alpha<=240&&line.Alpha>=40);
+ trailOptions.TrailCategories[1]=false;assert(trails.Drawing(fractional,trailOptions).size()==8);trailOptions.Trails=false;assert(trails.Drawing(fractional,trailOptions).empty());
+ trailOptions.Trails=true;trailOptions.TrailSeconds=30;moving.DemoTime=.165;moving.Entities[0].Origin[0]=1000;moving.Entities[1].Identity=3;assert(trails.Append(moving));auto beforeJump=trails.Drawing(moving,trailOptions);assert(beforeJump.size()==10); // no teleport or recycled-identity connection
+ moving.DemoTime=.3;moving.Entities[0].Origin[0]=1001;assert(trails.Append(moving));assert(trails.Drawing(moving,trailOptions).size()==10); // no missing-update bridge
+ moving.DemoTime=.315;moving.Entities.clear();assert(trails.Append(moving));moving.DemoTime=.33;moving.Entities.resize(1);moving.Entities[0].Identity=1;assert(trails.Append(moving));assert(trails.Drawing(moving,trailOptions).size()==10); // no despawn bridge
+
+ // Dense drawings respect fixed submission budgets.
+ auto denseModel=std::make_shared<Cache::Model>(*brush);denseModel->WireEdges.assign(70000,{0,1});auto densePose=std::make_shared<Cache::Pose>(*brushPose);densePose->ModelInfo=denseModel;auto denseFrame=brushFrame;denseFrame.Entities[0].ModelPose=densePose;assert(brushCache.Drawing(denseFrame,Cache::DrawingOptions{}).size()==65536);
+ Cache denseTrails;Cache::Frame crowd;crowd.Entities.resize(100);for(int i=0;i<100;++i)crowd.Entities[i].Identity=i+1;for(int t=0;t<180;++t){crowd.DemoTime=t*.01;for(auto&e:crowd.Entities)e.Origin[0]=float(t);assert(denseTrails.Append(crowd));}assert(denseTrails.Drawing(crowd,trailOptions).size()==16384);
 
 }

@@ -1796,17 +1796,14 @@ includes the handle serial, so destroyed/rebuilt objects cannot blend together.
 Parented gear/objectives can use retained player, corpse, building or prop hosts.
 Missing required hosts remain subject to the orphan filter.
 
-**Brush doors/moving BSP entities use recorded, rotated proxy bounds**, not a
-wireframe of their brush mesh. Their positions, angles and bounds can be scrubbed,
-but this milestone does not copy BSP surfaces or restore engine collision/physics.
-Unsupported studio poses also retain proxy bounds. Proxy corners now rotate in
-the entity's local frame, including rotating doors. Static world geometry/static
-prop-manager geometry is not duplicated; it remains the live map. Sprites,
-particles and first-person viewmodels stay outside this capture pass.
+**Brush doors/moving BSP entities use recorded surface wireframes** when their
+map's BSP geometry can be read. Mesh metadata is shared across frames; recorded
+origin and angles place the geometry at the cached tick. Unsupported geometry
+keeps its recorded bounds, which can be enabled separately.
 
 More entities increase capture cost and memory use. The existing capture range,
 payload budget, pose reuse and profiling controls apply. `cache status` reports
-the new category settings and pose counts; brush/unsupported models appear as
+the new category settings and pose counts; unsupported brush/studio models appear as
 proxy fallbacks rather than successful studio poses. In-game TF2/TF2C testing is
 still required, particularly for custom objectives and brush doors.
 
@@ -1879,3 +1876,50 @@ settings still restore when demo playback ends.
 Recording, cached preview, tick ranges, player identities, repair samples and
 other running operations are not saved globally. Demo-specific path and repair
 files continue using their existing save/load workflow.
+
+
+### Cached bounds, brush meshes and movement trails
+
+In **Sequencer → Scene Cache → Preview**, **Draw cached bounds** is separate
+from **Draw cached models** and **Show path**. Bounds default off, including
+when a campath is drawn. Enabling bounds adds them to cached entities even if
+those entities already have a wireframe mesh. The old yellow heading strokes
+are no longer drawn.
+
+Brush entities, including moving BSP doors, use their map submodel's actual
+triangulated surface edges through HLAE's existing line renderer. Record the
+interval again to add geometry to previously captured bounds-only history.
+Meshes follow each cached origin/rotation, and their shared vertex/edge storage
+counts toward the cache budget. Reading uses the game's versioned filesystem
+interface, with a loose-map-file fallback. This pass supports uncompressed
+Source BSP versions 19–21; compressed geometry, external lump overrides and
+unsupported layouts are not reconstructed. Capture diagnostics report missing
+or unsupported mesh data; **Draw cached bounds** remains an optional fallback.
+
+Enable **Movement trails** to see retained movement leading up to the cached
+cursor. **Trail duration (seconds)** accepts 0.05–30 seconds; **Trail categories**
+lets players, projectiles, held gear, ragdolls, gibs, buildings and props be
+shown independently. Trails fade toward the older end, stop at the fractional
+cached cursor, and break on missing updates, identity/owner changes and large
+teleports. They use existing retained samples and require no new recording.
+Previously uncaptured entities naturally have no trail.
+
+```text
+mirv_cache bounds 1
+mirv_cache bounds 0
+mirv_cache trails 1
+mirv_cache trails seconds 2
+mirv_cache trails all 0
+mirv_cache trails players 1
+mirv_cache trails projectiles 1
+mirv_cache trails props 1
+mirv_cache trails 0
+```
+
+Bounds, trail enablement, duration and category preferences persist in the
+existing overlay INI. Mesh visibility follows **Draw cached models**. Bounds
+and trails can be drawn with both model display and campath display disabled.
+Drawing uses a bounded, immutable line batch shared with the campath renderer;
+idle cursors reuse it. Limits of 65,536 total lines and 16,384 trail segments
+bound work on dense/long captures, so exceptionally dense previews may truncate
+some lines. Color customization remains deferred.
