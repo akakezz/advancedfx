@@ -302,7 +302,7 @@ static std::string SceneAnimationSummary(const advancedfx::SceneCache::Entity &e
 	}
 	if (pose.BlendFraction >= 0 && pose.HeldBones > pose.Fixed.size())
 		text += "\n  Additional preserved bones cross an adjacent exception or scale-handedness boundary.";
-	for (size_t i = 0; i < std::min(size_t(8), pose.Fixed.size()); ++i)
+	for (size_t i = 0; i < (std::min)(size_t(8), pose.Fixed.size()); ++i)
 	{
 		const auto &fixed = pose.Fixed[i];
 		text += "\n  Bone " + std::to_string(fixed.Index);
@@ -432,7 +432,7 @@ bool SceneCacheScrubKey(unsigned int key, double seconds)
 	                     : key == VK_RIGHT ? 1
 	                                       : (key == VK_UP ? 1 : -1) * std::llround(1 / interval));
 	SceneCacheStopScrub();
-	ScenePreviewTime(std::clamp(g_SceneCursor + step * std::min(seconds, .1) / .033 * interval,
+	ScenePreviewTime(std::clamp(g_SceneCursor + step * (std::min)(seconds, .1) / .033 * interval,
 	                            g_SceneCache.Frames().front().DemoTime,
 	                            g_SceneCache.Frames().back().DemoTime));
 	return true;
@@ -5131,7 +5131,7 @@ void Draw()
 				{
 					const double held = ImGui::GetKeyData(arrows[i])->DownDuration - .3;
 					if (held > 0)
-						SceneCacheScrubKey(keys[i], std::min(double(ImGui::GetIO().DeltaTime), held));
+						SceneCacheScrubKey(keys[i], (std::min)(double(ImGui::GetIO().DeltaTime), held));
 				}
 			}
 		}

@@ -218,6 +218,12 @@ s=s.replace('ImGui::InputDouble(', 'trackDouble(').replace('ImGui::Checkbox(', '
 s=s.replace('ImGui::NeoTimelineSpan(', 'trackSpan(')
 s=s.replace('ImGui::MenuItem("Go to")','trackSeekMenuItem("Go to")').replace('ImGui::MenuItem("Go to with lead-in")','trackSeekMenuItem("Go to with lead-in")')
 s=s.replace('ImGui::CollapsingHeader(', 'trackHeader(')
+# Exercise MSVC's Windows macro environment after headers, including the
+# cache diagnostics and held-key controls, rather than relying on MinGW defaults.
+s=s.replace('namespace AfxHookSource', '#define min(a,b) (((a)<(b))?(a):(b))\n#define max(a,b) (((a)>(b))?(a):(b))\nnamespace AfxHookSource',1)
+s=s.replace('static bool g_ShowCurveEditor', '#undef min\n#undef max\nstatic bool g_ShowCurveEditor',1)
+s=s.replace('void Draw()\n{', '#define min(a,b) (((a)<(b))?(a):(b))\n#define max(a,b) (((a)>(b))?(a):(b))\nvoid Draw()\n{',1)
+s+='\n#undef min\n#undef max\n'
 # Keep Windows' min/max macros active around the field editor, even on non-Windows hosts.
 s=s.replace('static bool ModifierField(', '#define min(a,b) (((a)<(b))?(a):(b))\n#define max(a,b) (((a)>(b))?(a):(b))\nstatic bool ModifierField(')
 s=s.replace('static void ApplyModifierFields(', '#undef min\n#undef max\nstatic void ApplyModifierFields(')
