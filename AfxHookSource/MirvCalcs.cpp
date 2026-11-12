@@ -7380,6 +7380,170 @@ static bool Mirv_Tf2_LabelDebris(CMirvTf2ClientUnknown *object)
 	return Mirv_Tf2_SceneDebris(object, clientClass);
 }
 // Pose-space anchors avoid stale model pivots and oversized surrounding bounds.
+// VVD vertices retain the visible piece's offset from the model pivot.
+static bool Mirv_Tf2_ReadGibVertexFile(const char *name, std::vector<unsigned char> &bytes);
+static bool Mirv_Tf2_GibVertexAnchor(CMirvTf2ClientRenderable *renderable, const unsigned char *hdr,
+                                     int boneCount, const SOURCESDK::matrix3x4_t *bones, float out[3])
+{
+	struct Contribution
+	{
+		double Point[3]{}, Weight = 0;
+	};
+	struct Entry
+	{
+		std::vector<Contribution> Bones;
+		int Vertices = 0;
+	};
+	static std::map<std::string, Entry> entries;
+	auto info = Mirv_Tf2_GetModelInfo();
+	const char *name = info ? info->GetModelName(renderable->GetModel()) : nullptr;
+	if (!name || renderable->GetBody() < 0)
+		return false;
+	int checksum, length, boneIndex;
+	std::memcpy(&checksum, hdr + 8, 4);
+	std::memcpy(&length, hdr + 76, 4);
+	std::memcpy(&boneIndex, hdr + 160, 4);
+	const std::string key =
+	    std::string(name) + ":" + std::to_string(checksum) + ":" + std::to_string(renderable->GetBody());
+	if (entries.size() >= 128 && !entries.count(key))
+		entries.clear();
+	auto found = entries.find(key);
+	if (found == entries.end())
+	{
+		Entry entry;
+		entry.Bones.resize(boneCount);
+		auto parse = [&]() -> bool {
+			std::vector<unsigned char> bytes;
+			if (!Mirv_Tf2_ReadGibVertexFile(name, bytes) || bytes.size() < 64)
+				return false;
+			auto integer = [&](size_t at) {
+				int v;
+				std::memcpy(&v, bytes.data() + at, 4);
+				return v;
+			};
+			if (integer(0) != 0x56534449 || integer(4) != 4 || integer(8) != checksum || integer(12) < 1 ||
+			    integer(12) > 8)
+				return false;
+			int vertices = integer(16), fixups = integer(48), fixStart = integer(52), data = integer(56);
+			if (vertices <= 0 || vertices > 1000000 || data < 64 ||
+			    std::uint64_t(data) + vertices * 48ULL > bytes.size() || fixups < 0 || fixups > 1000000)
+				return false;
+			std::vector<int> order;
+			if (fixups)
+			{
+				if (fixStart < 64 || std::uint64_t(fixStart) + fixups * 12ULL > bytes.size())
+					return false;
+				for (int i = 0; i < fixups; ++i)
+				{
+					int at = fixStart + i * 12, source = integer(at + 4), n = integer(at + 8);
+					if (integer(at) < 0 || source < 0 || n < 0 || source > vertices - n ||
+					    order.size() + n > size_t(vertices))
+						return false;
+					for (int j = 0; j < n; ++j)
+						order.push_back(source + j);
+				}
+				if (order.size() != size_t(vertices))
+					return false;
+			}
+			auto mdlInt = [&](size_t at) {
+				int v;
+				std::memcpy(&v, hdr + at, 4);
+				return v;
+			};
+			if (length < 240)
+				return false;
+			int parts = mdlInt(232), partStart = mdlInt(236);
+			if (parts < 1 || parts > 128 || partStart < 240 || std::int64_t(partStart) + parts * 16 > length)
+				return false;
+			for (int part = 0; part < parts; ++part)
+			{
+				int at = partStart + part * 16, models = mdlInt(at + 4), base = mdlInt(at + 8),
+				    offset = mdlInt(at + 12);
+				if (models < 1 || models > 256 || base <= 0 || offset < 16)
+					return false;
+				std::int64_t model =
+				    at + std::int64_t(offset) + ((renderable->GetBody() / base) % models) * 148LL;
+				if (model + 148 > length)
+					return false;
+				int n = mdlInt(size_t(model) + 80), first = mdlInt(size_t(model) + 84);
+				if (n < 0 || first < 0 || first % 48 || first / 48 > vertices - n)
+					return false;
+				for (int i = 0; i < n; ++i)
+				{
+					int index = first / 48 + i;
+					if (!order.empty())
+						index = order[index];
+					const auto vertex = bytes.data() + data + index * 48;
+					float point[3];
+					std::memcpy(point, vertex + 16, 12);
+					for (float v : point)
+						if (!std::isfinite(v) || std::abs(v) > 1048576)
+							return false;
+					int weights = vertex[15];
+					if (weights < 1 || weights > 3)
+						return false;
+					double total = 0;
+					for (int w = 0; w < weights; ++w)
+					{
+						int bone = vertex[12 + w];
+						float weight;
+						std::memcpy(&weight, vertex + w * 4, 4);
+						if (bone >= boneCount || !std::isfinite(weight) || weight < 0 || weight > 1)
+							return false;
+						total += weight;
+						auto &result = entry.Bones[bone];
+						result.Weight += weight;
+						for (int r = 0; r < 3; ++r)
+						{
+							float bind[4];
+							std::memcpy(bind, hdr + boneIndex + bone * 216 + 96 + r * 16, 16);
+							double local = bind[3];
+							for (int c = 0; c < 3; ++c)
+								local += bind[c] * point[c];
+							if (!std::isfinite(local))
+								return false;
+							result.Point[r] += weight * local;
+						}
+					}
+					if (std::abs(total - 1) > .01)
+						return false;
+					++entry.Vertices;
+				}
+			}
+			return entry.Vertices > 0;
+		};
+		if (!parse())
+		{
+			entry.Vertices = 0;
+			entry.Bones.clear();
+		}
+		found = entries.emplace(key, std::move(entry)).first;
+	}
+	const auto &entry = found->second;
+	if (!entry.Vertices || entry.Bones.size() != size_t(boneCount))
+		return false;
+	double result[3]{};
+	for (int i = 0; i < boneCount; ++i)
+	{
+		const auto &part = entry.Bones[i];
+		if (!part.Weight)
+			continue;
+		for (int r = 0; r < 3; ++r)
+		{
+			result[r] += bones[i][r][3] * part.Weight;
+			for (int c = 0; c < 3; ++c)
+				result[r] += bones[i][r][c] * part.Point[c];
+		}
+	}
+	for (int r = 0; r < 3; ++r)
+	{
+		double v = result[r] / entry.Vertices;
+		if (!std::isfinite(v) || std::abs(v) > 1048576)
+			return false;
+		out[r] = float(v);
+	}
+	return true;
+}
 static bool Mirv_Tf2_GibLabelAnchor(CMirvTf2ClientRenderable *renderable, float out[3])
 {
 	auto info = Mirv_Tf2_GetModelInfo();
@@ -7426,57 +7590,8 @@ static bool Mirv_Tf2_GibLabelAnchor(CMirvTf2ClientRenderable *renderable, float 
 		}
 		any = true;
 	};
-	// Rigid break-model pieces select a bodygroup from a shared studio model.
-	// Whole-model hitboxes/bones can surround invisible pieces. Prefer the
-	// selected meshes' model-space centers, transformed through the root bind pose.
-	if (length >= 240 && renderable->GetBody() >= 0)
-	{
-		int parts, partIndex;
-		std::memcpy(&parts, hdr + 232, 4);
-		std::memcpy(&partIndex, hdr + 236, 4);
-		if (parts > 0 && parts <= 128 && partIndex >= 240 &&
-		    std::int64_t(partIndex) + parts * 16 <= length)
-			for (int part = 0; part < parts; ++part)
-			{
-				const auto descriptor = hdr + partIndex + part * 16;
-				int models, base, modelIndex;
-				std::memcpy(&models, descriptor + 4, 4);
-				std::memcpy(&base, descriptor + 8, 4);
-				std::memcpy(&modelIndex, descriptor + 12, 4);
-				if (models <= 0 || models > 256 || base <= 0 || modelIndex < 16)
-					continue;
-				const std::int64_t selected = partIndex + part * 16LL + modelIndex +
-				    ((renderable->GetBody() / base) % models) * 148LL;
-				if (selected + 148 > length)
-					continue;
-				int meshes, meshIndex;
-				std::memcpy(&meshes, hdr + selected + 72, 4);
-				std::memcpy(&meshIndex, hdr + selected + 76, 4);
-				if (meshes <= 0 || meshes > 256 || meshIndex < 148 ||
-				    selected + meshIndex + meshes * 116LL > length)
-					continue;
-				for (int mesh = 0; mesh < meshes; ++mesh)
-				{
-					float center[3], local[3];
-					std::memcpy(center, hdr + selected + meshIndex + mesh * 116 + 36, 12);
-					for (int r = 0; r < 3; ++r)
-					{
-						float bind[4];
-						std::memcpy(bind, hdr + boneIndex + 96 + r * 16, 16);
-						local[r] = bind[3];
-						for (int c = 0; c < 3; ++c)
-							local[r] += bind[c] * center[c];
-					}
-					add(0, local);
-				}
-			}
-	}
-	if (any)
-	{
-		for (int a = 0; a < 3; ++a)
-			out[a] = (lo[a] + hi[a]) * .5f;
+	if (Mirv_Tf2_GibVertexAnchor(renderable, hdr, count, bones, out))
 		return true;
-	}
 	// SDK studiohdr hitbox sets (12-byte descriptors, 68-byte boxes).
 	if (length >= 180)
 	{
@@ -10566,6 +10681,33 @@ public:
 	virtual unsigned int Tell(void *) = 0;
 	virtual unsigned int Size(void *) = 0;
 };
+static bool Mirv_Tf2_ReadGibVertexFile(const char *name, std::vector<unsigned char> &bytes)
+{
+	std::string path = name ? name : "";
+	if (path.size() < 4 || path.substr(path.size() - 4) != ".mdl")
+		return false;
+	path.replace(path.size() - 4, 4, ".vvd");
+	auto fs = g_AppSystemFactory
+	              ? static_cast<SceneBaseFileSystem *>(g_AppSystemFactory("VBaseFileSystem011", nullptr))
+	              : nullptr;
+	void *file = fs ? fs->Open(path.c_str(), "rb", "GAME") : nullptr;
+	if (!file)
+		return false;
+	struct Close
+	{
+		SceneBaseFileSystem *Fs;
+		void *File;
+		~Close()
+		{
+			Fs->Close(File);
+		}
+	} close{fs, file};
+	unsigned size = fs->Size(file);
+	if (size < 64 || size > 64 * 1024 * 1024)
+		return false;
+	bytes.resize(size);
+	return fs->Read(bytes.data(), int(size), file) == int(size);
+}
 static std::shared_ptr<const advancedfx::SceneCache::Model> SceneBrushModel(const char *name)
 {
 	using Cache = advancedfx::SceneCache;
@@ -11231,8 +11373,9 @@ void Mirv_Tf2_DebugEntityLabel(int address)
 			int count = hdr ? Mirv_Tf2_ReadBoneNames(hdr, names) : 0;
 			auto globals = g_Hook_VClient_RenderView.GetGlobals();
 			SOURCESDK::matrix3x4_t bones[MIRV_TF2_MAX_BONES]{};
-			if (count > 0 && globals &&
-			    renderable->SetupBones(bones, MIRV_TF2_MAX_BONES, 0x7ff00, globals->curtime_get()))
+			const bool posed = count > 0 && globals &&
+			    renderable->SetupBones(bones, MIRV_TF2_MAX_BONES, 0x7ff00, globals->curtime_get());
+			if (posed)
 				for (int i = 0; i < count; ++i)
 				{
 					Tier0_Msg("  bone %i %s parent %i\n", i, names[i].name, names[i].parent);
@@ -11240,6 +11383,9 @@ void Mirv_Tf2_DebugEntityLabel(int address)
 						Tier0_Msg("    %.6f %.6f %.6f %.6f\n", bones[i][r][0], bones[i][r][1], bones[i][r][2],
 						          bones[i][r][3]);
 				}
+			if (posed)
+				Tier0_Msg("  Vertex geometry anchor: %s\n",
+				    Mirv_Tf2_GibVertexAnchor(renderable, hdr, count, bones, anchor) ? "available" : "unavailable (using fallback)");
 			return;
 		}
 	Tier0_Msg("Label address %i is unavailable.\n", address);

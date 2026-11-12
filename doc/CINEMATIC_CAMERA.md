@@ -2006,8 +2006,12 @@ Viewmodel-specific categorization/visibility remains separate work.
 
 ### Gib entity labels
 
-Rigid gib labels prefer the active bodygroup mesh centers transformed through
-the root bind pose. This avoids anchoring to invisible pieces in a shared model.
+Gib labels use the selected bodygroup's actual VVD vertices to calculate a
+geometry center, including per-vertex bone weights and bind transforms. This
+avoids the unused mesh-center field, model pivot and invisible bodygroups.
+VVD checksums, ranges and LOD fixups are validated. Per-model/bodygroup bone
+contributions are cached (at most 128 entries); subsequent frames transform
+those contributions without reading files or scanning vertices again.
 Fallbacks are transformed studio hitboxes, followed by the used leaf bones
 of the observed pose. World render bounds remain a fallback when pose data is
 unavailable. This avoids relying on pivots and surrounding bounds that may
