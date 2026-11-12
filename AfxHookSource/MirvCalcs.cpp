@@ -7312,8 +7312,8 @@ static int Mirv_Tf2_LabelCategory(const char *name, bool isPlayer, bool scene = 
 	     strstr(lower, "objectcartdispenser") || strstr(lower, "baseobject") || !strncmp(lower, "obj_", 4)))
 		return MIRV_TF2_ENTITY_BUILDING;
 
-	if (scene && strstr(lower, "ragdoll"))
-		return MIRV_TF2_ENTITY_RAGDOLL;
+	if (strstr(lower, "ragdoll"))
+		return scene ? MIRV_TF2_ENTITY_RAGDOLL : 6;
 	if (strstr(lower, "c_gib") || strstr(lower, "c_tfgib") || strstr(lower, "ctfgib") ||
 	    strstr(lower, "headgib") || strstr(lower, "head_gib") || !strcmp(lower, "gib") ||
 	    !strcmp(lower, "tf_gib"))
@@ -7708,10 +7708,10 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 
 		MirvTf2EntityLabel_t & label = outLabels[count++];
 		label.category = Mirv_Tf2_ToolCategory(iface, ent, index, iface->IsPlayer(ent));
-		if (label.category != MIRV_TF2_ENTITY_COSMETIC &&
+		if (label.category != MIRV_TF2_ENTITY_COSMETIC && label.category != 6 &&
 		    (nativeIndex < 0 || nativeIndex >= 2048) && Mirv_Tf2_LabelDebris(unknown))
 			label.category = 5;
-		if (label.category != MIRV_TF2_ENTITY_PLAYER && label.category != MIRV_TF2_ENTITY_COSMETIC)
+		if (label.category != MIRV_TF2_ENTITY_PLAYER && label.category != MIRV_TF2_ENTITY_COSMETIC && label.category != 6)
 		{
 			auto info = Mirv_Tf2_GetModelInfo();
 			const auto model = renderable->GetModel();

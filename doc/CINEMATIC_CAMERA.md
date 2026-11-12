@@ -2053,3 +2053,7 @@ geometry anchor is unavailable. It retries a cached failed load once per explici
 diagnostic request; drawing does not retry files every frame. Model reads query
 the app-system registry first, then the loaded filesystem module's public
 `VBaseFileSystem011` factory, preserving GAME search paths and VPK access.
+
+Entity labels support `mirv_drawentities filter ragdolls 0|1` and
+`mirv_drawentities color ragdolls R G B`. Ragdoll labels default to gray
+(170,170,170); gib labels default to orange (255,160,64).

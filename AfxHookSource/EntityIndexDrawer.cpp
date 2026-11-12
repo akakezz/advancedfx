@@ -167,7 +167,7 @@ void CEntityIndexDrawer::EndDevice(void)
 
 void CEntityIndexDrawer::CategoryColor_set(int category, int r, int g, int b)
 {
-	if (category < 0 || 6 <= category)
+	if (category < 0 || 7 <= category)
 		return;
 
 	const int values[3] = { r, g, b };
@@ -177,7 +177,7 @@ void CEntityIndexDrawer::CategoryColor_set(int category, int r, int g, int b)
 
 void CEntityIndexDrawer::CategoryColor_get(int category, int & r, int & g, int & b) const
 {
-	if (category < 0 || 6 <= category)
+	if (category < 0 || 7 <= category)
 		category = 4;
 
 	r = m_CategoryColors[category][0];
@@ -250,7 +250,7 @@ void CEntityIndexDrawer::OnPostRenderAllTools_EngineThread(void)
 	for (int i = 0; i < numFound; ++i)
 	{
 		const int category = found[i].category;
-		if (category < 0 || category >= 6 || !m_CategoryFilter[category])
+		if (category < 0 || category >= 7 || !m_CategoryFilter[category])
 			continue;
 		const double dx = found[i].origin[0] - camX;
 		const double dy = found[i].origin[1] - camY;
@@ -285,7 +285,7 @@ void CEntityIndexDrawer::OnPostRenderAllTools_EngineThread(void)
 	data.gibSize = m_GibSize;
 	data.stackLabels = m_StackLabels;
 	data.stackWorldDistance = m_StackWorldDistance;
-	for (int category = 0; category < 6; ++category)
+	for (int category = 0; category < 7; ++category)
 		data.colors[category] = 0xFF000000u | ((uint32_t)m_CategoryColors[category][0] << 16) | ((uint32_t)m_CategoryColors[category][1] << 8) | (uint32_t)m_CategoryColors[category][2];
 
 	data.labels.reserve(candidates.size());
@@ -447,7 +447,7 @@ void CEntityIndexDrawer::OnPostRenderAllTools_DrawingThread(const DrawData & dat
 	{
 		const ScreenLabel & label = labels[i];
 		int cat = label.label->category;
-		if (cat < 0 || cat >= 6)
+		if (cat < 0 || cat >= 7)
 			cat = 4;
 		EntityIndex_DrawNumber(device, label.label->index, label.x, label.y,
 		                       cat == 5 ? data.gibSize : data.size, data.colors[cat]);

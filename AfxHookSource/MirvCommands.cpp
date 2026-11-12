@@ -3623,7 +3623,7 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
         else if (0 == _stricmp("filter", arg1))
         {
             // Categories correspond to MirvTf2EntityLabel_t::category.
-			static const char *names[6] = {"players", "projectiles", "weapons", "cosmetics", "other", "gibs"};
+			static const char *names[7] = {"players", "projectiles", "weapons", "cosmetics", "other", "gibs", "ragdolls"};
 			if (3 <= argc)
             {
                 const char * name = args->ArgV(2);
@@ -3633,7 +3633,7 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
                 }
                 else
                 {
-					for (int i = 0; i < 6; ++i)
+					for (int i = 0; i < 7; ++i)
 						if (0 == _stricmp(names[i], name))
                         {
                             if (4 <= argc) { g_EntityIndexDrawer.Filter_set(i, 0 != atoi(args->ArgV(3))); return; }
@@ -3643,8 +3643,8 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
                 }
             }
 			Tier0_Msg(
-			    "mirv_drawentities filter <all|players|projectiles|weapons|cosmetics|other|gibs> 0|1\n");
-			for (int i = 0; i < 6; ++i)
+			    "mirv_drawentities filter <all|players|projectiles|weapons|cosmetics|other|gibs|ragdolls> 0|1\n");
+			for (int i = 0; i < 7; ++i)
 				Tier0_Msg("  %s: %i\n", names[i], g_EntityIndexDrawer.Filter_get(i) ? 1 : 0);
 			return;
         }
@@ -3723,11 +3723,11 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
 		}
         else if (0 == _stricmp("color", arg1))
         {
-			static const char *names[6] = {"players", "projectiles", "weapons", "cosmetics", "other", "gibs"};
+			static const char *names[7] = {"players", "projectiles", "weapons", "cosmetics", "other", "gibs", "ragdolls"};
 			if (3 <= argc)
             {
                 const char * name = args->ArgV(2);
-				for (int i = 0; i < 6; ++i)
+				for (int i = 0; i < 7; ++i)
 					if (0 == _stricmp(names[i], name))
                     {
                         if (6 <= argc)
@@ -3741,9 +3741,9 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
                         return;
                     }
             }
-			Tier0_Msg("mirv_drawentities color <players|projectiles|weapons|cosmetics|other|gibs> <red> "
+			Tier0_Msg("mirv_drawentities color <players|projectiles|weapons|cosmetics|other|gibs|ragdolls> <red> "
 			          "<green> <blue> (0-255)\n");
-			for (int i = 0; i < 6; ++i)
+			for (int i = 0; i < 7; ++i)
 			{
                 int r, g, b;
                 g_EntityIndexDrawer.CategoryColor_get(i, r, g, b);
@@ -3809,7 +3809,7 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
 	    "Usage:\n"
 	    "mirv_drawentities enabled 0|1 - Draw the entity index above entities (nearest ones are drawn on "
 	    "top).\n"
-	    "mirv_drawentities filter <all|players|projectiles|weapons|cosmetics|other|gibs> 0|1 - Toggle "
+	    "mirv_drawentities filter <all|players|projectiles|weapons|cosmetics|other|gibs|ragdolls> 0|1 - Toggle "
 		"categories "
 	    "(all on by default).\n"
 	    "mirv_drawentities height <fUnits> - Vertical offset from the entity anchor (default 0).\n"
@@ -3819,7 +3819,7 @@ CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view.
 	    "limit (default).\n"
 	    "mirv_drawentities maxLabels <iCount> - At most this many labels, the nearest ones (default 64).\n"
 	    "mirv_drawentities color <category> <red> <green> <blue> - RGB color for "
-	    "players/projectiles/weapons/cosmetics/other/gibs (0-255).\n"
+	    "players/projectiles/weapons/cosmetics/other/gibs/ragdolls (0-255).\n"
 	    "mirv_drawentities stackLabels 0|1 - 0: exact entity anchor, 1: world-aware stacking (default).\n"
 	    "mirv_drawentities stackWorldDistance <fUnits> - Maximum 3D distance for stacking (default 32).\n"
 	    "mirv_drawentities viewCheck 0|1 - 1 (default): Only draw on the main view (not i.e. the 3D "

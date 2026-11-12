@@ -18,19 +18,19 @@ public:
 	bool Enabled_get(void) { return m_Enabled; }
 	void Enabled_set(bool value) { m_Enabled = value; }
 
-	// Label categories: player, projectile, weapon, cosmetic, other, gib.
+	// Label categories: player, projectile, weapon, cosmetic, other, gib, ragdoll.
 	bool Filter_get(int category) const
 	{
-		return 0 <= category && category < 6 && m_CategoryFilter[category];
+		return 0 <= category && category < 7 && m_CategoryFilter[category];
 	}
 	void Filter_set(int category, bool value)
 	{
-		if (0 <= category && category < 6)
+		if (0 <= category && category < 7)
 			m_CategoryFilter[category] = value;
 	}
 	void FilterAll_set(bool value)
 	{
-		for (int i = 0; i < 6; ++i)
+		for (int i = 0; i < 7; ++i)
 			m_CategoryFilter[i] = value;
 	}
 
@@ -95,7 +95,7 @@ public:
 		float gibSize = 20.0f;
 		bool stackLabels = true;
 		float stackWorldDistance = 32.0f;
-		uint32_t colors[6] = {0xFF42C8FFu, 0xFFFF6A55u, 0xFF46EB8Cu, 0xFFCE80FFu, 0xFFFFE600u, 0xFFFFE600u};
+		uint32_t colors[7] = {0xFF42C8FFu, 0xFFFF6A55u, 0xFF46EB8Cu, 0xFFCE80FFu, 0xFFFFE600u, 0xFFFFA040u, 0xFFAAAAAAu};
 		std::vector<Label> labels;
 	};
 
@@ -107,14 +107,14 @@ private:
 	IDirect3DTexture9 * m_DigitsTexture = nullptr;
 
 	bool m_Enabled = false;
-	bool m_CategoryFilter[6] = {true, true, true, true, true, true};
+	bool m_CategoryFilter[7] = {true, true, true, true, true, true, true};
 	float m_Height = 0.0f;
 	float m_Size = 32.0f;
 	float m_GibSize = 20.0f;
 	float m_MaxDistance = 0.0f;
 	int m_MaxLabels = 64;
-	int m_CategoryColors[6][3] = {{66, 200, 255},  {255, 106, 85}, {70, 235, 140},
-	                              {206, 128, 255}, {255, 230, 0},  {255, 230, 0}};
+	int m_CategoryColors[7][3] = {{66, 200, 255},  {255, 106, 85}, {70, 235, 140},
+	                              {206, 128, 255}, {255, 230, 0},  {255, 160, 64}, {170, 170, 170}};
 	bool m_ViewCheck = true;
 	bool m_StackLabels = true;
 	float m_StackWorldDistance = 32.0f;
