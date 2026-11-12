@@ -1534,7 +1534,8 @@ forward through the shot. Freeze actual playback, enable **Cached preview**,
 and scrub backward through the covered interval. **Draw cached models** shows
 the recorded wireframe poses with the overlay closed and **Show path** disabled.
 Live models remain visible, so at the latest tick the wireframes can overlap
-them. Players are cyan, projectiles red, held weapons gold, and cosmetics purple.
+them. Players are cyan, projectiles red, held weapons gold, cosmetics purple,
+ragdolls green, and gibs orange.
 On engines without the verified
 `VMaterialSystem082` interface, model drawing falls back to the default studio
 wireframe; proxy boxes still use the category colors.
@@ -1710,3 +1711,37 @@ is preserved. Failed resets no longer recreate the overlay's device objects.
 readiness to help diagnose delayed failures. The safeguards have fixture coverage;
 live TF2 windowed idle/alt-tab testing is still required to verify the reported
 crash is resolved.
+
+### Ragdolls and gibs
+
+In **Sequencer → Scene Cache**, enable **Capture ragdoll models** and/or
+**Capture gib models** before recording. They are separate, opt-in categories
+and do not require a selected player. Record forward through a death/explosion,
+stop recording, then enable **Cached preview** and scrub the retained interval.
+Existing smooth animation, memory budget and capture-range controls apply.
+
+```text
+mirv_campath cache ragdolls 1
+mirv_campath cache gibs 1
+mirv_campath cache record 1
+// Play forward through the event, then:
+mirv_campath cache record 0
+mirv_campath cache preview 1
+```
+
+Ragdolls draw green; gibs draw orange. `cache status` reports their capture
+settings and observed pose counts. This records visible model poses produced by
+the game, including client-only objects whose public entity index is -1.
+Transient identity uses the entity handle's slot **and serial**, so different
+gibs sharing that public index, or objects reusing a slot, stay distinct. The
+collector preserves existing AGR tools attachments and never stores its live
+capture pointers in history. Existing gap/travel/model/category safeguards and
+per-bone transform fallbacks remain in effect.
+
+Gib recognition uses known gib class names and the model's `/gibs/` directory,
+including Windows-style paths. Unrecognized custom debris may need another
+classifier rule. Blood particles, dissolve effects, physics constraints and
+simulation are not cached. Hidden/dormant networked entities are skipped; models
+that cannot supply a supported studio pose retain proxy bounds. Live models
+remain visible alongside cached preview. TF2 in-game coverage still needs testing,
+especially client-only gibs and unusual/custom death effects.

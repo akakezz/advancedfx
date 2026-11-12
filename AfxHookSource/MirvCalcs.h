@@ -396,7 +396,9 @@ enum MirvTf2EntityCategory_t
  MIRV_TF2_ENTITY_WEAPON = 2,
  MIRV_TF2_ENTITY_COSMETIC = 3,
  MIRV_TF2_ENTITY_OTHER = 4,
- MIRV_TF2_ENTITY_CATEGORY_COUNT = 5
+ MIRV_TF2_ENTITY_RAGDOLL = 5,
+ MIRV_TF2_ENTITY_GIB = 6,
+ MIRV_TF2_ENTITY_CATEGORY_COUNT = advancedfx::SceneCache::CategoryCount
 };
 
 struct MirvTf2EntityLabel_t
@@ -415,9 +417,10 @@ int Mirv_Tf2_CollectEntityLabels(bool playersOnly, MirvTf2EntityLabel_t * outLab
 
 bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float mins[3], float maxs[3]);
 
-// Opt-in selected-player scene-pose prototype. Does not change AGR recording mode.
+// Opt-in scene-pose capture, including observed client-only debris. Does not change AGR recording mode.
 // The cache owns immutable value data only; engine pointers are resolved for each draw.
-bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status);
+bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status,
+ void *observedObject = nullptr);
 // Engine-thread submission only: Source queues the draw; HLAE queues resource retirement.
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
  const advancedfx::SceneCache::Entity *owner = nullptr);
@@ -425,10 +428,11 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 struct MirvTf2SceneEntity
 {
 	int Index = -1;
+	void *ObservedObject = nullptr; // Engine-thread capture only; never stored in history.
 	advancedfx::SceneCache::Entity Snapshot;
 };
-// One tools-list traversal per observed tick, with serial-aware projectile identities.
-void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics,
+// One tools-list traversal per observed tick, with serial-aware transient identities.
+void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs,
 	std::vector<MirvTf2SceneEntity> &out);
 void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued references remain pinned.
 

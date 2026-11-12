@@ -20,6 +20,7 @@ preamble = r'''
 #include "shared/SceneCache.h"
 #include "shared/AfxMath.h"
 #include "AfxHookSource/MaterialSystemHooks.h"
+bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&,std::string&,void* = nullptr);
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr);
 void Mirv_Tf2_SceneRenderFrame();
 #include <thread>
@@ -58,7 +59,7 @@ struct Fixture {
  void *StudioSlots[49]{},*CacheSlots[42]{},*NetworkSlots[9]{};
  Object Studio{StudioSlots},Cache{CacheSlots},Network{NetworkSlots};
  std::array<float,3> DrawColor{};bool MaterialInterface=true;void*MaterialSlots[43]{},*MaterialSystemSlots[71]{};Object MaterialSystem{MaterialSystemSlots};
- struct Material: Object {int Refs=0;std::string Color;std::array<float,3> Modulation{1,1,1},Tint{1,1,1};};Material Materials[5];int MaterialCount=0;
+ struct Material: Object {int Refs=0;std::string Color;std::array<float,3> Modulation{1,1,1},Tint{1,1,1};};Material Materials[8];int MaterialCount=0;
 
  void Put(int offset,int value){std::memcpy(Header+offset,&value,4);}
  void InitHeader(){Put(0,0x54534449);Put(4,48);Put(8,123);Put(76,sizeof(Header));Put(156,Count);Put(160,164);for(int i=0;i<Count&&i<8;++i){Put(164+i*216+4,i-1);Put(164+i*216+160,0x400);}}
@@ -67,7 +68,7 @@ struct CMirvTf2ClientRenderable {
  const void*GetModel(){return &fixture;}bool ShouldDraw(){return fixture.Visible;}int GetBody(){return fixture.Body;}
  bool SetupBones(SOURCESDK::matrix3x4_t*out,int maximum,int mask,float){++fixture.SetupCalls;assert(maximum==128&&mask==0x7ff00);if(!fixture.Setup)return false;std::memcpy(out,fixture.Observed,sizeof(fixture.Observed));return true;}
 } renderable;
-struct CMirvTf2ClientUnknown {void*GetClientNetworkable(){return &fixture.Network;}CMirvTf2ClientRenderable*GetClientRenderable(){return &renderable;}} unknown;
+struct CMirvTf2ClientUnknown {std::uint32_t Handle=(3<<12)|2050;const void*GetRefEHandle(){return &Handle;}bool HasNetwork=true;void*GetClientNetworkable(){return HasNetwork?&fixture.Network:nullptr;}CMirvTf2ClientRenderable*GetClientRenderable(){return &renderable;}} unknown;
 void*Mirv_Tf2_DiagnosticEntity(int index){return index==1?&unknown:nullptr;}
 struct ModelInfo {const char*GetModelName(const void*){return fixture.ModelName.c_str();}void*GetStudiomodel(const void*){return fixture.Header;}} modelInfo;
 ModelInfo*Mirv_Tf2_GetModelInfo(){return &modelInfo;}
@@ -178,7 +179,7 @@ int main(){
  assert(Mirv_Tf2_DrawScenePose(entity,status));ConsumeRenderQueue(false);assert(fixture.Refs==1&&fixture.HeaderLocks==1);Mirv_Tf2_SceneRenderFrame();assert(!fixture.Refs&&!fixture.HeaderLocks);
  // Repeated idle draws return to the same live resource baseline.
  for(int frame=0;frame<100;++frame){for(int model=0;model<32;++model)assert(Mirv_Tf2_DrawScenePose(entity,status));ConsumeRenderQueue();assert(!fixture.Refs&&!fixture.HeaderLocks&&!fixture.Override);}
- entity.Category=2;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(2);entity.Category=3;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(3);assert(!fixture.Override);ConsumeRenderQueue();Mirv_Tf2_ReleaseSceneMaterials();for(int i=0;i<fixture.MaterialCount;++i)assert(fixture.Materials[i].Refs==0);
+ entity.Category=2;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(2);entity.Category=3;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(3);entity.Category=5;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(5);entity.Category=6;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(6);assert(!fixture.Override);ConsumeRenderQueue();Mirv_Tf2_ReleaseSceneMaterials();for(int i=0;i<fixture.MaterialCount;++i)assert(fixture.Materials[i].Refs==0);
  assert(SOURCESDK::TF2::keySystem.Allocations==0);
  // Reconstruct a locally interpolated skeleton and bone-merged gear using
  // only captured values, after moving the live entity out of the test.
@@ -199,6 +200,12 @@ int main(){
  Cache::Entity mixedEntity;mixedEntity.ModelPose=std::make_shared<Cache::Pose>(sheared);SOURCESDK::matrix3x4_t mixedOut[128];assert(SceneBuildMatrices(mixedEntity,nullptr,mixedOut));for(int r=0;r<3;++r)for(int c=0;c<4;++c)assert(std::abs(mixedOut[0][r][c]-shear[r*4+c])<1e-5);
  // Singular-parent exceptions retain world space and follow root retargeting.
  Cache::Pose singular;singular.ModelInfo=skeleton;singular.Root=ownerPose->Root;Cache::Matrix zero=singular.Root;zero[5]=0;singular.Bones={zero,ownerPose->Root};ScenePrepareLocalPose(singular);assert(singular.Fixed.size()==2&&singular.Fixed[1].World&&singular.Fixed[1].Reason==Cache::BoneFallback::SingularParent&&Cache::ValidPose(singular));mixedEntity.ModelPose=std::make_shared<Cache::Pose>(singular);mixedEntity.Origin[0]=25;assert(SceneBuildMatrices(mixedEntity,nullptr,mixedOut)&&mixedOut[1][0][3]==25);
+ // Client-only gibs can have no networkable and share entindex -1. Capture uses the observed object.
+ unknown.HasNetwork=false;fixture.Visible=true;fixture.Dormant=true;entity.Identity=(1ull<<63)|unknown.Handle;entity.Category=6;
+ assert(Mirv_Tf2_CaptureScenePose(-1,entity,status,&unknown)&&entity.ModelPose&&Cache::ValidPose(*entity.ModelPose));
+ auto nativeCaptured=entity.ModelPose;unknown.Handle+=(1<<12);int oldSetups=fixture.SetupCalls;assert(!Mirv_Tf2_CaptureScenePose(-1,entity,status,&unknown)&&fixture.SetupCalls==oldSetups&&!entity.ModelPose);
+ entity.Identity=(1ull<<63)|unknown.Handle;fixture.Visible=false;assert(!Mirv_Tf2_CaptureScenePose(-1,entity,status,&unknown));fixture.Visible=true;
+ assert(!Mirv_Tf2_CaptureScenePose(-1,entity,status));unknown.HasNetwork=true;fixture.Dormant=false;
  std::cout<<"TF2 scene pose capture/render fixture checks passed\n";
 }
 '''
@@ -225,29 +232,30 @@ collector_source = r'''
 #include <cstring>
 #include <cctype>
 #include <iostream>
-enum {MIRV_TF2_ENTITY_PLAYER,MIRV_TF2_ENTITY_PROJECTILE,MIRV_TF2_ENTITY_WEAPON,MIRV_TF2_ENTITY_COSMETIC,MIRV_TF2_ENTITY_OTHER};
+enum {MIRV_TF2_ENTITY_PLAYER,MIRV_TF2_ENTITY_PROJECTILE,MIRV_TF2_ENTITY_WEAPON,MIRV_TF2_ENTITY_COSMETIC,MIRV_TF2_ENTITY_OTHER,MIRV_TF2_ENTITY_RAGDOLL,MIRV_TF2_ENTITY_GIB};
 constexpr unsigned SOURCESDK_TF2_ENT_ENTRY_MASK=4095;
 namespace SOURCESDK {namespace TF2 {constexpr std::uintptr_t HTOOLHANDLE_INVALID=0;}}
-struct MirvTf2SceneEntity {int Index=-1;advancedfx::SceneCache::Entity Snapshot;};
+struct MirvTf2SceneEntity {int Index=-1;void*ObservedObject=nullptr;advancedfx::SceneCache::Entity Snapshot;};
 struct ClassInfo {void*Create=nullptr,*Event=nullptr;const char*Name="CTFProjectile_Rocket";};
 struct Network {void**Vtable;bool Dormant=false;ClassInfo Class;};
 void*slots[9]{};
 const void*Class(void*p){return &static_cast<Network*>(p)->Class;}
 bool Dormant(void*p){return static_cast<Network*>(p)->Dormant;}
-struct CMirvTf2ClientRenderable {bool Visible=true;float Origin[3]{},Angles[3]{};bool ShouldDraw(){return Visible;}const void*GetRenderOrigin(){return Origin;}const void*GetRenderAngles(){return Angles;}void GetRenderBounds(float*a,float*b){for(int i=0;i<3;++i){a[i]=-1;b[i]=1;}};};
-struct CMirvTf2ClientUnknown {int Index=1,User=42,ViewWeapon=0;bool Player=true,ToolAttached=false;const char*ToolClass=nullptr;CMirvTf2ClientUnknown*Owner=nullptr;std::uint32_t Handle=1;Network Net{slots};CMirvTf2ClientRenderable Render;void*GetClientNetworkable(){return &Net;}auto*GetClientRenderable(){return &Render;}const void*GetRefEHandle(){return &Handle;}};
+struct CMirvTf2ClientRenderable {const char*ModelName="models/props/crate.mdl";const void*GetModel(){return ModelName;}bool Visible=true;float Origin[3]{},Angles[3]{};bool ShouldDraw(){return Visible;}const void*GetRenderOrigin(){return Origin;}const void*GetRenderAngles(){return Angles;}void GetRenderBounds(float*a,float*b){for(int i=0;i<3;++i){a[i]=-1;b[i]=1;}};};
+struct CMirvTf2ClientUnknown {int Index=1,User=42,ViewWeapon=0;bool Player=true,ToolAttached=false,HasNetwork=true;const char*ToolClass=nullptr;CMirvTf2ClientUnknown*Owner=nullptr;std::uint32_t Handle=1;Network Net{slots};CMirvTf2ClientRenderable Render;void*GetClientNetworkable(){return HasNetwork?&Net:nullptr;}auto*GetClientRenderable(){return &Render;}const void*GetRefEHandle(){return &Handle;}};
 std::vector<CMirvTf2ClientUnknown*> objects;
 struct Tools {void*FirstEntity(){return objects.empty()?nullptr:objects[0];}void*NextEntity(void*p){auto it=std::find(objects.begin(),objects.end(),p);return it==objects.end()||++it==objects.end()?nullptr:*it;}int GetEntIndex(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Index;}bool IsPlayer(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Player;}
  int Attaches=0,Detaches=0;
  void*GetOwnerEntity(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Owner;}
  int GetOwningWeaponEntIndex(int i){for(auto*p:objects)if(p->Index==i)return p->ViewWeapon;return 0;}
- std::uintptr_t GetToolHandleForEntityByIndex(int i){for(auto*p:objects)if(p->Index==i&&p->ToolAttached)return reinterpret_cast<std::uintptr_t>(p);return 0;}
+ std::uintptr_t GetToolHandleForEntityByIndex(int i){for(auto*p:objects)if(int(p->Handle&4095)==i&&p->ToolAttached)return reinterpret_cast<std::uintptr_t>(p);return 0;}
  std::uintptr_t AttachToEntity(void*p){++Attaches;static_cast<CMirvTf2ClientUnknown*>(p)->ToolAttached=true;return reinterpret_cast<std::uintptr_t>(p);}
  void DetachFromEntity(void*p){++Detaches;static_cast<CMirvTf2ClientUnknown*>(p)->ToolAttached=false;}
  const char*GetClassname(std::uintptr_t h){auto*p=reinterpret_cast<CMirvTf2ClientUnknown*>(h);return p->ToolClass?p->ToolClass:p->Net.Class.Name;}
 } tools;
 namespace SOURCESDK {namespace TF2 {using IClientTools=::Tools;using EntitySearchResult=void*;}}
 struct CClientToolsTf2 {static CClientToolsTf2*Instance(){static CClientToolsTf2 i;return &i;}Tools*GetClientTools(){return &tools;}};
+struct ModelInfo{const char*GetModelName(const void*model){return static_cast<const char*>(model);}} modelInfo;ModelInfo*Mirv_Tf2_GetModelInfo(){return &modelInfo;}
 int Mirv_Tf2_GetMaxPlayers(){return 32;}
 bool Mirv_Tf2_GetPlayerInfo(int i,char*,int,int*u){for(auto*p:objects)if(p->Index==i){*u=p->User;return true;}return false;}
 template<typename R,typename...Args>R SceneInterfaceCall(void*p,size_t slot,Args...args){return reinterpret_cast<R(*)(void*,Args...)>((*static_cast<void***>(p))[slot])(p,args...);}
@@ -255,33 +263,49 @@ template<typename R,typename...Args>R SceneInterfaceCall(void*p,size_t slot,Args
 int main(){
  slots[2]=reinterpret_cast<void*>(Class);slots[8]=reinterpret_cast<void*>(Dormant);
  CMirvTf2ClientUnknown player,rocket;rocket.Index=40;rocket.Handle=(2<<12)|40;rocket.Player=false;objects={&player,&rocket};
- std::vector<MirvTf2SceneEntity> out;Mirv_Tf2_CollectSceneEntities(false,false,false,out);assert(out.size()==1&&out[0].Snapshot.Identity==42);
- Mirv_Tf2_CollectSceneEntities(true,false,false,out);assert(out.size()==2&&out[1].Snapshot.Category==1);auto id=out[1].Snapshot.Identity;assert(id==((1ull<<63)|rocket.Handle));
- rocket.Handle=(3<<12)|40;Mirv_Tf2_CollectSceneEntities(true,false,false,out);assert(out.size()==2&&id!=out[1].Snapshot.Identity);
- rocket.Net.Dormant=true;Mirv_Tf2_CollectSceneEntities(true,false,false,out);assert(out.size()==1);rocket.Net.Dormant=false;
- rocket.Render.Visible=false;Mirv_Tf2_CollectSceneEntities(true,false,false,out);assert(out.size()==1);rocket.Render.Visible=true;
- rocket.Handle=0xffffffff;Mirv_Tf2_CollectSceneEntities(true,false,false,out);assert(out.size()==1);rocket.Handle=41;Mirv_Tf2_CollectSceneEntities(true,false,false,out);assert(out.size()==1);rocket.Handle=40;
- rocket.Render.Origin[0]=NAN;Mirv_Tf2_CollectSceneEntities(true,false,false,out);assert(out.size()==1);rocket.Render.Origin[0]=0;
- for(auto name:{"CTFRocketLauncher","CTFGrenadeLauncher","CTFFlareGun","CTFCrossbow","CTFCompoundBow","CTFCleaver","CTFRocketPack","CTFWearable"}){rocket.Net.Class.Name=name;Mirv_Tf2_CollectSceneEntities(true,false,false,out);assert(out.size()==1);}
- for(auto name:{"CTFProjectile_Rocket","CTFGrenadePipebombProjectile","CTFProjectile_Arrow","CTFProjectile_Flare","CTFProjectile_Cleaver"}){rocket.Net.Class.Name=name;Mirv_Tf2_CollectSceneEntities(true,false,false,out);assert(out.size()==2);}
- player.User=0;Mirv_Tf2_CollectSceneEntities(true,false,false,out);assert(out.size()==1&&out[0].Index==40);
+ std::vector<MirvTf2SceneEntity> out;Mirv_Tf2_CollectSceneEntities(false,false,false,false,false,out);assert(out.size()==1&&out[0].Snapshot.Identity==42);
+ Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,out);assert(out.size()==2&&out[1].Snapshot.Category==1);auto id=out[1].Snapshot.Identity;assert(id==((1ull<<63)|rocket.Handle));
+ rocket.Handle=(3<<12)|40;Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,out);assert(out.size()==2&&id!=out[1].Snapshot.Identity);
+ rocket.Net.Dormant=true;Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,out);assert(out.size()==1);rocket.Net.Dormant=false;
+ rocket.Render.Visible=false;Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,out);assert(out.size()==1);rocket.Render.Visible=true;
+ rocket.Handle=0xffffffff;Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,out);assert(out.size()==1);rocket.Handle=41;Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,out);assert(out.size()==1);rocket.Handle=40;
+ rocket.Render.Origin[0]=NAN;Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,out);assert(out.size()==1);rocket.Render.Origin[0]=0;
+ for(auto name:{"CTFRocketLauncher","CTFGrenadeLauncher","CTFFlareGun","CTFCrossbow","CTFCompoundBow","CTFCleaver","CTFRocketPack","CTFWearable"}){rocket.Net.Class.Name=name;Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,out);assert(out.size()==1);}
+ for(auto name:{"CTFProjectile_Rocket","CTFGrenadePipebombProjectile","CTFProjectile_Arrow","CTFProjectile_Flare","CTFProjectile_Cleaver"}){rocket.Net.Class.Name=name;Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,out);assert(out.size()==2);}
+ player.User=0;Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,out);assert(out.size()==1&&out[0].Index==40);
  player.User=42;CMirvTf2ClientUnknown other,weapon,hat;
  other.Index=2;other.User=43;weapon.Index=50;weapon.Handle=(3<<12)|50;weapon.Player=false;weapon.Owner=&player;weapon.Net.Class.Name="CTFSniperRifle";weapon.ToolClass="tf_weapon_sniperrifle";
  hat.Index=51;hat.Handle=(5<<12)|51;hat.Player=false;hat.Owner=&player;hat.Net.Class.Name="CTFWearable";
  objects={&player,&other,&rocket,&weapon,&hat};
- Mirv_Tf2_CollectSceneEntities(true,true,true,out);assert(out.size()==5);assert(out[3].Snapshot.Category==2&&out[3].Snapshot.OwnerIdentity==42&&out[4].Snapshot.Category==3&&out[4].Snapshot.OwnerIdentity==42);assert(tools.Attaches==tools.Detaches&&!weapon.ToolAttached);
- Mirv_Tf2_CollectSceneEntities(false,true,false,out);assert(out.size()==3&&out.back().Index==50);
- Mirv_Tf2_CollectSceneEntities(false,false,true,out);assert(out.size()==3&&out.back().Index==51);
- hat.Net.Class.Name="CTFWearableVM";Mirv_Tf2_CollectSceneEntities(false,true,true,out);assert(out.size()==3&&out.back().Index==50);hat.Net.Class.Name="CTFWearable";
- weapon.Render.Visible=false;Mirv_Tf2_CollectSceneEntities(false,true,true,out);assert(out.size()==3&&out.back().Index==51);weapon.Render.Visible=true;
- weapon.ViewWeapon=50;Mirv_Tf2_CollectSceneEntities(false,true,true,out);assert(out.size()==3&&out.back().Index==51);weapon.ViewWeapon=0;
- player.Net.Dormant=true;Mirv_Tf2_CollectSceneEntities(true,true,true,out);assert(out.size()==2);player.Net.Dormant=false;
- weapon.Owner=&other;Mirv_Tf2_CollectSceneEntities(false,true,false,out);assert(out.size()==3&&out.back().Snapshot.OwnerIdentity==43);
- weapon.Owner=&hat;hat.Owner=&weapon;Mirv_Tf2_CollectSceneEntities(false,true,true,out);assert(out.size()==2); // Bounded cyclic ownership.
- hat.Owner=&player;Mirv_Tf2_CollectSceneEntities(false,true,true,out);assert(out.size()==4&&out[2].Snapshot.OwnerIdentity==42); // Nested owner resolves to player.
- weapon.Owner=nullptr;Mirv_Tf2_CollectSceneEntities(false,true,true,out);assert(out.size()==3&&out.back().Index==51); // Dropped gear is outside this pass.
- weapon.Owner=&player;weapon.ToolAttached=true;int detaches=tools.Detaches;Mirv_Tf2_CollectSceneEntities(false,true,false,out);assert(out.size()==3&&weapon.ToolAttached&&tools.Detaches==detaches);weapon.ToolAttached=false;
- objects.clear();Mirv_Tf2_CollectSceneEntities(true,true,true,out);assert(out.empty());
+ Mirv_Tf2_CollectSceneEntities(true,true,true,false,false,out);assert(out.size()==5);assert(out[3].Snapshot.Category==2&&out[3].Snapshot.OwnerIdentity==42&&out[4].Snapshot.Category==3&&out[4].Snapshot.OwnerIdentity==42);assert(tools.Attaches==tools.Detaches&&!weapon.ToolAttached);
+ Mirv_Tf2_CollectSceneEntities(false,true,false,false,false,out);assert(out.size()==3&&out.back().Index==50);
+ Mirv_Tf2_CollectSceneEntities(false,false,true,false,false,out);assert(out.size()==3&&out.back().Index==51);
+ hat.Net.Class.Name="CTFWearableVM";Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.size()==3&&out.back().Index==50);hat.Net.Class.Name="CTFWearable";
+ weapon.Render.Visible=false;Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.size()==3&&out.back().Index==51);weapon.Render.Visible=true;
+ weapon.ViewWeapon=50;Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.size()==3&&out.back().Index==51);weapon.ViewWeapon=0;
+ player.Net.Dormant=true;Mirv_Tf2_CollectSceneEntities(true,true,true,false,false,out);assert(out.size()==2);player.Net.Dormant=false;
+ weapon.Owner=&other;Mirv_Tf2_CollectSceneEntities(false,true,false,false,false,out);assert(out.size()==3&&out.back().Snapshot.OwnerIdentity==43);
+ weapon.Owner=&hat;hat.Owner=&weapon;Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.size()==2); // Bounded cyclic ownership.
+ hat.Owner=&player;Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.size()==4&&out[2].Snapshot.OwnerIdentity==42); // Nested owner resolves to player.
+ weapon.Owner=nullptr;Mirv_Tf2_CollectSceneEntities(false,true,true,false,false,out);assert(out.size()==3&&out.back().Index==51); // Dropped gear is outside this pass.
+ weapon.Owner=&player;weapon.ToolAttached=true;int detaches=tools.Detaches;Mirv_Tf2_CollectSceneEntities(false,true,false,false,false,out);assert(out.size()==3&&weapon.ToolAttached&&tools.Detaches==detaches);weapon.ToolAttached=false;
+ // Networked ragdolls, client-only gibs and model-path fallback; no player owner is required.
+ CMirvTf2ClientUnknown corpse,gib,fragment,prop;
+ corpse.Player=false;corpse.Index=60;corpse.Handle=(8<<12)|60;corpse.Net.Class.Name="CTFRagdoll";
+ gib.Player=false;gib.Index=-1;gib.Handle=(9<<12)|2050;gib.HasNetwork=false;gib.ToolClass="class C_Gib";
+ fragment.Player=false;fragment.Index=-1;fragment.Handle=(10<<12)|2051;fragment.HasNetwork=false;fragment.ToolClass="class C_PhysPropClientside";fragment.Render.ModelName="MODELS\\PLAYER\\GIBS\\heavygib001.mdl";
+ prop.Player=false;prop.Index=-1;prop.Handle=(11<<12)|2052;prop.HasNetwork=false;prop.ToolClass="class C_PhysPropClientside";
+ objects={&corpse,&gib,&fragment,&prop};
+ Mirv_Tf2_CollectSceneEntities(false,false,false,false,false,out);assert(out.empty());
+ Mirv_Tf2_CollectSceneEntities(false,false,false,true,false,out);assert(out.size()==1&&out[0].Snapshot.Category==5&&out[0].ObservedObject==&corpse);
+ Mirv_Tf2_CollectSceneEntities(false,false,false,false,true,out);assert(out.size()==2&&out[0].Snapshot.Category==6&&out[1].Snapshot.Category==6&&out[0].ObservedObject==&gib&&out[1].ObservedObject==&fragment);auto gibId=out[0].Snapshot.Identity;
+ gib.Handle+=(1<<12);Mirv_Tf2_CollectSceneEntities(false,false,false,true,true,out);assert(out.size()==3&&out[1].Snapshot.Identity!=gibId);
+ gib.ToolAttached=true;int oldDetach=tools.Detaches;Mirv_Tf2_CollectSceneEntities(false,false,false,true,true,out);assert(gib.ToolAttached&&tools.Detaches==oldDetach+2);gib.ToolAttached=false; // Only other temporary attachments detach.
+ gib.Handle=0xffffffff;fragment.Render.Visible=false;Mirv_Tf2_CollectSceneEntities(false,false,false,true,true,out);assert(out.size()==1);gib.Handle=(9<<12)|2050;fragment.Render.Visible=true;
+ corpse.Net.Dormant=true;Mirv_Tf2_CollectSceneEntities(false,false,false,true,false,out);assert(out.empty());corpse.Net.Dormant=false;
+ for(auto name:{"class C_TFRagdoll","CTFRagdoll","prop_ragdoll"})assert(Mirv_Tf2_LabelCategory(name,false,true)==5&&Mirv_Tf2_LabelCategory(name,false)==4);
+ for(auto name:{"class C_Gib","CTFGib","class C_TFGib","gib","tf_gib"})assert(Mirv_Tf2_LabelCategory(name,false,true)==6&&Mirv_Tf2_LabelCategory(name,false)==4);
+ objects.clear();Mirv_Tf2_CollectSceneEntities(true,true,true,false,false,out);assert(out.empty());
  std::cout<<"TF2 scene entity lifecycle/classification checks passed\n";
 }
 '''

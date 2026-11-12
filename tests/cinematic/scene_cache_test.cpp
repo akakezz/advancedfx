@@ -123,4 +123,15 @@ int main()
  // A bone can enter/leave fallback without disabling the rest of the rig.
  mixedB=std::make_shared<Cache::Pose>(*mixedB);mixedB->Fixed.clear();modelFrame.DemoTime=.1;modelFrame.Entities[0].ModelPose=mixedB;assert(mixed.Append(modelFrame));assert(mixed.Sample(.09,out)&&out.Entities[0].ModelPose->Fixed.empty()&&out.Entities[0].ModelPose->HeldBones==1&&out.Entities[0].ModelPose->BlendedBones==1);
  auto invalidFixed=std::make_shared<Cache::Pose>(*mixedA);invalidFixed->Fixed.push_back(invalidFixed->Fixed[0]);assert(!Cache::ValidPose(*invalidFixed));invalidFixed->Fixed.resize(1);invalidFixed->Fixed[0].Index=128;assert(!Cache::ValidPose(*invalidFixed));
+ // Corpse/debris poses use the same local-space smoothing, but cannot bridge
+ // disappearance, category changes or a newly spawned object in a reused slot.
+ for(int debrisCategory:{5,6}){
+  Cache debrisCache;Cache::Frame debrisFrame;Cache::Entity debrisEntity;debrisEntity.Identity=(1ull<<63)|(7<<12)|2050;debrisEntity.Category=debrisCategory;debrisEntity.ModelPose=localA;debrisFrame.Entities={debrisEntity};assert(debrisCache.Append(debrisFrame));
+  debrisFrame.DemoTime=.05;debrisFrame.ClientTime=.05;debrisFrame.Entities[0].ModelPose=localB;assert(debrisCache.Append(debrisFrame));assert(debrisCache.Sample(.025,out)&&out.Entities.size()==1&&out.Entities[0].ModelPose->BlendFraction==.5f);assert(debrisCache.Sample(.025,out,.1,256,false)&&out.Entities[0].ModelPose==localB);
+  debrisFrame.DemoTime=.1;debrisFrame.ClientTime=.1;debrisFrame.Entities.clear();assert(debrisCache.Append(debrisFrame));assert(debrisCache.Sample(.075,out)&&out.Entities.empty());
+  debrisEntity.Identity+=(1<<12);debrisFrame.DemoTime=.15;debrisFrame.ClientTime=.15;debrisFrame.Entities={debrisEntity};assert(debrisCache.Append(debrisFrame));assert(debrisCache.Sample(.125,out)&&out.Entities.empty());
+  debrisFrame.DemoTime=.2;debrisFrame.ClientTime=.2;debrisFrame.Entities[0].Identity+=(1<<12);assert(debrisCache.Append(debrisFrame));assert(debrisCache.Sample(.175,out)&&out.Entities.empty());
+  assert(Cache::CategoryColor(debrisCategory)!=Cache::CategoryColor(0)&&Cache::CategoryColor(5)!=Cache::CategoryColor(6));
+ }
+
 }

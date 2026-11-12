@@ -19,6 +19,7 @@ namespace advancedfx
 class SceneCache
 {
 public:
+	static constexpr int CategoryCount = 7; // Existing categories 0..4, ragdolls 5, gibs 6.
 	static constexpr size_t MaxBones = 128; // TF2 / Source SDK 2013 studio limit.
 	using Matrix = std::array<float, 12>;
 	struct Model
@@ -135,7 +136,8 @@ public:
 	{
 		std::uint64_t Identity = 0; // Caller-supplied stable identity, never just a recycled entity index.
 		std::uint64_t OwnerIdentity = 0; // Stable player identity for attached gear.
-		int Category = 0; // MirvTf2EntityCategory_t: player=0, projectile=1, weapon=2, cosmetic=3, other=4.
+		int Category = 0; // MirvTf2EntityCategory_t: player=0, projectile=1, weapon=2, cosmetic=3, other=4,
+		                  // ragdoll=5, gib=6.
 		float Origin[3]{}, Angles[3]{}, Mins[3]{}, Maxs[3]{};
 		std::shared_ptr<const Pose> ModelPose;
 	};
@@ -145,6 +147,8 @@ public:
 		       : category == 2 ? std::array<unsigned char, 3>{255, 210, 70}
 		       : category == 3 ? std::array<unsigned char, 3>{210, 120, 255}
 		       : category == 4 ? std::array<unsigned char, 3>{180, 190, 200}
+		       : category == 5 ? std::array<unsigned char, 3>{100, 240, 140}
+		       : category == 6 ? std::array<unsigned char, 3>{255, 145, 65}
 		                       : std::array<unsigned char, 3>{80, 220, 255};
 	}
 	struct Frame
@@ -208,7 +212,7 @@ public:
 			return false;
 		for (const auto &entity : frame.Entities)
 		{
-			if (!entity.Identity || entity.Category < 0 || entity.Category > 4 ||
+			if (!entity.Identity || entity.Category < 0 || entity.Category >= CategoryCount ||
 			    (entity.ModelPose && !ValidPose(*entity.ModelPose)))
 				return false;
 			for (int i = 0; i < 3; ++i)

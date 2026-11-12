@@ -7171,7 +7171,7 @@ static bool Mirv_IsUsableBound(float v)
 // TF2 client class names can be C++-style (CTFProjectile_Rocket) or
 // entity-style (tf_projectile_rocket). Match case-insensitively and give
 // weapon / wearable names priority over shared words such as "rocket".
-static int Mirv_Tf2_LabelCategory(const char * name, bool isPlayer)
+static int Mirv_Tf2_LabelCategory(const char *name, bool isPlayer, bool scene = false)
 {
     if (isPlayer) return MIRV_TF2_ENTITY_PLAYER;
     if (!name || !name[0]) return MIRV_TF2_ENTITY_OTHER;
@@ -7183,7 +7183,14 @@ static int Mirv_Tf2_LabelCategory(const char * name, bool isPlayer)
         lower[n] = (char)tolower((unsigned char)name[n]);
     lower[n] = '\0';
 
-    if (strstr(lower, "wearable") || strstr(lower, "cosmetic") || strstr(lower, "econ_wear") || strstr(lower, "econwear"))
+	// Keep existing mirv_drawentities categories unchanged; debris categories are cache-only.
+	if (scene && strstr(lower, "ragdoll"))
+		return MIRV_TF2_ENTITY_RAGDOLL;
+	if (scene && (strstr(lower, "c_gib") || strstr(lower, "c_tfgib") || strstr(lower, "ctfgib") ||
+	              !strcmp(lower, "gib") || !strcmp(lower, "tf_gib")))
+		return MIRV_TF2_ENTITY_GIB;
+
+	if (strstr(lower, "wearable") || strstr(lower, "cosmetic") || strstr(lower, "econ_wear") || strstr(lower, "econwear"))
         return MIRV_TF2_ENTITY_COSMETIC;
 
     // Network class names lack the tools API's tf_weapon_ prefix. Explicit
@@ -7212,7 +7219,8 @@ static int Mirv_Tf2_LabelCategory(const char * name, bool isPlayer)
 // CTFSniperRifle / CTFMinigun lack "weapon" in their network class name.
 // A temporary tools handle does not enable recording or change AGR mode.
 static int Mirv_Tf2_ToolCategory(SOURCESDK::TF2::IClientTools *iface,
-                                 SOURCESDK::TF2::EntitySearchResult entity, int index, bool isPlayer)
+                                 SOURCESDK::TF2::EntitySearchResult entity, int index, bool isPlayer,
+                                 bool scene = false)
 {
 	auto handle = iface->GetToolHandleForEntityByIndex(index);
 	bool attachedHere = false;
@@ -7222,7 +7230,8 @@ static int Mirv_Tf2_ToolCategory(SOURCESDK::TF2::IClientTools *iface,
 		attachedHere = handle != SOURCESDK::TF2::HTOOLHANDLE_INVALID;
 	}
 	int category = Mirv_Tf2_LabelCategory(
-	    handle != SOURCESDK::TF2::HTOOLHANDLE_INVALID ? iface->GetClassname(handle) : nullptr, isPlayer);
+	    handle != SOURCESDK::TF2::HTOOLHANDLE_INVALID ? iface->GetClassname(handle) : nullptr, isPlayer,
+	    scene);
 	if (attachedHere)
 		iface->DetachFromEntity(entity);
 	return category;
@@ -9856,7 +9865,7 @@ static_assert(offsetof(SceneStudioInfo, LightCount) == (sizeof(void *) == 8 ? 14
 // Private, immutable materials avoid mutating the engine's shared debug
 // wireframe material or its color modulation. 082 is the verified TF2 ABI;
 // older engines retain the default studio wireframe and colored proxy bounds.
-static void *g_SceneMaterials[5]{};
+static void *g_SceneMaterials[advancedfx::SceneCache::CategoryCount]{};
 // MaterialSystem082 uses Source 2013's KeyValues layout. The older TF2
 // read-only tool-message adapter contains extra local-table fields, so it
 // cannot construct these shader definitions. Source owns the tree after
@@ -9922,7 +9931,8 @@ static bool SceneMaterialString(SceneMaterialKeyValues *root, const char *name, 
 }
 static void *SceneCategoryMaterial(int category)
 {
-	if (category < 0 || category >= 5 || !g_AppSystemFactory || !SOURCESDK::L4D2::g_pMemAlloc)
+	if (category < 0 || category >= advancedfx::SceneCache::CategoryCount || !g_AppSystemFactory ||
+	    !SOURCESDK::L4D2::g_pMemAlloc)
 		return nullptr;
 	if (g_SceneMaterials[category])
 		return g_SceneMaterials[category];
@@ -10170,13 +10180,15 @@ static bool SceneBuildMatrices(const advancedfx::SceneCache::Entity &entity,
 	return true;
 }
 // IClientNetworkable::IsDormant is slot 8 in TF2 (CS:GO inserts another method).
-static bool SceneRenderable(int index, CMirvTf2ClientRenderable *&renderable)
+static bool SceneRenderable(int index, CMirvTf2ClientRenderable *&renderable, void *observedObject)
 {
-	auto entity = Mirv_Tf2_DiagnosticEntity(index);
+	auto entity = observedObject ? observedObject : (index > 0 ? Mirv_Tf2_DiagnosticEntity(index) : nullptr);
 	auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(entity);
 	void *networkable = unknown ? unknown->GetClientNetworkable() : nullptr;
 	renderable = unknown ? unknown->GetClientRenderable() : nullptr;
-	return networkable && renderable && !SceneInterfaceCall<bool>(networkable, 8) && renderable->ShouldDraw();
+	return renderable && renderable->ShouldDraw() &&
+	       ((observedObject && (index < 0 || index >= 2048)) ||
+	        (networkable && !SceneInterfaceCall<bool>(networkable, 8)));
 }
 // Validate the same on-disk studio header used by AGR/bone-name inspection.
 static bool SceneStudioHeader(const unsigned char *header, int &count, unsigned int &checksum)
@@ -10195,12 +10207,25 @@ static bool SceneStudioHeader(const unsigned char *header, int &count, unsigned 
 	       int64_t(boneOffset) + int64_t(count) * 216 <= length;
 }
 } // namespace
-bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status)
+bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status,
+                               void *observedObject)
 {
 	using Cache = advancedfx::SceneCache;
 	entity.ModelPose.reset();
 	CMirvTf2ClientRenderable *renderable = nullptr;
-	if (!SceneRenderable(index, renderable))
+	if (observedObject && (entity.Identity >> 63))
+	{
+		const void *reference = reinterpret_cast<CMirvTf2ClientUnknown *>(observedObject)->GetRefEHandle();
+		std::uint32_t handle = 0xffffffff;
+		if (reference)
+			std::memcpy(&handle, reference, sizeof(handle));
+		if (handle == 0xffffffff || handle != std::uint32_t(entity.Identity))
+		{
+			status = "Observed entity identity changed; no pose captured.";
+			return false;
+		}
+	}
+	if (!SceneRenderable(index, renderable, observedObject))
 	{
 		status = "Entity is dormant, hidden or unavailable; no pose captured.";
 		return false;
@@ -10460,7 +10485,7 @@ void Mirv_Tf2_ReleaseSceneMaterials()
 // Scene entity enumeration shares the label classifier, without attaching tool
 // recorders to every projectile. Network class metadata is read through the
 // public IClientNetworkable::GetClientClass slot (2).
-void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics,
+void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs,
                                    std::vector<MirvTf2SceneEntity> &out)
 {
 	out.clear();
@@ -10473,16 +10498,18 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 	for (auto object = iface->FirstEntity(); object && scanned++ < 4096; object = iface->NextEntity(object))
 	{
 		const int index = iface->GetEntIndex(object);
-		if (index <= 0 || index >= 2048)
+		if (index == 0 || ((index < 0 || index >= 2048) && !ragdolls && !gibs))
 			continue;
 		auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
 		auto networkable = unknown->GetClientNetworkable();
 		auto renderable = unknown->GetClientRenderable();
-		if (!networkable || !renderable || SceneInterfaceCall<bool>(networkable, 8))
+		const bool networked = index > 0 && index < 2048;
+		if (!renderable || (networked && (!networkable || SceneInterfaceCall<bool>(networkable, 8))))
 			continue;
 		MirvTf2SceneEntity row;
 		row.Index = index;
-		if (index <= players && iface->IsPlayer(object))
+		row.ObservedObject = object;
+		if (networked && index <= players && iface->IsPlayer(object))
 		{
 			int user = 0;
 			if (!Mirv_Tf2_GetPlayerInfo(index, nullptr, 0, &user) || user <= 0)
@@ -10492,16 +10519,56 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 		}
 		else
 		{
-			if ((!projectiles && !weapons && !cosmetics) || !renderable->ShouldDraw())
+			if ((!projectiles && !weapons && !cosmetics && !ragdolls && !gibs) || !renderable->ShouldDraw())
 				continue;
-			const void *clientClass = SceneInterfaceCall<const void *>(networkable, 2);
+			std::uint32_t handle = 0xffffffff;
+			const void *reference = unknown->GetRefEHandle();
+			if (reference)
+				std::memcpy(&handle, reference, sizeof(handle));
+			if (handle == 0xffffffff || !(handle & SOURCESDK_TF2_ENT_ENTRY_MASK) ||
+			    (networked && (handle & SOURCESDK_TF2_ENT_ENTRY_MASK) != static_cast<unsigned>(index)))
+				continue;
+			const void *clientClass = networked ? SceneInterfaceCall<const void *>(networkable, 2) : nullptr;
 			const char *name = nullptr;
 			if (clientClass)
 				std::memcpy(&name, static_cast<const char *>(clientClass) + 2 * sizeof(void *), sizeof(name));
 			if (name && !std::strcmp(name, "CTFWearableVM"))
 				continue; // First-person arms/wearables.
-			int category = Mirv_Tf2_LabelCategory(name, false);
-			if (category == MIRV_TF2_ENTITY_PROJECTILE)
+			int category = Mirv_Tf2_LabelCategory(name, false, true);
+			if (!networked)
+			{
+				// A client-only entity has entindex -1, but its serial-bearing
+				// client handle still indexes the tools lookup. Preserve AGR attachments.
+				category = Mirv_Tf2_ToolCategory(iface, object, int(handle & SOURCESDK_TF2_ENT_ENTRY_MASK),
+				                                 false, true);
+			}
+			if (gibs && category == MIRV_TF2_ENTITY_OTHER)
+			{
+				// Some break-model gibs report only C_BaseAnimating/physics classes.
+				auto info = Mirv_Tf2_GetModelInfo();
+				const void *model = renderable->GetModel();
+				const char *modelName = info && model ? info->GetModelName(model) : nullptr;
+				if (modelName)
+				{
+					char path[260];
+					size_t i = 0;
+					for (; modelName[i] && i + 1 < sizeof(path); ++i)
+						path[i] = modelName[i] == '\\'
+						              ? '/'
+						              : char(tolower(static_cast<unsigned char>(modelName[i])));
+					path[i] = 0;
+					if (strstr(path, "/gibs/"))
+						category = MIRV_TF2_ENTITY_GIB;
+				}
+			}
+			if (!networked && category != MIRV_TF2_ENTITY_RAGDOLL && category != MIRV_TF2_ENTITY_GIB)
+				continue; // Client-only weapons/props are outside this pass.
+			if (category == MIRV_TF2_ENTITY_RAGDOLL || category == MIRV_TF2_ENTITY_GIB)
+			{
+				if (!(category == MIRV_TF2_ENTITY_RAGDOLL ? ragdolls : gibs))
+					continue;
+			}
+			else if (category == MIRV_TF2_ENTITY_PROJECTILE)
 			{
 				if (!projectiles)
 					continue;
@@ -10534,13 +10601,6 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 				      (category == MIRV_TF2_ENTITY_COSMETIC && cosmetics)))
 					continue;
 			}
-			std::uint32_t handle = 0xffffffff;
-			const void *reference = unknown->GetRefEHandle();
-			if (reference)
-				std::memcpy(&handle, reference, sizeof(handle));
-			if (handle == 0xffffffff ||
-			    (handle & SOURCESDK_TF2_ENT_ENTRY_MASK) != static_cast<unsigned int>(index))
-				continue;
 			row.Snapshot.Identity = (std::uint64_t(1) << 63) | handle;
 			row.Snapshot.Category = category;
 		}
