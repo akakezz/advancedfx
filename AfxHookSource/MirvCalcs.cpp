@@ -10681,33 +10681,6 @@ public:
 	virtual unsigned int Tell(void *) = 0;
 	virtual unsigned int Size(void *) = 0;
 };
-static bool Mirv_Tf2_ReadGibVertexFile(const char *name, std::vector<unsigned char> &bytes)
-{
-	std::string path = name ? name : "";
-	if (path.size() < 4 || path.substr(path.size() - 4) != ".mdl")
-		return false;
-	path.replace(path.size() - 4, 4, ".vvd");
-	auto fs = g_AppSystemFactory
-	              ? static_cast<SceneBaseFileSystem *>(g_AppSystemFactory("VBaseFileSystem011", nullptr))
-	              : nullptr;
-	void *file = fs ? fs->Open(path.c_str(), "rb", "GAME") : nullptr;
-	if (!file)
-		return false;
-	struct Close
-	{
-		SceneBaseFileSystem *Fs;
-		void *File;
-		~Close()
-		{
-			Fs->Close(File);
-		}
-	} close{fs, file};
-	unsigned size = fs->Size(file);
-	if (size < 64 || size > 64 * 1024 * 1024)
-		return false;
-	bytes.resize(size);
-	return fs->Read(bytes.data(), int(size), file) == int(size);
-}
 static std::shared_ptr<const advancedfx::SceneCache::Model> SceneBrushModel(const char *name)
 {
 	using Cache = advancedfx::SceneCache;
@@ -10814,6 +10787,33 @@ static std::shared_ptr<const advancedfx::SceneCache::Model> SceneBrushModel(cons
 	return result;
 }
 } // namespace
+static bool Mirv_Tf2_ReadGibVertexFile(const char *name, std::vector<unsigned char> &bytes)
+{
+	std::string path = name ? name : "";
+	if (path.size() < 4 || path.substr(path.size() - 4) != ".mdl")
+		return false;
+	path.replace(path.size() - 4, 4, ".vvd");
+	auto fs = g_AppSystemFactory
+	              ? static_cast<SceneBaseFileSystem *>(g_AppSystemFactory("VBaseFileSystem011", nullptr))
+	              : nullptr;
+	void *file = fs ? fs->Open(path.c_str(), "rb", "GAME") : nullptr;
+	if (!file)
+		return false;
+	struct Close
+	{
+		SceneBaseFileSystem *Fs;
+		void *File;
+		~Close()
+		{
+			Fs->Close(File);
+		}
+	} close{fs, file};
+	unsigned size = fs->Size(file);
+	if (size < 64 || size > 64 * 1024 * 1024)
+		return false;
+	bytes.resize(size);
+	return fs->Read(bytes.data(), int(size), file) == int(size);
+}
 bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status,
                                void *observedObject)
 {
