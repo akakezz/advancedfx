@@ -402,30 +402,9 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 		m_PlaneUp.Normalize();		
 	}
 
-	// Capture plain geometry once on the engine thread, independent of Show path.
-	if (path == &g_Hook_VClient_RenderView.m_CamPath && AfxHookSource::CameraOverlay::CameraGuidesEnabled() &&
-		!AfxHookSource::CameraOverlay::Recording::IsActive())
+	auto place = [&](const CamPathValue &anchor, float base, float width, float labelSize = 0) -> float
 	{
-		const double aspect=m_ScreenHeight>0?double(m_ScreenWidth)/m_ScreenHeight:4.0/3.0;
-		for(const auto &camera:MirvCam_Cameras(true))
-		{
-			if(camera.Viewed)continue;
-			const auto color=!camera.Available?D3DCOLOR_RGBA(150,155,165,140):camera.Selected?D3DCOLOR_RGBA(255,210,70,255):D3DCOLOR_RGBA(210,120,255,230);
-			for(const auto &line:advancedfx::CameraGuideLines(camera.Pose,aspect,AfxHookSource::CameraOverlay::CameraFrustumsEnabled()))
-				CameraLines.push_back({Vector3(line.A[0],line.A[1],line.A[2]),Vector3(line.B[0],line.B[1],line.B[2]),color});
-		}
-	}
-	if (sceneOnly)
-	{
-		m_InCampath = false;
-		m_DrawKeyFrameIndex = 0;
-		m_DrawKeyframeAxis = m_DrawKeyframeCam = false;
-		return; // Proxy-only snapshots need no path labels, indices or camera evaluation.
-	}
-
-	auto place = [&](const CamPathValue &anchor, float base, float width) -> float
-	{
-		const float size = drawer->m_DrawKeyframIndex;
+		const float size = labelSize > 0 ? labelSize : drawer->m_DrawKeyframIndex;
 		if (!(size > 0) || width <= 0)
 			return -1;
 		const float height = PlaceWorldLabel(anchor.X, anchor.Y, anchor.Z, base, size);
@@ -445,18 +424,20 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 				   : -1;
 	};
 	size_t keyIndex = 0;
-	for (auto it = path->GetBegin(); it != path->GetEnd(); ++it, ++keyIndex)
+	for (auto it = path->GetBegin(); !sceneOnly && it != path->GetEnd(); ++it, ++keyIndex)
 	{
 		size_t digits = std::to_string(keyIndex).size();
 		IndexRows.push_back(place(it.GetValue(), 0, (float)digits * 0.5f));
 	}
 	// Capture glyph metrics and text on the engine thread. Queued render work retains
 	// only immutable values, never a pointer to an editable or deleted camera path.
-	auto label = [&](const CamPathValue &anchor, float height, const std::string &text)
+	auto label = [&](const CamPathValue &anchor, float height, const std::string &text, float size = 0)
 	{
 		Text result;
 		result.Anchor = anchor;
 		result.Height = height;
+		result.Size = size;
+		result.IsCamera = size > 0;
 		for (size_t i = 0; i < text.size();)
 		{
 			unsigned int code = (unsigned char)text[i++];
@@ -474,14 +455,45 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 		float width = 0;
 		for (const auto &glyph : result.Glyphs)
 			width += glyph.Advance;
-		const float placed = place(anchor, height, width);
+		const float placed = place(anchor, height, width, size);
 		if (placed >= 0)
 		{
-			result.Anchor.Z += placed * drawer->m_DrawKeyframIndex;
+			result.Anchor.Z += placed * (size > 0 ? size : drawer->m_DrawKeyframIndex);
 			result.Height = 0;
 			Labels.push_back(std::move(result));
 		}
 	};
+	// Capture plain geometry once on the engine thread, independent of Show path.
+	if (path == &g_Hook_VClient_RenderView.m_CamPath && AfxHookSource::CameraOverlay::CameraGuidesEnabled() &&
+		!AfxHookSource::CameraOverlay::Recording::IsActive())
+	{
+		const double aspect = m_ScreenHeight > 0 ? double(m_ScreenWidth) / m_ScreenHeight : 4.0 / 3.0;
+		for (const auto &camera : MirvCam_Cameras(true))
+		{
+			if (camera.Viewed)
+				continue;
+			CamPathValue anchor;
+			anchor.X = camera.Pose.Position[0];
+			anchor.Y = camera.Pose.Position[1];
+			anchor.Z = camera.Pose.Position[2];
+			label(anchor, 1.5f, camera.Name, 12);
+			const auto color = !camera.Available ? D3DCOLOR_RGBA(150, 155, 165, 140)
+							   : camera.Selected ? D3DCOLOR_RGBA(255, 210, 70, 255)
+												 : D3DCOLOR_RGBA(210, 120, 255, 230);
+			for (const auto &line : advancedfx::CameraGuideLines(camera.Pose, aspect,
+																 AfxHookSource::CameraOverlay::CameraFrustumsEnabled()))
+				CameraLines.push_back(
+					{Vector3(line.A[0], line.A[1], line.A[2]), Vector3(line.B[0], line.B[1], line.B[2]), color});
+		}
+	}
+	if (sceneOnly)
+	{
+		m_InCampath = false;
+		m_DrawKeyFrameIndex = 0;
+		m_DrawKeyframeAxis = m_DrawKeyframeCam = false;
+		return; // Scene-only snapshots keep camera guides and labels, without path geometry.
+	}
+
 	if (path->GetSize())
 	{
 		if (drawer->m_DrawNames)
@@ -745,7 +757,8 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 
 		// Draw keyframes index:
 		float drawKeyFrameIndex = dynamicPorperties->GetDrawKeyframeIndex();
-		if (drawKeyFrameIndex) {
+		if (drawKeyFrameIndex || !dynamicPorperties->Labels.empty())
+		{
 			if (nullptr == m_DigitsTexture)
 			{
 				if (SUCCEEDED(m_Device->CreateTexture(256, 128, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_DigitsTexture, NULL)))
@@ -913,11 +926,13 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 						m_Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
 						for (const auto &text : dynamicPorperties->Labels)
 						{
+							if (text.IsCamera && AfxHookSource::CameraOverlay::Recording::IsActive())
+								continue;
 							float width = 0;
 							for (const auto &glyph : text.Glyphs)
 								width += glyph.Advance;
 							float pen = -width * 0.5f;
-							const float height = drawKeyFrameIndex;
+							const float height = text.Size > 0 ? text.Size : drawKeyFrameIndex;
 							for (const auto &glyph : text.Glyphs)
 							{
 								const float xs[] = {(pen + glyph.X0) * height, (pen + glyph.X1) * height};

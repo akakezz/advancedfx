@@ -2130,12 +2130,15 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		}
 		return true;
 	}
+	if (down && key == 'Z' && g_CampathPreviewUndoHeld)
+		return true;
 	// Keep repeats owned until key-up, even if Right Ctrl was released first.
 	if (down && key < 256 && g_CampathPreviewEditHeld[key])
 		return true;
 	if (!AfxHookSource::CameraOverlay::IsOpen() && !g_Hook_VClient_RenderView.IsMenuActive() &&
 	    MirvCam_PreviewKey(unsigned(key), down, CampathPreview_IsRepeatKey(lParam))) return true;
-	if (!g_CampathPreviewActive && !AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+	if (!g_CampathPreviewActive && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
+		!MirvCam_RigPreviewActive())
 		return false;
 	if (rightCtrl)
 	{
@@ -2147,7 +2150,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		return true;
 	}
 
-	if (!g_CampathPreviewActive)
+	if (!g_CampathPreviewActive && !MirvCam_RigPreviewActive())
 		return false;
 
 	if (key == 'Z' && (g_CampathPreviewUndoHeld || (down && (GetKeyState(VK_CONTROL) & 0x8000))))
@@ -2155,10 +2158,17 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		if (down && !g_CampathPreviewUndoHeld && !CampathPreview_IsRepeatKey(lParam))
 		{
 			g_CampathPreviewUndoHeld = true;
-			AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+			if (MirvCam_RigPreviewActive())
+				MirvCam_HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+			else
+				AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+			// Undo may leave preview and release its held keys; keep this chord owned until key-up.
+			g_CampathPreviewUndoHeld = true;
 		}
 		return true;
 	}
+	if (!g_CampathPreviewActive)
+		return false;
 	const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0,
 			   shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 	if (key == 'E' || key == 'Y' || key == VK_DELETE || (key == 'A' && control))

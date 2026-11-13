@@ -2142,9 +2142,10 @@ Attached cameras retain their target and mode; unavailable targets reject edits
 without changing their saved pose. **Manage cameras** in the Campath tab opens it.
 Selecting a row leaves the current view alone unless camera preview is already
 active; in that case it switches the viewed camera. Removal asks for confirmation
-and remains pinned to the chosen ID even if selection changes. Camera edits are
-not yet part of campath undo history, so campath Undo/Redo and keyframe editing
-shortcuts are disabled while managing cameras.
+and remains pinned to the chosen ID even if selection changes. Camera edits have their own bounded undo/redo history. The Undo/Redo buttons
+and Ctrl+Z / Ctrl+Shift+Z operate on cameras while the Cameras tab or camera
+preview navigation is active; otherwise they operate on campaths. Keyframe
+editing shortcuts remain disabled while managing cameras.
 
 **Show camera guides** optionally draws small camera icons independently of
 Show path and Scene Cache drawing. **Camera frustums** adds a short viewing-angle
@@ -2220,7 +2221,7 @@ explicit retargeting with `edit <ID>` followed by `attach`, preserving the camer
 Fixed camera definitions remain available across level changes.
 
 This milestone does **not** yet add timed sequencer clips, blends, rig persistence,
-undo, gizmos, tracking, orbit, modifiers, damping or collision for named rigs.
+gizmos, tracking, orbit, modifiers, damping or collision for named rigs.
 The live `mirv_cam attach` view retains the existing collision/follow evaluator.
 Saved-camera preview still evaluates rigid attachments; collision/follow settings
 are not yet stored per camera. Fixed cameras can be used during cache preview,
@@ -2271,4 +2272,37 @@ the camera's evaluated position, work without Show path, and share the existing
 recording suppression and safe engine-thread drawing snapshots.
 
 These requirements belong to the upcoming sequencer clips/camera mixer work;
-per-camera aiming and camera-name labels are not implemented yet.
+per-camera aiming is not implemented yet; camera-name labels are included in
+the first mixer slice below.
+
+
+### Mixer milestone, first slice: saved-camera transitions
+
+`mirv_cam preview <ID/name> [seconds]` switches to a saved camera. Omit the
+seconds, or use zero, for a cut. While viewing a saved camera, supply a positive
+duration to blend into another saved camera. Both cameras keep evaluating their
+current entity/bone positions during the transition. Position and FOV use a
+smoothstep weight; orientation uses shortest-path quaternion interpolation.
+
+The Cameras tab's **Camera transition (s)** controls transitions when choosing a
+camera while previewing; zero retains immediate switching. Start the next blend
+after the current one completes, or cut first. The current transition can be
+sampled backward using the cache cursor; it is not yet a saved sequencer clip.
+Missing subjects hold the last valid mixed view. Leaving preview or reloading
+clears the transition. Campath transitions and isolated per-camera `mirv_aim`
+configuration remain the next integration steps; existing global aim still does
+not affect saved-camera preview in this slice.
+
+Camera names now draw above their guides using the world-label renderer,
+including with Show path disabled. Their size is independent of the path's key
+index labels, and they are hidden during HLAE recording.
+
+`mirv_cam remove [ID/name]` removes the selected camera when the argument is
+omitted. An explicit ID/name continues to remove that camera. With no selection,
+it reports the problem without choosing another camera.
+
+Camera history covers add, remove, rename, recapture, numeric pose edits and
+attachment changes. `mirv_cam undo` and `mirv_cam redo` operate on that history
+explicitly. Preview navigation and drawing preferences do not create history
+entries. History retains up to 64 edits and is session-only. Restored attachments
+retain their recorded identity checks; undo cannot bind to a recycled entity slot.

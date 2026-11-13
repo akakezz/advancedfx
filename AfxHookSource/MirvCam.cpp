@@ -381,6 +381,15 @@ bool g_RigUnavailable = false;
 bool g_RigPreview = false;
 bool g_RigNavigation = false;
 unsigned long long g_NextCameraId = 0;
+std::string g_BlendFromCamera;
+double g_BlendDuration = 0, g_BlendStart = 0, g_BlendLastTime = 0;
+bool g_BlendStarted = false;
+void ClearCameraBlend()
+{
+	g_BlendFromCamera.clear();
+	g_BlendDuration = 0;
+	g_BlendStarted = false;
+}
 auto FindRig(const std::string &reference)
 {
 	auto named = g_CameraRigs.find(reference);
@@ -397,6 +406,7 @@ void SyncRigLevel()
 	if (level == g_LevelInitCount)
 		return;
 	level = g_LevelInitCount;
+	ClearCameraBlend();
 	auto selected = g_CameraRigs.find(g_CameraRigName);
 	const bool resume = selected != g_CameraRigs.end() && selected->second.Rig.Attached && !g_CameraDemoKey.empty() &&
 						selected->second.DemoKey == g_CameraDemoKey;
@@ -423,6 +433,94 @@ void SyncRigLevel()
 		}
 	g_RigUnavailable = resume;
 }
+struct CameraHistoryState
+{
+	std::map<std::string, NamedCameraRig> Cameras;
+	std::string Selected;
+};
+std::vector<CameraHistoryState> g_CameraUndo, g_CameraRedo;
+unsigned g_CameraEditDepth = 0;
+unsigned long long g_CameraCaptureRevision = 0;
+CameraHistoryState CloneCameraState(const CameraHistoryState &source)
+{
+	auto result = source;
+	for (auto &entry : result.Cameras)
+	{
+		auto &camera = entry.second;
+		if (!camera.Target)
+			continue;
+		auto clone = Mirv_Tf2_RebindCamera(camera.Target.get(), camera.EntityAddress);
+		if (clone)
+		{
+			clone->AddRef();
+			camera.Target = std::shared_ptr<IMirvVecAngCalc>(clone, [](IMirvVecAngCalc *p) { p->Release(); });
+		}
+	}
+	return result;
+}
+bool SameCameraDefinitions(const std::map<std::string, NamedCameraRig> &a,
+						   const std::map<std::string, NamedCameraRig> &b)
+{
+	if (a.size() != b.size())
+		return false;
+	auto right = b.begin();
+	for (auto left = a.begin(); left != a.end(); ++left, ++right)
+	{
+		const auto &x = left->second;
+		const auto &y = right->second;
+		if (left->first != right->first || x.Id != y.Id || x.AttachMode != y.AttachMode ||
+			x.Rig.Attached != y.Rig.Attached || x.Rig.InheritRotation != y.Rig.InheritRotation ||
+			x.EntityAddress != y.EntityAddress || x.TargetHandle != y.TargetHandle ||
+			x.CacheIdentity != y.CacheIdentity || x.Target.get() != y.Target.get())
+			return false;
+		const auto &p = x.Rig.Pose;
+		const auto &q = y.Rig.Pose;
+		for (int axis = 0; axis < 3; ++axis)
+			if (p.Position[axis] != q.Position[axis])
+				return false;
+		if (p.Fov != q.Fov || p.Rotation.W != q.Rotation.W || p.Rotation.X != q.Rotation.X ||
+			p.Rotation.Y != q.Rotation.Y || p.Rotation.Z != q.Rotation.Z)
+			return false;
+	}
+	return true;
+}
+class CameraEditTransaction
+{
+	bool Owner = false;
+	CameraHistoryState Before, Snapshot;
+	unsigned long long CaptureRevision = 0;
+
+  public:
+	explicit CameraEditTransaction(bool enabled = true)
+	{
+		if (!enabled)
+			return;
+		Owner = ++g_CameraEditDepth == 1;
+		if (Owner)
+		{
+			Before = {g_CameraRigs, g_CameraRigName};
+			Snapshot = CloneCameraState(Before);
+			CaptureRevision = g_CameraCaptureRevision;
+		}
+		Enabled = true;
+	}
+	~CameraEditTransaction()
+	{
+		if (!Enabled)
+			return;
+		--g_CameraEditDepth;
+		if (!Owner ||
+			(CaptureRevision == g_CameraCaptureRevision && SameCameraDefinitions(Before.Cameras, g_CameraRigs)))
+			return;
+		if (g_CameraUndo.size() == 64)
+			g_CameraUndo.erase(g_CameraUndo.begin());
+		g_CameraUndo.push_back(std::move(Snapshot));
+		g_CameraRedo.clear();
+	}
+
+  private:
+	bool Enabled = false;
+};
 bool TryRebindCamera(NamedCameraRig &rig)
 {
 	if (!rig.Rig.Attached || rig.TargetLevel == g_LevelInitCount)
@@ -680,14 +778,17 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 	}
 	Tier0_Msg("mirv_cam add [name] - Add a camera at the current view.\n"
 			  "mirv_cam list - List session cameras.\n"
+			  "mirv_cam undo - Undo a camera edit.\n"
+			  "mirv_cam redo - Redo a camera edit.\n"
 			  "mirv_cam capture <ID/name> - Recapture a camera from the current view.\n"
-			  "mirv_cam remove <ID/name> - Remove a camera.\n"
+			  "mirv_cam remove [ID/name] - Remove a camera, or the selected camera when omitted.\n"
 			  "mirv_cam edit <ID/name> [...] - Edit a camera.\n");
 }
 // Legacy attach remains the live evaluator (including follow/collision). Keep an
 // independent camera definition so the same attachment is available in preview.
 bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const advancedfx::CameraPose &world)
 {
+	CameraEditTransaction history;
 	SyncRigLevel();
 	auto edited = g_CameraRigs.find(g_EditingCameraName);
 	if (!calc || !world.Valid() || (edited == g_CameraRigs.end() && g_CameraRigs.size() >= 128))
@@ -735,7 +836,10 @@ void CaptureLegacyCamera(const advancedfx::CameraPose &world)
 	advancedfx::CameraPose target;
 	if (found != g_CameraRigs.end() && RigTarget(found->second, target) &&
 		found->second.Rig.Attach(world, target, true))
+	{
+		++g_CameraCaptureRevision;
 		found->second.LastWorld = world;
+	}
 }
 void ClearCameraAttachment(bool liveSource)
 {
@@ -767,6 +871,8 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
+	clientTime = AfxHookSource::CameraOverlay::EditingClientTime(clientTime);
+	g_BlendLastTime = clientTime;
 	for (auto &entry : g_CameraRigs)
 		if (entry.second.Rig.Attached && entry.second.TargetLevel != g_LevelInitCount)
 			TryRebindCamera(entry.second);
@@ -778,16 +884,84 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
 	advancedfx::CameraPose evaluated;
 	auto found = g_CameraRigs.find(g_CameraRigName);
 	const bool valid = found != g_CameraRigs.end() && EvaluateNamedRig(found->second, evaluated);
-	if (valid)
+	bool blendValid = valid;
+	if (valid && !g_BlendFromCamera.empty())
+	{
+		if (!g_BlendStarted)
+		{
+			g_BlendStart = clientTime;
+			g_BlendStarted = true;
+		}
+		const double fraction = (std::max)(0.0, (std::min)(1.0, (clientTime - g_BlendStart) / g_BlendDuration));
+		if (fraction < 1)
+		{
+			auto outgoing = g_CameraRigs.find(g_BlendFromCamera);
+			advancedfx::CameraPose from;
+			blendValid = outgoing != g_CameraRigs.end() && EvaluateNamedRig(outgoing->second, from);
+			if (blendValid)
+			{
+				const double weight = fraction * fraction * (3 - 2 * fraction);
+				for (int axis = 0; axis < 3; ++axis)
+					evaluated.Position[axis] =
+						from.Position[axis] + weight * (evaluated.Position[axis] - from.Position[axis]);
+				const auto start = from.Rotation.Normalized();
+				auto end = evaluated.Rotation.Normalized();
+				if (start.W * end.W + start.X * end.X + start.Y * end.Y + start.Z * end.Z < 0)
+					end = Afx::Math::Quaternion(-end.W, -end.X, -end.Y, -end.Z);
+				evaluated.Rotation = start.Slerp(end, weight).Normalized();
+				evaluated.Fov = from.Fov + weight * (evaluated.Fov - from.Fov);
+				blendValid = evaluated.Valid();
+			}
+		}
+	}
+	if (blendValid)
 		g_LastRigPose = evaluated;
 	else if (!g_RigUnavailable)
 		Tier0_Warning(
 			"Selected camera source unavailable; holding its last valid pose. Target or cached pose is unavailable.\n");
-	g_RigUnavailable = !valid;
+	g_RigUnavailable = !blendValid;
 	pose = g_LastRigPose;
 	return true;
 }
 
+bool MirvCam_HistoryUndo(bool redo)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	SyncRigLevel();
+	auto &from = redo ? g_CameraRedo : g_CameraUndo;
+	auto &to = redo ? g_CameraUndo : g_CameraRedo;
+	if (from.empty())
+		return false;
+	const bool viewing = g_RigPreview || (!g_LegacyCameraName.empty() && g_MirvCam.Source_get());
+	unsigned long long selectedId = ~0ull;
+	auto selected = g_CameraRigs.find(g_CameraRigName);
+	if (selected != g_CameraRigs.end())
+		selectedId = selected->second.Id;
+	to.push_back(CloneCameraState({g_CameraRigs, g_CameraRigName}));
+	auto state = std::move(from.back());
+	from.pop_back();
+	MirvCam_ReleaseLiveAttachment();
+	g_LegacyCameraName.clear();
+	g_EditingCameraName.clear();
+	ClearCameraBlend();
+	g_CameraRigs = std::move(state.Cameras);
+	g_CameraRigName = state.Selected;
+	for (auto &entry : g_CameraRigs)
+		if (entry.second.Id == selectedId)
+		{
+			g_CameraRigName = entry.first;
+			break;
+		}
+	g_RigPreview = viewing && g_CameraRigs.count(g_CameraRigName);
+	g_CameraSource = g_RigPreview ? CameraSource::Rig : CameraSource::Legacy;
+	g_RigUnavailable = false;
+	if (viewing && !g_RigPreview)
+	{
+		g_CameraSource = CameraSource::Rig;
+		MirvCam_EndRigPreview();
+	}
+	return true;
+}
 bool MirvCam_RigPreviewActive()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
@@ -796,6 +970,7 @@ bool MirvCam_RigPreviewActive()
 void MirvCam_EndRigPreview()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	ClearCameraBlend();
 	const bool adopt = g_CameraSource == CameraSource::Rig;
 	auto pose = g_LastRigPose;
 	g_RigPreview = false;
@@ -875,6 +1050,7 @@ bool MirvCam_PreviewKey(unsigned int key, bool down, bool repeat)
 		index = (index + 1) % ordered.size();
 	else
 		index = (index + ordered.size() - 1) % ordered.size();
+	ClearCameraBlend();
 	g_CameraRigName = ordered[index].second;
 	g_CameraSource = CameraSource::Rig;
 	return true;
@@ -887,6 +1063,16 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		return false;
 	std::string action = args->ArgV(1);
 	std::transform(action.begin(), action.end(), action.begin(), [](unsigned char c) { return char(tolower(c)); });
+	if (action == "undo" || action == "redo")
+	{
+		if (args->ArgC() == 2)
+			MirvCam_HistoryUndo(action == "redo");
+		else
+			Tier0_Msg("mirv_cam %s - Restore the previous camera edit.\n", action.c_str());
+		return true;
+	}
+	CameraEditTransaction history(action == "add" || action == "remove" || action == "rename" || action == "capture" ||
+								  (action == "edit" && args->ArgC() == 10));
 	if (action == "draw")
 	{
 		const bool frustums = args->ArgC() >= 3 && !_stricmp(args->ArgV(2), "frustums");
@@ -944,12 +1130,29 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 	}
 	if (action == "preview")
 	{
-		if (args->ArgC() != 3)
+		if (args->ArgC() != 3 && args->ArgC() != 4)
 		{
-			Tier0_Msg("mirv_cam preview <camera ID/name>|cameras|keys|toggle|off\n");
+			Tier0_Msg("mirv_cam preview <camera ID/name>|cameras|keys|toggle|off [blend seconds] - Preview a camera or "
+					  "keyframes.\n");
 			return true;
 		}
+		double duration = 0;
+		if (args->ArgC() == 4)
+		{
+			char *end = nullptr;
+			duration = std::strtod(args->ArgV(3), &end);
+			if (end == args->ArgV(3) || *end || !std::isfinite(duration) || duration < 0 || duration > 3600)
+			{
+				Tier0_Warning("Blend duration must be 0..3600 seconds.\n");
+				return true;
+			}
+		}
 		std::string reference = args->ArgV(2);
+		if (args->ArgC() == 4 && (reference == "keys" || reference == "toggle" || reference == "off"))
+		{
+			Tier0_Warning("This blend prototype supports saved cameras; switch to keyframes without a duration.\n");
+			return true;
+		}
 		if (!_stricmp(reference.c_str(), "toggle"))
 		{
 			MirvCam_TogglePreviewNavigation();
@@ -971,6 +1174,21 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		{
 			Tier0_Warning("No matching camera.\n");
 			return true;
+		}
+		std::string outgoing = g_CameraSource == CameraSource::Rig ? g_CameraRigName : std::string{};
+		if (duration > 0 &&
+			(outgoing.empty() ||
+			 (!g_BlendFromCamera.empty() && (!g_BlendStarted || g_BlendLastTime < g_BlendStart + g_BlendDuration))))
+		{
+			Tier0_Warning(
+				"Preview a saved camera first, and finish or cut the current blend before starting another.\n");
+			return true;
+		}
+		ClearCameraBlend();
+		if (duration > 0 && outgoing != found->first)
+		{
+			g_BlendFromCamera = outgoing;
+			g_BlendDuration = duration;
 		}
 		MirvCampathPreview_SetActive(false);
 		auto current = RigCapture();
@@ -1037,8 +1255,18 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 	}
 	if (action == "capture" || action == "remove" || action == "list")
 	{
-		for (int i = 2; i < args->ArgC(); ++i)
-			command.Words.push_back(args->ArgV(i));
+		if (action == "remove" && args->ArgC() == 2)
+		{
+			if (g_CameraRigs.find(g_CameraRigName) == g_CameraRigs.end())
+			{
+				Tier0_Warning("No camera selected.\n");
+				return true;
+			}
+			command.Words.push_back(g_CameraRigName);
+		}
+		else
+			for (int i = 2; i < args->ArgC(); ++i)
+				command.Words.push_back(args->ArgV(i));
 		CameraStorageCommand(&command);
 		if (g_CameraRigs.empty())
 			g_RigPreview = false;
@@ -1133,6 +1361,7 @@ bool MirvCam_EditCamera(std::uint64_t id, const advancedfx::CameraPose &pose)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
+	CameraEditTransaction history;
 	auto found = FindRig(std::to_string(id));
 	return found != g_CameraRigs.end() && EditCameraPose(found->first, found->second, pose);
 }
@@ -1263,6 +1492,8 @@ void MirvCam_NotifyDemoFile(const char *file, const char *gameDirectory)
 CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	CameraEditTransaction history(args->ArgC() >= 3 && !_stricmp(args->ArgV(1), "attach") &&
+								  _stricmp(args->ArgV(2), "follow"));
 	if (MirvCam_CameraCommand(args)) return;
 	int argc = args->ArgC();
 
@@ -1895,7 +2126,9 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 
 	Tier0_Msg("mirv_cam add [name] - Add a camera at the current view.\n"
 			  "mirv_cam list - List session cameras.\n"
-			  "mirv_cam remove <ID/name> - Remove a camera.\n"
+			  "mirv_cam undo - Undo a camera edit.\n"
+			  "mirv_cam redo - Redo a camera edit.\n"
+			  "mirv_cam remove [ID/name] - Remove a camera, or the selected camera when omitted.\n"
 			  "mirv_cam rename <ID/name> <name> - Rename a camera.\n"
 			  "mirv_cam edit <ID/name> [...] - Edit a camera with the free camera or numeric pose values.\n"
 			  "mirv_cam capture <ID/name> - Recapture a camera from the current view.\n"

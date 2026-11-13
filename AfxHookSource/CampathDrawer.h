@@ -102,6 +102,8 @@ private:
 		{
 			CamPathValue Anchor;
 			float Height;
+			float Size = 0;
+			bool IsCamera = false;
 			std::vector<AfxHookSource::Gui::WorldGlyph> Glyphs;
 		};
 	  std::vector<Text> Labels;

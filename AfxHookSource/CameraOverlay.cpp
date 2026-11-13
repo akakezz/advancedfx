@@ -6041,6 +6041,23 @@ static void DrawCamerasTab()
 	g_CameraGuidesPublished.store(g_ShowCameraGuides);
 	g_CameraFrustumsPublished.store(g_CameraFrustums);
 	ImGui::TextDisabled("Selected: gold. Other cameras: purple. Unavailable: gray. Hidden during HLAE recording.");
+	static double previewBlendSeconds = 0;
+	ImGui::InputDouble("Camera transition (s)", &previewBlendSeconds, 0, 0, "%.3f");
+	if (!std::isfinite(previewBlendSeconds))
+		previewBlendSeconds = 0;
+	previewBlendSeconds = std::clamp(previewBlendSeconds, 0.0, 3600.0);
+	auto previewCamera = [&](std::uint64_t id)
+	{
+		if (previewBlendSeconds > 0 && MirvCam_RigPreviewActive())
+		{
+			char command[160];
+			std::snprintf(command, sizeof(command), "mirv_cam preview %llu %.9g", static_cast<unsigned long long>(id),
+						  previewBlendSeconds);
+			Afx_ExecClientCmd(command);
+		}
+		else
+			MirvCam_CameraAction("preview", id);
+	};
 	auto cameras = MirvCam_Cameras(true);
 	std::uint64_t selected = ~std::uint64_t(0);
 	for (const auto &camera : cameras)
@@ -6061,7 +6078,9 @@ static void DrawCamerasTab()
 				label += " [unavailable]";
 			if (ImGui::Selectable(label.c_str(), camera.Id == selected))
 			{
-				if (MirvCam_SelectCamera(camera.Id))
+				if (previewBlendSeconds > 0 && MirvCam_RigPreviewActive())
+					previewCamera(camera.Id);
+				else if (MirvCam_SelectCamera(camera.Id))
 					selected = camera.Id;
 			}
 			ImGui::PopID();
@@ -6073,7 +6092,7 @@ static void DrawCamerasTab()
 	if (found != cameras.end())
 	{
 		if (ImGui::Button("Preview camera"))
-			MirvCam_CameraAction("preview", selected);
+			previewCamera(selected);
 		ImGui::SameLine();
 		if (ImGui::Button("Edit camera"))
 		{
@@ -6302,8 +6321,13 @@ void Draw()
 				PreviewSelectAll();
 		}
 	}
-	if (!g_CamerasTabActive && !MirvCam_RigNavigation() && ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z, false))
-		HistoryUndo(ImGui::GetIO().KeyShift);
+	if (ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z, false))
+	{
+		if (g_CamerasTabActive || MirvCam_RigNavigation())
+			MirvCam_HistoryUndo(ImGui::GetIO().KeyShift);
+		else
+			HistoryUndo(ImGui::GetIO().KeyShift);
+	}
 
 	if (g_Docking)
 		ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
@@ -6325,13 +6349,21 @@ void Draw()
 	ImGui::SetNextWindowPos(ImVec2(20, 30), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSizeConstraints(ImVec2(540, 200), ImVec2(900, ImGui::GetIO().DisplaySize.y - 50));
 	ImGui::Begin("TF2 Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-	ImGui::BeginDisabled(g_CamerasTabActive);
 	if (ImGui::Button("Undo"))
-		HistoryUndo(false);
+	{
+		if (g_CamerasTabActive || MirvCam_RigNavigation())
+			MirvCam_HistoryUndo(false);
+		else
+			HistoryUndo(false);
+	}
 	ImGui::SameLine();
 	if (ImGui::Button("Redo"))
-		HistoryUndo(true);
-	ImGui::EndDisabled();
+	{
+		if (g_CamerasTabActive || MirvCam_RigNavigation())
+			MirvCam_HistoryUndo(true);
+		else
+			HistoryUndo(true);
+	}
 	if (ImGui::BeginTabBar("##hlae_tabs"))
 	{
 		// Campath tab
