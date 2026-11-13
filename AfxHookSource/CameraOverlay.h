@@ -48,6 +48,8 @@ bool PreviewHudVisible();
 void ResetPreviewHudFrame();
 void SetPreviewHud(bool value);
 bool GetPreviewHud();
+void SetCameraGuides(bool enabled);
+void SetCameraFrustums(bool enabled);
 bool CameraGuidesEnabled();
 bool CameraFrustumsEnabled();
 bool PreviewInsert();

@@ -534,6 +534,24 @@ bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 	rig.Available = true;
 	return true;
 }
+bool EditCameraPose(const std::string &name, NamedCameraRig &camera, const advancedfx::CameraPose &pose)
+{
+	if (!pose.Valid())
+		return false;
+	if (camera.Rig.Attached)
+	{
+		advancedfx::CameraPose target;
+		if (!RigTarget(camera, target) || !camera.Rig.Attach(pose, target, camera.Rig.InheritRotation))
+			return false;
+	}
+	else
+		camera.Rig.Pose = pose;
+	camera.LastWorld = pose;
+	camera.Available = true;
+	if (g_EditingCameraName == name)
+		g_EditingCameraName.clear();
+	return true;
+}
 void CameraStorageCommand(advancedfx::ICommandArgs *args)
 {
 	SyncRigLevel();
@@ -656,22 +674,15 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 			Tier0_Warning("FOV must be 1..179 degrees.\n");
 			return;
 		}
-		if (found->second.Rig.Attached)
-		{
-			advancedfx::CameraPose target;
-			if (!RigTarget(found->second, target) ||
-				!found->second.Rig.Attach(pose, target, found->second.Rig.InheritRotation))
-				return;
-		}
-		else
-			found->second.Rig.Pose = pose;
-		found->second.LastWorld = pose;
-		if (g_EditingCameraName == found->first)
-			g_EditingCameraName.clear();
+		if (!EditCameraPose(found->first, found->second, pose))
+			Tier0_Warning("Camera target unavailable; pose retained.\n");
 		return;
 	}
-	Tier0_Msg("mirv_cam add [name] | list | capture <ID/name> | remove <ID/name> | edit <ID/name> <x> <y> <z> <pitch> "
-			  "<yaw> <roll> <fov>\n");
+	Tier0_Msg("mirv_cam add [name] - Add a camera at the current view.\n"
+			  "mirv_cam list - List session cameras.\n"
+			  "mirv_cam capture <ID/name> - Recapture a camera from the current view.\n"
+			  "mirv_cam remove <ID/name> - Remove a camera.\n"
+			  "mirv_cam edit <ID/name> [...] - Edit a camera.\n");
 }
 // Legacy attach remains the live evaluator (including follow/collision). Keep an
 // independent camera definition so the same attachment is available in preview.
@@ -876,6 +887,32 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		return false;
 	std::string action = args->ArgV(1);
 	std::transform(action.begin(), action.end(), action.begin(), [](unsigned char c) { return char(tolower(c)); });
+	if (action == "draw")
+	{
+		const bool frustums = args->ArgC() >= 3 && !_stricmp(args->ArgV(2), "frustums");
+		const bool enabled = args->ArgC() >= 3 && !_stricmp(args->ArgV(2), "enabled");
+		if (frustums || enabled)
+		{
+			if (args->ArgC() == 4 && (!std::strcmp(args->ArgV(3), "0") || !std::strcmp(args->ArgV(3), "1")))
+			{
+				const bool value = !std::strcmp(args->ArgV(3), "1");
+				if (frustums)
+					AfxHookSource::CameraOverlay::SetCameraFrustums(value);
+				else
+					AfxHookSource::CameraOverlay::SetCameraGuides(value);
+				return true;
+			}
+			Tier0_Msg("mirv_cam draw %s 0|1 - %s\nCurrent value: %i.\n",
+				frustums ? "frustums" : "enabled",
+				frustums ? "Disable or enable camera frustums." : "Disable or enable drawing camera guides.",
+				int(frustums ? AfxHookSource::CameraOverlay::CameraFrustumsEnabled()
+					: AfxHookSource::CameraOverlay::CameraGuidesEnabled()));
+			return true;
+		}
+		Tier0_Msg("mirv_cam draw enabled [...] - Enable or disable drawing camera guides.\n"
+				  "mirv_cam draw frustums [...] - Enable or disable camera frustums.\n");
+		return true;
+	}
 	struct Forward : advancedfx::ICommandArgs
 	{
 		std::vector<std::string> Words;
@@ -955,8 +992,9 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		}
 		if (args->ArgC() != 3)
 		{
-			Tier0_Msg("mirv_cam edit <ID/name> - Reframe using the free camera.\nmirv_cam edit <ID/name> <x> <y> <z> "
-					  "<pitch> <yaw> <roll> <fov> - Set the world pose numerically.\n");
+			Tier0_Msg("mirv_cam edit <ID/name> [<x> <y> <z> <pitch> <yaw> <roll> <fov>] - Edit a camera.\n"
+					  "Without pose values, move the free camera to the saved pose; use capture to save your framing.\n"
+					  "With all seven pose values, set its world position, angles and FOV directly.\n");
 			return true;
 		}
 		auto found = FindRig(args->ArgV(2));
@@ -1090,6 +1128,13 @@ bool MirvCam_CameraAction(const char *action, std::uint64_t id)
 	args.Id = std::to_string(id);
 	MirvCam_CameraCommand(&args);
 	return std::strcmp(action, "remove") || FindRig(args.Id) == g_CameraRigs.end();
+}
+bool MirvCam_EditCamera(std::uint64_t id, const advancedfx::CameraPose &pose)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	SyncRigLevel();
+	auto found = FindRig(std::to_string(id));
+	return found != g_CameraRigs.end() && EditCameraPose(found->first, found->second, pose);
 }
 std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
 {
@@ -1848,19 +1893,21 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 		}
 	}
 
-	Tier0_Msg("mirv_cam add [name] | list | remove <ID/name> | rename <ID/name> <name> - Session cameras.\n"
-			  "mirv_cam preview <ID/name>|cameras|keys|toggle|off - Preview cameras or keyframes.\n"
-			  "mirv_cam edit <ID/name> | capture <ID/name> - Move to a camera for editing, then recapture.\n"
-			  "mirv_cam attach <entity/name> [bone] [offsets...] - Attach and register a camera; edit a camera first "
-			  "to reattach it.\n"
-			  "mirv_cam edit <ID/name> <x> <y> <z> <pitch> <yaw> <roll> <fov> - Edit a camera.\n"
+	Tier0_Msg("mirv_cam add [name] - Add a camera at the current view.\n"
+			  "mirv_cam list - List session cameras.\n"
+			  "mirv_cam remove <ID/name> - Remove a camera.\n"
+			  "mirv_cam rename <ID/name> <name> - Rename a camera.\n"
+			  "mirv_cam edit <ID/name> [...] - Edit a camera with the free camera or numeric pose values.\n"
+			  "mirv_cam capture <ID/name> - Recapture a camera from the current view.\n"
+			  "mirv_cam preview [...] - Control camera and keyframe preview.\n"
+			  "mirv_cam draw [...] - Control drawing of cameras.\n"
 			  "mirv_cam source [...] - Control camera location.\n"
-			  "mirv_cam fov [...] - Control camera fov.\n"
-			  "mirv_cam attach [...] - (TF2) Attach the camera to a player or entity (and bone).\n"
-			  "mirv_cam attachMode [...] - (TF2) Controls which angles attach uses for bones.\n"
+			  "mirv_cam fov [...] - Control camera FOV.\n"
+			  "mirv_cam attach [...] - Attach the camera to a player or entity (and bone).\n"
+			  "mirv_cam attachMode [...] - Control which angles attachment uses for bones.\n"
 			  "mirv_cam offset [...] - Control camera offset (in local space).\n"
 			  "mirv_cam order [...] - Control order of camera overrides.\n"
-			  "mirv_cam collision [...] - Optional TF2/TF2C free-camera and campath collision.\n");
+			  "mirv_cam collision [...] - Control free-camera and campath collision.\n");
 }
 
 bool MirvCam_RigViewActive() { std::lock_guard<std::recursive_mutex> lock(g_CameraMutex); SyncRigLevel(); return g_CameraSource != CameraSource::Legacy; }

@@ -6005,6 +6005,20 @@ static void DrawPreviewHud()
 	ImGui::End();
 	g_PreviewHudDrawn = true;
 }
+void SetCameraGuides(bool enabled)
+{
+	g_ShowCameraGuides = enabled;
+	g_CameraGuidesPublished.store(enabled);
+	if (ImGui::GetCurrentContext())
+		ImGui::MarkIniSettingsDirty();
+}
+void SetCameraFrustums(bool enabled)
+{
+	g_CameraFrustums = enabled;
+	g_CameraFrustumsPublished.store(enabled);
+	if (ImGui::GetCurrentContext())
+		ImGui::MarkIniSettingsDirty();
+}
 bool CameraGuidesEnabled() { return g_CameraGuidesPublished.load(); }
 bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
 static void DrawCamerasTab()
@@ -6027,7 +6041,7 @@ static void DrawCamerasTab()
 	g_CameraGuidesPublished.store(g_ShowCameraGuides);
 	g_CameraFrustumsPublished.store(g_CameraFrustums);
 	ImGui::TextDisabled("Selected: gold. Other cameras: purple. Unavailable: gray. Hidden during HLAE recording.");
-	auto cameras = MirvCam_Cameras();
+	auto cameras = MirvCam_Cameras(true);
 	std::uint64_t selected = ~std::uint64_t(0);
 	for (const auto &camera : cameras)
 		if (camera.Selected)
@@ -6080,6 +6094,52 @@ static void DrawCamerasTab()
 			if (ImGui::Button("Stop camera preview"))
 				MirvCam_EndRigPreview();
 		}
+		ImGui::Separator();
+		ImGui::TextUnformatted("Edit camera pose");
+		static std::uint64_t poseId = ~std::uint64_t(0);
+		static double position[3]{}, angles[3]{}, fov = 90;
+		static bool poseDirty = false;
+		auto readPose = [&]()
+		{
+			poseId = selected;
+			for (int axis = 0; axis < 3; ++axis)
+				position[axis] = found->Pose.Position[axis];
+			const auto rotation = found->Pose.Rotation.ToQREulerAngles().ToQEulerAngles();
+			angles[0] = rotation.Pitch;
+			angles[1] = rotation.Yaw;
+			angles[2] = rotation.Roll;
+			fov = found->Pose.Fov;
+			poseDirty = false;
+		};
+		if (poseId != selected || (!poseDirty && !ImGui::IsAnyItemActive()))
+			readPose();
+		poseDirty |=
+			ImGui::InputScalarN("Position (X/Y/Z)", ImGuiDataType_Double, position, 3, nullptr, nullptr, "%.3f");
+		poseDirty |=
+			ImGui::InputScalarN("Angles (pitch/yaw/roll)", ImGuiDataType_Double, angles, 3, nullptr, nullptr, "%.3f");
+		poseDirty |= ImGui::InputDouble("Camera FOV", &fov, 0, 0, "%.3f");
+		if (ImGui::Button("Apply camera pose"))
+		{
+			advancedfx::CameraPose pose;
+			for (int axis = 0; axis < 3; ++axis)
+				pose.Position[axis] = position[axis];
+			pose.Rotation = Quaternion::FromQREulerAngles(
+				QREulerAngles::FromQEulerAngles(QEulerAngles(angles[0], angles[1], angles[2])));
+			pose.Fov = fov;
+			const bool valid = pose.Valid() && std::all_of(std::begin(angles), std::end(angles),
+														   [](double a) { return std::isfinite(a); });
+			const bool applied = valid && MirvCam_EditCamera(selected, pose);
+			g_DocumentStatus = applied ? "Camera pose updated."
+							   : valid ? "Camera target unavailable; pose retained."
+									   : "Use finite pose values and a FOV between 1 and 179 degrees.";
+			if (applied)
+				poseDirty = false;
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Reset camera fields"))
+			readPose();
+		ImGui::TextDisabled("World position and angles. Attached cameras keep their target and attachment mode.");
+		ImGui::Separator();
 		static std::uint64_t nameId = ~std::uint64_t(0);
 		static std::string previousName;
 		static char name[129]{};

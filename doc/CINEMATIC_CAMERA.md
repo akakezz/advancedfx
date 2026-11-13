@@ -2135,7 +2135,11 @@ selected camera, and capture saves the adjusted view. Attached cameras retain
 their target when recaptured. These controls do not yet provide a rig gizmo.
 
 The **Cameras** tab lists cameras by stable ID, with Preview, Edit, Recapture,
-Rename and Remove controls. **Manage cameras** in the Campath tab opens it.
+Rename and Remove controls. Position (X/Y/Z), angles (pitch/yaw/roll) and FOV
+fields let you edit the selected camera numerically. **Apply camera pose** saves
+all fields together; **Reset camera fields** reloads the current saved pose.
+Attached cameras retain their target and mode; unavailable targets reject edits
+without changing their saved pose. **Manage cameras** in the Campath tab opens it.
 Selecting a row leaves the current view alone unless camera preview is already
 active; in that case it switches the viewed camera. Removal asks for confirmation
 and remains pinned to the chosen ID even if selection changes. Camera edits are
@@ -2150,7 +2154,20 @@ observed pose in gray. The camera being viewed is omitted from its own image.
 Guides evaluate live or cached subjects through the same target provider as
 camera preview, and are hidden automatically during HLAE recording. Guide
 visibility and frustum preferences persist in the overlay INI; camera definitions
-remain session-only.
+remain session-only. The console uses the same saved settings:
+
+```text
+mirv_cam draw enabled 1
+mirv_cam draw enabled 0
+mirv_cam draw frustums 1
+mirv_cam draw frustums 0
+```
+
+`mirv_cam draw` lists the drawing options; `mirv_cam draw enabled` and
+`mirv_cam draw frustums` show usage and the current value. `mirv_cam` lists each operation
+on its own line, using `[...]` for operations with further options and `-` before
+the description, following the existing HLAE command conventions. `edit` has one
+help entry; `mirv_cam edit` explains its optional numeric pose values.
 
 Drawing uses immutable engine-thread pose/line snapshots and the existing line
 renderer. It does not add D3D resources or evaluate entity targets on the drawing
