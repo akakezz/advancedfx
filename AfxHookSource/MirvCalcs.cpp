@@ -2287,6 +2287,48 @@ public:
 
 		m_Anchor[0] = pos.x; m_Anchor[1] = pos.y; m_Anchor[2] = pos.z;
 		m_AnchorValid = true;
+		return ResolveFrame(pos, base, rawAngles, facing, baseOk, true, outVector, outAngles);
+	}
+	bool UsesCachedBone() const { return m_BoneIndex >= 0; }
+	const std::string &CachedBoneName() const { return m_BoneName; }
+	// No tools, entity queries, SetupBones, or calibration updates on this route.
+	bool CalcCachedFrame(const advancedfx::SceneCache::Entity &entity, const float (*boneMatrix)[4],
+						 SOURCESDK::Vector &outVector, SOURCESDK::QAngle &outAngles)
+	{
+		SOURCESDK::Vector pos;
+		SOURCESDK::QAngle facing, raw;
+		pos.x = entity.Origin[0];
+		pos.y = entity.Origin[1];
+		pos.z = entity.Origin[2];
+		facing.x = entity.Angles[0];
+		facing.y = entity.Angles[1];
+		facing.z = entity.Angles[2];
+		raw = facing;
+		float base[3][3];
+		Mirv_AngleMatrix3(facing.x, facing.y, facing.z, base);
+		bool baseOk = true;
+		if (m_BoneIndex >= 0)
+		{
+			if (!boneMatrix)
+				return false;
+			pos.x = boneMatrix[0][3];
+			pos.y = boneMatrix[1][3];
+			pos.z = boneMatrix[2][3];
+			float rotation[3][3];
+			for (int r = 0; r < 3; ++r)
+				for (int c = 0; c < 3; ++c)
+					rotation[r][c] = boneMatrix[r][c];
+			Mirv_MatrixAngles3(rotation, raw.x, raw.y, raw.z);
+			baseOk = Mirv_Basis3(boneMatrix, base);
+		}
+		return ResolveFrame(pos, base, raw, facing, baseOk, false, outVector, outAngles);
+	}
+
+  private:
+	bool ResolveFrame(const SOURCESDK::Vector &pos, float base[3][3], const SOURCESDK::QAngle &rawAngles,
+					  const SOURCESDK::QAngle &facing, bool baseOk, bool allowCalibration, SOURCESDK::Vector &outVector,
+					  SOURCESDK::QAngle &outAngles)
+	{
 		const bool bone = 0 <= m_BoneIndex;
 
 		if (m_Mode == MIRV_TF2_BONEMODE_WORLD || m_Mode == MIRV_TF2_BONEMODE_ENTITY)
@@ -2319,6 +2361,8 @@ public:
 
 		if (!m_Calibrated)
 		{
+			if (!allowCalibration)
+				return false;
 			// Start out facing like the entity: fix = inverse(base) * entity, so that base * fix == entity right now.
 			float entity[3][3];
 			Mirv_AngleMatrix3(facing.x, facing.y, facing.z, entity);
@@ -2343,6 +2387,7 @@ public:
 		return true;
 	}
 
+  public:
 	bool GetAttachAnchor(double origin[3], void *&entity, double entityOrigin[3], int *mode = nullptr) const
 	{
 		if (!m_AnchorValid || !m_AnchorEntity)
@@ -11150,8 +11195,40 @@ void Mirv_Tf2_ReleaseSceneMaterials()
 		if (void *value = std::exchange(material, nullptr))
 			SceneInterfaceCall<void>(value, 13);
 }
+// Shared with the camera target provider: reconstruct the same sampled bones
+// used by cached mesh rendering, including parent transforms and bone merges.
+static bool SceneCachedBoneFrame(const advancedfx::SceneCache::Entity &entity,
+								 const advancedfx::SceneCache::Entity *owner, const std::string &name,
+								 SOURCESDK::matrix3x4_t &out)
+{
+	if (name.empty() || !entity.ModelPose || !advancedfx::SceneCache::ValidPose(*entity.ModelPose))
+		return false;
+	const auto &names = entity.ModelPose->ModelInfo->BoneNames;
+	const auto found = std::find_if(names.begin(), names.end(), [&](const std::string &candidate)
+									{ return !_stricmp(candidate.c_str(), name.c_str()); });
+	if (found == names.end())
+		return false;
+	SOURCESDK::matrix3x4_t bones[advancedfx::SceneCache::MaxBones];
+	if (!SceneBuildMatrices(entity, owner, bones))
+		return false;
+	out = bones[std::distance(names.begin(), found)];
+	return true;
+}
 // End selected-player scene-pose prototype.
 
+bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc *calc, const advancedfx::SceneCache::Entity &entity,
+							   const advancedfx::SceneCache::Entity *owner, SOURCESDK::Vector &origin,
+							   SOURCESDK::QAngle &angles)
+{
+	if (!calc)
+		return false;
+	// Only calcs created by NewTf2EntityIndexCalc are passed by the camera registry.
+	auto target = static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc);
+	SOURCESDK::matrix3x4_t bone;
+	if (target->UsesCachedBone() && !SceneCachedBoneFrame(entity, owner, target->CachedBoneName(), bone))
+		return false;
+	return target->CalcCachedFrame(entity, target->UsesCachedBone() ? bone.m_flMatVal : nullptr, origin, angles);
+}
 // Scene entity enumeration shares the label classifier, without attaching tool
 // recorders to every projectile. Network class metadata is read through the
 // public IClientNetworkable::GetClientClass slot (2).

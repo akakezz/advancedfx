@@ -434,6 +434,9 @@ bool Mirv_Tf2_SceneMoveParent(const void *object, const void *clientClass, std::
 // The cache owns immutable value data only; engine pointers are resolved for each draw.
 bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status,
  void *observedObject = nullptr);
+// Read-only sampled target evaluation; the calc must come from NewTf2EntityIndexCalc.
+bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc *calc, const advancedfx::SceneCache::Entity &entity,
+ const advancedfx::SceneCache::Entity *owner, SOURCESDK::Vector &origin, SOURCESDK::QAngle &angles);
 // Engine-thread submission only: Source queues the draw; HLAE queues resource retirement.
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
  const advancedfx::SceneCache::Entity *owner = nullptr);

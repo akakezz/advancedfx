@@ -467,7 +467,9 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 		switch (m_Overrides[i])
 		{
 		case Override_CamSource:
-			if (g_MirvCam.ApplySource(Tx, Ty, Tz, Rz, Rx, Ry))
+			// Explicit cameras evaluate their own target. Do not recalibrate a shared
+			// attachment from live bones while displaying cached poses.
+			if (!MirvCam_RigViewActive() && g_MirvCam.ApplySource(Tx, Ty, Tz, Rz, Rx, Ry))
 			{
 				originOrAnglesOverriden = true;
 				collisionFree = false;

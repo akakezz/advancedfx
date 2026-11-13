@@ -355,6 +355,7 @@ struct NamedCameraRig
 	std::shared_ptr<IMirvVecAngCalc> Target;
 	int EntityAddress = -1, TargetLevel = -1;
 	unsigned int TargetHandle = 0xffffffffu;
+	std::uint64_t CacheIdentity = 0;
 };
 std::map<std::string, NamedCameraRig> g_CameraRigs;
 enum class CameraSource
@@ -416,12 +417,35 @@ unsigned int RigEntityHandle(int address)
 }
 bool RigTarget(const NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
-	if (!rig.Target || AfxHookSource::CameraOverlay::SceneCachePreviewActive() || rig.TargetLevel != g_LevelInitCount ||
-		rig.TargetHandle == 0xffffffffu || RigEntityHandle(rig.EntityAddress) != rig.TargetHandle)
+	if (!rig.Target || rig.TargetLevel != g_LevelInitCount || rig.TargetHandle == 0xffffffffu)
 		return false;
 	SOURCESDK::Vector origin;
 	SOURCESDK::QAngle angles;
-	if (!rig.Target->CalcVecAng(origin, angles))
+	if (AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+	{
+		auto frame = AfxHookSource::CameraOverlay::SceneCacheView();
+		if (!frame || !rig.CacheIdentity)
+			return false;
+		const advancedfx::SceneCache::Entity *entity = nullptr, *owner = nullptr;
+		for (const auto &candidate : frame->Entities)
+			if (candidate.Identity == rig.CacheIdentity)
+			{
+				entity = &candidate;
+				break;
+			}
+		if (!entity)
+			return false;
+		if (entity->OwnerIdentity)
+			for (const auto &candidate : frame->Entities)
+				if (candidate.Identity == entity->OwnerIdentity)
+				{
+					owner = &candidate;
+					break;
+				}
+		if (!Mirv_Tf2_CalcCachedCamera(rig.Target.get(), *entity, owner, origin, angles))
+			return false;
+	}
+	else if (RigEntityHandle(rig.EntityAddress) != rig.TargetHandle || !rig.Target->CalcVecAng(origin, angles))
 		return false;
 	pose.Position[0] = origin.x;
 	pose.Position[1] = origin.y;
@@ -526,6 +550,7 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 			else
 				found->second.Rig.Pose = pose;
 			found->second.LastWorld = pose;
+			if (g_EditingCameraName == found->first) g_EditingCameraName.clear();
 			return;
 		}
 	}
@@ -589,6 +614,10 @@ bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const a
 	attached.AttachMode = mode;
 	attached.TargetLevel = g_LevelInitCount;
 	attached.TargetHandle = RigEntityHandle(entity);
+	int user = 0;
+	attached.CacheIdentity = Mirv_Tf2_GetPlayerInfo(entity, nullptr, 0, &user) && user > 0
+								 ? std::uint64_t(user)
+								 : (std::uint64_t(1) << 63) | attached.TargetHandle;
 	advancedfx::CameraPose target;
 	if (!RigTarget(attached, target) || !attached.Rig.Attach(world, target, true))
 		return false;
@@ -660,8 +689,7 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
 	if (valid)
 		g_LastRigPose = evaluated;
 	else if (!g_RigUnavailable)
-		Tier0_Warning("Selected camera source unavailable; holding its last valid pose. Cached attachment "
-					  "evaluation is not implemented yet.\n");
+		Tier0_Warning("Selected camera source unavailable; holding its last valid pose. Target or cached pose is unavailable.\n");
 	g_RigUnavailable = !valid;
 	pose = g_LastRigPose;
 	return true;
@@ -775,7 +803,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			Tier0_Msg("Added camera %llu: %s.\n", added->second.Id, added->first.c_str());
 			MirvCam_EndRigPreview();
 			g_RigNavigation = previousNavigation;
-			g_EditingCameraName = added->first;
+			g_EditingCameraName.clear();
 		}
 		return true;
 	}
@@ -1284,6 +1312,11 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 
 			if (3 <= argc && 0 == _stricmp("capture", args->ArgV(2)))
 			{
+				if (AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+				{
+					MirvCam_SelectedCameraAction("capture");
+					return;
+				}
 				// In camera editing/preview, capture belongs to that camera, not a hidden previous attachment.
 				if (g_RigPreview || !g_EditingCameraName.empty())
 				{
@@ -1320,6 +1353,7 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				}
 
 				CaptureLegacyCamera(RigCapture());
+				g_EditingCameraName.clear();
 				if (!recaptured)
 					MirvCameraAttachedReset();
 				// The captured pose already includes everything, so the offsets must not be applied on top of it.
@@ -1337,6 +1371,11 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				return;
 			}
 
+			if (AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+			{
+				Tier0_Warning("Return to live demo playback to attach a camera, then preview it through Scene Cache.\n");
+				return;
+			}
 			if (3 <= argc)
 			{
 				const char *target = args->ArgV(2);

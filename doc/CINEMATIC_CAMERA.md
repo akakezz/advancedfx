@@ -2137,9 +2137,9 @@ recording. Toggle it with the persisted Preview indicator preference or
 
 `mirv_cam attach <entity address/player name> [bone name/index] [offsets...]`
 is the single attachment workflow. It also registers a numbered camera for later
-Cameras preview; no separate add or naming step is needed. After `mirv_cam edit <ID/name>`
-(or adding a camera), the next attach retargets that camera instead
-of creating another. Otherwise each successful attach creates a new camera.
+Cameras preview; no separate add or naming step is needed. Only after an explicit `mirv_cam edit <ID/name>` does the next attach retarget
+that camera instead of creating another. Adding or recapturing a camera does not
+arm it for later retargeting. Otherwise each successful attach creates a new camera.
 The command enters the live attachment view, ending free-camera control.
 It preserves the current `mirv_cam attachMode` and existing optional offsets.
 
@@ -2163,8 +2163,8 @@ removed. Use the normal keyframe preview controls for campaths.
 
 The shared `CameraPose`/`CameraRig` evaluation code has no engine or UI dependency.
 Procedural cameras output that pose; campaths retain their existing evaluator.
-A missing attachment target holds the last valid controller pose and reports the failure once instead of silently switching
-sources. Level changes return the controller to legacy mode; fixed definitions
+A missing attachment target holds the last valid controller pose and reports the
+failure once instead of silently switching sources. Level changes return the controller to legacy mode; fixed definitions
 remain, and stale entity attachments require explicit rebinding.
 
 This milestone does **not** yet add timed sequencer clips, blends, rig persistence,
@@ -2172,8 +2172,21 @@ undo, gizmos, tracking, orbit, modifiers, damping or collision for named rigs.
 The live `mirv_cam attach` view retains the existing collision/follow evaluator.
 Saved-camera preview still evaluates rigid attachments; collision/follow settings
 are not yet stored per camera. Fixed cameras can be used during cache preview,
-and campaths use its client-time cursor. Cached entity attachment
-is deliberately unavailable until the cached target provider is implemented:
-it holds the last valid pose rather than reading the live entity at a different
-time. Those limitations are the next milestones, not supported behavior implied
-by this prototype.
+and campaths use its client-time cursor.
+
+Attached cameras also evaluate against Scene Cache preview. Create the binding
+on the live demo, record its target, then enable cache preview and choose that
+camera. All four attachment modes use the sampled entity/bone pose at the cache
+cursor, including fractional and backward scrubbing. Cached bone attachments
+use bone names and the same reconstructed matrices as cached meshes, including
+bone-merged gear. Player bindings use the recorded user ID; other entities use
+the full entity handle, so client-only objects can remain addressable after
+vanishing from the live scene.
+
+The cache must contain the target and, for a bone attachment, its model pose.
+Missing coverage, a filtered target or a missing bone holds the last valid camera
+pose and shows `[unavailable]`; it never substitutes the live entity. A new
+attachment must still be created in live playback. Existing cameras can be
+recaptured against cached poses without changing the demo or native animation
+state. Stateful follow, collision against cached geometry, sequencer blends and
+camera persistence remain later milestones.

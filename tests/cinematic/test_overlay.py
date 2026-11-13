@@ -1262,7 +1262,7 @@ void AttachedFollowTests(){
 # Exercise the actual attachment orientation/capture code with deterministic entity poses.
 mode_source=(root/'AfxHookSource/MirvCalcs.cpp').read_text()
 mode_class=mode_source[mode_source.index('class CMirvVecAngTf2EntityIndexCalc'):mode_source.index('#ifndef _WIN64\nclass CMirvVecAngHandleAttachmentCalc')]
-mode_class=mode_class.replace('private:', 'public:', 1)
+mode_class=mode_class.replace('private:', 'public:')
 mode_class=mode_class.replace('Mirv_Tf2_GetBoneNames(m_EntityIndex, names)', 'TestBoneNames(m_EntityIndex, names)')
 mode_class=mode_class[:mode_class.index('\tSOURCESDK::TF2::IClientTools * GetTools(')]+r"""
  SOURCESDK::TF2::IClientTools*GetTools(){return &tools;}
@@ -1299,6 +1299,20 @@ while depth:
 mode_offset='struct Offset {float m_OffsetForwad=-60,m_OffsetLeft=0,m_OffsetUp=8,m_OffsetForwardRot=0,m_OffseLeftRot=0,m_OffsetUpRot=0;'+offset_source[start:end].replace('CMirvCam::ApplyOffset','ApplyOffset')+'};\n'
 mode_tests=r"""
 void Run(){
+ for(int mode=0;mode<4;++mode)for(int selectedBone:{-1,1}){
+  CMirvVecAngTf2EntityIndexCalc c(nullptr,2,selectedBone,mode);SOURCESDK::Vector live,cachedPos;SOURCESDK::QAngle angle,cachedAngle;
+  auto compare=[&]{
+   check(c.CalcVecAng(live,angle),"Live reference attachment evaluates");
+   advancedfx::SceneCache::Entity e;e.Origin[0]=pose.x;e.Origin[1]=pose.y;e.Origin[2]=pose.z;e.Angles[0]=entityAngles.x;e.Angles[1]=entityAngles.y;e.Angles[2]=entityAngles.z;
+   float matrix[3][4],rot[3][3];Mirv_AngleMatrix3(boneAngles.x,boneAngles.y,boneAngles.z,rot);for(int r=0;r<3;++r){for(int k=0;k<3;++k)matrix[r][k]=rot[r][k];matrix[r][3]=r==0?pose.x:r==1?pose.y:pose.z;}
+   check(c.CalcCachedFrame(e,selectedBone<0?nullptr:matrix,cachedPos,cachedAngle),"Cached attachment evaluates every mode");
+   check(std::abs(live.x-cachedPos.x)<.002&&std::abs(live.y-cachedPos.y)<.002&&std::abs(live.z-cachedPos.z)<.002,"Cached translation matches native attachment including captures");
+   check(std::abs(std::remainder(double(angle.x-cachedAngle.x),360.0))<.002&&std::abs(std::remainder(double(angle.y-cachedAngle.y),360.0))<.002&&std::abs(std::remainder(double(angle.z-cachedAngle.z),360.0))<.002,"Cached rotation matches native attachment in every mode");
+   poseValid=false;check(c.CalcCachedFrame(e,selectedBone<0?nullptr:matrix,cachedPos,cachedAngle),"Cached attachment never queries the live entity");poseValid=true;
+  };
+  compare();double origin[3]={12,24,90},angles[3]={-12,45,7};float offset[3];check(c.CaptureCamera(origin,angles,offset),"Capture reference camera");compare();
+  pose.x+=40;boneAngles.y-=30;entityAngles.y+=15;compare();pose.x-=40;boneAngles.y+=30;entityAngles.y-=15;compare();
+ }
  currentClientHandle=(3u<<12)|2050;CMirvVecAngTf2EntityIndexCalc gib(nullptr,2050,-1,MIRV_TF2_BONEMODE_ENTITY);check(gib.Matches(&tools,(void*)1),"Client attachment pins the complete handle at construction");currentClientHandle+=(1u<<12);check(!gib.Matches(&tools,(void*)1),"Recycled client slots cannot redirect an existing attachment");CMirvVecAngTf2EntityIndexCalc replacement(nullptr,2050,-1,MIRV_TF2_BONEMODE_ENTITY);check(replacement.Matches(&tools,(void*)1),"Explicit reattachment accepts the replacement serial");++g_LevelInitCount;check(!replacement.Matches(&tools,(void*)1),"Demo level changes invalidate client attachments even if a handle repeats");currentClientHandle=0xffffffffu;CMirvVecAngTf2EntityIndexCalc missing(nullptr,2050,-1,MIRV_TF2_BONEMODE_ENTITY);currentClientHandle=(9u<<12)|2050;check(!missing.Matches(&tools,(void*)1),"Initially absent client targets never latch onto later spawns");
 
  for(int mode:{MIRV_TF2_BONEMODE_BONE,MIRV_TF2_BONEMODE_ENTITY,MIRV_TF2_BONEMODE_ALIGNED,MIRV_TF2_BONEMODE_WORLD}){
