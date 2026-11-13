@@ -1506,6 +1506,7 @@ void RememberNativeDemoFile(const void *args)
 		if (command.ArgC() >= 2)
 		{
 			MirvFix_PlayerRepairNewDemo(command.Arg(1));
+			MirvCam_NotifyDemoFile(command.Arg(1), g_VEngineClient ? g_VEngineClient->GetGameDirectory() : nullptr);
 #if AFX_ENABLE_GUI
 			AfxHookSource::CameraOverlay::NotifyDemoPlaybackFile(command.Arg(1));
 #endif
@@ -1941,7 +1942,7 @@ void MirvCampathPreview_Update()
 		g_CampathPreviewLastMs = GetTickCount();
 		// Editor ownership suppresses navigation, while keeping the evaluated
 		// camera live. Only Source's own menus suspend preview evaluation.
-		if (g_Hook_VClient_RenderView.IsSourceUiActive())
+		if (g_Hook_VClient_RenderView.IsSourceUiActive() && !AfxHookSource::CameraOverlay::IsOpen())
 			return;
 	}
 

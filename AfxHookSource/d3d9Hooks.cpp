@@ -4900,6 +4900,7 @@ public:
 
 	void Afx_Present_Before(CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion, DWORD dwFlags)
 	{
+		AfxHookSource::Gui::On_Direct3DDevice9_Present_Before();
 	}
 
 	void Afx_Present_After(HRESULT hResult)

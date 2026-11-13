@@ -10,17 +10,21 @@
 
 #include <shared/AfxMath.h>
 
+#include "CameraOverlay.h"
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <cstdlib>
 #include <ctype.h>
-#include <stdlib.h>
-#include <string>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
-#include "CameraOverlay.h"
 #include <shared/MirvInput.h>
+#include <stdlib.h>
+#include <string>
+
+extern WrpVEngineClient *g_VEngineClient;
 
 // How mirv_cam attach gets the angles when a bone is used.
 static int g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ALIGNED;
@@ -359,6 +363,8 @@ struct NamedCameraRig
 	unsigned int TargetHandle = 0xffffffffu;
 	std::uint64_t CacheIdentity = 0;
 	bool Available = true;
+	std::string DemoKey, TargetModel;
+	std::chrono::steady_clock::time_point NextRebind{};
 };
 std::map<std::string, NamedCameraRig> g_CameraRigs;
 enum class CameraSource
@@ -369,6 +375,7 @@ enum class CameraSource
 CameraSource g_CameraSource = CameraSource::Legacy;
 std::string g_CameraRigName;
 std::string g_EditingCameraName, g_LegacyCameraName;
+std::string g_CameraDemoKey;
 advancedfx::CameraPose g_LastRigPose;
 bool g_RigUnavailable = false;
 bool g_RigPreview = false;
@@ -387,15 +394,73 @@ auto FindRig(const std::string &reference)
 void SyncRigLevel()
 {
 	static int level = g_LevelInitCount;
-	if (level != g_LevelInitCount)
+	if (level == g_LevelInitCount)
+		return;
+	level = g_LevelInitCount;
+	auto selected = g_CameraRigs.find(g_CameraRigName);
+	const bool resume = selected != g_CameraRigs.end() && selected->second.Rig.Attached && !g_CameraDemoKey.empty() &&
+						selected->second.DemoKey == g_CameraDemoKey;
+	if (!resume)
 	{
-		level = g_LevelInitCount;
 		g_CameraSource = CameraSource::Legacy;
 		g_RigPreview = false;
-		g_EditingCameraName.clear();
-		g_LegacyCameraName.clear();
-		g_RigUnavailable = false;
 	}
+	g_EditingCameraName.clear();
+	auto legacy = g_CameraRigs.find(g_LegacyCameraName);
+	if (legacy != g_CameraRigs.end() && legacy->second.Rig.Attached)
+	{
+		MirvCam_ReleaseLiveAttachment();
+		if (g_CameraDemoKey.empty() || legacy->second.DemoKey != g_CameraDemoKey)
+			g_LegacyCameraName.clear();
+	}
+	else
+		g_LegacyCameraName.clear();
+	for (auto &entry : g_CameraRigs)
+		if (entry.second.Rig.Attached)
+		{
+			entry.second.Available = false;
+			entry.second.NextRebind = {};
+		}
+	g_RigUnavailable = resume;
+}
+bool TryRebindCamera(NamedCameraRig &rig)
+{
+	if (!rig.Rig.Attached || rig.TargetLevel == g_LevelInitCount)
+		return rig.TargetLevel == g_LevelInitCount;
+	if (rig.DemoKey.empty() || rig.DemoKey != g_CameraDemoKey || !rig.Target)
+		return false;
+	const auto now = std::chrono::steady_clock::now();
+	if (now < rig.NextRebind)
+		return false;
+	rig.NextRebind = now + std::chrono::milliseconds(100);
+	const int address = Mirv_Tf2_FindCameraTarget(rig.CacheIdentity, rig.TargetModel);
+	if (address < 0)
+		return false;
+	auto calc = Mirv_Tf2_RebindCamera(rig.Target.get(), address);
+	if (!calc)
+		return false;
+	calc->AddRef();
+	std::shared_ptr<IMirvVecAngCalc> candidate(calc, [](IMirvVecAngCalc *p) { p->Release(); });
+	SOURCESDK::Vector origin;
+	SOURCESDK::QAngle angles;
+	if (!calc->CalcVecAng(origin, angles))
+		return false;
+	const auto handle = address >= 2048 ? Mirv_Tf2_HandleForAddress(address)
+										: Mirv_Tf2_EntityHandle(Mirv_Tf2_DiagnosticEntity(address));
+	if (handle == 0xffffffffu)
+		return false;
+	rig.Target = std::move(candidate);
+	rig.EntityAddress = address;
+	rig.TargetHandle = handle;
+	rig.TargetLevel = g_LevelInitCount;
+	rig.Available = true;
+	auto legacy = g_CameraRigs.find(g_LegacyCameraName);
+	if (legacy != g_CameraRigs.end() && &legacy->second == &rig && !g_MirvCam.Source_get())
+	{
+		g_MirvCam.Source_set(calc);
+		MirvCam_SetAttachCalc(calc);
+	}
+	return true;
 }
 advancedfx::CameraPose RigCapture()
 {
@@ -418,9 +483,9 @@ unsigned int RigEntityHandle(int address)
 	auto entity = Mirv_Tf2_DiagnosticEntity(address);
 	return entity ? Mirv_Tf2_EntityHandle(entity) : 0xffffffffu;
 }
-bool RigTarget(const NamedCameraRig &rig, advancedfx::CameraPose &pose)
+bool RigTarget(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
-	if (!rig.Target || rig.TargetLevel != g_LevelInitCount || rig.TargetHandle == 0xffffffffu)
+	if (!TryRebindCamera(rig) || !rig.Target || rig.TargetHandle == 0xffffffffu)
 		return false;
 	SOURCESDK::Vector origin;
 	SOURCESDK::QAngle angles;
@@ -561,7 +626,7 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 			return;
 		}
 	}
-	if (argc == 10 && !_stricmp(args->ArgV(1), "pose"))
+	if (argc == 10 && !_stricmp(args->ArgV(1), "edit"))
 	{
 		auto found = FindRig(args->ArgV(2));
 		if (found == g_CameraRigs.end())
@@ -601,9 +666,11 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 		else
 			found->second.Rig.Pose = pose;
 		found->second.LastWorld = pose;
+		if (g_EditingCameraName == found->first)
+			g_EditingCameraName.clear();
 		return;
 	}
-	Tier0_Msg("mirv_cam add [name] | list | capture <ID/name> | remove <ID/name> | pose <ID/name> <x> <y> <z> <pitch> "
+	Tier0_Msg("mirv_cam add [name] | list | capture <ID/name> | remove <ID/name> | edit <ID/name> <x> <y> <z> <pitch> "
 			  "<yaw> <roll> <fov>\n");
 }
 // Legacy attach remains the live evaluator (including follow/collision). Keep an
@@ -620,6 +687,8 @@ bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const a
 	attached.EntityAddress = entity;
 	attached.AttachMode = mode;
 	attached.TargetLevel = g_LevelInitCount;
+	attached.DemoKey = g_VEngineClient && g_VEngineClient->IsPlayingDemo() ? g_CameraDemoKey : std::string{};
+	attached.TargetModel = Mirv_Tf2_CameraTargetModel(entity);
 	attached.TargetHandle = RigEntityHandle(entity);
 	int user = 0;
 	attached.CacheIdentity = Mirv_Tf2_GetPlayerInfo(entity, nullptr, 0, &user) && user > 0
@@ -687,6 +756,9 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
+	for (auto &entry : g_CameraRigs)
+		if (entry.second.Rig.Attached && entry.second.TargetLevel != g_LevelInitCount)
+			TryRebindCamera(entry.second);
 	if (g_CameraSource == CameraSource::Legacy)
 	{
 		g_RigUnavailable = false;
@@ -876,8 +948,17 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 	}
 	if (action == "edit")
 	{
-		if (args->ArgC() != 3)
+		if (args->ArgC() == 10)
+		{
+			CameraStorageCommand(args);
 			return true;
+		}
+		if (args->ArgC() != 3)
+		{
+			Tier0_Msg("mirv_cam edit <ID/name> - Reframe using the free camera.\nmirv_cam edit <ID/name> <x> <y> <z> "
+					  "<pitch> <yaw> <roll> <fov> - Set the world pose numerically.\n");
+			return true;
+		}
 		auto found = FindRig(args->ArgV(2));
 		if (found == g_CameraRigs.end())
 			return true;
@@ -916,7 +997,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		g_CameraRigs.insert(std::move(node));
 		return true;
 	}
-	if (action == "capture" || action == "pose" || action == "remove" || action == "list")
+	if (action == "capture" || action == "remove" || action == "list")
 	{
 		for (int i = 2; i < args->ArgC(); ++i)
 			command.Words.push_back(args->ArgV(i));
@@ -1091,6 +1172,48 @@ bool MirvCam_RenameSelectedCamera(const char *name)
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	auto found = g_CameraRigs.find(g_CameraRigName);
 	return found != g_CameraRigs.end() && MirvCam_RenameCamera(found->second.Id, name);
+}
+void MirvCam_NotifyDemoFile(const char *file, const char *gameDirectory)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (!file || !*file)
+		return;
+	try
+	{
+		std::string text = file;
+		std::replace(text.begin(), text.end(), '\\', '/');
+		std::filesystem::path path(text);
+		if (!path.has_extension())
+			path += ".dem";
+		if (path.is_relative() && gameDirectory && *gameDirectory)
+		{
+			std::string gameText = gameDirectory;
+			std::replace(gameText.begin(), gameText.end(), '\\', '/');
+			auto game = std::filesystem::path(gameText).lexically_normal();
+			while (game.filename().empty() && game.parent_path() != game)
+				game = game.parent_path();
+			const bool includesGameDirectory =
+				!_stricmp(path.begin()->string().c_str(), game.filename().string().c_str());
+			path = (includesGameDirectory ? game.parent_path() : game) / path;
+		}
+		std::error_code error;
+		auto canonical = std::filesystem::weakly_canonical(path, error);
+		std::string key = (error ? path.lexically_normal() : canonical).generic_string();
+		std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+		error.clear();
+		const auto size = std::filesystem::file_size(path, error);
+		if (!error)
+		{
+			const auto stamp = std::filesystem::last_write_time(path, error);
+			if (!error)
+				key += "|" + std::to_string(size) + "|" + std::to_string(static_cast<long long>(stamp.time_since_epoch().count()));
+		}
+		g_CameraDemoKey = key;
+	}
+	catch (...)
+	{
+		g_CameraDemoKey.clear();
+	}
 }
 CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 {
@@ -1725,20 +1848,19 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 		}
 	}
 
-	Tier0_Msg(
-		"mirv_cam add [name] | list | remove <ID/name> | rename <ID/name> <name> - Session cameras.\n"
-		"mirv_cam preview <ID/name>|cameras|keys|toggle|off - Preview cameras or keyframes.\n"
-		"mirv_cam edit <ID/name> | capture <ID/name> - Move to a camera for editing, then recapture.\n"
-		"mirv_cam attach <entity/name> [bone] [offsets...] - Attach and register a camera; edit a camera first to reattach it.\n"
-		"mirv_cam pose <ID/name> <x> <y> <z> <pitch> <yaw> <roll> <fov> - Edit a camera.\n"
-		"mirv_cam source [...] - Control camera location.\n"
-		"mirv_cam fov [...] - Control camera fov.\n"
-		"mirv_cam attach [...] - (TF2) Attach the camera to a player or entity (and bone).\n"
-		"mirv_cam attachMode [...] - (TF2) Controls which angles attach uses for bones.\n"
-		"mirv_cam offset [...] - Control camera offset (in local space).\n"
-		"mirv_cam order [...] - Control order of camera overrides.\n"
-		"mirv_cam collision [...] - Optional TF2/TF2C free-camera and campath collision.\n"
-	);
+	Tier0_Msg("mirv_cam add [name] | list | remove <ID/name> | rename <ID/name> <name> - Session cameras.\n"
+			  "mirv_cam preview <ID/name>|cameras|keys|toggle|off - Preview cameras or keyframes.\n"
+			  "mirv_cam edit <ID/name> | capture <ID/name> - Move to a camera for editing, then recapture.\n"
+			  "mirv_cam attach <entity/name> [bone] [offsets...] - Attach and register a camera; edit a camera first "
+			  "to reattach it.\n"
+			  "mirv_cam edit <ID/name> <x> <y> <z> <pitch> <yaw> <roll> <fov> - Edit a camera.\n"
+			  "mirv_cam source [...] - Control camera location.\n"
+			  "mirv_cam fov [...] - Control camera fov.\n"
+			  "mirv_cam attach [...] - (TF2) Attach the camera to a player or entity (and bone).\n"
+			  "mirv_cam attachMode [...] - (TF2) Controls which angles attach uses for bones.\n"
+			  "mirv_cam offset [...] - Control camera offset (in local space).\n"
+			  "mirv_cam order [...] - Control order of camera overrides.\n"
+			  "mirv_cam collision [...] - Optional TF2/TF2C free-camera and campath collision.\n");
 }
 
 bool MirvCam_RigViewActive() { std::lock_guard<std::recursive_mutex> lock(g_CameraMutex); SyncRigLevel(); return g_CameraSource != CameraSource::Legacy; }

@@ -434,6 +434,10 @@ bool Mirv_Tf2_SceneMoveParent(const void *object, const void *clientClass, std::
 // The cache owns immutable value data only; engine pointers are resolved for each draw.
 bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity, std::string &status,
  void *observedObject = nullptr);
+std::string Mirv_Tf2_CameraTargetModel(int address);
+int Mirv_Tf2_FindCameraTarget(std::uint64_t identity, const std::string &model);
+// Clone attachment framing onto a fresh target; calc must come from NewTf2EntityIndexCalc.
+IMirvVecAngCalc *Mirv_Tf2_RebindCamera(IMirvVecAngCalc *calc, int entity);
 // Read-only sampled target evaluation; the calc must come from NewTf2EntityIndexCalc.
 bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc *calc, const advancedfx::SceneCache::Entity &entity,
  const advancedfx::SceneCache::Entity *owner, SOURCESDK::Vector &origin, SOURCESDK::QAngle &angles);

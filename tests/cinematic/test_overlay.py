@@ -182,6 +182,7 @@ bool MirvCam_PreviewKey(unsigned int,bool down,bool repeat){if(!testRigPreview)r
 bool MirvCampathPreview_SetActive(bool);
 bool MirvCam_SetPreviewNavigation(bool cameras){testRigPreview=false;testRigNavigation=false;MirvCampathPreview_SetActive(false);testRigNavigation=cameras;if(cameras)testRigPreview=true;else MirvCampathPreview_SetActive(true);return true;}
 bool MirvCam_TogglePreviewNavigation(){return MirvCam_SetPreviewNavigation(!testRigNavigation);}
+void MirvCam_NotifyDemoFile(const char*,const char*){}
 
 int tracedEntity=1;bool traceAvailable=true;
 bool Mirv_Tf2_TraceEntity(const double*,const double*,int&out){out=tracedEntity;return traceAvailable;}
@@ -395,6 +396,7 @@ struct POINT{int x=0,y=0;};using LPPOINT=POINT*;struct RECT{int left=0,top=0,rig
 constexpr bool TRUE=true,FALSE=false;constexpr UINT WM_SETCURSOR=0x20,HTCLIENT=1;
 unsigned LOWORD(LPARAM v){return unsigned(v)&65535;}
 bool Supported=true;bool IsSupported(){return Supported;}
+bool NativeCaptured=false;void NativeInput_SetCapture(bool b){NativeCaptured=b;}
 namespace CameraOverlay{bool Open=true,Look=false;int Finishes=0;bool IsOpen(){return Open;}bool IsMouseLook(){return Look;}void FinishEdit(){++Finishes;}}
 struct Input{int Clears=0;void ClearMovementInput(){++Clears;}}cursorInput;
 struct View{bool Menu=false,Visible=false;int Queries=0;Input*m_MirvInput=&cursorInput;void UiCursorStatus(bool&a,bool&v){++Queries;a=true;v=Visible;}bool IsSourceUiActive(){++Queries;return Menu;}}g_Hook_VClient_RenderView;
@@ -439,8 +441,8 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  check(virtualCorrect&&CursorSets==sets&&CursorInputTest::g_Hook_VClient_RenderView.Queries==queries,"Repeated WM_SETCURSOR never resets an I-beam or queries Source");
  double fieldValue=1;ImVec2 target;for(int frame=0;frame<3;++frame){io.DeltaTime=1.f/60;if(frame)io.MousePos=target;ImGui::NewFrame();ImGui::SetNextWindowPos({20,20});ImGui::Begin("Cursor hover test");ImGui::InputDouble("Value",&fieldValue);target=ImGui::GetItemRectMin()+ImVec2(25,8);if(frame==2)check(ImGui::GetMouseCursor()==ImGuiMouseCursor_TextInput,"Text fields still request the I-beam shape for the software cursor");ImGui::End();ImGui::Render();}
  check(CursorSets==sets,"Moving over real numeric inputs does not touch the OS cursor");
- CursorInputTest::g_Hook_VClient_RenderView.Menu=true;UpdateGraphInputOwnership();check(!m_GraphInputOwned&&io.MouseDrawCursor==originalDraw&&Hardware==ibeam&&Display==-1,"Source menu handoff restores its latest cursor and display count");
- HCURSOR ignored=nullptr;check(!OnSetCursor(arrow,ignored)&&!OnGetCursor(ignored),"Game cursor APIs pass through after handoff");
+ CursorInputTest::g_Hook_VClient_RenderView.Menu=true;UpdateGraphInputOwnership();check(m_GraphInputOwned&&io.MouseDrawCursor&&Hardware==nullptr&&NativeCaptured,"Overlay retains cursor and input ownership above Source menus");
+ CameraOverlay::Open=false;UpdateGraphInputOwnership();check(!m_GraphInputOwned&&io.MouseDrawCursor==originalDraw&&Hardware==ibeam&&Display==-1,"Closing above a Source menu restores its latest cursor and display count");HCURSOR ignored=nullptr;check(!OnSetCursor(arrow,ignored)&&!OnGetCursor(ignored),"Game cursor APIs pass through after close");CameraOverlay::Open=true;
  CursorInputTest::g_Hook_VClient_RenderView.Menu=false;UpdateGraphInputOwnership();CameraOverlay::Look=true;UpdateGraphInputOwnership();check(!m_GraphInputOwned&&!io.MouseDrawCursor,"Freecam mouse-look disables the software cursor");
  CameraOverlay::Look=false;UpdateGraphInputOwnership();g_OverlayWindowFocused=false;UpdateGraphInputOwnership();check(!m_GraphInputOwned&&!io.MouseDrawCursor,"Losing focus releases cursor ownership");
  CameraOverlay::Open=false;Supported=false;check(!OnGetCursor(ignored),"Cursor hooks pass through outside supported overlay ownership");io.MousePos={-100,-100};
@@ -1289,7 +1291,7 @@ mode_math=mode_source[mode_source.index('static void Mirv_AngleMatrix3('):mode_s
 mode_preamble=r"""
 namespace AttachmentModeTest {
 namespace SOURCESDK {struct Vector{float x=0,y=0,z=0;};using QAngle=Vector;namespace TF2{using IClientTools=::SOURCESDK::TF2::IClientTools;using EntitySearchResult=void*;}}
-struct CMirvVecAngCalc{CMirvVecAngCalc(const char*){}virtual void Console_PrintBegin(){}};
+struct CMirvVecAngCalc{CMirvVecAngCalc(const char*){}virtual void Console_PrintBegin(){}};using IMirvVecAngCalc=CMirvVecAngCalc;
 struct View{double LastCameraAngles[3]={12,37,-8};}g_Hook_VClient_RenderView;
 SOURCESDK::TF2::IClientTools tools;
 int g_LevelInitCount=0;const void*poseModel=(void*)1;
@@ -1317,6 +1319,8 @@ void Run(){
    check(std::abs(live.x-cachedPos.x)<.002&&std::abs(live.y-cachedPos.y)<.002&&std::abs(live.z-cachedPos.z)<.002,"Cached translation matches native attachment including captures");
    check(std::abs(std::remainder(double(angle.x-cachedAngle.x),360.0))<.002&&std::abs(std::remainder(double(angle.y-cachedAngle.y),360.0))<.002&&std::abs(std::remainder(double(angle.z-cachedAngle.z),360.0))<.002,"Cached rotation matches native attachment in every mode");
    poseValid=false;check(c.CalcCachedFrame(e,selectedBone<0?nullptr:matrix,cachedPos,cachedAngle),"Cached attachment never queries the live entity");poseValid=true;
+   auto rebound=static_cast<CMirvVecAngTf2EntityIndexCalc*>(c.RebindCamera(2));SOURCESDK::Vector reboundPos;SOURCESDK::QAngle reboundAngle;check(rebound->CalcVecAng(reboundPos,reboundAngle),"Rebound attachment evaluates");check(std::abs(reboundPos.x-live.x)<.002&&std::abs(reboundPos.y-live.y)<.002&&std::abs(reboundPos.z-live.z)<.002&&std::abs(std::remainder(double(reboundAngle.y-angle.y),360.0))<.002,"Rebinding preserves native captured offsets and orientation calibration");delete rebound;
+
   };
   compare();double origin[3]={12,24,90},angles[3]={-12,45,7};float offset[3];check(c.CaptureCamera(origin,angles,offset),"Capture reference camera");compare();
   pose.x+=40;boneAngles.y-=30;entityAngles.y+=15;compare();pose.x-=40;boneAngles.y+=30;entityAngles.y-=15;compare();

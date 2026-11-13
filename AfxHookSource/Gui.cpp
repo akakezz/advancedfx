@@ -24,14 +24,17 @@ extern void MirvCampathPreview_ReleaseKeys();
 #include <cmath>
 #include <cstdio>
 
-#include <SourceInterfaces.h>
 #include "WrpVEngineClient.h"
 #include "addresses.h"
 #include "hlaeFolder.h"
+#include <SourceInterfaces.h>
+#include <atomic>
 #include <list>
+#include <mutex>
+#include <shared/AfxDetours.h>
+#include <shared/OverlayInput.h>
 #include <string>
 #include <vector>
-#include <mutex>
 
 extern SourceSdkVer g_SourceSdkVer;
 extern WrpVEngineClient * g_VEngineClient;
@@ -46,7 +49,10 @@ POINT m_GameCursorPos = { 0, 0 };
 HCURSOR m_GameCursor = 0;
 std::string m_IniFilename;
 std::string m_LogFileName;
-bool m_FirstEndScene = true;
+UINT g_OverlayFrameMessage = 0;
+std::atomic<bool> g_OverlayFramePending{false};
+std::atomic<DWORD> g_LastOverlayFrame{0};
+std::recursive_mutex g_GuiFrameMutex;
 
 // Data
 static HWND                     g_hWnd = 0;
@@ -508,6 +514,155 @@ static bool IsAnyMouseButtonDown()
 	return false;
 }
 
+// Source polls its own input queue before the game WndProc in some builds.
+// Gate both public input-state updates and queued events, retaining releases/system events.
+namespace
+{
+using NativeEvent = advancedfx::OverlayInputEvent;
+using InputEnable = void(__thiscall *)(void *, bool);
+using InputCount = int(__thiscall *)(void *);
+using InputData = const NativeEvent *(__thiscall *)(void *);
+void *g_SourceInput = nullptr;
+InputEnable g_SourceEnable = nullptr;
+InputCount g_SourceCount = nullptr;
+InputData g_SourceData = nullptr;
+bool g_SourceRequestedInput = true;
+advancedfx::OverlayInputFilter g_SourceFilter;
+std::recursive_mutex g_SourceInputMutex;
+template <class T> T InputMethod(size_t slot)
+{
+	return reinterpret_cast<T>((*static_cast<void ***>(g_SourceInput))[slot]);
+}
+int SourceInputPoll() { return InputMethod<InputCount>(35)(g_SourceInput); }
+void SourceInputReset()
+{
+	using Fn = void(__thiscall *)(void *);
+	InputMethod<Fn>(25)(g_SourceInput);
+}
+void __fastcall SourceEnableHook(void *self,
+#ifndef _WIN64
+								 void *,
+#endif
+								 bool enabled)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SourceInputMutex);
+	g_SourceRequestedInput = enabled;
+	g_SourceEnable(self, enabled && !g_SourceFilter.Capturing());
+}
+int __fastcall SourceCountHook(void *self
+#ifndef _WIN64
+							   ,
+							   void *
+#endif
+)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SourceInputMutex);
+	const int count = g_SourceCount(self), poll = SourceInputPoll();
+	if (!g_SourceFilter.NeedsFilter(poll))
+		return count;
+	return int(g_SourceFilter.Filter(g_SourceData(self), count, poll).size());
+}
+const NativeEvent *__fastcall SourceDataHook(void *self
+#ifndef _WIN64
+											 ,
+											 void *
+#endif
+)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SourceInputMutex);
+	const int poll = SourceInputPoll();
+	const auto data = g_SourceData(self);
+	return g_SourceFilter.NeedsFilter(poll) ? g_SourceFilter.Filter(data, g_SourceCount(self), poll).data() : data;
+}
+bool InstallSourceInput()
+{
+	if (g_SourceInput)
+		return true;
+	auto module = GetModuleHandleW(L"inputsystem.dll");
+	if (!module)
+		return false;
+	auto factory = reinterpret_cast<SOURCESDK::CreateInterfaceFn>(GetProcAddress(module, "CreateInterface"));
+	auto object = factory ? factory("InputSystemVersion001", nullptr) : nullptr;
+	if (!object)
+		return false;
+	auto table = *static_cast<void ***>(object);
+	// SDK 2013 IAppSystem has five slots: EnableInput=7, GetEventCount=16, GetEventData=17.
+	const size_t slots[] = {7, 16, 17};
+	void *hooks[] = {reinterpret_cast<void *>(SourceEnableHook), reinterpret_cast<void *>(SourceCountHook),
+					 reinterpret_cast<void *>(SourceDataHook)};
+	void *originals[] = {table[7], table[16], table[17]};
+	g_SourceInput = object;
+	g_SourceEnable = reinterpret_cast<InputEnable>(originals[0]);
+	g_SourceCount = reinterpret_cast<InputCount>(originals[1]);
+	g_SourceData = reinterpret_cast<InputData>(originals[2]);
+	for (size_t i = 0; i < 3; ++i)
+	{
+		void *old = nullptr;
+		if (!AfxDetourPtr(&table[slots[i]], hooks[i], &old))
+		{
+			for (size_t j = 0; j < i; ++j)
+			{
+				void *unused;
+				AfxDetourPtr(&table[slots[j]], originals[j], &unused);
+			}
+			g_SourceInput = nullptr;
+			return false;
+		}
+	}
+	return true;
+}
+void NativeInput_SetCapture(bool capture)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SourceInputMutex);
+	if (!g_SourceInput && (!capture || !InstallSourceInput()))
+		return;
+	if (capture == g_SourceFilter.Capturing())
+		return;
+	g_SourceFilter.Capture(capture, SourceInputPoll());
+	SourceInputReset();
+	g_SourceEnable(g_SourceInput, capture ? false : g_SourceRequestedInput);
+}
+void NativeInput_EatKey(unsigned key)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SourceInputMutex);
+	if (!g_SourceInput)
+		return;
+	using Map = int(__thiscall *)(void *, int);
+	int button = InputMethod<Map>(32)(g_SourceInput, int(key));
+	if (key == VK_LBUTTON || key == VK_RBUTTON || key == VK_MBUTTON || key == VK_XBUTTON1 || key == VK_XBUTTON2)
+	{
+		using FromString = int(__thiscall *)(void *, const char *);
+		const char *name = key == VK_LBUTTON	? "MOUSE1"
+						   : key == VK_RBUTTON	? "MOUSE2"
+						   : key == VK_MBUTTON	? "MOUSE3"
+						   : key == VK_XBUTTON1 ? "MOUSE4"
+												: "MOUSE5";
+		button = InputMethod<FromString>(29)(g_SourceInput, name);
+	}
+	g_SourceFilter.EatButton(button);
+}
+void NativeInput_Shutdown()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SourceInputMutex);
+	if (!g_SourceInput)
+		return;
+	if (GetModuleHandleW(L"inputsystem.dll"))
+	{
+		NativeInput_SetCapture(false);
+		auto table = *static_cast<void ***>(g_SourceInput);
+		void *unused;
+		if (table[7] == reinterpret_cast<void *>(SourceEnableHook))
+			AfxDetourPtr(&table[7], reinterpret_cast<void *>(g_SourceEnable), &unused);
+		if (table[16] == reinterpret_cast<void *>(SourceCountHook))
+			AfxDetourPtr(&table[16], reinterpret_cast<void *>(g_SourceCount), &unused);
+		if (table[17] == reinterpret_cast<void *>(SourceDataHook))
+			AfxDetourPtr(&table[17], reinterpret_cast<void *>(g_SourceData), &unused);
+	}
+	g_SourceInput = nullptr;
+	g_SourceFilter.ResetButtons();
+}
+} // namespace
+
 namespace
 {
 bool g_OverlayWindowFocused = true;
@@ -521,7 +676,7 @@ bool SourceOwnsUi()
 bool GraphInteractive()
 {
 	return CameraOverlay::IsOpen() && !CameraOverlay::IsMouseLook() && g_OverlayWindowFocused && g_hWnd &&
-		   g_FontTexture && !SourceOwnsUi();
+		   g_FontTexture;
 }
 
 bool m_GraphInputOwned = false;
@@ -534,6 +689,7 @@ static bool m_PreviousDrawCursor = false;
 
 void UpdateGraphInputOwnership()
 {
+	NativeInput_SetCapture(CameraOverlay::IsOpen() && g_OverlayWindowFocused && g_hWnd && g_FontTexture);
 	bool wanted = GraphInteractive();
 	if (wanted == m_GraphInputOwned)
 		return;
@@ -606,9 +762,17 @@ bool WantsKeyboardInput()
 
 bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 {
+	std::lock_guard<std::recursive_mutex> frameLock(g_GuiFrameMutex);
 	if (!IsSupported())
 		return false;
 
+	if (g_OverlayFrameMessage && msg == g_OverlayFrameMessage)
+	{
+		g_OverlayFramePending = false;
+		if (CameraOverlay::IsOpen() || CameraOverlay::PreviewHudVisible())
+			OnGameFrameRenderEnd();
+		return true;
+	}
 	// WM_SETCURSOR is a hot/reentrant Windows callback. Ownership is refreshed by
 	// normal window events and frames, never by querying Source from this callback.
 	if (msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT && m_GraphInputOwned)
@@ -641,20 +805,13 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 			ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
 		return true;
 	}
-	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam == VK_F8 && !SourceOwnsUi())
+	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam == VK_F8)
 	{
 		if (!(lParam & (1LL << 30)))
 			SetOverlayOpen(!CameraOverlay::IsOpen());
 		m_KeyDownEaten[wParam] = true;
+		NativeInput_EatKey(unsigned(wParam));
 		return true;
-	}
-	if ((msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) &&
-		(wParam == VK_OEM_3 || wParam == VK_F2 || wParam == VK_SHIFT || wParam == VK_LSHIFT ||
-		 wParam == VK_RSHIFT))
-	{
-		if (GraphInteractive())
-			ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
-		return false;
 	}
 	if (msg == WM_RBUTTONDOWN && CameraOverlay::IsOpen() && !SourceOwnsUi() &&
 		!ImGui::GetIO().WantCaptureMouse && g_Hook_VClient_RenderView.m_MirvInput &&
@@ -662,6 +819,7 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 	{
 		MirvCampathPreview_SetActive(false);
 		CameraOverlay::SetMouseLook(true);
+		NativeInput_EatKey(VK_RBUTTON);
 		UpdateGraphInputOwnership();
 		return false;
 	}
@@ -680,23 +838,25 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 
 	ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
 	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam < 256)
-		m_KeyDownEaten[wParam] = true;
-	if (msg == WM_INPUT)
 	{
-		RAWINPUT input = {};
-		UINT size = sizeof(input);
-		GetRawInputData((HRAWINPUT)lParam, RID_INPUT, &input, &size, sizeof(RAWINPUTHEADER));
-		if (input.header.dwType == RIM_TYPEKEYBOARD &&
-			(input.data.keyboard.VKey == VK_SHIFT || input.data.keyboard.VKey == VK_LSHIFT ||
-			 input.data.keyboard.VKey == VK_RSHIFT || input.data.keyboard.VKey == VK_F2 ||
-			 input.data.keyboard.VKey == VK_OEM_3))
-		return false;
-		return input.header.dwType == RIM_TYPEMOUSE || !(input.data.keyboard.Flags & RI_KEY_BREAK);
+		m_KeyDownEaten[wParam] = true;
+		NativeInput_EatKey(unsigned(wParam));
 	}
-	return msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYUP ||
-		   msg == WM_CHAR || msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_RBUTTONDOWN ||
-		   msg == WM_RBUTTONUP || msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP || msg == WM_MOUSEWHEEL ||
-		   msg == WM_MOUSEMOVE;
+	if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK)
+		NativeInput_EatKey(VK_LBUTTON);
+	if (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONDBLCLK)
+		NativeInput_EatKey(VK_RBUTTON);
+	if (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONDBLCLK)
+		NativeInput_EatKey(VK_MBUTTON);
+	if (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONDBLCLK)
+		NativeInput_EatKey(HIWORD(wParam) == XBUTTON1 ? VK_XBUTTON1 : VK_XBUTTON2);
+	if (msg == WM_INPUT)
+		return true; // DefWindowProc still performs raw-buffer cleanup.
+	return (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) || msg == WM_SYSCHAR || msg == WM_CHAR || msg == WM_LBUTTONDOWN ||
+		   msg == WM_LBUTTONUP || msg == WM_LBUTTONDBLCLK || msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP ||
+		   msg == WM_RBUTTONDBLCLK || msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP || msg == WM_MBUTTONDBLCLK ||
+		   msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP || msg == WM_XBUTTONDBLCLK || msg == WM_MOUSEWHEEL ||
+		   msg == WM_MOUSEHWHEEL || msg == WM_MOUSEMOVE;
 }
 
 bool OnSetCursorPos(__in int X, __in int Y)
@@ -848,6 +1008,7 @@ void DllProcessDetach(void)
 {
 	CameraOverlay::FlushRecovery();
 	SetOverlayOpen(false);
+	NativeInput_Shutdown();
 	if (ImGui::GetIO().BackendPlatformUserData)
 		ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext(ImGui::GetCurrentContext());
@@ -856,6 +1017,9 @@ void DllProcessDetach(void)
 bool On_Direct3DDevice9_Init(void* hwnd, IDirect3DDevice9* device)
 {
 	CameraOverlay::SceneCacheDevicePresent(false);
+	g_OverlayFramePending = false;
+	if (!g_OverlayFrameMessage)
+		g_OverlayFrameMessage = RegisterWindowMessageW(L"HLAE.CameraOverlay.Frame");
 	if (!IsSupported())
 		return false;
 
@@ -922,10 +1086,7 @@ bool SetOverlayOpen(bool value)
 void DoFrame()
 {
 	CameraOverlay::ResetPreviewHudFrame();
-	if (!SourceOwnsUi())
-		CameraOverlay::Draw();
-	else
-		CameraOverlay::SetMouseLook(false);
+	CameraOverlay::Draw();
 	UpdateGraphInputOwnership();
 }
 
@@ -943,17 +1104,53 @@ void On_Direct3DDevice9_Shutdown()
 	g_hWnd = 0;
 }
 
-
 void On_Direct3DDevice9_EndScene()
 {
-	if (!IsSupported())
+	// Draw at Present instead: Source can submit menu scenes after the world EndScene.
+}
+void On_Direct3DDevice9_Present_Before()
+{
+	if (!IsSupported() || !m_Active || !g_FontTexture || !g_pd3dDevice ||
+		(!CameraOverlay::IsOpen() && !CameraOverlay::PreviewHudVisible()))
 		return;
-
-	if (m_FirstEndScene && m_Active && g_FontTexture && (CameraOverlay::IsOpen() || CameraOverlay::PreviewHudVisible()))
+	auto device = g_pd3dDevice;
+	IDirect3DSurface9 *target = nullptr, *back = nullptr, *depth = nullptr;
+	D3DVIEWPORT9 viewport{};
+	const bool ready = SUCCEEDED(device->GetRenderTarget(0, &target)) &&
+					   SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)) && target && back &&
+					   SUCCEEDED(device->GetViewport(&viewport));
+	if (ready)
 	{
-		if (m_ImGuiRernderCacheManager.Dx9_Render())
-			m_FirstEndScene = false;
+		const bool changed = target != back;
+		bool draw = true, restoreTarget = false;
+		if (changed)
+		{
+			const auto depthResult = device->GetDepthStencilSurface(&depth);
+			draw = SUCCEEDED(depthResult) || depthResult == D3DERR_NOTFOUND;
+			if (draw)
+			{
+				restoreTarget = true;
+				draw = SUCCEEDED(device->SetDepthStencilSurface(nullptr)) && SUCCEEDED(device->SetRenderTarget(0, back));
+			}
+		}
+		if (draw && SUCCEEDED(device->BeginScene()))
+		{
+			m_ImGuiRernderCacheManager.Dx9_Render();
+			device->EndScene();
+		}
+		if (restoreTarget)
+		{
+			device->SetRenderTarget(0, target);
+			device->SetDepthStencilSurface(depth);
+		}
+		device->SetViewport(&viewport);
 	}
+	if (depth)
+		depth->Release();
+	if (back)
+		back->Release();
+	if (target)
+		target->Release();
 }
 
 void On_Direct3DDevice9_Present(bool deviceLost)
@@ -962,7 +1159,13 @@ void On_Direct3DDevice9_Present(bool deviceLost)
 	if (!IsSupported())
 		return;
 
-	m_FirstEndScene = true;
+	if (!deviceLost && g_hWnd && g_OverlayFrameMessage &&
+		(CameraOverlay::IsOpen() || CameraOverlay::PreviewHudVisible()) &&
+		DWORD(GetTickCount() - g_LastOverlayFrame.load()) >= 16 && !g_OverlayFramePending.exchange(true))
+	{
+		if (!PostMessageW(g_hWnd, g_OverlayFrameMessage, 0, 0))
+			g_OverlayFramePending = false;
+	}
 }
 
 void On_Direct3DDevice9_Reset_Before()
@@ -987,6 +1190,7 @@ void On_Direct3DDevice9_Reset_After(bool success)
 
 bool OnGameFrameRenderEnd()
 {
+	std::lock_guard<std::recursive_mutex> frameLock(g_GuiFrameMutex);
 	if (!IsSupported())
 		return false;
 
@@ -1027,6 +1231,7 @@ bool OnGameFrameRenderEnd()
 	ImGui::Render();
 
 	CacheRenderDrawData(ImGui::GetDrawData());
+	g_LastOverlayFrame = GetTickCount();
 
 	return true;
 }
@@ -1132,6 +1337,8 @@ void On_Direct3DDevice9_EndScene()
 {
 
 }
+
+void On_Direct3DDevice9_Present_Before() {}
 
 void On_Direct3DDevice9_Present(bool deviceLost)
 {

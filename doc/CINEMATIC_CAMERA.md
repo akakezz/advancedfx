@@ -478,8 +478,13 @@ reconstruction described here.
 
 The overlay uses ImGui's own drawn cursor, including the I-beam over text fields.
 Windows cursor changes and Source UI queries are avoided in the busy cursor hooks.
-Menus, focus loss and free-camera mouse-look restore the game's cursor; they also
-end an active editing gesture. The renderer consumes the newest queued UI frame
+Focus loss and free-camera mouse-look restore the game's cursor and end an
+active editing gesture. F8 opens the overlay above Source menus and the console.
+While open, it captures keyboard and mouse input so Source binds and menu
+controls underneath do not activate; close it with F8 to use those controls.
+RMB free-camera movement remains available outside panels when no Source menu
+is open. Alt+Tab and Alt+F4 retain their normal system behavior.
+The renderer consumes the newest queued UI frame
 to avoid an additional stale-frame delay. It retains that snapshot if rendering
 gets ahead of UI updates, avoiding blank overlay frames; an explicit empty update
 or device reset clears it. The software cursor remains bound to the game's
@@ -1232,12 +1237,12 @@ still needs validation in a complete TF2 installation.
 
 ## Overlay render isolation
 
-The overlay draws only when render target zero is the swapchain backbuffer.
-Offscreen EndScene calls (for example while updating a game texture) are skipped
-without consuming the queued UI snapshot or the frame's overlay draw opportunity.
-A later backbuffer scene can draw it. This prevents overlay geometry from being
-written into reusable game textures, where corruption can persist after closing
-an overlay. Device/target-query failures skip drawing.
+The overlay draws into the swapchain backbuffer immediately before Present,
+after Source's world and menu scenes. Offscreen game textures never receive
+overlay geometry. If necessary, drawing temporarily selects the backbuffer and
+restores the previous render target, depth surface and viewport afterward.
+Device/target-query failures skip drawing. A window-thread frame request keeps
+the overlay interactive in menus where normal client render updates stop.
 
 Rendering explicitly captures the DX9 state block and backs up/restores world,
 view and projection transforms separately, matching ImGui's DX9 backend's driver
@@ -2176,8 +2181,9 @@ resolver. Bindings pin the full entity handle and level so a recycled slot
 cannot silently change the subject. Invalid/unavailable targets retain the
 previous source, camera definition and offsets.
 
-Numeric editing remains available as
-`mirv_cam pose <ID/name> <x> <y> <z> <pitch> <yaw> <roll> <fov>`.
+`mirv_cam edit <ID/name>` starts free-camera editing; `capture <ID/name>` saves
+the result. The same edit command accepts a numeric world pose as
+`mirv_cam edit <ID/name> <x> <y> <z> <pitch> <yaw> <roll> <fov>`.
 Values describe the desired world pose, including when attached. Names are
 case-sensitive, unique, nonnumeric and limited to 128 bytes; there is a maximum
 of 128 cameras. The redundant `rig`, `fixed` and `attach camera` routes have been
@@ -2186,8 +2192,15 @@ removed. Use the normal keyframe preview controls for campaths.
 The shared `CameraPose`/`CameraRig` evaluation code has no engine or UI dependency.
 Procedural cameras output that pose; campaths retain their existing evaluator.
 A missing attachment target holds the last valid controller pose and reports the
-failure once instead of silently switching sources. Level changes return the controller to legacy mode; fixed definitions
-remain, and stale entity attachments require explicit rebinding.
+failure once instead of silently switching sources. Reloading the same demo
+automatically reconnects attached cameras when their subjects become available.
+Camera IDs, names, local framing, bone selection and captured attachment offsets
+remain unchanged. Players reconnect by their recorded user ID; other entities
+require the same full handle and model. An unrelated entity occupying the old
+slot is never accepted. Different demo files do not reconnect automatically.
+Client-only gibs may receive different identities on replay; those still require
+explicit retargeting with `edit <ID>` followed by `attach`, preserving the camera.
+Fixed camera definitions remain available across level changes.
 
 This milestone does **not** yet add timed sequencer clips, blends, rig persistence,
 undo, gizmos, tracking, orbit, modifiers, damping or collision for named rigs.

@@ -2289,6 +2289,16 @@ public:
 		m_AnchorValid = true;
 		return ResolveFrame(pos, base, rawAngles, facing, baseOk, true, outVector, outAngles);
 	}
+	IMirvVecAngCalc *RebindCamera(int entity) const
+	{
+		auto result = new CMirvVecAngTf2EntityIndexCalc(nullptr, entity, m_BoneIndex, m_Mode);
+		result->m_BoneName = m_BoneName;
+		result->m_Calibrated = m_Calibrated;
+		result->m_Captured = m_Captured;
+		std::memcpy(result->m_Fix, m_Fix, sizeof(m_Fix));
+		std::memcpy(result->m_Offset, m_Offset, sizeof(m_Offset));
+		return result;
+	}
 	bool UsesCachedBone() const { return m_BoneIndex >= 0; }
 	const std::string &CachedBoneName() const { return m_BoneName; }
 	// No tools, entity queries, SetupBones, or calibration updates on this route.
@@ -6959,6 +6969,56 @@ bool Mirv_Tf2_ParseBoneArg(int entityIndex, const char * arg, int & outBone)
 
 	outBone = bone;
 	return true;
+}
+
+// Recover a target only by its recorded identity, never by a recycled slot alone.
+std::string Mirv_Tf2_CameraTargetModel(int address)
+{
+	auto tools = CClientToolsTf2::Instance();
+	auto iface = tools ? tools->GetClientTools() : nullptr;
+	auto info = Mirv_Tf2_GetModelInfo();
+	if (!iface || !info)
+		return {};
+	for (auto object = iface->FirstEntity(); object; object = iface->NextEntity(object))
+	{
+		if ((address < 2048 ? iface->GetEntIndex(object) : Mirv_Tf2_EntityAddress(object)) != address)
+			continue;
+		auto render = reinterpret_cast<CMirvTf2ClientUnknown *>(object)->GetClientRenderable();
+		auto model = render ? render->GetModel() : nullptr;
+		const char *name = model ? info->GetModelName(model) : nullptr;
+		return name && std::strlen(name) < 260 ? std::string(name) : std::string{};
+	}
+	return {};
+}
+int Mirv_Tf2_FindCameraTarget(std::uint64_t identity, const std::string &model)
+{
+	auto tools = CClientToolsTf2::Instance();
+	auto iface = tools ? tools->GetClientTools() : nullptr;
+	if (!iface || !identity)
+		return -1;
+	size_t scanned = 0;
+	for (auto object = iface->FirstEntity(); object && scanned++ < 4096; object = iface->NextEntity(object))
+	{
+		const int index = iface->GetEntIndex(object);
+		if (!(identity >> 63))
+		{
+			int user = 0;
+			if (index > 0 && iface->IsPlayer(object) && Mirv_Tf2_GetPlayerInfo(index, nullptr, 0, &user) &&
+				std::uint64_t(user) == identity)
+				return index;
+		}
+		else if (Mirv_Tf2_EntityHandle(object) == static_cast<unsigned int>(identity))
+		{
+			const int address = Mirv_Tf2_EntityAddress(object);
+			if (address >= 0 && !model.empty() && Mirv_Tf2_CameraTargetModel(address) == model)
+				return address;
+		}
+	}
+	return -1;
+}
+IMirvVecAngCalc *Mirv_Tf2_RebindCamera(IMirvVecAngCalc *calc, int entity)
+{
+	return calc ? static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->RebindCamera(entity) : nullptr;
 }
 
 bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode)
