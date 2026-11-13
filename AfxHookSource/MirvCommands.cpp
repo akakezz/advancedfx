@@ -2099,6 +2099,18 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		return true;
 	}
 
+	// Tab changes the preview's navigation domain, never while typing in the overlay.
+	if (key == VK_TAB && MirvCampathPreview_IsActive() && !AfxHookSource::CameraOverlay::IsOpen() &&
+		!(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000))
+	{
+		if (down && !CampathPreview_IsRepeatKey(lParam))
+		{
+			g_CampathPreviewEditHeld[VK_TAB] = true;
+			MirvCam_TogglePreviewNavigation();
+		}
+		return true;
+	}
+
 	if (g_CampathRightCtrlHeld &&
 		AfxHookSource::CameraOverlay::SceneCacheNavigationKey(static_cast<unsigned int>(key), false))
 	{

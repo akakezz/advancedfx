@@ -6058,6 +6058,8 @@ void Draw()
 	if (!ImGui::GetIO().WantTextInput && !g_CancelGesture &&
 		!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
 	{
+		if (MirvCampathPreview_IsActive() && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyAlt &&
+			ImGui::IsKeyPressed(ImGuiKey_Tab, false)) MirvCam_TogglePreviewNavigation();
 		if(MirvCam_RigPreviewActive() && !ImGui::GetIO().KeyCtrl)
 		{
 			const ImGuiKey keys[]={ImGuiKey_UpArrow,ImGuiKey_DownArrow,ImGuiKey_Home,ImGuiKey_End,ImGuiKey_Escape};

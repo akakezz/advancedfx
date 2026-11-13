@@ -97,6 +97,7 @@ void MirvCam_EndRigPreview();
 bool MirvCam_PreviewKey(unsigned int key, bool down, bool repeat);
 std::string MirvCam_PreviewLabel();
 bool MirvCam_SetPreviewNavigation(bool cameras);
+bool MirvCam_TogglePreviewNavigation();
 bool MirvCam_RigNavigation();
 void MirvCam_SetRigNavigation(bool cameras);
 bool MirvCam_SelectedCameraAction(const char *action);

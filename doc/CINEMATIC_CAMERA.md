@@ -2088,7 +2088,7 @@ Entity labels support `mirv_drawentities filter ragdolls 0|1` and
 
 Cameras are session-only and have stable numeric IDs. Naming them is optional;
 unnamed cameras receive a `Camera <ID>` name. IDs do not renumber after deletion.
-The existing `mirv_cam rig` controls remain available for compatibility.
+Camera commands live directly under `mirv_cam`; there is no separate `rig` command group.
 
 ```text
 mirv_cam add
@@ -2098,7 +2098,8 @@ mirv_cam preview 0
 mirv_cam edit 0
 mirv_cam capture 0
 mirv_cam rename 0 "Wide"
-mirv_cam attach camera 1 5 -1 entity
+mirv_cam attachMode entity
+mirv_cam attach 5 -1
 mirv_cam preview cameras
 mirv_cam preview keys
 mirv_cam preview off
@@ -2108,7 +2109,19 @@ mirv_cam preview off
 `preview <ID/name>` views a camera; `preview cameras` resumes the selected camera.
 In camera preview, Up/Down cycle cameras by creation ID, Home/End select the first
 or last, and Escape exits at the displayed pose. Switching cameras does not seek
-the demo. Right Ctrl + arrows retain their Scene Cache scrubbing behavior.
+the demo. **Tab** switches between Cameras and Keys while preview is active,
+including with the overlay closed. Held Tab does not repeat the switch; modifier
+chords such as Alt+Tab and typing in overlay text fields do not switch modes.
+An empty destination leaves the current view intact. Right Ctrl + arrows retain
+their Scene Cache scrubbing behavior.
+
+For a custom single-key bind:
+
+```text
+bind "F6" "mirv_cam preview toggle"
+```
+
+The console command also enters preview when it was off.
 
 The overlay's Preview navigation selector chooses Keyframes or Cameras. This
 choice survives stopping preview. Add camera, Edit camera and Recapture camera
@@ -2122,35 +2135,44 @@ It remains visible with the main overlay closed and is hidden during HLAE
 recording. Toggle it with the persisted Preview indicator preference or
 `mirv_campath preview hud 0|1`.
 
-`attach camera <ID/name> <entity address> [bone name/index] [bone|entity|aligned|world]`
-uses the existing attachment modes, defaulting to the current `mirv_cam attachMode`.
-Each camera owns its own resolver and mode. TF2 and TF2C entity addresses,
-including client-only gib addresses, use the existing resolver. Bindings pin the
-full entity handle and level so a recycled slot cannot silently change the subject.
+`mirv_cam attach <entity address/player name> [bone name/index] [offsets...]`
+is the single attachment workflow. It also registers a numbered camera for later
+Cameras preview; no separate add or naming step is needed. After `mirv_cam edit <ID/name>`
+(or adding a camera), the next attach retargets that camera instead
+of creating another. Otherwise each successful attach creates a new camera.
+The command enters the live attachment view, ending free-camera control.
+It preserves the current `mirv_cam attachMode` and existing optional offsets.
 
-`fixed <ID/name>` detaches at the evaluated pose. `remove <ID/name>` deletes a
-camera; deleting the viewed camera exits preview. Numeric editing is available as
+`mirv_cam attach capture` updates the registered camera as well as the live
+attachment. `mirv_cam attach clear` detaches the selected/edited camera, or the
+current live attachment, at its evaluated pose. A live attachment detaches into
+the free camera at the displayed pose. `remove <ID/name>` deletes a camera;
+deleting the viewed camera exits preview and releases its live attachment.
+
+TF2 and TF2C entity addresses, including client-only gibs, use the existing
+resolver. Bindings pin the full entity handle and level so a recycled slot
+cannot silently change the subject. Invalid/unavailable targets retain the
+previous source, camera definition and offsets.
+
+Numeric editing remains available as
 `mirv_cam pose <ID/name> <x> <y> <z> <pitch> <yaw> <roll> <fov>`.
-Values describe the desired world pose, including when attached. Invalid poses
-or targets retain the previous configuration. Names are case-sensitive, unique,
-nonnumeric and limited to 128 bytes; there is a maximum of 128 cameras.
-
-For compatibility, `mirv_cam rig new <name>` still views the newly created camera,
-and `mirv_cam rig path <document ID>` selects a named campath without changing keys.
-`mirv_cam rig off` returns to legacy camera control.
+Values describe the desired world pose, including when attached. Names are
+case-sensitive, unique, nonnumeric and limited to 128 bytes; there is a maximum
+of 128 cameras. The redundant `rig`, `fixed` and `attach camera` routes have been
+removed. Use the normal keyframe preview controls for campaths.
 
 The shared `CameraPose`/`CameraRig` evaluation code has no engine or UI dependency.
-The engine adapter converts both procedural rigs and campaths to that pose before
-final view/export. A missing target or removed/out-of-range campath holds the last
-valid controller pose and reports the failure once instead of silently switching
+Procedural cameras output that pose; campaths retain their existing evaluator.
+A missing attachment target holds the last valid controller pose and reports the failure once instead of silently switching
 sources. Level changes return the controller to legacy mode; fixed definitions
 remain, and stale entity attachments require explicit rebinding.
 
 This milestone does **not** yet add timed sequencer clips, blends, rig persistence,
 undo, gizmos, tracking, orbit, modifiers, damping or collision for named rigs.
-Legacy collision/follow corrections are bypassed for explicit controller output,
-so they cannot accidentally affect another rig. Fixed cameras can be used during
-cache preview, and campaths use its client-time cursor. Cached entity attachment
+The live `mirv_cam attach` view retains the existing collision/follow evaluator.
+Saved-camera preview still evaluates rigid attachments; collision/follow settings
+are not yet stored per camera. Fixed cameras can be used during cache preview,
+and campaths use its client-time cursor. Cached entity attachment
 is deliberately unavailable until the cached target provider is implemented:
 it holds the last valid pose rather than reading the live entity at a different
 time. Those limitations are the next milestones, not supported behavior implied

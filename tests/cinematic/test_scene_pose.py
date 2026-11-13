@@ -608,68 +608,93 @@ rig_preamble=r'''
 #define _stricmp strcasecmp
 namespace advancedfx {struct ICommandArgs {virtual int ArgC()=0;virtual const char*ArgV(int)=0;};}
 void Tier0_Msg(const char*,...){} void Tier0_Warning(const char*,...){}
+static bool MirvCam_ReleaseLiveAttachment();
 namespace SOURCESDK {struct Vector{float x=0,y=0,z=0;};struct QAngle{float x=0,y=0,z=0;};}
 std::map<int,advancedfx::CameraPose> targets;int liveCalcs=0;int g_LevelInitCount=0;
 std::map<int,unsigned> generations;void*Mirv_Tf2_DiagnosticEntity(int e){auto f=targets.find(e);return f==targets.end()?nullptr:&f->second;}unsigned Mirv_Tf2_EntityHandle(const void*p){for(auto&e:targets)if(&e.second==p)return unsigned(e.first)*100+generations[e.first];return 0xffffffffu;}unsigned Mirv_Tf2_HandleForAddress(int e){return Mirv_Tf2_EntityHandle(Mirv_Tf2_DiagnosticEntity(e));}
 
-struct IMirvVecAngCalc {int Refs=0,Entity;IMirvVecAngCalc(int e):Entity(e){++liveCalcs;}void AddRef(){++Refs;}void Release(){if(!--Refs){--liveCalcs;delete this;}}bool CalcVecAng(SOURCESDK::Vector&o,SOURCESDK::QAngle&a){auto f=targets.find(Entity);if(f==targets.end())return false;o.x=f->second.Position[0];o.y=f->second.Position[1];o.z=f->second.Position[2];auto r=f->second.Rotation.ToQREulerAngles().ToQEulerAngles();a.x=r.Pitch;a.y=r.Yaw;a.z=r.Roll;return true;}};
-struct Calcs{IMirvVecAngCalc*NewTf2EntityIndexCalc(const char*,int e,int,int){return new IMirvVecAngCalc(e);}}g_MirvVecAngCalcs;
+struct IMirvVecAngCalc {double Shift[3]{};int Refs=0,Entity;IMirvVecAngCalc(int e):Entity(e){++liveCalcs;}void AddRef(){++Refs;}void Release(){if(!--Refs){--liveCalcs;delete this;}}bool CalcVecAng(SOURCESDK::Vector&o,SOURCESDK::QAngle&a){auto f=targets.find(Entity);if(f==targets.end())return false;o.x=f->second.Position[0]+Shift[0];o.y=f->second.Position[1]+Shift[1];o.z=f->second.Position[2]+Shift[2];auto r=f->second.Rotation.ToQREulerAngles().ToQEulerAngles();a.x=r.Pitch;a.y=r.Yaw;a.z=r.Roll;return true;}};
+struct Calcs{int Entity=-1,Bone=-2,Mode=-1;IMirvVecAngCalc*NewTf2EntityIndexCalc(const char*,int e,int b,int m){Entity=e;Bone=b;Mode=m;return new IMirvVecAngCalc(e);}}g_MirvVecAngCalcs;
 constexpr int SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2,MIRV_TF2_BONEMODE_BONE=0;int g_SourceSdkVer=1;
 bool Mirv_Tf2_ParseBoneArg(int,const char*s,int&bone){bone=std::atoi(s);return bone>=-1;}
-constexpr unsigned VK_DELETE=0x2e,VK_UP=0x26,VK_DOWN=0x28,VK_HOME=0x24,VK_END=0x23,VK_ESCAPE=0x1b;
+constexpr unsigned VK_TAB=9,VK_DELETE=0x2e,VK_UP=0x26,VK_DOWN=0x28,VK_HOME=0x24,VK_END=0x23,VK_ESCAPE=0x1b;
 constexpr int MIRV_TF2_BONEMODE_ENTITY=1,MIRV_TF2_BONEMODE_ALIGNED=2,MIRV_TF2_BONEMODE_WORLD=3;
 int g_MirvCamAttachMode=2;bool nativePreview=false;
-bool MirvCam_RigPreviewActive();void MirvCam_EndRigPreview();bool MirvCam_CameraCommand(advancedfx::ICommandArgs*);
+bool MirvCam_RigPreviewActive();void MirvCam_EndRigPreview();bool MirvCam_CameraCommand(advancedfx::ICommandArgs*);bool MirvCam_SetPreviewNavigation(bool);bool MirvCam_TogglePreviewNavigation();
 bool MirvCampathPreview_IsActive(){return nativePreview||MirvCam_RigPreviewActive();}
 bool MirvCampathPreview_SetActive(bool active){nativePreview=active;return true;}
 struct Input{double X=0,Y=0,Z=0,P=0,Yaw=0,R=0,Fov=90;bool Enabled=false;void SetTx(float v){X=v;}void SetTy(float v){Y=v;}void SetTz(float v){Z=v;}void SetRx(float v){P=v;}void SetRy(float v){Yaw=v;}void SetRz(float v){R=v;}void SetFov(float v){Fov=v;}void SetCameraControlMode(bool v){Enabled=v;}}rigInput;
-bool cached=false,cacheCoverage=true;double pathEvalTime=-1;namespace AfxHookSource{namespace CameraOverlay{struct Frame{double ClientTime=2;};bool SceneCachePreviewActive(){return cached;}std::shared_ptr<Frame>SceneCacheView(){return cacheCoverage?std::make_shared<Frame>():nullptr;}}}
-struct FakePath{struct Value{double X=300,Y=0,Z=0,Fov=90;Afx::Math::Quaternion R{1,0,0,0};};bool CanEval(){return true;}double GetOffset(){return 0;}bool GetHold(){return true;}double GetLowerBound(){return 0;}double GetUpperBound(){return 10;}Value Eval(double time){pathEvalTime=time;return {};}};
-struct Document{bool Present=true;FakePath Path;size_t GetCount(){return Present?1:0;}std::string GetName(size_t){return "Path";}unsigned long long GetId(size_t){return 17;}FakePath*GetPath(size_t){return &Path;}};
-struct View{double LastCameraOrigin[3]{1,2,3},LastCameraAngles[3]{},LastCameraFov=65;Document m_CamPaths;Input*m_MirvInput=&rigInput;}g_Hook_VClient_RenderView;
+bool cached=false;namespace AfxHookSource{namespace CameraOverlay{bool SceneCachePreviewActive(){return cached;}}}
+struct PathKeys{size_t Count=2;size_t GetSize(){return Count;}};
+struct View{PathKeys m_CamPath;double LastCameraOrigin[3]{1,2,3},LastCameraAngles[3]{},LastCameraFov=65;Input*m_MirvInput=&rigInput;}g_Hook_VClient_RenderView;
 '''
+# Run the actual legacy attachment command body too, not a second imitation of its grammar.
+attach_start=rig_source.index('else if (0 == _stricmp("attach", arg1))')
+attach_end=rig_source.index('else if (0 == _stricmp("attachMode", arg1))',attach_start)
+attach_body=rig_source[attach_start:attach_end]
+attach_body=attach_body[attach_body.index('{'):attach_body.rindex('}')+1]
+legacy_methods=rig_source[rig_source.index('bool CMirvCam::ApplyOffset('):rig_source.index('bool CMirvCam::ApplyFov(')]
+legacy_fixture=r'''
+struct LegacyCam {
+IMirvVecAngCalc*Source=nullptr;
+float m_OffsetForwad=0,m_OffsetLeft=0,m_OffsetUp=0,m_OffsetForwardRot=0,m_OffseLeftRot=0,m_OffsetUpRot=0;
+void Source_set(IMirvVecAngCalc*p){if(p)p->AddRef();if(Source)Source->Release();Source=p;}
+IMirvVecAngCalc*Source_get(){return Source;}
+bool ApplyOffset(float&,float&,float&,float&,float&,float&);
+}g_MirvCam;
+IMirvVecAngCalc*g_MirvCamAttachCalc=nullptr;
+void MirvCam_SetAttachCalc(IMirvVecAngCalc*p){if(p)p->AddRef();if(g_MirvCamAttachCalc)g_MirvCamAttachCalc->Release();g_MirvCamAttachCalc=p;}
+const char*MirvCam_AttachModeName(int){return "test";}
+void MirvCameraAttachedReset(){}void MirvCameraAttachFollowCommand(advancedfx::ICommandArgs*){}
+bool MirvCameraAttachedCapturePose(IMirvVecAngCalc*,const double*,const double*){return false;}
+bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc*c,const double*o,const double*,float*offset){auto f=targets.find(c->Entity);if(f==targets.end())return false;for(int i=0;i<3;++i)offset[i]=c->Shift[i]=o[i]-f->second.Position[i];return true;}
+int Mirv_Tf2_GetMaxPlayers(){return 8;}bool Mirv_Tf2_GetPlayerInfo(int e,char*name,size_t n,void*){if(e!=5)return false;snprintf(name,n,"Subject");return true;}
+'''
+legacy_methods=rig_source[rig_source.index('static bool MirvCam_ReleaseLiveAttachment()'):rig_source.index('static char const * MirvCam_AttachModeName')]+legacy_methods.replace('CMirvCam::','LegacyCam::')
+attach_command='void LegacyAttachCommand(advancedfx::ICommandArgs*args){int argc=args->ArgC();'+attach_body+'}\n'
 rig_tests=r'''
 struct Args:advancedfx::ICommandArgs{std::vector<const char*>v;int ArgC()override{return int(v.size());}const char*ArgV(int i)override{return v.at(i);}};
-void command(std::initializer_list<const char*> words){Args a;a.v=words;RigCommand(&a);}
+bool command(std::initializer_list<const char*>words){Args a;a.v=words;if(words.size()>=2&&!std::strcmp(*(words.begin()+1),"attach")){LegacyAttachCommand(&a);return true;}return MirvCam_CameraCommand(&a);}
 int main(){advancedfx::CameraPose pose;
-command({"mirv_cam","rig","new","A"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==1);
-g_Hook_VClient_RenderView.LastCameraOrigin[0]=10;command({"mirv_cam","rig","new","B"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==10);
+command({"mirv_cam","add"});assert(FindRig("0")!=g_CameraRigs.end()&&g_CameraSource==CameraSource::Legacy&&rigInput.Enabled);
+command({"mirv_cam","add","Wide"});assert(FindRig("1")!=g_CameraRigs.end()&&g_CameraSource==CameraSource::Legacy);
+command({"mirv_cam","preview","0"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==1);
+MirvCam_PreviewKey(VK_UP,true,false);assert(g_CameraRigName=="Wide");MirvCam_PreviewKey(VK_DOWN,true,false);assert(FindRig(g_CameraRigName)->second.Id==0);
+MirvCam_PreviewKey(VK_UP,true,true);assert(FindRig(g_CameraRigName)->second.Id==0);
+command({"mirv_cam","preview","toggle"});assert(!g_RigNavigation&&nativePreview);
+command({"mirv_cam","preview","toggle"});assert(g_RigPreview&&g_RigNavigation);
+g_Hook_VClient_RenderView.m_CamPath.Count=0;assert(!MirvCam_TogglePreviewNavigation()&&g_RigPreview&&g_RigNavigation);g_Hook_VClient_RenderView.m_CamPath.Count=2;
+command({"mirv_cam","edit","0"});assert(!g_RigPreview&&rigInput.Enabled);
+g_Hook_VClient_RenderView.LastCameraOrigin[0]=75;command({"mirv_cam","capture","0"});command({"mirv_cam","rename","0","Hero"});assert(FindRig("0")->first=="Hero"&&g_EditingCameraName=="Hero");
+command({"mirv_cam","preview","0"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==75);
+command({"mirv_cam","pose","0","40","50","60","0","90","0","80"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==40&&pose.Fov==80);
+command({"mirv_cam","pose","0","inf","0","0","0","0","0","90"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==40);
+assert(!command({"mirv_cam","rig","new","Removed"})&&!command({"mirv_cam","fixed","0"})&&g_CameraRigs.size()==2);
+// Legacy attach creates a camera at the target, honoring offsets and bone/mode arguments.
 advancedfx::CameraPose target;target.Position[0]=100;targets[5]=target;
-command({"mirv_cam","rig","attach","A","5"});assert(liveCalcs==1);command({"mirv_cam","rig","use","A"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==1);
-targets[5].Position[0]=200;assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==101);
-++generations[5];targets[5].Position[0]=900;assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==101&&g_RigUnavailable);targets[5].Position[0]=200;command({"mirv_cam","rig","attach","A","5"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==101&&!g_RigUnavailable&&liveCalcs==1);
-
-cached=true;targets[5].Position[0]=300;assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==101&&g_RigUnavailable);cached=false;
-command({"mirv_cam","rig","use","B"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==10);
-command({"mirv_cam","rig","pose","B","40","50","60","0","90","0","80"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==40&&pose.Fov==80);
-command({"mirv_cam","rig","pose","B","inf","0","0","0","0","0","90"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==40);
-command({"mirv_cam","rig","attach","B","999"});assert(liveCalcs==1&&MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==40);
-command({"mirv_cam","rig","path","Path"});assert(MirvCam_EvaluateRig(3,pose)&&pose.Position[0]==300);
-cached=true;assert(MirvCam_EvaluateRig(99,pose)&&pathEvalTime==2);cacheCoverage=false;assert(MirvCam_EvaluateRig(99,pose)&&pathEvalTime==2&&g_RigUnavailable);cached=false;cacheCoverage=true;
-g_Hook_VClient_RenderView.m_CamPaths.Present=false;assert(MirvCam_EvaluateRig(3,pose)&&pose.Position[0]==300&&g_RigUnavailable);
-command({"mirv_cam","rig","off"});assert(!MirvCam_EvaluateRig(3,pose));
-command({"mirv_cam","rig","remove","A"});assert(liveCalcs==0);
-command({"mirv_cam","rig","use","B"});++g_LevelInitCount;assert(!MirvCam_EvaluateRig(0,pose));command({"mirv_cam","rig","use","B"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==40);
-auto root=[](std::initializer_list<const char*>v){Args a;a.v=v;return MirvCam_CameraCommand(&a);};
-root({"mirv_cam","add"});assert(FindRig("2")!=g_CameraRigs.end()&&g_CameraSource==CameraSource::Legacy&&rigInput.Enabled);
-root({"mirv_cam","add","Manual"});assert(FindRig("3")!=g_CameraRigs.end()&&g_CameraSource==CameraSource::Legacy);
-root({"mirv_cam","preview","2"});assert(g_RigPreview&&g_RigNavigation&&MirvCam_EvaluateRig(0,pose));
-assert(MirvCam_PreviewKey(VK_UP,true,false)&&g_CameraRigName=="Manual");MirvCam_PreviewKey(VK_DOWN,true,false);assert(FindRig(g_CameraRigName)->second.Id==2);
-MirvCam_PreviewKey(VK_UP,true,true);assert(FindRig(g_CameraRigName)->second.Id==2);
-root({"mirv_cam","edit","2"});assert(!g_RigPreview&&g_RigNavigation&&g_CameraSource==CameraSource::Legacy&&rigInput.Enabled);
-g_Hook_VClient_RenderView.LastCameraOrigin[0]=75;root({"mirv_cam","capture","2"});root({"mirv_cam","rename","2","Hero"});assert(FindRig("2")->first=="Hero");
-root({"mirv_cam","preview","2"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==75);assert(MirvCam_PreviewLabel().find("2: Hero")!=std::string::npos);
-root({"mirv_cam","preview","off"});assert(!g_RigPreview&&g_RigNavigation&&!nativePreview);
-root({"mirv_cam","preview","keys"});assert(!g_RigNavigation&&nativePreview);
-root({"mirv_cam","attach","camera","2","5","-1","world"});assert(FindRig("2")->second.AttachMode==3);
-for(const char *mode:{"bone","entity","aligned","world"}){root({"mirv_cam","attach","camera","2","5","-1",mode});int expected=!std::strcmp(mode,"bone")?0:!std::strcmp(mode,"entity")?1:!std::strcmp(mode,"aligned")?2:3;assert(FindRig("2")->second.AttachMode==expected);}
-g_MirvCamAttachMode=1;root({"mirv_cam","attach","camera","2","5"});assert(FindRig("2")->second.AttachMode==1);
-root({"mirv_cam","rename","2","123"});assert(FindRig("2")->first=="Hero");
-root({"mirv_cam","preview","3"});root({"mirv_cam","edit","2"});assert(g_CameraRigName=="Hero"&&!g_RigPreview);
-root({"mirv_cam","remove","3"});assert(FindRig("2")->first=="Hero"&&FindRig("3")==g_CameraRigs.end());
-std::cout<<"Named rig commands, target ownership and source selection checks passed\n";}
+command({"mirv_cam","attach","5","1","-20","4","3"});assert(g_CameraRigs.size()==3&&FindRig("2")->second.Rig.Attached&&FindRig("2")->second.AttachMode==2&&!rigInput.Enabled&&g_MirvVecAngCalcs.Bone==1&&g_MirvVecAngCalcs.Entity==5);
+command({"mirv_cam","preview","2"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==80&&std::abs(pose.Position[1]-4)<1e-5&&pose.Position[2]==3);
+targets[5].Position[0]=200;assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==180);
+++generations[5];assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==180&&g_RigUnavailable);
+command({"mirv_cam","edit","2"});command({"mirv_cam","attach","Subject","1","-10","0","0"});assert(g_CameraRigs.size()==3&&FindRig("2")->second.Rig.Attached);
+command({"mirv_cam","preview","2"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==190&&!g_RigUnavailable);
+cached=true;targets[5].Position[0]=300;assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==190&&g_RigUnavailable);cached=false;
+// Clear replaces fixed; it freezes the selected attachment at its evaluated pose.
+command({"mirv_cam","attach","clear"});assert(!FindRig("2")->second.Rig.Attached&&!g_MirvCam.Source_get());assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==290);
+// All modes and entity-only attachments go through the same existing command.
+for(int mode=0;mode<4;++mode){g_MirvCamAttachMode=mode;command({"mirv_cam","edit","2"});command({"mirv_cam","attach","5","-1","0","0","0"});assert(FindRig("2")->second.AttachMode==mode&&g_CameraRigs.size()==3);}
+// Failed targets do not allocate cameras or replace the current source.
+auto current=g_MirvCam.Source_get();const auto count=g_CameraRigs.size();command({"mirv_cam","attach","999","-1","10","20","30"});assert(g_MirvCam.Source_get()==current&&g_CameraRigs.size()==count&&g_MirvCam.m_OffsetForwad==0&&g_MirvCam.m_OffsetLeft==0&&g_MirvCam.m_OffsetUp==0);
+command({"mirv_cam","preview","0"});command({"mirv_cam","attach","capture"});assert(!FindRig("0")->second.Rig.Attached&&g_MirvCam.Source_get()==current);command({"mirv_cam","edit","2"});command({"mirv_cam","attach","capture"});command({"mirv_cam","preview","2"});assert(MirvCam_EvaluateRig(0,pose)&&std::abs(pose.Position[0]-75)<1e-5);
+command({"mirv_cam","rename","2","123"});assert(FindRig("2")->first=="Camera 2");
+command({"mirv_cam","remove","1"});assert(FindRig("1")==g_CameraRigs.end()&&FindRig("2")->second.Id==2);
+command({"mirv_cam","preview","off"});assert(!MirvCam_RigPreviewActive()&&g_RigNavigation);
+command({"mirv_cam","remove","2"});assert(!g_MirvCam.Source_get()&&!g_MirvCamAttachCalc);command({"mirv_cam","attach","5"});assert(FindRig("3")!=g_CameraRigs.end());auto custom=new IMirvVecAngCalc(5);g_MirvCam.Source_set(custom);command({"mirv_cam","remove","3"});assert(g_MirvCam.Source_get()==custom&&!g_MirvCamAttachCalc);
+command({"mirv_cam","preview","0"});++g_LevelInitCount;assert(!MirvCam_EvaluateRig(0,pose));
+g_MirvCam.Source_set(nullptr);MirvCam_SetAttachCalc(nullptr);g_CameraRigs.clear();assert(liveCalcs==0);g_RigNavigation=false;nativePreview=true;assert(!MirvCam_TogglePreviewNavigation()&&nativePreview&&!g_RigNavigation);
+std::cout<<"Consolidated camera commands, legacy attach registration and preview switching checks passed\n";}
 '''
-source=out/'camera_rig_adapter.cpp';source.write_text(rig_preamble+rig_adapter+rig_tests)
+source=out/'camera_rig_adapter.cpp';source.write_text(rig_preamble+rig_adapter+legacy_fixture+legacy_methods+attach_command+rig_tests)
 command=['g++','-std=c++17','-O1','-g','-Dabstract=','-I'+str(root),'-I'+str(root/'AfxHookSource'),'-include',str(root/'tests/cinematic/msvc_crt_compat.h'),str(source),str(root/'shared/AfxMath.cpp'),'-o',str(out/'camera_rig_adapter')]
 if args.sanitize:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 result=subprocess.run(command,capture_output=True,text=True)
