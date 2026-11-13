@@ -507,6 +507,13 @@ void consoleProfiles()
 		args.Values = {"mirv_campath", "edit", "interp", option, value};
 		MirvCampath_ConCommand(&args, IgnoreConsole, IgnoreConsole, &path, nullptr, nullptr, nullptr);
 	};
+	Args historyArgs;
+	historyArgs.Values = {"mirv_campath", "debug", "history", "begin"};
+	MirvCampath_ConCommand(&historyArgs, IgnoreConsole, IgnoreConsole, &path, nullptr, nullptr, nullptr);
+	check(path.GetEditHistoryEnabled() && path.GetEditHistorySize()==1, "Console starts edit history with a baseline");
+	historyArgs.Values[3] = "end";
+	MirvCampath_ConCommand(&historyArgs, IgnoreConsole, IgnoreConsole, &path, nullptr, nullptr, nullptr);
+	check(!path.GetEditHistoryEnabled() && path.GetEditHistorySize()==1, "Console stops history without discarding it");
 	command("auto", "catmullrom");
 	check(path.CanEval() && path.PositionInterpMethod_get() == CamPath::DI_CUSTOM &&
 		path.RotationInterpMethod_get() == CamPath::QI_CUSTOM && path.FovInterpMethod_get() == CamPath::DI_CUSTOM,
@@ -1266,12 +1273,31 @@ void shapePreservingRetiming()
 						double u = i / 60.0;
 						auto a = original.Eval(key + h + u * (1 - h));
 						auto b = path.Eval(times[key] + h + u * (times[key + 1] - times[key] - h));
-						near(a.X, b.X, 1e-6);
-						near(a.Y, b.Y, 1e-6);
-						near(a.Fov, b.Fov, 1e-6);
-						near(std::abs(DotProduct(a.R, b.R)), 1, 1e-8);
+						if (edited)
+						{
+							near(a.X, b.X, 1e-6);
+							near(a.Y, b.Y, 1e-6);
+							near(a.Fov, b.Fov, 1e-6);
+							near(std::abs(DotProduct(a.R, b.R)), 1, 1e-8);
+						}
+						else
+						{
+							check(std::isfinite(b.X) && std::isfinite(b.Fov),
+							      "Retimed Auto curves remain finite");
+							check(b.GetEulerAngles().Yaw > 0 && b.GetEulerAngles().Yaw < 360,
+							      "Retimed Auto rotation does not gain a full revolution");
+						}
 					}
 				}
+				if (!edited)
+					for (const auto &entry : path.CaptureState().Keys)
+					{
+						check(entry.second.TxModeIn == CamPath::TM_AUTO &&
+						          entry.second.TxModeOut == CamPath::TM_AUTO &&
+						          entry.second.TRzModeIn == CamPath::TM_AUTO &&
+						          entry.second.TRzModeOut == CamPath::TM_AUTO,
+						      "Sequencer retiming keeps Auto handles automatic");
+					}
 				const auto valid = path.CaptureState();
 				check(!path.Retime({0, 2, 1, 3, 4}) && path.CaptureState() == valid,
 				      "Crossed key order rejects atomically");
@@ -1298,15 +1324,14 @@ void shapePreservingRetiming()
 			const double times[] = {0, 1, 12, 13, 14};
 			near(mixed.Eval(times[key] + u * (times[key + 1] - times[key])).X, before.Eval(key + u).X, 1e-6);
 		}
-	CamPath turns; custom(turns);
-	turns.Add(0,CamPathValue(0,0,0,0,0,0,90));
-	turns.Add(2,CamPathValue(20,0,0,0,720,0,90));
-	check(turns.Retime({0,20}), "Intentional multi-turn animation retimes without losing winding");
-	near(turns.Eval(10).GetEulerAngles().Yaw,360,1e-6);
-	near(turns.Eval(20).GetEulerAngles().Yaw,720,1e-6);
-
+	CamPath turns;
+	custom(turns);
+	turns.Add(0, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	turns.Add(2, CamPathValue(20, 0, 0, 0, 720, 0, 90));
+	check(turns.Retime({0, 20}), "Intentional multi-turn animation retimes without losing winding");
+	near(turns.Eval(10).GetEulerAngles().Yaw, 360, 1e-6);
+	near(turns.Eval(20).GetEulerAngles().Yaw, 720, 1e-6);
 }
-
 void pathControlModifiers()
 {
 	using Type = CamPath::ModifierType;
@@ -2036,6 +2061,108 @@ void capturedEulerRegressionMatrix()
 	check(turns.CaptureState() == before, "Failed capture is atomic");
 }
 
+void recapturedEulerTangentsAndHistory()
+{
+	for (auto method : {AutoTangentMethod::Spline, AutoTangentMethod::CatmullRom, AutoTangentMethod::Monotone,
+	                    AutoTangentMethod::MinimumJerk})
+	{
+		CamPath path;
+		custom(path);
+		path.SetAutoTangentSettings({method, 0});
+		for (int i = 0; i < 5; ++i)
+			path.Add(i, CamPathValue(10 * i, 0, 0, 0, 10 * i, 0, 90));
+		auto keys = path.CaptureState().Keys;
+		keys.at(1).TRzModeOut = keys.at(2).TRzModeIn = keys.at(2).TRzModeOut = keys.at(3).TRzModeIn =
+		    CamPath::TM_FREE;
+		keys.at(1).TRzOut = keys.at(2).TRzIn = keys.at(2).TRzOut = keys.at(3).TRzIn = 3000;
+		keys.at(2).TRxModeIn = keys.at(2).TRxModeOut = CamPath::TM_FREE;
+		keys.at(2).TRxIn = 7;
+		keys.at(2).TRxOut = -9;
+		check(path.ReplaceKeys(keys), "Install a previously edited Euler curve");
+		check(path.Retime({0, 1, 12, 13, 14}), "Stretch intervals with old rotation handles");
+		bool excursion = false;
+		for (int i = 0; i < 100; ++i)
+			excursion |= std::abs(path.EvalUnmodified(1 + i * .11).GetEulerAngles().Yaw) > 180;
+		check(excursion, "Reproduce old manual tangent spin before recapture");
+		const auto before = path.CaptureState();
+		check(path.ReplacePose(12, CamPathValue(20, 0, 0, 0, 21, 0, 90)), "Recapture a pose after retiming");
+		const auto after = path.CaptureState();
+		check(after.Keys.at(1).TRzModeOut == CamPath::TM_AUTO &&
+		          after.Keys.at(12).TRzModeIn == CamPath::TM_AUTO &&
+		          after.Keys.at(12).TRzModeOut == CamPath::TM_AUTO &&
+		          after.Keys.at(13).TRzModeIn == CamPath::TM_AUTO,
+		      "Recapture rebuilds both facing sides of adjacent yaw segments");
+		near(after.Keys.at(12).TRxIn, before.Keys.at(12).TRxIn);
+		near(after.Keys.at(12).TRxOut, before.Keys.at(12).TRxOut);
+		check(after.Keys.at(12).TRxModeIn == before.Keys.at(12).TRxModeIn,
+		      "Unchanged roll handles survive recapture");
+		for (int i = 0; i <= 280; ++i)
+		{
+			double yaw = path.EvalUnmodified(i * .05).GetEulerAngles().Yaw;
+			check(yaw >= -140 && yaw <= 180, "Recaptured yaw no longer makes an unintended revolution");
+		}
+		auto pose = after.Keys.at(12);
+		pose.X += 20;
+		check(path.ReplacePose(12, pose, 1u << CamPath::CH_X), "Position-only capture succeeds");
+		auto onlyPosition = path.CaptureState().Keys.at(12);
+		onlyPosition.X = after.Keys.at(12).X;
+		check(onlyPosition == after.Keys.at(12), "Position-only capture preserves every angular field");
+	}
+	for (double pitch : {-90., -89.999, 0., 89.999, 90.})
+	{
+		CamPath same;
+		custom(same);
+		same.Add(0, CamPathValue(0, 0, 0, pitch, 170, 15, 90));
+		same.Add(1, CamPathValue(1, 0, 0, pitch, 190, 15, 90));
+		check(same.BakeTangents(), "Prepare equivalent-pose capture with manual handles");
+		auto old = same.CaptureState().Keys.at(1), capture = old;
+		capture.HasEuler = false;
+		capture.X = 50;
+		check(same.ReplacePose(1, capture), "Replace full pose with equivalent wrapped angles");
+		auto now = same.CaptureState().Keys.at(1);
+		now.X = old.X;
+		check(now == old, "Equivalent pose at a pitch pole preserves exact winding and manual handles");
+	}
+	CamPath repeated;
+	custom(repeated);
+	repeated.Add(0, CamPathValue(0, 0, 0, 0, 170, 0, 90));
+	repeated.Add(2, CamPathValue(2, 0, 0, 0, 190, 0, 90));
+	check(repeated.AddPose(2, CamPathValue(2, 0, 0, 0, -179, 0, 90)),
+	      "Add at an existing tick uses physical replacement");
+	near(repeated.CaptureState().Keys.at(2).GetEulerAngles().Yaw, 181);
+	CamPath shortPath;
+	shortPath.RotationInterpMethod_set(CamPath::QI_CUSTOM);
+	shortPath.Add(0, CamPathValue(0, 0, 0, 0, 170, 0, 90));
+	shortPath.Add(2, CamPathValue(2, 0, 0, 0, -170, 0, 90));
+	check(!shortPath.CanEval(), "Classic scalars do not yet have enough keys");
+	check(shortPath.ReplacePose(2, CamPathValue(2, 0, 0, 0, -179, 0, 90)),
+	      "Replace using raw Euler reference independently of scalar evaluation");
+	near(shortPath.CaptureState().Keys.at(2).GetEulerAngles().Yaw, 181);
+	CamPath history;
+	custom(history);
+	history.Add(0, CamPathValue());
+	check(history.GetEditHistorySize() == 0, "History has no default recording cost");
+	history.SetEditHistoryEnabled(true);
+	check(history.GetEditHistorySize() == 1, "History begin records its baseline");
+	for (int i = 0; i < 140; ++i)
+		check(history.ReplacePose(0, CamPathValue(i + 1, 0, 0, 0, i, 0, 90)), "Record a successful capture");
+	check(history.GetEditHistorySize() == 128, "History is bounded during continuous editing");
+	const auto file = std::filesystem::temp_directory_path() / "hlae-euler-edit-history.csv";
+	std::filesystem::remove(file);
+	check(history.SaveEditHistory(file.wstring().c_str()), "Export edit snapshots");
+	std::ifstream input(file);
+	std::string csv((std::istreambuf_iterator<char>(input)), {});
+	input.close();
+	check(csv.find("mode_in,mode_out,slope_in,slope_out") != std::string::npos &&
+	          csv.find("dropped_snapshots=13") != std::string::npos,
+	      "History reports tangent fields and dropped old snapshots");
+	std::filesystem::remove(file);
+	history.SetEditHistoryEnabled(false);
+	history.Add(1, CamPathValue());
+	check(history.GetEditHistorySize() == 128, "Stopping history retains data without further recording");
+	history.ClearEditHistory();
+	check(history.GetEditHistorySize() == 0, "History can be cleared");
+}
 void insertedEulerPoseAndSpeedMarkers()
 {
 	CamPath path;
@@ -2283,6 +2410,7 @@ int main()
 {
 	try
 	{
+		recapturedEulerTangentsAndHistory();
 		capturedEulerRegressionMatrix();
 		insertedEulerPoseAndSpeedMarkers();
 		tangentBatchEdits();

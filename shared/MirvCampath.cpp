@@ -43,6 +43,45 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 	{
 		char const* subcmd = args->ArgV(1);
 
+		if (!_stricmp("debug", subcmd) && argc >= 3 && !_stricmp("history", args->ArgV(2)))
+		{
+			bool valid = false;
+			if (argc == 4)
+			{
+				const char *action = args->ArgV(3);
+				if (!_stricmp(action, "begin"))
+				{
+					camPath->SetEditHistoryEnabled(false);
+					camPath->SetEditHistoryEnabled(true);
+					valid = true;
+				}
+				else if (!_stricmp(action, "end"))
+				{
+					camPath->SetEditHistoryEnabled(false);
+					valid = true;
+				}
+				else if (!_stricmp(action, "clear"))
+				{
+					camPath->ClearEditHistory();
+					valid = true;
+				}
+				else if (!_stricmp(action, "status"))
+					valid = true;
+			}
+			if (argc == 5 && !_stricmp(args->ArgV(3), "save"))
+			{
+				std::wstring file;
+				const bool saved =
+				    UTF8StringToWideString(args->ArgV(4), file) && camPath->SaveEditHistory(file.c_str());
+				(saved ? conMessage : conWarning)("Edit history export %s.\n", saved ? "saved" : "failed");
+				return;
+			}
+			if (!valid)
+				conMessage("%s debug history begin|end|clear|status|save <file.csv>\n", args->ArgV(0));
+			conMessage("Edit history: %s; %u retained snapshots (bounded to 128 snapshots / 4 MiB).\n",
+			           camPath->GetEditHistoryEnabled() ? "on" : "off", unsigned(camPath->GetEditHistorySize()));
+			return;
+		}
 		if (!_stricmp("modifier", subcmd))
 		{
 			auto modifiers = camPath->GetModifiers();
@@ -1610,6 +1649,7 @@ void MirvCampath_ConCommand(advancedfx::ICommandArgs* args, advancedfx::Con_Prin
 	conMessage("%s enabled 0|1 - Set whether the camera path is active or not. Please note that at least 4 keyframes are required to activate it successfully!\n", args->ArgV(0));
 	if(mirvDrawer) conMessage("%s draw [...] - Controls drawing of the camera path.\n", args->ArgV(0));
 	conMessage("%s clear - Removes all [or all selected] keyframes.\n", args->ArgV(0));
+	conMessage("%s debug history begin|end|clear|status|save <file.csv> - Record bounded key edit snapshots.\n", args->ArgV(0));
 	conMessage("%s print - Prints detailed information.\n", args->ArgV(0));
 	conMessage("%s remove <id> - Removes a keyframe.\n", args->ArgV(0));
 	conMessage("%s load <fileName> - Loads the campath from the file (XML format).\n", args->ArgV(0));

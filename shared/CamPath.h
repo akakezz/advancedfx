@@ -3,6 +3,7 @@
 #include "AfxMath.h"
 
 #include <list>
+#include <deque>
 #include <string>
 #include <limits>
 #include <memory>
@@ -213,6 +214,11 @@ public:
 		std::vector<NoiseModifier> Modifiers;
 		bool operator==(const State &other) const;
 	};
+	void SetEditHistoryEnabled(bool enabled);
+	bool GetEditHistoryEnabled() const { return m_EditHistoryEnabled; }
+	size_t GetEditHistorySize() const { return m_EditHistory.size(); }
+	void ClearEditHistory();
+	bool SaveEditHistory(const wchar_t *fileName) const;
 	State CaptureState() const;
 	unsigned long long GetRevision() const
 	{
@@ -717,6 +723,11 @@ private:
 	unsigned long long m_GeometryRevision = 0, m_PositionRevision = 0;
 	std::vector<double> m_KeyTimes;
 	std::vector<size_t> m_KeyArrival, m_KeyRelease;
+	bool m_EditHistoryEnabled = false;
+	std::deque<std::string> m_EditHistory;
+	size_t m_EditHistoryBytes = 0;
+	unsigned long long m_EditHistoryEvent = 0, m_EditHistoryDropped = 0;
+	void RecordEditHistory();
 	bool HasPositionModifiers() const;
 	static bool ValidModifiers(const std::vector<NoiseModifier> &modifiers);
 	void Changed(bool geometry = true, bool invalidateArcs = true, bool position = true,

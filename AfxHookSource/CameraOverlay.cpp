@@ -7319,7 +7319,7 @@ void Draw()
 				s_fitTimeline = true;
 			ImGui::SameLine();
 			ImGui::TextDisabled("View %d - %d | Wheel: zoom | MMB / Shift+wheel: pan", visibleStart, visibleEnd);
-			ImGui::TextDisabled("Retiming preserves editable curve shape: Auto tangents become Free; Classic scalar curves convert when using editable Euler.");
+			ImGui::TextDisabled("Retiming keeps Auto handles automatic and rescales Free handles. Classic scalar curves convert when using editable Euler.");
 			// Controls row
 			if (ImGui::SmallButton("Play"))
 			{

@@ -118,17 +118,40 @@ nearest that key's current evaluated angles. This prevents a wrapped capture nea
 ±180° from inserting an unintended revolution, including after subdivision.
 Explicit numeric winding and authored multi-turn paths remain available.
 
-Retiming keys in the sequencer, inspector or graph preserves the shaped editable
-intervals. Effective Auto tangents are frozen to Free and incoming/outgoing
-velocities are scaled by their own interval duration ratios; accelerations use
-the squared ratios. This avoids stretching a handle into an overshoot or Euler
-revolution when making a shot longer. Hold durations and explicit angle winding
-are retained. Crossing key order, collisions and invalid hold timings reject the
-whole edit. With editable Euler rotation, Classic position/FOV curves convert
-through the existing exact editable conversion when necessary to retain their
-shape. Reset tangents to Auto explicitly if you want the interpolation solver to
-recalculate a different curve after retiming. Unequal interval duration changes
-can change speed continuity even though the spatial curves are preserved.
+Retiming keys in the sequencer, inspector or graph keeps editable Auto handles
+automatic. Handles already saved as Free by an older version stay Free; reset
+those to Auto once if you want them solved automatically. Their curve is recalculated at the new times. Authored Free handles
+keep their normalized interval shape: velocities use each side's duration ratio
+and accelerations use its square. Hold durations and explicit angle winding are
+retained. Crossing key order, collisions and invalid hold timings reject the
+whole edit. With editable Euler rotation, Classic position/FOV curves may still
+convert through the exact editable conversion to retain their shape.
+
+Recapturing an existing camera pose rebuilds tangents on rotation channels whose
+angles changed, including the facing handle on each neighbouring key. Baked
+accelerations on those channels are discarded so the solver can recompute them.
+Other channels and the neighbours' opposite handles remain intact. Position-only
+replacement and recapture of an equivalent orientation preserve angular values
+and handles. Explicit graph edits retain the user's authored handles.
+
+To investigate an edit that still spins, enable the opt-in recorder **before**
+editing, reproduce it, then stop and export:
+
+```text
+mirv_campath debug history begin
+mirv_campath debug history end
+mirv_campath debug history save "euler-edits.csv"
+```
+
+`begin` starts a fresh recording with a baseline. `status` reports recording
+state and retained snapshots; `clear` discards them. The CSV records every
+successful geometry change, including zero-based key indices, times, channel
+values, authored-Euler flags, raw quaternions, tangent modes, slopes, weights,
+accelerations, holds and interpolation settings. It stores at most 128 snapshots
+or 4 MiB; discarded snapshots are reported in the export. Paths above 2048 keys
+are skipped and counted. The recorder is disabled by default, performs no file
+I/O during edits and remains outside saved path/undo state. `end` retains the
+recording for export; use a new writable CSV filename.
 
 The sequencer keeps classic zero-based key indices when zooming or panning past
 hidden keys. Zoom changes visibility, not numbering.

@@ -9,6 +9,9 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <locale>
 #include <functional>
 #include <chrono>
 #include <limits>
@@ -212,6 +215,26 @@ bool CamPath::Retime(const std::vector<double> &arrivals)
 				(side ? value.AccelerationOut[ch] : value.AccelerationIn[ch]) *= scale * scale;
 			}
 		}
+		// A timing edit must not turn automatically solved handles into authored
+		// Free handles. Preserve generated modes on native editable channels;
+		// Classic-to-editable conversion still needs its baked representation.
+		const auto &original = m_Map.at(key->first);
+		for (int ch = 0; ch < 7; ++ch)
+		{
+			const bool editable = ch < 3    ? m_PositionInterpMethod == DI_CUSTOM
+			                      : ch == 3 ? m_FovInterpMethod == DI_CUSTOM
+			                                : m_RotationInterpMethod == QI_CUSTOM;
+			if (!editable)
+				continue;
+			value.*ModeIn[ch] = original.*ModeIn[ch];
+			value.*ModeOut[ch] = original.*ModeOut[ch];
+			if (!(original.AccelerationMask & (1u << ch)) &&
+			    (original.*ModeIn[ch] != TM_FREE || original.*ModeOut[ch] != TM_FREE))
+			{
+				value.AccelerationMask &= ~(1u << ch);
+				value.AccelerationIn[ch] = value.AccelerationOut[ch] = 0;
+			}
+		}
 		result.emplace(arrivals[i], value);
 	}
 	if (!work.ReplaceKeys(result))
@@ -227,6 +250,9 @@ bool CamPath::AddPose(double time, const CamPathValue &pose)
 {
 	if (!std::isfinite(time) || !ValidValue(pose))
 		return false;
+	// Adding at an existing time is the same physical replacement operation.
+	if (m_Map.count(time))
+		return ReplacePose(time, pose, 0x7f);
 	auto value = pose;
 	// A captured camera orientation is not an authored revolution count. In
 	// particular, Source/free-camera angles can accumulate past +/-180 degrees.
@@ -274,13 +300,19 @@ bool CamPath::AddPose(double time, const CamPathValue &pose)
 bool CamPath::ReplacePose(double time, const CamPathValue &pose, unsigned int channels)
 {
 	auto found = m_Map.find(time);
-	if (found == m_Map.end())
+	if (found == m_Map.end() || !ValidValue(pose))
 		return false;
 	auto value = found->second;
-	if ((channels & 0x70) && m_RotationInterpMethod == QI_CUSTOM && CanEval() && !value.HasEuler)
-		value.SetEulerAngles(EvalUnmodified(time).GetEulerAngles());
+	// A positional recapture can supply a differently wrapped representation of
+	// exactly the same orientation. Do not rewrite its winding or handles.
+	if ((channels & 0x70) && std::abs(DotProduct(value.R.Normalized(), pose.R.Normalized())) > 1 - 1e-14)
+		channels &= ~0x70u;
+	if ((channels & 0x70) && m_RotationInterpMethod == QI_CUSTOM && m_RInterp->CanEval() && !value.HasEuler)
+		value.SetEulerAngles(
+		    static_cast<CEulerHermiteQuaternionInterpolation<CamPathValue> *>(m_RInterp)->EvalAngles(time));
 	// Camera poses are physical orientations. Keep the existing Euler branch/winding
 	// instead of treating a wrapped capture as an intentional full revolution.
+	const auto originalAngles = value.GetEulerAngles();
 	auto aligned = value;
 	if (channels & 0x70)
 	{
@@ -296,7 +328,44 @@ bool CamPath::ReplacePose(double time, const CamPathValue &pose, unsigned int ch
 		for (int ch = 4; ch < 7; ++ch)
 			if (channels & (1u << ch))
 				SetChannelValue(value, (Channel)ch, GetChannelValue(aligned, (Channel)ch));
-	return UpdateKey(time, time, value);
+	auto keys = m_Map;
+	keys[time] = value;
+	if (m_RotationInterpMethod == QI_CUSTOM && (channels & 0x70))
+	{
+		// A camera recapture is a new physical pose, not an authored graph-handle
+		// edit. Old (including retime-baked) derivatives describe the old pose.
+		auto edited = keys.find(time);
+		const auto oldAngles = originalAngles;
+		const double before[] = {oldAngles.Pitch, oldAngles.Yaw, oldAngles.Roll};
+		for (int ch = 4; ch < 7; ++ch)
+		{
+			if (!(channels & (1u << ch)) ||
+			    std::abs(GetChannelValue(value, (Channel)ch) - before[ch - 4]) <= 1e-8)
+				continue;
+			auto reset = [&](CamPathValue &v, bool outgoing) {
+				v.*(outgoing ? ModeOut[ch] : ModeIn[ch]) = TM_AUTO;
+				v.*(outgoing ? TangentOut[ch] : TangentIn[ch]) = 0;
+				v.*(outgoing ? WeightOut[ch] : WeightIn[ch]) = 1;
+				(outgoing ? v.AccelerationOut[ch] : v.AccelerationIn[ch]) = 0;
+			};
+			// Baked minimum-jerk accelerations depend on the whole channel.
+			// Once its values change, those frozen second derivatives are stale,
+			// including at keys outside the two directly adjacent segments.
+			for (auto &key : keys)
+			{
+				key.second.AccelerationMask &= ~(1u << ch);
+				key.second.AccelerationIn[ch] = key.second.AccelerationOut[ch] = 0;
+			}
+			reset(edited->second, false);
+			reset(edited->second, true);
+			edited->second.AccelerationMask &= ~(1u << ch);
+			if (edited != keys.begin())
+				reset(std::prev(edited)->second, true);
+			if (std::next(edited) != keys.end())
+				reset(std::next(edited)->second, false);
+		}
+	}
+	return ReplaceKeys(keys);
 }
 bool CamPath::DeleteSelected()
 {
@@ -1421,6 +1490,7 @@ void CamPath::Changed(bool geometry, bool invalidateArcs, bool position, bool ba
 		if (invalidateArcs)
 			m_ArcDirty = true;
 	}
+	if (geometry && m_EditHistoryEnabled) RecordEditHistory();
 	for(m_OnChangedIt = m_OnChanged.begin(); m_OnChangedIt != m_OnChanged.end(); m_OnChangedIt++) {
 		m_OnChangedIt->Notify();
 		if(m_OnChangedIt == m_OnChanged.end()) break;
@@ -2752,6 +2822,83 @@ bool WritePathFile(const std::filesystem::path &fileName, const std::string &xml
 	return success;
 }
 } // namespace
+void CamPath::ClearEditHistory()
+{
+	m_EditHistory.clear();
+	m_EditHistoryBytes = 0;
+	m_EditHistoryDropped = 0;
+	m_EditHistoryEvent = 0;
+}
+void CamPath::SetEditHistoryEnabled(bool enabled)
+{
+	if (enabled && !m_EditHistoryEnabled)
+	{
+		ClearEditHistory();
+		m_EditHistoryEnabled = true;
+		RecordEditHistory();
+	}
+	else
+		m_EditHistoryEnabled = enabled;
+}
+void CamPath::RecordEditHistory()
+{
+	std::ostringstream out;
+	out.imbue(std::locale::classic());
+	out << std::setprecision(17);
+	const auto event = ++m_EditHistoryEvent;
+	out << "# event=" << event << " revision=" << m_GeometryRevision << " keys=" << m_Map.size()
+	    << " position=" << int(m_PositionInterpMethod) << " rotation=" << int(m_RotationInterpMethod)
+	    << " fov=" << int(m_FovInterpMethod) << " auto=" << int(m_AutoTangentSettings.Method)
+	    << " tension=" << m_AutoTangentSettings.Tension << '\n';
+	// Bound the diagnostic's work and memory even during continuous graph dragging.
+	if (m_Map.size() > 2048)
+	{
+		++m_EditHistoryDropped;
+		return;
+	}
+	size_t index = 0;
+	for (const auto &key : m_Map)
+	{
+		const auto &v = key.second;
+		for (int ch = 0; ch < 7; ++ch)
+			out << event << ',' << index << ',' << key.first << ',' << ch << ','
+			    << GetChannelValue(v, (Channel)ch) << ',' << int(v.HasEuler) << ',' << v.R.W << ',' << v.R.X
+			    << ',' << v.R.Y << ',' << v.R.Z << ',' << int(v.*ModeIn[ch]) << ',' << int(v.*ModeOut[ch])
+			    << ',' << v.*TangentIn[ch] << ',' << v.*TangentOut[ch] << ',' << v.*WeightIn[ch] << ','
+			    << v.*WeightOut[ch] << ',' << int(v.AccelerationMask) << ',' << v.AccelerationIn[ch] << ','
+			    << v.AccelerationOut[ch] << ',' << v.HoldDuration << ',' << m_Offset << ',' << int(v.Selected)
+			    << '\n';
+		++index;
+	}
+	auto text = out.str();
+	if (text.size() > 4 * 1024 * 1024)
+	{
+		++m_EditHistoryDropped;
+		return;
+	}
+	while (!m_EditHistory.empty() &&
+	       (m_EditHistory.size() >= 128 || m_EditHistoryBytes + text.size() > 4 * 1024 * 1024))
+	{
+		m_EditHistoryBytes -= m_EditHistory.front().size();
+		m_EditHistory.pop_front();
+		++m_EditHistoryDropped;
+	}
+	m_EditHistoryBytes += text.size();
+	m_EditHistory.push_back(std::move(text));
+}
+bool CamPath::SaveEditHistory(const wchar_t *fileName) const
+{
+	if (!fileName || !*fileName)
+		return false;
+	std::string csv = "# HLAE key edit history; channels 0=X 1=Y 2=Z 3=FOV 4=pitch 5=yaw 6=roll; modes "
+	                  "0=auto 1=flat 2=linear 3=free\n";
+	csv += "# dropped_snapshots=" + std::to_string(m_EditHistoryDropped) + "\n";
+	csv += "event,key,time,channel,value,authored_euler,qw,qx,qy,qz,mode_in,mode_out,slope_in,slope_out,"
+	       "weight_in,weight_out,acceleration_mask,acceleration_in,acceleration_out,hold,offset,selected\n";
+	for (const auto &entry : m_EditHistory)
+		csv += entry;
+	return WritePathFile(std::filesystem::path(fileName), csv);
+}
 bool CamPath::Save(wchar_t const *fileName)
 {
 	std::string xml;
