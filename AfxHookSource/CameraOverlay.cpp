@@ -1,5 +1,6 @@
 // Adapted from Paper (papesgit/advancedfx), shared/overlay/OverlayDx9.cpp.
 // MIT license; see shared/overlay/PORTING.md for provenance and scope.
+#include "MirvCam.h"
 #include "CameraOverlay.h"
 #include "CampathDrawer.h"
 #include "Gui.h"
@@ -979,6 +980,7 @@ static CampathCtx g_LastCampathCtx;
 static bool g_ShowSequencer = false;
 static bool g_ShowCameraControl = false;
 static bool g_ShowGizmo = false;
+static bool g_PreviewHudEnabled = true;
 static ImGuizmo::OPERATION g_GizmoOp = ImGuizmo::TRANSLATE;
 static ImGuizmo::MODE g_GizmoMode = ImGuizmo::LOCAL;
 
@@ -1525,7 +1527,7 @@ static std::pair<std::uint64_t, size_t> OverlayPreferenceStamp()
 	for (bool value : {g_ScenePlayerModels, g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics,
 	                   g_SceneRagdolls, g_SceneGibs, g_SceneBuildings, g_SceneProps, g_SceneSmoothAnimation,
 	                   g_SceneDrawModels.load(), g_ShowSequencer, g_ShowCameraControl, g_ShowCurveEditor,
-	                   g_ShowGizmo, g_DemoMute, g_DemoDeathcam, g_DemoSmooth})
+	                   g_ShowGizmo, g_PreviewHudEnabled, g_DemoMute, g_DemoDeathcam, g_DemoSmooth})
 	{
 		if (value)
 			bits |= 1ull << bit;
@@ -1675,6 +1677,8 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		option = &g_ShowCurveEditor;
 	if (key == "ShowGizmo")
 		option = &g_ShowGizmo;
+	if (key == "PreviewHud")
+		option = &g_PreviewHudEnabled;
 	if (key == "FixRecorderMute")
 		option = &g_DemoMute;
 	if (key == "FixDeathcam")
@@ -1790,6 +1794,7 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("ShowCameraControl=%d\n", int(g_ShowCameraControl));
 	out_buf->appendf("ShowCurveEditor=%d\n", int(g_ShowCurveEditor));
 	out_buf->appendf("ShowGizmo=%d\n", int(g_ShowGizmo));
+	out_buf->appendf("PreviewHud=%d\n", int(g_PreviewHudEnabled));
 	out_buf->appendf("FixRecorderMute=%d\n", int(g_DemoMute));
 	out_buf->appendf("FixDeathcam=%d\n", int(g_DemoDeathcam));
 	out_buf->appendf("FixSmoothMovement=%d\n", int(g_DemoSmooth));
@@ -5939,9 +5944,66 @@ static void DrawSequencerDetails(int playhead)
 	ImGui::EndTabBar();
 }
 
+static std::atomic<bool> g_PreviewHudDrawn{false};
+void ResetPreviewHudFrame() { g_PreviewHudDrawn.store(false); }
+void SetPreviewHud(bool value) {g_PreviewHudEnabled=value; if(!value)g_PreviewHudDrawn=false; if(ImGui::GetCurrentContext())ImGui::MarkIniSettingsDirty();}
+bool GetPreviewHud() { return g_PreviewHudEnabled; }
+bool PreviewHudVisible() { return g_PreviewHudDrawn.load() && !Recording::IsActive(); }
+static void DrawPreviewHud()
+{
+	g_PreviewHudDrawn = false;
+	if (!g_PreviewHudEnabled || Recording::IsActive() ||
+		(!MirvCampathPreview_IsActive() && !MirvCam_RigPreviewActive()))
+		return;
+	std::string text = "PREVIEW | ";
+	if (MirvCam_RigPreviewActive())
+		text += MirvCam_PreviewLabel();
+	else
+	{
+		auto &path = g_Hook_VClient_RenderView.m_CamPath;
+		int left = -1, right = -1, index = 0;
+		double time = MirvCampathPreview_GetTime();
+		for (auto it = path.GetBegin(); it != path.GetEnd(); ++it, ++index)
+		{
+			if (std::abs(it.GetTime() - time) < 1e-6)
+			{
+				left = right = index;
+				break;
+			}
+			if (it.GetTime() > time)
+			{
+				right = index;
+				break;
+			}
+			left = index;
+		}
+		std::string keys = left < 0 ? "no key" : "#" + std::to_string(left);
+		if (right >= 0 && right != left)
+			keys += " -> #" + std::to_string(right);
+		auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+		std::string name =
+			paths.GetActive() < paths.GetCount() ? paths.GetName(paths.GetActive()).substr(0, 24) : "Path";
+		for (auto &c : name)
+			if (c == '\n' || c == '\r')
+				c = ' ';
+		char label[160];
+		snprintf(label, sizeof(label), "Keys | %s | %s | %.3fs", name.c_str(), keys.c_str(), time);
+		text += label;
+	}
+	ImGui::SetNextWindowPos(ImVec2(8, ImGui::GetIO().DisplaySize.y - 8), ImGuiCond_Always, ImVec2(0, 1));
+	ImGui::SetNextWindowBgAlpha(.65f);
+	ImGui::Begin("##camera_preview_hud", nullptr,
+				 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+					 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+					 ImGuiWindowFlags_NoDocking);
+	ImGui::TextUnformatted(text.c_str());
+	ImGui::End();
+	g_PreviewHudDrawn = true;
+}
 void Draw()
 {
 	CheckOverlayPreferences();
+	DrawPreviewHud();
 	PollTimelineIndex();
 	AutoIndexRequestedDemo();
 	if (!g_Open)
@@ -5996,6 +6058,13 @@ void Draw()
 	if (!ImGui::GetIO().WantTextInput && !g_CancelGesture &&
 		!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
 	{
+		if(MirvCam_RigPreviewActive() && !ImGui::GetIO().KeyCtrl)
+		{
+			const ImGuiKey keys[]={ImGuiKey_UpArrow,ImGuiKey_DownArrow,ImGuiKey_Home,ImGuiKey_End,ImGuiKey_Escape};
+			const unsigned int codes[]={VK_UP,VK_DOWN,VK_HOME,VK_END,VK_ESCAPE};
+			for(int i=0;i<5;++i)if(ImGui::IsKeyPressed(keys[i],false))MirvCam_PreviewKey(codes[i],true,false);
+		}
+
 		if (g_GraphRightCtrlHeld && !IsMouseLook() && !g_Hook_VClient_RenderView.IsSourceUiActive())
 		{
 			const ImGuiKey arrows[] = {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_UpArrow,
@@ -6013,7 +6082,7 @@ void Draw()
 				}
 			}
 		}
-		if (ImGui::IsKeyPressed(ImGuiKey_E, false))
+		if (!MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_E, false))
 		{
 			if (ImGui::GetIO().KeyCtrl)
 			{
@@ -6023,15 +6092,15 @@ void Draw()
 			else
 				PreviewCapture(ImGui::GetIO().KeyShift);
 		}
-		if (ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+		if (!MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
 		{
 			CancelEditGesture();
 			g_Hook_VClient_RenderView.m_CamPath.DeleteSelected();
 		}
-		if (ImGui::IsKeyPressed(ImGuiKey_Y, false))
+		if (!MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_Y, false))
 			PreviewHold(ImGui::GetIO().KeyShift);
 
-		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false))
+		if (!MirvCam_RigNavigation() && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false))
 		{
 			if (ImGui::GetIO().KeyShift)
 				PreviewAnchor();
@@ -6039,7 +6108,7 @@ void Draw()
 				PreviewSelectAll();
 		}
 	}
-	if (ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z, false))
+	if (!MirvCam_RigNavigation() && ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z, false))
 		HistoryUndo(ImGui::GetIO().KeyShift);
 
 	if (g_Docking)
@@ -6078,8 +6147,24 @@ void Draw()
 			if (ImGui::Checkbox("Show path", &showPath))
 				g_CampathDrawer.Draw_set(showPath);
 			bool preview = MirvCampathPreview_IsActive();
-			if (ImGui::Checkbox("Preview path", &preview))
+			if (ImGui::Checkbox("Preview", &preview))
 				MirvCampathPreview_SetActive(preview);
+			int navigation = MirvCam_RigNavigation() ? 1 : 0;
+			ImGui::SetNextItemWidth(130);
+			const char *navigationChoices[] = {"Keyframes", "Cameras"};
+			if (ImGui::Combo("Preview navigation", &navigation, navigationChoices, 2))
+			{
+				if (MirvCampathPreview_IsActive())
+					MirvCam_SetPreviewNavigation(navigation == 1);
+				else
+					MirvCam_SetRigNavigation(navigation == 1);
+			}
+			if(ImGui::Button("Add camera") && MirvCam_SelectedCameraAction("add")) g_DocumentStatus=MirvCam_PreviewLabel()+" added.";
+			if(MirvCam_RigNavigation())
+			{
+				ImGui::SameLine();if(ImGui::Button("Edit camera")) MirvCam_SelectedCameraAction("edit");
+				ImGui::SameLine();if(ImGui::Button("Recapture camera")) MirvCam_SelectedCameraAction("capture");
+			}
 
 			float labelHeight = g_CampathDrawer.GetDrawKeyframeIndex();
 			if (ImGui::SliderFloat("Key label size", &labelHeight, 0, 100, "%.0f",
@@ -6441,6 +6526,8 @@ void Draw()
 			ImGui::Checkbox("Camera Control", &g_ShowCameraControl);
 			ImGui::SameLine();
 			ImGui::Checkbox("Show Gizmo", &g_ShowGizmo);
+			ImGui::SameLine();
+			ImGui::Checkbox("Preview indicator", &g_PreviewHudEnabled);
 
 			ImGui::EndTabItem();
 		}
@@ -7419,7 +7506,7 @@ void Draw()
 				auto &path = g_Hook_VClient_RenderView.m_CamPath;
 				ImGui::Separator();
 				bool active = MirvCampathPreview_IsActive();
-				if (ImGui::Checkbox("Preview path", &active))
+				if (ImGui::Checkbox("Preview", &active))
 					MirvCampathPreview_SetActive(active);
 				const double begin = path.GetLowerBound(), end = path.GetUpperBound();
 				float position =

@@ -2084,48 +2084,60 @@ Entity labels support `mirv_drawentities filter ragdolls 0|1` and
 `mirv_drawentities color ragdolls R G B`. Ragdoll labels default to gray
 (170,170,170); gib labels default to orange (255,160,64).
 
-## Procedural camera rigs: first live prototype
+## Procedural cameras and preview
 
-`mirv_cam rig` adds session-only named cameras alongside the existing commands.
-The default controller source is **legacy**, so existing campath, camera input,
-attachment and aiming behavior remains available through `rig off`.
+Cameras are session-only and have stable numeric IDs. Naming them is optional;
+unnamed cameras receive a `Camera <ID>` name. IDs do not renumber after deletion.
+The existing `mirv_cam rig` controls remain available for compatibility.
 
 ```text
-mirv_cam rig new "Wide"
-mirv_cam rig off
-mirv_cam rig new "Player shoulder"
-mirv_cam rig attach "Player shoulder" 5 -1 target
-mirv_cam rig use "Wide"
-mirv_cam rig use "Player shoulder"
-mirv_cam rig path "Opening"
-mirv_cam rig off
+mirv_cam add
+mirv_cam add "Player shoulder"
+mirv_cam list
+mirv_cam preview 0
+mirv_cam edit 0
+mirv_cam capture 0
+mirv_cam rename 0 "Wide"
+mirv_cam attach camera 1 5 -1 entity
+mirv_cam preview cameras
+mirv_cam preview keys
+mirv_cam preview off
 ```
 
-`new` captures the final camera pose and immediately views it. Use `off` before
-moving the free camera to capture another pose. `use` cuts to a rig; `path` cuts
-to a named campath by its stable document ID without altering keyframes. The
-explicit controller source wins over legacy overrides, and free-camera input
-is not advanced invisibly behind it. `list` reports rigs and controller status;
-`remove <name>` deletes a rig. Removing a viewed rig returns to legacy controls.
+`add [name]` captures the current view and leaves the free camera usable.
+`preview <ID/name>` views a camera; `preview cameras` resumes the selected camera.
+In camera preview, Up/Down cycle cameras by creation ID, Home/End select the first
+or last, and Escape exits at the displayed pose. Switching cameras does not seek
+the demo. Right Ctrl + arrows retain their Scene Cache scrubbing behavior.
 
-`attach <name> <entity address> [bone name/index] [target|world]` captures the rig's
-current pose relative to the target without changing the view immediately.
-`target` inherits the target frame's orientation; `world` keeps the camera's
-orientation fixed while its offset still moves rigidly with the target frame.
-Each rig owns its own reference-counted entity/bone resolver; legacy attachment
-settings are not reused as mutable rig state. TF2 and TF2C entity addresses,
-including client-only gib addresses, use the existing resolver. Rig bindings
-also pin the full entity handle and level, so a recycled network slot cannot
-silently change the subject. Explicit reattachment can use the last observed
-world pose if the previous target has vanished.
+The overlay's Preview navigation selector chooses Keyframes or Cameras. This
+choice survives stopping preview. Add camera, Edit camera and Recapture camera
+provide the same workflow as the console: edit moves the free camera to the
+selected camera, and capture saves the adjusted view. Attached cameras retain
+their target when recaptured. These controls do not yet provide a rig gizmo.
 
-`capture <name>` recaptures the current view, and `fixed <name>` detaches while
-retaining the evaluated pose (or its last observed pose if the target vanished).
-Numeric editing is available as
-`mirv_cam rig pose <name> <x> <y> <z> <pitch> <yaw> <roll> <fov>`.
-These values describe the desired world pose, including when attached. Invalid
-poses/targets are rejected without replacing the prior configuration. There is
-an initial limit of 128 rigs. Names are case-sensitive and must be unique.
+A compact, noninteractive indicator at the bottom left shows preview mode and
+the selected camera or keyframe (including the interval when between keys).
+It remains visible with the main overlay closed and is hidden during HLAE
+recording. Toggle it with the persisted Preview indicator preference or
+`mirv_campath preview hud 0|1`.
+
+`attach camera <ID/name> <entity address> [bone name/index] [bone|entity|aligned|world]`
+uses the existing attachment modes, defaulting to the current `mirv_cam attachMode`.
+Each camera owns its own resolver and mode. TF2 and TF2C entity addresses,
+including client-only gib addresses, use the existing resolver. Bindings pin the
+full entity handle and level so a recycled slot cannot silently change the subject.
+
+`fixed <ID/name>` detaches at the evaluated pose. `remove <ID/name>` deletes a
+camera; deleting the viewed camera exits preview. Numeric editing is available as
+`mirv_cam pose <ID/name> <x> <y> <z> <pitch> <yaw> <roll> <fov>`.
+Values describe the desired world pose, including when attached. Invalid poses
+or targets retain the previous configuration. Names are case-sensitive, unique,
+nonnumeric and limited to 128 bytes; there is a maximum of 128 cameras.
+
+For compatibility, `mirv_cam rig new <name>` still views the newly created camera,
+and `mirv_cam rig path <document ID>` selects a named campath without changing keys.
+`mirv_cam rig off` returns to legacy camera control.
 
 The shared `CameraPose`/`CameraRig` evaluation code has no engine or UI dependency.
 The engine adapter converts both procedural rigs and campaths to that pose before

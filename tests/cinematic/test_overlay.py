@@ -165,13 +165,24 @@ unsigned long long Mirv_Tf2_DiagnosticBoneDropped(){return 0;}
 void Mirv_Tf2_DiagnosticBoneStop(){diagnosticBones.clear();}
 bool Mirv_Tf2_DiagnosticModel(int,MirvTf2DiagnosticModel&){return false;}
 int MirvCam_GetAttachMode(){return 2;}
+bool testRigPreview=false,testRigNavigation=false;int rigSteps=0;
+bool MirvCam_SelectedCameraAction(const char*){return true;}
+bool MirvCam_RigPreviewActive(){return testRigPreview;}bool MirvCam_RigNavigation(){return testRigNavigation;}
+void MirvCam_SetRigNavigation(bool v){testRigNavigation=v;}
+bool MirvCam_RigViewActive(){return testRigPreview;}
+void MirvCam_EndRigPreview(){testRigPreview=false;}
+std::string MirvCam_PreviewLabel(){return "Cameras | 2: Hero [fixed]";}
+bool MirvCam_PreviewKey(unsigned int,bool down,bool repeat){if(!testRigPreview)return false;if(down&&!repeat)++rigSteps;return true;}
+bool MirvCampathPreview_SetActive(bool);
+bool MirvCam_SetPreviewNavigation(bool cameras){testRigNavigation=cameras;testRigPreview=cameras;if(!cameras)MirvCampathPreview_SetActive(true);return true;}
+
 int tracedEntity=1;bool traceAvailable=true;
 bool Mirv_Tf2_TraceEntity(const double*,const double*,int&out){out=tracedEntity;return traceAvailable;}
 using LONG=long;using PVOID=void*;constexpr LONG NO_ERROR=0;LONG povHookError=0;int povHookCommits=0;
 void*GetCurrentThread(){return nullptr;}LONG DetourTransactionBegin(){return povHookError;}LONG DetourUpdateThread(void*){return 0;}LONG DetourAttach(PVOID*,PVOID){return 0;}LONG DetourTransactionAbort(){return 0;}LONG DetourTransactionCommit(){++povHookCommits;return 0;}
 using UINT=unsigned int;using DWORD=unsigned long;using WPARAM=uintptr_t;using LPARAM=intptr_t;
 constexpr UINT WM_KEYDOWN=0x100,WM_KEYUP=0x101,WM_SYSKEYDOWN=0x104,WM_SYSKEYUP=0x105;
-constexpr UINT VK_DELETE=0x2E,VK_F1=0x70,VK_INSERT=0x2D,VK_HOME=0x24,VK_END=0x23,VK_PRIOR=0x21,VK_NEXT=0x22,VK_LEFT=0x25,VK_UP=0x26,VK_RIGHT=0x27,VK_DOWN=0x28,VK_CONTROL=0x11,VK_SHIFT=0x10,VK_RCONTROL=0xA3;
+constexpr UINT VK_ESCAPE=0x1B,VK_DELETE=0x2E,VK_F1=0x70,VK_INSERT=0x2D,VK_HOME=0x24,VK_END=0x23,VK_PRIOR=0x21,VK_NEXT=0x22,VK_LEFT=0x25,VK_UP=0x26,VK_RIGHT=0x27,VK_DOWN=0x28,VK_CONTROL=0x11,VK_SHIFT=0x10,VK_RCONTROL=0xA3;
 bool controlHeld=false,shiftHeld=false;
 short GetKeyState(UINT key){return ((key==VK_CONTROL&&controlHeld)||(key==VK_SHIFT&&shiftHeld))?short(0x8000):0;}
 DWORD testTick=0;DWORD GetTickCount(){return testTick+=16;}
@@ -186,7 +197,8 @@ struct FakeConVar{float Value=0,Maximum=-1;bool Writable=true;float GetFloat(){r
 struct FakeCvar{std::map<std::string,FakeConVar> Vars{{"cl_interpolate",{1}},{"cl_interp",{.015f}},{"cl_interp_ratio",{1}}};FakeConVar *FindVar(const char*name){auto it=Vars.find(name);return it==Vars.end()?nullptr:&it->second;}}fakeCvar;
 namespace AfxHookSource{namespace CameraOverlay{void NotifyDemoPlaybackFile(const char*);}}
 namespace SOURCESDK{struct matrix3x4_t{float m_flMatVal[3][4];};struct CCommand_004{int Count=2;const char*File="";int ArgC()const{return Count;}const char*Arg(int)const{return File;}};namespace CSS{FakeCvar*g_pCVar=&fakeCvar;}namespace L4D2{FakeCvar*g_pCVar=nullptr;}}
-namespace AfxHookSource{namespace Gui{bool SetOverlayOpen(bool b){CameraOverlay::SetOpen(b);return true;}}namespace CameraOverlay{namespace Recording{const char*GetName(){return "test";}void SetName(const char*){}bool ScreenEnabled(){return true;}bool IsActive(){return false;}}}}
+bool testRecording=false;std::string previewHudText;void TestRecordHudText(const std::string&t){previewHudText=t;}
+namespace AfxHookSource{namespace Gui{bool SetOverlayOpen(bool b){CameraOverlay::SetOpen(b);return true;}}namespace CameraOverlay{namespace Recording{const char*GetName(){return "test";}void SetName(const char*){}bool ScreenEnabled(){return true;}bool IsActive(){return testRecording;}}}}
 struct Rect{ImVec2 Min,Max;};std::map<std::string,Rect>widgets;
 bool trackDouble(const char*l,double*v,double step=0,double fast=0,const char*format="%.6f",ImGuiInputTextFlags flags=0){bool b=ImGui::InputDouble(l,v,step,fast,format,flags);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackTree(const char*l){bool b=ImGui::TreeNode(l);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
@@ -223,6 +235,7 @@ s=s.replace('ImGui::InputDouble(', 'trackDouble(').replace('ImGui::Checkbox(', '
 s=s.replace('ImGui::NeoTimelineSpan(', 'trackSpan(')
 s=s.replace('ImGui::MenuItem("Go to")','trackSeekMenuItem("Go to")').replace('ImGui::MenuItem("Go to with lead-in")','trackSeekMenuItem("Go to with lead-in")')
 s=s.replace('ImGui::MenuItem("Edit")','trackSeekMenuItem("Edit")').replace('ImGui::MenuItem("Remove")','trackSeekMenuItem("Remove")')
+s=s.replace('ImGui::TextUnformatted(text.c_str());','TestRecordHudText(text); ImGui::TextUnformatted(text.c_str());',1)
 s=s.replace('ImGui::TreeNode("Bounding box filters")','trackTree("Bounding box filters")')
 s=s.replace('ImGui::TreeNode("Trail categories")','trackTree("Trail categories")')
 s=s.replace('ImGui::CollapsingHeader(', 'trackHeader(').replace('ImGui::TreeNode("Player filter (optional)")','trackTree("Player filter (optional)")')
@@ -497,6 +510,14 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  check(CampathPreview_Enter(),"Enter native preview for Ctrl+E insertion");MirvCampathPreview_SetTime(2);controlHeld=true;
  check(MirvCampathPreview_KeyEvent(WM_KEYDOWN,'E',0),"Native preview owns Ctrl+E");check(closedPath.GetSize()==3&&closedPath.CaptureState().Keys.count(2),"Ctrl+E inserts at the preview cursor rather than capturing demo time");check(std::abs(closedPath.CaptureState().Keys.at(2).X-10)<1e-6,"Ctrl+E uses the interpolated path pose");
  MirvCampathPreview_KeyEvent(WM_KEYDOWN,'E',1LL<<30);check(closedPath.GetSize()==3,"Held Ctrl+E does not repeat insertion");controlHeld=false;check(MirvCampathPreview_KeyEvent(WM_KEYUP,'E',0),"Ctrl+E consumes its release after Ctrl is released");HistoryUndo(false);check(closedPath.GetSize()==2,"Ctrl+E insertion is one undoable edit");CampathPreview_Exit();closedPath.Clear();UpdateHistory();
+ closedPath.Add(0,CamPathValue(0,0,0,0,0,0,90));closedPath.Add(2,CamPathValue(2,0,0,0,20,0,90));check(CampathPreview_Enter(),"Enter keyframe preview for HUD labels");MirvCampathPreview_SetTime(1);frame();check(previewHudText.find("Keys")!=std::string::npos&&previewHudText.find("#0 -> #1")!=std::string::npos,"HUD identifies the keyframe interval being viewed");CampathPreview_Exit();closedPath.Clear();UpdateHistory();
+ // HUD is independent of the main overlay and cannot capture mouse/keyboard input.
+ testRigPreview=true;testRigNavigation=true;SetPreviewHud(true);frame();
+ auto*hud=ImGui::FindWindowByName("##camera_preview_hud");check(hud&&hud->Active&&PreviewHudVisible(),"Camera preview HUD draws with overlay closed");
+ check((hud->Flags&ImGuiWindowFlags_NoInputs)==ImGuiWindowFlags_NoInputs&&hud->Size.y<60,"Preview HUD is compact and noninteractive");
+ check(previewHudText.find("Cameras | 2: Hero")!=std::string::npos,"HUD identifies camera ID, name and navigation mode");testRecording=true;frame();check(!PreviewHudVisible(),"Preview HUD stays out of recorded output");testRecording=false;frame();ResetPreviewHudFrame();check(!PreviewHudVisible(),"Skipping an overlay frame clears HUD visibility");frame();
+ SetPreviewHud(false);frame();check(!PreviewHudVisible(),"HUD can be disabled without ending preview");
+ SetPreviewHud(true);testRigPreview=false;testRigNavigation=false;frame();check(!PreviewHudVisible(),"HUD disappears when preview ends");
  SetOpen(true);g_Docking=false;frame();frame();check(widgets.count("Add point"),"Campath is the default tab");auto labelsDrawn=g_CampathDrawer;button("Segment durations");check(!g_CampathDrawer.GetDrawDurations()&&g_CampathDrawer.GetDrawNames()==labelsDrawn.GetDrawNames()&&g_CampathDrawer.GetDrawHolds()==labelsDrawn.GetDrawHolds()&&g_CampathDrawer.Draw_get()==labelsDrawn.Draw_get(),"Segment-duration toggle leaves world paths and other labels unchanged");button("Segment durations");{
  using namespace RenderCacheTest;CImGuiRenderCacheManager manager;IDirect3DDevice9 device;
  auto render=[&](auto work){std::thread worker([&]{renderThread=std::this_thread::get_id();work();});worker.join();};

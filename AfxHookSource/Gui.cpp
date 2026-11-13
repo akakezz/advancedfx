@@ -921,6 +921,7 @@ bool SetOverlayOpen(bool value)
 }
 void DoFrame()
 {
+	CameraOverlay::ResetPreviewHudFrame();
 	if (!SourceOwnsUi())
 		CameraOverlay::Draw();
 	else
@@ -948,7 +949,7 @@ void On_Direct3DDevice9_EndScene()
 	if (!IsSupported())
 		return;
 
-	if (m_FirstEndScene && m_Active && g_FontTexture && CameraOverlay::IsOpen())
+	if (m_FirstEndScene && m_Active && g_FontTexture && (CameraOverlay::IsOpen() || CameraOverlay::PreviewHudVisible()))
 	{
 		if (m_ImGuiRernderCacheManager.Dx9_Render())
 			m_FirstEndScene = false;

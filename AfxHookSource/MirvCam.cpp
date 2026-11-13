@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include "CameraOverlay.h"
+#include <shared/MirvInput.h>
 
 // How mirv_cam attach gets the angles when a bone is used.
 static int g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ALIGNED;
@@ -333,11 +334,14 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 }
 // End camera collision console command.
 
+extern bool MirvCampathPreview_SetActive(bool active);
 extern int g_LevelInitCount;
 namespace
 {
 struct NamedCameraRig
 {
+	unsigned long long Id = 0;
+	int AttachMode = MIRV_TF2_BONEMODE_BONE;
 	advancedfx::CameraRig Rig;
 	advancedfx::CameraPose LastWorld;
 	std::shared_ptr<IMirvVecAngCalc> Target;
@@ -356,6 +360,17 @@ std::string g_CameraRigName;
 unsigned long long g_CameraPathId = 0;
 advancedfx::CameraPose g_LastRigPose;
 bool g_RigUnavailable = false;
+bool g_RigPreview = false;
+bool g_RigNavigation = false;
+unsigned long long g_NextCameraId = 0;
+auto FindRig(const std::string &reference)
+{
+    auto named = g_CameraRigs.find(reference);
+    if (named != g_CameraRigs.end()) return named;
+    for (auto it=g_CameraRigs.begin();it!=g_CameraRigs.end();++it)
+        if (std::to_string(it->second.Id)==reference) return it;
+    return g_CameraRigs.end();
+}
 void SyncRigLevel()
 {
 	static int level = g_LevelInitCount;
@@ -363,6 +378,7 @@ void SyncRigLevel()
 	{
 		level = g_LevelInitCount;
 		g_CameraSource = CameraSource::Legacy;
+		g_RigPreview = false;
 		g_RigUnavailable = false;
 	}
 }
@@ -420,14 +436,13 @@ void RigCommand(advancedfx::ICommandArgs *args)
 	int argc = args->ArgC();
 	if (argc == 3 && !_stricmp(args->ArgV(2), "off"))
 	{
-		g_CameraSource = CameraSource::Legacy;
-		g_RigUnavailable = false;
+		MirvCam_EndRigPreview();
 		return;
 	}
 	if (argc == 3 && !_stricmp(args->ArgV(2), "list"))
 	{
 		for (const auto &entry : g_CameraRigs)
-			Tier0_Msg("%s: %s%s\n", entry.first.c_str(), entry.second.Rig.Attached ? "attached" : "fixed",
+			Tier0_Msg("%llu: %s (%s)%s\n", entry.second.Id, entry.first.c_str(), entry.second.Rig.Attached ? "attached" : "fixed",
 			          g_CameraSource == CameraSource::Rig && g_CameraRigName == entry.first ? " [viewing]"
 			                                                                                : "");
 		Tier0_Msg("Camera controller: %s%s\n",
@@ -452,6 +467,7 @@ void RigCommand(advancedfx::ICommandArgs *args)
 						break;
 					g_LastRigPose = RigCapture();
 					g_CameraPathId = paths.GetId(i);
+					g_RigPreview = false;
 					g_CameraSource = CameraSource::Path;
 					g_RigUnavailable = false;
 					return;
@@ -461,12 +477,15 @@ void RigCommand(advancedfx::ICommandArgs *args)
 		}
 		if (!_stricmp(action, "new"))
 		{
-			if (name.empty() || name.size() > 128 || g_CameraRigs.count(name) || g_CameraRigs.size() >= 128)
+			if (name.empty() || name.size() > 128 || g_CameraRigs.count(name) || g_CameraRigs.size() >= 128 ||
+                std::all_of(name.begin(),name.end(),[](unsigned char c){return c>='0'&&c<='9';}) || std::any_of(name.begin(),name.end(),[](unsigned char c){return c<32||c==127;}))
 			{
 				Tier0_Warning("Use a unique rig name of 1..128 bytes (maximum 128 rigs).\n");
 				return;
 			}
 			NamedCameraRig rig;
+			rig.Id = g_NextCameraId++;
+			rig.AttachMode = g_MirvCamAttachMode;
 			rig.Rig.Pose = RigCapture();
 			if (!rig.Rig.Pose.Valid())
 				return;
@@ -475,10 +494,12 @@ void RigCommand(advancedfx::ICommandArgs *args)
 			g_LastRigPose = g_CameraRigs.at(name).Rig.Pose;
 			g_CameraRigName = name;
 			g_CameraSource = CameraSource::Rig;
+			g_RigPreview = true;
+			g_RigNavigation = true;
 			g_RigUnavailable = false;
 			return;
 		}
-		auto found = g_CameraRigs.find(name);
+		auto found = FindRig(name);
 		if (found == g_CameraRigs.end())
 		{
 			Tier0_Warning("Unknown camera rig.\n");
@@ -486,8 +507,8 @@ void RigCommand(advancedfx::ICommandArgs *args)
 		}
 		if (!_stricmp(action, "remove"))
 		{
-			if (g_CameraSource == CameraSource::Rig && g_CameraRigName == name)
-				g_CameraSource = CameraSource::Legacy;
+			if (g_CameraSource == CameraSource::Rig && g_CameraRigName == found->first)
+				MirvCam_EndRigPreview();
 			g_CameraRigs.erase(found);
 			return;
 		}
@@ -500,8 +521,10 @@ void RigCommand(advancedfx::ICommandArgs *args)
 				return;
 			}
 			g_LastRigPose = pose;
-			g_CameraRigName = name;
+			g_CameraRigName = found->first;
 			g_CameraSource = CameraSource::Rig;
+			g_RigPreview = true;
+			g_RigNavigation = true;
 			g_RigUnavailable = false;
 			return;
 		}
@@ -538,7 +561,7 @@ void RigCommand(advancedfx::ICommandArgs *args)
 	}
 	if (argc == 11 && !_stricmp(args->ArgV(2), "pose"))
 	{
-		auto found = g_CameraRigs.find(args->ArgV(3));
+		auto found = FindRig(args->ArgV(3));
 		if (found == g_CameraRigs.end())
 		{
 			Tier0_Warning("Unknown camera rig.\n");
@@ -580,7 +603,7 @@ void RigCommand(advancedfx::ICommandArgs *args)
 	}
 	if ((argc == 5 || argc == 6 || argc == 7) && !_stricmp(args->ArgV(2), "attach"))
 	{
-		auto found = g_CameraRigs.find(args->ArgV(3));
+		auto found = FindRig(args->ArgV(3));
 		char *end = nullptr;
 		long entity = std::strtol(args->ArgV(4), &end, 10);
 		if (found == g_CameraRigs.end() || end == args->ArgV(4) || *end || entity < 0 || entity >= INT_MAX)
@@ -596,33 +619,33 @@ void RigCommand(advancedfx::ICommandArgs *args)
 		int bone = -1;
 		if (argc >= 6 && !Mirv_Tf2_ParseBoneArg(int(entity), args->ArgV(5), bone))
 			return;
-		bool inherit = true;
+		int mode = g_MirvCamAttachMode;
 		if (argc == 7)
 		{
-			if (!_stricmp(args->ArgV(6), "world"))
-				inherit = false;
-			else if (_stricmp(args->ArgV(6), "target"))
-			{
-				Tier0_Warning("Orientation must be target or world.\n");
-				return;
-			}
+			const char *text=args->ArgV(6);
+			if (!_stricmp(text,"bone") || !_stricmp(text,"target")) mode=MIRV_TF2_BONEMODE_BONE;
+			else if (!_stricmp(text,"entity")) mode=MIRV_TF2_BONEMODE_ENTITY;
+			else if (!_stricmp(text,"aligned")) mode=MIRV_TF2_BONEMODE_ALIGNED;
+			else if (!_stricmp(text,"world")) mode=MIRV_TF2_BONEMODE_WORLD;
+			else {Tier0_Warning("Use bone, entity, aligned or world attachment mode.\n");return;}
 		}
 		advancedfx::CameraPose world;
 		if (!EvaluateNamedRig(found->second, world))
 			world = found->second.LastWorld;
 		auto calc =
-		    g_MirvVecAngCalcs.NewTf2EntityIndexCalc(nullptr, int(entity), bone, MIRV_TF2_BONEMODE_BONE);
+		    g_MirvVecAngCalcs.NewTf2EntityIndexCalc(nullptr, int(entity), bone, mode);
 		if (!calc)
 			return;
 		calc->AddRef();
 		std::shared_ptr<IMirvVecAngCalc> owner(calc, [](IMirvVecAngCalc *p) { p->Release(); });
 		NamedCameraRig attached = found->second;
 		attached.Target = std::move(owner);
+		attached.AttachMode = mode;
 		attached.EntityAddress = int(entity);
 		attached.TargetLevel = g_LevelInitCount;
 		attached.TargetHandle = RigEntityHandle(int(entity));
 		advancedfx::CameraPose target;
-		if (!RigTarget(attached, target) || !attached.Rig.Attach(world, target, inherit))
+		if (!RigTarget(attached, target) || !attached.Rig.Attach(world, target, true))
 		{
 			Tier0_Warning("Attachment unavailable; rig retained.\n");
 			return;
@@ -631,7 +654,7 @@ void RigCommand(advancedfx::ICommandArgs *args)
 		return;
 	}
 	Tier0_Msg("mirv_cam rig new|use|capture|fixed|remove <name>\nmirv_cam rig attach <name> <entity> [bone] "
-	          "[target|world]\nmirv_cam rig pose <name> <x> <y> <z> <pitch> <yaw> <roll> <fov>\nmirv_cam rig "
+	          "[bone|entity|aligned|world]\nmirv_cam rig pose <name> <x> <y> <z> <pitch> <yaw> <roll> <fov>\nmirv_cam rig "
 	          "path <campath name> | off | list\nRigs are session-only. New captures and views a fixed rig; "
 	          "off returns to legacy camera controls.\n");
 }
@@ -690,8 +713,244 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
 	pose = g_LastRigPose;
 	return true;
 }
+
+bool MirvCam_RigPreviewActive() { return g_RigPreview; }
+void MirvCam_EndRigPreview()
+{
+	const bool adopt = g_CameraSource == CameraSource::Rig;
+	auto pose = g_LastRigPose;
+	g_RigPreview = false;
+	g_CameraSource = CameraSource::Legacy;
+	g_RigUnavailable = false;
+	// Clear native preview too, before restoring the displayed rig pose.
+	MirvCampathPreview_SetActive(false);
+	auto input = g_Hook_VClient_RenderView.m_MirvInput;
+	if (adopt && input && pose.Valid())
+	{
+		auto a = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
+		input->SetTx(float(pose.Position[0]));
+		input->SetTy(float(pose.Position[1]));
+		input->SetTz(float(pose.Position[2]));
+		input->SetRx(float(a.Pitch));
+		input->SetRy(float(a.Yaw));
+		input->SetRz(float(a.Roll));
+		input->SetFov(float(pose.Fov));
+		input->SetCameraControlMode(true);
+	}
+}
+bool MirvCam_RigNavigation() { return g_RigNavigation; }
+void MirvCam_SetRigNavigation(bool cameras) { g_RigNavigation = cameras; }
+std::string MirvCam_PreviewLabel()
+{
+	auto found = g_CameraRigs.find(g_CameraRigName);
+	if (found == g_CameraRigs.end())
+		return "Cameras | none";
+	return "Cameras | " + std::to_string(found->second.Id) + ": " + found->first.substr(0, 40) +
+		   (g_RigUnavailable			 ? " [unavailable]"
+			: found->second.Rig.Attached ? " [attached]"
+										 : " [fixed]");
+}
+bool MirvCam_PreviewKey(unsigned int key, bool down, bool repeat)
+{
+	if (!g_RigPreview)
+		return false;
+	if (key == 'E' || key == 'Y' || key == VK_DELETE)
+		return true;
+	if (key != VK_UP && key != VK_DOWN && key != VK_HOME && key != VK_END && key != VK_ESCAPE)
+		return false;
+	if (!down || repeat)
+		return true;
+	if (key == VK_ESCAPE)
+	{
+		MirvCam_EndRigPreview();
+		return true;
+	}
+	std::vector<std::pair<unsigned long long, std::string>> ordered;
+	for (const auto &entry : g_CameraRigs)
+		ordered.emplace_back(entry.second.Id, entry.first);
+	std::sort(ordered.begin(), ordered.end());
+	if (ordered.empty())
+	{
+		MirvCam_EndRigPreview();
+		return true;
+	}
+	size_t index = 0;
+	for (size_t i = 0; i < ordered.size(); ++i)
+		if (ordered[i].second == g_CameraRigName)
+			index = i;
+	if (key == VK_HOME)
+		index = 0;
+	else if (key == VK_END)
+		index = ordered.size() - 1;
+	else if (key == VK_UP)
+		index = (index + 1) % ordered.size();
+	else
+		index = (index + ordered.size() - 1) % ordered.size();
+	g_CameraRigName = ordered[index].second;
+	g_CameraSource = CameraSource::Rig;
+	return true;
+}
+bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
+{
+	if (args->ArgC() < 2)
+		return false;
+	std::string action = args->ArgV(1);
+	std::transform(action.begin(), action.end(), action.begin(), [](unsigned char c) { return char(tolower(c)); });
+	struct Forward : advancedfx::ICommandArgs
+	{
+		std::vector<std::string> Words;
+		int ArgC() override { return int(Words.size()); }
+		const char *ArgV(int i) override { return Words.at(i).c_str(); }
+	} command;
+	command.Words = {"mirv_cam", "rig", action};
+	if (action == "add")
+	{
+		if (args->ArgC() > 3)
+			return true;
+		if (args->ArgC() == 2)
+			while (g_CameraRigs.count("Camera " + std::to_string(g_NextCameraId)))
+				++g_NextCameraId;
+		command.Words[2] = "new";
+		command.Words.push_back(args->ArgC() == 3 ? args->ArgV(2) : "Camera " + std::to_string(g_NextCameraId));
+		const auto count = g_CameraRigs.size();
+		const bool previousNavigation = g_RigNavigation;
+		RigCommand(&command);
+		if (g_CameraRigs.size() > count)
+		{
+			auto added = g_CameraRigs.find(command.Words[3]);
+			Tier0_Msg("Added camera %llu: %s.\n", added->second.Id, added->first.c_str());
+			MirvCam_EndRigPreview();
+			g_RigNavigation = previousNavigation;
+		}
+		return true;
+	}
+	if (action == "preview")
+	{
+		if (args->ArgC() != 3)
+		{
+			Tier0_Msg("mirv_cam preview <camera ID/name>|cameras|keys|off\n");
+			return true;
+		}
+		std::string reference = args->ArgV(2);
+		if (reference == "off" || reference == "keys")
+		{
+			MirvCam_EndRigPreview();
+			if (reference == "keys")
+				g_RigNavigation = false;
+			MirvCampathPreview_SetActive(reference == "keys");
+			return true;
+		}
+		auto found = reference == "cameras" ? g_CameraRigs.find(g_CameraRigName) : FindRig(reference);
+		if (found == g_CameraRigs.end() && reference == "cameras" && !g_CameraRigs.empty())
+			found = g_CameraRigs.begin();
+		if (found == g_CameraRigs.end())
+		{
+			Tier0_Warning("No matching camera.\n");
+			return true;
+		}
+		MirvCampathPreview_SetActive(false);
+		auto current = RigCapture();
+		if (current.Valid())
+			g_LastRigPose = current;
+		g_CameraRigName = found->first;
+		g_CameraSource = CameraSource::Rig;
+		g_RigPreview = true;
+		g_RigNavigation = true;
+		return true;
+	}
+	if (action == "edit")
+	{
+		if (args->ArgC() != 3)
+			return true;
+		auto found = FindRig(args->ArgV(2));
+		if (found == g_CameraRigs.end())
+			return true;
+		advancedfx::CameraPose pose;
+		if (!EvaluateNamedRig(found->second, pose))
+			pose = found->second.LastWorld;
+		MirvCampathPreview_SetActive(false);
+		g_CameraRigName = found->first;
+		g_LastRigPose = pose;
+		g_CameraSource = CameraSource::Rig;
+		MirvCam_EndRigPreview();
+		return true;
+	}
+	if (action == "rename")
+	{
+		if (args->ArgC() != 4)
+			return true;
+		auto found = FindRig(args->ArgV(2));
+		std::string name = args->ArgV(3);
+		if (found == g_CameraRigs.end() || name.empty() || name.size() > 128 || g_CameraRigs.count(name) ||
+			std::all_of(name.begin(), name.end(), [](unsigned char c) { return c >= '0' && c <= '9'; }) ||
+			std::any_of(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == 127; }))
+		{
+			Tier0_Warning("Use a unique, nonnumeric camera name.\n");
+			return true;
+		}
+		auto node = g_CameraRigs.extract(found);
+		if (g_CameraRigName == node.key())
+			g_CameraRigName = name;
+		node.key() = name;
+		g_CameraRigs.insert(std::move(node));
+		return true;
+	}
+	if (action == "attach" && args->ArgC() >= 5 && !std::strcmp(args->ArgV(2), "camera"))
+	{
+		command.Words[2] = "attach";
+		for (int i = 3; i < args->ArgC(); ++i)
+			command.Words.push_back(args->ArgV(i));
+		RigCommand(&command);
+		return true;
+	}
+	if (action == "capture" || action == "pose" || action == "fixed" || action == "remove" || action == "list")
+	{
+		for (int i = 2; i < args->ArgC(); ++i)
+			command.Words.push_back(args->ArgV(i));
+		RigCommand(&command);
+		if (g_CameraRigs.empty())
+			g_RigPreview = false;
+		return true;
+	}
+	return false;
+}
+bool MirvCam_SetPreviewNavigation(bool cameras)
+{
+	struct Args : advancedfx::ICommandArgs
+	{
+		const char *Mode;
+		int ArgC() override { return 3; }
+		const char *ArgV(int i) override { return i == 0 ? "mirv_cam" : i == 1 ? "preview" : Mode; }
+	} args;
+	args.Mode = cameras ? "cameras" : "keys";
+	MirvCam_CameraCommand(&args);
+	return cameras ? MirvCam_RigPreviewActive() : MirvCampathPreview_IsActive();
+}
+bool MirvCam_SelectedCameraAction(const char *action)
+{
+	if (std::strcmp(action, "add") && std::strcmp(action, "edit") && std::strcmp(action, "capture"))
+		return false;
+	if (std::strcmp(action, "add") && g_CameraRigs.find(g_CameraRigName) == g_CameraRigs.end())
+	{
+		Tier0_Warning("Select a camera first.\n");
+		return false;
+	}
+	struct Args : advancedfx::ICommandArgs
+	{
+		const char *Action;
+		std::string Name;
+		int ArgC() override { return !std::strcmp(Action, "add") ? 2 : 3; }
+		const char *ArgV(int i) override { return i == 0 ? "mirv_cam" : i == 1 ? Action : Name.c_str(); }
+	} args;
+	args.Action = action;
+	args.Name = g_CameraRigName;
+	const auto before = g_CameraRigs.size();
+	const bool handled = MirvCam_CameraCommand(&args);
+	return !std::strcmp(action, "add") ? g_CameraRigs.size() > before : handled;
+}
 CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 {
+	if (MirvCam_CameraCommand(args)) return;
 	int argc = args->ArgC();
 
 	if (2 <= argc)
@@ -1238,7 +1497,12 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 	}
 
 	Tier0_Msg(
-		"mirv_cam rig [...] - Named fixed/rigid cameras and explicit campath cuts.\n"
+		"mirv_cam add [name] | list | remove <ID/name> | rename <ID/name> <name> - Session cameras.\n"
+		"mirv_cam preview <ID/name>|cameras|keys|off - Preview cameras or keyframes.\n"
+		"mirv_cam edit <ID/name> | capture <ID/name> - Move to a camera for editing, then recapture.\n"
+		"mirv_cam attach camera <ID/name> <entity> [bone] [bone|entity|aligned|world] - Attach a camera.\n"
+		"mirv_cam fixed <ID/name> | pose <ID/name> <x> <y> <z> <pitch> <yaw> <roll> <fov> - Edit a camera.\n"
+		"mirv_cam rig [...] - Compatibility controls and explicit campath cuts.\n"
 		"mirv_cam source [...] - Control camera location.\n"
 		"mirv_cam fov [...] - Control camera fov.\n"
 		"mirv_cam attach [...] - (TF2) Attach the camera to a player or entity (and bone).\n"

@@ -22,6 +22,7 @@ extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 
 #include "AfxStreams.h"
 #include "CameraOverlay.h"
+#include "MirvCam.h"
 #include "CampathDrawer.h"
 #include "Gui.h"
 #include "addresses.h"
@@ -1826,6 +1827,7 @@ static bool CampathPreview_SetCamera()
 
 static bool CampathPreview_Enter()
 {
+	MirvCam_SetRigNavigation(false);
 	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 	if (!g_Hook_VClient_RenderView.IsInstalled() || !CampathPreview_CanShow(path) || !g_Hook_VClient_RenderView.m_MirvInput)
 	{
@@ -1860,7 +1862,7 @@ static void CampathPreview_Exit()
 
 bool MirvCampathPreview_IsActive()
 {
-	return g_CampathPreviewActive;
+	return g_CampathPreviewActive || MirvCam_RigPreviewActive();
 }
 bool MirvCampathPreview_GetCamera(CamPathValue &value)
 {
@@ -1871,6 +1873,8 @@ bool MirvCampathPreview_GetCamera(CamPathValue &value)
 }
 bool MirvCampathPreview_SetActive(bool active)
 {
+	if (active && MirvCam_RigNavigation()) return MirvCam_SetPreviewNavigation(true);
+	if (MirvCam_RigPreviewActive()) MirvCam_EndRigPreview();
 	if (active)
 		return CampathPreview_Enter();
 	CampathPreview_Exit();
@@ -2083,8 +2087,12 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		else if (!g_CampathPreviewToggleHeld && !CampathPreview_IsRepeatKey(lParam))
 		{
 			g_CampathPreviewToggleHeld = true;
-			if (g_CampathPreviewActive)
+			if (MirvCam_RigPreviewActive())
+				MirvCam_EndRigPreview();
+			else if (g_CampathPreviewActive)
 				CampathPreview_Exit();
+			else if (MirvCam_RigNavigation())
+				MirvCam_SetPreviewNavigation(true);
 			else
 				CampathPreview_Enter();
 		}
@@ -2112,6 +2120,8 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 	// Keep repeats owned until key-up, even if Right Ctrl was released first.
 	if (down && key < 256 && g_CampathPreviewEditHeld[key])
 		return true;
+	if (!AfxHookSource::CameraOverlay::IsOpen() && !g_Hook_VClient_RenderView.IsMenuActive() &&
+	    MirvCam_PreviewKey(unsigned(key), down, CampathPreview_IsRepeatKey(lParam))) return true;
 	if (!g_CampathPreviewActive && !AfxHookSource::CameraOverlay::SceneCachePreviewActive())
 		return false;
 	if (rightCtrl)
@@ -2363,6 +2373,11 @@ CON_COMMAND(mirv_campath, "camera paths")
 					  "mute|solo|visible <0|1> - Selected path.\nNames must be "
 					  "nonempty and unique. Quote names containing spaces.\n");
 		return;
+	}
+	if (args->ArgC() >= 3 && !_stricmp(args->ArgV(1), "preview") && !_stricmp(args->ArgV(2), "hud"))
+	{
+		if(args->ArgC()==4) AfxHookSource::CameraOverlay::SetPreviewHud(atoi(args->ArgV(3))!=0);
+		Tier0_Msg("mirv_campath preview hud 0|1 - Current: %i\n", AfxHookSource::CameraOverlay::GetPreviewHud());return;
 	}
 	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "insert"))
 	{

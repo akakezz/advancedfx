@@ -90,3 +90,13 @@ extern CMirvCam g_MirvCam;
 
 bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose);
 bool MirvCam_RigViewActive();
+
+bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args);
+bool MirvCam_RigPreviewActive();
+void MirvCam_EndRigPreview();
+bool MirvCam_PreviewKey(unsigned int key, bool down, bool repeat);
+std::string MirvCam_PreviewLabel();
+bool MirvCam_SetPreviewNavigation(bool cameras);
+bool MirvCam_RigNavigation();
+void MirvCam_SetRigNavigation(bool cameras);
+bool MirvCam_SelectedCameraAction(const char *action);
