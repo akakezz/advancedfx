@@ -2242,3 +2242,33 @@ attachment must still be created in live playback. Existing cameras can be
 recaptured against cached poses without changing the demo or native animation
 state. Stateful follow, collision against cached geometry, sequencer blends and
 camera persistence remain later milestones.
+
+### Next milestone: camera mixing and existing aim integration
+
+Independent cameras must support the existing `mirv_aim` targeting and smoothing
+features. A stationary camera can keep its position while aiming at a moving
+subject; position attachment and aiming remain independent choices. Reuse the
+existing aiming implementation and command conventions rather than introducing
+a competing tracking system.
+
+The current legacy aim override executes before the saved-camera pose override,
+which replaces its angles. Integration therefore needs to evaluate the camera's
+position first, apply its aiming configuration, then pass the completed pose to
+the mixer. Outgoing and incoming cameras both continue evaluating during a blend.
+Their aim configuration and smoothing history must be isolated: evaluating an
+inactive camera must not advance the active camera's global aiming state. The
+existing `Aiming` object owns a reference-counted target and mutable smoothing
+history, so an implicit object copy is not a suitable configuration snapshot.
+
+Cached targeting must resolve the recorded subject at the cache cursor through
+the existing cached target provider. It must not substitute a live target when
+coverage is missing. Stateful aiming needs deterministic reconstruction for
+backward and out-of-order scrubbing before it can be advertised as cache-ready.
+
+Camera guides should also display each camera's name above its icon, using the
+existing world-label renderer in the same way as path names. Names should follow
+the camera's evaluated position, work without Show path, and share the existing
+recording suppression and safe engine-thread drawing snapshots.
+
+These requirements belong to the upcoming sequencer clips/camera mixer work;
+per-camera aiming and camera-name labels are not implemented yet.
