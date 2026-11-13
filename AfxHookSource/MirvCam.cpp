@@ -18,6 +18,7 @@
 #include <string>
 #include <map>
 #include <memory>
+#include <mutex>
 #include "CameraOverlay.h"
 #include <shared/MirvInput.h>
 
@@ -346,6 +347,7 @@ extern bool MirvCampathPreview_SetActive(bool active);
 extern int g_LevelInitCount;
 namespace
 {
+std::recursive_mutex g_CameraMutex;
 struct NamedCameraRig
 {
 	unsigned long long Id = 0;
@@ -356,6 +358,7 @@ struct NamedCameraRig
 	int EntityAddress = -1, TargetLevel = -1;
 	unsigned int TargetHandle = 0xffffffffu;
 	std::uint64_t CacheIdentity = 0;
+	bool Available = true;
 };
 std::map<std::string, NamedCameraRig> g_CameraRigs;
 enum class CameraSource
@@ -456,12 +459,14 @@ bool RigTarget(const NamedCameraRig &rig, advancedfx::CameraPose &pose)
 }
 bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
+	rig.Available = false;
 	advancedfx::CameraPose target;
 	if (rig.Rig.Attached && !RigTarget(rig, target))
 		return false;
 	if (!rig.Rig.Evaluate(rig.Rig.Attached ? &target : nullptr, pose))
 		return false;
 	rig.LastWorld = pose;
+	rig.Available = true;
 	return true;
 }
 void CameraStorageCommand(advancedfx::ICommandArgs *args)
@@ -521,7 +526,8 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 				g_EditingCameraName.clear();
 			if (g_LegacyCameraName == found->first)
 			{
-				if (MirvCam_ReleaseLiveAttachment() && g_CameraSource == CameraSource::Legacy && !MirvCampathPreview_IsActive())
+				if (MirvCam_ReleaseLiveAttachment() && g_CameraSource == CameraSource::Legacy &&
+					!MirvCampathPreview_IsActive())
 				{
 					g_LastRigPose = RigCapture();
 					g_CameraSource = CameraSource::Rig;
@@ -550,7 +556,8 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 			else
 				found->second.Rig.Pose = pose;
 			found->second.LastWorld = pose;
-			if (g_EditingCameraName == found->first) g_EditingCameraName.clear();
+			if (g_EditingCameraName == found->first)
+				g_EditingCameraName.clear();
 			return;
 		}
 	}
@@ -657,7 +664,8 @@ void ClearCameraAttachment(bool liveSource)
 	if (found != g_CameraRigs.end() && found->second.Rig.Attached)
 	{
 		advancedfx::CameraPose pose;
-		const bool live = liveSource && !MirvCampathPreview_IsActive() && g_EditingCameraName.empty() && name == g_LegacyCameraName;
+		const bool live =
+			liveSource && !MirvCampathPreview_IsActive() && g_EditingCameraName.empty() && name == g_LegacyCameraName;
 		if (live)
 			pose = RigCapture();
 		else if (!EvaluateNamedRig(found->second, pose))
@@ -677,6 +685,7 @@ void ClearCameraAttachment(bool liveSource)
 } // namespace
 bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
 {
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
 	if (g_CameraSource == CameraSource::Legacy)
 	{
@@ -689,15 +698,21 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
 	if (valid)
 		g_LastRigPose = evaluated;
 	else if (!g_RigUnavailable)
-		Tier0_Warning("Selected camera source unavailable; holding its last valid pose. Target or cached pose is unavailable.\n");
+		Tier0_Warning(
+			"Selected camera source unavailable; holding its last valid pose. Target or cached pose is unavailable.\n");
 	g_RigUnavailable = !valid;
 	pose = g_LastRigPose;
 	return true;
 }
 
-bool MirvCam_RigPreviewActive() { return g_RigPreview; }
+bool MirvCam_RigPreviewActive()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	return g_RigPreview;
+}
 void MirvCam_EndRigPreview()
 {
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	const bool adopt = g_CameraSource == CameraSource::Rig;
 	auto pose = g_LastRigPose;
 	g_RigPreview = false;
@@ -719,10 +734,19 @@ void MirvCam_EndRigPreview()
 		input->SetCameraControlMode(true);
 	}
 }
-bool MirvCam_RigNavigation() { return g_RigNavigation; }
-void MirvCam_SetRigNavigation(bool cameras) { g_RigNavigation = cameras; }
+bool MirvCam_RigNavigation()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	return g_RigNavigation;
+}
+void MirvCam_SetRigNavigation(bool cameras)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	g_RigNavigation = cameras;
+}
 std::string MirvCam_PreviewLabel()
 {
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	auto found = g_CameraRigs.find(g_CameraRigName);
 	if (found == g_CameraRigs.end())
 		return "Cameras | none";
@@ -733,6 +757,7 @@ std::string MirvCam_PreviewLabel()
 }
 bool MirvCam_PreviewKey(unsigned int key, bool down, bool repeat)
 {
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	if (!g_RigPreview)
 		return false;
 	if (key == 'E' || key == 'Y' || key == VK_DELETE)
@@ -773,6 +798,7 @@ bool MirvCam_PreviewKey(unsigned int key, bool down, bool repeat)
 }
 bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 {
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
 	if (args->ArgC() < 2)
 		return false;
@@ -903,6 +929,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 }
 bool MirvCam_SetPreviewNavigation(bool cameras)
 {
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	struct Args : advancedfx::ICommandArgs
 	{
 		const char *Mode;
@@ -915,6 +942,7 @@ bool MirvCam_SetPreviewNavigation(bool cameras)
 }
 bool MirvCam_TogglePreviewNavigation()
 {
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	const bool cameras = !g_RigNavigation;
 	// Switching to an unavailable destination must leave the current view intact.
 	if (!cameras && g_Hook_VClient_RenderView.m_CamPath.GetSize() == 0)
@@ -931,13 +959,17 @@ bool MirvCam_TogglePreviewNavigation()
 }
 bool MirvCam_SelectedCameraAction(const char *action)
 {
-	if (std::strcmp(action, "add") && std::strcmp(action, "edit") && std::strcmp(action, "capture"))
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (std::strcmp(action, "add") && std::strcmp(action, "edit") && std::strcmp(action, "capture") &&
+		std::strcmp(action, "preview") && std::strcmp(action, "remove"))
 		return false;
 	if (std::strcmp(action, "add") && g_CameraRigs.find(g_CameraRigName) == g_CameraRigs.end())
 	{
 		Tier0_Warning("Select a camera first.\n");
 		return false;
 	}
+	if (std::strcmp(action, "add"))
+		return MirvCam_CameraAction(action, g_CameraRigs.at(g_CameraRigName).Id);
 	struct Args : advancedfx::ICommandArgs
 	{
 		const char *Action;
@@ -951,8 +983,118 @@ bool MirvCam_SelectedCameraAction(const char *action)
 	const bool handled = MirvCam_CameraCommand(&args);
 	return !std::strcmp(action, "add") ? g_CameraRigs.size() > before : handled;
 }
+bool MirvCam_CameraAction(const char *action, std::uint64_t id)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (!action || (std::strcmp(action, "preview") && std::strcmp(action, "edit") && std::strcmp(action, "capture") &&
+					std::strcmp(action, "remove")))
+		return false;
+	auto found = FindRig(std::to_string(id));
+	if (found == g_CameraRigs.end())
+		return false;
+	if (!std::strcmp(action, "capture"))
+	{
+		advancedfx::CameraPose target;
+		if (!RigCapture().Valid() || (found->second.Rig.Attached && !RigTarget(found->second, target)))
+			return false;
+	}
+	struct Args : advancedfx::ICommandArgs
+	{
+		const char *Action;
+		std::string Id;
+		int ArgC() override { return 3; }
+		const char *ArgV(int i) override { return i == 0 ? "mirv_cam" : i == 1 ? Action : Id.c_str(); }
+	} args;
+	args.Action = action;
+	args.Id = std::to_string(id);
+	MirvCam_CameraCommand(&args);
+	return std::strcmp(action, "remove") || FindRig(args.Id) == g_CameraRigs.end();
+}
+std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	SyncRigLevel();
+	std::vector<advancedfx::CameraInfo> cameras;
+	cameras.reserve(g_CameraRigs.size());
+	for (auto &entry : g_CameraRigs)
+	{
+		auto &rig = entry.second;
+		advancedfx::CameraPose pose;
+		if (evaluate && !(g_RigPreview && entry.first == g_CameraRigName))
+			EvaluateNamedRig(rig, pose);
+		advancedfx::CameraInfo info;
+		info.Id = rig.Id;
+		info.Name = entry.first;
+		info.Pose = rig.LastWorld;
+		info.Attached = rig.Rig.Attached;
+		info.Available = rig.Available;
+		info.Selected = entry.first == g_CameraRigName;
+		info.Viewed = info.Selected && g_RigPreview;
+		info.EntityAddress = rig.EntityAddress;
+		info.AttachMode = rig.AttachMode;
+		cameras.push_back(std::move(info));
+	}
+	std::sort(cameras.begin(), cameras.end(), [](const auto &a, const auto &b) { return a.Id < b.Id; });
+	return cameras;
+}
+size_t MirvCam_CameraCount()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	return g_CameraRigs.size();
+}
+bool MirvCam_SelectCamera(std::uint64_t id)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	auto found = FindRig(std::to_string(id));
+	if (found == g_CameraRigs.end())
+		return false;
+	if (g_RigPreview)
+	{
+		struct Args : advancedfx::ICommandArgs
+		{
+			std::string Id;
+			int ArgC() override { return 3; }
+			const char *ArgV(int i) override { return i == 0 ? "mirv_cam" : i == 1 ? "preview" : Id.c_str(); }
+		} args;
+		args.Id = std::to_string(id);
+		return MirvCam_CameraCommand(&args);
+	}
+	g_CameraRigName = found->first;
+	g_EditingCameraName.clear();
+	return true;
+}
+bool MirvCam_RenameCamera(std::uint64_t id, const char *name)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	auto found = FindRig(std::to_string(id));
+	if (found == g_CameraRigs.end() || !name)
+		return false;
+	if (found->first == name)
+		return true;
+	struct Args : advancedfx::ICommandArgs
+	{
+		std::string Id, Name;
+		int ArgC() override { return 4; }
+		const char *ArgV(int i) override
+		{
+			return i == 0 ? "mirv_cam" : i == 1 ? "rename" : i == 2 ? Id.c_str() : Name.c_str();
+		}
+	} args;
+	args.Id = std::to_string(id);
+	args.Name = name;
+	MirvCam_CameraCommand(&args);
+	found = FindRig(std::to_string(id));
+	return found != g_CameraRigs.end() && found->first == name;
+}
+bool MirvCam_RenameSelectedCamera(const char *name)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	auto found = g_CameraRigs.find(g_CameraRigName);
+	return found != g_CameraRigs.end() && MirvCam_RenameCamera(found->second.Id, name);
+}
 CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 {
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	if (MirvCam_CameraCommand(args)) return;
 	int argc = args->ArgC();
 
@@ -1599,4 +1741,4 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 	);
 }
 
-bool MirvCam_RigViewActive() { SyncRigLevel(); return g_CameraSource != CameraSource::Legacy; }
+bool MirvCam_RigViewActive() { std::lock_guard<std::recursive_mutex> lock(g_CameraMutex); SyncRigLevel(); return g_CameraSource != CameraSource::Legacy; }

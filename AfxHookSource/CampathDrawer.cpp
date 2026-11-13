@@ -3,6 +3,7 @@
 #include <tuple>
 
 #include "CampathDrawer.h"
+#include "MirvCam.h"
 
 #include "SourceInterfaces.h"
 #include "RenderView.h"
@@ -401,6 +402,19 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 		m_PlaneUp.Normalize();		
 	}
 
+	// Capture plain geometry once on the engine thread, independent of Show path.
+	if (path == &g_Hook_VClient_RenderView.m_CamPath && AfxHookSource::CameraOverlay::CameraGuidesEnabled() &&
+		!AfxHookSource::CameraOverlay::Recording::IsActive())
+	{
+		const double aspect=m_ScreenHeight>0?double(m_ScreenWidth)/m_ScreenHeight:4.0/3.0;
+		for(const auto &camera:MirvCam_Cameras(true))
+		{
+			if(camera.Viewed)continue;
+			const auto color=!camera.Available?D3DCOLOR_RGBA(150,155,165,140):camera.Selected?D3DCOLOR_RGBA(255,210,70,255):D3DCOLOR_RGBA(210,120,255,230);
+			for(const auto &line:advancedfx::CameraGuideLines(camera.Pose,aspect,AfxHookSource::CameraOverlay::CameraFrustumsEnabled()))
+				CameraLines.push_back({Vector3(line.A[0],line.A[1],line.A[2]),Vector3(line.B[0],line.B[1],line.B[2]),color});
+		}
+	}
 	if (sceneOnly)
 	{
 		m_InCampath = false;
@@ -584,12 +598,13 @@ void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
 
 	const auto scene = AfxHookSource::CameraOverlay::SceneCacheLines();
 	const bool sceneDrawing = scene && !scene->empty();
-	if (!m_Draw && !sceneDrawing)
+	const bool cameraDrawing=AfxHookSource::CameraOverlay::CameraGuidesEnabled() && !AfxHookSource::CameraOverlay::Recording::IsActive() && MirvCam_CameraCount()>0;
+	if (!m_Draw && !sceneDrawing && !cameraDrawing)
 		return;
 
 	g_WorldLabelCells.clear();
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
-	if (sceneDrawing && (!m_Draw || !paths.IsVisible(paths.GetActive())))
+	if ((sceneDrawing || cameraDrawing) && (!m_Draw || !paths.IsVisible(paths.GetActive())))
 	{
 		if (!m_SceneProperties)
 		{
@@ -951,6 +966,13 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 
 		m_Device->SetFVF(CCampathDrawer_VertexFVF);
 
+		if (!dynamicPorperties->CameraLines.empty() && !AfxHookSource::CameraOverlay::Recording::IsActive())
+		{
+			newCScreenInfo[2]=2;
+			m_Device->SetVertexShaderConstantF(48,newCScreenInfo,1);
+			for(const auto &line:dynamicPorperties->CameraLines)AutoSingleLine(line.A,line.Color,line.B,line.Color);
+			AutoSingleLineFlush();
+		}
 		if (dynamicPorperties->SceneLines)
 		{
 			newCScreenInfo[2] = 2;

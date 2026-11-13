@@ -2129,6 +2129,28 @@ provide the same workflow as the console: edit moves the free camera to the
 selected camera, and capture saves the adjusted view. Attached cameras retain
 their target when recaptured. These controls do not yet provide a rig gizmo.
 
+The **Cameras** tab lists cameras by stable ID, with Preview, Edit, Recapture,
+Rename and Remove controls. **Manage cameras** in the Campath tab opens it.
+Selecting a row leaves the current view alone unless camera preview is already
+active; in that case it switches the viewed camera. Removal asks for confirmation
+and remains pinned to the chosen ID even if selection changes. Camera edits are
+not yet part of campath undo history, so campath Undo/Redo and keyframe editing
+shortcuts are disabled while managing cameras.
+
+**Show camera guides** optionally draws small camera icons independently of
+Show path and Scene Cache drawing. **Camera frustums** adds a short viewing-angle
+guide using the camera FOV and current viewport aspect ratio. The selected camera
+is gold, other cameras are purple, and an unavailable attachment uses its last
+observed pose in gray. The camera being viewed is omitted from its own image.
+Guides evaluate live or cached subjects through the same target provider as
+camera preview, and are hidden automatically during HLAE recording. Guide
+visibility and frustum preferences persist in the overlay INI; camera definitions
+remain session-only.
+
+Drawing uses immutable engine-thread pose/line snapshots and the existing line
+renderer. It does not add D3D resources or evaluate entity targets on the drawing
+thread. Guides default to off, and disabling frustums leaves the smaller icons.
+
 A compact, noninteractive indicator at the bottom left shows preview mode and
 the selected camera or keyframe (including the interval when between keys).
 It remains visible with the main overlay closed and is hidden during HLAE

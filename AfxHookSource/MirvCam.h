@@ -101,3 +101,11 @@ bool MirvCam_TogglePreviewNavigation();
 bool MirvCam_RigNavigation();
 void MirvCam_SetRigNavigation(bool cameras);
 bool MirvCam_SelectedCameraAction(const char *action);
+
+// Camera management uses value snapshots; selection only changes the view while previewing cameras.
+std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate = false);
+size_t MirvCam_CameraCount();
+bool MirvCam_SelectCamera(std::uint64_t id);
+bool MirvCam_RenameSelectedCamera(const char *name);
+bool MirvCam_CameraAction(const char *action, std::uint64_t id);
+bool MirvCam_RenameCamera(std::uint64_t id, const char *name);

@@ -95,6 +95,8 @@ private:
 		CDynamicProperties(CCampathDrawer *drawer, CamPath *path, const std::string &name,
 		                   bool sceneOnly = false);
 		std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneLines;
+		struct CameraLine { Vector3 A,B; DWORD Color; };
+		std::vector<CameraLine> CameraLines;
 		bool SceneOnly = false;
 		struct Text
 		{

@@ -426,13 +426,14 @@ proxy_fixture=r'''
 #include <cassert>
 #include <string>
 #include <iostream>
+bool guideDrawing=false,recording=false;size_t cameraCount=1;size_t MirvCam_CameraCount(){return cameraCount;}
 struct CamPath {};
 struct Paths {
  struct Entry{unsigned long long Id;std::shared_ptr<const int>Data;};struct State{std::vector<Entry>Paths;};
  CamPath Path[2];bool Visible[2]{true,false};size_t GetActive(){return 0;}size_t GetCount(){return 2;}bool IsVisible(size_t i){return Visible[i];}CamPath*GetPath(size_t i){return &Path[i];}std::string GetName(size_t){return "path";}State CaptureState(){return {{{1,{}},{2,{}}}};}
 };
 struct View {CamPath m_CamPath;Paths m_CamPaths;}g_Hook_VClient_RenderView;
-namespace AfxHookSource{namespace CameraOverlay{std::shared_ptr<const advancedfx::SceneCache::Frame>view;bool bounds=false;std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> overrideLines;auto SceneCacheLines(){if(overrideLines)return overrideLines;if(!view||!bounds)return std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>>{};static advancedfx::SceneCache cache;advancedfx::SceneCache::DrawingOptions options;options.Bounds=bounds;options.Meshes=false;return std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(cache.Drawing(*view,options));}}}
+namespace AfxHookSource{namespace CameraOverlay{bool CameraGuidesEnabled(){return guideDrawing;}namespace Recording{bool IsActive(){return recording;}}std::shared_ptr<const advancedfx::SceneCache::Frame>view;bool bounds=false;std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> overrideLines;auto SceneCacheLines(){if(overrideLines)return overrideLines;if(!view||!bounds)return std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>>{};static advancedfx::SceneCache cache;advancedfx::SceneCache::DrawingOptions options;options.Bounds=bounds;options.Meshes=false;return std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(cache.Drawing(*view,options));}}}
 std::vector<int>g_WorldLabelCells;
 struct CCampathDrawer{
  struct CLessDynamicProperties{int Refs=0;CLessDynamicProperties(CCampathDrawer*,CamPath*,CLessDynamicProperties* = nullptr){}void AddRef(){++Refs;}void Release(){if(!--Refs)delete this;}};
@@ -453,6 +454,7 @@ int main(){
  drawer.m_Draw=true;g_Hook_VClient_RenderView.m_CamPaths.Visible[1]=true;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==2&&queued[0]->SceneOnly&&!queued[1]->SceneOnly);queued.clear();
  g_Hook_VClient_RenderView.m_CamPaths.Visible[0]=true;g_Hook_VClient_RenderView.m_CamPaths.Visible[1]=false;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&!queued[0]->SceneOnly);queued.clear();
  drawer.m_Draw=false;bounds=false;auto meshes=std::make_shared<Cache::Frame>(*snapshot);meshes->Entities[0].ModelPose=std::make_shared<Cache::Pose>();view=meshes;drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());view.reset();drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());auto lines=std::make_shared<std::vector<Cache::Line>>();lines->push_back({{0,0,0},{1,1,1},8});overrideLines=lines;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&queued[0]->SceneOnly);queued.clear();
+ overrideLines.reset();guideDrawing=true;drawer.OnPostRenderAllTools_EngineThread();assert(queued.size()==1&&queued[0]->SceneOnly);queued.clear();recording=true;drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());recording=false;cameraCount=0;drawer.OnPostRenderAllTools_EngineThread();assert(queued.empty());
  std::cout<<"Scene proxy dispatch checks passed\n";
 }
 '''
@@ -595,10 +597,11 @@ if args.windows_abi_compiler:
 
 # Exercise the actual rig registry, console operations and controller selection.
 rig_source=(root/'AfxHookSource/MirvCam.cpp').read_text()
-rig_adapter=rig_source[rig_source.index('namespace\n{\nstruct NamedCameraRig'):rig_source.index('CON_COMMAND(mirv_cam,')]
+rig_adapter=rig_source[rig_source.rfind('namespace\n{',0,rig_source.index('struct NamedCameraRig')):rig_source.index('CON_COMMAND(mirv_cam,')]
 rig_preamble=r'''
 #include "shared/CameraRig.h"
 #include "shared/SceneCache.h"
+#include <mutex>
 #include <cassert>
 #include <climits>
 #include <map>
@@ -632,6 +635,7 @@ std::shared_ptr<const advancedfx::SceneCache::Frame>cachedFrame;
 bool cached=false;namespace AfxHookSource{namespace CameraOverlay{bool SceneCachePreviewActive(){return cached;}std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView(){return cachedFrame;}}}
 bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc*c,const advancedfx::SceneCache::Entity&e,const advancedfx::SceneCache::Entity*,SOURCESDK::Vector&o,SOURCESDK::QAngle&a){++cachedTargetReads;o.x=e.Origin[0]+c->Shift[0];o.y=e.Origin[1]+c->Shift[1];o.z=e.Origin[2]+c->Shift[2];a.x=e.Angles[0];a.y=e.Angles[1];a.z=e.Angles[2];return true;}
 bool MirvCam_SelectedCameraAction(const char*);
+bool MirvCam_CameraAction(const char*,std::uint64_t);
 
 struct PathKeys{size_t Count=2;size_t GetSize(){return Count;}};
 struct View{PathKeys m_CamPath;double LastCameraOrigin[3]{1,2,3},LastCameraAngles[3]{},LastCameraFov=65;Input*m_MirvInput=&rigInput;}g_Hook_VClient_RenderView;
@@ -666,8 +670,11 @@ bool command(std::initializer_list<const char*>words){Args a;a.v=words;if(words.
 int main(){advancedfx::CameraPose pose;
 command({"mirv_cam","add"});assert(FindRig("0")!=g_CameraRigs.end()&&g_CameraSource==CameraSource::Legacy&&rigInput.Enabled);
 command({"mirv_cam","add","Wide"});assert(FindRig("1")!=g_CameraRigs.end()&&g_CameraSource==CameraSource::Legacy);
+
+const auto metadataReads=liveTargetReads;auto infos=MirvCam_Cameras(false);assert(infos.size()==2&&infos[0].Id==0&&infos[1].Id==1&&MirvCam_CameraCount()==2&&liveTargetReads==metadataReads);
+assert(MirvCam_SelectCamera(0)&&!g_RigPreview&&MirvCam_Cameras(false)[0].Selected);assert(!MirvCam_SelectCamera(999)&&!MirvCam_CameraAction("remove",999));
 command({"mirv_cam","preview","0"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==1);
-MirvCam_PreviewKey(VK_UP,true,false);assert(g_CameraRigName=="Wide");MirvCam_PreviewKey(VK_DOWN,true,false);assert(FindRig(g_CameraRigName)->second.Id==0);
+assert(MirvCam_SelectCamera(1)&&g_RigPreview&&MirvCam_Cameras(false)[1].Viewed);assert(MirvCam_SelectCamera(0));MirvCam_PreviewKey(VK_UP,true,false);assert(g_CameraRigName=="Wide");MirvCam_PreviewKey(VK_DOWN,true,false);assert(FindRig(g_CameraRigName)->second.Id==0);
 MirvCam_PreviewKey(VK_UP,true,true);assert(FindRig(g_CameraRigName)->second.Id==0);
 command({"mirv_cam","preview","toggle"});assert(!g_RigNavigation&&nativePreview);
 command({"mirv_cam","preview","toggle"});assert(g_RigPreview&&g_RigNavigation);
@@ -683,7 +690,7 @@ advancedfx::CameraPose target;target.Position[0]=100;targets[5]=target;
 command({"mirv_cam","attach","5","1","-20","4","3"});assert(g_CameraRigs.size()==3&&FindRig("2")->second.Rig.Attached&&FindRig("2")->second.AttachMode==2&&!rigInput.Enabled&&g_MirvVecAngCalcs.Bone==1&&g_MirvVecAngCalcs.Entity==5);
 command({"mirv_cam","preview","2"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==80&&std::abs(pose.Position[1]-4)<1e-5&&pose.Position[2]==3);
 targets[5].Position[0]=200;assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==180);
-++generations[5];assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==180&&g_RigUnavailable);
+++generations[5];assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==180&&g_RigUnavailable);assert(!MirvCam_CameraAction("capture",2));
 command({"mirv_cam","edit","2"});command({"mirv_cam","attach","Subject","1","-10","0","0"});assert(g_CameraRigs.size()==3&&FindRig("2")->second.Rig.Attached);
 command({"mirv_cam","preview","2"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==190&&!g_RigUnavailable);
 cached=true;targets[5].Position[0]=300;assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==190&&g_RigUnavailable);
@@ -707,11 +714,14 @@ for(int mode=0;mode<4;++mode){g_MirvCamAttachMode=mode;command({"mirv_cam","edit
 auto current=g_MirvCam.Source_get();const auto count=g_CameraRigs.size();command({"mirv_cam","attach","999","-1","10","20","30"});assert(g_MirvCam.Source_get()==current&&g_CameraRigs.size()==count&&g_MirvCam.m_OffsetForwad==0&&g_MirvCam.m_OffsetLeft==0&&g_MirvCam.m_OffsetUp==0);
 command({"mirv_cam","preview","0"});command({"mirv_cam","attach","capture"});assert(!FindRig("0")->second.Rig.Attached&&g_MirvCam.Source_get()==current);command({"mirv_cam","edit","2"});command({"mirv_cam","attach","capture"});command({"mirv_cam","preview","2"});assert(MirvCam_EvaluateRig(0,pose)&&std::abs(pose.Position[0]-75)<1e-5);
 command({"mirv_cam","rename","2","123"});assert(FindRig("2")->first=="Camera 2");
-command({"mirv_cam","remove","1"});assert(FindRig("1")==g_CameraRigs.end()&&FindRig("2")->second.Id==2);
+auto retainedInfo=MirvCam_Cameras(false);command({"mirv_cam","remove","1"});assert(retainedInfo.size()==3&&retainedInfo[1].Id==1&&retainedInfo[1].Name=="Wide");assert(FindRig("1")==g_CameraRigs.end()&&FindRig("2")->second.Id==2);
 command({"mirv_cam","preview","off"});assert(!MirvCam_RigPreviewActive()&&g_RigNavigation);
 command({"mirv_cam","remove","2"});assert(!g_MirvCam.Source_get()&&!g_MirvCamAttachCalc);command({"mirv_cam","attach","5"});assert(FindRig("3")!=g_CameraRigs.end());auto custom=new IMirvVecAngCalc(5);g_MirvCam.Source_set(custom);command({"mirv_cam","remove","3"});assert(g_MirvCam.Source_get()==custom&&!g_MirvCamAttachCalc);
 command({"mirv_cam","preview","0"});++g_LevelInitCount;assert(!MirvCam_EvaluateRig(0,pose));
 
+// Management actions share the console path and preserve stable IDs.
+command({"mirv_cam","preview","off"});assert(MirvCam_SelectCamera(0)&&MirvCam_RenameSelectedCamera("Selected name"));assert(FindRig("0")->first=="Selected name");assert(!MirvCam_RenameSelectedCamera("123"));
+assert(MirvCam_CameraAction("edit",0)&&g_EditingCameraName=="Selected name");assert(MirvCam_CameraAction("capture",0)&&g_EditingCameraName.empty());
 // Adding/recapturing does not silently arm an old camera for the next attachment.
 command({"mirv_cam","add","Independent"});const auto existingCount=g_CameraRigs.size();assert(g_EditingCameraName.empty());command({"mirv_cam","attach","5"});assert(g_CameraRigs.size()==existingCount+1&&!g_CameraRigs.at("Independent").Rig.Attached);
 command({"mirv_cam","edit","Independent"});command({"mirv_cam","attach","5"});assert(g_CameraRigs.size()==existingCount+1&&g_CameraRigs.at("Independent").Rig.Attached);

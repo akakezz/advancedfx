@@ -981,6 +981,8 @@ static bool g_ShowSequencer = false;
 static bool g_ShowCameraControl = false;
 static bool g_ShowGizmo = false;
 static bool g_PreviewHudEnabled = true;
+static bool g_ShowCameraGuides=false,g_CameraFrustums=true,g_FocusCameras=false,g_CamerasTabActive=false;
+static std::atomic<bool> g_CameraGuidesPublished{false},g_CameraFrustumsPublished{true};
 static ImGuizmo::OPERATION g_GizmoOp = ImGuizmo::TRANSLATE;
 static ImGuizmo::MODE g_GizmoMode = ImGuizmo::LOCAL;
 
@@ -1527,7 +1529,7 @@ static std::pair<std::uint64_t, size_t> OverlayPreferenceStamp()
 	for (bool value : {g_ScenePlayerModels, g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics,
 	                   g_SceneRagdolls, g_SceneGibs, g_SceneBuildings, g_SceneProps, g_SceneSmoothAnimation,
 	                   g_SceneDrawModels.load(), g_ShowSequencer, g_ShowCameraControl, g_ShowCurveEditor,
-	                   g_ShowGizmo, g_PreviewHudEnabled, g_DemoMute, g_DemoDeathcam, g_DemoSmooth})
+	                   g_ShowGizmo, g_PreviewHudEnabled, g_ShowCameraGuides, g_CameraFrustums, g_DemoMute, g_DemoDeathcam, g_DemoSmooth})
 	{
 		if (value)
 			bits |= 1ull << bit;
@@ -1677,6 +1679,8 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		option = &g_ShowCurveEditor;
 	if (key == "ShowGizmo")
 		option = &g_ShowGizmo;
+	if (key == "CameraGuides") option=&g_ShowCameraGuides;
+	if (key == "CameraFrustums") option=&g_CameraFrustums;
 	if (key == "PreviewHud")
 		option = &g_PreviewHudEnabled;
 	if (key == "FixRecorderMute")
@@ -1795,6 +1799,7 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("ShowCurveEditor=%d\n", int(g_ShowCurveEditor));
 	out_buf->appendf("ShowGizmo=%d\n", int(g_ShowGizmo));
 	out_buf->appendf("PreviewHud=%d\n", int(g_PreviewHudEnabled));
+	out_buf->appendf("CameraGuides=%d\nCameraFrustums=%d\n",int(g_ShowCameraGuides),int(g_CameraFrustums));
 	out_buf->appendf("FixRecorderMute=%d\n", int(g_DemoMute));
 	out_buf->appendf("FixDeathcam=%d\n", int(g_DemoDeathcam));
 	out_buf->appendf("FixSmoothMovement=%d\n", int(g_DemoSmooth));
@@ -6000,9 +6005,136 @@ static void DrawPreviewHud()
 	ImGui::End();
 	g_PreviewHudDrawn = true;
 }
+bool CameraGuidesEnabled() { return g_CameraGuidesPublished.load(); }
+bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
+static void DrawCamerasTab()
+{
+	g_CamerasTabActive = ImGui::BeginTabItem("Cameras", nullptr, g_FocusCameras ? ImGuiTabItemFlags_SetSelected : 0);
+	if (!g_CamerasTabActive)
+		return;
+	g_FocusCameras = false;
+	static std::uint64_t removeId = 0;
+	static std::string removeName;
+	if (ImGui::Button("Add camera") && MirvCam_SelectedCameraAction("add"))
+	{
+		MirvCam_SetRigNavigation(true);
+		g_DocumentStatus = "Camera added. The free camera is ready.";
+	}
+	ImGui::SameLine();
+	ImGui::Checkbox("Show camera guides", &g_ShowCameraGuides);
+	ImGui::SameLine();
+	ImGui::Checkbox("Camera frustums", &g_CameraFrustums);
+	g_CameraGuidesPublished.store(g_ShowCameraGuides);
+	g_CameraFrustumsPublished.store(g_CameraFrustums);
+	ImGui::TextDisabled("Selected: gold. Other cameras: purple. Unavailable: gray. Hidden during HLAE recording.");
+	auto cameras = MirvCam_Cameras();
+	std::uint64_t selected = ~std::uint64_t(0);
+	for (const auto &camera : cameras)
+		if (camera.Selected)
+			selected = camera.Id;
+	if (cameras.empty())
+		ImGui::TextDisabled("No cameras yet. Add one here, or use mirv_cam attach in live playback.");
+	if (ImGui::BeginChild("##camera_list", ImVec2(0, 120), true))
+	{
+		for (const auto &camera : cameras)
+		{
+			const auto id = std::to_string(camera.Id);
+			ImGui::PushID(id.c_str());
+			std::string label = id + ": " + camera.Name + (camera.Attached ? " [attached]" : " [stationary]");
+			if (camera.Viewed)
+				label += " [viewing]";
+			if (!camera.Available)
+				label += " [unavailable]";
+			if (ImGui::Selectable(label.c_str(), camera.Id == selected))
+			{
+				if (MirvCam_SelectCamera(camera.Id))
+					selected = camera.Id;
+			}
+			ImGui::PopID();
+		}
+	}
+	ImGui::EndChild();
+	auto found =
+		std::find_if(cameras.begin(), cameras.end(), [&](const auto &camera) { return camera.Id == selected; });
+	if (found != cameras.end())
+	{
+		if (ImGui::Button("Preview camera"))
+			MirvCam_CameraAction("preview", selected);
+		ImGui::SameLine();
+		if (ImGui::Button("Edit camera"))
+		{
+			if (MirvCam_CameraAction("edit", selected))
+			{
+				MirvCam_SetRigNavigation(true);
+				g_DocumentStatus = "Reframe with the free camera, then Recapture camera.";
+			}
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Recapture camera"))
+			g_DocumentStatus = MirvCam_CameraAction("capture", selected)
+								   ? "Camera recaptured."
+								   : "Camera could not be recaptured; its target is unavailable.";
+		if (MirvCam_RigPreviewActive())
+		{
+			ImGui::SameLine();
+			if (ImGui::Button("Stop camera preview"))
+				MirvCam_EndRigPreview();
+		}
+		static std::uint64_t nameId = ~std::uint64_t(0);
+		static std::string previousName;
+		static char name[129]{};
+		if (nameId != selected || previousName != found->Name)
+		{
+			nameId = selected;
+			previousName = found->Name;
+			snprintf(name, sizeof(name), "%s", found->Name.c_str());
+		}
+		bool rename = ImGui::InputText("Camera name", name, sizeof(name), ImGuiInputTextFlags_EnterReturnsTrue);
+		ImGui::SameLine();
+		rename = ImGui::Button("Rename camera") || rename;
+		if (rename)
+			g_DocumentStatus = MirvCam_RenameCamera(selected, name)
+								   ? "Camera renamed."
+								   : "Use a unique, nonnumeric camera name (1..128 bytes).";
+		if (found->Attached)
+			ImGui::Text("Attached to entity %d (%s).", found->EntityAddress,
+						found->AttachMode == 3	 ? "world"
+						: found->AttachMode == 2 ? "aligned"
+						: found->AttachMode == 1 ? "entity"
+												 : "bone");
+		ImGui::TextDisabled("Edit moves the free camera to the saved pose. Recapture saves your framing.");
+		if (ImGui::Button("Remove camera"))
+		{
+			removeId = selected;
+			removeName = found->Name;
+			ImGui::OpenPopup("Remove saved camera?");
+		}
+	}
+	if (ImGui::BeginPopupModal("Remove saved camera?", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+	{
+		ImGui::Text("Remove camera %llu: %s?", static_cast<unsigned long long>(removeId), removeName.c_str());
+		ImGui::TextDisabled("Camera definitions are session-only; this action cannot be undone.");
+		if (ImGui::Button("Confirm removal"))
+		{
+			g_DocumentStatus =
+				MirvCam_CameraAction("remove", removeId) ? "Camera removed." : "That camera no longer exists.";
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel removal"))
+			ImGui::CloseCurrentPopup();
+		ImGui::EndPopup();
+	}
+	ImGui::TextDisabled(
+		"Click selects a camera; while camera preview is on, it also switches the view. Tab switches Cameras/Keys.");
+	ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
+	ImGui::EndTabItem();
+}
 void Draw()
 {
 	CheckOverlayPreferences();
+	g_CameraGuidesPublished.store(g_ShowCameraGuides);
+	g_CameraFrustumsPublished.store(g_CameraFrustums);
 	DrawPreviewHud();
 	PollTimelineIndex();
 	AutoIndexRequestedDemo();
@@ -6052,7 +6184,7 @@ void Draw()
 	if (g_GraphRightCtrlHeld && ImGui::IsKeyReleased(ImGuiKey_RightCtrl))
 	{
 		g_GraphRightCtrlHeld = false;
-		if (!g_GraphRightCtrlChord && !ImGui::GetIO().WantTextInput)
+		if (!g_GraphRightCtrlChord && !ImGui::GetIO().WantTextInput && !MirvCam_RigNavigation() && !g_CamerasTabActive)
 			MirvCampathPreview_Seek();
 	}
 	if (!ImGui::GetIO().WantTextInput && !g_CancelGesture &&
@@ -6084,7 +6216,7 @@ void Draw()
 				}
 			}
 		}
-		if (!MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_E, false))
+		if (!g_CamerasTabActive && !MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_E, false))
 		{
 			if (ImGui::GetIO().KeyCtrl)
 			{
@@ -6094,15 +6226,15 @@ void Draw()
 			else
 				PreviewCapture(ImGui::GetIO().KeyShift);
 		}
-		if (!MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+		if (!g_CamerasTabActive && !MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
 		{
 			CancelEditGesture();
 			g_Hook_VClient_RenderView.m_CamPath.DeleteSelected();
 		}
-		if (!MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_Y, false))
+		if (!g_CamerasTabActive && !MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_Y, false))
 			PreviewHold(ImGui::GetIO().KeyShift);
 
-		if (!MirvCam_RigNavigation() && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false))
+		if (!g_CamerasTabActive && !MirvCam_RigNavigation() && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false))
 		{
 			if (ImGui::GetIO().KeyShift)
 				PreviewAnchor();
@@ -6110,7 +6242,7 @@ void Draw()
 				PreviewSelectAll();
 		}
 	}
-	if (!MirvCam_RigNavigation() && ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z, false))
+	if (!g_CamerasTabActive && !MirvCam_RigNavigation() && ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z, false))
 		HistoryUndo(ImGui::GetIO().KeyShift);
 
 	if (g_Docking)
@@ -6133,11 +6265,13 @@ void Draw()
 	ImGui::SetNextWindowPos(ImVec2(20, 30), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSizeConstraints(ImVec2(540, 200), ImVec2(900, ImGui::GetIO().DisplaySize.y - 50));
 	ImGui::Begin("TF2 Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::BeginDisabled(g_CamerasTabActive);
 	if (ImGui::Button("Undo"))
 		HistoryUndo(false);
 	ImGui::SameLine();
 	if (ImGui::Button("Redo"))
 		HistoryUndo(true);
+	ImGui::EndDisabled();
 	if (ImGui::BeginTabBar("##hlae_tabs"))
 	{
 		// Campath tab
@@ -6161,12 +6295,7 @@ void Draw()
 				else
 					MirvCam_SetRigNavigation(navigation == 1);
 			}
-			if(ImGui::Button("Add camera") && MirvCam_SelectedCameraAction("add")) g_DocumentStatus=MirvCam_PreviewLabel()+" added.";
-			if(MirvCam_RigNavigation())
-			{
-				ImGui::SameLine();if(ImGui::Button("Edit camera")) MirvCam_SelectedCameraAction("edit");
-				ImGui::SameLine();if(ImGui::Button("Recapture camera")) MirvCam_SelectedCameraAction("capture");
-			}
+			if(ImGui::Button("Manage cameras"))g_FocusCameras=true;
 
 			float labelHeight = g_CampathDrawer.GetDrawKeyframeIndex();
 			if (ImGui::SliderFloat("Key label size", &labelHeight, 0, 100, "%.0f",
@@ -6533,6 +6662,8 @@ void Draw()
 
 			ImGui::EndTabItem();
 		}
+
+		DrawCamerasTab();
 
 		// Recording tab (Source 1 specific)
 		if (ImGui::BeginTabItem("Recording"))

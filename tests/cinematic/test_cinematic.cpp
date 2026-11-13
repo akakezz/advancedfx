@@ -2102,6 +2102,17 @@ void proceduralRigPoses()
 	check(!a.Attach(world, invalid, true), "Invalid target capture is rejected atomically");
 	check(a.Evaluate(&target, output), "Failed capture retains the rig");
 	near(output.Position[0], 15);
+	CameraPose guide;guide.Fov=90;
+	auto icon=CameraGuideLines(guide,16.0/9.0,false),frustum=CameraGuideLines(guide,16.0/9.0,true);
+	check(icon.size()==18&&frustum.size()==26,"Camera guides have bounded, independent icon and frustum segments");
+	near(frustum[18].A[0],0);near(frustum[18].B[0],48);near(frustum[18].B[1],-48);near(frustum[18].B[2],-27);
+	guide.Position[0]=10;guide.Position[1]=20;guide.Position[2]=30;
+	guide.Rotation=Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({0,90,0}));
+	auto rotated=CameraGuideLines(guide,16.0/9.0,true);
+	near(rotated[18].A[0],10);near(rotated[18].A[1],20);near(rotated[18].B[0],58);near(rotated[18].B[1],68);near(rotated[18].B[2],3);
+	guide.Fov=179;auto wide=CameraGuideLines(guide,1,true);for(const auto &line:wide)for(double value:{line.A[0],line.A[1],line.A[2],line.B[0],line.B[1],line.B[2]})check(std::isfinite(value),"Wide-angle guides remain finite");
+	check(CameraGuideLines(guide,0,true).empty()&&CameraGuideLines(guide,std::numeric_limits<double>::quiet_NaN(),true).empty(),"Invalid viewports reject guide geometry");
+	guide.Fov=std::numeric_limits<double>::quiet_NaN();check(CameraGuideLines(guide,1,true).empty(),"Invalid camera poses produce no guides");
 }
 void recapturedEulerTangentsAndHistory()
 {
