@@ -88,7 +88,7 @@ int MirvCam_GetAttachMode();
 bool MirvCam_GetAttachAnchor(double origin[3], void *&entity, const void *&identity, double entityOrigin[3], int *mode = nullptr);
 extern CMirvCam g_MirvCam;
 
-bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose);
+bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int frame = -1, double frameStep = 0);
 bool MirvCam_RigViewActive();
 
 bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args);
@@ -112,3 +112,6 @@ bool MirvCam_RenameCamera(std::uint64_t id, const char *name);
 void MirvCam_NotifyDemoFile(const char *file, const char *gameDirectory);
 bool MirvCam_EditCamera(std::uint64_t id, const advancedfx::CameraPose &pose);
 bool MirvCam_HistoryUndo(bool redo);
+
+class Aiming;
+bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advancedfx::ICommandArgs *, Aiming &));

@@ -688,7 +688,8 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 	
 	// Explicit procedural/campath source selection is independent of legacy overrides.
 	advancedfx::CameraPose rigPose;
-	if (MirvCam_EvaluateRig(curTime, rigPose))
+	if (MirvCam_EvaluateRig(curTime, rigPose, m_Globals ? m_Globals->framecount_get() : -1,
+							m_Globals ? m_Globals->absoluteframetime_get() : 0))
 	{
 		Tx = float(rigPose.Position[0]);
 		Ty = float(rigPose.Position[1]);

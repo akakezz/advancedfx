@@ -6058,6 +6058,21 @@ static void DrawCamerasTab()
 		else
 			MirvCam_CameraAction("preview", id);
 	};
+	if (ImGui::Button("Preview campath playback"))
+	{
+		char command[128];
+		if (previewBlendSeconds > 0 && MirvCam_RigPreviewActive())
+			std::snprintf(command, sizeof(command), "mirv_cam preview playback %.9g", previewBlendSeconds);
+		else
+			std::snprintf(command, sizeof(command), "mirv_cam preview playback");
+		Afx_ExecClientCmd(command);
+	}
+	if (MirvCam_RigPreviewActive())
+	{
+		ImGui::SameLine();
+		if (ImGui::Button("Stop preview"))
+			MirvCam_EndRigPreview();
+	}
 	auto cameras = MirvCam_Cameras(true);
 	std::uint64_t selected = ~std::uint64_t(0);
 	for (const auto &camera : cameras)
@@ -6107,12 +6122,7 @@ static void DrawCamerasTab()
 			g_DocumentStatus = MirvCam_CameraAction("capture", selected)
 								   ? "Camera recaptured."
 								   : "Camera could not be recaptured; its target is unavailable.";
-		if (MirvCam_RigPreviewActive())
-		{
-			ImGui::SameLine();
-			if (ImGui::Button("Stop camera preview"))
-				MirvCam_EndRigPreview();
-		}
+
 		ImGui::Separator();
 		ImGui::TextUnformatted("Edit camera pose");
 		static std::uint64_t poseId = ~std::uint64_t(0);
@@ -6159,6 +6169,53 @@ static void DrawCamerasTab()
 			readPose();
 		ImGui::TextDisabled("World position and angles. Attached cameras keep their target and attachment mode.");
 		ImGui::Separator();
+		if (ImGui::CollapsingHeader("Aiming"))
+		{
+			auto aimCommand = [&](const char *option, const std::string &value)
+			{
+				const std::string command = "mirv_aim camera " + std::to_string(selected) + " " + option + " " + value;
+				Afx_ExecClientCmd(command.c_str());
+			};
+			auto triple = [](const std::array<double, 3> &values)
+			{
+				char text[192];
+				std::snprintf(text, sizeof(text), "%.17g %.17g %.17g", values[0], values[1], values[2]);
+				return std::string(text);
+			};
+			if (found->AimCustomSource)
+				ImGui::TextWrapped("Using a mirv_calcs source. Choosing an entity or world point replaces it. Custom "
+								   "aim sources currently require live playback.");
+			bool active = found->AimActive, snap = found->AimSnap;
+			if (ImGui::Checkbox("Aim at target", &active))
+				aimCommand("active", active ? "1" : "0");
+			ImGui::SameLine();
+			if (ImGui::Checkbox("Snap to target", &snap))
+				aimCommand("snapTo", snap ? "1" : "0");
+			int entity = found->AimEntity;
+			if (ImGui::InputInt("Aim entity", &entity, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue))
+				aimCommand("entityIndex", std::to_string(entity));
+			auto point = found->AimPoint, offset = found->AimOffset;
+			if (ImGui::InputScalarN("Aim world point", ImGuiDataType_Double, point.data(), 3, nullptr, nullptr, "%.3f",
+									ImGuiInputTextFlags_EnterReturnsTrue))
+				aimCommand("point abs", triple(point));
+			if (ImGui::InputScalarN("Aim target offset", ImGuiDataType_Double, offset.data(), 3, nullptr, nullptr,
+									"%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
+				aimCommand("offset", triple(offset));
+			if (!snap)
+			{
+				double velocity = found->AimVelocity, acceleration = found->AimAcceleration;
+				if (ImGui::InputDouble("Aim velocity limit", &velocity, 0, 0, "%.3f",
+									   ImGuiInputTextFlags_EnterReturnsTrue))
+					aimCommand("velLimit", std::to_string(velocity));
+				if (ImGui::InputDouble("Aim acceleration limit", &acceleration, 0, 0, "%.3f",
+									   ImGuiInputTextFlags_EnterReturnsTrue))
+					aimCommand("accelLimit", std::to_string(acceleration));
+				if (SceneCachePreviewActive())
+					ImGui::TextDisabled("Cached aiming currently requires Snap to target.");
+			}
+			ImGui::TextWrapped("Press Enter to save target fields. A world point replaces entity tracking. Active "
+							   "aiming overrides the saved angles, keeping the camera's position.");
+		}
 		static std::uint64_t nameId = ~std::uint64_t(0);
 		static std::string previousName;
 		static char name[129]{};

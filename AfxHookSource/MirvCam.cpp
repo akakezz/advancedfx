@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "MirvCam.h"
+#include "aiming.h"
 
 #include "WrpVEngineClient.h"
 #include "WrpConsole.h"
@@ -365,12 +366,19 @@ struct NamedCameraRig
 	bool Available = true;
 	std::string DemoKey, TargetModel;
 	std::chrono::steady_clock::time_point NextRebind{};
+	std::shared_ptr<Aiming> Aim;
+	std::shared_ptr<NamedCameraRig> AimTarget;
+	double AimTime = -1;
+	int AimFrame = -1;
+	bool AimCached = false, AimDirty = true;
+	Afx::Math::Quaternion AimRotation{1, 0, 0, 0};
 };
 std::map<std::string, NamedCameraRig> g_CameraRigs;
 enum class CameraSource
 {
 	Legacy,
-	Rig
+	Rig,
+	Playback
 };
 CameraSource g_CameraSource = CameraSource::Legacy;
 std::string g_CameraRigName;
@@ -384,9 +392,14 @@ unsigned long long g_NextCameraId = 0;
 std::string g_BlendFromCamera;
 double g_BlendDuration = 0, g_BlendStart = 0, g_BlendLastTime = 0;
 bool g_BlendStarted = false;
+bool g_BlendFromPlayback = false;
+double g_CameraEvaluationTime = 0;
+int g_CameraEvaluationFrame = -1;
+double g_CameraEvaluationStep = 0;
 void ClearCameraBlend()
 {
 	g_BlendFromCamera.clear();
+	g_BlendFromPlayback = false;
 	g_BlendDuration = 0;
 	g_BlendStarted = false;
 }
@@ -408,7 +421,8 @@ void SyncRigLevel()
 	level = g_LevelInitCount;
 	ClearCameraBlend();
 	auto selected = g_CameraRigs.find(g_CameraRigName);
-	const bool resume = selected != g_CameraRigs.end() && selected->second.Rig.Attached && !g_CameraDemoKey.empty() &&
+	const bool resume = g_CameraSource != CameraSource::Playback && selected != g_CameraRigs.end() &&
+						selected->second.Rig.Attached && !g_CameraDemoKey.empty() &&
 						selected->second.DemoKey == g_CameraDemoKey;
 	if (!resume)
 	{
@@ -426,11 +440,17 @@ void SyncRigLevel()
 	else
 		g_LegacyCameraName.clear();
 	for (auto &entry : g_CameraRigs)
+	{
+		entry.second.AimTime = -1;
+		entry.second.AimDirty = true;
+		if (entry.second.AimTarget)
+			entry.second.AimTarget->NextRebind = {};
 		if (entry.second.Rig.Attached)
 		{
 			entry.second.Available = false;
 			entry.second.NextRebind = {};
 		}
+	}
 	g_RigUnavailable = resume;
 }
 struct CameraHistoryState
@@ -441,21 +461,31 @@ struct CameraHistoryState
 std::vector<CameraHistoryState> g_CameraUndo, g_CameraRedo;
 unsigned g_CameraEditDepth = 0;
 unsigned long long g_CameraCaptureRevision = 0;
+NamedCameraRig CloneCameraDefinition(const NamedCameraRig &source)
+{
+	auto result = source;
+	if (source.Aim)
+		result.Aim = source.Aim->CloneSettings();
+	if (source.AimTarget)
+		result.AimTarget = std::make_shared<NamedCameraRig>(CloneCameraDefinition(*source.AimTarget));
+	result.AimTime = -1;
+	result.AimDirty = true;
+	if (source.Target)
+	{
+		auto clone = Mirv_Tf2_RebindCamera(source.Target.get(), source.EntityAddress);
+		if (clone)
+		{
+			clone->AddRef();
+			result.Target = std::shared_ptr<IMirvVecAngCalc>(clone, [](IMirvVecAngCalc *p) { p->Release(); });
+		}
+	}
+	return result;
+}
 CameraHistoryState CloneCameraState(const CameraHistoryState &source)
 {
 	auto result = source;
 	for (auto &entry : result.Cameras)
-	{
-		auto &camera = entry.second;
-		if (!camera.Target)
-			continue;
-		auto clone = Mirv_Tf2_RebindCamera(camera.Target.get(), camera.EntityAddress);
-		if (clone)
-		{
-			clone->AddRef();
-			camera.Target = std::shared_ptr<IMirvVecAngCalc>(clone, [](IMirvVecAngCalc *p) { p->Release(); });
-		}
-	}
+		entry.second = CloneCameraDefinition(entry.second);
 	return result;
 }
 bool SameCameraDefinitions(const std::map<std::string, NamedCameraRig> &a,
@@ -489,6 +519,21 @@ class CameraEditTransaction
 	bool Owner = false;
 	CameraHistoryState Before, Snapshot;
 	unsigned long long CaptureRevision = 0;
+	bool AimChanged() const
+	{
+		for (const auto &entry : Snapshot.Cameras)
+		{
+			auto current = g_CameraRigs.find(entry.first);
+			if (current == g_CameraRigs.end())
+				continue;
+			const auto &a = entry.second.Aim;
+			const auto &b = current->second.Aim;
+			Aiming defaults;
+			if (!(a ? *a : defaults).SameSettings(b ? *b : defaults))
+				return true;
+		}
+		return false;
+	}
 
   public:
 	explicit CameraEditTransaction(bool enabled = true)
@@ -509,8 +554,8 @@ class CameraEditTransaction
 		if (!Enabled)
 			return;
 		--g_CameraEditDepth;
-		if (!Owner ||
-			(CaptureRevision == g_CameraCaptureRevision && SameCameraDefinitions(Before.Cameras, g_CameraRigs)))
+		if (!Owner || (CaptureRevision == g_CameraCaptureRevision && !AimChanged() &&
+					   SameCameraDefinitions(Before.Cameras, g_CameraRigs)))
 			return;
 		if (g_CameraUndo.size() == 64)
 			g_CameraUndo.erase(g_CameraUndo.begin());
@@ -620,6 +665,95 @@ bool RigTarget(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 		Afx::Math::QREulerAngles::FromQEulerAngles({angles.x, angles.y, angles.z}));
 	return pose.Valid();
 }
+bool EvaluatePlaybackPose(double clientTime, advancedfx::CameraPose &pose)
+{
+	auto path = g_Hook_VClient_RenderView.m_CamPaths.GetPlaybackPath(clientTime);
+	if (!path || !path->CanEval())
+		return false;
+	double time = clientTime - path->GetOffset();
+	if (path->GetHold())
+		time = (std::max)(path->GetLowerBound(), (std::min)(path->GetUpperBound(), time));
+	if (time < path->GetLowerBound() || time > path->GetUpperBound())
+		return false;
+	const auto value = path->Eval(time);
+	pose.Position[0] = value.X;
+	pose.Position[1] = value.Y;
+	pose.Position[2] = value.Z;
+	pose.Rotation = value.R;
+	pose.Fov = value.Fov;
+	return pose.Valid();
+}
+bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
+{
+	if (!camera.Aim)
+		return true;
+	auto &aim = *camera.Aim;
+	const bool cached = AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+	if (!aim.Active && (!aim.SoftDeactivate || cached))
+	{
+		camera.AimTime = -1;
+		return true;
+	}
+	if (cached && !aim.SnapTo && aim.Active)
+		return false;
+	Vector3 target;
+	const Vector3 *overrideTarget = nullptr;
+	if (aim.Active && aim.Source_get())
+	{
+		SOURCESDK::Vector origin;
+		SOURCESDK::QAngle angles;
+		if (aim.HasTf2EntitySource())
+		{
+			advancedfx::CameraPose targetPose;
+			if (!camera.AimTarget || !RigTarget(*camera.AimTarget, targetPose))
+				return false;
+			origin.x = float(targetPose.Position[0]);
+			origin.y = float(targetPose.Position[1]);
+			origin.z = float(targetPose.Position[2]);
+			const auto a = targetPose.Rotation.ToQREulerAngles().ToQEulerAngles();
+			angles.x = float(a.Pitch);
+			angles.y = float(a.Yaw);
+			angles.z = float(a.Roll);
+		}
+		else if (cached || !aim.Source_get()->CalcVecAng(origin, angles))
+			return false;
+		double forward[3], right[3], up[3];
+		MakeVectors(angles.z, angles.x, angles.y, forward, right, up);
+		target = Vector3(origin.x + aim.OffSet.X * forward[0] + aim.OffSet.Y * right[0] + aim.OffSet.Z * up[0],
+						 origin.y + aim.OffSet.X * forward[1] + aim.OffSet.Y * right[1] + aim.OffSet.Z * up[1],
+						 origin.z + aim.OffSet.X * forward[2] + aim.OffSet.Y * right[2] + aim.OffSet.Z * up[2]);
+		if (!std::isfinite(target.X) || !std::isfinite(target.Y) || !std::isfinite(target.Z))
+			return false;
+		overrideTarget = &target;
+	}
+	auto angles = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
+	const double time = g_CameraEvaluationTime;
+	if (!cached && !camera.AimDirty && camera.AimCached == cached &&
+		(g_CameraEvaluationFrame >= 0 ? camera.AimFrame == g_CameraEvaluationFrame : camera.AimTime == time))
+	{
+		pose.Rotation = camera.AimRotation;
+		return true;
+	}
+	double delta = time - camera.AimTime;
+	if (cached || camera.AimTime < 0 || camera.AimCached != cached || delta < 0 || delta > .25)
+	{
+		aim.Reset(angles.Pitch, angles.Yaw, angles.Roll);
+		delta = 1.0 / 66;
+	}
+	if (!cached && g_CameraEvaluationFrame >= 0 && std::isfinite(g_CameraEvaluationStep) && g_CameraEvaluationStep > 0)
+		delta = g_CameraEvaluationStep;
+	if (delta == 0)
+		delta = 1.0 / 66;
+	if (aim.Aim(delta, Vector3(pose.Position[0], pose.Position[1], pose.Position[2]), angles.Pitch, angles.Yaw,
+				angles.Roll, overrideTarget))
+		pose.Rotation = Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles(angles));
+	camera.AimTime = time;
+	camera.AimFrame = g_CameraEvaluationFrame;
+	camera.AimCached = cached;
+	camera.AimRotation = pose.Rotation;
+	camera.AimDirty = false;
+	return pose.Valid();
+}
 bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
 	rig.Available = false;
@@ -627,6 +761,8 @@ bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 	if (rig.Rig.Attached && !RigTarget(rig, target))
 		return false;
 	if (!rig.Rig.Evaluate(rig.Rig.Attached ? &target : nullptr, pose))
+		return false;
+	if (!EvaluateCameraAim(rig, pose))
 		return false;
 	rig.LastWorld = pose;
 	rig.Available = true;
@@ -644,6 +780,7 @@ bool EditCameraPose(const std::string &name, NamedCameraRig &camera, const advan
 	}
 	else
 		camera.Rig.Pose = pose;
+	camera.AimTime = -1;
 	camera.LastWorld = pose;
 	camera.Available = true;
 	if (g_EditingCameraName == name)
@@ -794,6 +931,11 @@ bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const a
 	if (!calc || !world.Valid() || (edited == g_CameraRigs.end() && g_CameraRigs.size() >= 128))
 		return false;
 	NamedCameraRig attached;
+	if (edited != g_CameraRigs.end())
+	{
+		attached.Aim = edited->second.Aim;
+		attached.AimTarget = edited->second.AimTarget;
+	}
 	calc->AddRef();
 	attached.Target = std::shared_ptr<IMirvVecAngCalc>(calc, [](IMirvVecAngCalc *p) { p->Release(); });
 	attached.EntityAddress = entity;
@@ -867,12 +1009,15 @@ void ClearCameraAttachment(bool liveSource)
 	g_LegacyCameraName.clear();
 }
 } // namespace
-bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
+bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int frame, double frameStep)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
 	clientTime = AfxHookSource::CameraOverlay::EditingClientTime(clientTime);
 	g_BlendLastTime = clientTime;
+	g_CameraEvaluationTime = clientTime;
+	g_CameraEvaluationFrame = frame;
+	g_CameraEvaluationStep = frameStep;
 	for (auto &entry : g_CameraRigs)
 		if (entry.second.Rig.Attached && entry.second.TargetLevel != g_LevelInitCount)
 			TryRebindCamera(entry.second);
@@ -883,9 +1028,11 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
 	}
 	advancedfx::CameraPose evaluated;
 	auto found = g_CameraRigs.find(g_CameraRigName);
-	const bool valid = found != g_CameraRigs.end() && EvaluateNamedRig(found->second, evaluated);
+	const bool valid = g_CameraSource == CameraSource::Playback
+						   ? EvaluatePlaybackPose(clientTime, evaluated)
+						   : found != g_CameraRigs.end() && EvaluateNamedRig(found->second, evaluated);
 	bool blendValid = valid;
-	if (valid && !g_BlendFromCamera.empty())
+	if (valid && (!g_BlendFromCamera.empty() || g_BlendFromPlayback))
 	{
 		if (!g_BlendStarted)
 		{
@@ -897,7 +1044,9 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
 		{
 			auto outgoing = g_CameraRigs.find(g_BlendFromCamera);
 			advancedfx::CameraPose from;
-			blendValid = outgoing != g_CameraRigs.end() && EvaluateNamedRig(outgoing->second, from);
+			blendValid = g_BlendFromPlayback
+							 ? EvaluatePlaybackPose(clientTime, from)
+							 : outgoing != g_CameraRigs.end() && EvaluateNamedRig(outgoing->second, from);
 			if (blendValid)
 			{
 				const double weight = fraction * fraction * (3 - 2 * fraction);
@@ -924,6 +1073,81 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
 	return true;
 }
 
+bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advancedfx::ICommandArgs *, Aiming &))
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	SyncRigLevel();
+	if (args->ArgC() < 3)
+	{
+		Tier0_Msg("mirv_aim camera <ID/name> [...] - Configure aiming for an independent camera.\n");
+		return false;
+	}
+	auto found = FindRig(args->ArgV(2));
+	if (found == g_CameraRigs.end())
+	{
+		Tier0_Warning("Unknown camera.\n");
+		return false;
+	}
+	const bool modifying = args->ArgC() >= 5 || (args->ArgC() == 4 && !_stricmp(args->ArgV(3), "calcVecAngClear"));
+	CameraEditTransaction history(modifying);
+	auto &camera = found->second;
+	auto original = camera.Aim;
+	auto before = original ? original->CloneSettings() : std::make_shared<Aiming>();
+	camera.Aim = original ? original->CloneState() : std::make_shared<Aiming>();
+	struct Args : advancedfx::ICommandArgs
+	{
+		advancedfx::ICommandArgs *Parent;
+		std::string Prefix;
+		int ArgC() override { return Parent->ArgC() - 2; }
+		const char *ArgV(int i) override { return i ? Parent->ArgV(i + 2) : Prefix.c_str(); }
+	} scoped;
+	scoped.Parent = args;
+	scoped.Prefix = "mirv_aim camera " + std::to_string(camera.Id);
+	command(&scoped, *camera.Aim);
+	if (before->SameSettings(*camera.Aim))
+	{
+		camera.Aim = original;
+		return true;
+	}
+	if (!std::isfinite(camera.Aim->LimitVelocity) || !std::isfinite(camera.Aim->LimitAcceleration) ||
+		camera.Aim->LimitVelocity < 0 || camera.Aim->LimitAcceleration < 0 || !std::isfinite(camera.Aim->OffSet.X) ||
+		!std::isfinite(camera.Aim->OffSet.Y) || !std::isfinite(camera.Aim->OffSet.Z) ||
+		!std::isfinite(camera.Aim->GetTargetPoint().X) || !std::isfinite(camera.Aim->GetTargetPoint().Y) ||
+		!std::isfinite(camera.Aim->GetTargetPoint().Z))
+	{
+		camera.Aim = original;
+		Tier0_Warning("Aim settings must be finite; velocity and acceleration limits must be nonnegative.\n");
+		return false;
+	}
+	camera.AimDirty = true;
+	const bool explicitRetarget = scoped.ArgC() >= 3 && !_stricmp(scoped.ArgV(1), "entityIndex");
+	if (!explicitRetarget && before->HasTf2EntitySource() && camera.Aim->HasTf2EntitySource() &&
+		before->EntityIndex == camera.Aim->EntityIndex && camera.AimTarget)
+		return true;
+	camera.AimTarget.reset();
+	if (camera.Aim->HasTf2EntitySource())
+	{
+		auto binding = std::make_shared<NamedCameraRig>();
+		binding->Rig.Attached = true;
+		binding->EntityAddress = camera.Aim->EntityIndex;
+		binding->TargetLevel = g_LevelInitCount;
+		binding->TargetHandle = RigEntityHandle(binding->EntityAddress);
+		binding->DemoKey = g_VEngineClient && g_VEngineClient->IsPlayingDemo() ? g_CameraDemoKey : std::string{};
+		binding->TargetModel = Mirv_Tf2_CameraTargetModel(binding->EntityAddress);
+		int user = 0;
+		binding->CacheIdentity = Mirv_Tf2_GetPlayerInfo(binding->EntityAddress, nullptr, 0, &user) && user > 0
+									 ? std::uint64_t(user)
+									 : (std::uint64_t(1) << 63) | binding->TargetHandle;
+		auto calc = Mirv_Tf2_RebindCamera(camera.Aim->Source_get(), binding->EntityAddress);
+		if (calc)
+		{
+			calc->AddRef();
+			binding->Target = std::shared_ptr<IMirvVecAngCalc>(calc, [](IMirvVecAngCalc *p) { p->Release(); });
+		}
+		camera.AimTarget = std::move(binding);
+	}
+	return true;
+}
 bool MirvCam_HistoryUndo(bool redo)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
@@ -932,6 +1156,7 @@ bool MirvCam_HistoryUndo(bool redo)
 	auto &to = redo ? g_CameraUndo : g_CameraRedo;
 	if (from.empty())
 		return false;
+	const bool playback = g_CameraSource == CameraSource::Playback;
 	const bool viewing = g_RigPreview || (!g_LegacyCameraName.empty() && g_MirvCam.Source_get());
 	unsigned long long selectedId = ~0ull;
 	auto selected = g_CameraRigs.find(g_CameraRigName);
@@ -952,8 +1177,8 @@ bool MirvCam_HistoryUndo(bool redo)
 			g_CameraRigName = entry.first;
 			break;
 		}
-	g_RigPreview = viewing && g_CameraRigs.count(g_CameraRigName);
-	g_CameraSource = g_RigPreview ? CameraSource::Rig : CameraSource::Legacy;
+	g_RigPreview = viewing && (playback || g_CameraRigs.count(g_CameraRigName));
+	g_CameraSource = g_RigPreview ? (playback ? CameraSource::Playback : CameraSource::Rig) : CameraSource::Legacy;
 	g_RigUnavailable = false;
 	if (viewing && !g_RigPreview)
 	{
@@ -971,7 +1196,7 @@ void MirvCam_EndRigPreview()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	ClearCameraBlend();
-	const bool adopt = g_CameraSource == CameraSource::Rig;
+	const bool adopt = g_CameraSource != CameraSource::Legacy;
 	auto pose = g_LastRigPose;
 	g_RigPreview = false;
 	g_CameraSource = CameraSource::Legacy;
@@ -1005,6 +1230,8 @@ void MirvCam_SetRigNavigation(bool cameras)
 std::string MirvCam_PreviewLabel()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (g_CameraSource == CameraSource::Playback)
+		return std::string("Playback | campaths") + (g_RigUnavailable ? " [unavailable]" : "");
 	auto found = g_CameraRigs.find(g_CameraRigName);
 	if (found == g_CameraRigs.end())
 		return "Cameras | none";
@@ -1016,6 +1243,8 @@ std::string MirvCam_PreviewLabel()
 bool MirvCam_PreviewKey(unsigned int key, bool down, bool repeat)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (g_CameraSource == CameraSource::Playback && key != VK_ESCAPE)
+		return false;
 	if (!g_RigPreview)
 		return false;
 	if (key == 'E' || key == 'Y' || key == VK_DELETE)
@@ -1132,7 +1361,8 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 	{
 		if (args->ArgC() != 3 && args->ArgC() != 4)
 		{
-			Tier0_Msg("mirv_cam preview <camera ID/name>|cameras|keys|toggle|off [blend seconds] - Preview a camera or "
+			Tier0_Msg("mirv_cam preview <camera ID/name>|cameras|playback|keys|toggle|off [blend seconds] - Preview a "
+					  "camera or "
 					  "keyframes.\n");
 			return true;
 		}
@@ -1150,7 +1380,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		std::string reference = args->ArgV(2);
 		if (args->ArgC() == 4 && (reference == "keys" || reference == "toggle" || reference == "off"))
 		{
-			Tier0_Warning("This blend prototype supports saved cameras; switch to keyframes without a duration.\n");
+			Tier0_Warning("Use playback for campath blends; keys, toggle and off do not take a duration.\n");
 			return true;
 		}
 		if (!_stricmp(reference.c_str(), "toggle"))
@@ -1167,38 +1397,43 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			MirvCampathPreview_SetActive(reference == "keys");
 			return true;
 		}
+		const bool playback = reference == "playback";
 		auto found = reference == "cameras" ? g_CameraRigs.find(g_CameraRigName) : FindRig(reference);
 		if (found == g_CameraRigs.end() && reference == "cameras" && !g_CameraRigs.empty())
 			found = g_CameraRigs.begin();
-		if (found == g_CameraRigs.end())
+		if (!playback && found == g_CameraRigs.end())
 		{
 			Tier0_Warning("No matching camera.\n");
 			return true;
 		}
-		std::string outgoing = g_CameraSource == CameraSource::Rig ? g_CameraRigName : std::string{};
-		if (duration > 0 &&
-			(outgoing.empty() ||
-			 (!g_BlendFromCamera.empty() && (!g_BlendStarted || g_BlendLastTime < g_BlendStart + g_BlendDuration))))
+		const auto outgoingSource = g_CameraSource;
+		std::string outgoing = outgoingSource == CameraSource::Rig ? g_CameraRigName : std::string{};
+		if (duration > 0 && (outgoingSource == CameraSource::Legacy ||
+							 ((!g_BlendFromCamera.empty() || g_BlendFromPlayback) &&
+							  (!g_BlendStarted || g_BlendLastTime < g_BlendStart + g_BlendDuration))))
 		{
-			Tier0_Warning(
-				"Preview a saved camera first, and finish or cut the current blend before starting another.\n");
+			Tier0_Warning("Preview a camera or campath playback first; finish or cut the current blend before starting "
+						  "another.\n");
 			return true;
 		}
+		MirvCampathPreview_SetActive(false);
 		ClearCameraBlend();
-		if (duration > 0 && outgoing != found->first)
+		if (duration > 0 && (playback ? outgoingSource != CameraSource::Playback
+									  : (outgoingSource == CameraSource::Playback || outgoing != found->first)))
 		{
 			g_BlendFromCamera = outgoing;
+			g_BlendFromPlayback = outgoingSource == CameraSource::Playback;
 			g_BlendDuration = duration;
 		}
-		MirvCampathPreview_SetActive(false);
 		auto current = RigCapture();
 		if (current.Valid())
 			g_LastRigPose = current;
-		g_CameraRigName = found->first;
+		if (!playback)
+			g_CameraRigName = found->first;
 		g_EditingCameraName.clear();
-		g_CameraSource = CameraSource::Rig;
+		g_CameraSource = playback ? CameraSource::Playback : CameraSource::Rig;
 		g_RigPreview = true;
-		g_RigNavigation = true;
+		g_RigNavigation = !playback;
 		return true;
 	}
 	if (action == "edit")
@@ -1268,7 +1503,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			for (int i = 2; i < args->ArgC(); ++i)
 				command.Words.push_back(args->ArgV(i));
 		CameraStorageCommand(&command);
-		if (g_CameraRigs.empty())
+		if (g_CameraRigs.empty() && g_CameraSource != CameraSource::Playback)
 			g_RigPreview = false;
 		return true;
 	}
@@ -1375,8 +1610,15 @@ std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
 	{
 		auto &rig = entry.second;
 		advancedfx::CameraPose pose;
-		if (evaluate && !(g_RigPreview && entry.first == g_CameraRigName))
-			EvaluateNamedRig(rig, pose);
+		if (evaluate && !(g_CameraSource == CameraSource::Rig && g_RigPreview && entry.first == g_CameraRigName))
+		{
+			auto sample = rig;
+			if (rig.Aim)
+				sample.Aim = rig.Aim->CloneState();
+			EvaluateNamedRig(sample, pose);
+			rig.LastWorld = sample.LastWorld;
+			rig.Available = sample.Available;
+		}
 		advancedfx::CameraInfo info;
 		info.Id = rig.Id;
 		info.Name = entry.first;
@@ -1384,9 +1626,21 @@ std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
 		info.Attached = rig.Rig.Attached;
 		info.Available = rig.Available;
 		info.Selected = entry.first == g_CameraRigName;
-		info.Viewed = info.Selected && g_RigPreview;
+		info.Viewed = info.Selected && g_RigPreview && g_CameraSource == CameraSource::Rig;
 		info.EntityAddress = rig.EntityAddress;
 		info.AttachMode = rig.AttachMode;
+		if (rig.Aim)
+		{
+			info.AimActive = rig.Aim->Active;
+			info.AimSnap = rig.Aim->SnapTo;
+			info.AimCustomSource = rig.Aim->Source_get() && !rig.Aim->HasTf2EntitySource();
+			info.AimEntity = rig.Aim->HasTf2EntitySource() ? rig.Aim->EntityIndex : -1;
+			const auto &point = rig.Aim->GetTargetPoint();
+			info.AimPoint = {point.X, point.Y, point.Z};
+			info.AimOffset = {rig.Aim->OffSet.X, rig.Aim->OffSet.Y, rig.Aim->OffSet.Z};
+			info.AimVelocity = rig.Aim->LimitVelocity;
+			info.AimAcceleration = rig.Aim->LimitAcceleration;
+		}
 		cameras.push_back(std::move(info));
 	}
 	std::sort(cameras.begin(), cameras.end(), [](const auto &a, const auto &b) { return a.Id < b.Id; });

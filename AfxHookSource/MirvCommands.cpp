@@ -32,21 +32,23 @@ extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 #include "csgo_S_StartSound.h"
 #endif //#ifndef _WIN64
 
-#include "d3d9Hooks.h"
-#include "aiming.h"
+#include "../shared/CommandSystem.h"
 #include "EntityIndexDrawer.h"
+#include "aiming.h"
+#include "d3d9Hooks.h"
 #include "tf2/ClientToolsTf2.h"
-#include <shared/PlayerRepair.h>
-#include <shared/DemoTimeline.h>
+#include <cerrno>
+#include <climits>
+#include <cstdarg>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <climits>
 #include <iterator>
-#include <cerrno>
-#include <stdexcept>
-#include <locale>
 #include <limits>
-#include "../shared/CommandSystem.h"
+#include <locale>
+#include <shared/DemoTimeline.h>
+#include <shared/PlayerRepair.h>
+#include <stdexcept>
 extern CommandSystem g_CommandSystem;
 #include <shared/binutils.h>
 
@@ -2158,7 +2160,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		if (down && !g_CampathPreviewUndoHeld && !CampathPreview_IsRepeatKey(lParam))
 		{
 			g_CampathPreviewUndoHeld = true;
-			if (MirvCam_RigPreviewActive())
+			if (MirvCam_RigPreviewActive() && MirvCam_RigNavigation())
 				MirvCam_HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
 			else
 				AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
@@ -3953,7 +3955,25 @@ CON_COMMAND(mirv_traceentity, "Trace entity from current view position")
 
 #endif //#ifndef _WIN64
 
-CON_COMMAND(mirv_aim, "Aiming system control.")
+static void AimMessage(const char *prefix, const char *format, ...)
+{
+	char buffer[8192];
+	va_list args;
+	va_start(args, format);
+	const int count = std::vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+	if (count < 0)
+		return;
+	std::string text(buffer);
+	if (std::strcmp(prefix, "mirv_aim"))
+		for (size_t at = 0; (at = text.find("mirv_aim ", at)) != std::string::npos;)
+		{
+			text.replace(at, 8, prefix);
+			at += std::strlen(prefix);
+		}
+	Tier0_Msg("%s", text.c_str());
+}
+static void MirvAim_Command(advancedfx::ICommandArgs *args, Aiming &aim)
 {
 	if(!g_Hook_VClient_RenderView.GetGlobals())
 	{
@@ -3973,15 +3993,14 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 			{
 				char const * arg2 = args->ArgV(2);
 
-				g_Aiming.Active = 0 != atoi(arg2);
+				aim.Active = 0 != atoi(arg2);
 				return;
 			}
 
-			Tier0_Msg(
-				"mirv_aim active 0|1 - Whether aiming is active (1) or not (0).\n"
-				"Current value: %s\n",
-				g_Aiming.Active ? "1" : "0"
-			);
+			AimMessage(args->ArgV(0),
+					   "mirv_aim active 0|1 - Whether aiming is active (1) or not (0).\n"
+					   "Current value: %s\n",
+					   aim.Active ? "1" : "0");
 			return;
 		}
 		else
@@ -3991,15 +4010,14 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 			{
 				char const * arg2 = args->ArgV(2);
 
-				g_Aiming.SoftDeactivate = 0 != atoi(arg2);
+				aim.SoftDeactivate = 0 != atoi(arg2);
 				return;
 			}
 
-			Tier0_Msg(
-				"mirv_aim softDeactivate 0|1 - Whether to support soft deactivation (1) or not (0).\n"
-				"Current value: %s\n",
-				g_Aiming.SoftDeactivate ? "1" : "0"
-			);
+			AimMessage(args->ArgV(0),
+					   "mirv_aim softDeactivate 0|1 - Whether to support soft deactivation (1) or not (0).\n"
+					   "Current value: %s\n",
+					   aim.SoftDeactivate ? "1" : "0");
 			return;
 		}
 		else if (0 == _stricmp("calcVecAng", arg1))
@@ -4011,27 +4029,27 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 				if (!vecAng)
 					Tier0_Warning("No vecAng calc \"%s\" exists.\n", args->ArgV(2));
 
-				g_Aiming.Source_set(vecAng);
+				aim.Source_set(vecAng);
 
 				return;
 			}
 
-			IMirvVecAngCalc * vecAng = g_Aiming.Source_get();
+			IMirvVecAngCalc *vecAng = aim.Source_get();
 
-			Tier0_Msg(
-				"mirv_aim calcVecAng <sClacVecAngName> - Calc to use as source (<sClacVecAngName> is name from mirv_calcs vecAng).\n"
-				"Current value: %s\n"
-				, vecAng ? "" : "(none)"
-			);
+			AimMessage(args->ArgV(0),
+					   "mirv_aim calcVecAng <sClacVecAngName> - Calc to use as source (<sClacVecAngName> is name from "
+					   "mirv_calcs vecAng).\n"
+					   "Current value: %s\n",
+					   vecAng ? "" : "(none)");
 
 			if (vecAng) { vecAng->Console_PrintBegin(); vecAng->Console_PrintEnd(); }
-			Tier0_Msg("\n");
+			AimMessage(args->ArgV(0), "\n");
 
 			return;
 		}
 		else if (0 == _stricmp("calcVecAngClear", arg1))
 		{
-			g_Aiming.Source_set(0);
+			aim.Source_set(0);
 		}
 		else
 		if(0 == _stricmp("entityIndex", arg1))
@@ -4040,16 +4058,16 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 			{
 				char const * arg2 = args->ArgV(2);
 
-				g_Aiming.EntityIndex = atoi(arg2);
-				g_Aiming.RebuildCalc();
+				aim.EntityIndex = atoi(arg2);
+				aim.RebuildCalc();
 				return;
 			}
 
-			Tier0_Msg(
-				"mirv_aim entityIndex <n> - Entity index to aim after (use mirv_listentities to get one). Use invalid index (i.e. -1) to deactivate re-targeting.\n"
-				"Current value: %i\n"
-				, g_Aiming.EntityIndex
-			);
+			AimMessage(args->ArgV(0),
+					   "mirv_aim entityIndex <n> - Entity index to aim after (use mirv_listentities to get one). Use "
+					   "invalid index (i.e. -1) to deactivate re-targeting.\n"
+					   "Current value: %i\n",
+					   aim.EntityIndex);
 
 			return;
 		}
@@ -4075,11 +4093,10 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 						offset.Z = atof(arg5);
 					}
 
-					g_Aiming.TargetPoint(
-						Vector3(g_Hook_VClient_RenderView.LastCameraOrigin[0],
-							g_Hook_VClient_RenderView.LastCameraOrigin[1],
-							g_Hook_VClient_RenderView.LastCameraOrigin[2])
-						+ offset);
+					aim.TargetPoint(Vector3(g_Hook_VClient_RenderView.LastCameraOrigin[0],
+											g_Hook_VClient_RenderView.LastCameraOrigin[1],
+											g_Hook_VClient_RenderView.LastCameraOrigin[2]) +
+									offset);
 					return;
 				}
 				else
@@ -4098,7 +4115,7 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 						offset.Z = atof(arg5);
 					}
 
-					g_Aiming.TargetPointFromLast(offset);
+					aim.TargetPointFromLast(offset);
 					return;
 				}
 				else
@@ -4116,16 +4133,16 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 						offset.Z = atof(arg5);
 					}
 
-					g_Aiming.TargetPoint(offset);
+					aim.TargetPoint(offset);
 					return;
 				}
 			}
 
-			Tier0_Msg(
-				"mirv_aim point abs <fX> <fY> <fz> - Absolute point in world coordinates.\n"
-				"mirv_aim point cam [<fOffsetX> <fOffsetY> <fOffsetZ>] - Aim at current camera position with optional offset in world coordinates.\n"
-				"mirv_aim point last [<fOffsetX> <fOffsetY> <fOffsetZ>] - Aim at last target position with optional offset in world coordinates.\n"
-			);
+			AimMessage(args->ArgV(0), "mirv_aim point abs <fX> <fY> <fz> - Absolute point in world coordinates.\n"
+									  "mirv_aim point cam [<fOffsetX> <fOffsetY> <fOffsetZ>] - Aim at current camera "
+									  "position with optional offset in world coordinates.\n"
+									  "mirv_aim point last [<fOffsetX> <fOffsetY> <fOffsetZ>] - Aim at last target "
+									  "position with optional offset in world coordinates.\n");
 			return;
 		}
 		else
@@ -4137,17 +4154,15 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 				char const * arg3 = args->ArgV(3);
 				char const * arg4 = args->ArgV(4);
 
-				g_Aiming.OffSet = Vector3(
-					atof(arg2), atof(arg3), atof(arg4)
-				);
+				aim.OffSet = Vector3(atof(arg2), atof(arg3), atof(arg4));
 				return;
 			}
 
-			Tier0_Msg(
+			AimMessage(
+				args->ArgV(0),
 				"mirv_aim offset <x> <y> <z> - Offset in target local space to aim at (3 floating point values).\n"
 				"Current value: %f %f %f\n",
-				g_Aiming.OffSet.X, g_Aiming.OffSet.Y, g_Aiming.OffSet.Z
-			);
+				aim.OffSet.X, aim.OffSet.Y, aim.OffSet.Z);
 			return;
 		}
 		else
@@ -4157,15 +4172,14 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 			{
 				char const * arg2 = args->ArgV(2);
 
-				g_Aiming.SnapTo = 0 != atoi(arg2);
+				aim.SnapTo = 0 != atoi(arg2);
 				return;
 			}
 
-			Tier0_Msg(
-				"mirv_aim snapTo 0|1 - Whether to aim non-soft (1) or not (0).\n"
-				"Current value: %s\n",
-				g_Aiming.SnapTo ? "1" : "0"
-			);
+			AimMessage(args->ArgV(0),
+					   "mirv_aim snapTo 0|1 - Whether to aim non-soft (1) or not (0).\n"
+					   "Current value: %s\n",
+					   aim.SnapTo ? "1" : "0");
 			return;
 		}
 		else
@@ -4175,15 +4189,15 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 			{
 				char const * arg2 = args->ArgV(2);
 
-				g_Aiming.LimitVelocity = atof(arg2);
+				aim.LimitVelocity = atof(arg2);
 				return;
 			}
 
-			Tier0_Msg(
-				"mirv_aim velLimit <fValue> - Max velocity (in angle degrees per second^1) possible (floating point value).\n"
-				"Current value: %f\n",
-				g_Aiming.LimitVelocity
-			);
+			AimMessage(args->ArgV(0),
+					   "mirv_aim velLimit <fValue> - Max velocity (in angle degrees per second^1) possible (floating "
+					   "point value).\n"
+					   "Current value: %f\n",
+					   aim.LimitVelocity);
 			return;
 		}
 		else
@@ -4193,37 +4207,36 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 			{
 				char const * arg2 = args->ArgV(2);
 
-				g_Aiming.LimitAcceleration = atof(arg2);
+				aim.LimitAcceleration = atof(arg2);
 				return;
 			}
 
-			Tier0_Msg(
-				"mirv_aim accelLimit <fValue> - Max acceleration (in angle degrees per second^2) possible (floating point value).\n"
-				"Current value: %f\n",
-				g_Aiming.LimitAcceleration
-			);
+			AimMessage(args->ArgV(0),
+					   "mirv_aim accelLimit <fValue> - Max acceleration (in angle degrees per second^2) possible "
+					   "(floating point value).\n"
+					   "Current value: %f\n",
+					   aim.LimitAcceleration);
 			return;
 		}
-/*
-		else
-		if(0 == _stricmp("jerkLimit", arg1))
-		{
-			if(3 <= argc)
-			{
-				char const * arg2 = args->ArgV(2);
+		/*
+				else
+				if(0 == _stricmp("jerkLimit", arg1))
+				{
+					if(3 <= argc)
+					{
+						char const * arg2 = args->ArgV(2);
 
-				g_Aiming.LimitJerk = atof(arg2);
-				return;
-			}
+						aim.LimitJerk = atof(arg2);
+						return;
+					}
 
-			Tier0_Msg(
-				"mirv_aim jerkLimit <fValue> - Max jerk (in angle degrees per second^3) possible (floating point value).\n"
-				"Current value: %f\n",
-				g_Aiming.LimitJerk
-			);
-			return;
-		}
-*/
+					AimMessage(args->ArgV(0),
+						"mirv_aim jerkLimit <fValue> - Max jerk (in angle degrees per second^3) possible (floating point
+		   value).\n" "Current value: %f\n", aim.LimitJerk
+					);
+					return;
+				}
+		*/
 		else
 		if(0 == _stricmp("origin", arg1))
 		{
@@ -4233,21 +4246,21 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 
 				if(0 == _stricmp("net", arg2))
 				{
-					g_Aiming.Origin = Aiming::O_Net;
-					g_Aiming.RebuildCalc();
+					aim.Origin = Aiming::O_Net;
+					aim.RebuildCalc();
 					return;
 				}
 				else
 				if(0 == _stricmp("view", arg2))
 				{
-					g_Aiming.Origin = Aiming::O_View;
-					g_Aiming.RebuildCalc();
+					aim.Origin = Aiming::O_View;
+					aim.RebuildCalc();
 					return;
 				}
 			}
 
 			char const * curValue = "[unknown]";
-			switch(g_Aiming.Origin)
+			switch (aim.Origin)
 			{
 			case Aiming::O_Net:
 				curValue = "net";
@@ -4257,11 +4270,10 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 				break;
 			}
 
-			Tier0_Msg(
-				"mirv_aim origin net|view - Target origin to use.\n"
-				"Current value: %s\n",
-				curValue
-			);
+			AimMessage(args->ArgV(0),
+					   "mirv_aim origin net|view - Target origin to use.\n"
+					   "Current value: %s\n",
+					   curValue);
 			return;
 		}
 		else
@@ -4273,21 +4285,21 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 
 				if(0 == _stricmp("net", arg2))
 				{
-					g_Aiming.Angles = Aiming::A_Net;
-					g_Aiming.RebuildCalc();
+					aim.Angles = Aiming::A_Net;
+					aim.RebuildCalc();
 					return;
 				}
 				else
 				if(0 == _stricmp("view", arg2))
 				{
-					g_Aiming.Angles = Aiming::A_View;
-					g_Aiming.RebuildCalc();
+					aim.Angles = Aiming::A_View;
+					aim.RebuildCalc();
 					return;
 				}
 			}
 
 			char const * curValue = "[unknown]";
-			switch(g_Aiming.Angles)
+			switch (aim.Angles)
 			{
 			case Aiming::A_Net:
 				curValue = "net";
@@ -4297,11 +4309,10 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 				break;
 			}
 
-			Tier0_Msg(
-				"mirv_aim angles net|view - Target angles to use.\n"
-				"Current value: %s\n",
-				curValue
-			);
+			AimMessage(args->ArgV(0),
+					   "mirv_aim angles net|view - Target angles to use.\n"
+					   "Current value: %s\n",
+					   curValue);
 			return;
 		}
 		else
@@ -4313,19 +4324,19 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 
 				if(0 == _stricmp("input", arg2))
 				{
-					g_Aiming.Up = Aiming::U_Input;
+					aim.Up = Aiming::U_Input;
 					return;
 				}
 				else
 				if(0 == _stricmp("world", arg2))
 				{
-					g_Aiming.Up = Aiming::U_World;
+					aim.Up = Aiming::U_World;
 					return;
 				}
 			}
 
 			char const * curValue = "[unknown]";
-			switch(g_Aiming.Up)
+			switch (aim.Up)
 			{
 			case Aiming::U_Input:
 				curValue = "input";
@@ -4335,33 +4346,44 @@ CON_COMMAND(mirv_aim, "Aiming system control.")
 				break;
 			}
 
-			Tier0_Msg(
-				"mirv_aim up input|world - Camera up direction to use.\n"
-				"Current value: %s\n",
-				curValue
-			);
+			AimMessage(args->ArgV(0),
+					   "mirv_aim up input|world - Camera up direction to use.\n"
+					   "Current value: %s\n",
+					   curValue);
 			return;
 		}
 	}
 
-	Tier0_Msg(
-		"mirv_aim active [...] - Whether aiming is active.\n"
-		"mirv_aim softDeactivate [...] - Whether to support soft deactivation (for snapTo 0).\n"
-		"mirv_aim calcVecAng [...] - Source for target (overrides entityIndex, point, origin, angles).\n"
-		"mirv_aim calcVecAngClear - Clears source for target (no target) (overrides entityIndex, point, origin, angles).\n"
-		"mirv_aim entityIndex [...] - Entity index to aim after (use mirv_listentities to get one).\n"
-		"mirv_aim point [...] - Point to aim after.\n"
-		"mirv_aim origin [...] - Target origin to use.\n"
-		"mirv_aim angles [...] - Target angles to use.\n"
-		"mirv_aim offset [...] - Offset in target space to aim at.\n"
-		"mirv_aim up [...] - How to determine the camera up direction.\n"
-		"mirv_aim snapTo [...] - Whether to aim non-soft or soft.\n"
-		"mirv_aim velLimit [...] - Max velocity possible (for snapTo 0).\n"
-		"mirv_aim accelLimit [...] - Max acceleration possible (for snapTo 0).\n"
-		// does not work atm // "mirv_aim jerkLimit [...] - Max jerk possible (for snapTo 0).\n"
+	AimMessage(args->ArgV(0),
+			   "mirv_aim active [...] - Whether aiming is active.\n"
+			   "mirv_aim softDeactivate [...] - Whether to support soft deactivation (for snapTo 0).\n"
+			   "mirv_aim calcVecAng [...] - Source for target (overrides entityIndex, point, origin, angles).\n"
+			   "mirv_aim calcVecAngClear - Clears source for target (no target) (overrides entityIndex, point, origin, "
+			   "angles).\n"
+			   "mirv_aim entityIndex [...] - Entity index to aim after (use mirv_listentities to get one).\n"
+			   "mirv_aim point [...] - Point to aim after.\n"
+			   "mirv_aim origin [...] - Target origin to use.\n"
+			   "mirv_aim angles [...] - Target angles to use.\n"
+			   "mirv_aim offset [...] - Offset in target space to aim at.\n"
+			   "mirv_aim up [...] - How to determine the camera up direction.\n"
+			   "mirv_aim snapTo [...] - Whether to aim non-soft or soft.\n"
+			   "mirv_aim velLimit [...] - Max velocity possible (for snapTo 0).\n"
+			   "mirv_aim accelLimit [...] - Max acceleration possible (for snapTo 0).\n"
+			   // does not work atm // "mirv_aim jerkLimit [...] - Max jerk possible (for snapTo 0).\n"
 	);
 }
 
+CON_COMMAND(mirv_aim, "Aiming system control.")
+{
+	if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "camera"))
+	{
+		MirvCam_AimCommand(args, MirvAim_Command);
+		return;
+	}
+	if (args->ArgC() < 2)
+		Tier0_Msg("mirv_aim camera <ID/name> [...] - Configure aiming for an independent camera.\n");
+	MirvAim_Command(args, g_Aiming);
+}
 
 extern class CommandSystem g_CommandSystem;
 

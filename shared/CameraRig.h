@@ -84,6 +84,10 @@ struct CameraInfo
 	CameraPose Pose;
 	bool Attached = false, Available = true, Selected = false, Viewed = false;
 	int EntityAddress = -1, AttachMode = 0;
+	bool AimActive = false, AimSnap = true, AimCustomSource = false;
+	int AimEntity = -1;
+	std::array<double, 3> AimPoint{}, AimOffset{};
+	double AimVelocity = 360, AimAcceleration = 90;
 };
 struct CameraGuideLine
 {

@@ -2220,7 +2220,7 @@ Client-only gibs may receive different identities on replay; those still require
 explicit retargeting with `edit <ID>` followed by `attach`, preserving the camera.
 Fixed camera definitions remain available across level changes.
 
-This milestone does **not** yet add timed sequencer clips, blends, rig persistence,
+This milestone does **not** yet add timed sequencer clips or rig persistence,
 gizmos, tracking, orbit, modifiers, damping or collision for named rigs.
 The live `mirv_cam attach` view retains the existing collision/follow evaluator.
 Saved-camera preview still evaluates rigid attachments; collision/follow settings
@@ -2272,8 +2272,8 @@ the camera's evaluated position, work without Show path, and share the existing
 recording suppression and safe engine-thread drawing snapshots.
 
 These requirements belong to the upcoming sequencer clips/camera mixer work;
-per-camera aiming is not implemented yet; camera-name labels are included in
-the first mixer slice below.
+camera-name labels, per-camera aiming and basic playback mixing are implemented
+below. Sequencer clips and deterministic cached smoothing remain pending.
 
 
 ### Mixer milestone, first slice: saved-camera transitions
@@ -2289,9 +2289,8 @@ camera while previewing; zero retains immediate switching. Start the next blend
 after the current one completes, or cut first. The current transition can be
 sampled backward using the cache cursor; it is not yet a saved sequencer clip.
 Missing subjects hold the last valid mixed view. Leaving preview or reloading
-clears the transition. Campath transitions and isolated per-camera `mirv_aim`
-configuration remain the next integration steps; existing global aim still does
-not affect saved-camera preview in this slice.
+clears the transition. The follow-up integration below adds campath playback transitions and isolated
+per-camera `mirv_aim` configuration.
 
 Camera names now draw above their guides using the world-label renderer,
 including with Show path disabled. Their size is independent of the path's key
@@ -2306,3 +2305,57 @@ attachment changes. `mirv_cam undo` and `mirv_cam redo` operate on that history
 explicitly. Preview navigation and drawing preferences do not create history
 entries. History retains up to 64 edits and is session-only. Restored attachments
 retain their recorded identity checks; undo cannot bind to a recycled entity slot.
+
+
+### Mixer milestone: per-camera aiming and campath playback
+
+Independent cameras reuse the existing aim engine and its options. Scope an
+existing `mirv_aim` command to a camera using `mirv_aim camera <ID/name> [...]`:
+
+```text
+mirv_cam add Hero
+mirv_aim camera Hero entityIndex 5
+mirv_aim camera Hero active 1
+mirv_aim camera Hero snapTo 0
+mirv_cam preview Hero
+```
+
+Position stays fixed unless the camera itself is attached. Aiming controls only
+orientation. `point abs`, `point cam`, `point last`, `offset`, `up`, `velLimit`,
+`accelLimit`, `softDeactivate`, and custom `calcVecAng` sources use the existing
+implementation. `mirv_aim camera Hero` lists scoped usage; ordinary `mirv_aim`
+continues to configure legacy aiming. The Cameras tab's **Aiming** section
+exposes target, active, snap/smooth, offset and smoothing-limit controls. Enter
+commits target fields. Aim settings participate in camera undo/redo and survive
+retargeting the camera's positional attachment.
+
+Each camera owns its settings and smoothing state. Evaluating guides or both
+ends of a blend cannot advance another camera's filter, or advance the same
+filter twice in the same engine frame. Inactive guide previews do not advance
+the stored filter. Live smoothing uses the engine frame step and keeps
+converging while demo time is paused. Discontinuous live time resets the filter.
+Entity aiming pins recorded identity and reconnects through the same provider
+as attachments; choose a target that exists in live playback when configuring
+it. Snap aiming can then resolve that subject from Scene Cache, without using
+its live pose. Fixed world-point targets also work in cache preview. Cached
+smoothed aiming and cached custom calc sources remain unavailable: they hold
+the last valid view instead of silently evaluating against live state.
+
+The mixer also accepts `playback` as a source, evaluating the existing enabled
+campath playback collection at the live or cached client time. Existing timing,
+offsets, holds, modifiers, mute/solo and playback cuts remain authoritative:
+
+```text
+mirv_cam preview Hero
+mirv_cam preview playback 1.5
+mirv_cam preview Hero 1.5
+mirv_cam preview off
+```
+
+Omit the duration for a cut. **Preview campath playback** in the Cameras tab
+uses the same transition setting as camera selection. Enable the desired paths
+for playback; a gap or unavailable source holds the last valid mixed pose.
+`keys` still selects interactive keyframe navigation, which is separate from
+playing the enabled campath collection. Mixer playback uses authored campath
+poses; it does not apply legacy global aiming or collision to that source.
+These transitions are session preview operations, not saved sequencer clips.
