@@ -590,3 +590,66 @@ if args.windows_abi_compiler:
         import re
         assert re.search(r'\b' + str(offset) + r'\(', assembly.read_text()), assembly.read_text()
     print('Real MSVC x86/x64 filesystem Size(handle) slot checks passed')
+
+# Exercise the actual rig registry, console operations and controller selection.
+rig_source=(root/'AfxHookSource/MirvCam.cpp').read_text()
+rig_adapter=rig_source[rig_source.index('namespace\n{\nstruct NamedCameraRig'):rig_source.index('CON_COMMAND(mirv_cam,')]
+rig_preamble=r'''
+#include "shared/CameraRig.h"
+#include <cassert>
+#include <climits>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+#include <cstdlib>
+#include <iostream>
+#include <strings.h>
+#define _stricmp strcasecmp
+namespace advancedfx {struct ICommandArgs {virtual int ArgC()=0;virtual const char*ArgV(int)=0;};}
+void Tier0_Msg(const char*,...){} void Tier0_Warning(const char*,...){}
+namespace SOURCESDK {struct Vector{float x=0,y=0,z=0;};struct QAngle{float x=0,y=0,z=0;};}
+std::map<int,advancedfx::CameraPose> targets;int liveCalcs=0;int g_LevelInitCount=0;
+std::map<int,unsigned> generations;void*Mirv_Tf2_DiagnosticEntity(int e){auto f=targets.find(e);return f==targets.end()?nullptr:&f->second;}unsigned Mirv_Tf2_EntityHandle(const void*p){for(auto&e:targets)if(&e.second==p)return unsigned(e.first)*100+generations[e.first];return 0xffffffffu;}unsigned Mirv_Tf2_HandleForAddress(int e){return Mirv_Tf2_EntityHandle(Mirv_Tf2_DiagnosticEntity(e));}
+
+struct IMirvVecAngCalc {int Refs=0,Entity;IMirvVecAngCalc(int e):Entity(e){++liveCalcs;}void AddRef(){++Refs;}void Release(){if(!--Refs){--liveCalcs;delete this;}}bool CalcVecAng(SOURCESDK::Vector&o,SOURCESDK::QAngle&a){auto f=targets.find(Entity);if(f==targets.end())return false;o.x=f->second.Position[0];o.y=f->second.Position[1];o.z=f->second.Position[2];auto r=f->second.Rotation.ToQREulerAngles().ToQEulerAngles();a.x=r.Pitch;a.y=r.Yaw;a.z=r.Roll;return true;}};
+struct Calcs{IMirvVecAngCalc*NewTf2EntityIndexCalc(const char*,int e,int,int){return new IMirvVecAngCalc(e);}}g_MirvVecAngCalcs;
+constexpr int SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2,MIRV_TF2_BONEMODE_BONE=0;int g_SourceSdkVer=1;
+bool Mirv_Tf2_ParseBoneArg(int,const char*s,int&bone){bone=std::atoi(s);return bone>=-1;}
+bool cached=false,cacheCoverage=true;double pathEvalTime=-1;namespace AfxHookSource{namespace CameraOverlay{struct Frame{double ClientTime=2;};bool SceneCachePreviewActive(){return cached;}std::shared_ptr<Frame>SceneCacheView(){return cacheCoverage?std::make_shared<Frame>():nullptr;}}}
+struct FakePath{struct Value{double X=300,Y=0,Z=0,Fov=90;Afx::Math::Quaternion R{1,0,0,0};};bool CanEval(){return true;}double GetOffset(){return 0;}bool GetHold(){return true;}double GetLowerBound(){return 0;}double GetUpperBound(){return 10;}Value Eval(double time){pathEvalTime=time;return {};}};
+struct Document{bool Present=true;FakePath Path;size_t GetCount(){return Present?1:0;}std::string GetName(size_t){return "Path";}unsigned long long GetId(size_t){return 17;}FakePath*GetPath(size_t){return &Path;}};
+struct View{double LastCameraOrigin[3]{1,2,3},LastCameraAngles[3]{},LastCameraFov=65;Document m_CamPaths;}g_Hook_VClient_RenderView;
+'''
+rig_tests=r'''
+struct Args:advancedfx::ICommandArgs{std::vector<const char*>v;int ArgC()override{return int(v.size());}const char*ArgV(int i)override{return v.at(i);}};
+void command(std::initializer_list<const char*> words){Args a;a.v=words;RigCommand(&a);}
+int main(){advancedfx::CameraPose pose;
+command({"mirv_cam","rig","new","A"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==1);
+g_Hook_VClient_RenderView.LastCameraOrigin[0]=10;command({"mirv_cam","rig","new","B"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==10);
+advancedfx::CameraPose target;target.Position[0]=100;targets[5]=target;
+command({"mirv_cam","rig","attach","A","5"});assert(liveCalcs==1);command({"mirv_cam","rig","use","A"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==1);
+targets[5].Position[0]=200;assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==101);
+++generations[5];targets[5].Position[0]=900;assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==101&&g_RigUnavailable);targets[5].Position[0]=200;command({"mirv_cam","rig","attach","A","5"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==101&&!g_RigUnavailable&&liveCalcs==1);
+
+cached=true;targets[5].Position[0]=300;assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==101&&g_RigUnavailable);cached=false;
+command({"mirv_cam","rig","use","B"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==10);
+command({"mirv_cam","rig","pose","B","40","50","60","0","90","0","80"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==40&&pose.Fov==80);
+command({"mirv_cam","rig","pose","B","inf","0","0","0","0","0","90"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==40);
+command({"mirv_cam","rig","attach","B","999"});assert(liveCalcs==1&&MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==40);
+command({"mirv_cam","rig","path","Path"});assert(MirvCam_EvaluateRig(3,pose)&&pose.Position[0]==300);
+cached=true;assert(MirvCam_EvaluateRig(99,pose)&&pathEvalTime==2);cacheCoverage=false;assert(MirvCam_EvaluateRig(99,pose)&&pathEvalTime==2&&g_RigUnavailable);cached=false;cacheCoverage=true;
+g_Hook_VClient_RenderView.m_CamPaths.Present=false;assert(MirvCam_EvaluateRig(3,pose)&&pose.Position[0]==300&&g_RigUnavailable);
+command({"mirv_cam","rig","off"});assert(!MirvCam_EvaluateRig(3,pose));
+command({"mirv_cam","rig","remove","A"});assert(liveCalcs==0);
+command({"mirv_cam","rig","use","B"});++g_LevelInitCount;assert(!MirvCam_EvaluateRig(0,pose));command({"mirv_cam","rig","use","B"});assert(MirvCam_EvaluateRig(0,pose)&&pose.Position[0]==40);
+std::cout<<"Named rig commands, target ownership and source selection checks passed\n";}
+'''
+source=out/'camera_rig_adapter.cpp';source.write_text(rig_preamble+rig_adapter+rig_tests)
+command=['g++','-std=c++17','-O1','-g','-Dabstract=','-I'+str(root),'-I'+str(root/'AfxHookSource'),'-include',str(root/'tests/cinematic/msvc_crt_compat.h'),str(source),str(root/'shared/AfxMath.cpp'),'-o',str(out/'camera_rig_adapter')]
+if args.sanitize:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
+result=subprocess.run(command,capture_output=True,text=True)
+if result.returncode:print(result.stderr[-6500:]);raise SystemExit(result.returncode)
+result=subprocess.run([str(out/'camera_rig_adapter')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
+print(result.stdout+result.stderr)
+if result.returncode:raise SystemExit(result.returncode)

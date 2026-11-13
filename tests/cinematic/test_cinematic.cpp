@@ -1,4 +1,5 @@
 #include "shared/CamPath.h"
+#include "shared/CameraRig.h"
 #include "shared/MirvCampath.h"
 #include <cmath>
 #include <cstring>
@@ -2061,6 +2062,47 @@ void capturedEulerRegressionMatrix()
 	check(turns.CaptureState() == before, "Failed capture is atomic");
 }
 
+void proceduralRigPoses()
+{
+	using namespace advancedfx;
+	CameraPose target;
+	target.Position[0] = 10;
+	target.Position[1] = 20;
+	target.Rotation = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({0, 90, 0}));
+	CameraPose world;
+	world.Position[0] = 15;
+	world.Position[1] = 25;
+	world.Position[2] = 8;
+	world.Fov = 65;
+	world.Rotation = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({15, 45, 10}));
+	CameraRig a, b;
+	CameraPose output;
+	check(a.Attach(world, target, true), "Capture a full rigid rig relative to its target");
+	check(a.Evaluate(&target, output), "Evaluate an attached rig without engine or UI state");
+	for (int i = 0; i < 3; ++i)
+		near(output.Position[i], world.Position[i]);
+	near(std::abs(DotProduct(output.Rotation, world.Rotation)), 1);
+	near(output.Fov, 65);
+	check(b.Attach(world, target, false), "Position attachment can keep world orientation");
+	auto moved = target;
+	moved.Position[0] += 100;
+	moved.Rotation = Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({0, 180, 0}));
+	check(b.Evaluate(&moved, output), "Evaluate another rig independently");
+	near(std::abs(DotProduct(output.Rotation, world.Rotation)), 1);
+	check(a.Evaluate(&target, output), "Evaluating another rig does not alter the first rig");
+	near(output.Position[0], 15);
+	auto before = output;
+	check(!a.Evaluate(nullptr, output), "Missing targets fail rather than using another live source");
+	near(output.Position[0], before.Position[0]);
+	b.Attached = false;
+	b.Pose = world;
+	check(b.Evaluate(nullptr, output), "Fixed rigs do not require scene data");
+	auto invalid = target;
+	invalid.Position[0] = std::numeric_limits<double>::quiet_NaN();
+	check(!a.Attach(world, invalid, true), "Invalid target capture is rejected atomically");
+	check(a.Evaluate(&target, output), "Failed capture retains the rig");
+	near(output.Position[0], 15);
+}
 void recapturedEulerTangentsAndHistory()
 {
 	for (auto method : {AutoTangentMethod::Spline, AutoTangentMethod::CatmullRom, AutoTangentMethod::Monotone,
@@ -2410,6 +2452,7 @@ int main()
 {
 	try
 	{
+		proceduralRigPoses();
 		recapturedEulerTangentsAndHistory();
 		capturedEulerRegressionMatrix();
 		insertedEulerPoseAndSpeedMarkers();

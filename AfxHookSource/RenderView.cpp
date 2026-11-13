@@ -570,6 +570,12 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 
 		case Override_Input:
 		{
+			if (MirvCam_RigViewActive())
+			{
+				m_MirvInput->ClearMovementInput();
+				m_MirvInput->ResetCameraSmoothing();
+				break;
+			}
 			if (MirvCampathPreview_IsActive())
 			{
 				m_MirvInput->ClearMovementInput();
@@ -678,6 +684,23 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 		else if (Fov > 179) Fov = 179;
 	}
 	
+	// Explicit procedural/campath source selection is independent of legacy overrides.
+	advancedfx::CameraPose rigPose;
+	if (MirvCam_EvaluateRig(curTime, rigPose))
+	{
+		Tx = float(rigPose.Position[0]);
+		Ty = float(rigPose.Position[1]);
+		Tz = float(rigPose.Position[2]);
+		const auto angles = rigPose.Rotation.ToQREulerAngles().ToQEulerAngles();
+		Rx = float(angles.Pitch);
+		Ry = float(angles.Yaw);
+		Rz = float(angles.Roll);
+		Fov = float(rigPose.Fov);
+		attachedIdentity = nullptr;
+		collisionFree = false;
+		collisionPath = nullptr;
+		originOrAnglesOverriden = true;
+	}
 	// Attached camera follow and framing.
 	float attachedAngles[3] = {Rx, Ry, Rz};
 	const bool aimFrame = attachedIdentity && aimAttachment == attachedIdentity;

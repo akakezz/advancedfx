@@ -16,6 +16,9 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <string>
+#include <map>
+#include <memory>
+#include "CameraOverlay.h"
 
 // How mirv_cam attach gets the angles when a bone is used.
 static int g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ALIGNED;
@@ -330,6 +333,363 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 }
 // End camera collision console command.
 
+extern int g_LevelInitCount;
+namespace
+{
+struct NamedCameraRig
+{
+	advancedfx::CameraRig Rig;
+	advancedfx::CameraPose LastWorld;
+	std::shared_ptr<IMirvVecAngCalc> Target;
+	int EntityAddress = -1, TargetLevel = -1;
+	unsigned int TargetHandle = 0xffffffffu;
+};
+std::map<std::string, NamedCameraRig> g_CameraRigs;
+enum class CameraSource
+{
+	Legacy,
+	Rig,
+	Path
+};
+CameraSource g_CameraSource = CameraSource::Legacy;
+std::string g_CameraRigName;
+unsigned long long g_CameraPathId = 0;
+advancedfx::CameraPose g_LastRigPose;
+bool g_RigUnavailable = false;
+void SyncRigLevel()
+{
+	static int level = g_LevelInitCount;
+	if (level != g_LevelInitCount)
+	{
+		level = g_LevelInitCount;
+		g_CameraSource = CameraSource::Legacy;
+		g_RigUnavailable = false;
+	}
+}
+advancedfx::CameraPose RigCapture()
+{
+	advancedfx::CameraPose pose;
+	double p, y, r, fov;
+	for (int i = 0; i < 3; ++i)
+		pose.Position[i] = g_Hook_VClient_RenderView.LastCameraOrigin[i];
+	p = g_Hook_VClient_RenderView.LastCameraAngles[0];
+	y = g_Hook_VClient_RenderView.LastCameraAngles[1];
+	r = g_Hook_VClient_RenderView.LastCameraAngles[2];
+	fov = g_Hook_VClient_RenderView.LastCameraFov;
+	pose.Rotation =
+	    Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({p, y, r}));
+	pose.Fov = fov;
+	return pose;
+}
+unsigned int RigEntityHandle(int address)
+{
+	if (address >= 2048) return Mirv_Tf2_HandleForAddress(address);
+	auto entity = Mirv_Tf2_DiagnosticEntity(address);
+	return entity ? Mirv_Tf2_EntityHandle(entity) : 0xffffffffu;
+}
+bool RigTarget(const NamedCameraRig &rig, advancedfx::CameraPose &pose)
+{
+	if (!rig.Target || AfxHookSource::CameraOverlay::SceneCachePreviewActive() ||
+	    rig.TargetLevel != g_LevelInitCount || rig.TargetHandle == 0xffffffffu ||
+	    RigEntityHandle(rig.EntityAddress) != rig.TargetHandle)
+		return false;
+	SOURCESDK::Vector origin;
+	SOURCESDK::QAngle angles;
+	if (!rig.Target->CalcVecAng(origin, angles))
+		return false;
+	pose.Position[0] = origin.x;
+	pose.Position[1] = origin.y;
+	pose.Position[2] = origin.z;
+	pose.Rotation = Afx::Math::Quaternion::FromQREulerAngles(
+	    Afx::Math::QREulerAngles::FromQEulerAngles({angles.x, angles.y, angles.z}));
+	return pose.Valid();
+}
+bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
+{
+	advancedfx::CameraPose target;
+	if (rig.Rig.Attached && !RigTarget(rig, target))
+		return false;
+	if (!rig.Rig.Evaluate(rig.Rig.Attached ? &target : nullptr, pose))
+		return false;
+	rig.LastWorld = pose;
+	return true;
+}
+void RigCommand(advancedfx::ICommandArgs *args)
+{
+	SyncRigLevel();
+	int argc = args->ArgC();
+	if (argc == 3 && !_stricmp(args->ArgV(2), "off"))
+	{
+		g_CameraSource = CameraSource::Legacy;
+		g_RigUnavailable = false;
+		return;
+	}
+	if (argc == 3 && !_stricmp(args->ArgV(2), "list"))
+	{
+		for (const auto &entry : g_CameraRigs)
+			Tier0_Msg("%s: %s%s\n", entry.first.c_str(), entry.second.Rig.Attached ? "attached" : "fixed",
+			          g_CameraSource == CameraSource::Rig && g_CameraRigName == entry.first ? " [viewing]"
+			                                                                                : "");
+		Tier0_Msg("Camera controller: %s%s\n",
+		          g_CameraSource == CameraSource::Legacy ? "legacy"
+		          : g_CameraSource == CameraSource::Path ? "campath"
+		                                                 : "rig",
+		          g_RigUnavailable ? "; source unavailable (holding last valid pose)" : "");
+		return;
+	}
+	if (argc == 4)
+	{
+		const std::string name = args->ArgV(3);
+		const char *action = args->ArgV(2);
+		if (!_stricmp(action, "path"))
+		{
+			auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+			for (size_t i = 0; i < paths.GetCount(); ++i)
+				if (paths.GetName(i) == name)
+				{
+					auto path = paths.GetPath(i);
+					if (!path || !path->CanEval())
+						break;
+					g_LastRigPose = RigCapture();
+					g_CameraPathId = paths.GetId(i);
+					g_CameraSource = CameraSource::Path;
+					g_RigUnavailable = false;
+					return;
+				}
+			Tier0_Warning("Named campath is missing or cannot evaluate.\n");
+			return;
+		}
+		if (!_stricmp(action, "new"))
+		{
+			if (name.empty() || name.size() > 128 || g_CameraRigs.count(name) || g_CameraRigs.size() >= 128)
+			{
+				Tier0_Warning("Use a unique rig name of 1..128 bytes (maximum 128 rigs).\n");
+				return;
+			}
+			NamedCameraRig rig;
+			rig.Rig.Pose = RigCapture();
+			if (!rig.Rig.Pose.Valid())
+				return;
+			rig.LastWorld = rig.Rig.Pose;
+			g_CameraRigs.emplace(name, std::move(rig));
+			g_LastRigPose = g_CameraRigs.at(name).Rig.Pose;
+			g_CameraRigName = name;
+			g_CameraSource = CameraSource::Rig;
+			g_RigUnavailable = false;
+			return;
+		}
+		auto found = g_CameraRigs.find(name);
+		if (found == g_CameraRigs.end())
+		{
+			Tier0_Warning("Unknown camera rig.\n");
+			return;
+		}
+		if (!_stricmp(action, "remove"))
+		{
+			if (g_CameraSource == CameraSource::Rig && g_CameraRigName == name)
+				g_CameraSource = CameraSource::Legacy;
+			g_CameraRigs.erase(found);
+			return;
+		}
+		if (!_stricmp(action, "use"))
+		{
+			advancedfx::CameraPose pose;
+			if (!EvaluateNamedRig(found->second, pose))
+			{
+				Tier0_Warning("Rig target unavailable; existing view retained.\n");
+				return;
+			}
+			g_LastRigPose = pose;
+			g_CameraRigName = name;
+			g_CameraSource = CameraSource::Rig;
+			g_RigUnavailable = false;
+			return;
+		}
+		if (!_stricmp(action, "capture"))
+		{
+			auto pose = RigCapture();
+			if (!pose.Valid())
+				return;
+			if (found->second.Rig.Attached)
+			{
+				advancedfx::CameraPose target;
+				if (!RigTarget(found->second, target) ||
+				    !found->second.Rig.Attach(pose, target, found->second.Rig.InheritRotation))
+				{
+					Tier0_Warning("Rig target unavailable; pose retained.\n");
+					return;
+				}
+			}
+			else
+				found->second.Rig.Pose = pose;
+			found->second.LastWorld = pose;
+			return;
+		}
+		if (!_stricmp(action, "fixed"))
+		{
+			advancedfx::CameraPose pose;
+			if (!EvaluateNamedRig(found->second, pose))
+				pose = found->second.LastWorld;
+			found->second.Rig.Pose = pose;
+			found->second.Rig.Attached = false;
+			found->second.Target.reset();
+			return;
+		}
+	}
+	if (argc == 11 && !_stricmp(args->ArgV(2), "pose"))
+	{
+		auto found = g_CameraRigs.find(args->ArgV(3));
+		if (found == g_CameraRigs.end())
+		{
+			Tier0_Warning("Unknown camera rig.\n");
+			return;
+		}
+		double values[7];
+		for (int i = 0; i < 7; ++i)
+		{
+			char *end = nullptr;
+			values[i] = std::strtod(args->ArgV(i + 4), &end);
+			if (end == args->ArgV(i + 4) || *end || !std::isfinite(values[i]))
+			{
+				Tier0_Warning("Pose values must be finite numbers.\n");
+				return;
+			}
+		}
+		advancedfx::CameraPose pose;
+		for (int i = 0; i < 3; ++i)
+			pose.Position[i] = values[i];
+		pose.Rotation = Afx::Math::Quaternion::FromQREulerAngles(
+		    Afx::Math::QREulerAngles::FromQEulerAngles({values[3], values[4], values[5]}));
+		pose.Fov = values[6];
+		if (!pose.Valid())
+		{
+			Tier0_Warning("FOV must be 1..179 degrees.\n");
+			return;
+		}
+		if (found->second.Rig.Attached)
+		{
+			advancedfx::CameraPose target;
+			if (!RigTarget(found->second, target) ||
+			    !found->second.Rig.Attach(pose, target, found->second.Rig.InheritRotation))
+				return;
+		}
+		else
+			found->second.Rig.Pose = pose;
+		found->second.LastWorld = pose;
+		return;
+	}
+	if ((argc == 5 || argc == 6 || argc == 7) && !_stricmp(args->ArgV(2), "attach"))
+	{
+		auto found = g_CameraRigs.find(args->ArgV(3));
+		char *end = nullptr;
+		long entity = std::strtol(args->ArgV(4), &end, 10);
+		if (found == g_CameraRigs.end() || end == args->ArgV(4) || *end || entity < 0 || entity >= INT_MAX)
+		{
+			Tier0_Warning("Unknown rig or invalid entity address.\n");
+			return;
+		}
+		if (!(g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified))
+		{
+			Tier0_Warning("Rig attachments currently support TF2/TF2C.\n");
+			return;
+		}
+		int bone = -1;
+		if (argc >= 6 && !Mirv_Tf2_ParseBoneArg(int(entity), args->ArgV(5), bone))
+			return;
+		bool inherit = true;
+		if (argc == 7)
+		{
+			if (!_stricmp(args->ArgV(6), "world"))
+				inherit = false;
+			else if (_stricmp(args->ArgV(6), "target"))
+			{
+				Tier0_Warning("Orientation must be target or world.\n");
+				return;
+			}
+		}
+		advancedfx::CameraPose world;
+		if (!EvaluateNamedRig(found->second, world))
+			world = found->second.LastWorld;
+		auto calc =
+		    g_MirvVecAngCalcs.NewTf2EntityIndexCalc(nullptr, int(entity), bone, MIRV_TF2_BONEMODE_BONE);
+		if (!calc)
+			return;
+		calc->AddRef();
+		std::shared_ptr<IMirvVecAngCalc> owner(calc, [](IMirvVecAngCalc *p) { p->Release(); });
+		NamedCameraRig attached = found->second;
+		attached.Target = std::move(owner);
+		attached.EntityAddress = int(entity);
+		attached.TargetLevel = g_LevelInitCount;
+		attached.TargetHandle = RigEntityHandle(int(entity));
+		advancedfx::CameraPose target;
+		if (!RigTarget(attached, target) || !attached.Rig.Attach(world, target, inherit))
+		{
+			Tier0_Warning("Attachment unavailable; rig retained.\n");
+			return;
+		}
+		found->second = std::move(attached);
+		return;
+	}
+	Tier0_Msg("mirv_cam rig new|use|capture|fixed|remove <name>\nmirv_cam rig attach <name> <entity> [bone] "
+	          "[target|world]\nmirv_cam rig pose <name> <x> <y> <z> <pitch> <yaw> <roll> <fov>\nmirv_cam rig "
+	          "path <campath name> | off | list\nRigs are session-only. New captures and views a fixed rig; "
+	          "off returns to legacy camera controls.\n");
+}
+} // namespace
+bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose)
+{
+	SyncRigLevel();
+	if (g_CameraSource == CameraSource::Legacy)
+	{
+		g_RigUnavailable = false;
+		return false;
+	}
+	bool clockValid = true;
+	if (AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+	{
+		auto view = AfxHookSource::CameraOverlay::SceneCacheView();
+		clockValid = bool(view);
+		if (view)
+			clientTime = view->ClientTime;
+	}
+	bool valid = false;
+	advancedfx::CameraPose evaluated;
+	if (g_CameraSource == CameraSource::Rig)
+	{
+		auto found = g_CameraRigs.find(g_CameraRigName);
+		valid = found != g_CameraRigs.end() && EvaluateNamedRig(found->second, evaluated);
+	}
+	else if (clockValid)
+	{
+		auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+		for (size_t i = 0; i < paths.GetCount(); ++i)
+			if (paths.GetId(i) == g_CameraPathId)
+			{
+				auto path = paths.GetPath(i);
+				double time = clientTime - path->GetOffset();
+				if (path->CanEval() &&
+				    (path->GetHold() || (time >= path->GetLowerBound() && time <= path->GetUpperBound())))
+				{
+					auto value = path->Eval(time);
+					evaluated.Position[0] = value.X;
+					evaluated.Position[1] = value.Y;
+					evaluated.Position[2] = value.Z;
+					evaluated.Rotation = value.R;
+					evaluated.Fov = value.Fov;
+					valid = evaluated.Valid();
+				}
+				break;
+			}
+	}
+	if (valid)
+		g_LastRigPose = evaluated;
+	else if (!g_RigUnavailable)
+		Tier0_Warning("Selected camera source unavailable; holding its last valid pose. Cached attachment "
+		              "evaluation is not implemented yet.\n");
+	g_RigUnavailable = !valid;
+	pose = g_LastRigPose;
+	return true;
+}
 CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 {
 	int argc = args->ArgC();
@@ -338,6 +698,7 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 	{
 		char const * arg1 = args->ArgV(1);
 
+		if (!_stricmp("rig", arg1)) { RigCommand(args); return; }
 		if (!_stricmp("collision", arg1)) { MirvCameraCollisionCommand(args); return; }
 
 		if (0 == _stricmp("source", arg1))
@@ -877,6 +1238,7 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 	}
 
 	Tier0_Msg(
+		"mirv_cam rig [...] - Named fixed/rigid cameras and explicit campath cuts.\n"
 		"mirv_cam source [...] - Control camera location.\n"
 		"mirv_cam fov [...] - Control camera fov.\n"
 		"mirv_cam attach [...] - (TF2) Attach the camera to a player or entity (and bone).\n"
@@ -886,3 +1248,5 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 		"mirv_cam collision [...] - Optional TF2/TF2C free-camera and campath collision.\n"
 	);
 }
+
+bool MirvCam_RigViewActive() { SyncRigLevel(); return g_CameraSource != CameraSource::Legacy; }

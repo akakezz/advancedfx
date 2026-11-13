@@ -3,6 +3,7 @@
 #include "SourceInterfaces.h"
 
 #include "MirvCalcs.h"
+#include <shared/CameraRig.h>
 
 #include <string>
 
@@ -86,3 +87,6 @@ private:
 int MirvCam_GetAttachMode();
 bool MirvCam_GetAttachAnchor(double origin[3], void *&entity, const void *&identity, double entityOrigin[3], int *mode = nullptr);
 extern CMirvCam g_MirvCam;
+
+bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose);
+bool MirvCam_RigViewActive();

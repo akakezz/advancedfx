@@ -2083,3 +2083,63 @@ the app-system registry first, then the loaded filesystem module's public
 Entity labels support `mirv_drawentities filter ragdolls 0|1` and
 `mirv_drawentities color ragdolls R G B`. Ragdoll labels default to gray
 (170,170,170); gib labels default to orange (255,160,64).
+
+## Procedural camera rigs: first live prototype
+
+`mirv_cam rig` adds session-only named cameras alongside the existing commands.
+The default controller source is **legacy**, so existing campath, camera input,
+attachment and aiming behavior remains available through `rig off`.
+
+```text
+mirv_cam rig new "Wide"
+mirv_cam rig off
+mirv_cam rig new "Player shoulder"
+mirv_cam rig attach "Player shoulder" 5 -1 target
+mirv_cam rig use "Wide"
+mirv_cam rig use "Player shoulder"
+mirv_cam rig path "Opening"
+mirv_cam rig off
+```
+
+`new` captures the final camera pose and immediately views it. Use `off` before
+moving the free camera to capture another pose. `use` cuts to a rig; `path` cuts
+to a named campath by its stable document ID without altering keyframes. The
+explicit controller source wins over legacy overrides, and free-camera input
+is not advanced invisibly behind it. `list` reports rigs and controller status;
+`remove <name>` deletes a rig. Removing a viewed rig returns to legacy controls.
+
+`attach <name> <entity address> [bone name/index] [target|world]` captures the rig's
+current pose relative to the target without changing the view immediately.
+`target` inherits the target frame's orientation; `world` keeps the camera's
+orientation fixed while its offset still moves rigidly with the target frame.
+Each rig owns its own reference-counted entity/bone resolver; legacy attachment
+settings are not reused as mutable rig state. TF2 and TF2C entity addresses,
+including client-only gib addresses, use the existing resolver. Rig bindings
+also pin the full entity handle and level, so a recycled network slot cannot
+silently change the subject. Explicit reattachment can use the last observed
+world pose if the previous target has vanished.
+
+`capture <name>` recaptures the current view, and `fixed <name>` detaches while
+retaining the evaluated pose (or its last observed pose if the target vanished).
+Numeric editing is available as
+`mirv_cam rig pose <name> <x> <y> <z> <pitch> <yaw> <roll> <fov>`.
+These values describe the desired world pose, including when attached. Invalid
+poses/targets are rejected without replacing the prior configuration. There is
+an initial limit of 128 rigs. Names are case-sensitive and must be unique.
+
+The shared `CameraPose`/`CameraRig` evaluation code has no engine or UI dependency.
+The engine adapter converts both procedural rigs and campaths to that pose before
+final view/export. A missing target or removed/out-of-range campath holds the last
+valid controller pose and reports the failure once instead of silently switching
+sources. Level changes return the controller to legacy mode; fixed definitions
+remain, and stale entity attachments require explicit rebinding.
+
+This milestone does **not** yet add timed sequencer clips, blends, rig persistence,
+undo, gizmos, tracking, orbit, modifiers, damping or collision for named rigs.
+Legacy collision/follow corrections are bypassed for explicit controller output,
+so they cannot accidentally affect another rig. Fixed cameras can be used during
+cache preview, and campaths use its client-time cursor. Cached entity attachment
+is deliberately unavailable until the cached target provider is implemented:
+it holds the last valid pose rather than reading the live entity at a different
+time. Those limitations are the next milestones, not supported behavior implied
+by this prototype.
