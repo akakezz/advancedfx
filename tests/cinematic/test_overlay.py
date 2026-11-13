@@ -196,7 +196,7 @@ bool trackButton(const char*l,const ImVec2&s=ImVec2(0,0)){bool b=ImGui::Button(l
 bool trackSeekMenuItem(const char*l){bool b=ImGui::MenuItem(l);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackTab(const char*l,bool*p=nullptr,ImGuiTabItemFlags f=0){bool b=ImGui::BeginTabItem(l,p,f);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
 bool trackInvisible(const char*l,const ImVec2&s,ImGuiButtonFlags f=0){bool b=ImGui::InvisibleButton(l,s,f);widgets[l]={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};return b;}
-std::map<int,int> sequencerLabels;void TestRecordNeoLabel(int tick,int index){sequencerLabels[tick]=index;}
+std::map<int,int> sequencerLabels;std::map<int,ImVec2> sequencerKeyPoints;void TestRecordNeoLabel(int tick,int index,ImVec2 point){sequencerLabels[tick]=index;sequencerKeyPoints[tick]=point;}
 int tooltipSpanTick=-1;void TestRecordSpanTooltip(int tick){tooltipSpanTick=tick;}
 namespace ImGui{void TestSetNeoView(float zoom,int offset);ImVec2 TestNeoPlayheadPoint(double tick);double TestNeoDisplayFrame();}
 int seqEnd=0,viewStart=0,viewEnd=0,timelineSelected=0;Rect seqRect,graphRect;
@@ -222,6 +222,7 @@ s=s.replace('ImGui::InputText(', 'trackText(').replace('ImGui::InputTextMultilin
 s=s.replace('ImGui::InputDouble(', 'trackDouble(').replace('ImGui::Checkbox(', 'trackCheckbox(').replace('ImGui::Button(', 'trackButton(').replace('ImGui::SmallButton(', 'trackButton(').replace('ImGui::BeginTabItem(', 'trackTab(').replace('ImGui::BeginNeoSequencer(', 'trackSequencer(').replace('ImGui::Selectable(', 'trackSelectable(').replace('ImGui::BeginCombo(', 'trackCombo(').replace('ImGui::InvisibleButton(', 'trackInvisible(').replace('ImGui::Combo(', 'trackArrayCombo(').replace('ImGui::SliderFloat(', 'trackSlider(').replace('ImGui::BeginNeoTimelineEx(', 'trackTimeline(').replace('ImGui::NeoKeyframe(', 'trackKeyframe(')
 s=s.replace('ImGui::NeoTimelineSpan(', 'trackSpan(')
 s=s.replace('ImGui::MenuItem("Go to")','trackSeekMenuItem("Go to")').replace('ImGui::MenuItem("Go to with lead-in")','trackSeekMenuItem("Go to with lead-in")')
+s=s.replace('ImGui::MenuItem("Edit")','trackSeekMenuItem("Edit")').replace('ImGui::MenuItem("Remove")','trackSeekMenuItem("Remove")')
 s=s.replace('ImGui::TreeNode("Bounding box filters")','trackTree("Bounding box filters")')
 s=s.replace('ImGui::TreeNode("Trail categories")','trackTree("Trail categories")')
 s=s.replace('ImGui::CollapsingHeader(', 'trackHeader(').replace('ImGui::TreeNode("Player filter (optional)")','trackTree("Player filter (optional)")')
@@ -712,6 +713,13 @@ int main(){try{ImGui::CreateContext();auto&io=ImGui::GetIO();io.IniFilename=null
  button("Recording");check(widgets.count("Start Recording"),"TF2 screen recording panel is available");button("Start Recording");check(!IsOpen(),"Recording closes the overlay before capture");check(commands.back().find("mirv_streams record screen enabled 1")!=std::string::npos,"Recording uses TF2 screen capture");
  // Real UI interaction with command markers and indexed event details.
  SetOpen(true);g_NativeDemoSeek=g_NativeDemoPlay=NativeDemoAction;g_ShowCurveEditor=false;g_ShowSequencer=true;g_SequencerTimeline.FocusCommands=true;ImGui::SetWindowPos("HLAE Sequencer",{20,20});ImGui::SetWindowSize("HLAE Sequencer",{1250,950});ImGui::SetWindowFocus("HLAE Sequencer");frame();frame();
+ // A keyframe context must win over the background's seek popup.
+ sequencerKeyPoints.clear();frame();check(!sequencerKeyPoints.empty(),"Sequencer draws an editable camera key marker");
+ auto keyContextPoint=sequencerKeyPoints.rbegin()->second;auto beforeKeyContext=path.CaptureState();g_ShowGizmo=false;
+ frame(keyContextPoint);frame(keyContextPoint,false,0,false,true);frame(keyContextPoint);
+ check(widgets.count("Edit")&&widgets.count("Remove")&&widgets.count("Go to"),"Right-clicking a camera key preserves its editing and seeking actions");
+ button("Edit");check(g_LastCampathCtx.active&&g_ShowGizmo,"Edit selects the clicked key for an immediately visible gizmo");
+ check(path.CaptureState()==beforeKeyContext,"Opening the key gizmo does not change the camera path");g_ShowGizmo=false;frame();
  auto cameraBeforeCommands=path.CaptureState();size_t commandsBeforeEdit=commands.size();button("Add command at playhead");check(g_CommandSystem.GetTickMarkers().size()==1&&!g_CommandSystem.TickMarkersEnabled(),"Sequencer creates a command marker without arming execution");
  auto typeCommandField=[&](const char*label,const char*value){auto r=widgets.at(label);ImVec2 p(r.Min.x+25,(r.Min.y+r.Max.y)/2);frame(p);frame(p,true);frame(p,false);io.AddKeyEvent(ImGuiMod_Ctrl,true);io.AddKeyEvent(ImGuiKey_A,true);frame();io.AddKeyEvent(ImGuiKey_A,false);io.AddKeyEvent(ImGuiMod_Ctrl,false);io.AddInputCharactersUTF8(value);frame();};
  typeCommandField("Command name","Test cue");typeCommandField("Command text","echo marker test");check(g_CommandSystem.GetTickMarkers()[0].Command.empty()&&commands.size()==commandsBeforeEdit,"Typing drafts neither changes the saved command nor executes it");button("Apply command edits");check(g_CommandSystem.GetTickMarkers()[0].Name=="Test cue"&&g_CommandSystem.GetTickMarkers()[0].Command=="echo marker test","Apply commits a command draft through the native scheduler");check(path.CaptureState()==cameraBeforeCommands,"Command editing does not retime or alter camera keys");
@@ -1340,7 +1348,7 @@ test=test.replace('void frame(',mode_preamble+mode_constants+mode_math+mode_clas
 test=test.replace('int main(){try{',collision_tests+'\nint main(){try{CollisionTests();AttachedFollowTests();AttachmentModeTest::Run();',1)
 
 neo=(root/'shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.cpp').read_text()
-neo='extern void TestRecordNeoLabel(int,int); extern void TestRecordSpanTooltip(int);\n'+neo.replace('TextUnformatted(context.SpanCaption.c_str());','TestRecordSpanTooltip(context.SpanBegin); TextUnformatted(context.SpanCaption.c_str());').replace('snprintf(lbl, sizeof(lbl), "%d", labelIndex);','snprintf(lbl, sizeof(lbl), "%d", labelIndex); TestRecordNeoLabel(*frame,labelIndex);')
+neo='struct ImVec2; extern void TestRecordNeoLabel(int,int,ImVec2); extern void TestRecordSpanTooltip(int);\n'+neo.replace('TextUnformatted(context.SpanCaption.c_str());','TestRecordSpanTooltip(context.SpanBegin); TextUnformatted(context.SpanCaption.c_str());').replace('snprintf(lbl, sizeof(lbl), "%d", labelIndex);','snprintf(lbl, sizeof(lbl), "%d", labelIndex); TestRecordNeoLabel(*frame,labelIndex,center);')
 neo+='\nnamespace ImGui{void TestSetNeoView(float zoom,int offset){for(auto &entry:sequencerData){entry.second.Zoom=zoom;entry.second.OffsetFrame=offset;}}}\n'
 neo += '\nnamespace ImGui{ImVec2 TestNeoPlayheadPoint(double tick){auto&c=sequencerData.at(currentSequencer);return getCurrentFrameBB(tick,c).GetCenter();}double TestNeoDisplayFrame(){return sequencerData.at(currentSequencer).DisplayFrame;}}\n'
 neo_file=out/'neo_labels_test.cpp';neo_file.write_text(neo)

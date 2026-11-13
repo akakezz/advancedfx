@@ -1296,7 +1296,9 @@ shot; collections retain their own native format and playback rules.
 
 ## Gizmos and observing
 
-Choose **Edit** on a timeline key, then enable **Show Gizmo**. **G** selects
+Right-click a keyframe marker and choose **Edit** to open its viewport gizmo.
+Right-clicking empty timeline space instead opens the tick-seeking menu.
+**Show Gizmo** also toggles the gizmo manually. **G** selects
 translation and **R** rotation when a text field is not active. Local/world modes
 and Ctrl snapping are available. **C** toggles free-camera control. Camera Control
 also provides FOV, roll and keyboard speed sliders.

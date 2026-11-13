@@ -4675,11 +4675,12 @@ static int EventSeekTick(int tick)
 {
 	return (std::max)(0, tick - (std::max)(0, g_SequencerTimeline.EventLeadTicks));
 }
-static void DrawSequencerSeekContext()
+static void DrawSequencerSeekContext(bool keyframeContextOpened)
 {
 	auto &state = g_SequencerTimeline;
 	ImGui::FrameIndexType tick;
-	if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && ImGui::GetNeoSequencerMouseFrame(&tick))
+	if (!keyframeContextOpened && ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+	    ImGui::GetNeoSequencerMouseFrame(&tick))
 	{
 		if (!state.MarkerContext)
 		{
@@ -6845,6 +6846,7 @@ void Draw()
 				if (ImGui::BeginNeoSequencer("##demo_seq", &s_seqFrame, &s_seqStart, &s_seqEnd, seqSize,
 											 seqFlags))
 				{
+					bool keyframeContextOpened = false;
 					ImGui::GetNeoSequencerView(&visibleStart, &visibleEnd);
 					if (SceneCachePreviewActive())
 					{
@@ -6994,6 +6996,9 @@ void Draw()
 						// Context menu on keyframe
 						if (rightClickedIndex >= 0)
 						{
+							// The marker owns this click; the later background seek
+							// menu must not replace its popup at the same ImGui level.
+							keyframeContextOpened = true;
 							contextRevision = g_Hook_VClient_RenderView.m_CamPath.GetGeometryRevision();
 							s_ctxMenuPending.active = true;
 							s_ctxMenuPending.time = s_cache.times[(size_t)rightClickedIndex];
@@ -7029,7 +7034,10 @@ void Draw()
 							if (ImGui::MenuItem("Edit"))
 							{
 								if (s_ctxMenuPending.active)
+								{
 									g_LastCampathCtx = s_ctxMenuPending;
+									g_ShowGizmo = true;
+								}
 								ImGui::CloseCurrentPopup();
 							}
 							ImGui::EndDisabled();
@@ -7297,7 +7305,7 @@ void Draw()
 					DrawSceneCoverage();
 					DrawSequencerExtraTracks(visibleStart, visibleEnd);
 					DrawPlayerRepairTrack(visibleStart, visibleEnd);
-					DrawSequencerSeekContext();
+					DrawSequencerSeekContext(keyframeContextOpened);
 					if (choosePath < document.GetCount())
 						ImGui::NeoCancelSelection();
 					ImGui::EndNeoSequencer();
