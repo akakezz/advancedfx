@@ -641,7 +641,7 @@ bool MirvCam_SelectedCameraAction(const char*);
 bool MirvCam_CameraAction(const char*,std::uint64_t);
 
 struct Engine{bool Playing=true;bool IsPlayingDemo(){return Playing;}}engine;Engine*g_VEngineClient=&engine;
-struct PathKeys{size_t Count=2;size_t GetSize(){return Count;}};
+struct PathKeys{size_t Count=2;bool Enabled=true;bool Enabled_get(){return Enabled;}size_t GetSize(){return Count;}};
 struct FixturePathValue{double X=0,Y=0,Z=0;Afx::Math::Quaternion R{1,0,0,0};double Fov=80;};
 struct PlaybackPath{bool Enabled=false,Hold=true;double Offset=0;bool CanEval(){return true;}double GetOffset(){return Offset;}bool GetHold(){return Hold;}double GetLowerBound(){return 0;}double GetUpperBound(){return 1000;}FixturePathValue Eval(double time){FixturePathValue v;v.X=time;return v;}};
 struct PlaybackPaths{PlaybackPath Path;PlaybackPath*GetPlaybackPath(double){return Path.Enabled?&Path:nullptr;}};
@@ -806,6 +806,8 @@ MirvCam_EndRigPreview();MirvCam_EvaluateRig(105,pose,3,1.0/60);const auto frameB
 // The common mixer can blend into and out of existing campath playback without changing it.
 command({"mirv_cam","add","Mixer source"});command({"mirv_cam","preview","Mixer source"});g_Hook_VClient_RenderView.m_CamPaths.Path.Enabled=true;MirvCam_EvaluateRig(110,pose);const double fixedX=pose.Position[0];command({"mirv_cam","preview","playback","2"});MirvCam_EvaluateRig(110,pose);assert(pose.Position[0]==fixedX);MirvCam_EvaluateRig(111,pose);assert(std::abs(pose.Position[0]-(fixedX+111)/2)<1e-5);MirvCam_EvaluateRig(112,pose);assert(pose.Position[0]==112);command({"mirv_cam","preview","Mixer source","2"});MirvCam_EvaluateRig(112,pose);assert(pose.Position[0]==112);MirvCam_EvaluateRig(113,pose);assert(std::abs(pose.Position[0]-(fixedX+113)/2)<1e-5);MirvCam_EvaluateRig(114,pose);assert(pose.Position[0]==fixedX);
 command({"mirv_cam","preview","playback"});g_Hook_VClient_RenderView.m_CamPaths.Path.Offset=10;MirvCam_EvaluateRig(8,pose);assert(pose.Position[0]==0);g_Hook_VClient_RenderView.m_CamPaths.Path.Hold=false;MirvCam_EvaluateRig(8,pose);assert(g_RigUnavailable);command({"mirv_cam","preview","off"});
+// Failure reports identify disabled playback, timing coverage and unsupported cached smoothing.
+command({"mirv_cam","preview","playback"});g_Hook_VClient_RenderView.m_CamPath.Enabled=false;MirvCam_EvaluateRig(120,pose);assert(g_RigUnavailable&&g_LastRigFailure.find("disabled")!=std::string::npos);g_Hook_VClient_RenderView.m_CamPath.Enabled=true;g_Hook_VClient_RenderView.m_CamPaths.Path.Enabled=false;MirvCam_EvaluateRig(120,pose);assert(g_LastRigFailure.find("covers this time")!=std::string::npos);g_Hook_VClient_RenderView.m_CamPaths.Path.Enabled=true;
 // Playback is independently addressable even after the final saved camera is removed.
 command({"mirv_cam","preview","playback"});auto removeAll=MirvCam_Cameras(false);for(const auto&c:removeAll)assert(MirvCam_CameraAction("remove",c.Id));assert(g_CameraRigs.empty()&&MirvCam_RigPreviewActive());assert(MirvCam_PreviewKey(VK_ESCAPE,true,false)&&!MirvCam_RigPreviewActive());
 // Authored point targets survive inactive evaluation; exact vertical targets remain finite.

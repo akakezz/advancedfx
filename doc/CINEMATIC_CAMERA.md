@@ -2359,3 +2359,14 @@ for playback; a gap or unavailable source holds the last valid mixed pose.
 playing the enabled campath collection. Mixer playback uses authored campath
 poses; it does not apply legacy global aiming or collision to that source.
 These transitions are session preview operations, not saved sequencer clips.
+
+
+Playback blend troubleshooting: test `mirv_cam preview playback` without a
+duration to evaluate campath playback on its own. It requires enabled playback
+and an evaluable, unmuted/non-excluded path covering the actual demo/cache time;
+drawing a path or viewing a key in interactive preview does not seek there.
+The whole transition needs valid source coverage. If it crosses a path endpoint,
+start earlier or explicitly enable endpoint hold with `mirv_campath hold 1`.
+The mixer diagnostic identifies the incoming or outgoing source and distinguishes
+disabled playback, missing time coverage, unavailable attachments/aim targets,
+and unsupported cached smooth/custom aiming.

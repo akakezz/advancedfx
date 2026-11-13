@@ -386,6 +386,7 @@ std::string g_EditingCameraName, g_LegacyCameraName;
 std::string g_CameraDemoKey;
 advancedfx::CameraPose g_LastRigPose;
 bool g_RigUnavailable = false;
+std::string g_CameraFailureReason, g_LastRigFailure;
 bool g_RigPreview = false;
 bool g_RigNavigation = false;
 unsigned long long g_NextCameraId = 0;
@@ -667,21 +668,43 @@ bool RigTarget(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 }
 bool EvaluatePlaybackPose(double clientTime, advancedfx::CameraPose &pose)
 {
-	auto path = g_Hook_VClient_RenderView.m_CamPaths.GetPlaybackPath(clientTime);
-	if (!path || !path->CanEval())
+	if (!g_Hook_VClient_RenderView.m_CamPath.Enabled_get())
+	{
+		g_CameraFailureReason = "Campath playback is disabled. Use mirv_campath enabled 1.";
 		return false;
+	}
+	auto path = g_Hook_VClient_RenderView.m_CamPaths.GetPlaybackPath(clientTime);
+	if (!path)
+	{
+		g_CameraFailureReason =
+			"No evaluable campath covers this time. Check key times, path offsets, mute/solo and endpoint hold.";
+		return false;
+	}
+	if (!path->CanEval())
+	{
+		g_CameraFailureReason = "The playback path cannot interpolate. Check its key count and interpolation method.";
+		return false;
+	}
 	double time = clientTime - path->GetOffset();
 	if (path->GetHold())
 		time = (std::max)(path->GetLowerBound(), (std::min)(path->GetUpperBound(), time));
 	if (time < path->GetLowerBound() || time > path->GetUpperBound())
+	{
+		g_CameraFailureReason = "Playback is outside the campath's time range and endpoint hold is off.";
 		return false;
+	}
 	const auto value = path->Eval(time);
 	pose.Position[0] = value.X;
 	pose.Position[1] = value.Y;
 	pose.Position[2] = value.Z;
 	pose.Rotation = value.R;
 	pose.Fov = value.Fov;
-	return pose.Valid();
+	if (!pose.Valid())
+	{
+		g_CameraFailureReason = "Campath evaluation produced an invalid pose.";
+		return false;
+	}
+	return true;
 }
 bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 {
@@ -758,12 +781,29 @@ bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
 	rig.Available = false;
 	advancedfx::CameraPose target;
+	const auto camera = "Camera " + std::to_string(rig.Id) + ": ";
 	if (rig.Rig.Attached && !RigTarget(rig, target))
+	{
+		g_CameraFailureReason = camera + "attachment target or its cached pose is unavailable.";
 		return false;
+	}
 	if (!rig.Rig.Evaluate(rig.Rig.Attached ? &target : nullptr, pose))
+	{
+		g_CameraFailureReason = camera + "the saved pose is invalid.";
 		return false;
+	}
 	if (!EvaluateCameraAim(rig, pose))
+	{
+		if (rig.Aim && rig.Aim->Active && AfxHookSource::CameraOverlay::SceneCachePreviewActive() && !rig.Aim->SnapTo)
+			g_CameraFailureReason =
+				camera + "smoothed aiming needs live playback. Cached aiming currently requires snapTo 1.";
+		else if (rig.Aim && rig.Aim->Source_get() && !rig.Aim->HasTf2EntitySource() &&
+				 AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+			g_CameraFailureReason = camera + "custom aim sources currently need live playback.";
+		else
+			g_CameraFailureReason = camera + "aim target or its cached pose is unavailable.";
 		return false;
+	}
 	rig.LastWorld = pose;
 	rig.Available = true;
 	return true;
@@ -1026,11 +1066,15 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 		g_RigUnavailable = false;
 		return false;
 	}
+	g_CameraFailureReason.clear();
 	advancedfx::CameraPose evaluated;
 	auto found = g_CameraRigs.find(g_CameraRigName);
 	const bool valid = g_CameraSource == CameraSource::Playback
 						   ? EvaluatePlaybackPose(clientTime, evaluated)
 						   : found != g_CameraRigs.end() && EvaluateNamedRig(found->second, evaluated);
+	if (!valid && g_CameraFailureReason.empty())
+		g_CameraFailureReason = "The selected camera no longer exists.";
+	std::string failure = valid ? std::string{} : "Incoming source: " + g_CameraFailureReason;
 	bool blendValid = valid;
 	if (valid && (!g_BlendFromCamera.empty() || g_BlendFromPlayback))
 	{
@@ -1047,6 +1091,10 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 			blendValid = g_BlendFromPlayback
 							 ? EvaluatePlaybackPose(clientTime, from)
 							 : outgoing != g_CameraRigs.end() && EvaluateNamedRig(outgoing->second, from);
+			if (!blendValid)
+				failure =
+					"Outgoing blend source: " +
+					(g_CameraFailureReason.empty() ? std::string("camera no longer exists.") : g_CameraFailureReason);
 			if (blendValid)
 			{
 				const double weight = fraction * fraction * (3 - 2 * fraction);
@@ -1060,14 +1108,22 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 				evaluated.Rotation = start.Slerp(end, weight).Normalized();
 				evaluated.Fov = from.Fov + weight * (evaluated.Fov - from.Fov);
 				blendValid = evaluated.Valid();
+				if (!blendValid)
+					failure = "The blended pose is invalid.";
 			}
 		}
 	}
 	if (blendValid)
+	{
 		g_LastRigPose = evaluated;
-	else if (!g_RigUnavailable)
-		Tier0_Warning(
-			"Selected camera source unavailable; holding its last valid pose. Target or cached pose is unavailable.\n");
+		g_LastRigFailure.clear();
+	}
+	else if (!g_RigUnavailable || failure != g_LastRigFailure)
+	{
+		Tier0_Warning("Camera mixer unavailable at client time %.3f. %s Holding the last valid view.\n", clientTime,
+					  failure.c_str());
+		g_LastRigFailure = failure;
+	}
 	g_RigUnavailable = !blendValid;
 	pose = g_LastRigPose;
 	return true;
