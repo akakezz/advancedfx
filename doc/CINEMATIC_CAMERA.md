@@ -1115,7 +1115,8 @@ open editor when a text field is not being edited:
 | Key | Action |
 | --- | --- |
 | E | Capture pose and current demo time |
-| Shift+E | Replace the one selected key's pose, keeping its time, hold and tangents |
+| Ctrl+E | Insert the interpolated pose at the preview cursor (cached cursor during cache preview) |
+| Shift+E | Replace the one selected key's pose, keeping its time and hold; changed rotation handles rebuild |
 | Y | Capture the selected keys' hold release at current demo time |
 | Shift+Y | Clear selected holds |
 | Delete | Delete selected keys, preserving path offset |

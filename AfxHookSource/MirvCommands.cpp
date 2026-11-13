@@ -2150,7 +2150,15 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 				AfxHookSource::CameraOverlay::FinishEdit();
 			}
 			else if (key == 'E')
-				AfxHookSource::CameraOverlay::PreviewCapture(shift);
+			{
+				if (control)
+				{
+					if (!shift)
+						AfxHookSource::CameraOverlay::PreviewInsert();
+				}
+				else
+					AfxHookSource::CameraOverlay::PreviewCapture(shift);
+			}
 			else if (key == 'Y')
 				AfxHookSource::CameraOverlay::PreviewHold(shift);
 			else if (shift)
@@ -2229,7 +2237,7 @@ static void CampathPreview_PrintHelp()
 		"mirv_campath preview seek - Seek the demo to the current preview time.\n"
 		"mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
 		"mirv_campath preview afterSeek timescale <0..100>|pause|continue - Default: timescale 0.\n"
-		"E captures; Shift+E replaces; Y captures hold release; Shift+Y clears it; RCtrl seeks.\n"
+		"E captures; Shift+E replaces; Ctrl+E inserts at preview time; Y captures hold release; Shift+Y clears it; RCtrl seeks.\n"
 		"Ctrl+A selects all; Ctrl+Shift+A anchors the selection using its first key.\n"
 		"Preview keys (console closed): UP/DOWN select next/previous; HOME/END select first/last.\n"
 		"LEFT/RIGHT scrub interpolated paths, or step through keyframes if interpolation is unavailable.\n"

@@ -44,6 +44,7 @@ bool SaveDocument(const wchar_t *fileName, bool all);
 bool LoadDocument(const wchar_t *fileName, bool all);
 void FlushRecovery();
 bool PreviewCapture(bool replace);
+bool PreviewInsert();
 bool PreviewHold(bool clear);
 void PreviewSelectAll();
 bool PreviewAnchor();

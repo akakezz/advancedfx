@@ -1826,6 +1826,32 @@ static void PathChanged(void *)
 			g_LastCampathCtx.active = false;
 	}
 }
+bool PreviewInsert()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (g_ScenePreview)
+		SceneCacheFrame(false);
+	const bool cachedMode = SceneCachePreviewActive();
+	auto cachedView = cachedMode ? SceneCacheView() : nullptr;
+	if (cachedMode && !cachedView)
+	{
+		g_DocumentStatus = "Cached time has no coverage. Choose a recorded frame before inserting.";
+		return false;
+	}
+	CancelEditGesture();
+	BeginEdit();
+	auto &path = g_Hook_VClient_RenderView.m_CamPath;
+	const double time = cachedMode ? cachedView->ClientTime - path.GetOffset() : MirvCampathPreview_GetTime();
+	const bool ok = path.Insert(time);
+	FinishEdit();
+	if (!ok)
+	{
+		g_DocumentStatus = "Insert requires an unoccupied interior time and Custom or Linear channels. The "
+		                   "path was retained.";
+		advancedfx::Warning("%s\n", g_DocumentStatus.c_str());
+	}
+	return ok;
+}
 bool PreviewCapture(bool replace)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
@@ -5988,7 +6014,15 @@ void Draw()
 			}
 		}
 		if (ImGui::IsKeyPressed(ImGuiKey_E, false))
-			PreviewCapture(ImGui::GetIO().KeyShift);
+		{
+			if (ImGui::GetIO().KeyCtrl)
+			{
+				if (!ImGui::GetIO().KeyShift)
+					PreviewInsert();
+			}
+			else
+				PreviewCapture(ImGui::GetIO().KeyShift);
+		}
 		if (ImGui::IsKeyPressed(ImGuiKey_Delete, false))
 		{
 			CancelEditGesture();
@@ -7369,16 +7403,7 @@ void Draw()
 				MirvCampathPreview_Seek();
 			ImGui::SameLine();
 			if (ImGui::SmallButton("Insert keyframe at preview"))
-			{
-				auto cachedView = SceneCacheView();
-				const bool cachedMode = SceneCachePreviewActive();
-				const double insertTime = cachedMode && cachedView
-					? cachedView->ClientTime - g_Hook_VClient_RenderView.m_CamPath.GetOffset()
-					: MirvCampathPreview_GetTime();
-				if ((cachedMode && !cachedView) || !g_Hook_VClient_RenderView.m_CamPath.Insert(insertTime))
-					g_DocumentStatus = "Insert requires an unoccupied interior time and Custom or Linear "
-									   "channels. The path was retained.";
-			}
+				PreviewInsert();
 
 			ImGui::SameLine();
 			if (ImGui::SmallButton(g_ShowCurveEditor ? "Hide Curve Editor" : "Show Curve Editor"))
