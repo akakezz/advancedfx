@@ -405,7 +405,8 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 	}
 	const bool saved = baked.ExportClassic(file, step);
 	g_CameraBakeReport = (saved ? "Saved " : "Failed to save ") + std::to_string(times.size()) + " poses from " +
-						 source + ", client seconds " + std::to_string(begin) + " .. " + std::to_string(end) + "; " +
+						 (sequence ? std::string("whole sequence") : "camera #" + std::to_string(id)) +
+						 ", client seconds " + std::to_string(begin) + " .. " + std::to_string(end) + "; " +
 						 std::to_string(changes) + " changed samples.";
 	if (saved && !changes)
 		g_CameraBakeReport += " All sampled poses are identical.";

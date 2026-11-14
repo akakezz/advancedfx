@@ -50,10 +50,10 @@ int main(){
  assert(MirvCam_LoadProject(file.c_str()));assert(g_CameraRigs.count(name)&&g_CameraRigs.at(name).Id==id);assert(path.GetSize()==2&&g_CameraClips.size()==1);assert(g_CommandSystem.GetTickMarkers().size()==1&&!g_CommandSystem.TickMarkersEnabled()&&!path.Enabled_get());assert(!g_RigPreview&&!g_Hook_VClient_RenderView.m_CamPaths.CanUndo());
  assert(g_CommandSystem.GetTickMarkers().front().Command.find("\\nline")!=std::string::npos);
  const auto saved=g_CameraRigs.size();std::ofstream bad(std::filesystem::path(file),std::ios::trunc);bad<<"HLAE_CINEMATIC 99\\n";bad.close();assert(!MirvCam_LoadProject(file.c_str())&&g_CameraRigs.size()==saved&&path.GetSize()==2);
- assert(MirvCam_Bake(bake.c_str(),std::to_string(id).c_str(),0,1,.1));CamPath baked;assert(baked.Load(bake.c_str()));assert(std::abs(baked.Eval(.5).X-1)<1e-6);
+ assert(MirvCam_Bake(bake.c_str(),std::to_string(id).c_str(),0,1,.1));assert(MirvCam_BakeStatus().find("from camera #"+std::to_string(id))!=std::string::npos);CamPath baked;assert(baked.Load(bake.c_str()));assert(std::abs(baked.Eval(.5).X-1)<1e-6);
  // Bake blends and near-instant cuts using the common source evaluator.
  g_Hook_VClient_RenderView.LastCameraOrigin[0]=100;command({"mirv_cam","add","B"});advancedfx::CameraClip next;next.Time=.5;next.Blend=.2;next.Target=g_CameraRigs.at("B").Id;assert(MirvCam_EditClip(next));
- assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.6).X-50.5)<.01);
+ assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(MirvCam_BakeStatus().find("from whole sequence")!=std::string::npos);assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.6).X-50.5)<.01);
  next.Blend=0;assert(MirvCam_EditClip(next));assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.499998).X-1)<.01&&std::abs(baked.Eval(.5).X-100)<.01);g_Hook_VClient_RenderView.LastCameraOrigin[0]=1;
  // Exercise the actual mixed camera -> path -> camera export, including rotation and FOV.
  auto changedCamera=g_CameraRigs.at("B").Rig.Pose;changedCamera.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,90,0}));changedCamera.Fov=110;assert(MirvCam_EditCamera(g_CameraRigs.at("B").Id,changedCamera));

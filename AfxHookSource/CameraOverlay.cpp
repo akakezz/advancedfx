@@ -5885,7 +5885,16 @@ static void DrawCinematicBakeControls(const std::string &source)
 	if (!ImGui::CollapsingHeader(sequence ? "Export sequence as classic campath"
 										  : "Export selected camera as classic campath"))
 		return;
-	static std::string previousSource;
+	// Each source keeps its own range, including when both export panels are open.
+	struct BakeSettings
+	{
+		int Begin = 0, End = 100;
+		double Step = 1.0 / 66;
+		bool Initialized = false;
+	};
+	static std::map<std::string, BakeSettings> settings;
+	auto &values = settings[source];
+	ImGui::PushID(source.c_str());
 	auto range = [&]
 	{
 		double demo = 0;
@@ -5924,31 +5933,35 @@ static void DrawCinematicBakeControls(const std::string &source)
 		double firstDemo = 0, lastDemo = 0;
 		if (!CinematicClock(first, true, firstDemo) || !CinematicClock(last, true, lastDemo))
 			return;
-		g_CinematicBakeBegin = (std::max)(0, int(std::floor(firstDemo / interval)));
-		g_CinematicBakeEnd = (std::max)(g_CinematicBakeBegin + 1, int(std::ceil(lastDemo / interval)));
-		g_CinematicBakeStep = interval;
+		values.Begin = (std::max)(0, int(std::floor(firstDemo / interval)));
+		values.End = (std::max)(values.Begin + 1, int(std::ceil(lastDemo / interval)));
+		values.Step = interval;
 	};
-	if (previousSource != source)
+	if (!values.Initialized)
 	{
-		previousSource = source;
+		values.Initialized = true;
 		range();
 	}
 	if (ImGui::Button(sequence ? "Use sequence range" : "Use cached range"))
 		range();
-	ImGui::TextWrapped(
-		"%s", sequence ? "Source: whole camera sequence, including transitions."
-					   : "Source: selected camera only. Use Camera clips to export the whole sequence.");
-	ImGui::InputInt("Bake start tick", &g_CinematicBakeBegin);
-	ImGui::InputInt("Bake end tick", &g_CinematicBakeEnd);
-	ImGui::InputDouble("Bake step (seconds)", &g_CinematicBakeStep, 0, 0, "%.6f");
+	ImGui::TextWrapped("%s", sequence
+								 ? "Source: whole camera sequence, including transitions."
+								 : "Source: selected camera only, without sequence clips or transitions.");
+	ImGui::InputInt("Bake start tick", &values.Begin);
+	ImGui::InputInt("Bake end tick", &values.End);
+	ImGui::InputDouble("Bake step (seconds)", &values.Step, 0, 0, "%.6f");
 	ImGui::TextWrapped("Tracking uses recorded camera samples when available; otherwise cached targeting is "
 					   "unsmoothed. Hard cuts use one-microsecond transitions. Export does not include "
 					   "commands or procedural bindings.");
 	if (ImGui::Button(sequence ? "Bake sequence..." : "Bake selected camera..."))
 	{
+		g_CinematicBakeBegin = values.Begin;
+		g_CinematicBakeEnd = values.End;
+		g_CinematicBakeStep = values.Step;
 		g_CinematicBakeSource = source;
 		g_CinematicFileAction = 3;
 	}
+	ImGui::PopID();
 }
 static void DrawCameraClipsPanel();
 static void DrawSequencerDetails(int playhead)
@@ -6484,6 +6497,7 @@ static void DrawCamerasTab()
 		return;
 	g_FocusCameras = false;
 	DrawCinematicFileButtons();
+	DrawCinematicBakeControls("sequence");
 	for (const auto &c : MirvCam_Cameras())
 		if (c.Selected)
 		{
