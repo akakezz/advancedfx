@@ -6103,12 +6103,10 @@ static void DrawCameraClipsPanel()
 	double now = EditingClientTime(g_MirvTime.GetTime()), demo = 0;
 	bool mapping = GetCurrentDemoTime(demo);
 	if (SceneCachePreviewActive())
-		if (auto frame = SceneCacheView())
-		{
-			now = frame->ClientTime;
-			demo = frame->DemoTime;
-			mapping = true;
-		}
+	{
+		demo = g_SceneCursor;
+		mapping = !g_SceneCache.Frames().empty();
+	}
 	const double interval = SceneTickInterval();
 	mapping = mapping && std::isfinite(interval) && interval > 0;
 	auto clips = MirvCam_Clips();
@@ -7373,8 +7371,11 @@ void Draw()
 				double demoNow = 0.0;
 				bool haveDemoNow = GetCurrentDemoTime(demoNow);
 					if (SceneCachePreviewActive())
-						if (auto view = SceneCacheView())
-						{ curTime = view->ClientTime; demoNow = view->DemoTime; haveDemoNow = true; }
+					{
+						curTime = EditingClientTime(curTime);
+						demoNow = g_SceneCursor;
+						haveDemoNow = !g_SceneCache.Frames().empty();
+					}
 
 				auto tick_from_client = [&](double clientTime) -> int {
 					int t = 0;
@@ -7487,8 +7488,11 @@ void Draw()
 					double demoNow = 0.0;
 					bool haveDemoNow = GetCurrentDemoTime(demoNow);
 					if (SceneCachePreviewActive())
-						if (auto view = SceneCacheView())
-						{ curTime = view->ClientTime; demoNow = view->DemoTime; haveDemoNow = true; }
+					{
+						curTime = EditingClientTime(curTime);
+						demoNow = g_SceneCursor;
+						haveDemoNow = !g_SceneCache.Frames().empty();
+					}
 
 					auto tick_from_client = [&](double clientTime) -> int {
 						int t = 0;

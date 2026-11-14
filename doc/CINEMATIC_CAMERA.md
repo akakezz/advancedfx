@@ -2409,3 +2409,8 @@ native keyframe preview controller. Campath endpoints only clamp the sampled
 source pose; they cannot clamp the sequence clock. Cache gaps retain historical
 time mapping rather than falling back to the live demo clock. Blue regions on
 the Camera sources track denote blends; hover them for the duration.
+
+Console preview enter/toggle/exit uses the same controller handoff as the preview
+key. Rejected camera selections retain sequence resume state. Cached clip editing
+and timeline placement use historical cursor time even when entity coverage is
+missing. Leaving preview immediately after enabling it retains the current view.

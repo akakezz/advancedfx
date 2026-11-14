@@ -1316,14 +1316,18 @@ bool MirvCam_EnableSequence(bool enabled)
 	if (g_CameraClips.empty() || (!g_SequenceDemo.empty() && g_SequenceDemo != g_CameraDemoKey) ||
 		(g_SequenceDemo.empty() && g_SequenceLevel != g_LevelInitCount))
 		return false;
+	const auto currentView = RigCapture();
+	if (!currentView.Valid())
+		return false;
 	if (!g_SequenceResume)
-		g_SequenceSeed = RigCapture();
+		g_SequenceSeed = currentView;
 	if (!g_SequenceSeed.Valid())
 		return false;
 	MirvCampathPreview_SetActive(false);
 	ClearCameraBlend();
 	g_CameraSource = CameraSource::Sequence;
 	g_SequenceResume = true;
+	g_LastRigPose = currentView;
 	g_RigPreview = true;
 	g_RigNavigation = true;
 	g_EditingCameraName.clear();
@@ -1448,6 +1452,8 @@ bool MirvCam_HistoryUndo(bool redo)
 									 : playback ? CameraSource::Playback
 												: CameraSource::Rig)
 								  : CameraSource::Legacy;
+	if (g_CameraClips.empty())
+		g_SequenceResume = false;
 	g_RigUnavailable = false;
 	if (viewing && !g_RigPreview)
 	{
@@ -1684,8 +1690,6 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			}
 		}
 		std::string reference = args->ArgV(2);
-		if (transition || reference != "off")
-			g_SequenceResume = false;
 		if (!transition && !_stricmp(reference.c_str(), "toggle"))
 		{
 			MirvCam_TogglePreviewNavigation();
@@ -1696,7 +1700,10 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			MirvCam_EndRigPreview();
 			g_EditingCameraName.clear();
 			if (reference == "keys")
+			{
+				g_SequenceResume = false;
 				g_RigNavigation = false;
+			}
 			MirvCampathPreview_SetActive(reference == "keys");
 			return true;
 		}
@@ -1724,6 +1731,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			Tier0_Warning("The current view cannot be used as a transition source.\n");
 			return true;
 		}
+		g_SequenceResume = false;
 		MirvCampathPreview_SetActive(false);
 		ClearCameraBlend();
 		if (duration > 0 &&

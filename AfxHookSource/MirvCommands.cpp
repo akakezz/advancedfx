@@ -2547,17 +2547,16 @@ CON_COMMAND(mirv_campath, "camera paths")
             return;
         }
         if (0 == _stricmp(cmd, "exit") && args->ArgC() == 3) {
-            CampathPreview_Exit();
-            return;
+			MirvCampathPreview_SetActive(false);
+			return;
         }
         if (0 == _stricmp(cmd, "toggle") && args->ArgC() == 3) {
-            if (g_CampathPreviewActive) CampathPreview_Exit();
-            else CampathPreview_Enter();
-            return;
+			MirvCampathPreview_SetActive(!MirvCampathPreview_IsActive());
+			return;
         }
         if (0 == _stricmp(cmd, "enter") && args->ArgC() == 3) {
-            CampathPreview_Enter();
-            return;
+			MirvCampathPreview_SetActive(true);
+			return;
         }
         if (!CampathPreview_CanShow(path) || !g_Hook_VClient_RenderView.m_MirvInput) {
             Tier0_Warning("Campath preview: no usable keyframes or free camera is unavailable.\n");
