@@ -1,10 +1,11 @@
 """Round-trip real project persistence and classic baking against isolated engine fixtures."""
 from pathlib import Path
 from types import SimpleNamespace
-import argparse, subprocess, os, re
+import argparse, subprocess, os, re, json
 parser=argparse.ArgumentParser()
 parser.add_argument('--build-dir',type=Path,default=Path('/tmp/hlae-camera-project-tests'))
 parser.add_argument('--sanitize',action='store_true')
+parser.add_argument('--project',type=Path,help='Optional real project to reproduce missing tracking coverage')
 args=parser.parse_args();root=Path(__file__).resolve().parents[2];out=args.build_dir.resolve();out.mkdir(parents=True,exist_ok=True)
 # Reuse the native camera/aim adapter fixture, replacing only its fake path model
 # with the real CamPathCollection. Generate it without invoking its separate tests.
@@ -32,8 +33,9 @@ s+='''
 bool UTF8StringToWideString(const char*s,std::wstring&w){try{w=std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.from_bytes(s);return true;}catch(...){return false;}}
 bool StringIBeginsWith(const char*a,const char*b){return strncasecmp(a,b,strlen(b))==0;}
 CommandSystem g_CommandSystem(nullptr,nullptr,nullptr);
-bool Mirv_Tf2_SaveCamera(std::ostream&out,IMirvVecAngCalc*c){out<<c->Entity;for(double v:c->Shift)out<<' '<<v;out<<'\\n';return bool(out);}
-IMirvVecAngCalc*Mirv_Tf2_LoadCamera(std::istream&in){int e;if(!(in>>e))return nullptr;auto c=new IMirvVecAngCalc(e);for(auto &v:c->Shift)if(!(in>>v)){delete c;return nullptr;}return c;}
+bool Mirv_Tf2_SaveCamera(std::ostream&out,IMirvVecAngCalc*c){out<<"fixture-calc "<<c->Entity;for(double v:c->Shift)out<<' '<<v;out<<'\\n';return bool(out);}
+IMirvVecAngCalc*Mirv_Tf2_LoadCamera(std::istream&in){std::string tag;if(!(in>>tag))return nullptr;int e=-1;double shift[3]{};if(tag=="fixture-calc"){if(!(in>>e>>shift[0]>>shift[1]>>shift[2]))return nullptr;}else{int mode;std::string name;bool calibrated,captured;double v;try{std::stoi(tag);}catch(...){return nullptr;}if(!(in>>mode>>std::quoted(name)>>calibrated>>captured))return nullptr;for(int i=0;i<9;++i)if(!(in>>v))return nullptr;for(double &x:shift)if(!(in>>x))return nullptr;}auto c=new IMirvVecAngCalc(e);for(int i=0;i<3;++i)c->Shift[i]=shift[i];return c;}
+
 namespace AfxHookSource{namespace CameraOverlay{void FlushRecovery(){}void ResetProjectRecovery(){}bool SampleCameraScene(double,advancedfx::SceneCache::Frame&f){if(!cachedFrame)return false;f=*cachedFrame;return true;}}}
 #include "AfxHookSource/CinematicProject.inl"
 int main(){
@@ -74,6 +76,17 @@ int main(){
  std::filesystem::remove(std::filesystem::path(file));std::filesystem::remove(std::filesystem::path(bake));std::cout<<"Project persistence and classic bake checks passed\\n";
 }
 '''
+if args.project:
+ injected=r'''
+ cachedFrame.reset();cached=false;assert(MirvCam_LoadProject(PROJECT));g_CameraDemoKey=g_SequenceDemo;
+ const double first=g_CameraClips.front().Time,last=g_CameraClips.back().Time+g_CameraClips.back().Blend+1;
+ auto previousFile=std::filesystem::path(bake);{std::ofstream sentinel(previousFile);sentinel<<"older export";}
+ assert(!MirvCam_Bake(bake.c_str(),"sequence",first,last,.1));std::cout<<"Actual project without target coverage: "<<MirvCam_BakeStatus()<<"\n";assert(MirvCam_BakeStatus().find("Camera 1")!=std::string::npos);{std::ifstream retained(previousFile);std::string value;std::getline(retained,value);assert(value=="older export");}
+ auto tracking=std::make_shared<advancedfx::SceneCache::Frame>();auto &trackedRig=g_CameraRigs.at("Camera 1");tracking->Cameras.push_back({trackedRig.Id,trackedRig.Definition,trackedRig.LastWorld});cachedFrame=tracking;
+ assert(MirvCam_Bake(bake.c_str(),"sequence",first,last,.1));CamPath result;assert(result.Load(bake.c_str()));const auto start=result.Eval(first),end=result.Eval(last);assert(std::abs(start.X-end.X)>1);std::cout<<"Actual project with recorded camera coverage: "<<MirvCam_BakeStatus()<<"\n";
+ std::filesystem::remove(previousFile);
+ '''.replace('PROJECT','L'+json.dumps(str(args.project.resolve())))
+ s=s.replace(' std::filesystem::remove(std::filesystem::path(file));',injected+' std::filesystem::remove(std::filesystem::path(file));',1)
 source=out/'project.cpp';source.write_text(s)
 cmd=['g++','-std=c++17','-O1','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp'),str(root/'shared/CommandSystem.cpp'),str(root/'shared/AfxConsole.cpp'),'-o',str(out/'project')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']

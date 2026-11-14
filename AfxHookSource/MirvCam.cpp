@@ -900,7 +900,12 @@ bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 			AfxHookSource::CameraOverlay::SceneCachePreviewActive())
 			g_CameraFailureReason = camera + "custom aim sources currently need live playback.";
 		else
-			g_CameraFailureReason = camera + "aim target or its cached pose is unavailable.";
+			g_CameraFailureReason =
+				camera +
+				((g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+					 ? "tracking has no recorded camera sample or cached target pose. Record the tracked "
+					   "camera/target over this range, or disable its aiming to bake the fixed orientation."
+					 : "aim target is unavailable.");
 		return false;
 	}
 	rig.LastWorld = pose;

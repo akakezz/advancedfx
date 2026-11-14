@@ -5863,7 +5863,9 @@ static void DrawCinematicFiles()
 											 : "Cinematic file saved.")
 							  : "Cinematic operation failed; check the file, range, source and cached "
 								"coverage. Custom aim calculations cannot be saved.";
-		g_CinematicFileStatus = action == 3 ? MirvCam_BakeStatus() : g_DocumentStatus;
+		if (action == 3)
+			g_DocumentStatus = MirvCam_BakeStatus();
+		g_CinematicFileStatus = g_DocumentStatus;
 		dialog.ClearSelected();
 	}
 }

@@ -2515,3 +2515,9 @@ Camera source clips draw as solid labelled blocks. A hatched region inside the
 leading edge indicates the blend into that source; the selected block has a gold
 outline. Clicking anywhere in the block, including its blend, opens the same clip
 editor. Exact start tick and blend duration remain editable numerically.
+
+A full-sequence bake requires coverage for every active tracked source, including
+its incoming blend. If a camera has neither a recorded camera sample nor its
+cached aim target, export aborts at that source/time and keeps the existing file.
+A retained XML may therefore be an older static camera export. The main file
+status and camera-tab status both show the specific bake report.
