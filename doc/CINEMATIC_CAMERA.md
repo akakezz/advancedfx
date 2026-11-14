@@ -2220,8 +2220,8 @@ Client-only gibs may receive different identities on replay; those still require
 explicit retargeting with `edit <ID>` followed by `attach`, preserving the camera.
 Fixed camera definitions remain available across level changes.
 
-This milestone does **not** yet add timed sequencer clips or rig persistence,
-gizmos, tracking, orbit, modifiers, damping or collision for named rigs.
+Rig persistence, gizmos, orbit, modifiers, damping and collision for named rigs
+remain future work. Timed sequencer clips and aiming are described below.
 The live `mirv_cam attach` view retains the existing collision/follow evaluator.
 Saved-camera preview still evaluates rigid attachments; collision/follow settings
 are not yet stored per camera. Fixed cameras can be used during cache preview,
@@ -2241,8 +2241,8 @@ Missing coverage, a filtered target or a missing bone holds the last valid camer
 pose and shows `[unavailable]`; it never substitutes the live entity. A new
 attachment must still be created in live playback. Existing cameras can be
 recaptured against cached poses without changing the demo or native animation
-state. Stateful follow, collision against cached geometry, sequencer blends and
-camera persistence remain later milestones.
+state. Stateful follow, collision against cached geometry and camera persistence
+remain later milestones.
 
 ### Next milestone: camera mixing and existing aim integration
 
@@ -2271,9 +2271,8 @@ existing world-label renderer in the same way as path names. Names should follow
 the camera's evaluated position, work without Show path, and share the existing
 recording suppression and safe engine-thread drawing snapshots.
 
-These requirements belong to the upcoming sequencer clips/camera mixer work;
-camera-name labels, per-camera aiming and basic playback mixing are implemented
-below. Sequencer clips and deterministic cached smoothing remain pending.
+Camera-name labels, per-camera aiming, playback mixing and sequencer clips are
+implemented below. Deterministic cached smoothing remains pending.
 
 
 ### Camera transitions
@@ -2357,3 +2356,41 @@ collection playback selector: disabled paths and endpoint holds no longer block
 the transition. Legacy global aiming/collision are not applied to this explicit
 campath source. Missing camera subjects, invalid paths and unsupported cached
 aim settings still report a specific failure and hold the last valid mixed pose.
+
+
+### Sequencer camera clips and live rig evaluation
+
+Aimed independent cameras now update once per engine frame even while viewing
+another camera or using the free camera. Their guides show the current aimed
+orientation, including smooth aiming. Drawing remains a read-only sample;
+turning guides on or off does not change the camera's aiming behavior.
+
+The sequencer's **Camera sources** track shows camera clips and their blend
+intervals. Click a clip to select it. Open **Camera clips** below the timeline:
+
+1. Choose **New camera clip at playhead**.
+2. Set its exact demo tick, source camera or campath, and blend duration.
+3. Press **Save camera clip**.
+4. Enable **Preview camera sequence**, then play or scrub the demo/cache.
+
+Zero blend makes a cut. A positive blend evaluates both the preceding and new
+source at the current time. Clip blending follows demo/cache time and is sampled
+by timestamp, so moving backward across a boundary selects the appropriate
+source and blend weight. Cached smoothed/custom aiming is still unavailable;
+snap aiming and cached attachments retain their existing coverage requirements.
+Before the first clip the view captured when sequence preview was enabled is
+held; the first clip blends from that view if its duration is positive.
+
+Clips extend until the next clip, with the final clip continuing indefinitely.
+Each blend must finish before the next clip, and two clips cannot start at the
+same time. Retiming and source changes apply together through Save; rejected
+edits leave the existing clips intact. Clip edits use camera undo/redo. Removing
+a referenced camera leaves its clips visibly addressable for correction and
+produces an unavailable source until restored or retargeted. Deleting the last
+clip or clearing the sequence stops sequence preview.
+
+`mirv_cam sequence 1` enables the configured sequence; `0` stops it at the current
+view. `mirv_cam sequence clear` clears the clips with undo support. Manual preview
+or transition commands take over from the sequence. Sequence clips are bound to
+their demo/session; clear them before authoring for a different demo. Cameras and
+clips are session-only and are not yet saved with the campath document.

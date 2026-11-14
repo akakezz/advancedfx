@@ -89,6 +89,12 @@ struct CameraInfo
 	std::array<double, 3> AimPoint{}, AimOffset{};
 	double AimVelocity = 360, AimAcceleration = 90;
 };
+struct CameraClip
+{
+	std::uint64_t Id = ~std::uint64_t(0), Target = 0;
+	double Time = 0, Blend = 0;
+	bool Campath = false;
+};
 struct CameraGuideLine
 {
 	std::array<double, 3> A, B;

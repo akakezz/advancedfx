@@ -115,3 +115,10 @@ bool MirvCam_HistoryUndo(bool redo);
 
 class Aiming;
 bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advancedfx::ICommandArgs *, Aiming &));
+
+std::vector<advancedfx::CameraClip> MirvCam_Clips();
+bool MirvCam_EditClip(advancedfx::CameraClip &clip);
+bool MirvCam_RemoveClip(std::uint64_t id);
+bool MirvCam_EnableSequence(bool enabled);
+bool MirvCam_SequenceEnabled();
+void MirvCam_ClearClips();

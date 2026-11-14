@@ -981,6 +981,9 @@ static bool g_ShowSequencer = false;
 static bool g_ShowCameraControl = false;
 static bool g_ShowGizmo = false;
 static bool g_PreviewHudEnabled = true;
+static bool g_CameraClipsEditing = false;
+static std::uint64_t g_SelectedCameraClip = ~std::uint64_t(0);
+static bool g_OpenCameraClips = false;
 static bool g_ShowCameraGuides=false,g_CameraFrustums=true,g_FocusCameras=false,g_CamerasTabActive=false;
 static std::atomic<bool> g_CameraGuidesPublished{false},g_CameraFrustumsPublished{true};
 static ImGuizmo::OPERATION g_GizmoOp = ImGuizmo::TRANSLATE;
@@ -6021,6 +6024,165 @@ void SetCameraFrustums(bool enabled)
 }
 bool CameraGuidesEnabled() { return g_CameraGuidesPublished.load(); }
 bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
+static bool CameraHistoryOwnsUi()
+{
+	auto focused = ImGui::GetCurrentContext()->NavWindow;
+	return g_CamerasTabActive || MirvCam_RigNavigation() ||
+		   (g_ShowSequencer && g_CameraClipsEditing && focused && focused->RootWindow &&
+			std::strcmp(focused->RootWindow->Name, "HLAE Sequencer") == 0);
+}
+static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visibleStart, int visibleEnd)
+{
+	if (!ImGui::BeginNeoTimelineEx("Camera sources", nullptr, ImGuiNeoTimelineFlags_None))
+		return;
+	auto clips = MirvCam_Clips();
+	for (size_t i = 0; i < clips.size(); ++i)
+	{
+		const auto &clip = clips[i];
+		const int begin = tick(clip.Time);
+		const int end = i + 1 < clips.size() ? tick(clips[i + 1].Time) : (std::max)(begin + 1, visibleEnd);
+		if (begin > visibleEnd || end < visibleStart)
+			continue;
+		std::string label = (clip.Campath ? "Campath #" : "Camera #") + std::to_string(clip.Target) +
+							" | clip " + std::to_string(clip.Id);
+		bool choose = ImGui::NeoTimelineSpan(begin, end,
+											 clip.Id == g_SelectedCameraClip ? IM_COL32(255, 210, 70, 230)
+																			 : IM_COL32(190, 120, 230, 200),
+											 label.c_str());
+		if (clip.Blend > 0)
+			choose = ImGui::NeoTimelineSpan(begin, (std::min)(end, tick(clip.Time + clip.Blend)),
+											IM_COL32(100, 190, 235, 180), "Camera source blend") ||
+					 choose;
+		if (choose)
+		{
+			g_SelectedCameraClip = clip.Id;
+			g_OpenCameraClips = true;
+		}
+	}
+	ImGui::EndNeoTimeLine();
+}
+static void DrawCameraClipsPanel()
+{
+	if (g_OpenCameraClips)
+	{
+		ImGui::SetNextItemOpen(true);
+		g_OpenCameraClips = false;
+	}
+	g_CameraClipsEditing = ImGui::CollapsingHeader("Camera clips");
+	if (!g_CameraClipsEditing)
+		return;
+	bool enabled = MirvCam_SequenceEnabled();
+	if (ImGui::Checkbox("Preview camera sequence", &enabled) && !MirvCam_EnableSequence(enabled))
+		g_DocumentStatus = "Add a camera clip first, and use the demo session it belongs to.";
+	double now = EditingClientTime(g_MirvTime.GetTime()), demo = 0;
+	bool mapping = GetCurrentDemoTime(demo);
+	if (SceneCachePreviewActive())
+		if (auto frame = SceneCacheView())
+		{
+			now = frame->ClientTime;
+			demo = frame->DemoTime;
+			mapping = true;
+		}
+	const double interval = SceneTickInterval();
+	mapping = mapping && std::isfinite(interval) && interval > 0;
+	auto clips = MirvCam_Clips();
+	static std::uint64_t loaded = ~std::uint64_t(0);
+	static int tick = 0;
+	static double blend = 0;
+	static bool campath = true;
+	static std::uint64_t target =
+		g_Hook_VClient_RenderView.m_CamPaths.GetId(g_Hook_VClient_RenderView.m_CamPaths.GetActive());
+	static advancedfx::CameraClip loadedValue;
+	auto found =
+		std::find_if(clips.begin(), clips.end(), [](const auto &c) { return c.Id == g_SelectedCameraClip; });
+	if (found != clips.end() && mapping &&
+		(loaded != g_SelectedCameraClip || found->Time != loadedValue.Time ||
+		 found->Blend != loadedValue.Blend || found->Target != loadedValue.Target ||
+		 found->Campath != loadedValue.Campath))
+	{
+		loadedValue = *found;
+		loaded = g_SelectedCameraClip;
+		tick = (std::max)(0, int(llround((found->Time - now + demo) / interval)));
+		blend = found->Blend;
+		campath = found->Campath;
+		target = found->Target;
+	}
+	if (ImGui::Button("New camera clip at playhead"))
+	{
+		g_SelectedCameraClip = loaded = ~std::uint64_t(0);
+		tick = g_SequencerFrame;
+		blend = 0;
+		auto cameras = MirvCam_Cameras();
+		auto selected =
+			std::find_if(cameras.begin(), cameras.end(), [](const auto &c) { return c.Selected; });
+		campath = selected == cameras.end();
+		target =
+			campath
+				? g_Hook_VClient_RenderView.m_CamPaths.GetId(g_Hook_VClient_RenderView.m_CamPaths.GetActive())
+				: selected->Id;
+	}
+	ImGui::InputInt("Camera clip tick", &tick);
+	tick = (std::max)(0, tick);
+	ImGui::InputDouble("Camera clip blend (s)", &blend, 0, 0, "%.3f");
+	auto cameras = MirvCam_Cameras();
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	std::string selectedName = (campath ? "Campath #" : "Camera #") + std::to_string(target);
+	if (ImGui::BeginCombo("Camera clip source", selectedName.c_str()))
+	{
+		for (const auto &c : cameras)
+		{
+			const auto name = "Camera " + std::to_string(c.Id) + ": " + c.Name;
+			if (ImGui::Selectable(name.c_str(), !campath && target == c.Id))
+			{
+				campath = false;
+				target = c.Id;
+			}
+		}
+		for (size_t i = 0; i < paths.GetCount(); ++i)
+		{
+			const auto name = "Campath " + std::to_string(paths.GetId(i)) + ": " + paths.GetName(i);
+			if (ImGui::Selectable(name.c_str(), campath && target == paths.GetId(i)))
+			{
+				campath = true;
+				target = paths.GetId(i);
+			}
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::BeginDisabled(!mapping);
+	if (ImGui::Button("Save camera clip"))
+	{
+		advancedfx::CameraClip clip;
+		clip.Id = g_SelectedCameraClip;
+		clip.Time = now - demo + tick * interval;
+		clip.Blend = blend;
+		clip.Campath = campath;
+		clip.Target = target;
+		if (MirvCam_EditClip(clip))
+		{
+			g_SelectedCameraClip = clip.Id;
+			loaded = ~std::uint64_t(0);
+			g_DocumentStatus = "Camera clip saved.";
+		}
+		else
+			g_DocumentStatus =
+				"Clip rejected: check its source, duplicate ticks, blend overlap and demo session.";
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ImGui::Button("Remove camera clip") && MirvCam_RemoveClip(g_SelectedCameraClip))
+		g_SelectedCameraClip = loaded = ~std::uint64_t(0);
+	if (ImGui::Button("Clear camera clips"))
+	{
+		MirvCam_ClearClips();
+		g_SelectedCameraClip = loaded = ~std::uint64_t(0);
+	}
+	ImGui::TextWrapped(
+		"Clips start at demo ticks. Zero blend cuts; positive blend transitions from the previous source. "
+		"Blends must finish before the next clip. Clips and cameras are session-only.");
+	if (!mapping)
+		ImGui::TextDisabled("Demo tick mapping is unavailable.");
+}
 static void DrawCamerasTab()
 {
 	g_CamerasTabActive = ImGui::BeginTabItem("Cameras", nullptr, g_FocusCameras ? ImGuiTabItemFlags_SetSelected : 0);
@@ -6386,7 +6548,7 @@ void Draw()
 	}
 	if (ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z, false))
 	{
-		if (g_CamerasTabActive || MirvCam_RigNavigation())
+		if (CameraHistoryOwnsUi())
 			MirvCam_HistoryUndo(ImGui::GetIO().KeyShift);
 		else
 			HistoryUndo(ImGui::GetIO().KeyShift);
@@ -6414,7 +6576,7 @@ void Draw()
 	ImGui::Begin("TF2 Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 	if (ImGui::Button("Undo"))
 	{
-		if (g_CamerasTabActive || MirvCam_RigNavigation())
+		if (CameraHistoryOwnsUi())
 			MirvCam_HistoryUndo(false);
 		else
 			HistoryUndo(false);
@@ -6422,7 +6584,7 @@ void Draw()
 	ImGui::SameLine();
 	if (ImGui::Button("Redo"))
 	{
-		if (g_CamerasTabActive || MirvCam_RigNavigation())
+		if (CameraHistoryOwnsUi())
 			MirvCam_HistoryUndo(true);
 		else
 			HistoryUndo(true);
@@ -7188,6 +7350,8 @@ void Draw()
 						t = (int)llround(clientTime / ipt);
 					return t < 0 ? 0 : t;
 				};
+				for (const auto &clip : MirvCam_Clips())
+					contentMaxTick = (std::max)(contentMaxTick, tick_from_client(clip.Time + clip.Blend));
 				for (CamPathIterator it = g_Hook_VClient_RenderView.m_CamPath.GetBegin();
 					 it != g_Hook_VClient_RenderView.m_CamPath.GetEnd(); ++it)
 				{
@@ -7234,7 +7398,7 @@ void Draw()
 			float zoomH = ImGui::GetFontSize() * neo.ZoomHeightScale + st.FramePadding.y * 2.0f;
 			float rowLabelH =
 				ImGui::CalcTextSize("Campath").y + st.FramePadding.y * 2.0f + neo.ItemSpacing.y * 2.0f;
-			const float rows = (float)(g_Hook_VClient_RenderView.m_CamPaths.GetCount() + 5);
+			const float rows = (float)(g_Hook_VClient_RenderView.m_CamPaths.GetCount() + 6);
 			float desiredSeqH = topBarH + neo.TopBarSpacing + zoomH + rowLabelH * (std::min)(rows, 6.0f);
 			float minSeqH = ImMax(60.0f, topBarH + neo.TopBarSpacing + zoomH + rowLabelH);
 			float maxSeqHAvail = ImMax(minSeqH, ImMax(55.0f, availY - btnRowH));
@@ -7711,6 +7875,7 @@ void Draw()
 						}
 						ImGui::EndNeoTimeLine();
 					}
+					DrawCameraClipTrack(tick_from_client, visibleStart, visibleEnd);
 					DrawSceneCoverage();
 					DrawSequencerExtraTracks(visibleStart, visibleEnd);
 					DrawPlayerRepairTrack(visibleStart, visibleEnd);
@@ -7737,6 +7902,7 @@ void Draw()
 			ImGui::SameLine();
 			ImGui::TextDisabled("View %d - %d | Wheel: zoom | MMB / Shift+wheel: pan", visibleStart, visibleEnd);
 			ImGui::TextDisabled("Retiming keeps Auto handles automatic and rescales Free handles. Classic scalar curves convert when using editable Euler.");
+			DrawCameraClipsPanel();
 			// Controls row
 			if (ImGui::SmallButton("Play"))
 			{
