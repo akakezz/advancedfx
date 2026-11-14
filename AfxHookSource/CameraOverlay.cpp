@@ -6391,22 +6391,14 @@ static void DrawCameraClipsPanel()
 		campath = found->Campath;
 		target = found->Target;
 	}
-	if (ImGui::Button("New camera clip at playhead"))
+	if(found==clips.end())g_SelectedCameraClip=~std::uint64_t(0);
+	const bool editing=found!=clips.end();
+	if(editing && ImGui::Button("New clip"))
 	{
-		g_SelectedCameraClip = loaded = ~std::uint64_t(0);
-		tick = g_SequencerFrame;
-		blend = 0;
-		clipStatus = "New clip draft. Choose its source and press Save camera clip to add it.";
-		auto cameras = MirvCam_Cameras();
-		auto selected =
-			std::find_if(cameras.begin(), cameras.end(), [](const auto &c) { return c.Selected; });
-		campath = selected == cameras.end();
-		target =
-			campath
-				? g_Hook_VClient_RenderView.m_CamPaths.GetId(g_Hook_VClient_RenderView.m_CamPaths.GetActive())
-				: selected->Id;
+		g_SelectedCameraClip=loaded=~std::uint64_t(0);
+		clipStatus="Choose a start tick and source, then add the new camera clip.";
 	}
-	ImGui::InputInt("Camera clip tick", &tick);
+	ImGui::InputInt("Start tick", &tick);
 	tick = (std::max)(0, tick);
 	ImGui::InputDouble("Blend into this source (s)", &blend, 0, 0, "%.3f");
 	auto cameras = MirvCam_Cameras();
@@ -6435,7 +6427,7 @@ static void DrawCameraClipsPanel()
 		ImGui::EndCombo();
 	}
 	ImGui::BeginDisabled(!mapping);
-	if (ImGui::Button("Save camera clip"))
+	if (ImGui::Button(g_SelectedCameraClip==~std::uint64_t(0)?"Add camera clip":"Save changes"))
 	{
 		advancedfx::CameraClip clip;
 		clip.Id = g_SelectedCameraClip;
@@ -6466,8 +6458,10 @@ static void DrawCameraClipsPanel()
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
+	ImGui::BeginDisabled(g_SelectedCameraClip==~std::uint64_t(0));
 	if (ImGui::Button("Remove camera clip") && MirvCam_RemoveClip(g_SelectedCameraClip))
 		g_SelectedCameraClip = loaded = ~std::uint64_t(0);
+	ImGui::EndDisabled();
 	if (ImGui::Button("Clear camera clips"))
 	{
 		MirvCam_ClearClips();

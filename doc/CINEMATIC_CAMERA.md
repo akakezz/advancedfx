@@ -2368,9 +2368,9 @@ turning guides on or off does not change the camera's aiming behavior.
 The sequencer's **Camera sources** track shows camera clips and their blend
 intervals. Click a clip to select it. Open the **Camera clips** tab beside Commands and Events:
 
-1. Choose **New camera clip at playhead**.
+1. Enter the desired **Start tick** (choose **New clip** first if editing an existing clip).
 2. Set its exact demo tick, source camera or campath, and blend duration.
-3. Press **Save camera clip**.
+3. Press **Add camera clip**, or **Save changes** when editing an existing clip.
 4. Enable **Enable camera sequence**, then play or scrub the demo/cache.
 
 Zero blend makes a cut. A positive blend evaluates both the preceding and new
@@ -2470,8 +2470,9 @@ freecam editing can then be used temporarily without turning the sequence off.
 and the Camera clips tab control the same enabled flag. Pause and cache scrubbing
 still control its evaluation clock.
 
-Clip creation does not require leaving freecam. **New camera clip at playhead**
-prepares a draft; select its source and press **Save camera clip**. Duplicate
+Clip creation does not require leaving freecam. Enter a **Start tick**, select the source and press **Add camera clip**.
+Select a timeline block to edit it with **Save changes**; **New clip** returns
+to creation mode without copying the playhead tick. Duplicate
 start times and blends crossing neighboring clips are rejected with an explanation
 inside the clip tab. New clips do not move the free camera.
 
