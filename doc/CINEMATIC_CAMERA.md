@@ -2509,3 +2509,8 @@ labels and filenames. The visible bake report identifies the source, sampled
 client-time range, pose count, and changed-sample count; an all-identical result
 is called out explicitly. This makes it possible to distinguish a static export
 from a failed export which retained a previous file.
+
+Camera source clips draw as solid labelled blocks. A hatched region inside the
+leading edge indicates the blend into that source; the selected block has a gold
+outline. Clicking anywhere in the block, including its blend, opens the same clip
+editor. Exact start tick and blend duration remain editable numerically.

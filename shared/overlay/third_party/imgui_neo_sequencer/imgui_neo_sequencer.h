@@ -127,7 +127,8 @@ namespace ImGui {
     IMGUI_API void NeoSetKeyframeSelected(int32_t *value, bool selected);
     // Read-only ranges / markers share the ruler transform without retaining editable pointers.
     IMGUI_API bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color,
-                                   const char *caption = nullptr, bool *hovered = nullptr);
+                                   const char *caption = nullptr, bool *hovered = nullptr, bool block = false,
+                                   bool selected = false, FrameIndexType blendEnd = -1);
     IMGUI_API void NeoCancelSelection();
 
     IMGUI_API bool IsNeoKeyframeHovered();

@@ -6312,6 +6312,7 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 	if (!ImGui::BeginNeoTimelineEx("Camera sources", nullptr, ImGuiNeoTimelineFlags_None))
 		return;
 	auto clips = MirvCam_Clips();
+	auto cameras=MirvCam_Cameras();
 	for (size_t i = 0; i < clips.size(); ++i)
 	{
 		const auto &clip = clips[i];
@@ -6319,18 +6320,11 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		const int end = i + 1 < clips.size() ? tick(clips[i + 1].Time) : (std::max)(begin + 1, visibleEnd);
 		if (begin > visibleEnd || end < visibleStart)
 			continue;
-		std::string label = (clip.Campath ? "Campath #" : "Camera #") + std::to_string(clip.Target) +
-							" | clip " + std::to_string(clip.Id);
-		bool choose = ImGui::NeoTimelineSpan(begin, end,
-											 clip.Id == g_SelectedCameraClip ? IM_COL32(255, 210, 70, 65)
-																			 : IM_COL32(190, 120, 230, 35),
-											 label.c_str());
-		choose = ImGui::NeoTimelineSpan(begin, begin, IM_COL32(255, 210, 70, 255), label.c_str()) || choose;
-		if (clip.Blend > 0)
-			choose = ImGui::NeoTimelineSpan(
-						 begin, (std::min)(end, tick(clip.Time + clip.Blend)), IM_COL32(100, 190, 235, 180),
-						 (label + " | blend " + std::to_string(clip.Blend) + " seconds").c_str()) ||
-					 choose;
+		std::string label=(clip.Campath?"Campath #":"Camera #")+std::to_string(clip.Target);
+		if(clip.Campath){auto &paths=g_Hook_VClient_RenderView.m_CamPaths;for(size_t n=0;n<paths.GetCount();++n)if(paths.GetId(n)==clip.Target)label=paths.GetName(n);}
+		else for(const auto &camera:cameras)if(camera.Id==clip.Target)label=camera.Name;
+		if(i && clip.Blend>0){char blend[64];snprintf(blend,sizeof(blend)," | Blend %.2f s",clip.Blend);label+=blend;}
+		const bool choose=ImGui::NeoTimelineSpan(begin,end,IM_COL32(90,65,125,230),label.c_str(),nullptr,true,clip.Id==g_SelectedCameraClip,i&&clip.Blend>0?tick(clip.Time+clip.Blend):-1);
 		if (choose)
 		{
 			g_SelectedCameraClip = clip.Id;
@@ -6346,7 +6340,7 @@ static void DrawCameraClipsPanel()
 	ImGui::TextWrapped(
 		"Enable the sequence to play these clips. Preview navigation is independent. You can use free camera "
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
-	ImGui::TextDisabled("Bright marker: clip start | Blue: blend | Faint span: source remains active");
+	ImGui::TextDisabled("One block per source | Hatched leading section: blend into this source");
 	if (SceneCachePreviewActive())
 		ImGui::TextWrapped("Recorded tracking preserves observed aiming. Without camera samples, aiming is "
 						   "unsmoothed. Re-record after editing a camera. Targets must be "
@@ -6414,7 +6408,7 @@ static void DrawCameraClipsPanel()
 	}
 	ImGui::InputInt("Camera clip tick", &tick);
 	tick = (std::max)(0, tick);
-	ImGui::InputDouble("Camera clip blend (s)", &blend, 0, 0, "%.3f");
+	ImGui::InputDouble("Blend into this source (s)", &blend, 0, 0, "%.3f");
 	auto cameras = MirvCam_Cameras();
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	std::string selectedName = (campath ? "Campath #" : "Camera #") + std::to_string(target);

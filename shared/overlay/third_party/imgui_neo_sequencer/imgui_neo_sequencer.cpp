@@ -1418,7 +1418,7 @@ namespace ImGui
                GetIO().MousePos.y < context.ValuesCursor.y + currentTimelineHeight;
     }
 
-    bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption, bool *hovered)
+    bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption, bool *hovered, bool block, bool selected, FrameIndexType blendEnd)
     {
         IM_ASSERT(inSequencer);
         auto &context = sequencerData[currentSequencer];
@@ -1442,6 +1442,26 @@ namespace ImGui
             draw->AddLine(ImVec2(x0, y0), ImVec2(x0, y1), color, 2);
         else
             draw->AddRectFilled(bounds.Min, bounds.Max, color, 3);
+        if (block)
+        {
+            if (blendEnd > begin)
+            {
+                const float blendX = ImClamp(left + getKeyframePositionX(blendEnd, context), bounds.Min.x, bounds.Max.x);
+                draw->PushClipRect(bounds.Min, ImVec2(blendX, bounds.Max.y), true);
+                draw->AddRectFilled(bounds.Min, ImVec2(blendX, bounds.Max.y), IM_COL32(100,190,235,55));
+                for(float x=bounds.Min.x-(y1-y0); x<blendX; x+=7)
+                    draw->AddLine(ImVec2(x,y1),ImVec2(x+y1-y0,y0),IM_COL32(180,220,245,90));
+                draw->PopClipRect();
+                draw->AddLine(ImVec2(blendX,y0),ImVec2(blendX,y1),IM_COL32(180,220,245,180));
+            }
+            draw->AddRect(bounds.Min,bounds.Max,selected?IM_COL32(255,215,90,255):IM_COL32(190,175,215,180),3,0,selected?2:1);
+            if(caption && bounds.GetWidth()>18)
+            {
+                draw->PushClipRect(ImVec2(bounds.Min.x+4,y0),ImVec2(bounds.Max.x-3,y1),true);
+                draw->AddText(ImVec2(bounds.Min.x+5,y0+(y1-y0-GetTextLineHeight())*.5f),IM_COL32(255,255,255,255),caption);
+                draw->PopClipRect();
+            }
+        }
         draw->PopClipRect();
         // Point markers have a visible head and a forgiving hit area, independent of zoom.
         if (begin == end)
