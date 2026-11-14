@@ -361,6 +361,9 @@ namespace
 std::recursive_mutex g_CameraMutex;
 std::uint64_t g_NextCameraDefinition = 1;
 bool g_BakingCamera = false;
+bool g_InspectingSequence = false;
+double g_SequencePreviewTime = 0;
+bool g_SequencePreviewLeft = false, g_SequencePreviewRight = false;
 std::shared_ptr<const advancedfx::SceneCache::Frame> g_BakeFrame;
 struct NamedCameraRig
 {
@@ -794,14 +797,15 @@ bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 	if (!camera.Aim)
 		return true;
 	const bool cached = g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive();
-	// Cached scrubbing must not advance or reset the live smoothing history.
-	auto sampledAim = cached ? camera.Aim->CloneSettings() : nullptr;
+	// Preview evaluates frozen targets without advancing the live aiming history.
+	const bool inspecting = cached || g_InspectingSequence;
+	auto sampledAim = inspecting ? camera.Aim->CloneSettings() : nullptr;
 	auto &aim = sampledAim ? *sampledAim : *camera.Aim;
-	if (cached)
+	if (inspecting)
 		aim.SnapTo = true;
-	if (!aim.Active && (!aim.SoftDeactivate || cached))
+	if (!aim.Active && (!aim.SoftDeactivate || inspecting))
 	{
-		if (!cached)
+		if (!inspecting)
 			camera.AimTime = -1;
 		return true;
 	}
@@ -837,26 +841,27 @@ bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 	}
 	auto angles = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
 	const double time = g_CameraEvaluationTime;
-	if (!cached && !camera.AimDirty && camera.AimCached == cached &&
+	if (!inspecting && !camera.AimDirty && camera.AimCached == cached &&
 		(g_CameraEvaluationFrame >= 0 ? camera.AimFrame == g_CameraEvaluationFrame : camera.AimTime == time))
 	{
 		pose.Rotation = camera.AimRotation;
 		return true;
 	}
 	double delta = time - camera.AimTime;
-	if (cached || camera.AimTime < 0 || camera.AimCached != cached || delta < 0 || delta > .25)
+	if (inspecting || camera.AimTime < 0 || camera.AimCached != cached || delta < 0 || delta > .25)
 	{
 		aim.Reset(angles.Pitch, angles.Yaw, angles.Roll);
 		delta = 1.0 / 66;
 	}
-	if (!cached && g_CameraEvaluationFrame >= 0 && std::isfinite(g_CameraEvaluationStep) && g_CameraEvaluationStep > 0)
+	if (!inspecting && g_CameraEvaluationFrame >= 0 && std::isfinite(g_CameraEvaluationStep) &&
+		g_CameraEvaluationStep > 0)
 		delta = g_CameraEvaluationStep;
 	if (delta == 0)
 		delta = 1.0 / 66;
 	if (aim.Aim(delta, Vector3(pose.Position[0], pose.Position[1], pose.Position[2]), angles.Pitch, angles.Yaw,
 				angles.Roll, overrideTarget))
 		pose.Rotation = Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles(angles));
-	if (cached)
+	if (inspecting)
 		return pose.Valid();
 	camera.AimTime = time;
 	camera.AimFrame = g_CameraEvaluationFrame;
@@ -982,6 +987,8 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 		}
 		if (!_stricmp(action, "remove"))
 		{
+			const bool browsing =
+				g_RigPreview && g_CameraSource == CameraSource::Rig && g_CameraRigName == found->first;
 			if (g_CameraSource == CameraSource::Rig && g_CameraRigName == found->first)
 				MirvCam_EndRigPreview();
 			if (g_EditingCameraName == found->first)
@@ -998,6 +1005,8 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 				g_LegacyCameraName.clear();
 			}
 			g_CameraRigs.erase(found);
+			if (browsing)
+				MirvCam_SetPreviewNavigation(true);
 			return;
 		}
 		if (!_stricmp(action, "capture"))
@@ -1183,7 +1192,23 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
+	struct InspectionScope
+	{
+		bool Previous = g_InspectingSequence;
+		~InspectionScope()
+		{
+			g_InspectingSequence = Previous;
+		}
+	} inspection;
+	g_InspectingSequence = MirvCam_SequencePreviewActive();
 	clientTime = AfxHookSource::CameraOverlay::EditingClientTime(clientTime);
+	if (MirvCam_SequencePreviewActive())
+	{
+		if (AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+			g_SequencePreviewTime = clientTime;
+		else
+			clientTime = g_SequencePreviewTime;
+	}
 	g_BlendLastTime = clientTime;
 	g_CameraEvaluationTime = clientTime;
 	g_CameraEvaluationFrame = frame;
@@ -1385,14 +1410,18 @@ bool MirvCam_EnableSequence(bool enabled)
 	SyncRigLevel();
 	if (!enabled)
 	{
+		const bool wasPreview = MirvCam_SequencePreviewActive();
 		g_SequencePlaying = false;
 		if (g_CameraSource == CameraSource::Sequence)
 			MirvCam_EndRigPreview();
+		if (wasPreview)
+			MirvCam_SetPreviewNavigation(g_RigNavigation);
 		return true;
 	}
 	if (g_CameraClips.empty() || (!g_SequenceDemo.empty() && g_SequenceDemo != g_CameraDemoKey) ||
 		(g_SequenceDemo.empty() && g_SequenceLevel != g_LevelInitCount))
 		return false;
+	const bool wasPreview = MirvCampathPreview_IsActive();
 	const auto currentView = RigCapture();
 	if (!currentView.Valid())
 		return false;
@@ -1405,6 +1434,8 @@ bool MirvCam_EnableSequence(bool enabled)
 	if (auto input = g_Hook_VClient_RenderView.m_MirvInput)
 		input->SetCameraControlMode(false);
 	g_EditingCameraName.clear();
+	if (wasPreview)
+		MirvCam_SetPreviewNavigation(g_RigNavigation);
 	return true;
 }
 bool MirvCam_ResumeSequencePreview()
@@ -1541,6 +1572,55 @@ bool MirvCam_RigPreviewActive()
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	return g_RigPreview;
 }
+bool MirvCam_SequencePreviewActive()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	return g_RigPreview && g_CameraSource == CameraSource::Sequence;
+}
+bool MirvCam_SequencePreviewRange(double &begin, double &end)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (g_CameraClips.empty())
+		return false;
+	begin = g_CameraClips.front().Time;
+	const auto &last = g_CameraClips.back();
+	end = last.Time + (std::max)(last.Blend, 1.0);
+	if (last.Campath)
+	{
+		auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+		for (size_t i = 0; i < paths.GetCount(); ++i)
+			if (paths.GetId(i) == last.Target)
+				if (auto path = paths.GetPath(i))
+					if (path->CanEval())
+						end = (std::max)(last.Time + last.Blend, path->GetOffset() + path->GetUpperBound());
+	}
+	end = (std::max)(end, begin + .001);
+	return true;
+}
+double MirvCam_SequencePreviewTime()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	return g_SequencePreviewTime;
+}
+bool MirvCam_SetSequencePreviewTime(double time)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	double begin, end;
+	if (!MirvCam_SequencePreviewActive() || !std::isfinite(time) || !MirvCam_SequencePreviewRange(begin, end))
+		return false;
+	g_SequencePreviewTime = std::clamp(time, begin, end);
+	AfxHookSource::CameraOverlay::SceneCacheFollowCameraTime(g_SequencePreviewTime);
+	return true;
+}
+void MirvCam_UpdateSequencePreview(double seconds)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (!MirvCam_SequencePreviewActive())
+		return;
+	const int direction = int(g_SequencePreviewRight) - int(g_SequencePreviewLeft);
+	if (direction && std::isfinite(seconds) && seconds > 0)
+		MirvCam_SetSequencePreviewTime(g_SequencePreviewTime + direction * seconds);
+}
 void MirvCam_EndRigPreview()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
@@ -1548,6 +1628,7 @@ void MirvCam_EndRigPreview()
 	const bool adopt = g_CameraSource != CameraSource::Legacy && (!g_SequencePlaying || g_RigPreview);
 	auto pose = g_LastRigPose;
 	g_RigPreview = false;
+	g_SequencePreviewLeft = g_SequencePreviewRight = false;
 	g_CameraSource = g_SequencePlaying ? CameraSource::Sequence : CameraSource::Legacy;
 	g_RigUnavailable = false;
 	// Clear native preview too, before restoring the displayed rig pose.
@@ -1601,8 +1682,39 @@ std::string MirvCam_PreviewLabel()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	if (g_CameraSource == CameraSource::Sequence)
-		return "Sequence | " + std::to_string(g_CameraClips.size()) + " clips" +
-			   (g_RigUnavailable ? " [unavailable]" : "");
+	{
+		auto sourceName = [&](const advancedfx::CameraClip &clip)
+		{
+			if (!clip.Campath)
+			{
+				auto rig = FindRig(std::to_string(clip.Target));
+				return rig == g_CameraRigs.end() ? std::string("missing camera") : rig->first.substr(0, 24);
+			}
+			auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+			for (size_t i = 0; i < paths.GetCount(); ++i)
+				if (paths.GetId(i) == clip.Target)
+					return paths.GetName(i).substr(0, 24);
+			return std::string("missing path");
+		};
+		std::string label = "Sequence | ";
+		if (!g_CameraClips.empty())
+		{
+			auto next = std::upper_bound(g_CameraClips.begin(), g_CameraClips.end(), g_SequencePreviewTime,
+										 [](double time, const advancedfx::CameraClip &clip)
+										 { return time < clip.Time; });
+			auto current = next == g_CameraClips.begin() ? next : std::prev(next);
+			if (current != g_CameraClips.begin() && current->Blend > 0 &&
+				g_SequencePreviewTime < current->Time + current->Blend)
+				label += sourceName(*std::prev(current)) + " -> ";
+			label += sourceName(*current);
+		}
+		for (auto &c : label)
+			if (c == '\n' || c == '\r')
+				c = ' ';
+		char time[48];
+		std::snprintf(time, sizeof(time), " | %.3fs", g_SequencePreviewTime);
+		return label + time + (g_RigUnavailable ? " [unavailable]" : "");
+	}
 	if (g_CameraSource == CameraSource::Playback)
 	{
 		std::string name = "missing";
@@ -1629,8 +1741,45 @@ std::string MirvCam_PreviewLabel()
 bool MirvCam_PreviewKey(unsigned int key, bool down, bool repeat)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
-	if ((g_CameraSource == CameraSource::Playback || g_CameraSource == CameraSource::Sequence) &&
-		key != VK_ESCAPE)
+	if (MirvCam_SequencePreviewActive())
+	{
+		if (key == VK_LEFT || key == VK_RIGHT)
+		{
+			(key == VK_LEFT ? g_SequencePreviewLeft : g_SequencePreviewRight) = down;
+			return true;
+		}
+		if (key == VK_HOME || key == VK_END || key == VK_UP || key == VK_DOWN)
+		{
+			if (!down || repeat)
+				return true;
+			g_SequencePreviewLeft = g_SequencePreviewRight = false;
+			double begin, end;
+			if (!MirvCam_SequencePreviewRange(begin, end))
+				return true;
+			double time = key == VK_HOME ? begin : end;
+			if (key == VK_UP)
+			{
+				for (const auto &clip : g_CameraClips)
+					if (clip.Time > g_SequencePreviewTime + 1e-6)
+					{
+						time = clip.Time;
+						break;
+					}
+			}
+			else if (key == VK_DOWN)
+			{
+				time = begin;
+				for (const auto &clip : g_CameraClips)
+					if (clip.Time < g_SequencePreviewTime - 1e-6)
+						time = clip.Time;
+			}
+			MirvCam_SetSequencePreviewTime(time);
+			return true;
+		}
+		if (key == 'E' || key == 'Y' || key == VK_DELETE)
+			return true;
+	}
+	if (g_CameraSource == CameraSource::Playback && key != VK_ESCAPE)
 		return false;
 	if (!g_RigPreview)
 		return false;
@@ -1974,6 +2123,32 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 bool MirvCam_SetPreviewNavigation(bool cameras)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (g_SequencePlaying && !g_CameraClips.empty())
+	{
+		if (MirvCam_SequencePreviewActive())
+			return true;
+		double begin, end;
+		if (!MirvCam_SequencePreviewRange(begin, end))
+			return false;
+		const double time = AfxHookSource::CameraOverlay::EditingClientTime(g_MirvTime.GetTime());
+		MirvCampathPreview_SetActive(false);
+		ClearCameraBlend();
+		g_SequencePreviewTime = std::clamp(time, begin, end);
+		g_SequencePreviewLeft = g_SequencePreviewRight = false;
+		g_CameraSource = CameraSource::Sequence;
+		g_RigPreview = true;
+		g_RigUnavailable = false;
+		if (auto input = g_Hook_VClient_RenderView.m_MirvInput)
+			input->SetCameraControlMode(false);
+		return true;
+	}
+	const bool keys = g_Hook_VClient_RenderView.m_CamPath.GetSize() != 0;
+	if (cameras && g_CameraRigs.empty())
+		cameras = false;
+	if (!cameras && !keys)
+		cameras = true;
+	if (cameras && g_CameraRigs.empty())
+		return false;
 	struct Args : advancedfx::ICommandArgs
 	{
 		const char *Mode;
@@ -1987,18 +2162,14 @@ bool MirvCam_SetPreviewNavigation(bool cameras)
 bool MirvCam_TogglePreviewNavigation()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (g_SequencePlaying)
+		return MirvCam_SetPreviewNavigation(g_RigNavigation);
 	const bool cameras = !g_RigNavigation;
 	// Switching to an unavailable destination must leave the current view intact.
 	if (!cameras && g_Hook_VClient_RenderView.m_CamPath.GetSize() == 0)
-	{
-		Tier0_Warning("No keyframes to preview; camera navigation retained.\n");
-		return false;
-	}
+		return MirvCam_SetPreviewNavigation(true);
 	if (cameras && g_CameraRigs.empty())
-	{
-		Tier0_Warning("No cameras to preview; keyframe navigation retained.\n");
-		return false;
-	}
+		return MirvCam_SetPreviewNavigation(false);
 	return MirvCam_SetPreviewNavigation(cameras);
 }
 bool MirvCam_SelectedCameraAction(const char *action)
@@ -2123,7 +2294,7 @@ bool MirvCam_SelectCamera(std::uint64_t id)
 	auto found = FindRig(std::to_string(id));
 	if (found == g_CameraRigs.end())
 		return false;
-	if (g_RigPreview)
+	if (g_RigPreview && g_CameraSource == CameraSource::Rig)
 	{
 		struct Args : advancedfx::ICommandArgs
 		{

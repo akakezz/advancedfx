@@ -2128,8 +2128,11 @@ bind "F6" "mirv_cam preview toggle"
 
 The console command also enters preview when it was off.
 
-The overlay's Preview navigation selector chooses Keyframes or Cameras. This
-choice survives stopping preview. Add camera, Edit camera and Recapture camera
+Preview chooses the enabled sequence automatically. With sequence playback off,
+it uses cameras or keyframes according to availability and the last chosen domain.
+Tab switches between cameras and keys when both exist; it keeps sequence preview
+when sequence playback is enabled. A missing camera/keyframe domain falls back to
+the available one. Add camera, Edit camera and Recapture camera
 provide the same workflow as the console: edit moves the free camera to the
 selected camera, and capture saves the adjusted view. Attached cameras retain
 their target when recaptured. These controls do not yet provide a rig gizmo.
@@ -2402,8 +2405,9 @@ Camera clips use bright start markers, blue blend regions and faint continuation
 spans. For cached transitions, enable Cached preview and Enable camera sequence;
 there is no need to preview an individual camera or campath first.
 
-Sequence playback is enabled independently of preview navigation. Camera/keyframe
-previews temporarily override the view without changing the enabled flag. Exiting
+Sequence playback is enabled independently of preview. Entering preview while it
+is enabled automatically previews the sequence with an independent cursor. Explicit
+individual camera commands can still override the view without changing the enabled flag. Exiting
 preview returns to enabled playback. Freecam can also temporarily override it;
 leaving freecam returns to the sequence. Only the sequence enable switch (or
 clearing its clips/loading a project) disables playback.
@@ -2531,3 +2535,20 @@ status and camera-tab status both show the specific bake report.
 
 In the Cameras list, click the selected camera again to deselect it. This ends
 individual camera preview while leaving sequence playback enabled.
+
+Sequence preview uses the existing Preview toggle or `mirv_campath preview enter`.
+Enable sequence playback first, then enter preview; the HUD identifies Sequence,
+the current source or blend, and the independent client-time cursor. Enabling a
+sequence while preview is already open switches to sequence preview. Disabling
+it returns to available camera/keyframe preview. Exiting preview leaves playback
+enabled and returns its clock to the actual demo/cache time.
+
+Without Cached preview, Left/Right scrub the sequence while the demo stays frozen;
+Up/Down jump to the next/previous clip, and Home/End go to the sequence bounds.
+The sequencer playhead, Go to tick, and preview slider use the same cursor without
+seeking the demo. **Seek actual demo here** and RCtrl remain explicit seek actions.
+No command markers execute when only the preview cursor moves. With Cached preview,
+the cache clock also supplies historical entity poses and recorded tracking.
+Without cached motion, entity attachment and aiming use the current live poses;
+aiming is evaluated without advancing the live smoothing history. Individual
+`mirv_cam preview <ID/name>` inspection remains an explicit override.

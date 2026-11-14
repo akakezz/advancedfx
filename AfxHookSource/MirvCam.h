@@ -94,6 +94,11 @@ bool MirvCam_RigViewActive();
 
 bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args);
 bool MirvCam_RigPreviewActive();
+bool MirvCam_SequencePreviewActive();
+bool MirvCam_SequencePreviewRange(double &begin, double &end);
+double MirvCam_SequencePreviewTime();
+bool MirvCam_SetSequencePreviewTime(double time);
+void MirvCam_UpdateSequencePreview(double seconds);
 void MirvCam_EndRigPreview();
 bool MirvCam_PreviewKey(unsigned int key, bool down, bool repeat);
 std::string MirvCam_PreviewLabel();

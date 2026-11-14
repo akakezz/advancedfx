@@ -6575,8 +6575,13 @@ static void DrawCamerasTab()
 		std::find_if(cameras.begin(), cameras.end(), [&](const auto &camera) { return camera.Id == selected; });
 	if (found != cameras.end())
 	{
-		if (ImGui::Button("Preview camera"))
-			MirvCam_CameraAction("preview", selected);
+		if (ImGui::Button(MirvCam_SequenceEnabled() ? "Preview sequence" : "Preview camera"))
+		{
+			if (MirvCam_SequenceEnabled())
+				MirvCampathPreview_SetActive(true);
+			else
+				MirvCam_CameraAction("preview", selected);
+		}
 		ImGui::SameLine();
 		if (ImGui::Button("Edit camera"))
 		{
@@ -6845,14 +6850,29 @@ void Draw()
 	if (g_GraphRightCtrlHeld && ImGui::IsKeyReleased(ImGuiKey_RightCtrl))
 	{
 		g_GraphRightCtrlHeld = false;
-		if (!g_GraphRightCtrlChord && !ImGui::GetIO().WantTextInput && !MirvCam_RigNavigation() && !g_CamerasTabActive)
+		if (!g_GraphRightCtrlChord && !ImGui::GetIO().WantTextInput &&
+			(MirvCam_SequencePreviewActive() || !MirvCam_RigNavigation()) && !g_CamerasTabActive)
 			MirvCampathPreview_Seek();
+	}
+	if (MirvCam_SequencePreviewActive() &&
+		(ImGui::GetIO().WantTextInput || g_CancelGesture ||
+		 ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)))
+	{
+		MirvCam_PreviewKey(VK_LEFT, false, false);
+		MirvCam_PreviewKey(VK_RIGHT, false, false);
 	}
 	if (!ImGui::GetIO().WantTextInput && !g_CancelGesture &&
 		!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
 	{
 		if (MirvCampathPreview_IsActive() && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyAlt &&
 			ImGui::IsKeyPressed(ImGuiKey_Tab, false)) MirvCam_TogglePreviewNavigation();
+		if (MirvCam_SequencePreviewActive())
+		{
+			const bool navigate =
+				!ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyAlt;
+			MirvCam_PreviewKey(VK_LEFT, navigate && ImGui::IsKeyDown(ImGuiKey_LeftArrow), false);
+			MirvCam_PreviewKey(VK_RIGHT, navigate && ImGui::IsKeyDown(ImGuiKey_RightArrow), false);
+		}
 		if(MirvCam_RigPreviewActive() && !ImGui::GetIO().KeyCtrl)
 		{
 			const ImGuiKey keys[]={ImGuiKey_UpArrow,ImGuiKey_DownArrow,ImGuiKey_Home,ImGuiKey_End,ImGuiKey_Escape};
@@ -6959,16 +6979,12 @@ void Draw()
 			bool preview = MirvCampathPreview_IsActive();
 			if (ImGui::Checkbox("Preview", &preview))
 				MirvCampathPreview_SetActive(preview);
-			int navigation = MirvCam_RigNavigation() ? 1 : 0;
-			ImGui::SetNextItemWidth(130);
-			const char *navigationChoices[] = {"Keyframes", "Cameras"};
-			if (ImGui::Combo("Preview navigation", &navigation, navigationChoices, 2))
-			{
-				if (MirvCampathPreview_IsActive())
-					MirvCam_SetPreviewNavigation(navigation == 1);
-				else
-					MirvCam_SetRigNavigation(navigation == 1);
-			}
+			ImGui::TextDisabled(MirvCam_SequenceEnabled() ? "Preview: sequence"
+								: MirvCam_RigNavigation() && MirvCam_CameraCount()
+									? "Preview: cameras (Tab: keys, when available)"
+								: g_Hook_VClient_RenderView.m_CamPath.GetSize()
+									? "Preview: keys (Tab: cameras, when available)"
+									: "Preview: cameras");
 			if(ImGui::Button("Manage cameras"))g_FocusCameras=true;
 
 			float labelHeight = g_CampathDrawer.GetDrawKeyframeIndex();
@@ -7684,6 +7700,10 @@ void Draw()
 				ImGui::SetTooltip("Use the camera clips to choose the view, including during cached "
 								  "scrubbing. This replaces individual camera/path preview.");
 			ImGui::SameLine();
+			bool previewing = MirvCampathPreview_IsActive();
+			if (ImGui::Checkbox("Preview", &previewing))
+				MirvCampathPreview_SetActive(previewing);
+			ImGui::SameLine();
 			if (ImGui::Button("Seek actual demo here")) Afx_GotoDemoTick(s_seqFrame);
 			int curDemoTick = 0;
 			const bool haveDemoTick = GetCurrentDemoTick(curDemoTick);
@@ -7793,6 +7813,19 @@ void Draw()
 				{
 					bool keyframeContextOpened = false;
 					ImGui::GetNeoSequencerView(&visibleStart, &visibleEnd);
+					if (MirvCam_SequencePreviewActive() && !SceneCachePreviewActive())
+					{
+						double tick, client;
+						if (ImGui::GetNeoSequencerPlayheadDrag(&tick) &&
+							CinematicClock(tick * SceneTickInterval(), false, client, false))
+						{
+							MirvCam_SetSequencePreviewTime(client);
+							fractionalPointerHandled = true;
+						}
+						double demo;
+						if (CinematicClock(MirvCam_SequencePreviewTime(), true, demo, false))
+							ImGui::SetNeoSequencerPlayhead(demo / SceneTickInterval(), s_seqFrame);
+					}
 					if (SceneCachePreviewActive())
 					{
 						double tick;
@@ -8333,24 +8366,38 @@ void Draw()
 			}
 			// Standalone Curve Editor (outside Neo timeline)
 			// A view onto the native preview cursor; the controller owns the camera.
-			if (g_Hook_VClient_RenderView.m_CamPath.GetSize())
+			if (MirvCam_SequencePreviewActive() || g_Hook_VClient_RenderView.m_CamPath.GetSize())
 			{
 				auto &path = g_Hook_VClient_RenderView.m_CamPath;
 				ImGui::Separator();
-				bool active = MirvCampathPreview_IsActive();
-				if (ImGui::Checkbox("Preview", &active))
-					MirvCampathPreview_SetActive(active);
-				const double begin = path.GetLowerBound(), end = path.GetUpperBound();
-				float position =
-					end > begin ? (float)((MirvCampathPreview_GetTime() - begin) / (end - begin)) : 0;
+				const bool sequence = MirvCam_SequencePreviewActive();
+				double begin = 0, end = 0;
+				if (sequence)
+					MirvCam_SequencePreviewRange(begin, end);
+				else
+				{
+					begin = path.GetLowerBound();
+					end = path.GetUpperBound();
+				}
+				const double previewTime =
+					sequence ? MirvCam_SequencePreviewTime() : MirvCampathPreview_GetTime();
+				float position = end > begin ? (float)((previewTime - begin) / (end - begin)) : 0;
 				position = std::clamp(position, 0.0f, 1.0f);
 				ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-				ImGui::BeginDisabled(!path.CanEval() || end <= begin);
+				ImGui::BeginDisabled((!sequence && !path.CanEval()) || end <= begin);
 				if (!SceneCachePreviewActive() && ImGui::SliderFloat("##previewcampath", &position, 0, 1, "%.3f"))
-					MirvCampathPreview_SetTime(begin + position * (end - begin));
+				{
+					if (sequence)
+						MirvCam_SetSequencePreviewTime(begin + position * (end - begin));
+					else
+						MirvCampathPreview_SetTime(begin + position * (end - begin));
+				}
 				ImGui::EndDisabled();
-				ImGui::TextDisabled("Camera preview: %.3f s | Demo time stays independent",
-									MirvCampathPreview_GetTime());
+				ImGui::TextDisabled("%s preview: %.3f s | Demo time stays independent",
+									sequence ? "Sequence" : "Camera", previewTime);
+				if (sequence && !SceneCachePreviewActive())
+					ImGui::TextDisabled(
+						"Entity targets use their current poses. Cached preview supplies recorded motion.");
 			}
 
 			if (ImGui::Button("Open demo..."))
@@ -8364,6 +8411,13 @@ void Draw()
 			if (go)
 			{
 				if (SceneCachePreviewActive()) s_seqFrame=(std::max)(0,g_SequencerTimeline.GoToTick);
+				else if (MirvCam_SequencePreviewActive())
+				{
+					double client;
+					if (CinematicClock((std::max)(0, g_SequencerTimeline.GoToTick) * SceneTickInterval(),
+									   false, client, false))
+						MirvCam_SetSequencePreviewTime(client);
+				}
 				else Afx_GotoDemoTick((std::max)(0,g_SequencerTimeline.GoToTick));
 			}
 			DrawSequencerDetails(int(s_seqFrame));
@@ -8387,16 +8441,24 @@ void Draw()
 			{
 				if (lmbReleased || !lmbDown)
 				{
-					if (s_seqFrame != s_dragStartFrame && !SceneCachePreviewActive())
+					if (s_seqFrame != s_dragStartFrame && !SceneCachePreviewActive() &&
+						!MirvCam_SequencePreviewActive())
 						Afx_GotoDemoTick((int)s_seqFrame);
 					s_draggingPointer = false;
 				}
 			}
-			else if (haveDemoTick && !SceneCachePreviewActive())
+			else if (haveDemoTick && !SceneCachePreviewActive() && !MirvCam_SequencePreviewActive())
 			{
 				s_seqFrame = std::clamp(curDemoTick, int(s_seqStart), int(s_seqEnd));
 			}
 
+			if (MirvCam_SequencePreviewActive() && !SceneCachePreviewActive() && pointerMoved &&
+				!fractionalPointerHandled)
+			{
+				double client;
+				if (CinematicClock(s_seqFrame * SceneTickInterval(), false, client, false))
+					MirvCam_SetSequencePreviewTime(client);
+			}
 			if (SceneCachePreviewActive())
 			{
 				if (pointerMoved && !fractionalPointerHandled)

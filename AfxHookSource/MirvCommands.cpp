@@ -1830,6 +1830,9 @@ static bool CampathPreview_SetCamera()
 
 static bool CampathPreview_Enter()
 {
+	if (MirvCam_SequenceEnabled() ||
+		(!g_Hook_VClient_RenderView.m_CamPath.GetSize() && MirvCam_CameraCount()))
+		return MirvCam_SetPreviewNavigation(MirvCam_RigNavigation());
 	MirvCam_SetRigNavigation(false);
 	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 	if (!g_Hook_VClient_RenderView.IsInstalled() || !CampathPreview_CanShow(path) || !g_Hook_VClient_RenderView.m_MirvInput)
@@ -1880,7 +1883,9 @@ bool MirvCampathPreview_GetCamera(CamPathValue &value)
 }
 bool MirvCampathPreview_SetActive(bool active)
 {
-	if (active && MirvCam_RigNavigation()) return MirvCam_SetPreviewNavigation(true);
+	if (active && (MirvCam_SequenceEnabled() || MirvCam_RigNavigation() ||
+				   !g_Hook_VClient_RenderView.m_CamPath.GetSize()))
+		return MirvCam_SetPreviewNavigation(MirvCam_RigNavigation());
 	if (MirvCam_RigPreviewActive()) MirvCam_EndRigPreview();
 	if (active)
 		return CampathPreview_Enter();
@@ -1889,10 +1894,16 @@ bool MirvCampathPreview_SetActive(bool active)
 }
 double MirvCampathPreview_GetTime()
 {
-	return g_CampathPreviewTime;
+	return MirvCam_SequencePreviewActive()
+			   ? MirvCam_SequencePreviewTime() - g_Hook_VClient_RenderView.m_CamPath.GetOffset()
+			   : g_CampathPreviewTime;
 }
 bool MirvCampathPreview_SetTime(double time)
 {
+	if (MirvCam_SequenceEnabled() && !MirvCam_SequencePreviewActive())
+		MirvCam_SetPreviewNavigation(MirvCam_RigNavigation());
+	if (MirvCam_SequencePreviewActive())
+		return MirvCam_SetSequencePreviewTime(time + g_Hook_VClient_RenderView.m_CamPath.GetOffset());
 	if (MirvCam_RigPreviewActive())
 		return false;
 	if (!std::isfinite(time))
@@ -1911,9 +1922,12 @@ bool MirvCampathPreview_Seek()
 {
 	auto &path = g_Hook_VClient_RenderView.m_CamPath;
 	int tick = -1;
-	if (!g_VEngineClient || !g_CampathPreviewActive || !path.GetSize() ||
+	if (!g_VEngineClient || (!g_CampathPreviewActive && !MirvCam_SequencePreviewActive()) ||
 		!g_MirvCampath_Time.GetDemoTickFromClientTime(g_MirvTime.GetTime(),
-													  g_CampathPreviewTime + path.GetOffset(), tick) ||
+													  MirvCam_SequencePreviewActive()
+														  ? MirvCam_SequencePreviewTime()
+														  : g_CampathPreviewTime + path.GetOffset(),
+													  tick) ||
 		tick < 0)
 		return false;
 	return MirvCampathPreview_SeekTick(tick);
@@ -1930,6 +1944,35 @@ void MirvCampathPreview_Update()
 		AfxHookSource::CameraOverlay::UpdateHistory();
 	}
 	CampathPreview_UpdateCachedNavigation();
+	static DWORD sequenceLastMs = 0;
+	static int sequenceFrame = -1;
+	if (MirvCam_SequencePreviewActive())
+	{
+		const int frame = g_MirvTime.GetFrameCount();
+		const DWORD now = GetTickCount();
+		if (sequenceFrame != frame)
+		{
+			sequenceFrame = frame;
+			const DWORD elapsed = sequenceLastMs ? (std::min)(DWORD(100), now - sequenceLastMs) : 0;
+			sequenceLastMs = now;
+			if (g_Hook_VClient_RenderView.IsMenuActive() && !AfxHookSource::CameraOverlay::IsOpen())
+			{
+				MirvCam_PreviewKey(VK_LEFT, false, false);
+				MirvCam_PreviewKey(VK_RIGHT, false, false);
+			}
+			else
+			{
+				double scale = 1;
+				if (g_VEngineClient)
+					if (auto *demo = g_VEngineClient->GetDemoInfoEx())
+						scale = demo->GetDemoPlaybackTimeScale();
+				MirvCam_UpdateSequencePreview(elapsed * .001 * (scale > 0 ? scale : 1));
+			}
+		}
+		return;
+	}
+	sequenceLastMs = 0;
+	sequenceFrame = -1;
 	if (MirvCam_RigPreviewActive() || !g_CampathPreviewActive)
 		return;
 
@@ -1957,6 +2000,12 @@ void MirvCampathPreview_Update()
 	CamPath & path = g_Hook_VClient_RenderView.m_CamPath;
 	if (!CampathPreview_CanShow(path))
 	{
+		// Prefer existing cameras when the last keyframe disappears.
+		if (MirvCam_CameraCount())
+		{
+			MirvCam_SetPreviewNavigation(true);
+			return;
+		}
 		// Undoing the first capture must leave preview alive so redo still works.
 		CampathPreview_StopTravel();
 		g_CampathPreviewLastMs = 0;
@@ -2061,7 +2110,8 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 	{
 		g_CampathRightCtrlHeld = false;
 		CampathPreview_StopCachedNavigation();
-		if (!g_CampathRightCtrlChord && g_CampathPreviewActive && !g_Hook_VClient_RenderView.IsMenuActive())
+		if (!g_CampathRightCtrlChord && (g_CampathPreviewActive || MirvCam_SequencePreviewActive()) &&
+			!g_Hook_VClient_RenderView.IsMenuActive())
 			MirvCampathPreview_Seek();
 		return true;
 	}
@@ -2100,10 +2150,8 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 				MirvCam_EndRigPreview();
 			else if (g_CampathPreviewActive)
 				CampathPreview_Exit();
-			else if (MirvCam_RigNavigation())
-				MirvCam_SetPreviewNavigation(true);
 			else
-				CampathPreview_Enter();
+				MirvCampathPreview_SetActive(true);
 		}
 		return true;
 	}
@@ -2166,7 +2214,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		if (down && !g_CampathPreviewUndoHeld && !CampathPreview_IsRepeatKey(lParam))
 		{
 			g_CampathPreviewUndoHeld = true;
-			if (MirvCam_RigPreviewActive() && MirvCam_RigNavigation())
+			if (MirvCam_RigPreviewActive() && (MirvCam_RigNavigation() || MirvCam_SequencePreviewActive()))
 				MirvCam_HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
 			else
 				AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
@@ -2253,6 +2301,8 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 
 void MirvCampathPreview_ReleaseKeys()
 {
+	MirvCam_PreviewKey(VK_LEFT, false, false);
+	MirvCam_PreviewKey(VK_RIGHT, false, false);
 	CampathPreview_StopCachedNavigation();
 	AfxHookSource::CameraOverlay::SceneCacheStopScrub();
 	CampathPreview_StopTravel();
@@ -2267,7 +2317,7 @@ void MirvCampathPreview_ReleaseKeys()
 static void CampathPreview_PrintHelp()
 {
 	Tier0_Msg(
-		"mirv_campath preview enter - Begin preview mode (one or more keyframes).\n"
+		"mirv_campath preview enter - Preview the enabled sequence, otherwise available cameras/keyframes.\n"
 		"mirv_campath preview toggle - Toggle Preview Mode on/off.\n"
 		"mirv_campath preview toggleKey <key|none> - Set a dedicated key (letters, digits, F1..F12, insert, "
 		"home, end, pageup, pagedown).\n"
@@ -2278,7 +2328,8 @@ static void CampathPreview_PrintHelp()
 		"mirv_campath preview seek - Seek the demo to the current preview time.\n"
 		"mirv_campath preview exit - Leave preview, retaining the free camera pose.\n"
 		"mirv_campath preview afterSeek timescale <0..100>|pause|continue - Default: timescale 0.\n"
-		"E captures; Shift+E replaces; Ctrl+E inserts at preview time; Y captures hold release; Shift+Y clears it; RCtrl seeks.\n"
+		"E captures; Shift+E replaces; Ctrl+E inserts at preview time; Y captures hold release; Shift+Y "
+		"clears it; RCtrl seeks.\n"
 		"Ctrl+A selects all; Ctrl+Shift+A anchors the selection using its first key.\n"
 		"Preview keys (console closed): UP/DOWN select next/previous; HOME/END select first/last.\n"
 		"LEFT/RIGHT scrub interpolated paths, or step through keyframes if interpolation is unavailable.\n"
