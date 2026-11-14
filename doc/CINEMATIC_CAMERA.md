@@ -2276,29 +2276,39 @@ camera-name labels, per-camera aiming and basic playback mixing are implemented
 below. Sequencer clips and deterministic cached smoothing remain pending.
 
 
-### Mixer milestone, first slice: saved-camera transitions
+### Camera transitions
 
-`mirv_cam preview <ID/name> [seconds]` switches to a saved camera. Omit the
-seconds, or use zero, for a cut. While viewing a saved camera, supply a positive
-duration to blend into another saved camera. Both cameras keep evaluating their
-current entity/bone positions during the transition. Position and FOV use a
-smoothstep weight; orientation uses shortest-path quaternion interpolation.
+`mirv_cam transition <ID/name|campath> <seconds>` starts a transition when the
+command is issued. Use `0` for an immediate cut. Transition progress follows
+live demo or cached preview time, so pausing pauses the blend. From an existing
+camera/campath source, both sources continue evaluating during the blend. From
+the free camera, or when replacing an unfinished transition, the outgoing pose
+is the currently displayed view.
 
-The Cameras tab's **Camera transition (s)** controls transitions when choosing a
-camera while previewing; zero retains immediate switching. Start the next blend
-after the current one completes, or cut first. The current transition can be
-sampled backward using the cache cursor; it is not yet a saved sequencer clip.
-Missing subjects hold the last valid mixed view. Leaving preview or reloading
-clears the transition. The follow-up integration below adds campath playback transitions and isolated
-per-camera `mirv_aim` configuration.
+`campath` captures the active path's stable ID at command time. It evaluates that
+path regardless of the normal playback-enabled flag or collection mute/solo
+settings. Before its time range it holds the first evaluated pose; after the
+range it holds the last. Inside the range it follows the normal evaluator,
+including offsets and modifiers. It does not alter the path's enabled or Hold
+settings, and switching the active editing path does not retarget the transition.
+The path must have enough keys for its interpolation method to evaluate.
 
-Camera names now draw above their guides using the world-label renderer,
-including with Show path disabled. Their size is independent of the path's key
-index labels, and they are hidden during HLAE recording.
+In the Cameras tab, choose **Transition destination**, set **Transition duration
+(s)**, then press **Transition**. The destination can be Active campath or any
+saved camera. Selecting/previewing a camera remains separate from transitioning.
+A new transition can interrupt an unfinished one from the displayed pose.
 
-`mirv_cam remove [ID/name]` removes the selected camera when the argument is
-omitted. An explicit ID/name continues to remove that camera. With no selection,
-it reports the problem without choosing another camera.
+```text
+mirv_cam transition campath 2
+mirv_cam transition Hero 2
+mirv_cam transition Hero 0
+```
+
+`mirv_cam preview` remains camera/keyframe inspection and navigation; it no longer
+accepts blend durations or the `playback` destination. `mirv_cam preview off`
+exits the controller at the displayed pose. Transitions are session operations,
+not saved sequencer clips. Camera names draw above their guides independently
+of path drawing and key-index label size, and hide during HLAE recording.
 
 Camera history covers add, remove, rename, recapture, numeric pose edits and
 attachment changes. `mirv_cam undo` and `mirv_cam redo` operate on that history
@@ -2341,32 +2351,9 @@ its live pose. Fixed world-point targets also work in cache preview. Cached
 smoothed aiming and cached custom calc sources remain unavailable: they hold
 the last valid view instead of silently evaluating against live state.
 
-The mixer also accepts `playback` as a source, evaluating the existing enabled
-campath playback collection at the live or cached client time. Existing timing,
-offsets, holds, modifiers, mute/solo and playback cuts remain authoritative:
-
-```text
-mirv_cam preview Hero
-mirv_cam preview playback 1.5
-mirv_cam preview Hero 1.5
-mirv_cam preview off
-```
-
-Omit the duration for a cut. **Preview campath playback** in the Cameras tab
-uses the same transition setting as camera selection. Enable the desired paths
-for playback; a gap or unavailable source holds the last valid mixed pose.
-`keys` still selects interactive keyframe navigation, which is separate from
-playing the enabled campath collection. Mixer playback uses authored campath
-poses; it does not apply legacy global aiming or collision to that source.
-These transitions are session preview operations, not saved sequencer clips.
-
-
-Playback blend troubleshooting: test `mirv_cam preview playback` without a
-duration to evaluate campath playback on its own. It requires enabled playback
-and an evaluable, unmuted/non-excluded path covering the actual demo/cache time;
-drawing a path or viewing a key in interactive preview does not seek there.
-The whole transition needs valid source coverage. If it crosses a path endpoint,
-start earlier or explicitly enable endpoint hold with `mirv_campath hold 1`.
-The mixer diagnostic identifies the incoming or outgoing source and distinguishes
-disabled playback, missing time coverage, unavailable attachments/aim targets,
-and unsupported cached smooth/custom aiming.
+Use the root `mirv_cam transition` command described above to mix procedural
+cameras and the active campath. This is explicit source selection, not the normal
+collection playback selector: disabled paths and endpoint holds no longer block
+the transition. Legacy global aiming/collision are not applied to this explicit
+campath source. Missing camera subjects, invalid paths and unsupported cached
+aim settings still report a specific failure and hold the last valid mixed pose.

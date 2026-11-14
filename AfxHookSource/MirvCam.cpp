@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "MirvCam.h"
+#include "MirvTime.h"
 #include "aiming.h"
 
 #include "WrpVEngineClient.h"
@@ -393,7 +394,9 @@ unsigned long long g_NextCameraId = 0;
 std::string g_BlendFromCamera;
 double g_BlendDuration = 0, g_BlendStart = 0, g_BlendLastTime = 0;
 bool g_BlendStarted = false;
-bool g_BlendFromPlayback = false;
+bool g_BlendFromPlayback = false, g_BlendFromView = false;
+unsigned long long g_CampathSourceId = ~0ull, g_BlendPathId = ~0ull;
+advancedfx::CameraPose g_BlendViewPose;
 double g_CameraEvaluationTime = 0;
 int g_CameraEvaluationFrame = -1;
 double g_CameraEvaluationStep = 0;
@@ -401,6 +404,7 @@ void ClearCameraBlend()
 {
 	g_BlendFromCamera.clear();
 	g_BlendFromPlayback = false;
+	g_BlendFromView = false;
 	g_BlendDuration = 0;
 	g_BlendStarted = false;
 }
@@ -666,33 +670,24 @@ bool RigTarget(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 		Afx::Math::QREulerAngles::FromQEulerAngles({angles.x, angles.y, angles.z}));
 	return pose.Valid();
 }
-bool EvaluatePlaybackPose(double clientTime, advancedfx::CameraPose &pose)
+bool EvaluatePlaybackPose(double clientTime, advancedfx::CameraPose &pose, unsigned long long id)
 {
-	if (!g_Hook_VClient_RenderView.m_CamPath.Enabled_get())
-	{
-		g_CameraFailureReason = "Campath playback is disabled. Use mirv_campath enabled 1.";
-		return false;
-	}
-	auto path = g_Hook_VClient_RenderView.m_CamPaths.GetPlaybackPath(clientTime);
-	if (!path)
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	decltype(paths.GetPath(0)) path = nullptr;
+	for (size_t i = 0; i < paths.GetCount(); ++i)
+		if (paths.GetId(i) == id)
+		{
+			path = paths.GetPath(i);
+			break;
+		}
+	if (!path || !path->CanEval())
 	{
 		g_CameraFailureReason =
-			"No evaluable campath covers this time. Check key times, path offsets, mute/solo and endpoint hold.";
+			"The transition's campath is missing or cannot interpolate. Check its key count and interpolation method.";
 		return false;
 	}
-	if (!path->CanEval())
-	{
-		g_CameraFailureReason = "The playback path cannot interpolate. Check its key count and interpolation method.";
-		return false;
-	}
-	double time = clientTime - path->GetOffset();
-	if (path->GetHold())
-		time = (std::max)(path->GetLowerBound(), (std::min)(path->GetUpperBound(), time));
-	if (time < path->GetLowerBound() || time > path->GetUpperBound())
-	{
-		g_CameraFailureReason = "Playback is outside the campath's time range and endpoint hold is off.";
-		return false;
-	}
+	const double time =
+		(std::max)(path->GetLowerBound(), (std::min)(path->GetUpperBound(), clientTime - path->GetOffset()));
 	const auto value = path->Eval(time);
 	pose.Position[0] = value.X;
 	pose.Position[1] = value.Y;
@@ -1070,13 +1065,13 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 	advancedfx::CameraPose evaluated;
 	auto found = g_CameraRigs.find(g_CameraRigName);
 	const bool valid = g_CameraSource == CameraSource::Playback
-						   ? EvaluatePlaybackPose(clientTime, evaluated)
+						   ? EvaluatePlaybackPose(clientTime, evaluated, g_CampathSourceId)
 						   : found != g_CameraRigs.end() && EvaluateNamedRig(found->second, evaluated);
 	if (!valid && g_CameraFailureReason.empty())
 		g_CameraFailureReason = "The selected camera no longer exists.";
 	std::string failure = valid ? std::string{} : "Incoming source: " + g_CameraFailureReason;
 	bool blendValid = valid;
-	if (valid && (!g_BlendFromCamera.empty() || g_BlendFromPlayback))
+	if (valid && (!g_BlendFromCamera.empty() || g_BlendFromPlayback || g_BlendFromView))
 	{
 		if (!g_BlendStarted)
 		{
@@ -1089,8 +1084,13 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 			auto outgoing = g_CameraRigs.find(g_BlendFromCamera);
 			advancedfx::CameraPose from;
 			blendValid = g_BlendFromPlayback
-							 ? EvaluatePlaybackPose(clientTime, from)
+							 ? EvaluatePlaybackPose(clientTime, from, g_BlendPathId)
 							 : outgoing != g_CameraRigs.end() && EvaluateNamedRig(outgoing->second, from);
+			if (g_BlendFromView)
+			{
+				from = g_BlendViewPose;
+				blendValid = from.Valid();
+			}
 			if (!blendValid)
 				failure =
 					"Outgoing blend source: " +
@@ -1287,7 +1287,20 @@ std::string MirvCam_PreviewLabel()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	if (g_CameraSource == CameraSource::Playback)
-		return std::string("Playback | campaths") + (g_RigUnavailable ? " [unavailable]" : "");
+	{
+		std::string name = "missing";
+		auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+		for (size_t i = 0; i < paths.GetCount(); ++i)
+			if (paths.GetId(i) == g_CampathSourceId)
+			{
+				name = paths.GetName(i).substr(0, 40);
+				break;
+			}
+		for (auto &c : name)
+			if (static_cast<unsigned char>(c) < 32)
+				c = ' ';
+		return "Campath | " + name + (g_RigUnavailable ? " [unavailable]" : "");
+	}
 	auto found = g_CameraRigs.find(g_CameraRigName);
 	if (found == g_CameraRigs.end())
 		return "Cameras | none";
@@ -1413,17 +1426,19 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		}
 		return true;
 	}
-	if (action == "preview")
+	if (action == "preview" || action == "transition")
 	{
-		if (args->ArgC() != 3 && args->ArgC() != 4)
+		const bool transition = action == "transition";
+		if (args->ArgC() != (transition ? 4 : 3))
 		{
-			Tier0_Msg("mirv_cam preview <camera ID/name>|cameras|playback|keys|toggle|off [blend seconds] - Preview a "
-					  "camera or "
-					  "keyframes.\n");
+			Tier0_Msg(transition
+						  ? "mirv_cam transition <ID/name|campath> <seconds> - Transition to a camera or the active "
+							"campath; 0 cuts.\n"
+						  : "mirv_cam preview <ID/name>|cameras|keys|toggle|off - Inspect cameras or keyframes.\n");
 			return true;
 		}
 		double duration = 0;
-		if (args->ArgC() == 4)
+		if (transition)
 		{
 			char *end = nullptr;
 			duration = std::strtod(args->ArgV(3), &end);
@@ -1434,17 +1449,12 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			}
 		}
 		std::string reference = args->ArgV(2);
-		if (args->ArgC() == 4 && (reference == "keys" || reference == "toggle" || reference == "off"))
-		{
-			Tier0_Warning("Use playback for campath blends; keys, toggle and off do not take a duration.\n");
-			return true;
-		}
-		if (!_stricmp(reference.c_str(), "toggle"))
+		if (!transition && !_stricmp(reference.c_str(), "toggle"))
 		{
 			MirvCam_TogglePreviewNavigation();
 			return true;
 		}
-		if (reference == "off" || reference == "keys")
+		if (!transition && (reference == "off" || reference == "keys"))
 		{
 			MirvCam_EndRigPreview();
 			g_EditingCameraName.clear();
@@ -1453,9 +1463,10 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			MirvCampathPreview_SetActive(reference == "keys");
 			return true;
 		}
-		const bool playback = reference == "playback";
-		auto found = reference == "cameras" ? g_CameraRigs.find(g_CameraRigName) : FindRig(reference);
-		if (found == g_CameraRigs.end() && reference == "cameras" && !g_CameraRigs.empty())
+		const bool playback = transition && reference == "campath";
+		auto found = !transition && reference == "cameras" ? g_CameraRigs.find(g_CameraRigName)
+																		  : FindRig(reference);
+		if (!transition && found == g_CameraRigs.end() && reference == "cameras" && !g_CameraRigs.empty())
 			found = g_CameraRigs.begin();
 		if (!playback && found == g_CameraRigs.end())
 		{
@@ -1464,28 +1475,42 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		}
 		const auto outgoingSource = g_CameraSource;
 		std::string outgoing = outgoingSource == CameraSource::Rig ? g_CameraRigName : std::string{};
-		if (duration > 0 && (outgoingSource == CameraSource::Legacy ||
-							 ((!g_BlendFromCamera.empty() || g_BlendFromPlayback) &&
-							  (!g_BlendStarted || g_BlendLastTime < g_BlendStart + g_BlendDuration))))
+		const auto outgoingPath = g_CampathSourceId;
+		const auto currentView = RigCapture();
+		const double commandTime = AfxHookSource::CameraOverlay::EditingClientTime(g_MirvTime.GetTime());
+		const bool interrupted = (!g_BlendFromCamera.empty() || g_BlendFromPlayback || g_BlendFromView) &&
+								 (!g_BlendStarted || commandTime < g_BlendStart + g_BlendDuration);
+		const bool fromView = outgoingSource == CameraSource::Legacy || g_RigUnavailable || interrupted;
+		if (duration > 0 && fromView && !currentView.Valid())
 		{
-			Tier0_Warning("Preview a camera or campath playback first; finish or cut the current blend before starting "
-						  "another.\n");
+			Tier0_Warning("The current view cannot be used as a transition source.\n");
 			return true;
 		}
 		MirvCampathPreview_SetActive(false);
 		ClearCameraBlend();
-		if (duration > 0 && (playback ? outgoingSource != CameraSource::Playback
-									  : (outgoingSource == CameraSource::Playback || outgoing != found->first)))
+		if (duration > 0 &&
+			(fromView || (playback ? outgoingSource != CameraSource::Playback ||
+										 g_Hook_VClient_RenderView.m_CamPaths.GetId(
+											 g_Hook_VClient_RenderView.m_CamPaths.GetActive()) != outgoingPath
+								   : (outgoingSource == CameraSource::Playback || outgoing != found->first))))
 		{
 			g_BlendFromCamera = outgoing;
 			g_BlendFromPlayback = outgoingSource == CameraSource::Playback;
 			g_BlendDuration = duration;
+			g_BlendPathId = outgoingPath;
+			g_BlendFromView = fromView;
+			g_BlendViewPose = currentView;
+			g_BlendStart = commandTime;
+			g_BlendStarted = true;
 		}
 		auto current = RigCapture();
 		if (current.Valid())
 			g_LastRigPose = current;
 		if (!playback)
 			g_CameraRigName = found->first;
+		else
+			g_CampathSourceId =
+				g_Hook_VClient_RenderView.m_CamPaths.GetId(g_Hook_VClient_RenderView.m_CamPaths.GetActive());
 		g_EditingCameraName.clear();
 		g_CameraSource = playback ? CameraSource::Playback : CameraSource::Rig;
 		g_RigPreview = true;
@@ -2443,6 +2468,7 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 			  "mirv_cam edit <ID/name> [...] - Edit a camera with the free camera or numeric pose values.\n"
 			  "mirv_cam capture <ID/name> - Recapture a camera from the current view.\n"
 			  "mirv_cam preview [...] - Control camera and keyframe preview.\n"
+			  "mirv_cam transition <ID/name|campath> <seconds> - Transition to a camera or active campath.\n"
 			  "mirv_cam draw [...] - Control drawing of cameras.\n"
 			  "mirv_cam source [...] - Control camera location.\n"
 			  "mirv_cam fov [...] - Control camera FOV.\n"

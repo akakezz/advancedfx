@@ -6041,39 +6041,47 @@ static void DrawCamerasTab()
 	g_CameraGuidesPublished.store(g_ShowCameraGuides);
 	g_CameraFrustumsPublished.store(g_CameraFrustums);
 	ImGui::TextDisabled("Selected: gold. Other cameras: purple. Unavailable: gray. Hidden during HLAE recording.");
-	static double previewBlendSeconds = 0;
-	ImGui::InputDouble("Camera transition (s)", &previewBlendSeconds, 0, 0, "%.3f");
-	if (!std::isfinite(previewBlendSeconds))
-		previewBlendSeconds = 0;
-	previewBlendSeconds = std::clamp(previewBlendSeconds, 0.0, 3600.0);
-	auto previewCamera = [&](std::uint64_t id)
+	auto cameras = MirvCam_Cameras(true);
+	static double transitionSeconds = 1;
+	static std::uint64_t destination = ~std::uint64_t(0);
+	ImGui::InputDouble("Transition duration (s)", &transitionSeconds, 0, 0, "%.3f");
+	if (!std::isfinite(transitionSeconds))
+		transitionSeconds = 0;
+	transitionSeconds = std::clamp(transitionSeconds, 0.0, 3600.0);
+	auto target = std::find_if(cameras.begin(), cameras.end(), [&](const auto &c) { return c.Id == destination; });
+	const bool campath = destination == ~std::uint64_t(0);
+	const std::string targetName = campath					 ? "Active campath"
+								   : target != cameras.end() ? target->Name
+															 : "Choose a destination";
+	if (ImGui::BeginCombo("Transition destination", targetName.c_str()))
 	{
-		if (previewBlendSeconds > 0 && MirvCam_RigPreviewActive())
+		if (ImGui::Selectable("Active campath", campath))
+			destination = ~std::uint64_t(0);
+		for (const auto &c : cameras)
 		{
-			char command[160];
-			std::snprintf(command, sizeof(command), "mirv_cam preview %llu %.9g", static_cast<unsigned long long>(id),
-						  previewBlendSeconds);
-			Afx_ExecClientCmd(command);
+			const auto label = std::to_string(c.Id) + ": " + c.Name;
+			if (ImGui::Selectable(label.c_str(), c.Id == destination))
+				destination = c.Id;
 		}
-		else
-			MirvCam_CameraAction("preview", id);
-	};
-	if (ImGui::Button("Preview campath playback"))
+		ImGui::EndCombo();
+	}
+	const bool destinationIsCampath = destination == ~std::uint64_t(0);
+	ImGui::BeginDisabled(!destinationIsCampath && std::none_of(cameras.begin(), cameras.end(),
+															   [&](const auto &c) { return c.Id == destination; }));
+	if (ImGui::Button("Transition"))
 	{
-		char command[128];
-		if (previewBlendSeconds > 0 && MirvCam_RigPreviewActive())
-			std::snprintf(command, sizeof(command), "mirv_cam preview playback %.9g", previewBlendSeconds);
-		else
-			std::snprintf(command, sizeof(command), "mirv_cam preview playback");
+		char command[160];
+		const auto reference = destinationIsCampath ? std::string("campath") : std::to_string(destination);
+		std::snprintf(command, sizeof(command), "mirv_cam transition %s %.9g", reference.c_str(), transitionSeconds);
 		Afx_ExecClientCmd(command);
 	}
+	ImGui::EndDisabled();
 	if (MirvCam_RigPreviewActive())
 	{
 		ImGui::SameLine();
 		if (ImGui::Button("Stop preview"))
 			MirvCam_EndRigPreview();
 	}
-	auto cameras = MirvCam_Cameras(true);
 	std::uint64_t selected = ~std::uint64_t(0);
 	for (const auto &camera : cameras)
 		if (camera.Selected)
@@ -6093,9 +6101,7 @@ static void DrawCamerasTab()
 				label += " [unavailable]";
 			if (ImGui::Selectable(label.c_str(), camera.Id == selected))
 			{
-				if (previewBlendSeconds > 0 && MirvCam_RigPreviewActive())
-					previewCamera(camera.Id);
-				else if (MirvCam_SelectCamera(camera.Id))
+				if (MirvCam_SelectCamera(camera.Id))
 					selected = camera.Id;
 			}
 			ImGui::PopID();
@@ -6107,7 +6113,7 @@ static void DrawCamerasTab()
 	if (found != cameras.end())
 	{
 		if (ImGui::Button("Preview camera"))
-			previewCamera(selected);
+			MirvCam_CameraAction("preview", selected);
 		ImGui::SameLine();
 		if (ImGui::Button("Edit camera"))
 		{
