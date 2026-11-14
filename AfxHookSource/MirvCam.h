@@ -107,6 +107,7 @@ bool MirvCam_SelectedCameraAction(const char *action);
 std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate = false);
 size_t MirvCam_CameraCount();
 bool MirvCam_SelectCamera(std::uint64_t id);
+void MirvCam_ClearCameraSelection();
 bool MirvCam_RenameSelectedCamera(const char *name);
 bool MirvCam_CameraAction(const char *action, std::uint64_t id);
 bool MirvCam_RenameCamera(std::uint64_t id, const char *name);

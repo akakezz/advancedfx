@@ -6,6 +6,7 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--build-dir',type=Path,default=Path('/tmp/hlae-camera-project-tests'))
 parser.add_argument('--sanitize',action='store_true')
 parser.add_argument('--project',type=Path,help='Optional real project to reproduce missing tracking coverage')
+parser.add_argument('--baked',type=Path,help='Optional classic XML to verify through the collection loader')
 args=parser.parse_args();root=Path(__file__).resolve().parents[2];out=args.build_dir.resolve();out.mkdir(parents=True,exist_ok=True)
 # Reuse the native camera/aim adapter fixture, replacing only its fake path model
 # with the real CamPathCollection. Generate it without invoking its separate tests.
@@ -51,9 +52,10 @@ int main(){
  assert(g_CommandSystem.GetTickMarkers().front().Command.find("\\nline")!=std::string::npos);
  const auto saved=g_CameraRigs.size();std::ofstream bad(std::filesystem::path(file),std::ios::trunc);bad<<"HLAE_CINEMATIC 99\\n";bad.close();assert(!MirvCam_LoadProject(file.c_str())&&g_CameraRigs.size()==saved&&path.GetSize()==2);
  assert(MirvCam_Bake(bake.c_str(),std::to_string(id).c_str(),0,1,.1));assert(MirvCam_BakeStatus().find("from camera #"+std::to_string(id))!=std::string::npos);CamPath baked;assert(baked.Load(bake.c_str()));assert(std::abs(baked.Eval(.5).X-1)<1e-6);
+ MirvCam_ClearCameraSelection();assert(g_CameraRigName.empty());assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(MirvCam_BakeStatus().find("Sampled 1 of 1 sequence clips")!=std::string::npos);assert(MirvCam_BakeStatus().find("Clip #0 camera #")!=std::string::npos);
  // Bake blends and near-instant cuts using the common source evaluator.
  g_Hook_VClient_RenderView.LastCameraOrigin[0]=100;command({"mirv_cam","add","B"});advancedfx::CameraClip next;next.Time=.5;next.Blend=.2;next.Target=g_CameraRigs.at("B").Id;assert(MirvCam_EditClip(next));
- assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(MirvCam_BakeStatus().find("from whole sequence")!=std::string::npos);assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.6).X-50.5)<.01);
+ assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(MirvCam_BakeStatus().find("from whole sequence")!=std::string::npos);assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.6).X-50.5)<.01);assert(MirvCam_BakeStatus().find("Sampled 2 of 2 sequence clips")!=std::string::npos);
  next.Blend=0;assert(MirvCam_EditClip(next));assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.499998).X-1)<.01&&std::abs(baked.Eval(.5).X-100)<.01);g_Hook_VClient_RenderView.LastCameraOrigin[0]=1;
  // Exercise the actual mixed camera -> path -> camera export, including rotation and FOV.
  auto changedCamera=g_CameraRigs.at("B").Rig.Pose;changedCamera.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,90,0}));changedCamera.Fov=110;assert(MirvCam_EditCamera(g_CameraRigs.at("B").Id,changedCamera));
@@ -84,8 +86,15 @@ if args.project:
  assert(!MirvCam_Bake(bake.c_str(),"sequence",first,last,.1));std::cout<<"Actual project without target coverage: "<<MirvCam_BakeStatus()<<"\n";assert(MirvCam_BakeStatus().find("Camera 1")!=std::string::npos);{std::ifstream retained(previousFile);std::string value;std::getline(retained,value);assert(value=="older export");}
  auto tracking=std::make_shared<advancedfx::SceneCache::Frame>();auto &trackedRig=g_CameraRigs.at("Camera 1");tracking->Cameras.push_back({trackedRig.Id,trackedRig.Definition,trackedRig.LastWorld});cachedFrame=tracking;
  assert(MirvCam_Bake(bake.c_str(),"sequence",first,last,.1));CamPath result;assert(result.Load(bake.c_str()));const auto start=result.Eval(first),end=result.Eval(last);assert(std::abs(start.X-end.X)>1);std::cout<<"Actual project with recorded camera coverage: "<<MirvCam_BakeStatus()<<"\n";
+ // Reproduce the reported reduced setup: only the first fixed camera and its campath.
+ assert(MirvCam_RemoveClip(g_CameraClips.back().Id));MirvCam_ClearCameraSelection();const auto &lastPath=g_Hook_VClient_RenderView.m_CamPath;const double reducedEnd=lastPath.GetOffset()+lastPath.GetUpperBound();cachedFrame.reset();assert(MirvCam_Bake(bake.c_str(),"sequence",first,reducedEnd,.1));assert(result.Load(bake.c_str()));assert(std::abs(result.Eval(first).X-result.Eval(reducedEnd).X)>1);assert(MirvCam_BakeStatus().find("Sampled 2 of 2 sequence clips")!=std::string::npos);
  std::filesystem::remove(previousFile);
  '''.replace('PROJECT','L'+json.dumps(str(args.project.resolve())))
+ s=s.replace(' std::filesystem::remove(std::filesystem::path(file));',injected+' std::filesystem::remove(std::filesystem::path(file));',1)
+if args.baked:
+ injected=r'''
+ assert(g_Hook_VClient_RenderView.m_CamPaths.LoadOne(BAKED));auto &imported=g_Hook_VClient_RenderView.m_CamPath;assert(imported.GetSize()>2&&imported.CanEval());const auto importedFirst=imported.Eval(imported.GetLowerBound()),importedLast=imported.Eval(imported.GetUpperBound());assert(std::abs(importedFirst.X-importedLast.X)+std::abs(importedFirst.Y-importedLast.Y)+std::abs(importedFirst.Z-importedLast.Z)>1);std::cout<<"Supplied classic XML through collection loader: "<<imported.GetSize()<<" keys; first position "<<importedFirst.X<<", "<<importedFirst.Y<<", "<<importedFirst.Z<<"; last position "<<importedLast.X<<", "<<importedLast.Y<<", "<<importedLast.Z<<"\n";
+ '''.replace('BAKED','L'+json.dumps(str(args.baked.resolve())))
  s=s.replace(' std::filesystem::remove(std::filesystem::path(file));',injected+' std::filesystem::remove(std::filesystem::path(file));',1)
 source=out/'project.cpp';source.write_text(s)
 cmd=['g++','-std=c++17','-O1','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp'),str(root/'shared/CommandSystem.cpp'),str(root/'shared/AfxConsole.cpp'),'-o',str(out/'project')]

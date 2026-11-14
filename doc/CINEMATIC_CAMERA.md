@@ -2447,7 +2447,10 @@ In Cameras, open **Project and export**, then **Export sequence as classic campa
 and choose **Bake sequence...** to export all clips and transitions. No camera selection is required. The same export
 is available in Sequencer > Camera clips. **Export selected camera as classic campath**
 exports only that camera and does not include sequence transitions. Each source keeps
-its own start/end **demo ticks** and sampling step in seconds. Camera pose, aiming,
+its own start/end **demo ticks** and sampling step in seconds. The default sequence
+range follows changes to the sequence until you edit its start/end ticks.
+**Use sequence range** restores that automatic range. Constant sequence bakes
+report clip start times and sample counts to help diagnose timing mismatches. Camera pose, aiming,
 name/removal settings, transitions and guide display controls are grouped into
 collapsible sections; the camera list and preview/edit/recapture actions stay visible.
 The console range is expressed in **client seconds**, matching campath timestamps, rather than demo ticks. Sampling is
@@ -2525,3 +2528,6 @@ its incoming blend. If a camera has neither a recorded camera sample nor its
 cached aim target, export aborts at that source/time and keeps the existing file.
 A retained XML may therefore be an older static camera export. The main file
 status and camera-tab status both show the specific bake report.
+
+In the Cameras list, click the selected camera again to deselect it. This ends
+individual camera preview while leaving sequence playback enabled.

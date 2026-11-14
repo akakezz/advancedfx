@@ -2138,6 +2138,14 @@ bool MirvCam_SelectCamera(std::uint64_t id)
 	g_EditingCameraName.clear();
 	return true;
 }
+void MirvCam_ClearCameraSelection()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (g_RigPreview && g_CameraSource == CameraSource::Rig)
+		MirvCam_EndRigPreview();
+	g_CameraRigName.clear();
+	g_EditingCameraName.clear();
+}
 bool MirvCam_RenameCamera(std::uint64_t id, const char *name)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);

@@ -5890,11 +5890,28 @@ static void DrawCinematicBakeControls(const std::string &source)
 	{
 		int Begin = 0, End = 100;
 		double Step = 1.0 / 66;
-		bool Initialized = false;
+		bool Initialized = false, CustomRange = false;
+		double SourceBegin = 0, SourceEnd = 0;
 	};
 	static std::map<std::string, BakeSettings> settings;
 	auto &values = settings[source];
 	ImGui::PushID(source.c_str());
+	const auto clips = MirvCam_Clips();
+	double sourceBegin = 0, sourceEnd = 0;
+	if (sequence && !clips.empty())
+	{
+		sourceBegin = clips.front().Time;
+		sourceEnd = clips.back().Time + clips.back().Blend;
+		if (clips.back().Campath)
+		{
+			auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+			for (size_t i = 0; i < paths.GetCount(); ++i)
+				if (paths.GetId(i) == clips.back().Target)
+					if (auto path = paths.GetPath(i))
+						if (path->GetSize())
+							sourceEnd = (std::max)(sourceEnd, path->GetOffset() + path->GetUpperBound());
+		}
+	}
 	auto range = [&]
 	{
 		double demo = 0;
@@ -5909,21 +5926,10 @@ static void DrawCinematicBakeControls(const std::string &source)
 		if (!mapped || interval <= 0)
 			return;
 		double first = now, last = now + 1;
-		auto clips = MirvCam_Clips();
 		if (sequence && !clips.empty())
 		{
-			first = clips.front().Time;
-			last = clips.back().Time + clips.back().Blend;
-			if (clips.back().Campath)
-			{
-				auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
-				for (size_t i = 0; i < paths.GetCount(); ++i)
-					if (paths.GetId(i) == clips.back().Target)
-						if (auto path = paths.GetPath(i))
-							if (path->GetSize())
-								last = (std::max)(last, path->GetOffset() + path->GetUpperBound());
-			}
-			last = (std::max)(last, first + interval);
+			first = sourceBegin;
+			last = (std::max)(sourceEnd, first + interval);
 		}
 		else if (!g_SceneCache.Frames().empty())
 		{
@@ -5936,19 +5942,31 @@ static void DrawCinematicBakeControls(const std::string &source)
 		values.Begin = (std::max)(0, int(std::floor(firstDemo / interval)));
 		values.End = (std::max)(values.Begin + 1, int(std::ceil(lastDemo / interval)));
 		values.Step = interval;
+		values.SourceBegin = sourceBegin;
+		values.SourceEnd = sourceEnd;
 	};
 	if (!values.Initialized)
 	{
 		values.Initialized = true;
 		range();
 	}
-	if (ImGui::Button(sequence ? "Use sequence range" : "Use cached range"))
+	else if (sequence && !values.CustomRange &&
+			 (values.SourceBegin != sourceBegin || values.SourceEnd != sourceEnd))
+	{
+		const double step = values.Step;
 		range();
+		values.Step = step;
+	}
+	if (ImGui::Button(sequence ? "Use sequence range" : "Use cached range"))
+	{
+		values.CustomRange = false;
+		range();
+	}
 	ImGui::TextWrapped("%s", sequence
 								 ? "Source: whole camera sequence, including transitions."
 								 : "Source: selected camera only, without sequence clips or transitions.");
-	ImGui::InputInt("Bake start tick", &values.Begin);
-	ImGui::InputInt("Bake end tick", &values.End);
+	values.CustomRange |= ImGui::InputInt("Bake start tick", &values.Begin);
+	values.CustomRange |= ImGui::InputInt("Bake end tick", &values.End);
 	ImGui::InputDouble("Bake step (seconds)", &values.Step, 0, 0, "%.6f");
 	ImGui::TextWrapped("Tracking uses recorded camera samples when available; otherwise cached targeting is "
 					   "unsmoothed. Hard cuts use one-microsecond transitions. Export does not include "
@@ -6536,7 +6554,12 @@ static void DrawCamerasTab()
 				label += " [unavailable]";
 			if (ImGui::Selectable(label.c_str(), camera.Id == selected))
 			{
-				if (MirvCam_SelectCamera(camera.Id))
+				if (camera.Id == selected)
+				{
+					MirvCam_ClearCameraSelection();
+					selected = ~std::uint64_t(0);
+				}
+				else if (MirvCam_SelectCamera(camera.Id))
 					selected = camera.Id;
 			}
 			ImGui::PopID();
@@ -6762,8 +6785,8 @@ static void DrawCamerasTab()
 		ImGui::TextDisabled(
 			"Selected: gold. Other cameras: purple. Unavailable: gray. Hidden during HLAE recording.");
 	}
-	ImGui::TextDisabled(
-		"Click selects a camera; while camera preview is on, it also switches the view. Tab switches Cameras/Keys.");
+	ImGui::TextDisabled("Click selects a camera; click it again to deselect. During preview, selection "
+						"switches the view. Tab switches Cameras/Keys.");
 	ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
 	ImGui::EndTabItem();
 }

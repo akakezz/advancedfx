@@ -371,6 +371,7 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 	advancedfx::CameraPose previous;
 	bool first = true;
 	size_t changes = 0;
+	std::vector<size_t> clipSamples(g_CameraClips.size(), 0);
 	for (double time : times)
 	{
 		advancedfx::SceneCache::Frame frame;
@@ -397,6 +398,14 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 			delta += 1 - std::abs(a.W * b.W + a.X * b.X + a.Y * b.Y + a.Z * b.Z) / (a.Norm() * b.Norm());
 			changes += delta > 1e-9;
 		}
+		if (sequence)
+		{
+			auto next =
+				std::upper_bound(g_CameraClips.begin(), g_CameraClips.end(), time,
+								 [](double t, const advancedfx::CameraClip &c) { return t < c.Time; });
+			const auto index = next == g_CameraClips.begin() ? 0 : size_t(next - g_CameraClips.begin() - 1);
+			++clipSamples[index];
+		}
 		previous = pose;
 		first = false;
 		const auto a = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
@@ -410,5 +419,22 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 						 std::to_string(changes) + " changed samples.";
 	if (saved && !changes)
 		g_CameraBakeReport += " All sampled poses are identical.";
+	if (saved && sequence)
+	{
+		const auto visited =
+			std::count_if(clipSamples.begin(), clipSamples.end(), [](size_t n) { return n != 0; });
+		g_CameraBakeReport += " Sampled " + std::to_string(visited) + " of " +
+							  std::to_string(g_CameraClips.size()) + " sequence clips.";
+		if (!changes)
+			for (size_t i = 0; i < g_CameraClips.size() && i < 8; ++i)
+			{
+				const auto &clip = g_CameraClips[i];
+				g_CameraBakeReport +=
+					"\nClip #" + std::to_string(clip.Id) + (clip.Campath ? " campath #" : " camera #") +
+					std::to_string(clip.Target) + " at client " + std::to_string(clip.Time) + ": " +
+					std::to_string(clipSamples[i]) + " samples.";
+			}
+	}
+
 	return saved;
 }
