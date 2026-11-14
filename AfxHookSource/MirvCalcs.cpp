@@ -1,3 +1,5 @@
+#include <iomanip>
+#include <sstream>
 #include "stdafx.h"
 
 #include "MirvCalcs.h"
@@ -2297,6 +2299,42 @@ public:
 		result->m_Captured = m_Captured;
 		std::memcpy(result->m_Fix, m_Fix, sizeof(m_Fix));
 		std::memcpy(result->m_Offset, m_Offset, sizeof(m_Offset));
+		return result;
+	}
+	void SaveCamera(std::ostream &out) const
+	{
+		out << m_BoneIndex << ' ' << m_Mode << ' ' << std::quoted(m_BoneName) << ' ' << m_Calibrated << ' '
+			<< m_Captured;
+		for (auto &row : m_Fix)
+			for (float v : row)
+				out << ' ' << v;
+		for (float v : m_Offset)
+			out << ' ' << v;
+		out << '\n';
+	}
+	static IMirvVecAngCalc *LoadCamera(std::istream &in)
+	{
+		int bone, mode;
+		std::string name;
+		bool calibrated, captured;
+		float fix[3][3], offset[3];
+		if (!(in >> bone >> mode >> std::quoted(name) >> calibrated >> captured) || bone < -1 ||
+			bone >= MIRV_TF2_MAX_BONES || mode < 0 || mode > 3 || name.size() > 256)
+			return nullptr;
+		for (auto &row : fix)
+			for (float &v : row)
+				if (!(in >> v) || !std::isfinite(v))
+					return nullptr;
+		for (float &v : offset)
+			if (!(in >> v) || !std::isfinite(v))
+				return nullptr;
+		auto result = new CMirvVecAngTf2EntityIndexCalc(nullptr, -1, -1, mode);
+		result->m_BoneIndex = bone;
+		result->m_BoneName = name;
+		result->m_Calibrated = calibrated;
+		result->m_Captured = captured;
+		std::memcpy(result->m_Fix, fix, sizeof(fix));
+		std::memcpy(result->m_Offset, offset, sizeof(offset));
 		return result;
 	}
 	bool UsesCachedBone() const { return m_BoneIndex >= 0; }
@@ -7019,6 +7057,18 @@ int Mirv_Tf2_FindCameraTarget(std::uint64_t identity, const std::string &model)
 IMirvVecAngCalc *Mirv_Tf2_RebindCamera(IMirvVecAngCalc *calc, int entity)
 {
 	return calc ? static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->RebindCamera(entity) : nullptr;
+}
+
+bool Mirv_Tf2_SaveCamera(std::ostream &out, IMirvVecAngCalc *calc)
+{
+	if (!calc)
+		return false;
+	static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->SaveCamera(out);
+	return bool(out);
+}
+IMirvVecAngCalc *Mirv_Tf2_LoadCamera(std::istream &in)
+{
+	return CMirvVecAngTf2EntityIndexCalc::LoadCamera(in);
 }
 
 bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode)

@@ -202,6 +202,54 @@ std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView()
 	return std::atomic_load(&g_SceneView);
 }
 bool SceneCachePreviewActive() { std::lock_guard<std::recursive_mutex> lock(g_SceneMutex); return g_ScenePreview; }
+bool SampleCameraScene(double clientTime, advancedfx::SceneCache::Frame &frame)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	const auto &frames = g_SceneCache.Frames();
+	static auto revision = ~g_SceneCache.Revision();
+	static bool sorted = false;
+	if (revision != g_SceneCache.Revision())
+	{
+		revision = g_SceneCache.Revision();
+		sorted = std::is_sorted(frames.begin(), frames.end(),
+								[](const auto &a, const auto &b) { return a.ClientTime < b.ClientTime; });
+	}
+	if (sorted)
+	{
+		auto right = std::lower_bound(frames.begin(), frames.end(), clientTime,
+									  [](const auto &f, double t) { return f.ClientTime < t; });
+		if (right != frames.end() && std::abs(right->ClientTime - clientTime) < 1e-9)
+		{
+			frame = *right;
+			return true;
+		}
+		if (right == frames.begin() || right == frames.end())
+			return false;
+		const auto &left = *std::prev(right);
+		const double f = (clientTime - left.ClientTime) / (right->ClientTime - left.ClientTime);
+		return g_SceneCache.Sample(left.DemoTime + f * (right->DemoTime - left.DemoTime), frame, .1, 256,
+								   true);
+	}
+	for (size_t i = 0; i < frames.size(); ++i)
+	{
+		const auto &a = frames[i];
+		if (std::abs(a.ClientTime - clientTime) < 1e-9)
+		{
+			frame = a;
+			return true;
+		}
+		if (i + 1 < frames.size())
+		{
+			const auto &b = frames[i + 1];
+			if (a.ClientTime < clientTime && clientTime < b.ClientTime)
+			{
+				const double f = (clientTime - a.ClientTime) / (b.ClientTime - a.ClientTime);
+				return g_SceneCache.Sample(a.DemoTime + f * (b.DemoTime - a.DemoTime), frame, .1, 256, true);
+			}
+		}
+	}
+	return false;
+}
 double EditingClientTime(double liveTime)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
@@ -904,6 +952,10 @@ static void UpdateRecovery(bool force)
 		g_RecoveryWritten = true;
 		g_RecoverySnapshot = std::move(snapshot);
 	}
+}
+void ResetProjectRecovery()
+{
+	NewRecoverySession();
 }
 void FlushRecovery()
 {
@@ -5697,6 +5749,89 @@ static void DrawSceneCacheMenu(int playhead)
 	ImGui::TextDisabled("Console: mirv_cache help");
 }
 
+static int g_CinematicFileAction = 0;
+static std::string g_CinematicBakeSource;
+static int g_CinematicBakeBegin = 0, g_CinematicBakeEnd = 100;
+static double g_CinematicBakeStep = 1.0 / 66;
+static void DrawCinematicFiles()
+{
+	static ImGui::FileBrowser dialog(ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_EditPathString |
+									 ImGuiFileBrowserFlags_EnterNewFilename |
+									 ImGuiFileBrowserFlags_CreateNewDir);
+	static int action = 0;
+	static std::string source;
+	static double begin = 0, end = 0, step = 0;
+	if (g_CinematicFileAction)
+	{
+		action = g_CinematicFileAction;
+		g_CinematicFileAction = 0;
+		dialog.SetTitle(action == 1	  ? "Save cinematic project"
+						: action == 2 ? "Open cinematic project"
+									  : "Bake classic campath");
+		dialog.SetTypeFilters({action == 3 ? ".xml" : ".hlae"});
+		dialog.SetInputName(action == 3 ? "baked-camera.xml" : "cinematic.hlae");
+		if (action == 3)
+		{
+			double demo = 0;
+			bool mapped = GetCurrentDemoTime(demo);
+			double now = EditingClientTime(g_MirvTime.GetTime());
+			if (SceneCachePreviewActive())
+			{
+				demo = g_SceneCursor;
+				mapped = !g_SceneCache.Frames().empty();
+			}
+			const double interval = SceneTickInterval();
+			if (!mapped || interval <= 0 || g_CinematicBakeBegin < 0 || g_CinematicBakeBegin >= g_CinematicBakeEnd)
+			{
+				g_DocumentStatus = "Choose a valid demo tick range before baking.";
+				action = 0;
+				return;
+			}
+			begin = now - demo + g_CinematicBakeBegin * interval;
+			end = now - demo + g_CinematicBakeEnd * interval;
+			step = g_CinematicBakeStep;
+			source = g_CinematicBakeSource;
+		}
+		dialog.Open();
+	}
+	dialog.Display();
+	if (dialog.HasSelected())
+	{
+		auto file = dialog.GetSelected().wstring();
+		bool ok = action == 1	? MirvCam_SaveProject(file.c_str())
+				  : action == 2 ? MirvCam_LoadProject(file.c_str())
+								: MirvCam_Bake(file.c_str(), source.c_str(), begin, end, step);
+		g_DocumentStatus = ok ? (action == 2 ? "Cinematic project loaded; playback and commands are disabled."
+											 : "Cinematic file saved.")
+							  : "Cinematic operation failed; check the file, range, source and cached "
+								"coverage. Custom aim calculations cannot be saved.";
+		dialog.ClearSelected();
+	}
+}
+static void DrawCinematicFileButtons()
+{
+	if (ImGui::Button("Save cinematic project..."))
+		g_CinematicFileAction = 1;
+	ImGui::SameLine();
+	if (ImGui::Button("Open cinematic project..."))
+		g_CinematicFileAction = 2;
+}
+static void DrawCinematicBakeControls(const std::string &source)
+{
+	if (!ImGui::CollapsingHeader("Export classic campath"))
+		return;
+	ImGui::InputInt("Bake start tick", &g_CinematicBakeBegin);
+	ImGui::InputInt("Bake end tick", &g_CinematicBakeEnd);
+	ImGui::InputDouble("Bake step (seconds)", &g_CinematicBakeStep, 0, 0, "%.6f");
+	ImGui::TextWrapped("Attached and aimed cameras require complete cached target coverage. Cached aiming is "
+					   "unsmoothed. Hard cuts are approximated over one microsecond. Export does not include "
+					   "commands or procedural bindings.");
+	if (ImGui::Button("Bake classic campath..."))
+	{
+		g_CinematicBakeSource = source;
+		g_CinematicFileAction = 3;
+	}
+}
 static void DrawCameraClipsPanel();
 static void DrawSequencerDetails(int playhead)
 {
@@ -6090,6 +6225,8 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 }
 static void DrawCameraClipsPanel()
 {
+	DrawCinematicFileButtons();
+	DrawCinematicBakeControls("sequence");
 	ImGui::TextWrapped(
 		"Choose sequence preview to play these clips. You do not need to preview a camera or path "
 		"separately. Cached preview supplies the scene and clock; sequence preview chooses the camera.");
@@ -6203,7 +6340,7 @@ static void DrawCameraClipsPanel()
 	}
 	ImGui::TextWrapped(
 		"Clips start at demo ticks. Zero blend cuts; positive blend transitions from the previous source. "
-		"Blends must finish before the next clip. Clips and cameras are session-only.");
+		"Blends must finish before the next clip. Save the cinematic project to keep clips, cameras and commands.");
 	if (!mapping)
 		ImGui::TextDisabled("Demo tick mapping is unavailable.");
 }
@@ -6213,6 +6350,13 @@ static void DrawCamerasTab()
 	if (!g_CamerasTabActive)
 		return;
 	g_FocusCameras = false;
+	DrawCinematicFileButtons();
+	for (const auto &c : MirvCam_Cameras())
+		if (c.Selected)
+		{
+			DrawCinematicBakeControls(std::to_string(c.Id));
+			break;
+		}
 	static std::uint64_t removeId = 0;
 	static std::string removeName;
 	if (ImGui::Button("Add camera") && MirvCam_SelectedCameraAction("add"))
@@ -6441,7 +6585,7 @@ static void DrawCamerasTab()
 	if (ImGui::BeginPopupModal("Remove saved camera?", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{
 		ImGui::Text("Remove camera %llu: %s?", static_cast<unsigned long long>(removeId), removeName.c_str());
-		ImGui::TextDisabled("Camera definitions are session-only; this action cannot be undone.");
+		ImGui::TextDisabled("Removal can be undone. Clips referencing this camera will be unavailable.");
 		if (ImGui::Button("Confirm removal"))
 		{
 			g_DocumentStatus =
@@ -6468,6 +6612,7 @@ void Draw()
 	AutoIndexRequestedDemo();
 	if (!g_Open)
 		return;
+	DrawCinematicFiles();
 	static bool subscribed = false;
 	if (!subscribed)
 	{

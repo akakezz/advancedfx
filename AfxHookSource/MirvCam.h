@@ -123,3 +123,7 @@ bool MirvCam_EnableSequence(bool enabled);
 bool MirvCam_SequenceEnabled();
 void MirvCam_ClearClips();
 bool MirvCam_ResumeSequencePreview();
+
+bool MirvCam_SaveProject(const wchar_t *file);
+bool MirvCam_LoadProject(const wchar_t *file);
+bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double end, double step);

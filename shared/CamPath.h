@@ -802,6 +802,18 @@ class CamPathCollection
 	{
 		return m_Paths.at(index).Visible;
 	}
+	// A project load starts a new document; old path history cannot restore foreign source IDs.
+	void ResetProjectHistory()
+	{
+		m_Undo.clear();
+		m_Redo.clear();
+		m_FileName.clear();
+		m_Last = CaptureState();
+		m_Before = m_Last;
+		m_Editing = false;
+		m_HistoryReady = true;
+		MarkSaved(true);
+	}
 	bool SaveOne(const wchar_t *fileName);
 	bool LoadOne(const wchar_t *fileName);
 	bool SaveAll(const wchar_t *fileName, bool recovery = false);

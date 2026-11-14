@@ -84,6 +84,7 @@ bool g_Tf2RecorderSoundMute=false;bool Tf2RecorderSoundPov(){return false;}
 #include <bitset>
 #include <tuple>
 #include <sstream>
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -174,7 +175,7 @@ bool MirvCam_CameraAction(const char*action,std::uint64_t id){cameraActions.empl
 int cameraUndoCalls=0;bool cameraRedoRequested=false;std::vector<advancedfx::CameraClip>testCameraClips;bool testSequence=false;
 std::vector<advancedfx::CameraClip>MirvCam_Clips(){return testCameraClips;}
 bool MirvCam_EditClip(advancedfx::CameraClip&c){if(c.Id==~std::uint64_t(0))c.Id=testCameraClips.size();testCameraClips.push_back(c);return true;}
-void MirvCam_ClearClips(){testCameraClips.clear();}bool MirvCam_RemoveClip(std::uint64_t){return false;}bool MirvCam_EnableSequence(bool v){testSequence=v;return true;}bool MirvCam_SequenceEnabled(){return testSequence;}bool MirvCam_ResumeSequencePreview(){return false;}
+void MirvCam_ClearClips(){testCameraClips.clear();}bool MirvCam_RemoveClip(std::uint64_t){return false;}bool MirvCam_EnableSequence(bool v){testSequence=v;return true;}bool MirvCam_SaveProject(const wchar_t*){return false;}bool MirvCam_LoadProject(const wchar_t*){return false;}bool MirvCam_Bake(const wchar_t*,const char*,double,double,double){return false;}bool MirvCam_SequenceEnabled(){return testSequence;}bool MirvCam_ResumeSequencePreview(){return false;}
 bool MirvCam_HistoryUndo(bool redo){++cameraUndoCalls;cameraRedoRequested=redo;return true;}
 bool MirvCam_EditCamera(std::uint64_t id,const advancedfx::CameraPose&pose){if(!pose.Valid())return false;for(auto &c:testCameras)if(c.Id==id){c.Pose=pose;return true;}return false;}
 bool MirvCam_SelectedCameraAction(const char*action){if(!std::strcmp(action,"add")){advancedfx::CameraInfo c;c.Id=testCameras.empty()?0:testCameras.back().Id+1;c.Name="Camera "+std::to_string(c.Id);for(auto &p:testCameras)p.Selected=false;c.Selected=true;testCameras.push_back(c);}return true;}
@@ -858,6 +859,7 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  g_SceneCache.Clear();advancedfx::SceneCache::Frame cachedFrame;cachedFrame.DemoTime=300*SceneTickInterval();cachedFrame.ClientTime=10;g_SceneCache.Append(cachedFrame);cachedFrame.DemoTime=301*SceneTickInterval();cachedFrame.ClientTime=10+SceneTickInterval();g_SceneCache.Append(cachedFrame);
  frame();frame();check(widgets.count("Cached preview")&&widgets.count("Seek actual demo here"),"Cached mode and explicit live seek belong to the sequencer");button("Cached preview");frame();check(SceneCacheView()!=nullptr,"Enabling sequencer cached mode selects covered time");
  bool cacheTrack=false,actualMarker=false;for(auto &span:spans){cacheTrack|=span.Caption=="Recorded scene coverage";actualMarker|=span.Caption=="Actual demo position";}check(cacheTrack&&actualMarker,"Sequencer draws cached coverage and a distinct actual-demo marker");
+ advancedfx::SceneCache::Frame bakeSample;const double cursorBeforeBake=g_SceneCursor;check(SampleCameraScene(10+.5*SceneTickInterval(),bakeSample)&&std::abs(bakeSample.ClientTime-(10+.5*SceneTickInterval()))<1e-9&&g_SceneCursor==cursorBeforeBake,"Bake target sampling interpolates historical poses without moving preview time");check(!SampleCameraScene(999,bakeSample)&&g_SceneCursor==cursorBeforeBake,"Bake target sampling rejects missing coverage without live fallback");
  // Saved-camera and sequence preview must exclusively own the camera while the cache owns time.
  testRigPreview=true;const double oldPathPreviewTime=MirvCampathPreview_GetTime();ScenePreviewTick(301);check(!g_CampathPreviewActive&&g_SequencerFrame==301,"Cached rig scrubbing does not enter native campath preview");SceneCacheFollowCameraTime(10);check(g_SequencerFrame==301,"Inactive path callbacks cannot move the sequence cursor");check(!MirvCampathPreview_SetTime(0)&&MirvCampathPreview_GetTime()==oldPathPreviewTime,"Path endpoint edits cannot take over a rig sequence");testRigPreview=false;ScenePreviewTick(300);
  auto gapFrame=cachedFrame;gapFrame.DemoTime=320*SceneTickInterval();gapFrame.ClientTime=10+20*SceneTickInterval();g_SceneCache.Append(gapFrame);ScenePreviewTick(310);check(!SceneCacheView()&&std::abs(EditingClientTime(999)-(10+10*SceneTickInterval()))<1e-6,"Missing cached coverage keeps the historical clock instead of jumping to live time");g_SceneCache.Clear();cachedFrame.DemoTime=300*SceneTickInterval();cachedFrame.ClientTime=10;g_SceneCache.Append(cachedFrame);cachedFrame.DemoTime=301*SceneTickInterval();cachedFrame.ClientTime=10+SceneTickInterval();g_SceneCache.Append(cachedFrame);ScenePreviewTick(300);
@@ -1334,6 +1336,7 @@ void Run(){
    check(std::abs(live.x-cachedPos.x)<.002&&std::abs(live.y-cachedPos.y)<.002&&std::abs(live.z-cachedPos.z)<.002,"Cached translation matches native attachment including captures");
    check(std::abs(std::remainder(double(angle.x-cachedAngle.x),360.0))<.002&&std::abs(std::remainder(double(angle.y-cachedAngle.y),360.0))<.002&&std::abs(std::remainder(double(angle.z-cachedAngle.z),360.0))<.002,"Cached rotation matches native attachment in every mode");
    poseValid=false;check(c.CalcCachedFrame(e,selectedBone<0?nullptr:matrix,cachedPos,cachedAngle),"Cached attachment never queries the live entity");poseValid=true;
+   std::ostringstream serialized;serialized<<std::setprecision(17);c.SaveCamera(serialized);std::istringstream serializedInput(serialized.str());auto restored=static_cast<CMirvVecAngTf2EntityIndexCalc*>(CMirvVecAngTf2EntityIndexCalc::LoadCamera(serializedInput));check(restored!=nullptr,"Attachment framing deserializes without a live target");SOURCESDK::Vector loadedPos;SOURCESDK::QAngle loadedAngle;check(restored->CalcCachedFrame(e,selectedBone<0?nullptr:matrix,loadedPos,loadedAngle)&&std::abs(loadedPos.x-live.x)<.002&&std::abs(loadedPos.y-live.y)<.002&&std::abs(loadedPos.z-live.z)<.002&&std::abs(std::remainder(double(loadedAngle.y-angle.y),360.0))<.002,"Serialized attachment framing preserves position and orientation across every mode");delete restored;
    auto rebound=static_cast<CMirvVecAngTf2EntityIndexCalc*>(c.RebindCamera(2));SOURCESDK::Vector reboundPos;SOURCESDK::QAngle reboundAngle;check(rebound->CalcVecAng(reboundPos,reboundAngle),"Rebound attachment evaluates");check(std::abs(reboundPos.x-live.x)<.002&&std::abs(reboundPos.y-live.y)<.002&&std::abs(reboundPos.z-live.z)<.002&&std::abs(std::remainder(double(reboundAngle.y-angle.y),360.0))<.002,"Rebinding preserves native captured offsets and orientation calibration");delete rebound;
 
   };

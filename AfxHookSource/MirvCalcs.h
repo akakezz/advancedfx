@@ -463,3 +463,7 @@ void Mirv_Tf2_SceneRenderFrame();
 void Mirv_Tf2_SceneRenderStatus(unsigned &outstanding, unsigned &peak);
 
 void Mirv_Tf2_DebugEntityLabel(int address);
+
+#include <iosfwd>
+bool Mirv_Tf2_SaveCamera(std::ostream &out, IMirvVecAngCalc *calc);
+IMirvVecAngCalc *Mirv_Tf2_LoadCamera(std::istream &in);

@@ -20,6 +20,11 @@
 #include <ctype.h>
 #include <filesystem>
 #include <map>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <set>
+#include <shared/CommandSystem.h>
 #include <memory>
 #include <mutex>
 #include <shared/MirvInput.h>
@@ -354,6 +359,8 @@ extern int g_LevelInitCount;
 namespace
 {
 std::recursive_mutex g_CameraMutex;
+bool g_BakingCamera = false;
+std::shared_ptr<const advancedfx::SceneCache::Frame> g_BakeFrame;
 struct NamedCameraRig
 {
 	unsigned long long Id = 0;
@@ -645,14 +652,15 @@ unsigned int RigEntityHandle(int address)
 }
 bool RigTarget(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
-	if ((!AfxHookSource::CameraOverlay::SceneCachePreviewActive() && !TryRebindCamera(rig)) || !rig.Target ||
-		rig.TargetHandle == 0xffffffffu)
+	if ((!(g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive()) &&
+		 !TryRebindCamera(rig)) ||
+		!rig.Target || rig.TargetHandle == 0xffffffffu)
 		return false;
 	SOURCESDK::Vector origin;
 	SOURCESDK::QAngle angles;
-	if (AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+	if ((g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive()))
 	{
-		auto frame = AfxHookSource::CameraOverlay::SceneCacheView();
+		auto frame = g_BakingCamera ? g_BakeFrame : AfxHookSource::CameraOverlay::SceneCacheView();
 		if (!frame || !rig.CacheIdentity)
 			return false;
 		const advancedfx::SceneCache::Entity *entity = nullptr, *owner = nullptr;
@@ -768,7 +776,7 @@ bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 {
 	if (!camera.Aim)
 		return true;
-	const bool cached = AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+	const bool cached = g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive();
 	// Cached scrubbing must not advance or reset the live smoothing history.
 	auto sampledAim = cached ? camera.Aim->CloneSettings() : nullptr;
 	auto &aim = sampledAim ? *sampledAim : *camera.Aim;
@@ -1584,6 +1592,42 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		return false;
 	std::string action = args->ArgV(1);
 	std::transform(action.begin(), action.end(), action.begin(), [](unsigned char c) { return char(tolower(c)); });
+	if (action == "save" || action == "load")
+	{
+		if (args->ArgC() != 3)
+		{
+			Tier0_Msg("mirv_cam %s <file> - %s a cinematic project.\n", action.c_str(),
+					  action == "save" ? "Save" : "Load");
+			return true;
+		}
+		auto file = std::filesystem::u8path(args->ArgV(2)).wstring();
+		bool ok = action == "save" ? MirvCam_SaveProject(file.c_str()) : MirvCam_LoadProject(file.c_str());
+		Tier0_Msg("Cinematic project %s. Loading leaves command execution disabled.\n",
+				  ok ? "complete" : "failed; current project/file retained");
+		return true;
+	}
+	if (action == "bake")
+	{
+		if (args->ArgC() != 7)
+		{
+			Tier0_Msg("mirv_cam bake <ID/name|sequence> <file> <start client seconds> <end client seconds> "
+					  "<step seconds> - Export classic campath using cached targets.\n");
+			return true;
+		}
+		double values[3];
+		bool valid = true;
+		for (int i = 0; i < 3; ++i)
+		{
+			char *end = nullptr;
+			values[i] = std::strtod(args->ArgV(i + 4), &end);
+			valid &= end != args->ArgV(i + 4) && !*end && std::isfinite(values[i]);
+		}
+		auto file = std::filesystem::u8path(args->ArgV(3)).wstring();
+		bool ok = valid && MirvCam_Bake(file.c_str(), args->ArgV(2), values[0], values[1], values[2]);
+		Tier0_Msg("Classic camera bake %s. Hard cuts use one-microsecond transitions.\n",
+				  ok ? "saved" : "failed; check coverage, range and source");
+		return true;
+	}
 	if (action == "sequence")
 	{
 		if (args->ArgC() == 3 && !_stricmp(args->ArgV(2), "clear"))
@@ -2719,6 +2763,9 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 			  "mirv_cam preview [...] - Control camera and keyframe preview.\n"
 			  "mirv_cam transition <ID/name|campath> <seconds> - Transition to a camera or active campath.\n"
 			  "mirv_cam sequence [...] - Control sequencer camera clips.\n"
+			  "mirv_cam save <file> - Save a cinematic project, including commands.\n"
+			  "mirv_cam load <file> - Load a cinematic project.\n"
+			  "mirv_cam bake [...] - Export a classic campath.\n"
 			  "mirv_cam draw [...] - Control drawing of cameras.\n"
 			  "mirv_cam source [...] - Control camera location.\n"
 			  "mirv_cam fov [...] - Control camera FOV.\n"
@@ -2730,3 +2777,5 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 }
 
 bool MirvCam_RigViewActive() { std::lock_guard<std::recursive_mutex> lock(g_CameraMutex); SyncRigLevel(); return g_CameraSource != CameraSource::Legacy; }
+
+#include "CinematicProject.inl"

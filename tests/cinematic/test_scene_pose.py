@@ -654,6 +654,7 @@ aim_header=(root/'AfxHookSource/aiming.h').read_text()
 aim_class=aim_header[aim_header.index('class Aiming'):aim_header.index('extern Aiming')]
 calcs_source=(root/'AfxHookSource/MirvCalcs.cpp').read_text()
 aim_smoothing=calcs_source[calcs_source.index('void CalcDeltaSmooth('):calcs_source.index('class CMirvCalc :')]
+rig_preamble+='\nbool MirvCam_SaveProject(const wchar_t*){return false;} bool MirvCam_LoadProject(const wchar_t*){return false;} bool MirvCam_Bake(const wchar_t*,const char*,double,double,double){return false;}\n'
 rig_preamble+='\n#include <cstdarg>\n#define _WIN64 1\nusing namespace Afx::Math;\n'+aim_smoothing+aim_class+aim_source[aim_source.index('void LookAnglesFromTo('):]+'\nAiming g_Aiming;\n'
 aim_commands=(root/'AfxHookSource/MirvCommands.cpp').read_text()
 aim_parser=aim_commands[aim_commands.index('static void AimMessage('):aim_commands.index('CON_COMMAND(mirv_aim,')]

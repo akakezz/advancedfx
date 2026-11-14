@@ -2091,7 +2091,7 @@ Entity labels support `mirv_drawentities filter ragdolls 0|1` and
 
 ## Procedural cameras and preview
 
-Cameras are session-only and have stable numeric IDs. Naming them is optional;
+Cameras have stable numeric IDs and can be stored in cinematic projects. Naming them is optional;
 unnamed cameras receive a `Camera <ID>` name. IDs do not renumber after deletion.
 Camera commands live directly under `mirv_cam`; there is no separate `rig` command group.
 
@@ -2155,7 +2155,7 @@ observed pose in gray. The camera being viewed is omitted from its own image.
 Guides evaluate live or cached subjects through the same target provider as
 camera preview, and are hidden automatically during HLAE recording. Guide
 visibility and frustum preferences persist in the overlay INI; camera definitions
-remain session-only. The console uses the same saved settings:
+are stored through explicit cinematic project saves. The console uses the same saved settings:
 
 ```text
 mirv_cam draw enabled 1
@@ -2220,7 +2220,7 @@ Client-only gibs may receive different identities on replay; those still require
 explicit retargeting with `edit <ID>` followed by `attach`, preserving the camera.
 Fixed camera definitions remain available across level changes.
 
-Rig persistence, gizmos, orbit, modifiers, damping and collision for named rigs
+Gizmos, orbit, modifiers, damping and collision for named rigs
 remain future work. Timed sequencer clips and aiming are described below.
 The live `mirv_cam attach` view retains the existing collision/follow evaluator.
 Saved-camera preview still evaluates rigid attachments; collision/follow settings
@@ -2241,8 +2241,7 @@ Missing coverage, a filtered target or a missing bone holds the last valid camer
 pose and shows `[unavailable]`; it never substitutes the live entity. A new
 attachment must still be created in live playback. Existing cameras can be
 recaptured against cached poses without changing the demo or native animation
-state. Stateful follow, collision against cached geometry and camera persistence
-remain later milestones.
+state. Stateful follow and collision against cached geometry remain later milestones.
 
 ### Next milestone: camera mixing and existing aim integration
 
@@ -2394,7 +2393,7 @@ clip or clearing the sequence stops sequence preview.
 view. `mirv_cam sequence clear` clears the clips with undo support. Manual preview
 or transition commands take over from the sequence. Sequence clips are bound to
 their demo/session; clear them before authoring for a different demo. Cameras and
-clips are session-only and are not yet saved with the campath document.
+clips can be saved in cinematic projects; ordinary campath files still contain paths only.
 
 Camera clips use bright start markers, blue blend regions and faint continuation
 spans. For cached transitions, enable Cached preview and Preview camera sequence;
@@ -2414,3 +2413,44 @@ Console preview enter/toggle/exit uses the same controller handoff as the previe
 key. Rejected camera selections retain sequence resume state. Cached clip editing
 and timeline placement use historical cursor time even when entity coverage is
 missing. Leaving preview immediately after enabling it retains the current view.
+
+### Cinematic projects and classic camera export
+
+The Cameras and Camera clips tabs provide **Save cinematic project...** and
+**Open cinematic project...**. Projects use the versioned `.hlae` format and
+contain the full path collection, independent cameras, built-in aiming settings,
+attachment framing/identity, sequence clips and command markers. Scene Cache
+payloads, demo files, overlay preferences and undo history are not embedded.
+
+```text
+mirv_cam save "shot.hlae"
+mirv_cam load "shot.hlae"
+mirv_cam bake sequence "shot.xml" 10 20 0.015151515
+mirv_cam bake 3 "camera.xml" 10 20 0.015151515
+```
+
+Loading replaces the project only after all sections pass validation, starts
+fresh edit histories, stops camera/path preview, and leaves path playback and
+command execution disabled. Open the matching demo before loading attachments.
+Absent subjects remain unavailable and reconnect by recorded identity when
+possible. Client-only gibs may still require explicit retargeting after replay.
+Custom `mirv_calcs` aim sources cannot currently be serialized: saving a project
+with one fails instead of silently dropping its behavior. Independently saved
+command tracks remain available through Commands → Save/Load command track.
+
+Expand **Export classic campath** in Cameras (selected camera) or Camera clips
+(sequence). Set start/end **demo ticks** and a sampling step in seconds, then
+choose **Bake classic campath...**. The console range is expressed in **client
+seconds**, matching campath timestamps, rather than demo ticks. Sampling is
+bounded to 50,000 regular intervals. Missing target/bone coverage aborts export;
+fixed cameras can export without cached entities. Attached and aimed cameras
+require a cache. A live recording-pass exporter is not included yet.
+
+Baking reads recorded poses without seeking the demo, moving the preview cursor,
+or changing the authored cameras or live aim history. Cached aiming is unsmoothed.
+The baked classic XML contains position, quaternion orientation and FOV, without
+attachments, aim settings or commands. Sequences keep both sources evaluating
+during blends. Instant cuts use keys one microsecond apart: classic campaths
+approximate a cut with a very short transition, rather than encoding an exact
+step. Export may require denser sampling for rapid motion. Ordinary path Save
+and Save all remain path-only; use Save cinematic project to retain the full shot.

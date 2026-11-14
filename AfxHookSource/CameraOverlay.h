@@ -32,6 +32,8 @@ bool SceneCacheScrubKey(unsigned int key, double seconds);
 void SceneCacheFollowCameraTime(double clientTime);
 bool SceneCachePreviewActive();
 std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView();
+void ResetProjectRecovery();
+bool SampleCameraScene(double clientTime, advancedfx::SceneCache::Frame &frame);
 double EditingClientTime(double liveTime);
 // Called on the engine thread for playdemo/timedemo; indexing starts outside the command callback.
 void NotifyDemoPlaybackFile(const char *file);
