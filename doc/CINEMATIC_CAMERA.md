@@ -2443,12 +2443,14 @@ Custom `mirv_calcs` aim sources cannot currently be serialized: saving a project
 with one fails instead of silently dropping its behavior. Independently saved
 command tracks remain available through Commands → Save/Load command track.
 
-In Cameras, expand **Export sequence as classic campath** and choose **Bake sequence...**
-to export all clips and transitions. No camera selection is required. The same export
+In Cameras, open **Project and export**, then **Export sequence as classic campath**
+and choose **Bake sequence...** to export all clips and transitions. No camera selection is required. The same export
 is available in Sequencer > Camera clips. **Export selected camera as classic campath**
 exports only that camera and does not include sequence transitions. Each source keeps
-its own start/end **demo ticks** and sampling step in seconds. The console range is expressed in **client
-seconds**, matching campath timestamps, rather than demo ticks. Sampling is
+its own start/end **demo ticks** and sampling step in seconds. Camera pose, aiming,
+name/removal settings, transitions and guide display controls are grouped into
+collapsible sections; the camera list and preview/edit/recapture actions stay visible.
+The console range is expressed in **client seconds**, matching campath timestamps, rather than demo ticks. Sampling is
 bounded to 50,000 regular intervals. Missing target/bone coverage aborts export;
 fixed cameras can export without cached entities. Attached and aimed cameras
 require a cache. A live recording-pass exporter is not included yet.

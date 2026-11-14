@@ -6496,14 +6496,18 @@ static void DrawCamerasTab()
 	if (!g_CamerasTabActive)
 		return;
 	g_FocusCameras = false;
-	DrawCinematicFileButtons();
-	DrawCinematicBakeControls("sequence");
-	for (const auto &c : MirvCam_Cameras())
-		if (c.Selected)
-		{
-			DrawCinematicBakeControls(std::to_string(c.Id));
-			break;
-		}
+	if (ImGui::CollapsingHeader("Project and export"))
+	{
+		DrawCinematicFileButtons();
+		DrawCinematicBakeControls("sequence");
+		for (const auto &c : MirvCam_Cameras())
+			if (c.Selected)
+			{
+				DrawCinematicBakeControls(std::to_string(c.Id));
+				break;
+			}
+	}
+	ImGui::Separator();
 	static std::uint64_t removeId = 0;
 	static std::string removeName;
 	if (ImGui::Button("Add camera") && MirvCam_SelectedCameraAction("add"))
@@ -6511,54 +6515,8 @@ static void DrawCamerasTab()
 		MirvCam_SetRigNavigation(true);
 		g_DocumentStatus = "Camera added. The free camera is ready.";
 	}
-	ImGui::SameLine();
-	ImGui::Checkbox("Show camera guides", &g_ShowCameraGuides);
-	ImGui::SameLine();
-	ImGui::Checkbox("Camera frustums", &g_CameraFrustums);
-	g_CameraGuidesPublished.store(g_ShowCameraGuides);
-	g_CameraFrustumsPublished.store(g_CameraFrustums);
-	ImGui::TextDisabled("Selected: gold. Other cameras: purple. Unavailable: gray. Hidden during HLAE recording.");
+
 	auto cameras = MirvCam_Cameras(true);
-	static double transitionSeconds = 1;
-	static std::uint64_t destination = ~std::uint64_t(0);
-	ImGui::InputDouble("Transition duration (s)", &transitionSeconds, 0, 0, "%.3f");
-	if (!std::isfinite(transitionSeconds))
-		transitionSeconds = 0;
-	transitionSeconds = std::clamp(transitionSeconds, 0.0, 3600.0);
-	auto target = std::find_if(cameras.begin(), cameras.end(), [&](const auto &c) { return c.Id == destination; });
-	const bool campath = destination == ~std::uint64_t(0);
-	const std::string targetName = campath					 ? "Active campath"
-								   : target != cameras.end() ? target->Name
-															 : "Choose a destination";
-	if (ImGui::BeginCombo("Transition destination", targetName.c_str()))
-	{
-		if (ImGui::Selectable("Active campath", campath))
-			destination = ~std::uint64_t(0);
-		for (const auto &c : cameras)
-		{
-			const auto label = std::to_string(c.Id) + ": " + c.Name;
-			if (ImGui::Selectable(label.c_str(), c.Id == destination))
-				destination = c.Id;
-		}
-		ImGui::EndCombo();
-	}
-	const bool destinationIsCampath = destination == ~std::uint64_t(0);
-	ImGui::BeginDisabled(!destinationIsCampath && std::none_of(cameras.begin(), cameras.end(),
-															   [&](const auto &c) { return c.Id == destination; }));
-	if (ImGui::Button("Transition"))
-	{
-		char command[160];
-		const auto reference = destinationIsCampath ? std::string("campath") : std::to_string(destination);
-		std::snprintf(command, sizeof(command), "mirv_cam transition %s %.9g", reference.c_str(), transitionSeconds);
-		Afx_ExecClientCmd(command);
-	}
-	ImGui::EndDisabled();
-	if (MirvCam_RigPreviewActive())
-	{
-		ImGui::SameLine();
-		if (ImGui::Button("Stop preview"))
-			MirvCam_EndRigPreview();
-	}
 	std::uint64_t selected = ~std::uint64_t(0);
 	for (const auto &camera : cameras)
 		if (camera.Selected)
@@ -6585,6 +6543,11 @@ static void DrawCamerasTab()
 		}
 	}
 	ImGui::EndChild();
+	if (MirvCam_RigPreviewActive())
+	{
+		if (ImGui::Button("Stop preview"))
+			MirvCam_EndRigPreview();
+	}
 	auto found =
 		std::find_if(cameras.begin(), cameras.end(), [&](const auto &camera) { return camera.Id == selected; });
 	if (found != cameras.end())
@@ -6606,52 +6569,53 @@ static void DrawCamerasTab()
 								   ? "Camera recaptured."
 								   : "Camera could not be recaptured; its target is unavailable.";
 
-		ImGui::Separator();
-		ImGui::TextUnformatted("Edit camera pose");
-		static std::uint64_t poseId = ~std::uint64_t(0);
-		static double position[3]{}, angles[3]{}, fov = 90;
-		static bool poseDirty = false;
-		auto readPose = [&]()
+		if (ImGui::CollapsingHeader("Camera pose"))
 		{
-			poseId = selected;
-			for (int axis = 0; axis < 3; ++axis)
-				position[axis] = found->Pose.Position[axis];
-			const auto rotation = found->Pose.Rotation.ToQREulerAngles().ToQEulerAngles();
-			angles[0] = rotation.Pitch;
-			angles[1] = rotation.Yaw;
-			angles[2] = rotation.Roll;
-			fov = found->Pose.Fov;
-			poseDirty = false;
-		};
-		if (poseId != selected || (!poseDirty && !ImGui::IsAnyItemActive()))
-			readPose();
-		poseDirty |=
-			ImGui::InputScalarN("Position (X/Y/Z)", ImGuiDataType_Double, position, 3, nullptr, nullptr, "%.3f");
-		poseDirty |=
-			ImGui::InputScalarN("Angles (pitch/yaw/roll)", ImGuiDataType_Double, angles, 3, nullptr, nullptr, "%.3f");
-		poseDirty |= ImGui::InputDouble("Camera FOV", &fov, 0, 0, "%.3f");
-		if (ImGui::Button("Apply camera pose"))
-		{
-			advancedfx::CameraPose pose;
-			for (int axis = 0; axis < 3; ++axis)
-				pose.Position[axis] = position[axis];
-			pose.Rotation = Quaternion::FromQREulerAngles(
-				QREulerAngles::FromQEulerAngles(QEulerAngles(angles[0], angles[1], angles[2])));
-			pose.Fov = fov;
-			const bool valid = pose.Valid() && std::all_of(std::begin(angles), std::end(angles),
-														   [](double a) { return std::isfinite(a); });
-			const bool applied = valid && MirvCam_EditCamera(selected, pose);
-			g_DocumentStatus = applied ? "Camera pose updated."
-							   : valid ? "Camera target unavailable; pose retained."
-									   : "Use finite pose values and a FOV between 1 and 179 degrees.";
-			if (applied)
+			static std::uint64_t poseId = ~std::uint64_t(0);
+			static double position[3]{}, angles[3]{}, fov = 90;
+			static bool poseDirty = false;
+			auto readPose = [&]()
+			{
+				poseId = selected;
+				for (int axis = 0; axis < 3; ++axis)
+					position[axis] = found->Pose.Position[axis];
+				const auto rotation = found->Pose.Rotation.ToQREulerAngles().ToQEulerAngles();
+				angles[0] = rotation.Pitch;
+				angles[1] = rotation.Yaw;
+				angles[2] = rotation.Roll;
+				fov = found->Pose.Fov;
 				poseDirty = false;
+			};
+			if (poseId != selected || (!poseDirty && !ImGui::IsAnyItemActive()))
+				readPose();
+			poseDirty |= ImGui::InputScalarN("Position (X/Y/Z)", ImGuiDataType_Double, position, 3, nullptr,
+											 nullptr, "%.3f");
+			poseDirty |= ImGui::InputScalarN("Angles (pitch/yaw/roll)", ImGuiDataType_Double, angles, 3,
+											 nullptr, nullptr, "%.3f");
+			poseDirty |= ImGui::InputDouble("Camera FOV", &fov, 0, 0, "%.3f");
+			if (ImGui::Button("Apply camera pose"))
+			{
+				advancedfx::CameraPose pose;
+				for (int axis = 0; axis < 3; ++axis)
+					pose.Position[axis] = position[axis];
+				pose.Rotation = Quaternion::FromQREulerAngles(
+					QREulerAngles::FromQEulerAngles(QEulerAngles(angles[0], angles[1], angles[2])));
+				pose.Fov = fov;
+				const bool valid = pose.Valid() && std::all_of(std::begin(angles), std::end(angles),
+															   [](double a) { return std::isfinite(a); });
+				const bool applied = valid && MirvCam_EditCamera(selected, pose);
+				g_DocumentStatus = applied ? "Camera pose updated."
+								   : valid ? "Camera target unavailable; pose retained."
+										   : "Use finite pose values and a FOV between 1 and 179 degrees.";
+				if (applied)
+					poseDirty = false;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Reset camera fields"))
+				readPose();
+			ImGui::TextDisabled(
+				"World position and angles. Attached cameras keep their target and attachment mode.");
 		}
-		ImGui::SameLine();
-		if (ImGui::Button("Reset camera fields"))
-			readPose();
-		ImGui::TextDisabled("World position and angles. Attached cameras keep their target and attachment mode.");
-		ImGui::Separator();
 		if (ImGui::CollapsingHeader("Aiming"))
 		{
 			auto aimCommand = [&](const char *option, const std::string &value)
@@ -6699,34 +6663,39 @@ static void DrawCamerasTab()
 			ImGui::TextWrapped("Press Enter to save target fields. A world point replaces entity tracking. Active "
 							   "aiming overrides the saved angles, keeping the camera's position.");
 		}
-		static std::uint64_t nameId = ~std::uint64_t(0);
-		static std::string previousName;
-		static char name[129]{};
-		if (nameId != selected || previousName != found->Name)
+		if (ImGui::CollapsingHeader("Camera settings"))
 		{
-			nameId = selected;
-			previousName = found->Name;
-			snprintf(name, sizeof(name), "%s", found->Name.c_str());
-		}
-		bool rename = ImGui::InputText("Camera name", name, sizeof(name), ImGuiInputTextFlags_EnterReturnsTrue);
-		ImGui::SameLine();
-		rename = ImGui::Button("Rename camera") || rename;
-		if (rename)
-			g_DocumentStatus = MirvCam_RenameCamera(selected, name)
-								   ? "Camera renamed."
-								   : "Use a unique, nonnumeric camera name (1..128 bytes).";
-		if (found->Attached)
-			ImGui::Text("Attached to entity %d (%s).", found->EntityAddress,
-						found->AttachMode == 3	 ? "world"
-						: found->AttachMode == 2 ? "aligned"
-						: found->AttachMode == 1 ? "entity"
-												 : "bone");
-		ImGui::TextDisabled("Edit moves the free camera to the saved pose. Recapture saves your framing.");
-		if (ImGui::Button("Remove camera"))
-		{
-			removeId = selected;
-			removeName = found->Name;
-			ImGui::OpenPopup("Remove saved camera?");
+			static std::uint64_t nameId = ~std::uint64_t(0);
+			static std::string previousName;
+			static char name[129]{};
+			if (nameId != selected || previousName != found->Name)
+			{
+				nameId = selected;
+				previousName = found->Name;
+				snprintf(name, sizeof(name), "%s", found->Name.c_str());
+			}
+			bool rename =
+				ImGui::InputText("Camera name", name, sizeof(name), ImGuiInputTextFlags_EnterReturnsTrue);
+			ImGui::SameLine();
+			rename = ImGui::Button("Rename camera") || rename;
+			if (rename)
+				g_DocumentStatus = MirvCam_RenameCamera(selected, name)
+									   ? "Camera renamed."
+									   : "Use a unique, nonnumeric camera name (1..128 bytes).";
+			if (found->Attached)
+				ImGui::Text("Attached to entity %d (%s).", found->EntityAddress,
+							found->AttachMode == 3	 ? "world"
+							: found->AttachMode == 2 ? "aligned"
+							: found->AttachMode == 1 ? "entity"
+													 : "bone");
+			ImGui::TextDisabled(
+				"Edit moves the free camera to the saved pose. Recapture saves your framing.");
+			if (ImGui::Button("Remove camera"))
+			{
+				removeId = selected;
+				removeName = found->Name;
+				ImGui::OpenPopup("Remove saved camera?");
+			}
 		}
 	}
 	if (ImGui::BeginPopupModal("Remove saved camera?", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
@@ -6743,6 +6712,55 @@ static void DrawCamerasTab()
 		if (ImGui::Button("Cancel removal"))
 			ImGui::CloseCurrentPopup();
 		ImGui::EndPopup();
+	}
+	if (ImGui::CollapsingHeader("Transitions"))
+	{
+		static double transitionSeconds = 1;
+		static std::uint64_t destination = ~std::uint64_t(0);
+		ImGui::InputDouble("Transition duration (s)", &transitionSeconds, 0, 0, "%.3f");
+		if (!std::isfinite(transitionSeconds))
+			transitionSeconds = 0;
+		transitionSeconds = std::clamp(transitionSeconds, 0.0, 3600.0);
+		auto target =
+			std::find_if(cameras.begin(), cameras.end(), [&](const auto &c) { return c.Id == destination; });
+		const bool campath = destination == ~std::uint64_t(0);
+		const std::string targetName = campath					 ? "Active campath"
+									   : target != cameras.end() ? target->Name
+																 : "Choose a destination";
+		if (ImGui::BeginCombo("Transition destination", targetName.c_str()))
+		{
+			if (ImGui::Selectable("Active campath", campath))
+				destination = ~std::uint64_t(0);
+			for (const auto &c : cameras)
+			{
+				const auto label = std::to_string(c.Id) + ": " + c.Name;
+				if (ImGui::Selectable(label.c_str(), c.Id == destination))
+					destination = c.Id;
+			}
+			ImGui::EndCombo();
+		}
+		const bool destinationIsCampath = destination == ~std::uint64_t(0);
+		ImGui::BeginDisabled(
+			!destinationIsCampath &&
+			std::none_of(cameras.begin(), cameras.end(), [&](const auto &c) { return c.Id == destination; }));
+		if (ImGui::Button("Transition"))
+		{
+			char command[160];
+			const auto reference =
+				destinationIsCampath ? std::string("campath") : std::to_string(destination);
+			std::snprintf(command, sizeof(command), "mirv_cam transition %s %.9g", reference.c_str(),
+						  transitionSeconds);
+			Afx_ExecClientCmd(command);
+		}
+		ImGui::EndDisabled();
+	}
+	if (ImGui::CollapsingHeader("Display"))
+	{
+		ImGui::Checkbox("Show camera guides", &g_ShowCameraGuides);
+		ImGui::SameLine();
+		ImGui::Checkbox("Camera frustums", &g_CameraFrustums);
+		ImGui::TextDisabled(
+			"Selected: gold. Other cameras: purple. Unavailable: gray. Hidden during HLAE recording.");
 	}
 	ImGui::TextDisabled(
 		"Click selects a camera; while camera preview is on, it also switches the view. Tab switches Cameras/Keys.");
