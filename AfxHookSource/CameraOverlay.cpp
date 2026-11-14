@@ -5681,6 +5681,7 @@ static void DrawSceneCacheMenu(int playhead)
 	ImGui::TextDisabled("Console: mirv_cache help");
 }
 
+static void DrawCameraClipsPanel();
 static void DrawSequencerDetails(int playhead)
 {
 	auto &state = g_SequencerTimeline;
@@ -5693,6 +5694,14 @@ static void DrawSequencerDetails(int playhead)
 	    ImGuiFileBrowserFlags_EnterNewFilename | ImGuiFileBrowserFlags_CreateNewDir);
 	if (!ImGui::BeginTabBar("Sequencer details"))
 		return;
+	g_CameraClipsEditing =
+		ImGui::BeginTabItem("Camera clips", nullptr, g_OpenCameraClips ? ImGuiTabItemFlags_SetSelected : 0);
+	if (g_CameraClipsEditing)
+	{
+		g_OpenCameraClips = false;
+		DrawCameraClipsPanel();
+		ImGui::EndTabItem();
+	}
 	if (ImGui::BeginTabItem("Scene Cache"))
 	{
 		DrawSceneCacheMenu(playhead);
@@ -6046,12 +6055,13 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		std::string label = (clip.Campath ? "Campath #" : "Camera #") + std::to_string(clip.Target) +
 							" | clip " + std::to_string(clip.Id);
 		bool choose = ImGui::NeoTimelineSpan(begin, end,
-											 clip.Id == g_SelectedCameraClip ? IM_COL32(255, 210, 70, 230)
-																			 : IM_COL32(190, 120, 230, 200),
+											 clip.Id == g_SelectedCameraClip ? IM_COL32(255, 210, 70, 65)
+																			 : IM_COL32(190, 120, 230, 35),
 											 label.c_str());
+		choose = ImGui::NeoTimelineSpan(begin, begin, IM_COL32(255, 210, 70, 255), label.c_str()) || choose;
 		if (clip.Blend > 0)
 			choose = ImGui::NeoTimelineSpan(begin, (std::min)(end, tick(clip.Time + clip.Blend)),
-											IM_COL32(100, 190, 235, 180), "Camera source blend") ||
+											IM_COL32(100, 190, 235, 180), (label + " | blend").c_str()) ||
 					 choose;
 		if (choose)
 		{
@@ -6063,14 +6073,13 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 }
 static void DrawCameraClipsPanel()
 {
-	if (g_OpenCameraClips)
-	{
-		ImGui::SetNextItemOpen(true);
-		g_OpenCameraClips = false;
-	}
-	g_CameraClipsEditing = ImGui::CollapsingHeader("Camera clips");
-	if (!g_CameraClipsEditing)
-		return;
+	ImGui::TextWrapped(
+		"Choose sequence preview to play these clips. You do not need to preview a camera or path "
+		"separately. Cached preview supplies the scene and clock; sequence preview chooses the camera.");
+	ImGui::TextDisabled("Bright marker: clip start | Blue: blend | Faint span: source remains active");
+	if (SceneCachePreviewActive())
+		ImGui::TextWrapped("Cached aiming is unsmoothed; live aiming settings are preserved. Targets must be "
+						   "included in the cache.");
 	bool enabled = MirvCam_SequenceEnabled();
 	if (ImGui::Checkbox("Preview camera sequence", &enabled) && !MirvCam_EnableSequence(enabled))
 		g_DocumentStatus = "Add a camera clip first, and use the demo session it belongs to.";
@@ -7319,6 +7328,14 @@ void Draw()
 				ScenePreviewTick(s_seqFrame);
 			}
 			ImGui::SameLine();
+			bool sequencePreview = MirvCam_SequenceEnabled();
+			if (ImGui::Checkbox("Sequence camera", &sequencePreview) &&
+				!MirvCam_EnableSequence(sequencePreview))
+				g_DocumentStatus = "Add clips in the Camera clips tab for this demo first.";
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Use the camera clips to choose the view, including during cached "
+								  "scrubbing. This replaces individual camera/path preview.");
+			ImGui::SameLine();
 			if (ImGui::Button("Seek actual demo here")) Afx_GotoDemoTick(s_seqFrame);
 			int curDemoTick = 0;
 			const bool haveDemoTick = GetCurrentDemoTick(curDemoTick);
@@ -7902,7 +7919,6 @@ void Draw()
 			ImGui::SameLine();
 			ImGui::TextDisabled("View %d - %d | Wheel: zoom | MMB / Shift+wheel: pan", visibleStart, visibleEnd);
 			ImGui::TextDisabled("Retiming keeps Auto handles automatic and rescales Free handles. Classic scalar curves convert when using editable Euler.");
-			DrawCameraClipsPanel();
 			// Controls row
 			if (ImGui::SmallButton("Play"))
 			{

@@ -2366,7 +2366,7 @@ orientation, including smooth aiming. Drawing remains a read-only sample;
 turning guides on or off does not change the camera's aiming behavior.
 
 The sequencer's **Camera sources** track shows camera clips and their blend
-intervals. Click a clip to select it. Open **Camera clips** below the timeline:
+intervals. Click a clip to select it. Open the **Camera clips** tab beside Commands and Events:
 
 1. Choose **New camera clip at playhead**.
 2. Set its exact demo tick, source camera or campath, and blend duration.
@@ -2376,8 +2376,9 @@ intervals. Click a clip to select it. Open **Camera clips** below the timeline:
 Zero blend makes a cut. A positive blend evaluates both the preceding and new
 source at the current time. Clip blending follows demo/cache time and is sampled
 by timestamp, so moving backward across a boundary selects the appropriate
-source and blend weight. Cached smoothed/custom aiming is still unavailable;
-snap aiming and cached attachments retain their existing coverage requirements.
+source and blend weight. Cached preview evaluates built-in aiming without smoothing on a private settings
+copy, preserving live smoothing settings and history. Custom aiming calculations
+still require live playback. Cached attachments and aim targets require coverage.
 Before the first clip the view captured when sequence preview was enabled is
 held; the first clip blends from that view if its duration is positive.
 
@@ -2394,3 +2395,11 @@ view. `mirv_cam sequence clear` clears the clips with undo support. Manual previ
 or transition commands take over from the sequence. Sequence clips are bound to
 their demo/session; clear them before authoring for a different demo. Cameras and
 clips are session-only and are not yet saved with the campath document.
+
+Camera clips use bright start markers, blue blend regions and faint continuation
+spans. For cached transitions, enable Cached preview and Preview camera sequence;
+there is no need to preview an individual camera or campath first.
+
+Exiting preview suspends sequence viewing. The preview toggle resumes the sequence
+on re-entry; explicitly disabling Sequence camera, or choosing a camera/keyframe
+preview or manual transition, leaves sequence viewing.

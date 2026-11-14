@@ -403,6 +403,7 @@ int g_CameraEvaluationFrame = -1;
 double g_CameraEvaluationStep = 0;
 std::vector<advancedfx::CameraClip> g_CameraClips;
 unsigned long long g_NextClipId = 0;
+bool g_SequenceResume = false;
 std::string g_SequenceDemo;
 int g_SequenceLevel = -1;
 advancedfx::CameraPose g_SequenceSeed;
@@ -644,7 +645,8 @@ unsigned int RigEntityHandle(int address)
 }
 bool RigTarget(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
-	if (!TryRebindCamera(rig) || !rig.Target || rig.TargetHandle == 0xffffffffu)
+	if ((!AfxHookSource::CameraOverlay::SceneCachePreviewActive() && !TryRebindCamera(rig)) || !rig.Target ||
+		rig.TargetHandle == 0xffffffffu)
 		return false;
 	SOURCESDK::Vector origin;
 	SOURCESDK::QAngle angles;
@@ -766,15 +768,18 @@ bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 {
 	if (!camera.Aim)
 		return true;
-	auto &aim = *camera.Aim;
 	const bool cached = AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+	// Cached scrubbing must not advance or reset the live smoothing history.
+	auto sampledAim = cached ? camera.Aim->CloneSettings() : nullptr;
+	auto &aim = sampledAim ? *sampledAim : *camera.Aim;
+	if (cached)
+		aim.SnapTo = true;
 	if (!aim.Active && (!aim.SoftDeactivate || cached))
 	{
-		camera.AimTime = -1;
+		if (!cached)
+			camera.AimTime = -1;
 		return true;
 	}
-	if (cached && !aim.SnapTo && aim.Active)
-		return false;
 	Vector3 target;
 	const Vector3 *overrideTarget = nullptr;
 	if (aim.Active && aim.Source_get())
@@ -826,6 +831,8 @@ bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 	if (aim.Aim(delta, Vector3(pose.Position[0], pose.Position[1], pose.Position[2]), angles.Pitch, angles.Yaw,
 				angles.Roll, overrideTarget))
 		pose.Rotation = Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles(angles));
+	if (cached)
+		return pose.Valid();
 	camera.AimTime = time;
 	camera.AimFrame = g_CameraEvaluationFrame;
 	camera.AimCached = cached;
@@ -850,11 +857,8 @@ bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 	}
 	if (!EvaluateCameraAim(rig, pose))
 	{
-		if (rig.Aim && rig.Aim->Active && AfxHookSource::CameraOverlay::SceneCachePreviewActive() && !rig.Aim->SnapTo)
-			g_CameraFailureReason =
-				camera + "smoothed aiming needs live playback. Cached aiming currently requires snapTo 1.";
-		else if (rig.Aim && rig.Aim->Source_get() && !rig.Aim->HasTf2EntitySource() &&
-				 AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+		if (rig.Aim && rig.Aim->Source_get() && !rig.Aim->HasTf2EntitySource() &&
+			AfxHookSource::CameraOverlay::SceneCachePreviewActive())
 			g_CameraFailureReason = camera + "custom aim sources currently need live playback.";
 		else
 			g_CameraFailureReason = camera + "aim target or its cached pose is unavailable.";
@@ -1304,6 +1308,7 @@ bool MirvCam_EnableSequence(bool enabled)
 	SyncRigLevel();
 	if (!enabled)
 	{
+		g_SequenceResume = false;
 		if (g_CameraSource == CameraSource::Sequence)
 			MirvCam_EndRigPreview();
 		return true;
@@ -1311,16 +1316,23 @@ bool MirvCam_EnableSequence(bool enabled)
 	if (g_CameraClips.empty() || (!g_SequenceDemo.empty() && g_SequenceDemo != g_CameraDemoKey) ||
 		(g_SequenceDemo.empty() && g_SequenceLevel != g_LevelInitCount))
 		return false;
-	g_SequenceSeed = RigCapture();
+	if (!g_SequenceResume)
+		g_SequenceSeed = RigCapture();
 	if (!g_SequenceSeed.Valid())
 		return false;
 	MirvCampathPreview_SetActive(false);
 	ClearCameraBlend();
 	g_CameraSource = CameraSource::Sequence;
+	g_SequenceResume = true;
 	g_RigPreview = true;
 	g_RigNavigation = true;
 	g_EditingCameraName.clear();
 	return true;
+}
+bool MirvCam_ResumeSequencePreview()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	return g_SequenceResume && MirvCam_EnableSequence(true);
 }
 bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advancedfx::ICommandArgs *, Aiming &))
 {
@@ -1672,6 +1684,8 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			}
 		}
 		std::string reference = args->ArgV(2);
+		if (transition || reference != "off")
+			g_SequenceResume = false;
 		if (!transition && !_stricmp(reference.c_str(), "toggle"))
 		{
 			MirvCam_TogglePreviewNavigation();

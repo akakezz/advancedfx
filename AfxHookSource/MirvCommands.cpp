@@ -1876,6 +1876,8 @@ bool MirvCampathPreview_GetCamera(CamPathValue &value)
 }
 bool MirvCampathPreview_SetActive(bool active)
 {
+	if (active && MirvCam_ResumeSequencePreview())
+		return true;
 	if (active && MirvCam_RigNavigation()) return MirvCam_SetPreviewNavigation(true);
 	if (MirvCam_RigPreviewActive()) MirvCam_EndRigPreview();
 	if (active)
@@ -2094,6 +2096,9 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 				MirvCam_EndRigPreview();
 			else if (g_CampathPreviewActive)
 				CampathPreview_Exit();
+			else if (MirvCam_ResumeSequencePreview())
+			{
+			}
 			else if (MirvCam_RigNavigation())
 				MirvCam_SetPreviewNavigation(true);
 			else

@@ -122,3 +122,4 @@ bool MirvCam_RemoveClip(std::uint64_t id);
 bool MirvCam_EnableSequence(bool enabled);
 bool MirvCam_SequenceEnabled();
 void MirvCam_ClearClips();
+bool MirvCam_ResumeSequencePreview();

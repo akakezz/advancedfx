@@ -174,7 +174,7 @@ bool MirvCam_CameraAction(const char*action,std::uint64_t id){cameraActions.empl
 int cameraUndoCalls=0;bool cameraRedoRequested=false;std::vector<advancedfx::CameraClip>testCameraClips;bool testSequence=false;
 std::vector<advancedfx::CameraClip>MirvCam_Clips(){return testCameraClips;}
 bool MirvCam_EditClip(advancedfx::CameraClip&c){if(c.Id==~std::uint64_t(0))c.Id=testCameraClips.size();testCameraClips.push_back(c);return true;}
-void MirvCam_ClearClips(){testCameraClips.clear();}bool MirvCam_RemoveClip(std::uint64_t){return false;}bool MirvCam_EnableSequence(bool v){testSequence=v;return true;}bool MirvCam_SequenceEnabled(){return testSequence;}
+void MirvCam_ClearClips(){testCameraClips.clear();}bool MirvCam_RemoveClip(std::uint64_t){return false;}bool MirvCam_EnableSequence(bool v){testSequence=v;return true;}bool MirvCam_SequenceEnabled(){return testSequence;}bool MirvCam_ResumeSequencePreview(){return false;}
 bool MirvCam_HistoryUndo(bool redo){++cameraUndoCalls;cameraRedoRequested=redo;return true;}
 bool MirvCam_EditCamera(std::uint64_t id,const advancedfx::CameraPose&pose){if(!pose.Valid())return false;for(auto &c:testCameras)if(c.Id==id){c.Pose=pose;return true;}return false;}
 bool MirvCam_SelectedCameraAction(const char*action){if(!std::strcmp(action,"add")){advancedfx::CameraInfo c;c.Id=testCameras.empty()?0:testCameras.back().Id+1;c.Name="Camera "+std::to_string(c.Id);for(auto &p:testCameras)p.Selected=false;c.Selected=true;testCameras.push_back(c);}return true;}
