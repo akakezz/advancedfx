@@ -2223,12 +2223,11 @@ Client-only gibs may receive different identities on replay; those still require
 explicit retargeting with `edit <ID>` followed by `attach`, preserving the camera.
 Fixed camera definitions remain available across level changes.
 
-Gizmos, orbit, modifiers, damping and collision for named rigs
-remain future work. Timed sequencer clips and aiming are described below.
-The live `mirv_cam attach` view retains the existing collision/follow evaluator.
-Saved-camera preview still evaluates rigid attachments; collision/follow settings
-are not yet stored per camera. Fixed cameras can be used during cache preview,
-and campaths use its client-time cursor.
+Saved cameras support per-camera follow and orbit, described below. Gizmos,
+modifiers and collision for saved cameras remain future work. The live legacy
+`mirv_cam attach` view retains its existing collision/follow evaluator; saved-camera
+motion settings apply when viewing that camera or using it in a sequence.
+Fixed cameras can be used during cache preview, and campaths use its client-time cursor.
 
 Attached cameras also evaluate against Scene Cache preview. Create the binding
 on the live demo, record its target, then enable cache preview and choose that
@@ -2244,7 +2243,8 @@ Missing coverage, a filtered target or a missing bone holds the last valid camer
 pose and shows `[unavailable]`; it never substitutes the live entity. A new
 attachment must still be created in live playback. Existing cameras can be
 recaptured against cached poses without changing the demo or native animation
-state. Stateful follow and collision against cached geometry remain later milestones.
+state. Cached follow reconstructs damping from recorded history; collision against
+cached geometry remains a later milestone.
 
 ### Next milestone: camera mixing and existing aim integration
 
@@ -2552,3 +2552,40 @@ the cache clock also supplies historical entity poses and recorded tracking.
 Without cached motion, entity attachment and aiming use the current live poses;
 aiming is evaluated without advancing the live smoothing history. Individual
 `mirv_cam preview <ID/name>` inspection remains an explicit override.
+
+### Per-camera follow and orbit
+
+Select an attached camera in **Cameras**, then expand **Motion**. Edit the fields
+and choose **Apply camera motion**; **Reset camera motion** restores rigid behavior.
+Changes participate in camera undo/redo and cinematic project save/load. New
+projects use format version 2; existing version-1 projects still load with rigid defaults.
+
+- **Follow half-life** smooths the attachment position; **Rotation half-life**
+  independently smooths its orientation. Values are 0..10 seconds; zero disables
+  that filter. Half-life is the time to close half the remaining positional/angular error.
+- **Maximum follow lag** caps positional lag in world units. **Teleport reset
+  distance** snaps the filter when the raw target moves farther than this in one
+  observed step. Zero disables the respective distance limit. Missing targets,
+  backward live time and gaps over 0.25 seconds reset the live filter.
+- **Orbit speed** circles around the attachment's local up axis at a signed rate
+  in degrees/second (maximum magnitude 3600). The captured offset supplies radius
+  and height; capture a framing away from the pivot before orbiting. Zero stops
+  at the current pose. Changing speed preserves the current pose, and recapturing
+  saves framing at the current orbit phase. Attachment modes still define the
+  pivot/coordinate frame. Existing per-camera aiming can track the subject independently.
+
+```text
+mirv_cam edit 0 follow 0.15 0.08
+mirv_cam edit 0 follow 0.15 0.08 128 256
+mirv_cam edit 0 orbit 30
+mirv_cam edit 0 orbit 0
+```
+
+Orbit follows the evaluated demo/preview client time, so backward sequence scrubbing
+returns to the same position. Without cached motion, sequence preview keeps targets
+at their current poses while orbiting them. Live follow stays warm even when another
+camera is being viewed. Cached follow is reconstructed from recorded target history,
+including gaps, and never depends on scrub direction. Its first available observation
+seeds the filter; record some lead-in before the shot for settled damping. A small
+checkpoint per 64 frames limits repeated reconstruction, and append-only recording
+extends those checkpoints without copying recorded entity or bone arrays.

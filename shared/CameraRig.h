@@ -23,16 +23,112 @@ struct CameraPose
 			   Rotation.Norm() > 1e-12 && std::isfinite(Fov) && Fov >= 1 && Fov <= 179;
 	}
 };
+// Settings belong to each saved camera; evaluation state is kept separately.
+struct CameraMotion
+{
+	double FollowHalfLife = 0, RotationHalfLife = 0;
+	double MaxDistance = 128, TeleportDistance = 256;
+	double OrbitSpeed = 0, OrbitEpoch = 0;
+	bool Valid() const
+	{
+		return std::isfinite(FollowHalfLife) && FollowHalfLife >= 0 && FollowHalfLife <= 10 &&
+			   std::isfinite(RotationHalfLife) && RotationHalfLife >= 0 && RotationHalfLife <= 10 &&
+			   std::isfinite(MaxDistance) && MaxDistance >= 0 && MaxDistance <= 1048576 &&
+			   std::isfinite(TeleportDistance) && TeleportDistance >= 0 && TeleportDistance <= 1048576 &&
+			   std::isfinite(OrbitSpeed) && std::abs(OrbitSpeed) <= 3600 && std::isfinite(OrbitEpoch) &&
+			   std::abs(OrbitEpoch) <= 1e9;
+	}
+	bool operator==(const CameraMotion &v) const
+	{
+		return FollowHalfLife == v.FollowHalfLife && RotationHalfLife == v.RotationHalfLife &&
+			   MaxDistance == v.MaxDistance && TeleportDistance == v.TeleportDistance &&
+			   OrbitSpeed == v.OrbitSpeed && OrbitEpoch == v.OrbitEpoch;
+	}
+	double OrbitAngle(double time) const
+	{
+		return std::remainder((time - OrbitEpoch) * OrbitSpeed, 360.0);
+	}
+	static CameraPose RotateLocal(CameraPose pose, double degrees, bool rotateView)
+	{
+		const double radians = degrees * 3.14159265358979323846 / 180;
+		const double x = pose.Position[0], y = pose.Position[1];
+		pose.Position[0] = std::cos(radians) * x - std::sin(radians) * y;
+		pose.Position[1] = std::sin(radians) * x + std::cos(radians) * y;
+		if (rotateView)
+			pose.Rotation = (Afx::Math::Quaternion::FromQREulerAngles(
+								 Afx::Math::QREulerAngles::FromQEulerAngles({0, degrees, 0})) *
+							 pose.Rotation)
+								.Normalized();
+		return pose;
+	}
+};
+struct CameraFollowState
+{
+	CameraPose Filtered, Raw;
+	double Time = 0;
+	bool Ready = false;
+	bool Sample(const CameraMotion &settings, double time, const CameraPose &target, CameraPose &out)
+	{
+		if (!settings.Valid() || !std::isfinite(time) || !target.Valid())
+		{
+			Ready = false;
+			return false;
+		}
+		double distance = 0;
+		for (int axis = 0; axis < 3; ++axis)
+			distance += std::pow(target.Position[axis] - Raw.Position[axis], 2);
+		const double dt = time - Time;
+		if (!Ready || dt < 0 || dt > .25 ||
+			(settings.TeleportDistance > 0 &&
+			 distance > settings.TeleportDistance * settings.TeleportDistance))
+		{
+			Filtered = Raw = target;
+			Time = time;
+			Ready = true;
+			out = Filtered;
+			return true;
+		}
+		if (dt > 0)
+		{
+			const double positionWeight =
+				settings.FollowHalfLife > 0 ? 1 - std::exp2(-dt / settings.FollowHalfLife) : 1;
+			for (int axis = 0; axis < 3; ++axis)
+				Filtered.Position[axis] += positionWeight * (target.Position[axis] - Filtered.Position[axis]);
+			double lag = 0;
+			for (int axis = 0; axis < 3; ++axis)
+				lag += std::pow(Filtered.Position[axis] - target.Position[axis], 2);
+			if (settings.MaxDistance > 0 && lag > settings.MaxDistance * settings.MaxDistance)
+				for (int axis = 0; axis < 3; ++axis)
+					Filtered.Position[axis] =
+						target.Position[axis] + (Filtered.Position[axis] - target.Position[axis]) *
+													settings.MaxDistance / std::sqrt(lag);
+			auto a = Filtered.Rotation.Normalized(), b = target.Rotation.Normalized();
+			if (a.W * b.W + a.X * b.X + a.Y * b.Y + a.Z * b.Z < 0)
+				b = Afx::Math::Quaternion(-b.W, -b.X, -b.Y, -b.Z);
+			Filtered.Rotation =
+				a.Slerp(b, settings.RotationHalfLife > 0 ? 1 - std::exp2(-dt / settings.RotationHalfLife) : 1)
+					.Normalized();
+			Raw = target;
+			Time = time;
+		}
+		out = Filtered;
+		return true;
+	}
+};
 struct CameraRig
 {
 	CameraPose Pose;
+	CameraMotion Motion;
 	bool Attached = false;
 	bool InheritRotation = true;
-	bool Evaluate(const CameraPose *target, CameraPose &out) const
+	bool Evaluate(const CameraPose *target, CameraPose &out, double time = 0) const
 	{
-		if (!Pose.Valid() || (Attached && (!target || !target->Valid())))
+		if (!Pose.Valid() || !Motion.Valid() || !std::isfinite(time) ||
+			(Attached && (!target || !target->Valid())))
 			return false;
-		auto result = Pose;
+		const auto local =
+			Attached ? CameraMotion::RotateLocal(Pose, Motion.OrbitAngle(time), InheritRotation) : Pose;
+		auto result = local;
 		if (Attached)
 		{
 			double rotation[3][3];
@@ -41,10 +137,10 @@ struct CameraRig
 			{
 				result.Position[r] = target->Position[r];
 				for (int c = 0; c < 3; ++c)
-					result.Position[r] += rotation[r][c] * Pose.Position[c];
+					result.Position[r] += rotation[r][c] * local.Position[c];
 			}
 			if (InheritRotation)
-				result.Rotation = (target->Rotation.Normalized() * Pose.Rotation).Normalized();
+				result.Rotation = (target->Rotation.Normalized() * local.Rotation).Normalized();
 		}
 		result.Rotation = result.Rotation.Normalized();
 		if (!result.Valid())
@@ -53,9 +149,9 @@ struct CameraRig
 		return true;
 	}
 	// Capture the current world pose relative to a target without a visual jump.
-	bool Attach(const CameraPose &world, const CameraPose &target, bool inheritRotation)
+	bool Attach(const CameraPose &world, const CameraPose &target, bool inheritRotation, double time = 0)
 	{
-		if (!world.Valid() || !target.Valid())
+		if (!world.Valid() || !target.Valid() || !Motion.Valid() || !std::isfinite(time))
 			return false;
 		auto local = world;
 		double rotation[3][3];
@@ -70,7 +166,7 @@ struct CameraRig
 			local.Rotation = (target.Rotation.Normalized().Conjugate() * world.Rotation).Normalized();
 		if (!local.Valid())
 			return false;
-		Pose = local;
+		Pose = CameraMotion::RotateLocal(local, -Motion.OrbitAngle(time), inheritRotation);
 		Attached = true;
 		InheritRotation = inheritRotation;
 		return true;
@@ -82,6 +178,7 @@ struct CameraInfo
 	std::uint64_t Id = 0;
 	std::string Name;
 	CameraPose Pose;
+	CameraMotion Motion;
 	bool Attached = false, Available = true, Selected = false, Viewed = false;
 	int EntityAddress = -1, AttachMode = 0;
 	bool AimActive = false, AimSnap = true, AimCustomSource = false;

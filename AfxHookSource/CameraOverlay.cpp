@@ -202,6 +202,12 @@ std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView()
 	return std::atomic_load(&g_SceneView);
 }
 bool SceneCachePreviewActive() { std::lock_guard<std::recursive_mutex> lock(g_SceneMutex); return g_ScenePreview; }
+void VisitCameraSceneFrames(
+	const std::function<void(const std::deque<advancedfx::SceneCache::Frame> &, std::uint64_t)> &visitor)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	visitor(g_SceneCache.Frames(), g_SceneCache.Revision());
+}
 bool SampleCameraScene(double clientTime, advancedfx::SceneCache::Frame &frame)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
@@ -6643,6 +6649,49 @@ static void DrawCamerasTab()
 				readPose();
 			ImGui::TextDisabled(
 				"World position and angles. Attached cameras keep their target and attachment mode.");
+		}
+		if (ImGui::CollapsingHeader("Motion"))
+		{
+			static std::uint64_t motionId = ~std::uint64_t(0);
+			static advancedfx::CameraMotion motion;
+			static bool motionDirty = false;
+			if (motionId != selected || (!motionDirty && !ImGui::IsAnyItemActive()))
+			{
+				motionId = selected;
+				motion = found->Motion;
+				motionDirty = false;
+			}
+			ImGui::BeginDisabled(!found->Attached);
+			motionDirty |= ImGui::InputDouble("Follow half-life (s)", &motion.FollowHalfLife, 0, 0, "%.3f");
+			motionDirty |=
+				ImGui::InputDouble("Rotation half-life (s)", &motion.RotationHalfLife, 0, 0, "%.3f");
+			motionDirty |= ImGui::InputDouble("Maximum follow lag", &motion.MaxDistance, 0, 0, "%.1f");
+			motionDirty |=
+				ImGui::InputDouble("Teleport reset distance", &motion.TeleportDistance, 0, 0, "%.1f");
+			motionDirty |= ImGui::InputDouble("Orbit speed (deg/s)", &motion.OrbitSpeed, 0, 0, "%.3f");
+			if (ImGui::Button("Apply camera motion"))
+			{
+				const bool applied = MirvCam_EditMotion(selected, motion);
+				g_DocumentStatus =
+					applied
+						? "Camera motion updated."
+						: "Use half-lives 0..10 s, nonnegative distances and orbit speeds -3600..3600 deg/s.";
+				if (applied)
+					motionDirty = false;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Reset camera motion"))
+			{
+				motion = {};
+				motionDirty = !MirvCam_EditMotion(selected, motion);
+				g_DocumentStatus = motionDirty ? "Could not reset camera motion." : "Camera motion reset.";
+			}
+			ImGui::EndDisabled();
+			if (!found->Attached)
+				ImGui::TextDisabled("Attach this camera to an entity or bone to use follow and orbit.");
+			ImGui::TextWrapped("Zero disables each motion. Distances use world units; zero disables a "
+							   "distance limit. Orbit uses the attachment's local up axis. Recapture saves "
+							   "your framing. Aiming remains independent.");
 		}
 		if (ImGui::CollapsingHeader("Aiming"))
 		{

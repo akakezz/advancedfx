@@ -1,6 +1,7 @@
 #pragma once
 #include <shared/SceneCache.h>
 #include <memory>
+#include <functional>
 namespace advancedfx { class ICommandArgs; }
 namespace AfxHookSource
 {
@@ -34,6 +35,9 @@ bool SceneCachePreviewActive();
 std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView();
 void ResetProjectRecovery();
 bool SampleCameraScene(double clientTime, advancedfx::SceneCache::Frame &frame);
+// Borrow frames only during the callback; no entity/bone arrays are copied.
+void VisitCameraSceneFrames(
+	const std::function<void(const std::deque<advancedfx::SceneCache::Frame> &, std::uint64_t)> &visitor);
 double EditingClientTime(double liveTime);
 // Called on the engine thread for playdemo/timedemo; indexing starts outside the command callback.
 void NotifyDemoPlaybackFile(const char *file);

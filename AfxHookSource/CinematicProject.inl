@@ -25,6 +25,11 @@ bool ProjectRig(std::ostream &out, const NamedCameraRig &r, int depth = 0)
 	out << r.Id << ' ' << r.AttachMode << ' ' << r.Rig.Attached << ' ' << r.Rig.InheritRotation << ' '
 		<< r.EntityAddress << ' ' << r.TargetHandle << ' ' << r.CacheIdentity << ' ' << std::quoted(r.DemoKey) << ' '
 		<< std::quoted(r.TargetModel) << '\n';
+	const auto &motion = r.Rig.Motion;
+	if (!motion.Valid())
+		return false;
+	out << motion.FollowHalfLife << ' ' << motion.RotationHalfLife << ' ' << motion.MaxDistance << ' '
+		<< motion.TeleportDistance << ' ' << motion.OrbitSpeed << ' ' << motion.OrbitEpoch << '\n';
 	if (!ProjectPose(out, r.Rig.Pose) || !ProjectPose(out, r.LastWorld))
 		return false;
 	out << bool(r.Target) << '\n';
@@ -45,7 +50,7 @@ bool ProjectRig(std::ostream &out, const NamedCameraRig &r, int depth = 0)
 	out << bool(r.AimTarget) << '\n';
 	return (!r.AimTarget || ProjectRig(out, *r.AimTarget, depth + 1)) && bool(out);
 }
-bool ProjectRig(std::istream &in, NamedCameraRig &r, int depth = 0)
+bool ProjectRig(std::istream &in, NamedCameraRig &r, int version, int depth = 0)
 {
 	if (depth > 1)
 		return false;
@@ -54,6 +59,14 @@ bool ProjectRig(std::istream &in, NamedCameraRig &r, int depth = 0)
 		r.Id >= 0x7fffffffffffffffull || r.AttachMode < 0 || r.AttachMode > 3 || r.DemoKey.size() > 4096 ||
 		r.TargetModel.size() > 4096)
 		return false;
+	if (version >= 2)
+	{
+		auto &motion = r.Rig.Motion;
+		if (!(in >> motion.FollowHalfLife >> motion.RotationHalfLife >> motion.MaxDistance >>
+			  motion.TeleportDistance >> motion.OrbitSpeed >> motion.OrbitEpoch) ||
+			!motion.Valid())
+			return false;
+	}
 	if (!ProjectPose(in, r.Rig.Pose) || !ProjectPose(in, r.LastWorld))
 		return false;
 	bool present;
@@ -103,7 +116,7 @@ bool ProjectRig(std::istream &in, NamedCameraRig &r, int depth = 0)
 	if (present)
 	{
 		r.AimTarget = std::make_shared<NamedCameraRig>();
-		if (!ProjectRig(in, *r.AimTarget, depth + 1))
+		if (!ProjectRig(in, *r.AimTarget, version, depth + 1))
 			return false;
 	}
 	return !r.Aim || !r.Aim->Source_get() || bool(r.AimTarget);
@@ -145,7 +158,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	SyncRigLevel();
 	std::ostringstream out;
 	out.imbue(std::locale::classic());
-	out << std::setprecision(17) << "HLAE_CINEMATIC 1\n";
+	out << std::setprecision(17) << "HLAE_CINEMATIC 2\n";
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto state = paths.CaptureState();
 	out << state.Paths.size() << ' ' << state.Active << '\n';
@@ -195,7 +208,7 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	std::string magic;
 	int version;
 	size_t count;
-	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" || version != 1)
+	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" || (version != 1 && version != 2))
 		return false;
 	CamPathCollection::State paths;
 	std::set<unsigned long long> pathIds, rigIds, clipIds;
@@ -230,8 +243,9 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	{
 		std::string name;
 		NamedCameraRig r;
-		if (!(in >> std::quoted(name)) || name.empty() || name.size() > 128 || name.find('\0') != std::string::npos ||
-			!ProjectRig(in, r) || !rigIds.insert(r.Id).second || !rigs.emplace(name, std::move(r)).second)
+		if (!(in >> std::quoted(name)) || name.empty() || name.size() > 128 ||
+			name.find('\0') != std::string::npos || !ProjectRig(in, r, version) ||
+			!rigIds.insert(r.Id).second || !rigs.emplace(name, std::move(r)).second)
 			return false;
 	}
 	if (!selected.empty() && !rigs.count(selected))

@@ -118,6 +118,7 @@ bool MirvCam_CameraAction(const char *action, std::uint64_t id);
 bool MirvCam_RenameCamera(std::uint64_t id, const char *name);
 void MirvCam_NotifyDemoFile(const char *file, const char *gameDirectory);
 bool MirvCam_EditCamera(std::uint64_t id, const advancedfx::CameraPose &pose);
+bool MirvCam_EditMotion(std::uint64_t id, const advancedfx::CameraMotion &motion);
 bool MirvCam_HistoryUndo(bool redo);
 
 class Aiming;
