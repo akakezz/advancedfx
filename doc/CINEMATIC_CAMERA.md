@@ -2557,7 +2557,8 @@ aiming is evaluated without advancing the live smoothing history. Individual
 
 Select a camera and expand **Attachment** to edit its entity address, bone index/name
 (`-1` means no bone), and existing Bone/Entity/Aligned/World mode. **Apply attachment**
-retargets that same camera and preserves its current world framing. Camera IDs,
+retargets that same camera and preserves its offset and orientation relative to the target.
+It moves to the new entity, including when that entity is across the map. Camera IDs,
 sequence references and undo/redo remain intact. Return to live playback before
 changing bindings; attachment selection uses the existing entity/bone resolver.
 
@@ -2570,8 +2571,10 @@ mirv_cam edit 0 attach 8 -1 world
 with state/settings owned by each saved camera. There is no separate position or
 rotation smoothing algorithm. Root and bone damping, orbit/composition response,
 lag limits, teleport resets and framing correction use the existing controller.
-Live collision tracing remains on the legacy view; saved and cached motion use
-the shared follow controller with live collision disabled.
+Live attached-camera views use the existing collision controller when enabled.
+Cached and frozen sequence preview do not trace against the current live world.
+The attached collision switch, soft zone and recovery controls are in Cameras;
+Campath retains freecam/path collision. Clearance and obstacle options are shared.
 
 **Follow half-life** controls root damping; **Follow bone half-life** independently
 controls bone movement. **Follow orbit half-life** and **Follow turn-rate limit**
@@ -2606,3 +2609,28 @@ preview/demo clock. Uncached sequence preview uses frozen target poses; cached
 follow replays recorded history through the same attachment controller using small
 checkpoints, giving the same result in either scrub direction. Its first available
 observation seeds the state, so record lead-in before shots that need settled follow.
+
+### Camera list and project files
+
+Camera indices are zero-based positions in the creation-ordered camera list.
+After removal, visible indices and unnamed `Camera N` labels close the gap.
+Custom names remain unchanged. Console camera references use these current
+indices or names. Internal camera identities remain stable, so renumbering never
+redirects attachments, aiming, cached samples or sequence clips to another camera.
+Clips referring to a removed camera remain unavailable until it is restored.
+
+Click a row to select it; Ctrl-click toggles additional rows, and Shift-click
+selects a range. Select all / Deselect controls are below the list. Removal is
+immediate and undoable. Batch pose, attachment, motion edits and removals use one undo step.
+Edits apply only fields changed from the primary camera; other values are retained
+per camera, so a batch FOV change preserves each camera’s position. Recapture
+applies the full current world view to all selected cameras. Rename is available for a single selection.
+
+`mirv_cam attach capture` can repeatedly recapture the selected attached camera,
+including after leaving camera editing or switching away from the legacy live
+attachment controller. No new attachment is required between captures.
+
+The **Project** tab contains cinematic-project save/open, campath XML/collection
+files, classic export/baking, and standalone command-track file import/export.
+Camera clips and Cameras contain editing controls rather than duplicate save
+panels. Cinematic projects already include command markers.

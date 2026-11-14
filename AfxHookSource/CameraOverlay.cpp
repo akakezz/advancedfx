@@ -5987,52 +5987,14 @@ static void DrawCinematicBakeControls(const std::string &source)
 	}
 	ImGui::PopID();
 }
-static void DrawCameraClipsPanel();
-static void DrawSequencerDetails(int playhead)
+static void DrawCommandFiles()
 {
 	auto &state = g_SequencerTimeline;
-	static ImGui::FileBrowser indexDialog(ImGuiFileBrowserFlags_CloseOnEsc |
-	                                      ImGuiFileBrowserFlags_EditPathString);
 	static ImGui::FileBrowser loadDialog(ImGuiFileBrowserFlags_CloseOnEsc |
 	                                     ImGuiFileBrowserFlags_EditPathString);
 	static ImGui::FileBrowser saveDialog(
 	    ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_EditPathString |
 	    ImGuiFileBrowserFlags_EnterNewFilename | ImGuiFileBrowserFlags_CreateNewDir);
-	if (!ImGui::BeginTabBar("Sequencer details"))
-		return;
-	g_CameraClipsEditing =
-		ImGui::BeginTabItem("Camera clips", nullptr, g_OpenCameraClips ? ImGuiTabItemFlags_SetSelected : 0);
-	if (g_CameraClipsEditing)
-	{
-		g_OpenCameraClips = false;
-		DrawCameraClipsPanel();
-		ImGui::EndTabItem();
-	}
-	if (ImGui::BeginTabItem("Scene Cache"))
-	{
-		DrawSceneCacheMenu(playhead);
-		ImGui::EndTabItem();
-	}
-	if (ImGui::BeginTabItem("Commands", nullptr, state.FocusCommands ? ImGuiTabItemFlags_SetSelected : 0))
-	{
-		state.FocusCommands = false;
-		bool enabled = g_CommandSystem.TickMarkersEnabled();
-		ImGui::BeginDisabled(!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
-		                     !MirvCampath_CommandSeekObserverReady());
-		if (ImGui::Checkbox("Enable command execution", &enabled))
-			g_CommandSystem.EnableTickMarkers(enabled);
-		ImGui::EndDisabled();
-		if (!MirvCampath_CommandSeekObserverReady())
-			ImGui::TextDisabled("Automatic commands require the TF2/TF2C native seek observer.");
-		if (!g_CommandSystem.Enabled)
-			ImGui::TextDisabled("The global mirv_cmd scheduler is disabled.");
-		if (ImGui::Button("Add command at playhead"))
-		{
-			state.SelectedCommand = g_CommandSystem.AddTickMarker((std::max)(0, playhead), "Command", "");
-			if (!state.SelectedCommand)
-				state.Status = "Cannot add another command marker.";
-		}
-		ImGui::SameLine();
 		if (ImGui::Button("Load command track"))
 		{
 			loadDialog.SetTitle("Load command track");
@@ -6078,6 +6040,48 @@ static void DrawSequencerDetails(int playhead)
 				state.CommandsFile = file;
 			saveDialog.ClearSelected();
 		}
+}
+static void DrawCameraClipsPanel();
+static void DrawSequencerDetails(int playhead)
+{
+	auto &state = g_SequencerTimeline;
+	static ImGui::FileBrowser indexDialog(ImGuiFileBrowserFlags_CloseOnEsc |
+										  ImGuiFileBrowserFlags_EditPathString);
+	if (!ImGui::BeginTabBar("Sequencer details"))
+		return;
+	g_CameraClipsEditing =
+		ImGui::BeginTabItem("Camera clips", nullptr, g_OpenCameraClips ? ImGuiTabItemFlags_SetSelected : 0);
+	if (g_CameraClipsEditing)
+	{
+		g_OpenCameraClips = false;
+		DrawCameraClipsPanel();
+		ImGui::EndTabItem();
+	}
+	if (ImGui::BeginTabItem("Scene Cache"))
+	{
+		DrawSceneCacheMenu(playhead);
+		ImGui::EndTabItem();
+	}
+	if (ImGui::BeginTabItem("Commands", nullptr, state.FocusCommands ? ImGuiTabItemFlags_SetSelected : 0))
+	{
+		state.FocusCommands = false;
+		bool enabled = g_CommandSystem.TickMarkersEnabled();
+		ImGui::BeginDisabled(!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+							 !MirvCampath_CommandSeekObserverReady());
+		if (ImGui::Checkbox("Enable command execution", &enabled))
+			g_CommandSystem.EnableTickMarkers(enabled);
+		ImGui::EndDisabled();
+		if (!MirvCampath_CommandSeekObserverReady())
+			ImGui::TextDisabled("Automatic commands require the TF2/TF2C native seek observer.");
+		if (!g_CommandSystem.Enabled)
+			ImGui::TextDisabled("The global mirv_cmd scheduler is disabled.");
+		if (ImGui::Button("Add command at playhead"))
+		{
+			state.SelectedCommand = g_CommandSystem.AddTickMarker((std::max)(0, playhead), "Command", "");
+			if (!state.SelectedCommand)
+				state.Status = "Cannot add another command marker.";
+		}
+
 		const auto &markers = g_CommandSystem.GetTickMarkers();
 		if (ImGui::BeginChild("Command marker list", ImVec2(0, 85), true))
 		{
@@ -6374,8 +6378,6 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 }
 static void DrawCameraClipsPanel()
 {
-	DrawCinematicFileButtons();
-	DrawCinematicBakeControls("sequence");
 	ImGui::TextWrapped(
 		"Enable the sequence to play these clips. Preview navigation is independent. You can use free camera "
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
@@ -6447,7 +6449,7 @@ static void DrawCameraClipsPanel()
 	{
 		for (const auto &c : cameras)
 		{
-			const auto name = "Camera " + std::to_string(c.Id) + ": " + c.Name;
+			const auto name = "Camera " + std::to_string(c.Index) + ": " + c.Name;
 			if (ImGui::Selectable(name.c_str(), !campath && target == c.Id))
 			{
 				campath = false;
@@ -6514,26 +6516,47 @@ static void DrawCameraClipsPanel()
 	if (!mapping)
 		ImGui::TextDisabled("Demo tick mapping is unavailable.");
 }
+static void DrawSharedCollisionOptions()
+{
+	auto collision = MirvCameraCollisionGet();
+	if (ImGui::Checkbox("Ignore local player", &collision.IgnoreLocal))
+		Afx_ExecClientCmd(collision.IgnoreLocal ? "mirv_cam collision ignoreLocal 1"
+												: "mirv_cam collision ignoreLocal 0");
+	if (ImGui::Checkbox("Collide with other players", &collision.Players))
+		Afx_ExecClientCmd(collision.Players ? "mirv_cam collision players 1"
+											: "mirv_cam collision players 0");
+	if (ImGui::Checkbox("Slide along obstacles", &collision.Slide))
+		Afx_ExecClientCmd(collision.Slide ? "mirv_cam collision response slide"
+										  : "mirv_cam collision response stop");
+	if (ImGui::InputDouble("Camera clearance (units)", &collision.Radius, 0, 0, "%.2f",
+						   ImGuiInputTextFlags_EnterReturnsTrue))
+	{
+		char command[128];
+		std::snprintf(command, sizeof(command), "mirv_cam collision radius %.9g", collision.Radius);
+		Afx_ExecClientCmd(command);
+	}
+	if (ImGui::InputDouble("Collision return half-life (s)", &collision.ReturnHalfLife, 0, 0, "%.3f",
+						   ImGuiInputTextFlags_EnterReturnsTrue))
+	{
+		char command[128];
+		std::snprintf(command, sizeof(command), "mirv_cam collision returnHalfLife %.9g",
+					  collision.ReturnHalfLife);
+		Afx_ExecClientCmd(command);
+	}
+	if (ImGui::InputDouble("Maximum return speed (units/s)", &collision.ReturnSpeed, 0, 0, "%.1f",
+						   ImGuiInputTextFlags_EnterReturnsTrue))
+	{
+		char command[128];
+		std::snprintf(command, sizeof(command), "mirv_cam collision returnSpeed %.9g", collision.ReturnSpeed);
+		Afx_ExecClientCmd(command);
+	}
+}
 static void DrawCamerasTab()
 {
 	g_CamerasTabActive = ImGui::BeginTabItem("Cameras", nullptr, g_FocusCameras ? ImGuiTabItemFlags_SetSelected : 0);
 	if (!g_CamerasTabActive)
 		return;
 	g_FocusCameras = false;
-	if (ImGui::CollapsingHeader("Project and export"))
-	{
-		DrawCinematicFileButtons();
-		DrawCinematicBakeControls("sequence");
-		for (const auto &c : MirvCam_Cameras())
-			if (c.Selected)
-			{
-				DrawCinematicBakeControls(std::to_string(c.Id));
-				break;
-			}
-	}
-	ImGui::Separator();
-	static std::uint64_t removeId = 0;
-	static std::string removeName;
 	if (ImGui::Button("Add camera") && MirvCam_SelectedCameraAction("add"))
 	{
 		MirvCam_SetRigNavigation(true);
@@ -6541,37 +6564,128 @@ static void DrawCamerasTab()
 	}
 
 	auto cameras = MirvCam_Cameras(true);
+	static std::vector<std::uint64_t> selectedIds;
+	static std::uint64_t observed = ~std::uint64_t(0), rangeAnchor = ~std::uint64_t(0);
 	std::uint64_t selected = ~std::uint64_t(0);
 	for (const auto &camera : cameras)
 		if (camera.Selected)
 			selected = camera.Id;
+	selectedIds.erase(std::remove_if(selectedIds.begin(), selectedIds.end(),
+									 [&](auto id)
+									 {
+										 return std::none_of(cameras.begin(), cameras.end(),
+															 [&](const auto &c) { return c.Id == id; });
+									 }),
+					  selectedIds.end());
+	if (selected != observed)
+	{
+		if (std::find(selectedIds.begin(), selectedIds.end(), selected) == selectedIds.end())
+		{
+			selectedIds.clear();
+			if (selected != ~std::uint64_t(0))
+				selectedIds.push_back(selected);
+		}
+		observed = selected;
+	}
 	if (cameras.empty())
 		ImGui::TextDisabled("No cameras yet. Add one here, or use mirv_cam attach in live playback.");
 	if (ImGui::BeginChild("##camera_list", ImVec2(0, 120), true))
 	{
 		for (const auto &camera : cameras)
 		{
-			const auto id = std::to_string(camera.Id);
-			ImGui::PushID(id.c_str());
-			std::string label = id + ": " + camera.Name + (camera.Attached ? " [attached]" : " [stationary]");
-			if (camera.Viewed)
-				label += " [viewing]";
-			if (!camera.Available)
-				label += " [unavailable]";
-			if (ImGui::Selectable(label.c_str(), camera.Id == selected))
+			ImGui::PushID(std::to_string(camera.Id).c_str());
+			const auto label = std::to_string(camera.Index) + ": " + camera.Name +
+							   (camera.Attached ? " [attached]" : " [stationary]") +
+							   (camera.Viewed ? " [viewing]" : "") +
+							   (!camera.Available ? " [unavailable]" : "");
+			const bool picked =
+				std::find(selectedIds.begin(), selectedIds.end(), camera.Id) != selectedIds.end();
+			if (ImGui::Selectable(label.c_str(), picked))
 			{
-				if (camera.Id == selected)
+				if (ImGui::GetIO().KeyShift && rangeAnchor != ~std::uint64_t(0))
+				{
+					if (!ImGui::GetIO().KeyCtrl)
+						selectedIds.clear();
+					auto anchor = std::find_if(cameras.begin(), cameras.end(),
+											   [&](const auto &c) { return c.Id == rangeAnchor; });
+					const size_t start = anchor == cameras.end() ? camera.Index : anchor->Index;
+					for (const auto &c : cameras)
+						if (c.Index >= (std::min)(start, camera.Index) &&
+							c.Index <= (std::max)(start, camera.Index) &&
+							std::find(selectedIds.begin(), selectedIds.end(), c.Id) == selectedIds.end())
+							selectedIds.push_back(c.Id);
+				}
+				else if (ImGui::GetIO().KeyCtrl)
+				{
+					if (picked)
+						selectedIds.erase(std::remove(selectedIds.begin(), selectedIds.end(), camera.Id),
+										  selectedIds.end());
+					else
+						selectedIds.push_back(camera.Id);
+					rangeAnchor = camera.Id;
+				}
+				else
+				{
+					const bool deselect = picked && selectedIds.size() == 1;
+					selectedIds.clear();
+					if (!deselect)
+						selectedIds.push_back(camera.Id);
+					rangeAnchor = camera.Id;
+				}
+				if (selectedIds.empty())
 				{
 					MirvCam_ClearCameraSelection();
 					selected = ~std::uint64_t(0);
 				}
-				else if (MirvCam_SelectCamera(camera.Id))
-					selected = camera.Id;
+				else
+				{
+					selected =
+						std::find(selectedIds.begin(), selectedIds.end(), camera.Id) != selectedIds.end()
+							? camera.Id
+							: selectedIds.back();
+					MirvCam_SelectCamera(selected);
+				}
+				observed = selected;
 			}
 			ImGui::PopID();
 		}
 	}
 	ImGui::EndChild();
+	if (ImGui::Button("Select all cameras"))
+	{
+		selectedIds.clear();
+		for (const auto &c : cameras)
+			selectedIds.push_back(c.Id);
+		if (!selectedIds.empty())
+		{
+			selected = selectedIds.front();
+			observed = selected;
+			MirvCam_SelectCamera(selected);
+		}
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Deselect cameras"))
+	{
+		selectedIds.clear();
+		selected = observed = ~std::uint64_t(0);
+		MirvCam_ClearCameraSelection();
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("%zu selected", selectedIds.size());
+	auto editSelected = [&](const std::function<bool(std::uint64_t)> &edit)
+	{ return MirvCam_EditCameras(selectedIds, edit); };
+	if (!selectedIds.empty())
+	{
+		if (ImGui::Button(selectedIds.size() > 1 ? "Remove selected cameras" : "Remove camera"))
+		{
+			g_DocumentStatus = editSelected([](auto id) { return MirvCam_CameraAction("remove", id); })
+								   ? "Cameras removed. Undo restores them."
+								   : "Could not remove cameras.";
+			selectedIds.clear();
+			selected = observed = ~std::uint64_t(0);
+			MirvCam_ClearCameraSelection();
+		}
+	}
 	if (MirvCam_RigPreviewActive())
 	{
 		if (ImGui::Button("Stop preview"))
@@ -6581,6 +6695,30 @@ static void DrawCamerasTab()
 		std::find_if(cameras.begin(), cameras.end(), [&](const auto &camera) { return camera.Id == selected; });
 	if (found != cameras.end())
 	{
+		ImGui::BeginDisabled(selectedIds.size() != 1);
+		static std::uint64_t nameId = ~std::uint64_t(0);
+		static std::string previousName;
+		static char name[129]{};
+		if (nameId != selected || previousName != found->Name)
+		{
+			nameId = selected;
+			previousName = found->Name;
+			snprintf(name, sizeof(name), "%s", found->Name.c_str());
+		}
+		bool rename =
+			ImGui::InputText("Camera name", name, sizeof(name), ImGuiInputTextFlags_EnterReturnsTrue);
+		ImGui::SameLine();
+		rename = ImGui::Button("Rename camera") || rename;
+		if (rename)
+			g_DocumentStatus = MirvCam_RenameCamera(selected, name)
+								   ? "Camera renamed."
+								   : "Use a unique, nonnumeric camera name (1..128 bytes).";
+
+		ImGui::EndDisabled();
+		if (selectedIds.size() > 1)
+			ImGui::TextWrapped(
+				"Changes apply to all selected cameras. Unchanged fields keep each camera's values. "
+				"Recapture applies the full current view to every selected camera.");
 		if (ImGui::Button(MirvCam_SequenceEnabled() ? "Preview sequence" : "Preview camera"))
 		{
 			if (MirvCam_SequenceEnabled())
@@ -6599,7 +6737,7 @@ static void DrawCamerasTab()
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Recapture camera"))
-			g_DocumentStatus = MirvCam_CameraAction("capture", selected)
+			g_DocumentStatus = editSelected([](auto id) { return MirvCam_CameraAction("capture", id); })
 								   ? "Camera recaptured."
 								   : "Camera could not be recaptured; its target is unavailable.";
 
@@ -6607,6 +6745,7 @@ static void DrawCamerasTab()
 		{
 			static std::uint64_t poseId = ~std::uint64_t(0);
 			static double position[3]{}, angles[3]{}, fov = 90;
+			static double basePosition[3]{}, baseAngles[3]{}, baseFov = 90;
 			static bool poseDirty = false;
 			auto readPose = [&]()
 			{
@@ -6618,6 +6757,9 @@ static void DrawCamerasTab()
 				angles[1] = rotation.Yaw;
 				angles[2] = rotation.Roll;
 				fov = found->Pose.Fov;
+				std::copy(position, position + 3, basePosition);
+				std::copy(angles, angles + 3, baseAngles);
+				baseFov = fov;
 				poseDirty = false;
 			};
 			if (poseId != selected || (!poseDirty && !ImGui::IsAnyItemActive()))
@@ -6637,7 +6779,45 @@ static void DrawCamerasTab()
 				pose.Fov = fov;
 				const bool valid = pose.Valid() && std::all_of(std::begin(angles), std::end(angles),
 															   [](double a) { return std::isfinite(a); });
-				const bool applied = valid && MirvCam_EditCamera(selected, pose);
+				const bool applied =
+					valid &&
+					editSelected(
+						[&](auto id)
+						{
+							if (selectedIds.size() == 1)
+								return MirvCam_EditCamera(id, pose);
+							auto camera = std::find_if(cameras.begin(), cameras.end(),
+													   [&](const auto &c) { return c.Id == id; });
+							if (camera == cameras.end())
+								return false;
+							auto updated = camera->Pose;
+							const auto euler = updated.Rotation.ToQREulerAngles().ToQEulerAngles();
+							double updatedAngles[3] = {euler.Pitch, euler.Yaw, euler.Roll};
+							bool changed = false, rotationChanged = false;
+							for (int axis = 0; axis < 3; ++axis)
+							{
+								if (position[axis] != basePosition[axis])
+								{
+									updated.Position[axis] = position[axis];
+									changed = true;
+								}
+								if (angles[axis] != baseAngles[axis])
+								{
+									updatedAngles[axis] = angles[axis];
+									changed = rotationChanged = true;
+								}
+							}
+							if (fov != baseFov)
+							{
+								updated.Fov = fov;
+								changed = true;
+							}
+							if (rotationChanged)
+								updated.Rotation =
+									Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(
+										QEulerAngles(updatedAngles[0], updatedAngles[1], updatedAngles[2])));
+							return !changed || MirvCam_EditCamera(id, updated);
+						});
 				g_DocumentStatus = applied ? "Camera pose updated."
 								   : valid ? "Camera target unavailable; pose retained."
 										   : "Use finite pose values and a FOV between 1 and 179 degrees.";
@@ -6679,8 +6859,24 @@ static void DrawCamerasTab()
 			ImGui::BeginDisabled(SceneCachePreviewActive());
 			if (ImGui::Button("Apply attachment"))
 				g_DocumentStatus =
-					MirvCam_EditAttachment(selected, entity, bone, mode)
-						? "Camera attachment updated; framing preserved."
+					editSelected(
+						[&](auto id)
+						{
+							auto camera = std::find_if(cameras.begin(), cameras.end(),
+													   [&](const auto &c) { return c.Id == id; });
+							if (camera == cameras.end())
+								return false;
+							const auto initialBone =
+								found->BoneName.empty() ? std::to_string(found->BoneIndex) : found->BoneName;
+							const auto cameraBone = camera->BoneName.empty()
+														? std::to_string(camera->BoneIndex)
+														: camera->BoneName;
+							return MirvCam_EditAttachment(
+								id, entity != found->EntityAddress ? entity : camera->EntityAddress,
+								bone != initialBone ? bone : cameraBone.c_str(),
+								mode != found->AttachMode ? mode : camera->AttachMode);
+						})
+						? "Camera attachment updated; relative framing preserved."
 						: "Attachment unavailable. Check the entity and bone in live playback.";
 			ImGui::EndDisabled();
 			ImGui::TextWrapped("Bone accepts -1, an index, or a name. Apply changes this camera without "
@@ -6711,7 +6907,25 @@ static void DrawCamerasTab()
 			motionDirty |= ImGui::InputDouble("Orbit speed (deg/s)", &motion.OrbitSpeed, 0, 0, "%.3f");
 			if (ImGui::Button("Apply camera motion"))
 			{
-				const bool applied = MirvCam_EditMotion(selected, motion);
+				const bool applied = editSelected(
+					[&](auto id)
+					{
+						auto camera = std::find_if(cameras.begin(), cameras.end(),
+												   [&](const auto &c) { return c.Id == id; });
+						if (camera == cameras.end())
+							return false;
+						auto updated = camera->Motion;
+						for (auto field :
+							 {&advancedfx::CameraMotion::FollowHalfLife,
+							  &advancedfx::CameraMotion::BoneHalfLife,
+							  &advancedfx::CameraMotion::RotationHalfLife,
+							  &advancedfx::CameraMotion::TurnRate, &advancedfx::CameraMotion::MaxDistance,
+							  &advancedfx::CameraMotion::TeleportDistance,
+							  &advancedfx::CameraMotion::OrbitSpeed})
+							if (motion.*field != found->Motion.*field)
+								updated.*field = motion.*field;
+						return MirvCam_EditMotion(id, updated);
+					});
 				g_DocumentStatus =
 					applied
 						? "Camera motion updated."
@@ -6723,7 +6937,7 @@ static void DrawCamerasTab()
 			if (ImGui::Button("Reset camera motion"))
 			{
 				motion = {};
-				motionDirty = !MirvCam_EditMotion(selected, motion);
+				motionDirty = !editSelected([&](auto id) { return MirvCam_EditMotion(id, motion); });
 				g_DocumentStatus = motionDirty ? "Could not reset camera motion." : "Camera motion reset.";
 			}
 			ImGui::EndDisabled();
@@ -6738,8 +6952,14 @@ static void DrawCamerasTab()
 		{
 			auto aimCommand = [&](const char *option, const std::string &value)
 			{
-				const std::string command = "mirv_aim camera " + std::to_string(selected) + " " + option + " " + value;
-				Afx_ExecClientCmd(command.c_str());
+				editSelected(
+					[&](auto id)
+					{
+						const std::string command =
+							"mirv_aim camera @" + std::to_string(id) + " " + option + " " + value;
+						Afx_ExecClientCmd(command.c_str());
+						return true;
+					});
 			};
 			auto triple = [](const std::array<double, 3> &values)
 			{
@@ -6781,55 +7001,6 @@ static void DrawCamerasTab()
 			ImGui::TextWrapped("Press Enter to save target fields. A world point replaces entity tracking. Active "
 							   "aiming overrides the saved angles, keeping the camera's position.");
 		}
-		if (ImGui::CollapsingHeader("Camera settings"))
-		{
-			static std::uint64_t nameId = ~std::uint64_t(0);
-			static std::string previousName;
-			static char name[129]{};
-			if (nameId != selected || previousName != found->Name)
-			{
-				nameId = selected;
-				previousName = found->Name;
-				snprintf(name, sizeof(name), "%s", found->Name.c_str());
-			}
-			bool rename =
-				ImGui::InputText("Camera name", name, sizeof(name), ImGuiInputTextFlags_EnterReturnsTrue);
-			ImGui::SameLine();
-			rename = ImGui::Button("Rename camera") || rename;
-			if (rename)
-				g_DocumentStatus = MirvCam_RenameCamera(selected, name)
-									   ? "Camera renamed."
-									   : "Use a unique, nonnumeric camera name (1..128 bytes).";
-			if (found->Attached)
-				ImGui::Text("Attached to entity %d (%s).", found->EntityAddress,
-							found->AttachMode == 3	 ? "world"
-							: found->AttachMode == 2 ? "aligned"
-							: found->AttachMode == 1 ? "entity"
-													 : "bone");
-			ImGui::TextDisabled(
-				"Edit moves the free camera to the saved pose. Recapture saves your framing.");
-			if (ImGui::Button("Remove camera"))
-			{
-				removeId = selected;
-				removeName = found->Name;
-				ImGui::OpenPopup("Remove saved camera?");
-			}
-		}
-	}
-	if (ImGui::BeginPopupModal("Remove saved camera?", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-	{
-		ImGui::Text("Remove camera %llu: %s?", static_cast<unsigned long long>(removeId), removeName.c_str());
-		ImGui::TextDisabled("Removal can be undone. Clips referencing this camera will be unavailable.");
-		if (ImGui::Button("Confirm removal"))
-		{
-			g_DocumentStatus =
-				MirvCam_CameraAction("remove", removeId) ? "Camera removed." : "That camera no longer exists.";
-			ImGui::CloseCurrentPopup();
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Cancel removal"))
-			ImGui::CloseCurrentPopup();
-		ImGui::EndPopup();
 	}
 	if (ImGui::CollapsingHeader("Transitions"))
 	{
@@ -6851,7 +7022,7 @@ static void DrawCamerasTab()
 				destination = ~std::uint64_t(0);
 			for (const auto &c : cameras)
 			{
-				const auto label = std::to_string(c.Id) + ": " + c.Name;
+				const auto label = std::to_string(c.Index) + ": " + c.Name;
 				if (ImGui::Selectable(label.c_str(), c.Id == destination))
 					destination = c.Id;
 			}
@@ -6865,12 +7036,41 @@ static void DrawCamerasTab()
 		{
 			char command[160];
 			const auto reference =
-				destinationIsCampath ? std::string("campath") : std::to_string(destination);
+				destinationIsCampath ? std::string("campath") : "@" + std::to_string(destination);
 			std::snprintf(command, sizeof(command), "mirv_cam transition %s %.9g", reference.c_str(),
 						  transitionSeconds);
 			Afx_ExecClientCmd(command);
 		}
 		ImGui::EndDisabled();
+	}
+	if (ImGui::CollapsingHeader("Attached camera collision"))
+	{
+		auto collision = MirvCameraCollisionGet();
+
+		DrawSharedCollisionOptions();
+		if (ImGui::Checkbox("Enable attached collision", &collision.Attached))
+			Afx_ExecClientCmd(collision.Attached ? "mirv_cam collision attached 1"
+												 : "mirv_cam collision attached 0");
+		if (ImGui::InputDouble("Attached collision soft zone (units)", &collision.AttachedSoftDistance, 0, 0,
+							   "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
+		{
+			char command[128];
+			std::snprintf(command, sizeof(command), "mirv_cam collision attachedSoftDistance %.9g",
+						  collision.AttachedSoftDistance);
+			Afx_ExecClientCmd(command);
+		}
+		auto follow = collision;
+		if (ImGui::InputDouble("Blocked recovery cut delay (s)", &follow.FollowRecoveryDelay, 0, 0, "%.2f",
+							   ImGuiInputTextFlags_EnterReturnsTrue))
+		{
+			char command[128];
+			std::snprintf(command, sizeof(command), "mirv_cam attach follow recoveryDelay %.9g",
+						  follow.FollowRecoveryDelay);
+			Afx_ExecClientCmd(command);
+		}
+		ImGui::TextWrapped("Applies to attached cameras during live playback. Cached preview uses recorded "
+						   "motion without live collision traces. Clearance and obstacle settings are shared "
+						   "with freecam and campath collision.");
 	}
 	if (ImGui::CollapsingHeader("Display"))
 	{
@@ -6880,8 +7080,9 @@ static void DrawCamerasTab()
 		ImGui::TextDisabled(
 			"Selected: gold. Other cameras: purple. Unavailable: gray. Hidden during HLAE recording.");
 	}
-	ImGui::TextDisabled("Click selects a camera; click it again to deselect. During preview, selection "
-						"switches the view. Tab switches Cameras/Keys.");
+	ImGui::TextDisabled(
+		"Ctrl-click selects multiple cameras; Shift-click selects a range. During preview, selection "
+		"switches the view. Tab switches Cameras/Keys.");
 	ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
 	ImGui::EndTabItem();
 }
@@ -7077,29 +7278,33 @@ void Draw()
 									: "Preview: cameras");
 			if(ImGui::Button("Manage cameras"))g_FocusCameras=true;
 
-			float labelHeight = g_CampathDrawer.GetDrawKeyframeIndex();
-			if (ImGui::SliderFloat("Key label size", &labelHeight, 0, 100, "%.0f",
-								   ImGuiSliderFlags_AlwaysClamp))
-				g_CampathDrawer.SetDrawKeyframeIndex(labelHeight);
-			bool names = g_CampathDrawer.GetDrawNames(), holds = g_CampathDrawer.GetDrawHolds(),
-				 durations = g_CampathDrawer.GetDrawDurations();
-			if (ImGui::Checkbox("Path names", &names))
+			if (ImGui::CollapsingHeader("Path display"))
 			{
-				g_CampathDrawer.SetDrawNames(names);
-				ImGui::MarkIniSettingsDirty();
+				float labelHeight = g_CampathDrawer.GetDrawKeyframeIndex();
+				if (ImGui::SliderFloat("Key label size", &labelHeight, 0, 100, "%.0f",
+									   ImGuiSliderFlags_AlwaysClamp))
+					g_CampathDrawer.SetDrawKeyframeIndex(labelHeight);
+				bool names = g_CampathDrawer.GetDrawNames(), holds = g_CampathDrawer.GetDrawHolds(),
+					 durations = g_CampathDrawer.GetDrawDurations();
+				if (ImGui::Checkbox("Path names", &names))
+				{
+					g_CampathDrawer.SetDrawNames(names);
+					ImGui::MarkIniSettingsDirty();
+				}
+				ImGui::SameLine();
+				if (ImGui::Checkbox("Hold labels", &holds))
+				{
+					g_CampathDrawer.SetDrawHolds(holds);
+					ImGui::MarkIniSettingsDirty();
+				}
+				ImGui::SameLine();
+				if (ImGui::Checkbox("Segment durations", &durations))
+				{
+					g_CampathDrawer.SetDrawDurations(durations);
+					ImGui::MarkIniSettingsDirty();
+				}
 			}
-			ImGui::SameLine();
-			if (ImGui::Checkbox("Hold labels", &holds))
-			{
-				g_CampathDrawer.SetDrawHolds(holds);
-				ImGui::MarkIniSettingsDirty();
-			}
-			ImGui::SameLine();
-			if (ImGui::Checkbox("Segment durations", &durations))
-			{
-				g_CampathDrawer.SetDrawDurations(durations);
-				ImGui::MarkIniSettingsDirty();
-			}
+
 			// Info
 			size_t cpCount = g_Hook_VClient_RenderView.m_CamPath.GetSize();
 			if (cpCount > 0)
@@ -7169,90 +7374,11 @@ void Draw()
 					Afx_ExecClientCmd(collision.Free ? "mirv_cam collision free 1" : "mirv_cam collision free 0");
 				if (ImGui::Checkbox("Campath collision", &collision.Campath))
 					Afx_ExecClientCmd(collision.Campath ? "mirv_cam collision campath 1" : "mirv_cam collision campath 0");
-				if (ImGui::Checkbox("Attached camera collision", &collision.Attached))
-					Afx_ExecClientCmd(collision.Attached ? "mirv_cam collision attached 1" : "mirv_cam collision attached 0");
-				if (ImGui::Checkbox("Ignore local player", &collision.IgnoreLocal))
-					Afx_ExecClientCmd(collision.IgnoreLocal ? "mirv_cam collision ignoreLocal 1" : "mirv_cam collision ignoreLocal 0");
-				if (ImGui::Checkbox("Collide with other players", &collision.Players))
-					Afx_ExecClientCmd(collision.Players ? "mirv_cam collision players 1" : "mirv_cam collision players 0");
-				if (ImGui::Checkbox("Slide along obstacles", &collision.Slide))
-					Afx_ExecClientCmd(collision.Slide ? "mirv_cam collision response slide" : "mirv_cam collision response stop");
-				if (ImGui::InputDouble("Camera clearance (units)", &collision.Radius, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam collision radius %.9g", collision.Radius);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Collision return half-life (s)", &collision.ReturnHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];std::snprintf(command,sizeof(command),"mirv_cam collision returnHalfLife %.9g",collision.ReturnHalfLife);Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Maximum return speed (units/s)", &collision.ReturnSpeed, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];std::snprintf(command,sizeof(command),"mirv_cam collision returnSpeed %.9g",collision.ReturnSpeed);Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Attached collision soft zone (units)", &collision.AttachedSoftDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam collision attachedSoftDistance %.9g", collision.AttachedSoftDistance);
-					Afx_ExecClientCmd(command);
-				}
+				DrawSharedCollisionOptions();
 				ImGui::TextDisabled("Campaths return gradually after blocking. Speed 0 removes the cap; half-life 0 removes damping.");
 				if (ImGui::Button("Reset collision history"))
 					Afx_ExecClientCmd("mirv_cam collision reset");
 				ImGui::TextWrapped("TF2/TF2C only; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
-			}
-			if (ImGui::CollapsingHeader("Attached camera follow"))
-			{
-				auto follow = MirvCameraCollisionGet();
-				if (ImGui::InputDouble("Follow root half-life (s)", &follow.FollowHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];std::snprintf(command,sizeof(command),"mirv_cam attach follow %.9g",follow.FollowHalfLife);Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Orbit half-life (s)", &follow.OrbitHalfLife, 0, 0,
-				                      "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam attach follow orbitHalfLife %.9g",
-					              follow.OrbitHalfLife);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Maximum orbit turn rate (deg/s)", &follow.OrbitSpeed, 0, 0,
-				                      "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam attach follow orbitSpeed %.9g",
-					              follow.OrbitSpeed);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Blocked recovery cut delay (s)", &follow.FollowRecoveryDelay, 0, 0,
-				                      "%.2f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam attach follow recoveryDelay %.9g",
-					              follow.FollowRecoveryDelay);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Bone position half-life (s)", &follow.BoneHalfLife, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam attach follow boneHalfLife %.9g", follow.BoneHalfLife);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Subject teleport reset (units)", &follow.FollowTeleportDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];
-					std::snprintf(command, sizeof(command), "mirv_cam attach follow teleportDistance %.9g", follow.FollowTeleportDistance);
-					Afx_ExecClientCmd(command);
-				}
-				if (ImGui::InputDouble("Maximum entity lag (units)", &follow.FollowMaxDistance, 0, 0, "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-				{
-					char command[128];std::snprintf(command,sizeof(command),"mirv_cam attach follow maxDistance %.9g",follow.FollowMaxDistance);Afx_ExecClientCmd(command);
-				}
-				if (ImGui::Button("Reset attached follow"))
-					Afx_ExecClientCmd("mirv_cam attach follow reset");
-				ImGui::TextWrapped("Follow coordinates a filtered focus, orbit and framing. Root half-life 0 restores rigid attachment; otherwise orbit half-life smooths sharp turns and composition changes. Orbit speed 0 removes the turn cap. Bone damping separately smooths animation translation. World mode retains its heading; mirv_aim retains control of its target. Teleport reset responds to large subject jumps. With follow enabled, blocked recovery cuts to a verified clear subject-side pose after the configured demo time (default 1 s); 0 disables cuts. Physical overlaps still require immediate correction.");
-				ImGui::TextDisabled("Blocked recovery requires attached camera collision.");
 			}
 
 			if (ImGui::CollapsingHeader("Demo fixes"))
@@ -7312,120 +7438,6 @@ void Draw()
 			auto &path = g_Hook_VClient_RenderView.m_CamPath;
 			DrawInterpolationSettings(path);
 			ImGui::Separator();
-			if (ImGui::Button("Open path"))
-			{
-				g_OpenAll = false;
-				s_campathOpenDialog.SetTitle("Open path");
-				s_campathOpenDialog.Open();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Open collection"))
-			{
-				g_OpenAll = true;
-				s_campathOpenDialog.SetTitle("Open collection");
-				s_campathOpenDialog.Open();
-			}
-			if (ImGui::Button("Choose path folder..."))
-			{
-				s_campathFolderDialog.SetTitle("Choose path save folder");
-				s_campathFolderDialog.SetDirectory(s_campathSaveDialog.GetDirectory());
-				s_campathFolderDialog.Open();
-			}
-			ImGui::TextWrapped("Path save folder: %s", s_campathSaveDialog.GetDirectory().u8string().c_str());
-			ImGui::TextDisabled("Save as chooses a new file; Save updates the current file.");
-			s_campathFolderDialog.Display();
-			if (s_campathFolderDialog.HasSelected())
-			{
-				auto folder = s_campathFolderDialog.GetSelected();
-				if (s_campathSaveDialog.SetDirectory(folder))
-				{
-					s_campathOpenDialog.SetDirectory(folder);
-					g_OverlayPaths.campathDir = folder.string();
-					ImGui::MarkIniSettingsDirty();
-				}
-				s_campathFolderDialog.ClearSelected();
-			}
-			if (ImGui::Button("Save path"))
-			{
-				const auto &file = g_Hook_VClient_RenderView.m_CamPaths.GetFileName();
-				if (file.empty())
-				{
-					g_SaveAll = false;
-					g_ExportClassic = false;
-					s_campathSaveDialog.Open();
-				}
-				else
-					SaveDocument(file.c_str(), false);
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Save path as"))
-			{
-				g_SaveAll = false;
-				g_ExportClassic = false;
-				s_campathSaveDialog.SetTitle("Save path as");
-				s_campathSaveDialog.Open();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Save all"))
-			{
-				const auto &file = g_Hook_VClient_RenderView.m_CamPaths.GetCollectionFileName();
-				if (file.empty())
-				{
-					g_SaveAll = true;
-					g_ExportClassic = false;
-					s_campathSaveDialog.SetTitle("Save collection");
-					s_campathSaveDialog.Open();
-				}
-				else
-					SaveDocument(file.c_str(), true);
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Save all as"))
-			{
-				g_SaveAll = true;
-				g_ExportClassic = false;
-				s_campathSaveDialog.SetTitle("Save collection as");
-				s_campathSaveDialog.Open();
-			}
-			if (ImGui::Button("Export classic XML"))
-			{
-				g_ExportClassic = true;
-				s_campathSaveDialog.SetInputName("campath-classic.xml");
-				s_campathSaveDialog.SetTitle("Export classic sampled path");
-				s_campathSaveDialog.Open();
-			}
-			ImGui::SameLine();
-			ImGui::SetNextItemWidth(100);
-			ImGui::InputDouble("Sample FPS", &g_ExportFps, 0, 0, "%.0f");
-			g_ExportFps = std::isfinite(g_ExportFps) ? std::clamp(g_ExportFps, 1.0, 1000.0) : 120;
-			s_campathOpenDialog.Display();
-			s_campathSaveDialog.Display();
-			if (s_campathOpenDialog.HasSelected())
-			{
-				LoadDocument(s_campathOpenDialog.GetSelected().wstring().c_str(), g_OpenAll);
-				g_OverlayPaths.campathDir = s_campathOpenDialog.GetSelected().parent_path().string();
-				s_campathSaveDialog.SetDirectory(s_campathOpenDialog.GetSelected().parent_path());
-				ImGui::MarkIniSettingsDirty();
-				s_campathOpenDialog.ClearSelected();
-			}
-			if (s_campathSaveDialog.HasSelected())
-			{
-				auto file = s_campathSaveDialog.GetSelected();
-				if (!file.has_extension())
-					file += ".xml";
-				if (g_ExportClassic)
-					g_DocumentStatus =
-						path.ExportClassic(file.wstring().c_str(), 1 / g_ExportFps)
-							? "Exported sampled classic XML. Editing data and savepoint retained."
-							: "Classic export failed (unplayable path, excessive sample count or unwritable "
-							  "file).";
-				else
-					SaveDocument(file.wstring().c_str(), g_SaveAll);
-				g_OverlayPaths.campathDir = file.parent_path().string();
-				s_campathOpenDialog.SetDirectory(file.parent_path());
-				ImGui::MarkIniSettingsDirty();
-				s_campathSaveDialog.ClearSelected();
-			}
 
 			// Sequencer / Camera Control / Gizmo toggles
 			ImGui::Separator();
@@ -7444,6 +7456,142 @@ void Draw()
 		}
 
 		DrawCamerasTab();
+		if (ImGui::BeginTabItem("Project"))
+		{
+			DrawCinematicFileButtons();
+			ImGui::TextWrapped("Cinematic projects include paths, cameras, clips and command markers. "
+							   "Loading leaves playback and command execution disabled.");
+			if (ImGui::CollapsingHeader("Campath files"))
+			{
+				auto &path = g_Hook_VClient_RenderView.m_CamPath;
+				if (ImGui::Button("Open path"))
+				{
+					g_OpenAll = false;
+					s_campathOpenDialog.SetTitle("Open path");
+					s_campathOpenDialog.Open();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Open collection"))
+				{
+					g_OpenAll = true;
+					s_campathOpenDialog.SetTitle("Open collection");
+					s_campathOpenDialog.Open();
+				}
+				if (ImGui::Button("Choose path folder..."))
+				{
+					s_campathFolderDialog.SetTitle("Choose path save folder");
+					s_campathFolderDialog.SetDirectory(s_campathSaveDialog.GetDirectory());
+					s_campathFolderDialog.Open();
+				}
+				ImGui::TextWrapped("Path save folder: %s",
+								   s_campathSaveDialog.GetDirectory().u8string().c_str());
+				ImGui::TextDisabled("Save as chooses a new file; Save updates the current file.");
+				s_campathFolderDialog.Display();
+				if (s_campathFolderDialog.HasSelected())
+				{
+					auto folder = s_campathFolderDialog.GetSelected();
+					if (s_campathSaveDialog.SetDirectory(folder))
+					{
+						s_campathOpenDialog.SetDirectory(folder);
+						g_OverlayPaths.campathDir = folder.string();
+						ImGui::MarkIniSettingsDirty();
+					}
+					s_campathFolderDialog.ClearSelected();
+				}
+				if (ImGui::Button("Save path"))
+				{
+					const auto &file = g_Hook_VClient_RenderView.m_CamPaths.GetFileName();
+					if (file.empty())
+					{
+						g_SaveAll = false;
+						g_ExportClassic = false;
+						s_campathSaveDialog.Open();
+					}
+					else
+						SaveDocument(file.c_str(), false);
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Save path as"))
+				{
+					g_SaveAll = false;
+					g_ExportClassic = false;
+					s_campathSaveDialog.SetTitle("Save path as");
+					s_campathSaveDialog.Open();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Save all"))
+				{
+					const auto &file = g_Hook_VClient_RenderView.m_CamPaths.GetCollectionFileName();
+					if (file.empty())
+					{
+						g_SaveAll = true;
+						g_ExportClassic = false;
+						s_campathSaveDialog.SetTitle("Save collection");
+						s_campathSaveDialog.Open();
+					}
+					else
+						SaveDocument(file.c_str(), true);
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Save all as"))
+				{
+					g_SaveAll = true;
+					g_ExportClassic = false;
+					s_campathSaveDialog.SetTitle("Save collection as");
+					s_campathSaveDialog.Open();
+				}
+				if (ImGui::Button("Export classic XML"))
+				{
+					g_ExportClassic = true;
+					s_campathSaveDialog.SetInputName("campath-classic.xml");
+					s_campathSaveDialog.SetTitle("Export classic sampled path");
+					s_campathSaveDialog.Open();
+				}
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(100);
+				ImGui::InputDouble("Sample FPS", &g_ExportFps, 0, 0, "%.0f");
+				g_ExportFps = std::isfinite(g_ExportFps) ? std::clamp(g_ExportFps, 1.0, 1000.0) : 120;
+				s_campathOpenDialog.Display();
+				s_campathSaveDialog.Display();
+				if (s_campathOpenDialog.HasSelected())
+				{
+					LoadDocument(s_campathOpenDialog.GetSelected().wstring().c_str(), g_OpenAll);
+					g_OverlayPaths.campathDir = s_campathOpenDialog.GetSelected().parent_path().string();
+					s_campathSaveDialog.SetDirectory(s_campathOpenDialog.GetSelected().parent_path());
+					ImGui::MarkIniSettingsDirty();
+					s_campathOpenDialog.ClearSelected();
+				}
+				if (s_campathSaveDialog.HasSelected())
+				{
+					auto file = s_campathSaveDialog.GetSelected();
+					if (!file.has_extension())
+						file += ".xml";
+					if (g_ExportClassic)
+						g_DocumentStatus =
+							path.ExportClassic(file.wstring().c_str(), 1 / g_ExportFps)
+								? "Exported sampled classic XML. Editing data and savepoint retained."
+								: "Classic export failed (unplayable path, excessive sample count or "
+								  "unwritable "
+								  "file).";
+					else
+						SaveDocument(file.wstring().c_str(), g_SaveAll);
+					g_OverlayPaths.campathDir = file.parent_path().string();
+					s_campathOpenDialog.SetDirectory(file.parent_path());
+					ImGui::MarkIniSettingsDirty();
+					s_campathSaveDialog.ClearSelected();
+				}
+			}
+			if (ImGui::CollapsingHeader("Command track files"))
+				DrawCommandFiles();
+			DrawCinematicBakeControls("sequence");
+			for (const auto &camera : MirvCam_Cameras())
+				if (camera.Selected)
+				{
+					DrawCinematicBakeControls(std::to_string(camera.Id));
+					break;
+				}
+			ImGui::EndTabItem();
+		}
 
 		// Recording tab (Source 1 specific)
 		if (ImGui::BeginTabItem("Recording"))

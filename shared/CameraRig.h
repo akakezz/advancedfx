@@ -143,6 +143,7 @@ struct CameraRig
 struct CameraInfo
 {
 	std::uint64_t Id = 0;
+	size_t Index = 0;
 	std::string Name;
 	CameraPose Pose;
 	CameraMotion Motion;

@@ -2301,6 +2301,18 @@ public:
 		std::memcpy(result->m_Offset, m_Offset, sizeof(m_Offset));
 		return result;
 	}
+	IMirvVecAngCalc *RetargetCamera(int entity, int bone, int mode) const
+	{
+		auto result = new CMirvVecAngTf2EntityIndexCalc(nullptr, entity, bone, mode);
+		result->m_Captured = m_Captured;
+		if (m_Calibrated && (m_Mode == mode || m_Captured))
+		{
+			result->m_Calibrated = m_Calibrated;
+			std::memcpy(result->m_Fix, m_Fix, sizeof(m_Fix));
+		}
+		std::memcpy(result->m_Offset, m_Offset, sizeof(m_Offset));
+		return result;
+	}
 	void SaveCamera(std::ostream &out) const
 	{
 		out << m_BoneIndex << ' ' << m_Mode << ' ' << std::quoted(m_BoneName) << ' ' << m_Calibrated << ' '
@@ -11336,6 +11348,11 @@ static bool SceneCachedBoneFrame(const advancedfx::SceneCache::Entity &entity,
 }
 // End selected-player scene-pose prototype.
 
+IMirvVecAngCalc *Mirv_Tf2_RetargetCamera(IMirvVecAngCalc *calc, int entity, int bone, int mode)
+{
+	return calc ? static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->RetargetCamera(entity, bone, mode)
+				: nullptr;
+}
 bool Mirv_Tf2_CameraBone(IMirvVecAngCalc *calc, int &index, std::string &name)
 {
 	if (!calc)
