@@ -130,7 +130,8 @@ void CCampathDrawer::AutoPolyLineStart()
 void CCampathDrawer::AutoPolyLinePoint(Vector3 previous, Vector3 current, DWORD colorCurrent, Vector3 next)
 {
 	// make sure we have enough space:
-	if(c_VertexBufferVertexCount < m_VertexBufferVertexCount+2)
+	// BuildPolyLinePoint also writes the following pair of tangent attributes.
+	if (c_VertexBufferVertexCount < m_VertexBufferVertexCount + 4)
 		AutoPolyLineFlush();
 
 	bool isFirst = 0 == m_VertexBufferVertexCount;

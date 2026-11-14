@@ -2370,7 +2370,7 @@ intervals. Click a clip to select it. Open the **Camera clips** tab beside Comma
 1. Choose **New camera clip at playhead**.
 2. Set its exact demo tick, source camera or campath, and blend duration.
 3. Press **Save camera clip**.
-4. Enable **Preview camera sequence**, then play or scrub the demo/cache.
+4. Enable **Enable camera sequence**, then play or scrub the demo/cache.
 
 Zero blend makes a cut. A positive blend evaluates both the preceding and new
 source at the current time. Clip blending follows demo/cache time and is sampled
@@ -2390,18 +2390,20 @@ produces an unavailable source until restored or retargeted. Deleting the last
 clip or clearing the sequence stops sequence preview.
 
 `mirv_cam sequence 1` enables the configured sequence; `0` stops it at the current
-view. `mirv_cam sequence clear` clears the clips with undo support. Manual preview
-or transition commands take over from the sequence. Sequence clips are bound to
+view. `mirv_cam sequence clear` clears the clips with undo support. Manual preview or transition commands temporarily override the sequence view;
+exiting preview restores enabled sequence playback. Sequence clips are bound to
 their demo/session; clear them before authoring for a different demo. Cameras and
 clips can be saved in cinematic projects; ordinary campath files still contain paths only.
 
 Camera clips use bright start markers, blue blend regions and faint continuation
-spans. For cached transitions, enable Cached preview and Preview camera sequence;
+spans. For cached transitions, enable Cached preview and Enable camera sequence;
 there is no need to preview an individual camera or campath first.
 
-Exiting preview suspends sequence viewing. The preview toggle resumes the sequence
-on re-entry; explicitly disabling Sequence camera, or choosing a camera/keyframe
-preview or manual transition, leaves sequence viewing.
+Sequence playback is enabled independently of preview navigation. Camera/keyframe
+previews temporarily override the view without changing the enabled flag. Exiting
+preview returns to enabled playback. Freecam can also temporarily override it;
+leaving freecam returns to the sequence. Only the sequence enable switch (or
+clearing its clips/loading a project) disables playback.
 
 During sequence or independent-camera preview, cached scrubbing never enters the
 native keyframe preview controller. Campath endpoints only clamp the sampled
@@ -2454,3 +2456,21 @@ during blends. Instant cuts use keys one microsecond apart: classic campaths
 approximate a cut with a very short transition, rather than encoding an exact
 step. Export may require denser sampling for rapid motion. Ordinary path Save
 and Save all remain path-only; use Save cinematic project to retain the full shot.
+
+### Sequence playback and dense baked paths
+
+`mirv_cam sequence 1` enables automatic sequence playback. It exits the current
+preview/freecam view so playback starts immediately. Preview navigation and
+freecam editing can then be used temporarily without turning the sequence off.
+`mirv_cam sequence 0` disables it. Both the top-level **Enable sequence** checkbox
+and the Camera clips tab control the same enabled flag. Pause and cache scrubbing
+still control its evaluation clock.
+
+Clip creation does not require leaving freecam. **New camera clip at playhead**
+prepares a draft; select its source and press **Save camera clip**. Duplicate
+start times and blends crossing neighboring clips are rejected with an explanation
+inside the clip tab. New clips do not move the free camera.
+
+Dense classic bakes exposed an out-of-bounds write in trajectory polyline drawing:
+the helper writes four vertex slots while the caller reserved only two. The
+renderer now flushes with room for all four, including at batch boundaries.

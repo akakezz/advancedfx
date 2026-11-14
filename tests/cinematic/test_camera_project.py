@@ -60,6 +60,8 @@ int main(){
  assert(!MirvCam_Bake(bake.c_str(),attached.c_str(),0,1,.1));
  auto frame=std::make_shared<advancedfx::SceneCache::Frame>();advancedfx::SceneCache::Entity e;e.Identity=identity;e.Origin[0]=500;frame->Entities.push_back(e);cachedFrame=frame;
  const auto previous= g_CameraRigs.at(attached).LastWorld.Position[0];assert(MirvCam_Bake(bake.c_str(),attached.c_str(),0,1,.1));assert(g_CameraRigs.at(attached).LastWorld.Position[0]==previous&&!g_BakingCamera);
+ // Dense classic XML remains loadable independently of the drawing stress fixture.
+ CamPath dense;dense.PositionInterpMethod_set(CamPath::DI_LINEAR);dense.RotationInterpMethod_set(CamPath::QI_SLINEAR);dense.FovInterpMethod_set(CamPath::DI_LINEAR);auto denseState=dense.CaptureState();for(int i=0;i<=4096;++i)denseState.Keys.emplace(i*.01,CamPathValue(i*.01,5*std::sin(i*.02),0,0,0,0,90));dense.RestoreState(denseState);assert(dense.ExportClassic(bake.c_str(),.01));CamPath denseLoaded;assert(denseLoaded.Load(bake.c_str())&&denseLoaded.GetSize()>=4097&&std::abs(denseLoaded.Eval(20).X-20)<1e-6);
  // Unsupported custom aim serialization and malformed/truncated input are transactional.
  std::ifstream savedInput(std::filesystem::path(file),std::ios::binary);std::string originalBytes((std::istreambuf_iterator<char>(savedInput)),{});savedInput.close();
  auto custom=new IMirvVecAngCalc(5);g_CameraRigs.at(name).Aim->Source_set(custom);assert(!MirvCam_SaveProject(file.c_str()));std::ifstream unchanged(std::filesystem::path(file),std::ios::binary);std::string unchangedBytes((std::istreambuf_iterator<char>(unchanged)),{});assert(unchangedBytes==originalBytes);unchanged.close();assert(MirvCam_LoadProject(file.c_str()));

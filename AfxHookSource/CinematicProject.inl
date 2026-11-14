@@ -344,7 +344,7 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 			g_BakeFrame = BakeFrame;
 		}
 	} restore;
-	if (!g_SequenceResume)
+	if (!g_SequencePlaying)
 		g_SequenceSeed = RigCapture();
 	g_BakingCamera = true;
 	g_CameraEvaluationFrame = -1;

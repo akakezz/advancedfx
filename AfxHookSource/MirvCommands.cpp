@@ -1855,11 +1855,14 @@ static bool CampathPreview_Enter()
 
 static void CampathPreview_Exit()
 {
-	if (g_CampathPreviewActive)
+	const bool wasActive = g_CampathPreviewActive;
+	if (wasActive)
 		CampathPreview_SetCamera();
 	g_CampathPreviewActive = false;
 	CampathPreview_StopTravel();
 	g_CampathPreviewLastMs = 0;
+	if (wasActive && MirvCam_SequenceEnabled() && g_Hook_VClient_RenderView.m_MirvInput)
+		g_Hook_VClient_RenderView.m_MirvInput->SetCameraControlMode(false);
 	Tier0_Msg("Campath preview exited; free camera retained.\n");
 }
 
@@ -1877,8 +1880,6 @@ bool MirvCampathPreview_GetCamera(CamPathValue &value)
 }
 bool MirvCampathPreview_SetActive(bool active)
 {
-	if (active && MirvCam_ResumeSequencePreview())
-		return true;
 	if (active && MirvCam_RigNavigation()) return MirvCam_SetPreviewNavigation(true);
 	if (MirvCam_RigPreviewActive()) MirvCam_EndRigPreview();
 	if (active)
@@ -2099,9 +2100,6 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 				MirvCam_EndRigPreview();
 			else if (g_CampathPreviewActive)
 				CampathPreview_Exit();
-			else if (MirvCam_ResumeSequencePreview())
-			{
-			}
 			else if (MirvCam_RigNavigation())
 				MirvCam_SetPreviewNavigation(true);
 			else

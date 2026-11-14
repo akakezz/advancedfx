@@ -410,7 +410,7 @@ int g_CameraEvaluationFrame = -1;
 double g_CameraEvaluationStep = 0;
 std::vector<advancedfx::CameraClip> g_CameraClips;
 unsigned long long g_NextClipId = 0;
-bool g_SequenceResume = false;
+bool g_SequencePlaying = false;
 std::string g_SequenceDemo;
 int g_SequenceLevel = -1;
 advancedfx::CameraPose g_SequenceSeed;
@@ -1139,6 +1139,13 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 			EvaluateNamedRig(camera, background);
 		}
 	}
+	if (g_SequencePlaying && !g_RigPreview)
+	{
+		auto input = g_Hook_VClient_RenderView.m_MirvInput;
+		if (MirvCampathPreview_IsActive() || (input && input->GetCameraControlMode()))
+			return false;
+		g_CameraSource = CameraSource::Sequence;
+	}
 	if (g_CameraSource == CameraSource::Legacy)
 	{
 		g_RigUnavailable = false;
@@ -1308,7 +1315,7 @@ void MirvCam_ClearClips()
 bool MirvCam_SequenceEnabled()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
-	return g_CameraSource == CameraSource::Sequence && g_RigPreview;
+	return g_SequencePlaying;
 }
 bool MirvCam_EnableSequence(bool enabled)
 {
@@ -1316,7 +1323,7 @@ bool MirvCam_EnableSequence(bool enabled)
 	SyncRigLevel();
 	if (!enabled)
 	{
-		g_SequenceResume = false;
+		g_SequencePlaying = false;
 		if (g_CameraSource == CameraSource::Sequence)
 			MirvCam_EndRigPreview();
 		return true;
@@ -1327,24 +1334,25 @@ bool MirvCam_EnableSequence(bool enabled)
 	const auto currentView = RigCapture();
 	if (!currentView.Valid())
 		return false;
-	if (!g_SequenceResume)
+	if (!g_SequencePlaying)
 		g_SequenceSeed = currentView;
 	if (!g_SequenceSeed.Valid())
 		return false;
 	MirvCampathPreview_SetActive(false);
 	ClearCameraBlend();
 	g_CameraSource = CameraSource::Sequence;
-	g_SequenceResume = true;
+	g_SequencePlaying = true;
 	g_LastRigPose = currentView;
-	g_RigPreview = true;
-	g_RigNavigation = true;
+	g_RigPreview = false;
+	if (auto input = g_Hook_VClient_RenderView.m_MirvInput)
+		input->SetCameraControlMode(false);
 	g_EditingCameraName.clear();
 	return true;
 }
 bool MirvCam_ResumeSequencePreview()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
-	return g_SequenceResume && MirvCam_EnableSequence(true);
+	return g_SequencePlaying && MirvCam_EnableSequence(true);
 }
 bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advancedfx::ICommandArgs *, Aiming &))
 {
@@ -1461,7 +1469,7 @@ bool MirvCam_HistoryUndo(bool redo)
 												: CameraSource::Rig)
 								  : CameraSource::Legacy;
 	if (g_CameraClips.empty())
-		g_SequenceResume = false;
+		g_SequencePlaying = false;
 	g_RigUnavailable = false;
 	if (viewing && !g_RigPreview)
 	{
@@ -1479,10 +1487,10 @@ void MirvCam_EndRigPreview()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	ClearCameraBlend();
-	const bool adopt = g_CameraSource != CameraSource::Legacy;
+	const bool adopt = g_CameraSource != CameraSource::Legacy && (!g_SequencePlaying || g_RigPreview);
 	auto pose = g_LastRigPose;
 	g_RigPreview = false;
-	g_CameraSource = CameraSource::Legacy;
+	g_CameraSource = g_SequencePlaying ? CameraSource::Sequence : CameraSource::Legacy;
 	g_RigUnavailable = false;
 	// Clear native preview too, before restoring the displayed rig pose.
 	MirvCampathPreview_SetActive(false);
@@ -1497,7 +1505,7 @@ void MirvCam_EndRigPreview()
 		input->SetRy(float(a.Yaw));
 		input->SetRz(float(a.Roll));
 		input->SetFov(float(pose.Fov));
-		input->SetCameraControlMode(true);
+		input->SetCameraControlMode(!g_SequencePlaying);
 	}
 }
 bool MirvCam_RigNavigation()
@@ -1708,6 +1716,8 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			MirvCam_EndRigPreview();
 			g_RigNavigation = previousNavigation;
 			g_EditingCameraName.clear();
+			if (auto input = g_Hook_VClient_RenderView.m_MirvInput)
+				input->SetCameraControlMode(true);
 		}
 		return true;
 	}
@@ -1745,7 +1755,6 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			g_EditingCameraName.clear();
 			if (reference == "keys")
 			{
-				g_SequenceResume = false;
 				g_RigNavigation = false;
 			}
 			MirvCampathPreview_SetActive(reference == "keys");
@@ -1775,7 +1784,6 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			Tier0_Warning("The current view cannot be used as a transition source.\n");
 			return true;
 		}
-		g_SequenceResume = false;
 		MirvCampathPreview_SetActive(false);
 		ClearCameraBlend();
 		if (duration > 0 &&
@@ -1998,9 +2006,11 @@ std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
 		info.Attached = rig.Rig.Attached;
 		info.Available = rig.Available;
 		info.Selected = entry.first == g_CameraRigName;
-		info.Viewed =
-			g_RigPreview && ((info.Selected && g_CameraSource == CameraSource::Rig) ||
-							 (g_CameraSource == CameraSource::Sequence && g_SequenceCamera == rig.Id));
+		auto input = g_Hook_VClient_RenderView.m_MirvInput;
+		info.Viewed = (g_RigPreview && info.Selected && g_CameraSource == CameraSource::Rig) ||
+					  (g_SequencePlaying && !g_RigPreview && g_CameraSource == CameraSource::Sequence &&
+					   g_SequenceCamera == rig.Id && !MirvCampathPreview_IsActive() &&
+					   (!input || !input->GetCameraControlMode()));
 		info.EntityAddress = rig.EntityAddress;
 		info.AttachMode = rig.AttachMode;
 		if (rig.Aim)
@@ -2776,6 +2786,11 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 			  "mirv_cam collision [...] - Control free-camera and campath collision.\n");
 }
 
-bool MirvCam_RigViewActive() { std::lock_guard<std::recursive_mutex> lock(g_CameraMutex); SyncRigLevel(); return g_CameraSource != CameraSource::Legacy; }
+bool MirvCam_RigViewActive()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	SyncRigLevel();
+	return g_RigPreview;
+}
 
 #include "CinematicProject.inl"

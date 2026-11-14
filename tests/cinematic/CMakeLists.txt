@@ -36,3 +36,7 @@ if(UNIX)
     add_test(NAME scene_pose_native COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_scene_pose.py" --build-dir "${CMAKE_CURRENT_BINARY_DIR}/scene-pose-native")
     add_test(NAME overlay_input_native COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_overlay_input.py" --build-dir "${CMAKE_CURRENT_BINARY_DIR}/overlay-input-native")
 endif()
+
+if(UNIX)
+    add_test(NAME dense_path_drawer COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_path_drawer.py")
+endif()

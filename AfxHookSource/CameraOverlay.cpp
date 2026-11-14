@@ -6228,15 +6228,25 @@ static void DrawCameraClipsPanel()
 	DrawCinematicFileButtons();
 	DrawCinematicBakeControls("sequence");
 	ImGui::TextWrapped(
-		"Choose sequence preview to play these clips. You do not need to preview a camera or path "
-		"separately. Cached preview supplies the scene and clock; sequence preview chooses the camera.");
+		"Enable the sequence to play these clips. Preview navigation is independent. You can use free camera "
+		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
 	ImGui::TextDisabled("Bright marker: clip start | Blue: blend | Faint span: source remains active");
 	if (SceneCachePreviewActive())
 		ImGui::TextWrapped("Cached aiming is unsmoothed; live aiming settings are preserved. Targets must be "
 						   "included in the cache.");
+	static std::string clipStatus;
 	bool enabled = MirvCam_SequenceEnabled();
-	if (ImGui::Checkbox("Preview camera sequence", &enabled) && !MirvCam_EnableSequence(enabled))
+	if (ImGui::Checkbox("Enable camera sequence", &enabled) && !MirvCam_EnableSequence(enabled))
 		g_DocumentStatus = "Add a camera clip first, and use the demo session it belongs to.";
+	if (enabled)
+	{
+		auto input = g_Hook_VClient_RenderView.m_MirvInput;
+		ImGui::TextDisabled(MirvCampathPreview_IsActive()
+								? "Sequence enabled; preview temporarily overrides the view."
+							: input && input->GetCameraControlMode()
+								? "Sequence enabled; free camera temporarily overrides the view."
+								: "Sequence enabled; following the demo/cache clock.");
+	}
 	double now = EditingClientTime(g_MirvTime.GetTime()), demo = 0;
 	bool mapping = GetCurrentDemoTime(demo);
 	if (SceneCachePreviewActive())
@@ -6273,6 +6283,7 @@ static void DrawCameraClipsPanel()
 		g_SelectedCameraClip = loaded = ~std::uint64_t(0);
 		tick = g_SequencerFrame;
 		blend = 0;
+		clipStatus = "New clip draft. Choose its source and press Save camera clip to add it.";
 		auto cameras = MirvCam_Cameras();
 		auto selected =
 			std::find_if(cameras.begin(), cameras.end(), [](const auto &c) { return c.Selected; });
@@ -6319,15 +6330,26 @@ static void DrawCameraClipsPanel()
 		clip.Blend = blend;
 		clip.Campath = campath;
 		clip.Target = target;
-		if (MirvCam_EditClip(clip))
+		clipStatus.clear();
+		for (const auto &other : clips)
+			if (other.Id != clip.Id)
+			{
+				if (std::abs(other.Time - clip.Time) < 1e-9)
+					clipStatus = "Another clip starts at this tick. Select that clip to edit it, or choose a "
+								 "different tick.";
+				else if ((other.Time < clip.Time && other.Time + other.Blend > clip.Time + 1e-9) ||
+						 (other.Time > clip.Time && clip.Time + clip.Blend > other.Time + 1e-9))
+					clipStatus = "The blend overlaps a neighboring clip. Shorten the blend or move the clip.";
+			}
+		if (clipStatus.empty() && MirvCam_EditClip(clip))
 		{
 			g_SelectedCameraClip = clip.Id;
 			loaded = ~std::uint64_t(0);
-			g_DocumentStatus = "Camera clip saved.";
+			clipStatus = g_DocumentStatus = "Camera clip saved.";
 		}
-		else
-			g_DocumentStatus =
-				"Clip rejected: check its source, duplicate ticks, blend overlap and demo session.";
+		else if (clipStatus.empty())
+			clipStatus = "Clip rejected. Check its source, blend duration (0..3600 seconds), 256-clip limit "
+						 "and demo session.";
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
@@ -6341,6 +6363,8 @@ static void DrawCameraClipsPanel()
 	ImGui::TextWrapped(
 		"Clips start at demo ticks. Zero blend cuts; positive blend transitions from the previous source. "
 		"Blends must finish before the next clip. Save the cinematic project to keep clips, cameras and commands.");
+	if (!clipStatus.empty())
+		ImGui::TextWrapped("%s", clipStatus.c_str());
 	if (!mapping)
 		ImGui::TextDisabled("Demo tick mapping is unavailable.");
 }
@@ -7489,7 +7513,7 @@ void Draw()
 			}
 			ImGui::SameLine();
 			bool sequencePreview = MirvCam_SequenceEnabled();
-			if (ImGui::Checkbox("Sequence camera", &sequencePreview) &&
+			if (ImGui::Checkbox("Enable sequence", &sequencePreview) &&
 				!MirvCam_EnableSequence(sequencePreview))
 				g_DocumentStatus = "Add clips in the Camera clips tab for this demo first.";
 			if (ImGui::IsItemHovered())
