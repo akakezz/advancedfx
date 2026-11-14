@@ -1869,7 +1869,8 @@ bool MirvCampathPreview_IsActive()
 }
 bool MirvCampathPreview_GetCamera(CamPathValue &value)
 {
-	if (!g_CampathPreviewActive || !g_Hook_VClient_RenderView.m_CamPath.GetSize())
+	if (MirvCam_RigPreviewActive() || !g_CampathPreviewActive ||
+		!g_Hook_VClient_RenderView.m_CamPath.GetSize())
 		return false;
 	value = g_CampathPreviewValue;
 	return true;
@@ -1891,6 +1892,8 @@ double MirvCampathPreview_GetTime()
 }
 bool MirvCampathPreview_SetTime(double time)
 {
+	if (MirvCam_RigPreviewActive())
+		return false;
 	if (!std::isfinite(time))
 		return false;
 	if (!g_CampathPreviewActive && !CampathPreview_Enter())
@@ -1926,7 +1929,7 @@ void MirvCampathPreview_Update()
 		AfxHookSource::CameraOverlay::UpdateHistory();
 	}
 	CampathPreview_UpdateCachedNavigation();
-	if (!g_CampathPreviewActive)
+	if (MirvCam_RigPreviewActive() || !g_CampathPreviewActive)
 		return;
 
 	// Do not re-enable free camera after it was explicitly exited.

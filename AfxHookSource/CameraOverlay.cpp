@@ -207,7 +207,22 @@ double EditingClientTime(double liveTime)
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	if (!g_ScenePreview) return liveTime;
 	auto view = SceneCacheView();
-	return view ? view->ClientTime : liveTime;
+	if (view)
+		return view->ClientTime;
+	// Missing entity coverage must not switch a cached sequence to the live clock.
+	const auto &frames = g_SceneCache.Frames();
+	if (frames.empty())
+		return liveTime;
+	auto right =
+		std::lower_bound(frames.begin(), frames.end(), g_SceneCursor,
+						 [](const advancedfx::SceneCache::Frame &f, double t) { return f.DemoTime < t; });
+	if (right == frames.begin())
+		return right->ClientTime + g_SceneCursor - right->DemoTime;
+	if (right == frames.end())
+		return frames.back().ClientTime + g_SceneCursor - frames.back().DemoTime;
+	const auto &left = *std::prev(right);
+	const double f = (g_SceneCursor - left.DemoTime) / (right->DemoTime - left.DemoTime);
+	return left.ClientTime + f * (right->ClientTime - left.ClientTime);
 }
 void SceneCacheFrame(bool capture)
 {
@@ -514,7 +529,7 @@ static void ScenePreviewTime(double time)
 	SceneCacheFrame(false);
 	auto view = SceneCacheView();
 	auto &path = g_Hook_VClient_RenderView.m_CamPath;
-	if (view && MirvCampathPreview_IsActive() && path.CanEval())
+	if (view && !MirvCam_RigPreviewActive() && MirvCampathPreview_IsActive() && path.CanEval())
 	{
 		const bool driving = std::exchange(g_SceneDrivingCamera, true);
 		MirvCampathPreview_SetTime(view->ClientTime - path.GetOffset());
@@ -531,7 +546,8 @@ void SceneCacheFollowCameraTime(double clientTime)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	const auto &frames = g_SceneCache.Frames();
-	if (!g_ScenePreview || g_SceneDrivingCamera || frames.empty() || !std::isfinite(clientTime))
+	if (!g_ScenePreview || g_SceneDrivingCamera || MirvCam_RigPreviewActive() || frames.empty() ||
+		!std::isfinite(clientTime))
 		return;
 	const auto current = SceneCacheView();
 	if (current && current->ClientTime == clientTime)
@@ -6060,8 +6076,9 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 											 label.c_str());
 		choose = ImGui::NeoTimelineSpan(begin, begin, IM_COL32(255, 210, 70, 255), label.c_str()) || choose;
 		if (clip.Blend > 0)
-			choose = ImGui::NeoTimelineSpan(begin, (std::min)(end, tick(clip.Time + clip.Blend)),
-											IM_COL32(100, 190, 235, 180), (label + " | blend").c_str()) ||
+			choose = ImGui::NeoTimelineSpan(
+						 begin, (std::min)(end, tick(clip.Time + clip.Blend)), IM_COL32(100, 190, 235, 180),
+						 (label + " | blend " + std::to_string(clip.Blend) + " seconds").c_str()) ||
 					 choose;
 		if (choose)
 		{

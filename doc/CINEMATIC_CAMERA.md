@@ -2403,3 +2403,9 @@ there is no need to preview an individual camera or campath first.
 Exiting preview suspends sequence viewing. The preview toggle resumes the sequence
 on re-entry; explicitly disabling Sequence camera, or choosing a camera/keyframe
 preview or manual transition, leaves sequence viewing.
+
+During sequence or independent-camera preview, cached scrubbing never enters the
+native keyframe preview controller. Campath endpoints only clamp the sampled
+source pose; they cannot clamp the sequence clock. Cache gaps retain historical
+time mapping rather than falling back to the live demo clock. Blue regions on
+the Camera sources track denote blends; hover them for the duration.
