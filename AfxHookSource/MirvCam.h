@@ -4,6 +4,7 @@
 
 #include "MirvCalcs.h"
 #include <shared/CameraRig.h>
+#include <shared/SceneCache.h>
 
 #include <string>
 
@@ -127,3 +128,10 @@ bool MirvCam_ResumeSequencePreview();
 bool MirvCam_SaveProject(const wchar_t *file);
 bool MirvCam_LoadProject(const wchar_t *file);
 bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double end, double step);
+
+void MirvCam_CaptureCameras(double time, int frame, double step,
+							std::vector<advancedfx::SceneCache::CameraSample> &samples);
+
+std::string MirvCam_BakeStatus();
+
+void MirvCam_BeginFreeCamera();

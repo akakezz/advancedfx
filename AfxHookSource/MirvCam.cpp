@@ -359,11 +359,13 @@ extern int g_LevelInitCount;
 namespace
 {
 std::recursive_mutex g_CameraMutex;
+std::uint64_t g_NextCameraDefinition = 1;
 bool g_BakingCamera = false;
 std::shared_ptr<const advancedfx::SceneCache::Frame> g_BakeFrame;
 struct NamedCameraRig
 {
 	unsigned long long Id = 0;
+	std::uint64_t Definition = g_NextCameraDefinition++;
 	int AttachMode = MIRV_TF2_BONEMODE_BONE;
 	advancedfx::CameraRig Rig;
 	advancedfx::CameraPose LastWorld;
@@ -413,7 +415,6 @@ unsigned long long g_NextClipId = 0;
 bool g_SequencePlaying = false;
 std::string g_SequenceDemo;
 int g_SequenceLevel = -1;
-advancedfx::CameraPose g_SequenceSeed;
 unsigned long long g_SequenceCamera = ~0ull;
 void ClearCameraBlend()
 {
@@ -581,6 +582,24 @@ class CameraEditTransaction
 		if (!Owner || (CaptureRevision == g_CameraCaptureRevision && !AimChanged() &&
 					   SameCameraDefinitions(Before.Cameras, g_CameraRigs)))
 			return;
+		for (auto &entry : g_CameraRigs)
+		{
+			auto before = std::find_if(Before.Cameras.begin(), Before.Cameras.end(),
+									   [&](const auto &old) { return old.second.Id == entry.second.Id; });
+			auto snapshot = before == Before.Cameras.end() ? Snapshot.Cameras.end()
+														   : Snapshot.Cameras.find(before->first);
+			bool changed = before == Before.Cameras.end();
+			if (!changed)
+			{
+				changed = !SameCameraDefinitions({{"camera", before->second}}, {{"camera", entry.second}});
+				Aiming defaults;
+				const auto &a = snapshot->second.Aim;
+				const auto &b = entry.second.Aim;
+				changed |= !(a ? *a : defaults).SameSettings(b ? *b : defaults);
+			}
+			if (changed)
+				entry.second.Definition = g_NextCameraDefinition++;
+		}
 		if (g_CameraUndo.size() == 64)
 			g_CameraUndo.erase(g_CameraUndo.begin());
 		g_CameraUndo.push_back(std::move(Snapshot));
@@ -746,20 +765,18 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	}
 	auto next = std::upper_bound(g_CameraClips.begin(), g_CameraClips.end(), time,
 								 [](double t, const advancedfx::CameraClip &c) { return t < c.Time; });
-	if (next == g_CameraClips.begin())
-	{
-		pose = g_SequenceSeed;
-		return pose.Valid();
-	}
-	auto current = std::prev(next);
+	if (g_CameraClips.empty())
+		return false;
+	auto current = next == g_CameraClips.begin() ? g_CameraClips.begin() : std::prev(next);
 	if (!EvaluateClipSource(*current, time, pose))
 		return false;
 	if (!current->Campath)
 		g_SequenceCamera = current->Target;
-	if (current->Blend <= 0 || time >= current->Time + current->Blend)
+	// The first source is already active during pre-roll; it never blends from an editor view.
+	if (current == g_CameraClips.begin() || current->Blend <= 0 || time >= current->Time + current->Blend)
 		return true;
-	advancedfx::CameraPose from = g_SequenceSeed;
-	if (current != g_CameraClips.begin() && !EvaluateClipSource(*std::prev(current), time, from))
+	advancedfx::CameraPose from;
+	if (!EvaluateClipSource(*std::prev(current), time, from))
 		return false;
 	const double t = std::clamp((time - current->Time) / current->Blend, 0.0, 1.0);
 	const double weight = t * t * (3 - 2 * t);
@@ -851,6 +868,20 @@ bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
 	rig.Available = false;
+	if (rig.Aim && rig.Aim->Active &&
+		(g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive()))
+	{
+		auto frame = g_BakingCamera ? g_BakeFrame : AfxHookSource::CameraOverlay::SceneCacheView();
+		if (frame)
+			for (const auto &sample : frame->Cameras)
+				if (sample.Id == rig.Id && sample.Definition == rig.Definition)
+				{
+					pose = sample.Pose;
+					rig.LastWorld = pose;
+					rig.Available = pose.Valid();
+					return rig.Available;
+				}
+	}
 	advancedfx::CameraPose target;
 	const auto camera = "Camera " + std::to_string(rig.Id) + ": ";
 	if (rig.Rig.Attached && !RigTarget(rig, target))
@@ -1117,6 +1148,32 @@ void ClearCameraAttachment(bool liveSource)
 	g_LegacyCameraName.clear();
 }
 } // namespace
+void MirvCam_CaptureCameras(double time, int frame, double step,
+							std::vector<advancedfx::SceneCache::CameraSample> &samples)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+		return;
+	SyncRigLevel();
+	const auto previousTime = g_CameraEvaluationTime;
+	const auto previousFrame = g_CameraEvaluationFrame;
+	const auto previousStep = g_CameraEvaluationStep;
+	const auto failure = g_CameraFailureReason;
+	g_CameraEvaluationTime = time;
+	g_CameraEvaluationFrame = frame;
+	g_CameraEvaluationStep = step;
+	for (auto &entry : g_CameraRigs)
+		if (entry.second.Aim && entry.second.Aim->Active)
+		{
+			advancedfx::CameraPose pose;
+			if (EvaluateNamedRig(entry.second, pose))
+				samples.push_back({entry.second.Id, entry.second.Definition, pose});
+		}
+	g_CameraEvaluationTime = previousTime;
+	g_CameraEvaluationFrame = previousFrame;
+	g_CameraEvaluationStep = previousStep;
+	g_CameraFailureReason = failure;
+}
 bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int frame, double frameStep)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
@@ -1334,10 +1391,6 @@ bool MirvCam_EnableSequence(bool enabled)
 	const auto currentView = RigCapture();
 	if (!currentView.Valid())
 		return false;
-	if (!g_SequencePlaying)
-		g_SequenceSeed = currentView;
-	if (!g_SequenceSeed.Valid())
-		return false;
 	MirvCampathPreview_SetActive(false);
 	ClearCameraBlend();
 	g_CameraSource = CameraSource::Sequence;
@@ -1508,6 +1561,27 @@ void MirvCam_EndRigPreview()
 		input->SetCameraControlMode(!g_SequencePlaying);
 	}
 }
+void MirvCam_BeginFreeCamera()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	const auto pose = RigCapture();
+	MirvCampathPreview_SetActive(false);
+	if (auto input = g_Hook_VClient_RenderView.m_MirvInput)
+	{
+		if (pose.Valid())
+		{
+			const auto a = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
+			input->SetTx(float(pose.Position[0]));
+			input->SetTy(float(pose.Position[1]));
+			input->SetTz(float(pose.Position[2]));
+			input->SetRx(float(a.Pitch));
+			input->SetRy(float(a.Yaw));
+			input->SetRz(float(a.Roll));
+			input->SetFov(float(pose.Fov));
+		}
+		input->SetCameraControlMode(true);
+	}
+}
 bool MirvCam_RigNavigation()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
@@ -1634,6 +1708,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		bool ok = valid && MirvCam_Bake(file.c_str(), args->ArgV(2), values[0], values[1], values[2]);
 		Tier0_Msg("Classic camera bake %s. Hard cuts use one-microsecond transitions.\n",
 				  ok ? "saved" : "failed; check coverage, range and source");
+		Tier0_Msg("%s\n", valid ? MirvCam_BakeStatus().c_str() : "Invalid numeric bake arguments.");
 		return true;
 	}
 	if (action == "sequence")
@@ -1812,6 +1887,8 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		g_EditingCameraName.clear();
 		g_CameraSource = playback ? CameraSource::Playback : CameraSource::Rig;
 		g_RigPreview = true;
+		if (auto input = g_Hook_VClient_RenderView.m_MirvInput)
+			input->SetCameraControlMode(false);
 		g_RigNavigation = !playback;
 		return true;
 	}

@@ -2346,8 +2346,9 @@ Entity aiming pins recorded identity and reconnects through the same provider
 as attachments; choose a target that exists in live playback when configuring
 it. Snap aiming can then resolve that subject from Scene Cache, without using
 its live pose. Fixed world-point targets also work in cache preview. Cached
-smoothed aiming and cached custom calc sources remain unavailable: they hold
-the last valid view instead of silently evaluating against live state.
+smoothed aiming and custom calc sources can use recorded camera samples. Without
+them, built-in aiming is unsmoothed and custom sources hold the last valid view
+instead of silently evaluating against live state.
 
 Use the root `mirv_cam transition` command described above to mix procedural
 cameras and the active campath. This is explicit source selection, not the normal
@@ -2375,11 +2376,13 @@ intervals. Click a clip to select it. Open the **Camera clips** tab beside Comma
 Zero blend makes a cut. A positive blend evaluates both the preceding and new
 source at the current time. Clip blending follows demo/cache time and is sampled
 by timestamp, so moving backward across a boundary selects the appropriate
-source and blend weight. Cached preview evaluates built-in aiming without smoothing on a private settings
-copy, preserving live smoothing settings and history. Custom aiming calculations
+source and blend weight. Cached preview first uses observed tracking-camera samples recorded with the
+scene. Without matching camera samples, it evaluates built-in aiming without
+smoothing on a private settings copy, preserving live smoothing history. Custom aiming calculations
 still require live playback. Cached attachments and aim targets require coverage.
-Before the first clip the view captured when sequence preview was enabled is
-held; the first clip blends from that view if its duration is positive.
+The first clip is already active before its start tick. Its camera/path is
+evaluated during pre-roll, and its own initial blend duration is ignored; later
+clips blend from their preceding source. No editor/freecam pose seeds the shot.
 
 Clips extend until the next clip, with the final clip continuing indefinitely.
 Each blend must finish before the next clip, and two clips cannot start at the
@@ -2449,7 +2452,8 @@ fixed cameras can export without cached entities. Attached and aimed cameras
 require a cache. A live recording-pass exporter is not included yet.
 
 Baking reads recorded poses without seeking the demo, moving the preview cursor,
-or changing the authored cameras or live aim history. Cached aiming is unsmoothed.
+or changing the authored cameras or live aim history. Recorded camera samples preserve
+observed tracking; fallback cached targeting is unsmoothed.
 The baked classic XML contains position, quaternion orientation and FOV, without
 attachments, aim settings or commands. Sequences keep both sources evaluating
 during blends. Instant cuts use keys one microsecond apart: classic campaths
@@ -2474,3 +2478,34 @@ inside the clip tab. New clips do not move the free camera.
 Dense classic bakes exposed an out-of-bounds write in trajectory polyline drawing:
 the helper writes four vertex slots while the caller reserved only two. The
 renderer now flushes with room for all four, including at batch boundaries.
+
+### Recorded tracking cameras and sequence pre-roll
+
+Create/configure tracked cameras before recording Scene Cache, then replay the
+shot with scene recording enabled and cached preview off. Active tracked cameras
+are sampled even when not selected. Their observed position, orientation and FOV
+are retained within the cache memory budget. This preserves live smooth aiming
+and custom aim results for cached scrubbing and baking. Existing caches cannot
+recover unrecorded live filter history; built-in targeting falls back to the
+previous unsmoothed evaluation when no camera sample is available.
+
+Camera setting/pose edits invalidate that camera's older samples. Rename and
+sequence clip edits preserve them; undo can restore the original camera samples.
+Cache gaps and definition changes are never bridged with recorded camera poses.
+Scene Cache diagnostics show how many recorded camera poses exist at the cursor.
+These samples are transient, alongside the entity cache, rather than project data.
+
+The first clip is active during pre-roll; switching off preview or leaving freecam
+returns to its pose before the first transition. `mirv_input camera` and the
+overlay freecam controls explicitly leave camera/keyframe preview without disabling
+the sequence. Export controls identify selected-camera versus whole-sequence
+sources, offer the sequence range, and display the bake result in the camera tab.
+The result includes the client-time range, number of sampled poses and changed
+samples. Failed exports report the unavailable source/time and retain the old file.
+
+Bake tick ranges are converted through recorded demo/client-time pairs, including
+nonuniform clock offsets. Selected-camera and whole-sequence exports have distinct
+labels and filenames. The visible bake report identifies the source, sampled
+client-time range, pose count, and changed-sample count; an all-identical result
+is called out explicitly. This makes it possible to distinguish a static export
+from a failed export which retained a previous file.

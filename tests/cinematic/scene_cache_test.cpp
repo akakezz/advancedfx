@@ -69,7 +69,15 @@ int main()
 
  // Exact pose reuse charges shared allocations once and never crosses ownership/model boundaries.
  Cache reuse;Cache::Frame repeated;p.DemoTime=0;p.ClientTime=0;p.Entities[0].ModelPose=pose;p.Entities[0].OwnerIdentity=0;assert(reuse.Append(p));auto firstPose=reuse.Frames().front().Entities[0].ModelPose;size_t firstBytes=reuse.Bytes();
- auto copy=std::make_shared<Cache::Pose>(*pose);p.DemoTime=.05;p.ClientTime=.05;p.Entities[0].ModelPose=copy;assert(reuse.Append(p));assert(reuse.PoseCount()==1&&reuse.ReusedPoses()==1&&reuse.Frames().back().Entities[0].ModelPose==firstPose);assert(reuse.Bytes()-firstBytes<sizeof(Cache::Pose));
+ auto copy = std::make_shared<Cache::Pose>(*pose);
+ p.DemoTime = .05;
+ p.ClientTime = .05;
+ p.Entities[0].ModelPose = copy;
+ assert(reuse.Append(p));
+ assert(reuse.PoseCount() == 1 && reuse.ReusedPoses() == 1 &&
+		reuse.Frames().back().Entities[0].ModelPose == firstPose);
+ assert(reuse.Bytes() - firstBytes ==
+		sizeof(Cache::Frame) + reuse.Frames().back().Entities.capacity() * sizeof(Cache::Entity));
  copy=std::make_shared<Cache::Pose>(*pose);copy->Bones[0][3]+=.001f;p.DemoTime=.1;p.ClientTime=.1;p.Entities[0].ModelPose=copy;assert(reuse.Append(p)&&reuse.PoseCount()==2);assert(reuse.Frames().back().Entities[0].ModelPose==copy);
  copy=std::make_shared<Cache::Pose>(*copy);p.DemoTime=.15;p.ClientTime=.15;p.Entities[0].OwnerIdentity=2;p.Entities[0].ModelPose=copy;assert(reuse.Append(p)&&reuse.PoseCount()==3);assert(reuse.ReusedPoses()==1);
  copy=std::make_shared<Cache::Pose>(*copy);copy->Root[3]+=1;p.DemoTime=.2;p.ClientTime=.2;p.Entities[0].ModelPose=copy;assert(reuse.Append(p)&&reuse.PoseCount()==4);
@@ -185,4 +193,30 @@ int main()
  // Bounds can be limited to categories, missing meshes, and stable identities.
  Cache::DrawingOptions scoped;scoped.Meshes=false;scoped.Bounds=true;scoped.BoundCategories.fill(false);scoped.BoundCategories[8]=true;assert(brushCache.Drawing(brushFrame,scoped).size()==12);scoped.BoundCategories[8]=false;assert(brushCache.Drawing(brushFrame,scoped).empty());scoped.BoundCategories[8]=true;scoped.BoundsMissingOnly=true;assert(brushCache.Drawing(brushFrame,scoped).empty());auto proxyFrame=brushFrame;proxyFrame.Entities[0].ModelPose.reset();assert(brushCache.Drawing(proxyFrame,scoped).size()==12);scoped.BoundsSelectedOnly=true;assert(brushCache.Drawing(proxyFrame,scoped).empty());scoped.BoundEntities.insert(201);assert(brushCache.Drawing(proxyFrame,scoped).size()==12);proxyFrame.Entities[0].Identity=202;assert(brushCache.Drawing(proxyFrame,scoped).empty());auto scopedCopy=scoped;scopedCopy.BoundEntities.insert(202);assert(!(scoped==scopedCopy));
 
+ // Tracking outputs interpolate only across the same authored camera definition.
+ Cache cameraCache;
+ Cache::Frame c0, c1;
+ c0.ClientTime = c0.DemoTime = 0;
+ c1.ClientTime = c1.DemoTime = .05;
+ Cache::CameraSample camera;
+ camera.Id = 0;
+ camera.Definition = 1;
+ camera.Pose.Position[0] = 10;
+ c0.Cameras.push_back(camera);
+ camera.Pose.Position[0] = 20;
+ camera.Pose.Fov = 110;
+ c1.Cameras.push_back(camera);
+ assert(cameraCache.Append(c0) && cameraCache.Append(c1));
+ Cache::Frame cameraBlendResult;
+ assert(cameraCache.Sample(.025, cameraBlendResult) && cameraBlendResult.Cameras.size() == 1 &&
+		std::abs(cameraBlendResult.Cameras[0].Pose.Position[0] - 15) < 1e-6 &&
+		std::abs(cameraBlendResult.Cameras[0].Pose.Fov - 100) < 1e-6);
+ const auto cameraBytes = cameraCache.Bytes();
+ c1.Cameras[0].Definition = 2;
+ cameraCache.Clear();
+ assert(cameraCache.Append(c0) && cameraCache.Append(c1) && cameraCache.Sample(.025, cameraBlendResult) &&
+		cameraBlendResult.Cameras.empty());
+ assert(cameraBytes >= 2 * sizeof(Cache::CameraSample));
+ cameraCache.SetLimit(0);
+ assert(cameraCache.Count() == 0 && cameraCache.Bytes() == 0);
 }

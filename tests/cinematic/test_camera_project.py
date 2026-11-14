@@ -13,10 +13,11 @@ mock_process=SimpleNamespace(run=lambda *a,**k:SimpleNamespace(returncode=0,stdo
 scope=dict(root=root,out=out,args=args,os=os,subprocess=mock_process)
 exec(script[script.index('rig_source=(root/'):],scope)
 s=(out/'camera_rig_adapter.cpp').read_text();s=s[:s.index('int main(){')]
+s=s.replace('std::string MirvCam_BakeStatus(){return {};}', 'std::string MirvCam_BakeStatus();')
 s=s.replace('namespace advancedfx {struct ICommandArgs {virtual int ArgC()=0;virtual const char*ArgV(int)=0;};}','')
 a=s.index('struct PathKeys');b=s.index('#include <cstdarg>',a)
 s=s[:a]+'''struct View{CamPath m_CamPath;CamPathCollection m_CamPaths{m_CamPath};double LastCameraOrigin[3]{1,2,3},LastCameraAngles[3]{},LastCameraFov=65;Input*m_MirvInput=&rigInput;void*GetGlobals(){return this;}}g_Hook_VClient_RenderView;
-bool MirvCam_SaveProject(const wchar_t*);bool MirvCam_LoadProject(const wchar_t*);bool MirvCam_Bake(const wchar_t*,const char*,double,double,double);
+std::string MirvCam_BakeStatus();bool MirvCam_SaveProject(const wchar_t*);bool MirvCam_LoadProject(const wchar_t*);bool MirvCam_Bake(const wchar_t*,const char*,double,double,double);
 '''+s[b:]
 s='''#include "shared/CamPath.h"
 #include "shared/CommandSystem.h"
@@ -38,7 +39,7 @@ namespace AfxHookSource{namespace CameraOverlay{void FlushRecovery(){}void Reset
 int main(){
  const auto file=(std::filesystem::temp_directory_path()/"hlae-project-roundtrip.hlae").wstring();
  const auto bake=(std::filesystem::temp_directory_path()/"hlae-project-bake.xml").wstring();
- auto &path=g_Hook_VClient_RenderView.m_CamPath;path.Add(0,CamPathValue(0,0,0,0,0,0,90));path.Add(10,CamPathValue(10,0,0,0,0,0,100));
+ auto &path=g_Hook_VClient_RenderView.m_CamPath;path.PositionInterpMethod_set(CamPath::DI_LINEAR);path.RotationInterpMethod_set(CamPath::QI_SLINEAR);path.FovInterpMethod_set(CamPath::DI_LINEAR);path.Add(0,CamPathValue(0,0,0,0,0,0,90));path.Add(10,CamPathValue(10,0,0,0,0,0,100));
  command({"mirv_cam","add","A \\"quoted\\" camera"});auto name=g_CameraRigName;auto id=g_CameraRigs.at(name).Id;
  advancedfx::CameraClip clip;clip.Time=0;clip.Target=id;assert(MirvCam_EditClip(clip));
  auto marker=g_CommandSystem.AddTickMarker(50,"A command","echo \\"hello\\"; echo next\\nline");assert(marker);g_CommandSystem.EnableTickMarkers(true);
@@ -52,6 +53,9 @@ int main(){
  g_Hook_VClient_RenderView.LastCameraOrigin[0]=100;command({"mirv_cam","add","B"});advancedfx::CameraClip next;next.Time=.5;next.Blend=.2;next.Target=g_CameraRigs.at("B").Id;assert(MirvCam_EditClip(next));
  assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.6).X-50.5)<.01);
  next.Blend=0;assert(MirvCam_EditClip(next));assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.499998).X-1)<.01&&std::abs(baked.Eval(.5).X-100)<.01);g_Hook_VClient_RenderView.LastCameraOrigin[0]=1;
+ // Exercise the actual mixed camera -> path -> camera export, including rotation and FOV.
+ auto changedCamera=g_CameraRigs.at("B").Rig.Pose;changedCamera.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,90,0}));changedCamera.Fov=110;assert(MirvCam_EditCamera(g_CameraRigs.at("B").Id,changedCamera));
+ advancedfx::CameraClip pathClip;pathClip.Campath=true;pathClip.Target=g_Hook_VClient_RenderView.m_CamPaths.GetId(0);pathClip.Time=1.2;pathClip.Blend=.1;assert(MirvCam_EditClip(pathClip));advancedfx::CameraClip returnClip;returnClip.Target=g_CameraRigs.at("B").Id;returnClip.Time=1.8;returnClip.Blend=.2;assert(MirvCam_EditClip(returnClip));if(!MirvCam_Bake(bake.c_str(),"sequence",-1,2,.05)){std::cerr<<MirvCam_BakeStatus()<<"\\n";std::abort();}assert(baked.Load(bake.c_str()));assert(std::abs(baked.Eval(-.5).X-1)<.01&&std::abs(baked.Eval(1.4).X-1.4)<.01&&std::abs(baked.Eval(1.9).X-50.95)<.02);assert(std::abs(baked.Eval(2).GetEulerAngles().Yaw-90)<.01&&std::abs(baked.Eval(2).Fov-110)<.01);assert(MirvCam_BakeStatus().find("All sampled poses are identical")==std::string::npos);
  // Attached/aimed settings and identity survive save/load with unavailable live entities.
  advancedfx::CameraPose target;target.Position[0]=100;targets[5]=target;playerUsers[5]=6;
  command({"mirv_cam","attach","5","-1","0","0","0"});const auto attached=g_CameraRigName;const auto identity=g_CameraRigs.at(attached).CacheIdentity;
@@ -60,6 +64,7 @@ int main(){
  assert(!MirvCam_Bake(bake.c_str(),attached.c_str(),0,1,.1));
  auto frame=std::make_shared<advancedfx::SceneCache::Frame>();advancedfx::SceneCache::Entity e;e.Identity=identity;e.Origin[0]=500;frame->Entities.push_back(e);cachedFrame=frame;
  const auto previous= g_CameraRigs.at(attached).LastWorld.Position[0];assert(MirvCam_Bake(bake.c_str(),attached.c_str(),0,1,.1));assert(g_CameraRigs.at(attached).LastWorld.Position[0]==previous&&!g_BakingCamera);
+ advancedfx::CameraPose observed;observed.Position[0]=123;observed.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({10,30,0}));observed.Fov=80;frame->Cameras.push_back({g_CameraRigs.at(name).Id,g_CameraRigs.at(name).Definition,observed});assert(MirvCam_Bake(bake.c_str(),name.c_str(),0,1,.1));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.5).X-123)<.01&&std::abs(baked.Eval(.5).GetEulerAngles().Yaw-30)<.01);frame->Cameras.clear();
  // Dense classic XML remains loadable independently of the drawing stress fixture.
  CamPath dense;dense.PositionInterpMethod_set(CamPath::DI_LINEAR);dense.RotationInterpMethod_set(CamPath::QI_SLINEAR);dense.FovInterpMethod_set(CamPath::DI_LINEAR);auto denseState=dense.CaptureState();for(int i=0;i<=4096;++i)denseState.Keys.emplace(i*.01,CamPathValue(i*.01,5*std::sin(i*.02),0,0,0,0,90));dense.RestoreState(denseState);assert(dense.ExportClassic(bake.c_str(),.01));CamPath denseLoaded;assert(denseLoaded.Load(bake.c_str())&&denseLoaded.GetSize()>=4097&&std::abs(denseLoaded.Eval(20).X-20)<1e-6);
  // Unsupported custom aim serialization and malformed/truncated input are transactional.
@@ -75,7 +80,7 @@ if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-point
 # Cache the large shared translation units between iterations; always rebuild
 # the adapter because it includes the implementation being tested.
 base=cmd[:cmd.index(str(source))];objects=[]
-headers=max(p.stat().st_mtime for p in (root/'shared').rglob('*.h'))
+headers=max(p.stat().st_mtime for p in (root/'shared').rglob('*.h') if p.name not in ('SceneCache.h','CameraRig.h'))
 for arg in cmd[cmd.index(str(source))+1:cmd.index('-o')]:
  path=Path(arg);obj=out/(path.name+('.asan.o' if args.sanitize else '.o'))
  if not obj.exists() or obj.stat().st_mtime<max(path.stat().st_mtime,headers):

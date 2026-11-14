@@ -1,4 +1,5 @@
 #pragma once
+#include "CameraRig.h"
 #include "AfxMath.h"
 #include <algorithm>
 #include <array>
@@ -276,10 +277,16 @@ public:
 		       : category == 8 ? std::array<unsigned char, 3>{120, 155, 255}
 		                       : std::array<unsigned char, 3>{80, 220, 255};
 	}
+	struct CameraSample
+	{
+		std::uint64_t Id = 0, Definition = 0;
+		CameraPose Pose;
+	};
 	struct Frame
 	{
 		double DemoTime = 0, ClientTime = 0;
 		std::vector<Entity> Entities;
+		std::vector<CameraSample> Cameras;
 	};
 
 	struct Line
@@ -457,6 +464,16 @@ public:
 	{
 		if (!std::isfinite(frame.DemoTime) || !std::isfinite(frame.ClientTime))
 			return false;
+		if (frame.Cameras.size() > 128)
+			return false;
+		std::sort(frame.Cameras.begin(), frame.Cameras.end(),
+				  [](const auto &a, const auto &b) { return a.Id < b.Id; });
+		for (size_t i = 1; i < frame.Cameras.size(); ++i)
+			if (frame.Cameras[i - 1].Id == frame.Cameras[i].Id)
+				return false;
+		for (const auto &camera : frame.Cameras)
+			if (!camera.Pose.Valid() || !camera.Definition)
+				return false;
 		for (const auto &entity : frame.Entities)
 		{
 			if (!entity.Identity || entity.Category < 0 || entity.Category >= CategoryCount ||
@@ -551,6 +568,22 @@ public:
 		const double f = (time - left.DemoTime) / gap;
 		out.DemoTime = time;
 		out.ClientTime = left.ClientTime + f * (right->ClientTime - left.ClientTime);
+		for (const auto &a : left.Cameras)
+			for (const auto &b : right->Cameras)
+				if (a.Id == b.Id && a.Definition == b.Definition)
+				{
+					CameraSample sample = a;
+					for (int i = 0; i < 3; ++i)
+						sample.Pose.Position[i] += f * (b.Pose.Position[i] - a.Pose.Position[i]);
+					auto q = b.Pose.Rotation.Normalized(), p = a.Pose.Rotation.Normalized();
+					if (p.W * q.W + p.X * q.X + p.Y * q.Y + p.Z * q.Z < 0)
+						q = Afx::Math::Quaternion(-q.W, -q.X, -q.Y, -q.Z);
+					sample.Pose.Rotation = p.Slerp(q, f).Normalized();
+					sample.Pose.Fov += f * (b.Pose.Fov - a.Pose.Fov);
+					if (sample.Pose.Valid())
+						out.Cameras.push_back(sample);
+					break;
+				}
 		for (const auto &a : left.Entities)
 		{
 			auto b = std::lower_bound(
@@ -770,7 +803,8 @@ private:
 	}
 	static size_t Cost(const Frame &frame)
 	{
-		return sizeof(Frame) + frame.Entities.capacity() * sizeof(Entity);
+		return sizeof(Frame) + frame.Entities.capacity() * sizeof(Entity) +
+			   frame.Cameras.capacity() * sizeof(CameraSample);
 	}
 	void Trim()
 	{

@@ -1,6 +1,7 @@
 // Cinematic project persistence. Value data only: engine pointers and preview state are never saved.
 namespace
 {
+std::string g_CameraBakeReport;
 bool ProjectPose(std::ostream &out, const advancedfx::CameraPose &p)
 {
 	if (!p.Valid())
@@ -300,9 +301,15 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	AfxHookSource::CameraOverlay::ResetProjectRecovery();
 	return true;
 }
+std::string MirvCam_BakeStatus()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	return g_CameraBakeReport;
+}
 bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double end, double step)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	g_CameraBakeReport = "Bake failed: invalid range, step, source or sample limit.";
 	if (!std::isfinite(begin) || !std::isfinite(end) || !std::isfinite(step) || begin >= end || step <= 0 ||
 		(end - begin) / step > 50000)
 		return false;
@@ -316,7 +323,6 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 	struct Restore
 	{
 		std::map<std::string, NamedCameraRig> Rigs;
-		advancedfx::CameraPose Seed;
 		double Time, Step;
 		int Frame;
 		unsigned long long SequenceCamera;
@@ -324,7 +330,7 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 		bool Baking;
 		std::shared_ptr<const advancedfx::SceneCache::Frame> BakeFrame;
 		Restore()
-			: Rigs(g_CameraRigs), Seed(g_SequenceSeed), Time(g_CameraEvaluationTime), Step(g_CameraEvaluationStep),
+			: Rigs(g_CameraRigs), Time(g_CameraEvaluationTime), Step(g_CameraEvaluationStep),
 			  Frame(g_CameraEvaluationFrame), SequenceCamera(g_SequenceCamera), Failure(g_CameraFailureReason),
 			  Baking(g_BakingCamera), BakeFrame(g_BakeFrame)
 		{
@@ -334,7 +340,6 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 		~Restore()
 		{
 			g_CameraRigs = std::move(Rigs);
-			g_SequenceSeed = Seed;
 			g_CameraEvaluationTime = Time;
 			g_CameraEvaluationStep = Step;
 			g_CameraEvaluationFrame = Frame;
@@ -344,8 +349,6 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 			g_BakeFrame = BakeFrame;
 		}
 	} restore;
-	if (!g_SequencePlaying)
-		g_SequenceSeed = RigCapture();
 	g_BakingCamera = true;
 	g_CameraEvaluationFrame = -1;
 	std::set<double> times;
@@ -365,6 +368,9 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 	baked.PositionInterpMethod_set(CamPath::DI_LINEAR);
 	baked.RotationInterpMethod_set(CamPath::QI_SLINEAR);
 	baked.FovInterpMethod_set(CamPath::DI_LINEAR);
+	advancedfx::CameraPose previous;
+	bool first = true;
+	size_t changes = 0;
 	for (double time : times)
 	{
 		advancedfx::SceneCache::Frame frame;
@@ -376,10 +382,32 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 		auto rig = FindRig(std::to_string(id));
 		if (!(sequence ? EvaluateSequence(time, pose)
 					   : rig != g_CameraRigs.end() && EvaluateNamedRig(rig->second, pose)))
+		{
+			g_CameraBakeReport = "Bake failed at client time " + std::to_string(time) + ": " + g_CameraFailureReason +
+								 ". Existing file retained.";
 			return false;
+		}
+		if (!first)
+		{
+			double delta = std::abs(pose.Fov - previous.Fov);
+			for (int i = 0; i < 3; ++i)
+				delta += std::abs(pose.Position[i] - previous.Position[i]);
+			const auto &a = pose.Rotation;
+			const auto &b = previous.Rotation;
+			delta += 1 - std::abs(a.W * b.W + a.X * b.X + a.Y * b.Y + a.Z * b.Z) / (a.Norm() * b.Norm());
+			changes += delta > 1e-9;
+		}
+		previous = pose;
+		first = false;
 		const auto a = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
 		baked.Add(time,
 				  CamPathValue(pose.Position[0], pose.Position[1], pose.Position[2], a.Pitch, a.Yaw, a.Roll, pose.Fov));
 	}
-	return baked.ExportClassic(file, step);
+	const bool saved = baked.ExportClassic(file, step);
+	g_CameraBakeReport = (saved ? "Saved " : "Failed to save ") + std::to_string(times.size()) + " poses from " +
+						 source + ", client seconds " + std::to_string(begin) + " .. " + std::to_string(end) + "; " +
+						 std::to_string(changes) + " changed samples.";
+	if (saved && !changes)
+		g_CameraBakeReport += " All sampled poses are identical.";
+	return saved;
 }

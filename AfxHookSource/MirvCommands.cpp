@@ -2931,11 +2931,17 @@ CON_COMMAND(mirv_replace_team_name, "allows replacing player team names")
 
 CON_COMMAND(mirv_input, "Input mode configuration.")
 {
-    if (args->ArgC() >= 3 && 0 == _stricmp(args->ArgV(1), "camera"))
-    {
-        if (0 == _stricmp(args->ArgV(2), "uiCursor"))
-        {
-            if (args->ArgC() >= 4)
+	if (args->ArgC() == 2 && !_stricmp(args->ArgV(1), "camera"))
+	{
+		MirvCam_BeginFreeCamera();
+		return;
+	}
+
+	if (args->ArgC() >= 3 && 0 == _stricmp(args->ArgV(1), "camera"))
+	{
+		if (0 == _stricmp(args->ArgV(2), "uiCursor"))
+		{
+			if (args->ArgC() >= 4)
             {
                 g_Hook_VClient_RenderView.UiCursorSuspend_set(0 != atoi(args->ArgV(3)));
                 return;
@@ -2943,8 +2949,8 @@ CON_COMMAND(mirv_input, "Input mode configuration.")
             Tier0_Msg("mirv_input camera uiCursor 0|1 - Yield to Source's visible UI cursor. Experimental, default 0. Current: %i\n",
                 g_Hook_VClient_RenderView.UiCursorSuspend_get() ? 1 : 0);
             return;
-        }
-        if (0 == _stricmp(args->ArgV(2), "uiCursorStatus"))
+		}
+		if (0 == _stricmp(args->ArgV(2), "uiCursorStatus"))
         {
             bool available = false, visible = false;
             g_Hook_VClient_RenderView.UiCursorStatus(available, visible);
@@ -2953,9 +2959,9 @@ CON_COMMAND(mirv_input, "Input mode configuration.")
                 available ? (visible ? "1" : "0") : "n/a",
                 g_Hook_VClient_RenderView.UiCursorSuspend_get() ? 1 : 0);
             Tier0_Msg("Note: opening the console itself may make the UI cursor visible.\n");
-            return;
-        }
-    }
+			return;
+		}
+	}
 	g_Hook_VClient_RenderView.Console_MirvInput(args);
 }
 

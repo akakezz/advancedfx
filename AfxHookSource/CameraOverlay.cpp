@@ -330,6 +330,9 @@ void SceneCacheFrame(bool capture)
 		advancedfx::SceneCache::Frame frame;
 		frame.DemoTime = time;
 		frame.ClientTime = g_MirvTime.GetTime();
+		if (auto globals = g_Hook_VClient_RenderView.GetGlobals())
+			MirvCam_CaptureCameras(frame.ClientTime, globals->framecount_get(),
+								   globals->absoluteframetime_get(), frame.Cameras);
 		size_t selectedSeen = 0;
 		std::vector<MirvTf2SceneEntity> entities;
 		Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls,
@@ -5722,6 +5725,10 @@ static void DrawSceneCacheMenu(int playhead)
 		ImGui::Text("Capture ms: last %.3f | mean %.3f | peak %.3f (%llu frames)", g_SceneCaptureMs,
 		            g_SceneCaptureFrames ? g_SceneCaptureTotalMs / g_SceneCaptureFrames : 0,
 		            g_SceneCapturePeakMs, g_SceneCaptureFrames);
+		if (auto view = SceneCacheView())
+			ImGui::Text("Recorded tracking cameras at cursor: %zu", view->Cameras.size());
+		ImGui::TextWrapped("Tracking cameras must exist before recording. Camera setting edits invalidate "
+						   "their old samples; renaming cameras and editing clips do not.");
 		ImGui::Text("Unique retained poses: %zu | Unchanged poses reused: %zu", g_SceneCache.PoseCount(),
 		            g_SceneCache.ReusedPoses());
 		unsigned pending = 0, peak = 0;
@@ -5750,9 +5757,52 @@ static void DrawSceneCacheMenu(int playhead)
 }
 
 static int g_CinematicFileAction = 0;
+static std::string g_CinematicFileStatus;
 static std::string g_CinematicBakeSource;
 static int g_CinematicBakeBegin = 0, g_CinematicBakeEnd = 100;
 static double g_CinematicBakeStep = 1.0 / 66;
+// Bake ranges follow recorded tick/client pairs; a paused or shifted client clock need not have a constant
+// offset.
+static bool CinematicClock(double value, bool clientToDemo, double &mapped, bool useCache = true)
+{
+	if (!std::isfinite(value))
+		return false;
+	const auto &frames = g_SceneCache.Frames();
+	if (useCache && !frames.empty())
+	{
+		const advancedfx::SceneCache::Frame *nearest = &frames.front();
+		auto x = [&](const auto &f) { return clientToDemo ? f.ClientTime : f.DemoTime; };
+		auto y = [&](const auto &f) { return clientToDemo ? f.DemoTime : f.ClientTime; };
+		for (size_t i = 0; i < frames.size(); ++i)
+		{
+			const auto &a = frames[i];
+			if (std::abs(x(a) - value) < 1e-9)
+			{
+				mapped = y(a);
+				return true;
+			}
+			if (std::abs(x(a) - value) < std::abs(x(*nearest) - value))
+				nearest = &a;
+			if (i + 1 < frames.size())
+			{
+				const auto &b = frames[i + 1];
+				if (x(a) < value && value < x(b))
+				{
+					mapped = y(a) + (value - x(a)) / (x(b) - x(a)) * (y(b) - y(a));
+					return std::isfinite(mapped);
+				}
+			}
+		}
+		mapped = y(*nearest) + value - x(*nearest);
+		return std::isfinite(mapped);
+	}
+	double demo = 0;
+	if (!GetCurrentDemoTime(demo))
+		return false;
+	const double now = g_MirvTime.GetTime();
+	mapped = clientToDemo ? value - now + demo : value + now - demo;
+	return std::isfinite(mapped);
+}
 static void DrawCinematicFiles()
 {
 	static ImGui::FileBrowser dialog(ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_EditPathString |
@@ -5765,11 +5815,14 @@ static void DrawCinematicFiles()
 	{
 		action = g_CinematicFileAction;
 		g_CinematicFileAction = 0;
-		dialog.SetTitle(action == 1	  ? "Save cinematic project"
-						: action == 2 ? "Open cinematic project"
-									  : "Bake classic campath");
+		dialog.SetTitle(action == 1							  ? "Save cinematic project"
+						: action == 2						  ? "Open cinematic project"
+						: g_CinematicBakeSource == "sequence" ? "Bake camera sequence"
+															  : "Bake selected camera");
 		dialog.SetTypeFilters({action == 3 ? ".xml" : ".hlae"});
-		dialog.SetInputName(action == 3 ? "baked-camera.xml" : "cinematic.hlae");
+		dialog.SetInputName(
+			action == 3 ? (g_CinematicBakeSource == "sequence" ? "baked-sequence.xml" : "baked-camera.xml")
+						: "cinematic.hlae");
 		if (action == 3)
 		{
 			double demo = 0;
@@ -5787,8 +5840,13 @@ static void DrawCinematicFiles()
 				action = 0;
 				return;
 			}
-			begin = now - demo + g_CinematicBakeBegin * interval;
-			end = now - demo + g_CinematicBakeEnd * interval;
+			if (!CinematicClock(g_CinematicBakeBegin * interval, false, begin) ||
+				!CinematicClock(g_CinematicBakeEnd * interval, false, end))
+			{
+				g_DocumentStatus = "Bake tick/client mapping unavailable.";
+				action = 0;
+				return;
+			}
 			step = g_CinematicBakeStep;
 			source = g_CinematicBakeSource;
 		}
@@ -5805,6 +5863,7 @@ static void DrawCinematicFiles()
 											 : "Cinematic file saved.")
 							  : "Cinematic operation failed; check the file, range, source and cached "
 								"coverage. Custom aim calculations cannot be saved.";
+		g_CinematicFileStatus = action == 3 ? MirvCam_BakeStatus() : g_DocumentStatus;
 		dialog.ClearSelected();
 	}
 }
@@ -5815,18 +5874,75 @@ static void DrawCinematicFileButtons()
 	ImGui::SameLine();
 	if (ImGui::Button("Open cinematic project..."))
 		g_CinematicFileAction = 2;
+	if (!g_CinematicFileStatus.empty())
+		ImGui::TextWrapped("%s", g_CinematicFileStatus.c_str());
 }
 static void DrawCinematicBakeControls(const std::string &source)
 {
-	if (!ImGui::CollapsingHeader("Export classic campath"))
+	const bool sequence = source == "sequence";
+	if (!ImGui::CollapsingHeader(sequence ? "Export sequence as classic campath"
+										  : "Export selected camera as classic campath"))
 		return;
+	static std::string previousSource;
+	auto range = [&]
+	{
+		double demo = 0;
+		bool mapped = GetCurrentDemoTime(demo);
+		double now = EditingClientTime(g_MirvTime.GetTime());
+		if (SceneCachePreviewActive())
+		{
+			demo = g_SceneCursor;
+			mapped = !g_SceneCache.Frames().empty();
+		}
+		const double interval = SceneTickInterval();
+		if (!mapped || interval <= 0)
+			return;
+		double first = now, last = now + 1;
+		auto clips = MirvCam_Clips();
+		if (sequence && !clips.empty())
+		{
+			first = clips.front().Time;
+			last = clips.back().Time + clips.back().Blend;
+			if (clips.back().Campath)
+			{
+				auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+				for (size_t i = 0; i < paths.GetCount(); ++i)
+					if (paths.GetId(i) == clips.back().Target)
+						if (auto path = paths.GetPath(i))
+							if (path->GetSize())
+								last = (std::max)(last, path->GetOffset() + path->GetUpperBound());
+			}
+			last = (std::max)(last, first + interval);
+		}
+		else if (!g_SceneCache.Frames().empty())
+		{
+			first = g_SceneCache.Frames().front().ClientTime;
+			last = g_SceneCache.Frames().back().ClientTime;
+		}
+		double firstDemo = 0, lastDemo = 0;
+		if (!CinematicClock(first, true, firstDemo) || !CinematicClock(last, true, lastDemo))
+			return;
+		g_CinematicBakeBegin = (std::max)(0, int(std::floor(firstDemo / interval)));
+		g_CinematicBakeEnd = (std::max)(g_CinematicBakeBegin + 1, int(std::ceil(lastDemo / interval)));
+		g_CinematicBakeStep = interval;
+	};
+	if (previousSource != source)
+	{
+		previousSource = source;
+		range();
+	}
+	if (ImGui::Button(sequence ? "Use sequence range" : "Use cached range"))
+		range();
+	ImGui::TextWrapped(
+		"%s", sequence ? "Source: whole camera sequence, including transitions."
+					   : "Source: selected camera only. Use Camera clips to export the whole sequence.");
 	ImGui::InputInt("Bake start tick", &g_CinematicBakeBegin);
 	ImGui::InputInt("Bake end tick", &g_CinematicBakeEnd);
 	ImGui::InputDouble("Bake step (seconds)", &g_CinematicBakeStep, 0, 0, "%.6f");
-	ImGui::TextWrapped("Attached and aimed cameras require complete cached target coverage. Cached aiming is "
-					   "unsmoothed. Hard cuts are approximated over one microsecond. Export does not include "
+	ImGui::TextWrapped("Tracking uses recorded camera samples when available; otherwise cached targeting is "
+					   "unsmoothed. Hard cuts use one-microsecond transitions. Export does not include "
 					   "commands or procedural bindings.");
-	if (ImGui::Button("Bake classic campath..."))
+	if (ImGui::Button(sequence ? "Bake sequence..." : "Bake selected camera..."))
 	{
 		g_CinematicBakeSource = source;
 		g_CinematicFileAction = 3;
@@ -6232,7 +6348,8 @@ static void DrawCameraClipsPanel()
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
 	ImGui::TextDisabled("Bright marker: clip start | Blue: blend | Faint span: source remains active");
 	if (SceneCachePreviewActive())
-		ImGui::TextWrapped("Cached aiming is unsmoothed; live aiming settings are preserved. Targets must be "
+		ImGui::TextWrapped("Recorded tracking preserves observed aiming. Without camera samples, aiming is "
+						   "unsmoothed. Re-record after editing a camera. Targets must be "
 						   "included in the cache.");
 	static std::string clipStatus;
 	bool enabled = MirvCam_SequenceEnabled();
@@ -6273,7 +6390,9 @@ static void DrawCameraClipsPanel()
 	{
 		loadedValue = *found;
 		loaded = g_SelectedCameraClip;
-		tick = (std::max)(0, int(llround((found->Time - now + demo) / interval)));
+		double clipDemo = 0;
+		CinematicClock(found->Time, true, clipDemo, SceneCachePreviewActive());
+		tick = (std::max)(0, int(llround(clipDemo / interval)));
 		blend = found->Blend;
 		campath = found->Campath;
 		target = found->Target;
@@ -6326,7 +6445,7 @@ static void DrawCameraClipsPanel()
 	{
 		advancedfx::CameraClip clip;
 		clip.Id = g_SelectedCameraClip;
-		clip.Time = now - demo + tick * interval;
+		CinematicClock(tick * interval, false, clip.Time, SceneCachePreviewActive());
 		clip.Blend = blend;
 		clip.Campath = campath;
 		clip.Target = target;
@@ -7549,7 +7668,11 @@ void Draw()
 				auto tick_from_client = [&](double clientTime) -> int {
 					int t = 0;
 						if (SceneCachePreviewActive() && haveDemoNow)
-							return (std::max)(0,int(llround((clientTime-curTime+demoNow)/ipt)));
+						{
+							double mapped = 0;
+							if (CinematicClock(clientTime, true, mapped))
+								return (std::max)(0, int(llround(mapped / ipt)));
+						}
 					if (!GetDemoTickFromClientTime(curTime, clientTime, t))
 						t = (int)llround(clientTime / ipt);
 					return t < 0 ? 0 : t;
@@ -7666,7 +7789,11 @@ void Draw()
 					auto tick_from_client = [&](double clientTime) -> int {
 						int t = 0;
 						if (SceneCachePreviewActive() && haveDemoNow)
-							return (std::max)(0,int(llround((clientTime-curTime+demoNow)/ipt)));
+						{
+							double mapped = 0;
+							if (CinematicClock(clientTime, true, mapped))
+								return (std::max)(0, int(llround(mapped / ipt)));
+						}
 						if (!GetDemoTickFromClientTime(curTime, clientTime, t))
 							t = (int)llround(clientTime / ipt);
 						return t < 0 ? 0 : t;
@@ -8247,12 +8374,15 @@ void Draw()
 			ImGui::SetNextWindowPos(ImVec2((std::max)(600.0f, ImGui::GetIO().DisplaySize.x - 370), 30),
 									ImGuiCond_FirstUseEver);
 			ImGui::Begin("Mirv Camera");
-			bool camEnabled = pMirv->GetCameraControlMode();
+			bool camEnabled = pMirv->GetCameraControlMode() && !MirvCampathPreview_IsActive();
 			ImGui::Text("Mirv Camera (C): %s", camEnabled ? "enabled" : "disabled");
 			ImGui::SameLine();
 			if (ImGui::Button(camEnabled ? "Disable" : "Enable"))
 			{
-				pMirv->SetCameraControlMode(!camEnabled);
+				if (!camEnabled)
+					MirvCam_BeginFreeCamera();
+				else
+					pMirv->SetCameraControlMode(false);
 			}
 			// FOV slider (reserve right space so label is always visible)
 			{
@@ -8404,8 +8534,11 @@ void Draw()
 			{
 				if (MirvInput *pMirv = g_Hook_VClient_RenderView.m_MirvInput)
 				{
-					bool camEnabled = pMirv->GetCameraControlMode();
-					pMirv->SetCameraControlMode(!camEnabled);
+					bool camEnabled = pMirv->GetCameraControlMode() && !MirvCampathPreview_IsActive();
+					if (!camEnabled)
+						MirvCam_BeginFreeCamera();
+					else
+						pMirv->SetCameraControlMode(false);
 				}
 			}
 		}
