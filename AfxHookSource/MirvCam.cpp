@@ -371,8 +371,8 @@ struct CameraFollowCache
 	bool Sorted = true;
 	size_t Count = 0;
 	double FirstDemoTime = 0, LastClientTime = 0;
-	advancedfx::CameraFollowState Tail;
-	std::vector<advancedfx::CameraFollowState> Checkpoints;
+	MirvCameraAttachedState Tail;
+	std::vector<MirvCameraAttachedState> Checkpoints;
 };
 struct NamedCameraRig
 {
@@ -381,8 +381,7 @@ struct NamedCameraRig
 	int AttachMode = MIRV_TF2_BONEMODE_BONE;
 	advancedfx::CameraRig Rig;
 	advancedfx::CameraPose LastWorld;
-	advancedfx::CameraFollowState Follow;
-	std::uint64_t FollowDefinition = 0;
+	MirvCameraAttachedState Follow;
 	std::shared_ptr<CameraFollowCache> FollowCache;
 	std::shared_ptr<IMirvVecAngCalc> Target;
 	int EntityAddress = -1, TargetLevel = -1;
@@ -478,6 +477,8 @@ void SyncRigLevel()
 		g_LegacyCameraName.clear();
 	for (auto &entry : g_CameraRigs)
 	{
+		entry.second.Follow = {};
+		entry.second.FollowCache.reset();
 		entry.second.AimTime = -1;
 		entry.second.AimDirty = true;
 		if (entry.second.AimTarget)
@@ -509,7 +510,6 @@ NamedCameraRig CloneCameraDefinition(const NamedCameraRig &source)
 	if (source.AimTarget)
 		result.AimTarget = std::make_shared<NamedCameraRig>(CloneCameraDefinition(*source.AimTarget));
 	result.Follow = {};
-	result.FollowDefinition = 0;
 	result.AimTime = -1;
 	result.AimDirty = true;
 	if (source.Target)
@@ -694,7 +694,7 @@ double CameraAuthoringTime()
 			   : AfxHookSource::CameraOverlay::EditingClientTime(g_MirvTime.GetTime());
 }
 bool CachedRigTarget(NamedCameraRig &rig, const advancedfx::SceneCache::Frame &frame,
-					 advancedfx::CameraPose &pose)
+					 advancedfx::CameraPose &pose, double *pivot = nullptr, double *root = nullptr)
 {
 	if (!rig.Target || !rig.CacheIdentity)
 		return false;
@@ -716,7 +716,9 @@ bool CachedRigTarget(NamedCameraRig &rig, const advancedfx::SceneCache::Frame &f
 			}
 	SOURCESDK::Vector origin;
 	SOURCESDK::QAngle angles;
-	if (!Mirv_Tf2_CalcCachedCamera(rig.Target.get(), *entity, owner, origin, angles))
+	if (root)
+		std::copy(entity->Origin, entity->Origin + 3, root);
+	if (!Mirv_Tf2_CalcCachedCamera(rig.Target.get(), *entity, owner, origin, angles, pivot))
 		return false;
 	pose.Position[0] = origin.x;
 	pose.Position[1] = origin.y;
@@ -747,31 +749,86 @@ bool RigTarget(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 		Afx::Math::QREulerAngles::FromQEulerAngles({angles.x, angles.y, angles.z}));
 	return pose.Valid();
 }
-bool SmoothRigTarget(NamedCameraRig &rig, double time, const advancedfx::CameraPose &raw,
-					 advancedfx::CameraPose &out)
+bool CameraAttachmentTarget(NamedCameraRig &rig, double, advancedfx::CameraPose &target,
+							double *pivot = nullptr, double *root = nullptr)
 {
-	const auto &settings = rig.Rig.Motion;
-	if (settings.FollowHalfLife == 0 && settings.RotationHalfLife == 0)
+	if (g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive())
 	{
-		out = raw;
-		return true;
+		auto frame = g_BakingCamera ? g_BakeFrame : AfxHookSource::CameraOverlay::SceneCacheView();
+		return frame && CachedRigTarget(rig, *frame, target, pivot, root);
 	}
+	if (!RigTarget(rig, target))
+	{
+		rig.Follow.Valid = false;
+		return false;
+	}
+	if (pivot || root)
+	{
+		double physical[3], origin[3];
+		void *entity = nullptr;
+		if (!Mirv_Tf2_GetAttachAnchor(rig.Target.get(), physical, entity, origin))
+			return false;
+		if (pivot)
+			std::copy(physical, physical + 3, pivot);
+		if (root)
+			std::copy(origin, origin + 3, root);
+	}
+	return true;
+}
+MirvCameraCollisionSettings RigFollowSettings(const advancedfx::CameraMotion &motion)
+{
+	auto settings = MirvCameraCollisionGet();
+	settings.Attached = false; // Historical geometry is not a live collision world.
+	settings.FollowHalfLife = motion.FollowHalfLife;
+	settings.BoneHalfLife = motion.BoneHalfLife;
+	settings.OrbitHalfLife = motion.RotationHalfLife;
+	settings.OrbitSpeed = motion.TurnRate;
+	settings.FollowMaxDistance = motion.MaxDistance > 0 ? motion.MaxDistance : 1e6;
+	settings.FollowTeleportDistance = motion.TeleportDistance;
+	return settings;
+}
+bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double time,
+				   const advancedfx::CameraPose &target, const double pivot[3], const double root[3],
+				   advancedfx::CameraPose &pose)
+{
+	if (!rig.Rig.Evaluate(&target, pose, time, pivot))
+		return false;
+	const auto &motion = rig.Rig.Motion;
+	if (motion.FollowHalfLife == 0 && motion.BoneHalfLife == 0)
+		return true;
+	float x = float(pose.Position[0]), y = float(pose.Position[1]), z = float(pose.Position[2]);
+	const auto rotation = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
+	float angles[3] = {float(rotation.Pitch), float(rotation.Yaw), float(rotation.Roll)};
+	// Stable tokens identify this shot across UI copies; collision tracing is disabled.
+	const auto token = reinterpret_cast<void *>(static_cast<std::uintptr_t>(rig.Id + 1));
+	if (!MirvCameraAttachedEvaluate(state, RigFollowSettings(motion), 1, token, token, pivot, time, x, y, z,
+									root, rig.AttachMode == MIRV_TF2_BONEMODE_WORLD ? nullptr : angles))
+		return false;
+	pose.Position[0] = x;
+	pose.Position[1] = y;
+	pose.Position[2] = z;
+	pose.Rotation = Afx::Math::Quaternion::FromQREulerAngles(
+		Afx::Math::QREulerAngles::FromQEulerAngles({angles[0], angles[1], angles[2]}));
+	return pose.Valid();
+}
+bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPose &out)
+{
+	advancedfx::CameraPose target;
+	double pivot[3], root[3];
+	if (!CameraAttachmentTarget(rig, time, target, pivot, root))
+		return false;
+	const auto &settings = rig.Rig.Motion;
+	if (settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0)
+		return rig.Rig.Evaluate(&target, out, time, pivot);
 	const bool cached = g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive();
 	if (!cached)
 	{
-		if (rig.FollowDefinition != rig.Definition)
-		{
-			rig.Follow = {};
-			rig.FollowDefinition = rig.Definition;
-		}
-		// A hypothetical sequence time cannot advance a live target's damping state.
 		if (MirvCam_SequencePreviewActive())
 		{
-			auto state = rig.Follow;
-			return state.Sample(
-				settings, AfxHookSource::CameraOverlay::EditingClientTime(g_MirvTime.GetTime()), raw, out);
+			MirvCameraAttachedState frozen;
+			return RigFollowStep(rig, frozen, time, target, pivot, root, out);
 		}
-		return rig.Follow.Sample(settings, time, raw, out);
+		return RigFollowStep(rig, rig.Follow, time, target, pivot, root, out);
 	}
 	if (!rig.FollowCache)
 		rig.FollowCache = std::make_shared<CameraFollowCache>();
@@ -780,10 +837,18 @@ bool SmoothRigTarget(NamedCameraRig &rig, double time, const advancedfx::CameraP
 	AfxHookSource::CameraOverlay::VisitCameraSceneFrames(
 		[&](const auto &frames, std::uint64_t revision)
 		{
+			auto stepFrame = [&](MirvCameraAttachedState &state, const auto &frame)
+			{
+				advancedfx::CameraPose raw, result;
+				double physical[3], origin[3];
+				if (!CachedRigTarget(rig, frame, raw, physical, origin) ||
+					!RigFollowStep(rig, state, frame.ClientTime, raw, physical, origin, result))
+					state.Valid = false;
+			};
 			if (frames.empty())
 			{
-				advancedfx::CameraFollowState seed;
-				sampled = seed.Sample(settings, time, raw, out);
+				MirvCameraAttachedState seed;
+				sampled = RigFollowStep(rig, seed, time, target, pivot, root, out);
 				return;
 			}
 			if (cache.Revision != revision || cache.Definition != rig.Definition)
@@ -799,7 +864,7 @@ bool SmoothRigTarget(NamedCameraRig &rig, double time, const advancedfx::CameraP
 				cache.Revision = revision;
 				cache.Definition = rig.Definition;
 				cache.Sorted = true;
-				auto state = append ? cache.Tail : advancedfx::CameraFollowState{};
+				auto state = append ? cache.Tail : MirvCameraAttachedState{};
 				for (size_t i = start; i < frames.size(); ++i)
 				{
 					if (i && frames[i].ClientTime < frames[i - 1].ClientTime)
@@ -808,12 +873,7 @@ bool SmoothRigTarget(NamedCameraRig &rig, double time, const advancedfx::CameraP
 						cache.Count = 0;
 						return;
 					}
-					advancedfx::CameraPose target, filtered;
-					if (CachedRigTarget(rig, frames[i], target))
-						state.Sample(settings, frames[i].ClientTime, target, filtered);
-					else
-						state.Ready = false;
-					// One small checkpoint per 64 observed frames, rather than a second scene cache.
+					stepFrame(state, frames[i]);
 					if (i % 64 == 0)
 						cache.Checkpoints.push_back(state);
 				}
@@ -825,35 +885,16 @@ bool SmoothRigTarget(NamedCameraRig &rig, double time, const advancedfx::CameraP
 			if (!cache.Sorted)
 				return;
 			auto next = std::upper_bound(frames.begin(), frames.end(), time,
-										 [](double t, const auto &frame) { return t < frame.ClientTime; });
+										 [](double t, const auto &f) { return t < f.ClientTime; });
 			if (next == frames.begin())
 				return;
 			const size_t left = size_t(next - frames.begin() - 1), checkpoint = left / 64;
 			auto state = cache.Checkpoints[checkpoint];
 			for (size_t i = checkpoint * 64 + 1; i <= left; ++i)
-			{
-				advancedfx::CameraPose target, filtered;
-				if (CachedRigTarget(rig, frames[i], target))
-					state.Sample(settings, frames[i].ClientTime, target, filtered);
-				else
-					state.Ready = false;
-			}
-			sampled = state.Sample(settings, time, raw, out);
+				stepFrame(state, frames[i]);
+			sampled = RigFollowStep(rig, state, time, target, pivot, root, out);
 		});
-	if (!sampled)
-		g_CameraFailureReason =
-			"Cached follow history is unavailable or its client clock changed; re-record this range.";
 	return sampled;
-}
-bool CameraAttachmentTarget(NamedCameraRig &rig, double time, advancedfx::CameraPose &target)
-{
-	advancedfx::CameraPose raw;
-	if (!RigTarget(rig, raw))
-	{
-		rig.Follow.Ready = false;
-		return false;
-	}
-	return SmoothRigTarget(rig, time, raw, target);
 }
 bool EvaluatePlaybackPose(double clientTime, advancedfx::CameraPose &pose, unsigned long long id)
 {
@@ -1029,16 +1070,12 @@ bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 					return rig.Available;
 				}
 	}
-	advancedfx::CameraPose target;
 	const auto camera = "Camera " + std::to_string(rig.Id) + ": ";
-	if (rig.Rig.Attached && !CameraAttachmentTarget(rig, g_CameraEvaluationTime, target))
+	if (rig.Rig.Attached ? !EvaluateAttachedRig(rig, g_CameraEvaluationTime, pose)
+						 : !rig.Rig.Evaluate(nullptr, pose, g_CameraEvaluationTime))
 	{
-		g_CameraFailureReason = camera + "attachment target or its cached pose is unavailable.";
-		return false;
-	}
-	if (!rig.Rig.Evaluate(rig.Rig.Attached ? &target : nullptr, pose, g_CameraEvaluationTime))
-	{
-		g_CameraFailureReason = camera + "the saved pose is invalid.";
+		g_CameraFailureReason = camera + "attachment target or follow history is unavailable.";
+		rig.Follow.Valid = false;
 		return false;
 	}
 	if (!EvaluateCameraAim(rig, pose))
@@ -1066,8 +1103,9 @@ bool EditCameraPose(const std::string &name, NamedCameraRig &camera, const advan
 	if (camera.Rig.Attached)
 	{
 		advancedfx::CameraPose target;
-		if (!CameraAttachmentTarget(camera, CameraAuthoringTime(), target) ||
-			!camera.Rig.Attach(pose, target, camera.Rig.InheritRotation, CameraAuthoringTime()))
+		double pivot[3];
+		if (!CameraAttachmentTarget(camera, CameraAuthoringTime(), target, pivot) ||
+			!camera.Rig.Attach(pose, target, camera.Rig.InheritRotation, CameraAuthoringTime(), pivot))
 			return false;
 	}
 	else
@@ -1160,9 +1198,10 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 			if (found->second.Rig.Attached)
 			{
 				advancedfx::CameraPose target;
-				if (!CameraAttachmentTarget(found->second, CameraAuthoringTime(), target) ||
+				double pivot[3];
+				if (!CameraAttachmentTarget(found->second, CameraAuthoringTime(), target, pivot) ||
 					!found->second.Rig.Attach(pose, target, found->second.Rig.InheritRotation,
-											  CameraAuthoringTime()))
+											  CameraAuthoringTime(), pivot))
 				{
 					Tier0_Warning("Camera target unavailable; pose retained.\n");
 					return;
@@ -1247,8 +1286,9 @@ bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const a
 								 ? std::uint64_t(user)
 								 : (std::uint64_t(1) << 63) | attached.TargetHandle;
 	advancedfx::CameraPose target;
-	if (!CameraAttachmentTarget(attached, CameraAuthoringTime(), target) ||
-		!attached.Rig.Attach(world, target, true, CameraAuthoringTime()))
+	double pivot[3];
+	if (!CameraAttachmentTarget(attached, CameraAuthoringTime(), target, pivot) ||
+		!attached.Rig.Attach(world, target, true, CameraAuthoringTime(), pivot))
 		return false;
 	attached.LastWorld = world;
 	std::string name;
@@ -1275,8 +1315,10 @@ void CaptureLegacyCamera(const advancedfx::CameraPose &world)
 {
 	auto found = g_CameraRigs.find(g_LegacyCameraName);
 	advancedfx::CameraPose target;
-	if (found != g_CameraRigs.end() && CameraAttachmentTarget(found->second, CameraAuthoringTime(), target) &&
-		found->second.Rig.Attach(world, target, true, CameraAuthoringTime()))
+	double pivot[3];
+	if (found != g_CameraRigs.end() &&
+		CameraAttachmentTarget(found->second, CameraAuthoringTime(), target, pivot) &&
+		found->second.Rig.Attach(world, target, true, CameraAuthoringTime(), pivot))
 	{
 		++g_CameraCaptureRevision;
 		found->second.LastWorld = world;
@@ -1367,10 +1409,9 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 		auto &camera = entry.second;
 		const bool warmFollow =
 			camera.Rig.Attached &&
-			(camera.Rig.Motion.FollowHalfLife > 0 || camera.Rig.Motion.RotationHalfLife > 0) &&
+			(camera.Rig.Motion.FollowHalfLife > 0 || camera.Rig.Motion.BoneHalfLife > 0) &&
 			!g_InspectingSequence && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
-			(!camera.Follow.Ready || camera.FollowDefinition != camera.Definition ||
-			 camera.Follow.Time != clientTime);
+			(!camera.Follow.Valid || camera.Follow.Time != clientTime);
 		if (warmFollow ||
 			(camera.Aim && (camera.Aim->Active || camera.Aim->SoftDeactivate) &&
 			 (camera.AimDirty || (frame >= 0 ? camera.AimFrame != frame : camera.AimTime != clientTime))))
@@ -2201,6 +2242,33 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 	}
 	if (action == "edit")
 	{
+		if (args->ArgC() >= 4 && !_stricmp(args->ArgV(3), "attach"))
+		{
+			auto camera = FindRig(args->ArgV(2));
+			bool ok = camera != g_CameraRigs.end() && args->ArgC() >= 5 && args->ArgC() <= 7;
+			int mode = ok ? camera->second.AttachMode : 0;
+			char *end = nullptr;
+			long entity = -1;
+			if (ok)
+			{
+				entity = std::strtol(args->ArgV(4), &end, 10);
+				ok = end != args->ArgV(4) && !*end && entity >= 0 && entity < INT_MAX;
+			}
+			if (ok && args->ArgC() == 7)
+			{
+				mode = -1;
+				for (int i = 0; i < 4; ++i)
+					if (!_stricmp(args->ArgV(6), MirvCam_AttachModeName(i)))
+						mode = i;
+				ok = mode >= 0;
+			}
+			ok = ok && MirvCam_EditAttachment(camera->second.Id, int(entity),
+											  args->ArgC() >= 6 ? args->ArgV(5) : "-1", mode);
+			if (!ok)
+				Tier0_Warning("mirv_cam edit <ID/name> attach <entity> [bone=-1] [bone|entity|aligned|world] "
+							  "- Retarget a camera in live playback; keep its framing.\n");
+			return true;
+		}
 		if (args->ArgC() >= 4 && (!_stricmp(args->ArgV(3), "follow") || !_stricmp(args->ArgV(3), "orbit")))
 		{
 			auto camera = FindRig(args->ArgV(2));
@@ -2215,6 +2283,18 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			const bool orbit = !_stricmp(args->ArgV(3), "orbit");
 			if (orbit)
 				ok = ok && args->ArgC() == 5 && number(4, motion.OrbitSpeed);
+			else if (args->ArgC() == 6 &&
+					 (!_stricmp(args->ArgV(4), "boneHalfLife") || !_stricmp(args->ArgV(4), "orbitHalfLife") ||
+					  !_stricmp(args->ArgV(4), "orbitSpeed") || !_stricmp(args->ArgV(4), "maxDistance") ||
+					  !_stricmp(args->ArgV(4), "teleportDistance")))
+			{
+				double *field = !_stricmp(args->ArgV(4), "boneHalfLife")	? &motion.BoneHalfLife
+								: !_stricmp(args->ArgV(4), "orbitHalfLife") ? &motion.RotationHalfLife
+								: !_stricmp(args->ArgV(4), "orbitSpeed")	? &motion.TurnRate
+								: !_stricmp(args->ArgV(4), "maxDistance")	? &motion.MaxDistance
+																			: &motion.TeleportDistance;
+				ok = ok && number(5, *field);
+			}
 			else
 			{
 				ok = ok && (args->ArgC() == 5 || args->ArgC() == 6 || args->ArgC() == 8) &&
@@ -2226,10 +2306,10 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			}
 			ok = ok && MirvCam_EditMotion(camera->second.Id, motion);
 			if (!ok)
-				Tier0_Warning("mirv_cam edit <ID/name> follow <position half-life> [rotation half-life [max "
+				Tier0_Warning("mirv_cam edit <ID/name> follow <root half-life> [orbit half-life [max "
 							  "lag teleport distance]] - Attached camera damping; seconds, 0 disables.\n"
 							  "mirv_cam edit <ID/name> orbit <degrees/second> - Orbit around the "
-							  "attachment's local up axis; 0 stops.\n");
+							  "attachment's world-up axis; 0 stops.\n");
 			return true;
 		}
 		if (args->ArgC() == 10)
@@ -2239,12 +2319,14 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		}
 		if (args->ArgC() != 3)
 		{
-			Tier0_Msg("mirv_cam edit <ID/name> [<x> <y> <z> <pitch> <yaw> <roll> <fov>] - Edit a camera.\n"
-					  "Without pose values, move the free camera to the saved pose; use capture to save your "
-					  "framing.\n"
-					  "With all seven pose values, set its world position, angles and FOV directly.\n"
-					  "mirv_cam edit <ID/name> follow [...] - Configure attached-camera smoothing.\n"
-					  "mirv_cam edit <ID/name> orbit <degrees/second> - Configure attached-camera orbit.\n");
+			Tier0_Msg(
+				"mirv_cam edit <ID/name> [<x> <y> <z> <pitch> <yaw> <roll> <fov>] - Edit a camera.\n"
+				"Without pose values, move the free camera to the saved pose; use capture to save your "
+				"framing.\n"
+				"With all seven pose values, set its world position, angles and FOV directly.\n"
+				"mirv_cam edit <ID/name> attach <entity> [bone] [mode] - Change this camera's attachment.\n"
+				"mirv_cam edit <ID/name> follow [...] - Configure existing attachment follow.\n"
+				"mirv_cam edit <ID/name> orbit <degrees/second> - Configure attached-camera orbit.\n");
 			return true;
 		}
 		auto found = FindRig(args->ArgV(2));
@@ -2412,6 +2494,78 @@ bool MirvCam_CameraAction(const char *action, std::uint64_t id)
 	MirvCam_CameraCommand(&args);
 	return std::strcmp(action, "remove") || FindRig(args.Id) == g_CameraRigs.end();
 }
+bool MirvCam_EditAttachment(std::uint64_t id, int entity, const char *bone, int mode)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	SyncRigLevel();
+	auto found = FindRig(std::to_string(id));
+	if (found == g_CameraRigs.end() || entity < 0 || entity == INT_MAX || !bone || mode < 0 || mode > 3 ||
+		AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+		return false;
+	int boneIndex = -1;
+	if (!Mirv_Tf2_ParseBoneArg(entity, bone, boneIndex))
+		return false;
+	auto calc = g_MirvVecAngCalcs.NewTf2EntityIndexCalc(nullptr, entity, boneIndex, mode);
+	if (!calc)
+		return false;
+	calc->AddRef();
+	std::shared_ptr<IMirvVecAngCalc> target(calc, [](IMirvVecAngCalc *p) { p->Release(); });
+	const double time = CameraAuthoringTime();
+	auto current = found->second.LastWorld;
+	auto sample = found->second;
+	if (sample.Aim)
+		sample.Aim = sample.Aim->CloneState();
+	const double previous = g_CameraEvaluationTime;
+	g_CameraEvaluationTime = time;
+	advancedfx::CameraPose evaluated;
+	if (EvaluateNamedRig(sample, evaluated))
+		current = evaluated;
+	g_CameraEvaluationTime = previous;
+	if (!current.Valid())
+		return false;
+	auto updated = found->second;
+	updated.Target = target;
+	updated.EntityAddress = entity;
+	updated.AttachMode = mode;
+	updated.TargetHandle = RigEntityHandle(entity);
+	updated.TargetLevel = g_LevelInitCount;
+	updated.TargetModel = Mirv_Tf2_CameraTargetModel(entity);
+	updated.DemoKey = g_VEngineClient && g_VEngineClient->IsPlayingDemo() ? g_CameraDemoKey : std::string{};
+	int user = 0;
+	updated.CacheIdentity = Mirv_Tf2_GetPlayerInfo(entity, nullptr, 0, &user) && user > 0
+								? std::uint64_t(user)
+								: (std::uint64_t(1) << 63) | updated.TargetHandle;
+	updated.Follow = {};
+	updated.FollowCache.reset();
+	updated.AimDirty = true;
+	updated.AimTime = -1;
+	advancedfx::CameraPose anchor;
+	double pivot[3];
+	if (!CameraAttachmentTarget(updated, time, anchor, pivot) ||
+		!updated.Rig.Attach(current, anchor, updated.Rig.InheritRotation, time, pivot))
+		return false;
+	updated.LastWorld = current;
+	updated.Available = true;
+	CameraEditTransaction history;
+	const bool legacy =
+		g_LegacyCameraName == found->first && g_MirvCam.Source_get() == found->second.Target.get();
+	found->second = std::move(updated);
+	if (legacy)
+	{
+		MirvCam_ReleaseLiveAttachment();
+		g_LegacyCameraName.clear();
+		if (g_CameraSource == CameraSource::Legacy)
+		{
+			g_CameraRigName = found->first;
+			g_CameraSource = CameraSource::Rig;
+			g_RigPreview = true;
+			g_LastRigPose = current;
+			if (auto input = g_Hook_VClient_RenderView.m_MirvInput)
+				input->SetCameraControlMode(false);
+		}
+	}
+	return true;
+}
 bool MirvCam_EditMotion(std::uint64_t id, const advancedfx::CameraMotion &motion)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
@@ -2428,18 +2582,32 @@ bool MirvCam_EditMotion(std::uint64_t id, const advancedfx::CameraMotion &motion
 		const double time = CameraAuthoringTime();
 		if (!std::isfinite(time) || std::abs(time) > 1e9)
 			return false;
-		camera.Rig.Pose = advancedfx::CameraMotion::RotateLocal(
-			camera.Rig.Pose, camera.Rig.Motion.OrbitAngle(time), camera.Rig.InheritRotation);
+		advancedfx::CameraPose target, current;
+		double pivot[3];
+		if (!CameraAttachmentTarget(camera, time, target, pivot) ||
+			!camera.Rig.Evaluate(&target, current, time, pivot))
+			return false;
 		settings.OrbitEpoch = time;
+		auto updated = camera.Rig;
+		updated.Motion = settings;
+		if (!updated.Attach(current, target, updated.InheritRotation, time, pivot))
+			return false;
+		camera.Rig.Pose = updated.Pose;
 	}
 	else
 		settings.OrbitEpoch = camera.Rig.Motion.OrbitEpoch;
 	if (settings == camera.Rig.Motion)
 		return true;
+	const bool followChanged = settings.FollowHalfLife != camera.Rig.Motion.FollowHalfLife ||
+							   settings.BoneHalfLife != camera.Rig.Motion.BoneHalfLife ||
+							   settings.RotationHalfLife != camera.Rig.Motion.RotationHalfLife ||
+							   settings.MaxDistance != camera.Rig.Motion.MaxDistance ||
+							   settings.TeleportDistance != camera.Rig.Motion.TeleportDistance ||
+							   settings.TurnRate != camera.Rig.Motion.TurnRate;
 	camera.Rig.Motion = settings;
-	camera.Follow = {};
+	if (followChanged)
+		camera.Follow = {};
 	camera.FollowCache.reset();
-	camera.FollowDefinition = 0;
 	camera.AimTime = -1;
 	camera.AimDirty = true;
 	return true;
@@ -2478,6 +2646,8 @@ std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
 		info.Attached = rig.Rig.Attached;
 		info.Available = rig.Available;
 		info.Motion = rig.Rig.Motion;
+		if (rig.Target)
+			Mirv_Tf2_CameraBone(rig.Target.get(), info.BoneIndex, info.BoneName);
 		info.Selected = entry.first == g_CameraRigName;
 		auto input = g_Hook_VClient_RenderView.m_MirvInput;
 		info.Viewed = (g_RigPreview && info.Selected && g_CameraSource == CameraSource::Rig) ||

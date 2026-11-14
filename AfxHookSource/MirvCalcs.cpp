@@ -2337,11 +2337,21 @@ public:
 		std::memcpy(result->m_Offset, offset, sizeof(offset));
 		return result;
 	}
-	bool UsesCachedBone() const { return m_BoneIndex >= 0; }
-	const std::string &CachedBoneName() const { return m_BoneName; }
+	bool UsesCachedBone() const
+	{
+		return m_BoneIndex >= 0;
+	}
+	const std::string &CachedBoneName() const
+	{
+		return m_BoneName;
+	}
+	int CameraBoneIndex() const
+	{
+		return m_BoneIndex;
+	}
 	// No tools, entity queries, SetupBones, or calibration updates on this route.
 	bool CalcCachedFrame(const advancedfx::SceneCache::Entity &entity, const float (*boneMatrix)[4],
-						 SOURCESDK::Vector &outVector, SOURCESDK::QAngle &outAngles)
+						 SOURCESDK::Vector &outVector, SOURCESDK::QAngle &outAngles, double *pivot = nullptr)
 	{
 		SOURCESDK::Vector pos;
 		SOURCESDK::QAngle facing, raw;
@@ -2368,6 +2378,12 @@ public:
 					rotation[r][c] = boneMatrix[r][c];
 			Mirv_MatrixAngles3(rotation, raw.x, raw.y, raw.z);
 			baseOk = Mirv_Basis3(boneMatrix, base);
+		}
+		if (pivot)
+		{
+			pivot[0] = pos.x;
+			pivot[1] = pos.y;
+			pivot[2] = pos.z;
 		}
 		return ResolveFrame(pos, base, raw, facing, baseOk, false, outVector, outAngles);
 	}
@@ -6207,24 +6223,7 @@ void MirvCameraAttachedReset()
 }
 namespace
 {
-struct AttachedCameraHistory
-{
-	bool Valid = false, Retracted = false, Contracting = false;
-	double LastAllowed = 0;
-	const void *Identity = nullptr;
-	void *Entity = nullptr;
-	unsigned long long Generation = 0;
-	double Time = 0, ArmLength = 0, Position[3] = {}, FollowPosition[3] = {};
-	double Desired[3] = {}, AuthoredAngles[3] = {}, DisplayAngles[3] = {};
-	bool HasAngles = false;
-	double Root[3] = {}, FollowVelocity[3] = {}, BonePosition[3] = {}, BoneVelocity[3] = {};
-	double FollowHalfLife = 0, BoneHalfLife = 0;
-	// Orbit, composition and focus are one shot state. Source poses remain inputs,
-	// rather than repeatedly replacing the camera with an instantly rotating boom.
-	Afx::Math::Quaternion Orbit, Composition, View;
-	double OrbitLength = 0, OrbitYaw = 0, BlockedTime = 0;
-	bool CompositionValid = false;
-} g_AttachedCameraHistory;
+MirvCameraAttachedState g_AttachedCameraHistory;
 } // namespace
 // Capture the authored pose when recapturing the displayed, collision-corrected
 // attachment. Otherwise the soft clearance and framing correction apply twice.
@@ -6308,15 +6307,14 @@ bool MirvCameraAttachedReframe(const double from[3], const double to[3], const d
 	angles[1] = float(bestYaw);
 	return true;
 }
-bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
-                             float &x, float &y, float &z, const double *entityOrigin, float *angles)
+bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCameraCollisionSettings &settings,
+								unsigned long long generation, const void *identity, void *entity,
+								const double pivot[3], double sceneTime, float &x, float &y, float &z,
+								const double *entityOrigin, float *angles)
 {
-	auto &history = g_AttachedCameraHistory;
-	const auto settings = MirvCameraCollisionGet();
 	if (!identity || !entity ||
-	    (!settings.Attached && settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0) ||
-	    !std::isfinite(sceneTime) || !g_VEngineClient || !g_VEngineClient->IsInGame() ||
-	    g_VEngineClient->IsDrawingLoadingImage())
+		(!settings.Attached && settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0) ||
+		!std::isfinite(sceneTime))
 	{
 		history.Valid = false;
 		return false;
@@ -6335,7 +6333,6 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 		}
 		rootJump2 += (root[a] - history.Root[a]) * (root[a] - history.Root[a]);
 	}
-	const auto generation = g_AttachedCameraGeneration.load();
 	const bool continuous = history.Valid && history.Identity == identity && history.Entity == entity &&
 	                        history.Generation == generation && sceneTime >= history.Time &&
 	                        sceneTime - history.Time <= 10 &&
@@ -6770,6 +6767,19 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 	history.ArmLength = std::sqrt(history.ArmLength);
 	return true;
 }
+bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
+							 float &x, float &y, float &z, const double *entityOrigin, float *angles)
+{
+	if (!g_VEngineClient || !g_VEngineClient->IsInGame() || g_VEngineClient->IsDrawingLoadingImage())
+	{
+		g_AttachedCameraHistory.Valid = false;
+		return false;
+	}
+	return MirvCameraAttachedEvaluate(g_AttachedCameraHistory, MirvCameraCollisionGet(),
+									  g_AttachedCameraGeneration.load(), identity, entity, pivot, sceneTime,
+									  x, y, z, entityOrigin, angles);
+}
+
 // End optional camera collision implementation.
 
 // Minimal IVModelInfo (public Source SDK interface "VModelInfoClient006") up to GetStudiomodel.
@@ -11326,9 +11336,18 @@ static bool SceneCachedBoneFrame(const advancedfx::SceneCache::Entity &entity,
 }
 // End selected-player scene-pose prototype.
 
+bool Mirv_Tf2_CameraBone(IMirvVecAngCalc *calc, int &index, std::string &name)
+{
+	if (!calc)
+		return false;
+	auto target = static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc);
+	index = target->CameraBoneIndex();
+	name = target->CachedBoneName();
+	return true;
+}
 bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc *calc, const advancedfx::SceneCache::Entity &entity,
 							   const advancedfx::SceneCache::Entity *owner, SOURCESDK::Vector &origin,
-							   SOURCESDK::QAngle &angles)
+							   SOURCESDK::QAngle &angles, double *pivot)
 {
 	if (!calc)
 		return false;
@@ -11337,7 +11356,8 @@ bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc *calc, const advancedfx::SceneCac
 	SOURCESDK::matrix3x4_t bone;
 	if (target->UsesCachedBone() && !SceneCachedBoneFrame(entity, owner, target->CachedBoneName(), bone))
 		return false;
-	return target->CalcCachedFrame(entity, target->UsesCachedBone() ? bone.m_flMatVal : nullptr, origin, angles);
+	return target->CalcCachedFrame(entity, target->UsesCachedBone() ? bone.m_flMatVal : nullptr, origin,
+								   angles, pivot);
 }
 // Scene entity enumeration shares the label classifier, without attaching tool
 // recorders to every projectile. Network class metadata is read through the

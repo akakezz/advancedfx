@@ -29,7 +29,8 @@ bool ProjectRig(std::ostream &out, const NamedCameraRig &r, int depth = 0)
 	if (!motion.Valid())
 		return false;
 	out << motion.FollowHalfLife << ' ' << motion.RotationHalfLife << ' ' << motion.MaxDistance << ' '
-		<< motion.TeleportDistance << ' ' << motion.OrbitSpeed << ' ' << motion.OrbitEpoch << '\n';
+		<< motion.TeleportDistance << ' ' << motion.OrbitSpeed << ' ' << motion.OrbitEpoch << ' '
+		<< motion.BoneHalfLife << ' ' << motion.TurnRate << '\n';
 	if (!ProjectPose(out, r.Rig.Pose) || !ProjectPose(out, r.LastWorld))
 		return false;
 	out << bool(r.Target) << '\n';
@@ -67,6 +68,9 @@ bool ProjectRig(std::istream &in, NamedCameraRig &r, int version, int depth = 0)
 			!motion.Valid())
 			return false;
 	}
+	if (version >= 3)
+		if (!(in >> r.Rig.Motion.BoneHalfLife >> r.Rig.Motion.TurnRate) || !r.Rig.Motion.Valid())
+			return false;
 	if (!ProjectPose(in, r.Rig.Pose) || !ProjectPose(in, r.LastWorld))
 		return false;
 	bool present;
@@ -158,7 +162,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	SyncRigLevel();
 	std::ostringstream out;
 	out.imbue(std::locale::classic());
-	out << std::setprecision(17) << "HLAE_CINEMATIC 2\n";
+	out << std::setprecision(17) << "HLAE_CINEMATIC 3\n";
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto state = paths.CaptureState();
 	out << state.Paths.size() << ' ' << state.Active << '\n';
@@ -208,7 +212,8 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	std::string magic;
 	int version;
 	size_t count;
-	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" || (version != 1 && version != 2))
+	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" ||
+		(version != 1 && version != 2 && version != 3))
 		return false;
 	CamPathCollection::State paths;
 	std::set<unsigned long long> pathIds, rigIds, clipIds;

@@ -623,8 +623,8 @@ std::map<int,advancedfx::CameraPose> targets;int liveCalcs=0,liveTargetReads=0,c
 std::map<int,int>playerUsers{{5,6}};std::map<int,std::string>targetModels;
 std::map<int,unsigned> generations;void*Mirv_Tf2_DiagnosticEntity(int e){auto f=targets.find(e);return f==targets.end()?nullptr:&f->second;}unsigned Mirv_Tf2_EntityHandle(const void*p){for(auto&e:targets)if(&e.second==p)return unsigned(e.first)*100+generations[e.first];return 0xffffffffu;}unsigned Mirv_Tf2_HandleForAddress(int e){return Mirv_Tf2_EntityHandle(Mirv_Tf2_DiagnosticEntity(e));}
 
-struct IMirvVecAngCalc {double Shift[3]{};int Refs=0,Entity;IMirvVecAngCalc(int e):Entity(e){++liveCalcs;}void Console_PrintBegin(){}void Console_PrintEnd(){}void AddRef(){++Refs;}void Release(){if(!--Refs){--liveCalcs;delete this;}}bool CalcVecAng(SOURCESDK::Vector&o,SOURCESDK::QAngle&a){++liveTargetReads;auto f=targets.find(Entity);if(f==targets.end())return false;o.x=f->second.Position[0]+Shift[0];o.y=f->second.Position[1]+Shift[1];o.z=f->second.Position[2]+Shift[2];auto r=f->second.Rotation.ToQREulerAngles().ToQEulerAngles();a.x=r.Pitch;a.y=r.Yaw;a.z=r.Roll;return true;}};
-struct Calcs{IMirvVecAngCalc*GetByName(const char*){return nullptr;}int Entity=-1,Bone=-2,Mode=-1;IMirvVecAngCalc*NewTf2EntityIndexCalc(const char*,int e,int b=-1,int m=0){Entity=e;Bone=b;Mode=m;return new IMirvVecAngCalc(e);}}g_MirvVecAngCalcs;
+struct IMirvVecAngCalc {double Shift[3]{};int Refs=0,Entity,Bone=-1,Mode=0;IMirvVecAngCalc(int e):Entity(e){++liveCalcs;}void Console_PrintBegin(){}void Console_PrintEnd(){}void AddRef(){++Refs;}void Release(){if(!--Refs){--liveCalcs;delete this;}}bool CalcVecAng(SOURCESDK::Vector&o,SOURCESDK::QAngle&a){++liveTargetReads;auto f=targets.find(Entity);if(f==targets.end())return false;o.x=f->second.Position[0]+Shift[0];o.y=f->second.Position[1]+Shift[1];o.z=f->second.Position[2]+Shift[2];auto r=f->second.Rotation.ToQREulerAngles().ToQEulerAngles();a.x=r.Pitch;a.y=r.Yaw;a.z=r.Roll;return true;}};
+struct Calcs{IMirvVecAngCalc*GetByName(const char*){return nullptr;}int Entity=-1,Bone=-2,Mode=-1;IMirvVecAngCalc*NewTf2EntityIndexCalc(const char*,int e,int b=-1,int m=0){Entity=e;Bone=b;Mode=m;auto c=new IMirvVecAngCalc(e);c->Bone=b;c->Mode=m;return c;}}g_MirvVecAngCalcs;
 constexpr int SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2,MIRV_TF2_BONEMODE_BONE=0;int g_SourceSdkVer=1;
 bool Mirv_Tf2_ParseBoneArg(int,const char*s,int&bone){bone=std::atoi(s);return bone>=-1;}
 constexpr unsigned VK_LEFT=0x25,VK_RIGHT=0x27;
@@ -640,12 +640,15 @@ bool Mirv_Tf2_GetPlayerInfo(int,char*,size_t,int*);
 std::shared_ptr<const advancedfx::SceneCache::Frame>cachedFrame;
 std::deque<advancedfx::SceneCache::Frame> cameraFrames;std::uint64_t cameraFramesRevision=0;
 bool cached=false;namespace AfxHookSource{namespace CameraOverlay{void VisitCameraSceneFrames(const std::function<void(const std::deque<advancedfx::SceneCache::Frame>&,std::uint64_t)>&fn){fn(cameraFrames,cameraFramesRevision);}double EditingClientTime(double t){return t;}void SceneCacheFollowCameraTime(double){}bool guides=false,frustums=true;void SetCameraGuides(bool v){guides=v;}void SetCameraFrustums(bool v){frustums=v;}bool CameraGuidesEnabled(){return guides;}bool CameraFrustumsEnabled(){return frustums;}bool SceneCachePreviewActive(){return cached;}std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView(){return cachedFrame;}}}
-bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc*c,const advancedfx::SceneCache::Entity&e,const advancedfx::SceneCache::Entity*,SOURCESDK::Vector&o,SOURCESDK::QAngle&a){++cachedTargetReads;o.x=e.Origin[0]+c->Shift[0];o.y=e.Origin[1]+c->Shift[1];o.z=e.Origin[2]+c->Shift[2];a.x=e.Angles[0];a.y=e.Angles[1];a.z=e.Angles[2];return true;}
+bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc*c,const advancedfx::SceneCache::Entity&e,const advancedfx::SceneCache::Entity*,SOURCESDK::Vector&o,SOURCESDK::QAngle&a,double*pivot=nullptr){if(pivot)std::copy(e.Origin,e.Origin+3,pivot);++cachedTargetReads;o.x=e.Origin[0]+c->Shift[0];o.y=e.Origin[1]+c->Shift[1];o.z=e.Origin[2]+c->Shift[2];a.x=e.Angles[0];a.y=e.Angles[1];a.z=e.Angles[2];return true;}
+bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc*c,double*pivot,void*&entity,double*root,int*mode=nullptr){auto f=targets.find(c->Entity);if(f==targets.end())return false;entity=&f->second;for(int i=0;i<3;++i)pivot[i]=root[i]=f->second.Position[i];if(mode)*mode=c->Mode;return true;}
+bool Mirv_Tf2_CameraBone(IMirvVecAngCalc*c,int&bone,std::string&name){bone=c->Bone;name=bone>=0?"fixture_bone":"";return true;}
+bool MirvCam_EditAttachment(std::uint64_t,int,const char*,int);
 bool MirvCam_EditMotion(std::uint64_t,const advancedfx::CameraMotion&);
 bool MirvCam_SelectedCameraAction(const char*);
 bool MirvCam_CameraAction(const char*,std::uint64_t);
 
-struct Engine{bool Playing=true;bool IsPlayingDemo(){return Playing;}}engine;Engine*g_VEngineClient=&engine;
+struct Engine{bool Playing=true;bool IsPlayingDemo(){return Playing;}bool IsInGame(){return true;}bool IsDrawingLoadingImage(){return false;}}engine;Engine*g_VEngineClient=&engine;
 struct PathKeys{size_t Count=2;bool Enabled=true;bool Enabled_get(){return Enabled;}size_t GetSize(){return Count;}};
 struct FixturePathValue{double X=0,Y=0,Z=0;Afx::Math::Quaternion R{1,0,0,0};double Fov=80;};
 struct PlaybackPath{bool Enabled=false,Hold=true;double Offset=0,Base=0;bool Evaluable=true;bool CanEval(){return Evaluable;}double GetOffset(){return Offset;}bool GetHold(){return Hold;}double GetLowerBound(){return 0;}double GetUpperBound(){return 1000;}FixturePathValue Eval(double time){FixturePathValue v;v.X=Base+time;return v;}};
@@ -663,6 +666,27 @@ rig_preamble+='\n#include <cstdarg>\n#define _WIN64 1\nusing namespace Afx::Math
 aim_commands=(root/'AfxHookSource/MirvCommands.cpp').read_text()
 aim_parser=aim_commands[aim_commands.index('static void AimMessage('):aim_commands.index('CON_COMMAND(mirv_aim,')]
 rig_preamble+='\nstruct Clock {double Now=0;double GetTime(){return Now;}}g_MirvTime;\n'
+calcs_motion=(root/'AfxHookSource/MirvCalcs.cpp').read_text()
+calcs_motion_header=(root/'AfxHookSource/MirvCalcs.h').read_text()
+def motion_function(text, signature):
+ begin=text.index(signature);brace=text.index('{',begin);end=brace+1;depth=1
+ while depth:
+  if text[end]=='{':depth+=1
+  elif text[end]=='}':depth-=1
+  end+=1
+ return text[begin:end]
+motion_header=calcs_motion_header[calcs_motion_header.index('struct MirvCameraCollisionSettings'):calcs_motion_header.index('MirvCameraCollisionSettings MirvCameraCollisionGet();')]
+motion_stubs=r"""
+struct MirvTf2Trace_t{bool startSolid=false,allSolid=false;float fraction=1;};
+MirvCameraCollisionSettings fixtureFollowSettings;MirvCameraCollisionSettings MirvCameraCollisionGet(){return fixtureFollowSettings;}
+bool CameraCollisionClear(const double*,const MirvCameraCollisionSettings&,void* =nullptr){std::abort();}
+bool CameraCollisionTrace(const double*,const double*,const MirvCameraCollisionSettings&,MirvTf2Trace_t&,void* =nullptr,void* =nullptr){std::abort();}
+bool CameraCollisionMove(const double*,const double*,const MirvCameraCollisionSettings&,double*,void* =nullptr){std::abort();}
+void CameraReturnTarget(const double*,const double*,double,double,double,double*){std::abort();}
+"""
+rig_preamble+=motion_header+motion_stubs+motion_function(calcs_motion,'bool MirvCameraAttachedReframe(')+motion_function(calcs_motion,'bool MirvCameraAttachedEvaluate(')
+rig_preamble+='\nMirvCameraAttachedState g_AttachedCameraHistory;struct FixtureGeneration{unsigned long long load(){return 1;}}g_AttachedCameraGeneration;\n'+motion_function(calcs_motion,'bool MirvCameraAttachedApply(')
+
 # Run the actual legacy attachment command body too, not a second imitation of its grammar.
 attach_start=rig_source.index('else if (0 == _stricmp("attach", arg1))')
 attach_end=rig_source.index('else if (0 == _stricmp("attachMode", arg1))',attach_start)
@@ -679,7 +703,7 @@ bool ApplyOffset(float&,float&,float&,float&,float&,float&);
 }g_MirvCam;
 IMirvVecAngCalc*g_MirvCamAttachCalc=nullptr;
 void MirvCam_SetAttachCalc(IMirvVecAngCalc*p){if(p)p->AddRef();if(g_MirvCamAttachCalc)g_MirvCamAttachCalc->Release();g_MirvCamAttachCalc=p;}
-const char*MirvCam_AttachModeName(int){return "test";}
+const char*MirvCam_AttachModeName(int mode){static const char*names[]={"bone","entity","aligned","world"};return mode>=0&&mode<4?names[mode]:"unknown";}
 void MirvCameraAttachedReset(){}void MirvCameraAttachFollowCommand(advancedfx::ICommandArgs*){}
 bool MirvCameraAttachedCapturePose(IMirvVecAngCalc*,const double*,const double*){return false;}
 bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc*c,const double*o,const double*,float*offset){auto f=targets.find(c->Entity);if(f==targets.end())return false;for(int i=0;i<3;++i)offset[i]=c->Shift[i]=o[i]-f->second.Position[i];return true;}
@@ -688,9 +712,9 @@ int Mirv_Tf2_GetMaxPlayers(){return 8;}bool Mirv_Tf2_GetPlayerInfo(int e,char*na
 legacy_fixture+=r'''
 std::string Mirv_Tf2_CameraTargetModel(int e){return targetModels.count(e)?targetModels[e]:"models/test.mdl";}
 int Mirv_Tf2_FindCameraTarget(std::uint64_t id,const std::string&model){for(auto &e:targets){if(!(id>>63)){if(playerUsers.count(e.first)&&std::uint64_t(playerUsers[e.first])==id)return e.first;}else if(Mirv_Tf2_EntityHandle(&e.second)==unsigned(id)&&Mirv_Tf2_CameraTargetModel(e.first)==model)return e.first;}return -1;}
-IMirvVecAngCalc*Mirv_Tf2_RebindCamera(IMirvVecAngCalc*old,int e){auto c=new IMirvVecAngCalc(e);for(int i=0;i<3;++i)c->Shift[i]=old->Shift[i];return c;}
+IMirvVecAngCalc*Mirv_Tf2_RebindCamera(IMirvVecAngCalc*old,int e){auto c=new IMirvVecAngCalc(e);c->Bone=old->Bone;c->Mode=old->Mode;for(int i=0;i<3;++i)c->Shift[i]=old->Shift[i];return c;}
 '''
-legacy_methods=rig_source[rig_source.index('static bool MirvCam_ReleaseLiveAttachment()'):rig_source.index('static char const * MirvCam_AttachModeName')]+legacy_methods.replace('CMirvCam::','LegacyCam::')
+legacy_methods=rig_source[rig_source.index('static bool MirvCam_ReleaseLiveAttachment()'):rig_source.index('static char const')]+legacy_methods.replace('CMirvCam::','LegacyCam::')
 attach_command='void LegacyAttachCommand(advancedfx::ICommandArgs*args){CameraEditTransaction history;int argc=args->ArgC();'+attach_body+'}\n'
 rig_tests=r'''
 struct Args:advancedfx::ICommandArgs{std::vector<const char*>v;int ArgC()override{return int(v.size());}const char*ArgV(int i)override{return v.at(i);}};
@@ -857,14 +881,19 @@ advancedfx::CameraPose motionTarget;targets[5]=motionTarget;playerUsers[5]=6;g_C
 advancedfx::CameraClip orbitClip;orbitClip.Time=100;orbitClip.Target=motionId;assert(MirvCam_EditClip(orbitClip));assert(MirvCam_EnableSequence(true)&&MirvCam_SequencePreviewActive());MirvCam_SetSequencePreviewTime(101);MirvCam_EvaluateRig(999,pose);assert(std::abs(pose.Position[0])<1e-6&&std::abs(pose.Position[1]-10)<1e-6);MirvCam_SetSequencePreviewTime(100.5);MirvCam_EvaluateRig(999,pose);assert(std::abs(pose.Position[0]-std::sqrt(50))<1e-6);MirvCam_ClearClips();
 g_MirvTime.Now=100.5;auto motion=g_CameraRigs.at(motionName).Rig.Motion;motion.OrbitSpeed=180;assert(MirvCam_EditMotion(motionId,motion));MirvCam_EvaluateRig(100.5,pose);assert(std::abs(pose.Position[0]-std::sqrt(50))<1e-6&&std::abs(pose.Position[1]-std::sqrt(50))<1e-6);g_MirvTime.Now=101;auto recapture=pose;recapture.Position[0]=20;recapture.Position[1]=0;assert(MirvCam_EditCamera(motionId,recapture));MirvCam_EvaluateRig(101,pose);assert(std::abs(pose.Position[0]-20)<1e-6&&std::abs(pose.Position[1])<1e-6);
 motion=g_CameraRigs.at(motionName).Rig.Motion;motion.OrbitSpeed=0;assert(MirvCam_EditMotion(motionId,motion));recapture.Position[0]=10;assert(MirvCam_EditCamera(motionId,recapture));motion.FollowHalfLife=.1;motion.RotationHalfLife=.1;motion.MaxDistance=motion.TeleportDistance=0;assert(MirvCam_EditMotion(motionId,motion));assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.at(motionName).Rig.Motion.FollowHalfLife==0);assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.at(motionName).Rig.Motion.FollowHalfLife==.1);
-MirvCam_EndRigPreview();assert(!MirvCam_EvaluateRig(101,pose));targets[5].Position[0]=100;assert(!MirvCam_EvaluateRig(101.1,pose));command({"mirv_cam","preview",motionName.c_str()});MirvCam_EvaluateRig(101.1,pose);assert(std::abs(pose.Position[0]-60)<1e-5);MirvCam_EvaluateRig(101.1,pose);assert(std::abs(pose.Position[0]-60)<1e-5);
+MirvCam_EndRigPreview();assert(!MirvCam_EvaluateRig(101,pose));targets[5].Position[0]=100;assert(!MirvCam_EvaluateRig(101.1,pose));command({"mirv_cam","preview",motionName.c_str()});MirvCam_EvaluateRig(101.1,pose);const double liveFollowX=pose.Position[0];MirvCam_EvaluateRig(101.1,pose);assert(std::abs(pose.Position[0]-liveFollowX)<1e-5);
+fixtureFollowSettings=RigFollowSettings(g_CameraRigs.at(motionName).Rig.Motion);g_AttachedCameraHistory={};double goldenPivot[3]={0,0,0};float goldenX=10,goldenY=0,goldenZ=0;auto goldenAnglesQ=g_CameraRigs.at(motionName).Rig.Pose.Rotation.ToQREulerAngles().ToQEulerAngles();float goldenAngles[3]={float(goldenAnglesQ.Pitch),float(goldenAnglesQ.Yaw),float(goldenAnglesQ.Roll)};MirvCameraAttachedApply((void*)1,(void*)2,goldenPivot,101,goldenX,goldenY,goldenZ,goldenPivot,goldenAngles);goldenPivot[0]=100;goldenX=110;goldenY=goldenZ=0;goldenAngles[0]=float(goldenAnglesQ.Pitch);goldenAngles[1]=float(goldenAnglesQ.Yaw);goldenAngles[2]=float(goldenAnglesQ.Roll);MirvCameraAttachedApply((void*)1,(void*)2,goldenPivot,101.1,goldenX,goldenY,goldenZ,goldenPivot,goldenAngles);assert(std::abs(liveFollowX-goldenX)<1e-4);
+
 // Cached follow reconstructs history from checkpoints, independent of scrub order.
 for(int i=0;i<=200;++i){advancedfx::SceneCache::Frame f;f.DemoTime=i/66.0;f.ClientTime=100+i/66.0;advancedfx::SceneCache::Entity e;e.Identity=6;e.Origin[0]=2*i;f.Entities.push_back(e);cameraFrames.push_back(f);}++cameraFramesRevision;cached=true;
 auto queryMotion=[&](double index){auto f=std::make_shared<advancedfx::SceneCache::Frame>();f->ClientTime=100+index/66;advancedfx::SceneCache::Entity e;e.Identity=6;e.Origin[0]=2*index;f->Entities.push_back(e);cachedFrame=f;assert(MirvCam_EvaluateRig(f->ClientTime,pose)&&!g_RigUnavailable);return pose.Position[0];};
-auto expectedMotion=[&](double index){double filtered=0,last=0;for(int i=1;i<=int(index);++i){double time=i/66.0;filtered+=(1-std::exp2(-(time-last)/.1))*(2*i-filtered);last=time;}if(index>int(index))filtered+=(1-std::exp2(-(index/66-last)/.1))*(double(float(2*index))-filtered);return filtered+10;};
+auto expectedMotion=[&](double index){fixtureFollowSettings=RigFollowSettings(g_CameraRigs.at(motionName).Rig.Motion);g_AttachedCameraHistory={};float x=0,y=0,z=0;auto apply=[&](double time,double value){advancedfx::CameraPose raw,desired;raw.Position[0]=double(float(value));double pivot[3]={raw.Position[0],0,0};g_CameraRigs.at(motionName).Rig.Evaluate(&raw,desired,time,pivot);x=float(desired.Position[0]);y=float(desired.Position[1]);z=float(desired.Position[2]);const auto a=desired.Rotation.ToQREulerAngles().ToQEulerAngles();float angles[3]={float(a.Pitch),float(a.Yaw),float(a.Roll)};MirvCameraAttachedApply((void*)1,(void*)2,pivot,time,x,y,z,pivot,angles);};const double time=100+index/66;for(const auto &f:cameraFrames){if(f.ClientTime>time+1e-9)break;if(f.Entities.empty()){g_AttachedCameraHistory.Valid=false;continue;}apply(f.ClientTime,f.Entities[0].Origin[0]);}apply(time,2*index);return double(x);};
 const auto forwardMotion=queryMotion(150.5);assert(std::abs(forwardMotion-expectedMotion(150.5))<1e-5);queryMotion(30.25);assert(std::abs(queryMotion(150.5)-forwardMotion)<1e-9);for(int i=200;i>=0;--i)assert(std::abs(queryMotion(i)-expectedMotion(i))<1e-5);
 const auto readsBeforeCheckpoint=cachedTargetReads;queryMotion(150.5);assert(cachedTargetReads-readsBeforeCheckpoint<65);auto appended=cameraFrames.back();appended.DemoTime=201/66.0;appended.ClientTime=100+201/66.0;appended.Entities[0].Origin[0]=402;cameraFrames.push_back(appended);++cameraFramesRevision;const auto readsBeforeAppend=cachedTargetReads;assert(std::abs(queryMotion(201)-expectedMotion(201))<1e-5&&cachedTargetReads-readsBeforeAppend<66);
-cameraFrames[100].Entities.clear();++cameraFramesRevision;assert(std::abs(queryMotion(101)-212)<1e-5);for(int i=0;i<64;++i)cameraFrames.pop_front();++cameraFramesRevision;double motionRetainedExpected=128;for(int i=65;i<=90;++i)motionRetainedExpected+=(1-std::exp2(-1.0/66/.1))*(2*i-motionRetainedExpected);assert(std::abs(queryMotion(90)-(motionRetainedExpected+10))<1e-5);const auto priorClock=cameraFrames[10].ClientTime;cameraFrames[10].ClientTime=cameraFrames[9].ClientTime-.1;++cameraFramesRevision;assert(MirvCam_EvaluateRig(100+90/66.0,pose)&&g_RigUnavailable);cameraFrames[10].ClientTime=priorClock;++cameraFramesRevision;assert(std::abs(queryMotion(90)-(motionRetainedExpected+10))<1e-5);cameraFrames.clear();++cameraFramesRevision;cached=false;cachedFrame.reset();
+cameraFrames[100].Entities.clear();++cameraFramesRevision;assert(std::abs(queryMotion(101)-212)<1e-5);for(int i=0;i<64;++i)cameraFrames.pop_front();++cameraFramesRevision;double motionRetainedExpected=expectedMotion(90)-10;assert(std::abs(queryMotion(90)-(motionRetainedExpected+10))<1e-5);const auto priorClock=cameraFrames[10].ClientTime;cameraFrames[10].ClientTime=cameraFrames[9].ClientTime-.1;++cameraFramesRevision;assert(MirvCam_EvaluateRig(100+90/66.0,pose)&&g_RigUnavailable);cameraFrames[10].ClientTime=priorClock;++cameraFramesRevision;assert(std::abs(queryMotion(90)-(motionRetainedExpected+10))<1e-5);cameraFrames.clear();++cameraFramesRevision;cached=false;cachedFrame.reset();
+// Captured calculators can hold the entire boom: local pose zero must still orbit the physical pivot.
+targets[5].Position[0]=0;g_MirvTime.Now=110;auto physicalMotion=g_CameraRigs.at(motionName).Rig.Motion;physicalMotion.FollowHalfLife=physicalMotion.BoneHalfLife=physicalMotion.OrbitSpeed=0;assert(MirvCam_EditMotion(motionId,physicalMotion));g_CameraRigs.at(motionName).Target->Shift[0]=30;g_CameraRigs.at(motionName).Rig.Pose.Position[0]=g_CameraRigs.at(motionName).Rig.Pose.Position[1]=g_CameraRigs.at(motionName).Rig.Pose.Position[2]=0;physicalMotion.OrbitSpeed=90;assert(MirvCam_EditMotion(motionId,physicalMotion));MirvCam_EvaluateRig(111,pose);assert(std::abs(pose.Position[0])<.001&&std::abs(pose.Position[1]-30)<.001);
+g_MirvTime.Now=111;physicalMotion.OrbitSpeed=0;assert(MirvCam_EditMotion(motionId,physicalMotion));MirvCam_EvaluateRig(111,pose);const auto beforeRetarget=pose;targets[8]=motionTarget;targets[8].Position[0]=200;const auto countBeforeRetarget=g_CameraRigs.size();assert(MirvCam_EditAttachment(motionId,8,"3",3));MirvCam_EvaluateRig(111,pose);assert(g_CameraRigs.size()==countBeforeRetarget&&g_CameraRigs.at(motionName).EntityAddress==8&&g_CameraRigs.at(motionName).Id==motionId);for(int axis=0;axis<3;++axis)assert(std::abs(pose.Position[axis]-beforeRetarget.Position[axis])<.001);assert(!MirvCam_EditAttachment(motionId,999,"-1",0)&&g_CameraRigs.at(motionName).EntityAddress==8);assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.at(motionName).EntityAddress==5);assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.at(motionName).EntityAddress==8);command({"mirv_cam","edit",motionName.c_str(),"attach","5","-1","entity"});assert(g_CameraRigs.at(motionName).EntityAddress==5&&g_CameraRigs.at(motionName).AttachMode==1&&g_CameraRigs.size()==countBeforeRetarget);
 std::cout<<"Consolidated camera commands, legacy attach registration and preview switching checks passed\n";}
 '''
 source=out/'camera_rig_adapter.cpp';source.write_text(rig_preamble+legacy_fixture+rig_adapter+legacy_methods+attach_command+aim_parser+rig_tests)

@@ -322,6 +322,30 @@ struct MirvCameraCollisionSettings
 	double BoneHalfLife = 0, FollowTeleportDistance = 1024, AttachedSoftDistance = 24;
 	double OrbitHalfLife = .15, OrbitSpeed = 360, FollowRecoveryDelay = 1;
 };
+struct MirvCameraAttachedState
+{
+	bool Valid = false, Retracted = false, Contracting = false;
+	double LastAllowed = 0;
+	const void *Identity = nullptr;
+	void *Entity = nullptr;
+	unsigned long long Generation = 0;
+	double Time = 0, ArmLength = 0, Position[3] = {}, FollowPosition[3] = {};
+	double Desired[3] = {}, AuthoredAngles[3] = {}, DisplayAngles[3] = {};
+	bool HasAngles = false;
+	double Root[3] = {}, FollowVelocity[3] = {}, BonePosition[3] = {}, BoneVelocity[3] = {};
+	double FollowHalfLife = 0, BoneHalfLife = 0;
+	// Orbit, composition and focus are one shot state. Source poses remain inputs,
+	// rather than repeatedly replacing the camera with an instantly rotating boom.
+	Afx::Math::Quaternion Orbit, Composition, View;
+	double OrbitLength = 0, OrbitYaw = 0, BlockedTime = 0;
+	bool CompositionValid = false;
+};
+// One implementation for legacy attachment and saved-camera evaluation.
+// Callers own the state and settings; cached callers disable live collision tracing.
+bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &state, const MirvCameraCollisionSettings &settings,
+								unsigned long long generation, const void *identity, void *entity,
+								const double pivot[3], double sceneTime, float &x, float &y, float &z,
+								const double *entityOrigin = nullptr, float *angles = nullptr);
 MirvCameraCollisionSettings MirvCameraCollisionGet();
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);
 void MirvCameraCollisionReset();
@@ -440,7 +464,9 @@ int Mirv_Tf2_FindCameraTarget(std::uint64_t identity, const std::string &model);
 IMirvVecAngCalc *Mirv_Tf2_RebindCamera(IMirvVecAngCalc *calc, int entity);
 // Read-only sampled target evaluation; the calc must come from NewTf2EntityIndexCalc.
 bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc *calc, const advancedfx::SceneCache::Entity &entity,
- const advancedfx::SceneCache::Entity *owner, SOURCESDK::Vector &origin, SOURCESDK::QAngle &angles);
+							   const advancedfx::SceneCache::Entity *owner, SOURCESDK::Vector &origin,
+							   SOURCESDK::QAngle &angles, double *pivot = nullptr);
+bool Mirv_Tf2_CameraBone(IMirvVecAngCalc *calc, int &index, std::string &name);
 // Engine-thread submission only: Source queues the draw; HLAE queues resource retirement.
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
  const advancedfx::SceneCache::Entity *owner = nullptr);

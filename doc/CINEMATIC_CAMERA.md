@@ -2553,39 +2553,56 @@ Without cached motion, entity attachment and aiming use the current live poses;
 aiming is evaluated without advancing the live smoothing history. Individual
 `mirv_cam preview <ID/name>` inspection remains an explicit override.
 
-### Per-camera follow and orbit
+### Per-camera attachment, follow and orbit
 
-Select an attached camera in **Cameras**, then expand **Motion**. Edit the fields
-and choose **Apply camera motion**; **Reset camera motion** restores rigid behavior.
-Changes participate in camera undo/redo and cinematic project save/load. New
-projects use format version 2; existing version-1 projects still load with rigid defaults.
+Select a camera and expand **Attachment** to edit its entity address, bone index/name
+(`-1` means no bone), and existing Bone/Entity/Aligned/World mode. **Apply attachment**
+retargets that same camera and preserves its current world framing. Camera IDs,
+sequence references and undo/redo remain intact. Return to live playback before
+changing bindings; attachment selection uses the existing entity/bone resolver.
 
-- **Follow half-life** smooths the attachment position; **Rotation half-life**
-  independently smooths its orientation. Values are 0..10 seconds; zero disables
-  that filter. Half-life is the time to close half the remaining positional/angular error.
-- **Maximum follow lag** caps positional lag in world units. **Teleport reset
-  distance** snaps the filter when the raw target moves farther than this in one
-  observed step. Zero disables the respective distance limit. Missing targets,
-  backward live time and gaps over 0.25 seconds reset the live filter.
-- **Orbit speed** circles around the attachment's local up axis at a signed rate
-  in degrees/second (maximum magnitude 3600). The captured offset supplies radius
-  and height; capture a framing away from the pivot before orbiting. Zero stops
-  at the current pose. Changing speed preserves the current pose, and recapturing
-  saves framing at the current orbit phase. Attachment modes still define the
-  pivot/coordinate frame. Existing per-camera aiming can track the subject independently.
+```text
+mirv_cam edit 0 attach 5 head entity
+mirv_cam edit 0 attach 8 -1 world
+```
+
+**Motion** uses the same attachment follow evaluator as `mirv_cam attach follow`,
+with state/settings owned by each saved camera. There is no separate position or
+rotation smoothing algorithm. Root and bone damping, orbit/composition response,
+lag limits, teleport resets and framing correction use the existing controller.
+Live collision tracing remains on the legacy view; saved and cached motion use
+the shared follow controller with live collision disabled.
+
+**Follow half-life** controls root damping; **Follow bone half-life** independently
+controls bone movement. **Follow orbit half-life** and **Follow turn-rate limit**
+control the existing turn/composition response while root follow is enabled.
+The latter is the legacy `orbitSpeed` follow option, not an automatic orbit rate.
+**Maximum follow lag** and **Teleport reset distance** use world units. Zero disables
+the respective filter/limit. World attachment mode keeps its authored heading;
+existing per-camera aiming remains available for independent target tracking.
 
 ```text
 mirv_cam edit 0 follow 0.15 0.08
-mirv_cam edit 0 follow 0.15 0.08 128 256
+mirv_cam edit 0 follow boneHalfLife 0.05
+mirv_cam edit 0 follow orbitSpeed 180
+mirv_cam edit 0 follow maxDistance 128
+mirv_cam edit 0 follow teleportDistance 1024
+```
+
+**Orbit speed** supplies a signed automatic orbit rate around the physical entity/bone
+pivot on the world up axis. The full captured boom is rotated, including offsets
+stored inside an attachment calculator. Its maximum magnitude is 3600 degrees/second.
+Capture framing away from the pivot to provide a radius; zero radius cannot circle.
+Changing speed preserves the current pose; recapture saves framing at the current phase.
+
+```text
 mirv_cam edit 0 orbit 30
 mirv_cam edit 0 orbit 0
 ```
 
-Orbit follows the evaluated demo/preview client time, so backward sequence scrubbing
-returns to the same position. Without cached motion, sequence preview keeps targets
-at their current poses while orbiting them. Live follow stays warm even when another
-camera is being viewed. Cached follow is reconstructed from recorded target history,
-including gaps, and never depends on scrub direction. Its first available observation
-seeds the filter; record some lead-in before the shot for settled damping. A small
-checkpoint per 64 frames limits repeated reconstruction, and append-only recording
-extends those checkpoints without copying recorded entity or bone arrays.
+Motion settings support undo/redo and project persistence. New projects use format
+version 3, while version-1 and version-2 projects still load. Orbit follows the
+preview/demo clock. Uncached sequence preview uses frozen target poses; cached
+follow replays recorded history through the same attachment controller using small
+checkpoints, giving the same result in either scrub direction. Its first available
+observation seeds the state, so record lead-in before shots that need settled follow.

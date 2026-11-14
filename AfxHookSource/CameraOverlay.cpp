@@ -6650,6 +6650,42 @@ static void DrawCamerasTab()
 			ImGui::TextDisabled(
 				"World position and angles. Attached cameras keep their target and attachment mode.");
 		}
+		if (ImGui::CollapsingHeader("Attachment"))
+		{
+			static std::uint64_t attachmentId = ~std::uint64_t(0);
+			static int entity = -1, mode = 0;
+			static char bone[128]{};
+			static int sourceEntity = -2, sourceMode = -1, sourceBone = -2;
+			static std::string sourceBoneName;
+			if (attachmentId != selected || sourceEntity != found->EntityAddress ||
+				sourceMode != found->AttachMode || sourceBone != found->BoneIndex ||
+				sourceBoneName != found->BoneName)
+			{
+				attachmentId = selected;
+				sourceEntity = found->EntityAddress;
+				sourceMode = found->AttachMode;
+				sourceBone = found->BoneIndex;
+				sourceBoneName = found->BoneName;
+				entity = found->EntityAddress;
+				mode = found->AttachMode;
+				std::snprintf(bone, sizeof(bone), "%s",
+							  found->BoneName.empty() ? std::to_string(found->BoneIndex).c_str()
+													  : found->BoneName.c_str());
+			}
+			ImGui::InputInt("Attachment entity", &entity);
+			ImGui::InputText("Attachment bone", bone, sizeof(bone));
+			const char *modes[] = {"Bone", "Entity", "Aligned", "World"};
+			ImGui::Combo("Attachment mode", &mode, modes, 4);
+			ImGui::BeginDisabled(SceneCachePreviewActive());
+			if (ImGui::Button("Apply attachment"))
+				g_DocumentStatus =
+					MirvCam_EditAttachment(selected, entity, bone, mode)
+						? "Camera attachment updated; framing preserved."
+						: "Attachment unavailable. Check the entity and bone in live playback.";
+			ImGui::EndDisabled();
+			ImGui::TextWrapped("Bone accepts -1, an index, or a name. Apply changes this camera without "
+							   "creating another. Return to live playback to change targets.");
+		}
 		if (ImGui::CollapsingHeader("Motion"))
 		{
 			static std::uint64_t motionId = ~std::uint64_t(0);
@@ -6664,7 +6700,11 @@ static void DrawCamerasTab()
 			ImGui::BeginDisabled(!found->Attached);
 			motionDirty |= ImGui::InputDouble("Follow half-life (s)", &motion.FollowHalfLife, 0, 0, "%.3f");
 			motionDirty |=
-				ImGui::InputDouble("Rotation half-life (s)", &motion.RotationHalfLife, 0, 0, "%.3f");
+				ImGui::InputDouble("Follow bone half-life (s)", &motion.BoneHalfLife, 0, 0, "%.3f");
+			motionDirty |=
+				ImGui::InputDouble("Follow turn-rate limit (deg/s)", &motion.TurnRate, 0, 0, "%.1f");
+			motionDirty |=
+				ImGui::InputDouble("Follow orbit half-life (s)", &motion.RotationHalfLife, 0, 0, "%.3f");
 			motionDirty |= ImGui::InputDouble("Maximum follow lag", &motion.MaxDistance, 0, 0, "%.1f");
 			motionDirty |=
 				ImGui::InputDouble("Teleport reset distance", &motion.TeleportDistance, 0, 0, "%.1f");
@@ -6689,9 +6729,10 @@ static void DrawCamerasTab()
 			ImGui::EndDisabled();
 			if (!found->Attached)
 				ImGui::TextDisabled("Attach this camera to an entity or bone to use follow and orbit.");
-			ImGui::TextWrapped("Zero disables each motion. Distances use world units; zero disables a "
-							   "distance limit. Orbit uses the attachment's local up axis. Recapture saves "
-							   "your framing. Aiming remains independent.");
+			ImGui::TextWrapped(
+				"Follow uses the existing attachment controller and its framing correction. Orbit smoothing "
+				"and turn limits apply while root follow is enabled. Orbit speed circles the physical pivot "
+				"on the world up axis; capture an offset first.");
 		}
 		if (ImGui::CollapsingHeader("Aiming"))
 		{
