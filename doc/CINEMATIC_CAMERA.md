@@ -2739,3 +2739,28 @@ frame retirement. Previously it requested bone poses at FRAME_RENDER_START,
 which could preempt the live renderer's normal interpolated bone setup. The
 capture-stage fixture checks that the engine finishes rendering before any scene
 pose capture. Visual improvement still requires testing in the game.
+
+### Follow and smooth aiming share the camera clock
+
+Independent cameras evaluate attachment/follow (including collision) first,
+then aiming from that final position, then camera modifiers. Source transitions
+blend the completed poses. The existing follow and Aiming controllers are reused.
+
+Smooth aiming uses elapsed demo/client time while the scene advances, matching
+attachment follow rather than the render frame duration. With the scene paused,
+render time still lets aiming settle; follow remains stationary. Repeated calls
+at the same render frame and camera time reuse the aim result. Distinct camera
+times within one render frame evaluate separately, so subframes and capture do
+not pair a fresh follow position with a stale heading. Follow and aim share the
+same large-gap reset threshold. Backward time changes still reset live aim;
+recorded cached-camera samples and frozen inspection keep their existing behavior.
+
+Follow lag and aim velocity/acceleration remain separate artistic controls.
+A tracking limit can still let a fast target leave the frame; this synchronization
+change does not force snap-to or change those limits.
+
+The shared acceleration-limited smoother also preserves displacement across all
+phases of an update and ignores roundoff-sized leftover time. Previously a later
+phase could overwrite earlier motion, including after very small timing changes.
+Zero/nonpositive limits stop smoothing motion instead of entering zero-duration
+phases. The same corrected routine is used by legacy aiming and calculator callers.

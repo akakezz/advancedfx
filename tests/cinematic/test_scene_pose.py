@@ -844,6 +844,8 @@ assert(aimCommand({"mirv_aim","camera","Aimed","point","abs","333","1000","0"}))
 MirvCam_EndRigPreview();MirvCam_EvaluateRig(105,pose,3,1.0/60);const auto frameBeforeGuides=g_CameraRigs.at("Aimed").AimFrame;auto guideInfo=MirvCam_Cameras(true);assert(g_CameraRigs.at("Aimed").AimFrame==frameBeforeGuides);auto guideCamera=std::find_if(guideInfo.begin(),guideInfo.end(),[](const auto&c){return c.Name=="Aimed";});assert(guideCamera!=guideInfo.end());command({"mirv_cam","preview","Aimed"});MirvCam_EvaluateRig(105,pose,3,1.0/60);assert(std::abs(pose.Rotation.W-guideCamera->Pose.Rotation.W)<1e-9&&std::abs(pose.Rotation.Z-guideCamera->Pose.Rotation.Z)<1e-9);
 // Inactive aimed cameras advance even while guides and source preview are disabled.
 MirvCam_EndRigPreview();const auto outsideBefore=g_CameraRigs.at("Aimed").AimRotation;guides=false;MirvCam_EvaluateRig(105,pose,4,1.0/60);const auto outsideAfter=g_CameraRigs.at("Aimed").AimRotation;assert(outsideAfter.W!=outsideBefore.W||outsideAfter.Z!=outsideBefore.Z);assert(g_CameraRigs.at("Aimed").LastWorld.Rotation.W==outsideAfter.W);
+// Background sources also advance for a new scene time within the same render frame.
+MirvCam_EvaluateRig(105.005,pose,4,1.0/60);assert(g_CameraRigs.at("Aimed").AimTime==105.005);const auto subframeAim=g_CameraRigs.at("Aimed").AimRotation;MirvCam_EvaluateRig(105.005,pose,4,1.0/60);assert(g_CameraRigs.at("Aimed").AimRotation.W==subframeAim.W&&g_CameraRigs.at("Aimed").AimRotation.Z==subframeAim.Z);
 // Recorded tracking uses observed smooth output during forward/backward cached scrubbing.
 advancedfx::SceneCache tracked(1024*1024);advancedfx::SceneCache::Frame ca,cb;ca.DemoTime=ca.ClientTime=105;MirvCam_CaptureCameras(105,5,1.0/60,ca.Cameras);assert(!ca.Cameras.empty());cb.DemoTime=cb.ClientTime=105.01;MirvCam_CaptureCameras(105.01,6,1.0/60,cb.Cameras);assert(tracked.Append(ca)&&tracked.Append(cb));auto interpolated=std::make_shared<advancedfx::SceneCache::Frame>();assert(tracked.Sample(105.005,*interpolated));cachedFrame=interpolated;cached=true;command({"mirv_cam","preview","Aimed"});MirvCam_EvaluateRig(105.005,pose);auto capturedAim=std::find_if(interpolated->Cameras.begin(),interpolated->Cameras.end(),[&](const auto&c){return c.Id==aimedId;});assert(capturedAim!=interpolated->Cameras.end()&&std::abs(pose.Rotation.W-capturedAim->Pose.Rotation.W)<1e-9);MirvCam_EvaluateRig(105.005,pose);assert(std::abs(pose.Rotation.W-capturedAim->Pose.Rotation.W)<1e-9);const auto recordedDefinition=g_CameraRigs.at("Aimed").Definition;assert(MirvCam_RenameCamera(aimedId,"Tracking name")&&g_CameraRigs.at("Tracking name").Definition==recordedDefinition);assert(MirvCam_RenameCamera(aimedId,"Aimed")&&g_CameraRigs.at("Aimed").Definition==recordedDefinition);advancedfx::CameraClip temporary;temporary.Target=aimedId;temporary.Time=200;assert(MirvCam_EditClip(temporary)&&g_CameraRigs.at("Aimed").Definition==recordedDefinition);assert(MirvCam_RemoveClip(temporary.Id));assert(aimCommand({"mirv_aim","camera","Aimed","offset","0","0","9"}));assert(g_CameraRigs.at("Aimed").Definition!=recordedDefinition);cached=false;cachedFrame.reset();MirvCam_EndRigPreview();
 // The common mixer can blend into and out of existing campath playback without changing it.
@@ -924,6 +926,60 @@ cameraFrames[100].Entities.clear();++cameraFramesRevision;assert(std::abs(queryM
 // Captured calculators can hold the entire boom: local pose zero must still orbit the physical pivot.
 targets[5].Position[0]=0;g_MirvTime.Now=110;auto physicalMotion=g_CameraRigs.at(motionName).Rig.Motion;physicalMotion.FollowHalfLife=physicalMotion.BoneHalfLife=physicalMotion.OrbitSpeed=0;assert(MirvCam_EditMotion(motionId,physicalMotion));g_CameraRigs.at(motionName).Target->Shift[0]=30;g_CameraRigs.at(motionName).Rig.Pose.Position[0]=g_CameraRigs.at(motionName).Rig.Pose.Position[1]=g_CameraRigs.at(motionName).Rig.Pose.Position[2]=0;physicalMotion.OrbitSpeed=90;assert(MirvCam_EditMotion(motionId,physicalMotion));MirvCam_EvaluateRig(111,pose);assert(std::abs(pose.Position[0])<.001&&std::abs(pose.Position[1]-30)<.001);
 g_MirvTime.Now=111;physicalMotion.OrbitSpeed=0;assert(MirvCam_EditMotion(motionId,physicalMotion));MirvCam_EvaluateRig(111,pose);const auto beforeRetarget=pose;targets[8]=motionTarget;targets[8].Position[0]=200;const auto countBeforeRetarget=g_CameraRigs.size();assert(MirvCam_EditAttachment(motionId,8,"3",3));MirvCam_EvaluateRig(111,pose);assert(g_CameraRigs.size()==countBeforeRetarget&&g_CameraRigs.at(motionName).EntityAddress==8&&g_CameraRigs.at(motionName).Id==motionId);for(int axis=0;axis<3;++axis)assert(std::abs(pose.Position[axis]-beforeRetarget.Position[axis]-(axis==0?200:0))<.001);assert(!MirvCam_EditAttachment(motionId,999,"-1",0)&&g_CameraRigs.at(motionName).EntityAddress==8);assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.at(motionName).EntityAddress==5);assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.at(motionName).EntityAddress==8);command({"mirv_cam","edit",motionName.c_str(),"attach","5","-1","entity"});assert(g_CameraRigs.at(motionName).EntityAddress==5&&g_CameraRigs.at(motionName).AttachMode==1&&g_CameraRigs.size()==countBeforeRetarget);
+
+
+
+// Shared acceleration-limited smoothing is continuous across roundoff-sized
+// time differences, and preserves distance when a step spans several phases.
+for(double velocity:{-180.,-90.,0.,90.,180.})for(double distance:{-180.,-1.,-.1,.1,1.,180.}){
+ double v0=velocity,v1=velocity,d0=0,d1=0;
+ CalcDeltaSmooth(std::nextafter(1./60,0.),distance,d0,v0,360,90);
+ CalcDeltaSmooth(std::nextafter(1./60,1.),distance,d1,v1,360,90);
+ assert(std::abs(d0-d1)<1e-7&&std::abs(v0-v1)<1e-7);
+}
+{
+ double v0=50,v1=50,d0=0,position=0;
+ CalcDeltaSmooth(1,.2,d0,v0,360,90);
+ for(int i=0;i<1000;++i){double moved=0;CalcDeltaSmooth(.001,.2-position,moved,v1,360,90);position+=moved;}
+ assert(std::abs(d0-position)<1e-5&&std::abs(v0-v1)<1e-5);
+ for(auto limits:{std::array<double,2>{0,90},std::array<double,2>{360,0}}){double moved=1,velocity=50;CalcDeltaSmooth(.1,10,moved,velocity,limits[0],limits[1]);assert(moved==0&&velocity==0);}
+}
+
+// Follow + smooth aiming must use one scene-time sample. Match the existing
+// controllers in order, including the reported .5-second aligned head setup.
+{
+ const auto savedTarget=targets[5];const auto savedShift=g_CameraRigs.at(motionName).Target->Shift[2];
+ for(int mode=0;mode<4;++mode)for(int boom:{0,80})for(int clock=0;clock<4;++clock){
+  auto combined=g_CameraRigs.at(motionName);combined.Follow={};combined.FollowCache.reset();combined.AttachMode=mode;
+  combined.Rig.Motion={};combined.Rig.Motion.FollowHalfLife=.5;combined.Rig.InheritRotation=mode!=MIRV_TF2_BONEMODE_WORLD;
+  combined.Rig.Pose.Position[0]=-boom;combined.Rig.Pose.Position[1]=combined.Rig.Pose.Position[2]=0;combined.Target->Shift[2]=64;
+  combined.Aim=std::make_shared<Aiming>();combined.Aim->Active=true;combined.Aim->SnapTo=false;combined.AimTime=-1;combined.AimFrame=-1;combined.AimDirty=true;
+  auto followOnly=combined;followOnly.Aim.reset();auto oracle=combined.Aim->CloneSettings();
+  for(int i=0;i<120;++i){
+   targets[5].Position[0]=i*.8;targets[5].Position[1]=std::sin(i*.04)*30;
+   targets[5].Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({std::sin(i*.1)*8,i*.7,std::sin(i*.08)*4}));
+   const Vector3 tracked(targets[5].Position[0]+300,targets[5].Position[1]+100,64);
+   combined.Aim->TargetPoint(tracked);oracle->TargetPoint(tracked);
+   const double sceneStep=clock==3?.5:clock==2?1./30:1./60;
+   g_CameraEvaluationTime=200+i*sceneStep;g_CameraEvaluationFrame=clock==1?i/2:i;g_CameraEvaluationStep=1./120;
+   advancedfx::CameraPose followed,actual,repeated;assert(EvaluateNamedRig(followOnly,followed));
+   auto expected=followed.Rotation.ToQREulerAngles().ToQEulerAngles();if(i==0)oracle->Reset(expected.Pitch,expected.Yaw,expected.Roll);
+   oracle->Aim(i?sceneStep:1./66,Vector3(followed.Position[0],followed.Position[1],followed.Position[2]),expected.Pitch,expected.Yaw,expected.Roll);
+   const auto expectedRotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles(expected));
+   assert(EvaluateNamedRig(combined,actual));assert(EvaluateNamedRig(combined,repeated));
+   for(int a=0;a<3;++a){assert(std::abs(actual.Position[a]-followed.Position[a])<1e-5);assert(actual.Position[a]==repeated.Position[a]);}
+   if(1-std::abs(Afx::Math::DotProduct(actual.Rotation,expectedRotation))>=1e-10)std::cerr<<"Follow/aim mismatch mode="<<mode<<" boom="<<boom<<" clock="<<clock<<" sample="<<i<<" time="<<g_CameraEvaluationTime<<" angle error="<<(1-std::abs(Afx::Math::DotProduct(actual.Rotation,expectedRotation)))<<"\n";
+   assert(1-std::abs(Afx::Math::DotProduct(actual.Rotation,expectedRotation))<1e-10);
+   assert(1-std::abs(Afx::Math::DotProduct(actual.Rotation,repeated.Rotation))<1e-10);
+  }
+  const double x=combined.LastWorld.Position[0],y=combined.LastWorld.Position[1],z=combined.LastWorld.Position[2];
+  combined.Aim->TargetPoint(Vector3(targets[5].Position[0]+100,targets[5].Position[1]-300,90));
+  ++g_CameraEvaluationFrame;advancedfx::CameraPose paused,duplicate;assert(EvaluateNamedRig(combined,paused));assert(EvaluateNamedRig(combined,duplicate));
+  assert(paused.Position[0]==x&&paused.Position[1]==y&&paused.Position[2]==z);
+  assert(1-std::abs(Afx::Math::DotProduct(paused.Rotation,duplicate.Rotation))<1e-10);
+ }
+ targets[5]=savedTarget;g_CameraRigs.at(motionName).Target->Shift[2]=savedShift;
+}
 
 // Display order is independent of persistent clip/camera references.
 MirvCam_ClearClips();MirvCam_EndRigPreview();MirvCam_ReleaseLiveAttachment();g_CameraRigs.clear();g_CameraRigName.clear();g_EditingCameraName.clear();g_LegacyCameraName.clear();

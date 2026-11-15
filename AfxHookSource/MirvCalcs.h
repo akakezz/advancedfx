@@ -324,6 +324,7 @@ struct MirvCameraCollisionSettings
 };
 struct MirvCameraAttachedState
 {
+	static constexpr double MaxContinuousGap = 10; // Shared follow/aim scene-time reset threshold.
 	bool Valid = false, Retracted = false, Contracting = false;
 	double LastAllowed = 0;
 	const void *Identity = nullptr;

@@ -76,6 +76,20 @@ void CalcDeltaSmooth(double deltaT, double targetDeltaPos, double & resultDeltaP
 		return;
 	}
 
+	// Zero limits cannot advance this profile. Avoid zero-duration phases and
+	// division by zero (these values can also arrive through legacy commands).
+	if (!std::isfinite(deltaT) || !std::isfinite(targetDeltaPos) || !std::isfinite(lastVel) ||
+		!std::isfinite(LimitVelocity) || !std::isfinite(LimitAcceleration) || LimitVelocity <= 0 ||
+		LimitAcceleration <= 0)
+	{
+		resultDeltaPos = 0;
+		lastVel = 0;
+		return;
+	}
+	double accumulatedDelta = 0;
+	const double timeTolerance = (std::max)(1e-12, deltaT * 1e-12);
+	resultDeltaPos = 0;
+
 	// What we would like to have ideally is this:
 	// https://www.physicsforums.com/threads/3rd-order-motion-profile-programming-sinusoidal.868148/
 
@@ -155,8 +169,9 @@ void CalcDeltaSmooth(double deltaT, double targetDeltaPos, double & resultDeltaP
 	// 1) Position error: abs(deltaPos -resultDeltaPos)
 	// 2) Position time: phase1T +phase2T +phase3T +phase4T +phase5T +phase6T +phase7T
 
-	while (0 < deltaT)
+	while (timeTolerance < deltaT)
 	{
+		const double previousTime = deltaT;
 		//Tier0_Msg("%f ", deltaT);
 
 		if (lastVel > LimitVelocity)
@@ -332,7 +347,12 @@ void CalcDeltaSmooth(double deltaT, double targetDeltaPos, double & resultDeltaP
 					resultDeltaPos = targetDeltaPos;
 				}
 			}
+			accumulatedDelta += resultDeltaPos;
+			targetDeltaPos -= resultDeltaPos;
+			if (deltaT >= previousTime)
+				break; // A degenerate phase cannot consume more time.
 	}
+	resultDeltaPos = accumulatedDelta;
 }
 
 void CalcSmooth(double deltaT, double targetPos, double & lastPos, double & lastVel, double LimitVelocity, double LimitAcceleration)
@@ -6343,10 +6363,10 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		rootJump2 += (root[a] - history.Root[a]) * (root[a] - history.Root[a]);
 	}
 	const bool continuous = history.Valid && history.Identity == identity && history.Entity == entity &&
-	                        history.Generation == generation && sceneTime >= history.Time &&
-	                        sceneTime - history.Time <= 10 &&
-	                        (settings.FollowTeleportDistance == 0 ||
-	                         rootJump2 <= settings.FollowTeleportDistance * settings.FollowTeleportDistance);
+							history.Generation == generation && sceneTime >= history.Time &&
+							sceneTime - history.Time <= MirvCameraAttachedState::MaxContinuousGap &&
+							(settings.FollowTeleportDistance == 0 ||
+							 rootJump2 <= settings.FollowTeleportDistance * settings.FollowTeleportDistance);
 	const double dt = continuous ? sceneTime - history.Time : 0;
 	const bool following = settings.FollowHalfLife > 1e-6;
 	const bool shotContinuous = continuous && (history.FollowHalfLife > 1e-6) == following;

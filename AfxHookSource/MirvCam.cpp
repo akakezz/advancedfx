@@ -1176,23 +1176,31 @@ bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 	}
 	auto angles = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
 	const double time = g_CameraEvaluationTime;
-	if (!inspecting && !camera.AimDirty && camera.AimCached == cached &&
-		(g_CameraEvaluationFrame >= 0 ? camera.AimFrame == g_CameraEvaluationFrame : camera.AimTime == time))
+	if (!inspecting && !camera.AimDirty && camera.AimCached == cached && camera.AimTime == time &&
+		(g_CameraEvaluationFrame < 0 || camera.AimFrame == g_CameraEvaluationFrame))
 	{
 		pose.Rotation = camera.AimRotation;
 		return true;
 	}
 	double delta = time - camera.AimTime;
-	if (inspecting || camera.AimTime < 0 || camera.AimCached != cached || delta < 0 || delta > .25)
+	// Follow and aiming share scene time while it advances. A render frame can
+	// contain several distinct camera times (subframes, seeking or recording).
+	// Match the existing follow controller's continuity window; a slow frame
+	// must not reset aim to the raw bone orientation while follow keeps running.
+	if (inspecting || camera.AimTime < 0 || camera.AimCached != cached || delta < 0 ||
+		delta > MirvCameraAttachedState::MaxContinuousGap)
 	{
 		aim.Reset(angles.Pitch, angles.Yaw, angles.Roll);
 		delta = 1.0 / 66;
 	}
-	if (!inspecting && g_CameraEvaluationFrame >= 0 && std::isfinite(g_CameraEvaluationStep) &&
-		g_CameraEvaluationStep > 0)
-		delta = g_CameraEvaluationStep;
+	// Only a frozen scene uses render time, so paused aiming can settle without
+	// advancing attachment motion. Repeated samples of the same frame/time
+	// already returned above and cannot consume another smoothing step.
 	if (delta == 0)
-		delta = 1.0 / 66;
+		delta = !inspecting && g_CameraEvaluationFrame >= 0 && std::isfinite(g_CameraEvaluationStep) &&
+						g_CameraEvaluationStep > 0
+					? g_CameraEvaluationStep
+					: 1.0 / 66;
 	if (aim.Aim(delta, Vector3(pose.Position[0], pose.Position[1], pose.Position[2]), angles.Pitch, angles.Yaw,
 				angles.Roll, overrideTarget))
 		pose.Rotation = Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles(angles));
@@ -1576,7 +1584,7 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 			(!camera.Follow.Valid || camera.Follow.Time != clientTime);
 		if (warmFollow ||
 			(camera.Aim && (camera.Aim->Active || camera.Aim->SoftDeactivate) &&
-			 (camera.AimDirty || (frame >= 0 ? camera.AimFrame != frame : camera.AimTime != clientTime))))
+			 (camera.AimDirty || camera.AimTime != clientTime || (frame >= 0 && camera.AimFrame != frame))))
 		{
 			advancedfx::CameraPose background;
 			EvaluateNamedRig(camera, background);
