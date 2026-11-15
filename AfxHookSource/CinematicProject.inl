@@ -31,7 +31,10 @@ bool ProjectRig(std::ostream &out, const NamedCameraRig &r, int depth = 0)
 	out << motion.FollowHalfLife << ' ' << motion.RotationHalfLife << ' ' << motion.MaxDistance << ' '
 		<< motion.TeleportDistance << ' ' << motion.OrbitSpeed << ' ' << motion.OrbitEpoch << ' '
 		<< motion.BoneHalfLife << ' ' << motion.TurnRate << '\n';
-	if (!ProjectPose(out, r.Rig.Pose) || !ProjectPose(out, r.LastWorld))
+	out << r.Modifiers.size() << '\n';
+	for (const auto &link : r.Modifiers)
+		out << link.Id << ' ' << link.Influence << ' ' << link.Enabled << '\n';
+	if (!ProjectPose(out, r.Rig.Pose) || !ProjectPose(out, r.LastWorld) || !ProjectPose(out, r.BaseWorld))
 		return false;
 	out << bool(r.Target) << '\n';
 	if (r.Target && !Mirv_Tf2_SaveCamera(out, r.Target.get()))
@@ -71,8 +74,29 @@ bool ProjectRig(std::istream &in, NamedCameraRig &r, int version, int depth = 0)
 	if (version >= 3)
 		if (!(in >> r.Rig.Motion.BoneHalfLife >> r.Rig.Motion.TurnRate) || !r.Rig.Motion.Valid())
 			return false;
+	if (version >= 4)
+	{
+		size_t count;
+		if (!(in >> count) || count > 64)
+			return false;
+		for (size_t i = 0; i < count; ++i)
+		{
+			advancedfx::CameraModifierLink link;
+			if (!(in >> link.Id >> link.Influence >> link.Enabled) || !std::isfinite(link.Influence) ||
+				link.Influence < 0 || link.Influence > 1)
+				return false;
+			r.Modifiers.push_back(link);
+		}
+	}
 	if (!ProjectPose(in, r.Rig.Pose) || !ProjectPose(in, r.LastWorld))
 		return false;
+	if (version >= 4)
+	{
+		if (!ProjectPose(in, r.BaseWorld))
+			return false;
+	}
+	else
+		r.BaseWorld = r.LastWorld;
 	bool present;
 	if (!(in >> present))
 		return false;
@@ -162,7 +186,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	SyncRigLevel();
 	std::ostringstream out;
 	out.imbue(std::locale::classic());
-	out << std::setprecision(17) << "HLAE_CINEMATIC 3\n";
+	out << std::setprecision(17) << "HLAE_CINEMATIC 4\n";
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto state = paths.CaptureState();
 	out << state.Paths.size() << ' ' << state.Active << '\n';
@@ -193,6 +217,15 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	for (auto &m : markers)
 		out << m.Tick << ' ' << std::quoted(m.Name) << ' ' << std::quoted(m.Command) << ' ' << m.Enabled << ' '
 			<< m.RunOnSeek << '\n';
+	out << g_CameraModifiers.size() << '\n';
+	for (const auto &m : g_CameraModifiers)
+	{
+		CamPath data;
+		std::string xml;
+		if (!data.SetModifiers({m.Settings}) || !data.SaveToString(xml))
+			return false;
+		out << m.Id << ' ' << std::quoted(m.Name) << ' ' << std::quoted(xml) << '\n';
+	}
 	out << "END\n";
 	return bool(out) && ProjectWrite(file, out.str());
 }
@@ -213,7 +246,7 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	int version;
 	size_t count;
 	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" ||
-		(version != 1 && version != 2 && version != 3))
+		(version != 1 && version != 2 && version != 3 && version != 4))
 		return false;
 	CamPathCollection::State paths;
 	std::set<unsigned long long> pathIds, rigIds, clipIds;
@@ -284,6 +317,32 @@ bool MirvCam_LoadProject(const wchar_t *file)
 		if (!m.Id || !checked.SetTickMarker(m))
 			return false;
 	}
+	std::vector<MirvCameraModifier> modifiers;
+	std::set<std::uint64_t> modifierIds;
+	if (version >= 4)
+	{
+		if (!(in >> count) || count > 128)
+			return false;
+		for (size_t i = 0; i < count; ++i)
+		{
+			MirvCameraModifier m;
+			std::string xml;
+			CamPath data;
+			if (!(in >> m.Id >> std::quoted(m.Name) >> std::quoted(xml)) || !m.Id ||
+				m.Id >= 0x7fffffffffffffffull || !modifierIds.insert(m.Id).second || m.Name.empty() ||
+				m.Name.size() > 128 || !data.LoadFromString(xml) || data.GetModifiers().size() != 1)
+				return false;
+			m.Settings = data.GetModifiers()[0];
+			if (m.Settings.Type != CamPath::ModifierType::Noise &&
+				m.Settings.Type != CamPath::ModifierType::Oscillation)
+				return false;
+			modifiers.push_back(m);
+		}
+	}
+	for (const auto &entry : rigs)
+		for (const auto &link : entry.second.Modifiers)
+			if (!modifierIds.count(link.Id))
+				return false;
 	if (!(in >> magic) || magic != "END")
 		return false;
 	in >> std::ws;
@@ -299,6 +358,9 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
 	g_Hook_VClient_RenderView.m_CamPaths.RestoreState(paths);
 	g_Hook_VClient_RenderView.m_CamPaths.ResetProjectHistory();
+	g_CameraModifiers = std::move(modifiers);
+	for (const auto &m : g_CameraModifiers)
+		g_NextModifierId = (std::max)(g_NextModifierId, m.Id + 1);
 	g_CameraRigs = std::move(rigs);
 	g_CameraRigName = selected;
 	g_CameraClips = std::move(clips);

@@ -2657,3 +2657,28 @@ Live target lookup, cached-pose replay and the independent preview clock remain
 different data/state adapters; they do not introduce another follow, aiming or
 blend algorithm. Classic baking's previously reported problems remain a separate,
 deferred task; this consolidation does not claim to resolve them.
+
+### Shared camera modifiers (initial version)
+
+Open **Modifiers**, choose **New modifier**, name it, and select Noise/shake or
+Oscillation. Set its range in client seconds, strength, frequency, seed and
+position/FOV/angle amplitudes, then **Apply shared modifier**. A new effect starts
+at the current demo/cache/sequence-preview time and lasts ten seconds by default.
+
+In **Cameras**, select one or more cameras and open **Modifier stack → Add
+modifier**. This links the shared definition to every selected camera. Editing
+the definition updates all links. On a single camera, links have independent
+enabled/influence controls, Up/Down ordering, Unlink, and **Make independent**
+(which copies that definition for just this link). Deleting a definition unlinks
+it everywhere; undo restores it and its links.
+
+The stack runs after attachment, follow, orbit and aiming, before source blending.
+Noise and oscillation call the existing campath additive evaluator; their output
+is deterministic at the preview/demo client time. Base poses are retained for
+pose editing, recapture and cached tracking, so effects are not applied twice and
+editing a modifier does not invalidate recorded base-camera movement.
+
+Definitions and links participate in camera undo/redo and cinematic project files.
+New files use format 4; versions 1–3 still load. This initial version deliberately
+exposes only the existing additive effects. History-dependent and path-retiming
+modifiers are not yet offered for procedural cameras.

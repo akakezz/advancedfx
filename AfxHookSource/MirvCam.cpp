@@ -374,13 +374,16 @@ struct CameraFollowCache
 	MirvCameraAttachedState Tail;
 	std::vector<MirvCameraAttachedState> Checkpoints;
 };
+std::vector<MirvCameraModifier> g_CameraModifiers;
+std::uint64_t g_NextModifierId = 1;
 struct NamedCameraRig
 {
+	std::vector<advancedfx::CameraModifierLink> Modifiers;
 	unsigned long long Id = 0;
 	std::uint64_t Definition = g_NextCameraDefinition++;
 	int AttachMode = MIRV_TF2_BONEMODE_BONE;
 	advancedfx::CameraRig Rig;
-	advancedfx::CameraPose LastWorld;
+	advancedfx::CameraPose LastWorld, BaseWorld;
 	MirvCameraAttachedState Follow;
 	std::shared_ptr<CameraFollowCache> FollowCache;
 	std::shared_ptr<IMirvVecAngCalc> Target;
@@ -539,6 +542,7 @@ struct CameraHistoryState
 	std::vector<advancedfx::CameraClip> Clips;
 	std::string Demo;
 	int Level = -1;
+	std::vector<MirvCameraModifier> Modifiers;
 };
 std::vector<CameraHistoryState> g_CameraUndo, g_CameraRedo;
 unsigned g_CameraEditDepth = 0;
@@ -581,11 +585,11 @@ bool SameCameraDefinitions(const std::map<std::string, NamedCameraRig> &a,
 	{
 		const auto &x = left->second;
 		const auto &y = right->second;
-		if (left->first != right->first || x.Id != y.Id || x.AttachMode != y.AttachMode ||
-			x.Rig.Attached != y.Rig.Attached || x.Rig.InheritRotation != y.Rig.InheritRotation ||
-			!(x.Rig.Motion == y.Rig.Motion) || x.EntityAddress != y.EntityAddress ||
-			x.TargetHandle != y.TargetHandle || x.CacheIdentity != y.CacheIdentity ||
-			x.Target.get() != y.Target.get())
+		if (x.Modifiers != y.Modifiers || left->first != right->first || x.Id != y.Id ||
+			x.AttachMode != y.AttachMode || x.Rig.Attached != y.Rig.Attached ||
+			x.Rig.InheritRotation != y.Rig.InheritRotation || !(x.Rig.Motion == y.Rig.Motion) ||
+			x.EntityAddress != y.EntityAddress || x.TargetHandle != y.TargetHandle ||
+			x.CacheIdentity != y.CacheIdentity || x.Target.get() != y.Target.get())
 			return false;
 		const auto &p = x.Rig.Pose;
 		const auto &q = y.Rig.Pose;
@@ -627,7 +631,8 @@ class CameraEditTransaction
 		Owner = ++g_CameraEditDepth == 1;
 		if (Owner)
 		{
-			Before = {g_CameraRigs, g_CameraRigName, g_CameraClips, g_SequenceDemo, g_SequenceLevel};
+			Before = {g_CameraRigs,	  g_CameraRigName, g_CameraClips,
+					  g_SequenceDemo, g_SequenceLevel, g_CameraModifiers};
 			Snapshot = CloneCameraState(Before);
 			CaptureRevision = g_CameraCaptureRevision;
 		}
@@ -650,7 +655,9 @@ class CameraEditTransaction
 			bool changed = before == Before.Cameras.end();
 			if (!changed)
 			{
-				changed = !SameCameraDefinitions({{"camera", before->second}}, {{"camera", entry.second}});
+				auto baseBefore = before->second;
+				baseBefore.Modifiers = entry.second.Modifiers;
+				changed = !SameCameraDefinitions({{"camera", baseBefore}}, {{"camera", entry.second}});
 				Aiming defaults;
 				const auto &a = snapshot->second.Aim;
 				const auto &b = entry.second.Aim;
@@ -1118,6 +1125,35 @@ bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 	camera.AimDirty = false;
 	return pose.Valid();
 }
+bool FinishCameraPose(NamedCameraRig &rig, advancedfx::CameraPose &pose)
+{
+	rig.BaseWorld = pose;
+	for (const auto &link : rig.Modifiers)
+		if (link.Enabled && link.Influence > 0)
+		{
+			auto definition = std::find_if(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+										   [&](const auto &m) { return m.Id == link.Id; });
+			if (definition == g_CameraModifiers.end())
+				return false;
+			auto settings = definition->Settings;
+			settings.Strength *= link.Influence;
+			auto angles = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
+			CamPathValue value(pose.Position[0], pose.Position[1], pose.Position[2], angles.Pitch, angles.Yaw,
+							   angles.Roll, pose.Fov);
+			if (!CamPath::ApplyPoseModifier(value, settings, g_CameraEvaluationTime))
+				return false;
+			pose.Position[0] = value.X;
+			pose.Position[1] = value.Y;
+			pose.Position[2] = value.Z;
+			pose.Rotation = value.R;
+			pose.Fov = std::clamp(value.Fov, 1.0, 179.0);
+		}
+	if (!pose.Valid())
+		return false;
+	rig.LastWorld = pose;
+	rig.Available = true;
+	return true;
+}
 bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
 	rig.Available = false;
@@ -1129,10 +1165,8 @@ bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 			for (const auto &sample : frame->Cameras)
 				if (sample.Id == rig.Id && sample.Definition == rig.Definition)
 				{
-					pose = sample.Pose;
-					rig.LastWorld = pose;
-					rig.Available = pose.Valid();
-					return rig.Available;
+					pose = sample.HasBasePose ? sample.BasePose : sample.Pose;
+					return FinishCameraPose(rig, pose);
 				}
 	}
 	const auto camera = "Camera " + std::to_string(rig.Id) + ": ";
@@ -1157,10 +1191,9 @@ bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 					 : "aim target is unavailable.");
 		return false;
 	}
-	rig.LastWorld = pose;
-	rig.Available = true;
-	return true;
+	return FinishCameraPose(rig, pose);
 }
+
 bool EditCameraPose(const std::string &name, NamedCameraRig &camera, const advancedfx::CameraPose &pose)
 {
 	if (!pose.Valid())
@@ -1178,7 +1211,7 @@ bool EditCameraPose(const std::string &name, NamedCameraRig &camera, const advan
 	camera.Follow = {};
 	camera.FollowCache.reset();
 	camera.AimTime = -1;
-	camera.LastWorld = pose;
+	camera.LastWorld = camera.BaseWorld = pose;
 	camera.Available = true;
 	if (camera.Rig.Attached && g_LegacyCameraName == name && g_MirvCamAttachCalc == camera.Target.get() &&
 		g_MirvCam.Source_get() == camera.Target.get())
@@ -1233,7 +1266,7 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 			rig.Rig.Pose = RigCapture();
 			if (!rig.Rig.Pose.Valid())
 				return;
-			rig.LastWorld = rig.Rig.Pose;
+			rig.LastWorld = rig.BaseWorld = rig.Rig.Pose;
 			g_CameraRigs.emplace(name, std::move(rig));
 			g_LastRigPose = g_CameraRigs.at(name).Rig.Pose;
 			g_CameraRigName = name;
@@ -1275,7 +1308,7 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 		}
 		if (!_stricmp(action, "capture"))
 		{
-			if (!MirvCam_EditCamera(found->second.Id, RigCapture()))
+			if (!MirvCam_CameraAction("capture", found->second.Id))
 				Tier0_Warning("Camera target unavailable or pose invalid; camera retained.\n");
 			return;
 		}
@@ -1355,7 +1388,7 @@ bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const a
 	if (!CameraAttachmentTarget(attached, CameraAuthoringTime(), target, pivot) ||
 		!attached.Rig.Attach(world, target, true, CameraAuthoringTime(), pivot))
 		return false;
-	attached.LastWorld = world;
+	attached.LastWorld = attached.BaseWorld = world;
 	std::string name;
 	if (edited != g_CameraRigs.end())
 	{
@@ -1424,7 +1457,8 @@ void MirvCam_CaptureCameras(double time, int frame, double step,
 		{
 			advancedfx::CameraPose pose;
 			if (EvaluateNamedRig(entry.second, pose))
-				samples.push_back({entry.second.Id, entry.second.Definition, pose});
+				samples.push_back(
+					{entry.second.Id, entry.second.Definition, pose, entry.second.BaseWorld, true});
 		}
 	g_CameraEvaluationTime = previousTime;
 	g_CameraEvaluationFrame = previousFrame;
@@ -1777,8 +1811,8 @@ bool MirvCam_HistoryUndo(bool redo)
 	auto selected = g_CameraRigs.find(g_CameraRigName);
 	if (selected != g_CameraRigs.end())
 		selectedId = selected->second.Id;
-	to.push_back(
-		CloneCameraState({g_CameraRigs, g_CameraRigName, g_CameraClips, g_SequenceDemo, g_SequenceLevel}));
+	to.push_back(CloneCameraState(
+		{g_CameraRigs, g_CameraRigName, g_CameraClips, g_SequenceDemo, g_SequenceLevel, g_CameraModifiers}));
 	auto state = std::move(from.back());
 	from.pop_back();
 	MirvCam_ReleaseLiveAttachment();
@@ -1789,6 +1823,7 @@ bool MirvCam_HistoryUndo(bool redo)
 	g_CameraClips = std::move(state.Clips);
 	g_SequenceDemo = state.Demo;
 	g_SequenceLevel = state.Level;
+	g_CameraModifiers = std::move(state.Modifiers);
 	g_CameraRigName = state.Selected;
 	for (auto &entry : g_CameraRigs)
 		if (entry.second.Id == selectedId)
@@ -2399,6 +2434,8 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		advancedfx::CameraPose pose;
 		if (!EvaluateNamedRig(found->second, pose))
 			pose = found->second.LastWorld;
+		if (!found->second.Modifiers.empty())
+			pose = found->second.BaseWorld;
 		MirvCampathPreview_SetActive(false);
 		g_CameraRigName = found->first;
 		g_LastRigPose = pose;
@@ -2543,7 +2580,18 @@ bool MirvCam_CameraAction(const char *action, std::uint64_t id)
 	if (found == g_CameraRigs.end())
 		return false;
 	if (!std::strcmp(action, "capture"))
-		return MirvCam_EditCamera(id, RigCapture());
+	{
+		auto pose = RigCapture();
+		if (!found->second.Modifiers.empty() && g_RigPreview && g_CameraSource == CameraSource::Rig &&
+			g_CameraRigName == found->first)
+		{
+			advancedfx::CameraPose rendered;
+			if (!EvaluateNamedRig(found->second, rendered))
+				return false;
+			pose = found->second.BaseWorld;
+		}
+		return MirvCam_EditCamera(id, pose);
+	}
 
 	struct Args : advancedfx::ICommandArgs
 	{
@@ -2572,8 +2620,8 @@ bool MirvCam_EditCameras(const std::vector<std::uint64_t> &ids,
 		if (FindRig(std::to_string(id)) == g_CameraRigs.end())
 			return false;
 	CameraEditTransaction history;
-	auto before =
-		CameraHistoryState{g_CameraRigs, g_CameraRigName, g_CameraClips, g_SequenceDemo, g_SequenceLevel};
+	auto before = CameraHistoryState{g_CameraRigs,	 g_CameraRigName, g_CameraClips,
+									 g_SequenceDemo, g_SequenceLevel, g_CameraModifiers};
 	const auto source = g_CameraSource;
 	const auto preview = g_RigPreview;
 	const auto last = g_LastRigPose;
@@ -2601,6 +2649,7 @@ bool MirvCam_EditCameras(const std::vector<std::uint64_t> &ids,
 			g_CameraClips = std::move(before.Clips);
 			g_SequenceDemo = before.Demo;
 			g_SequenceLevel = before.Level;
+			g_CameraModifiers = std::move(before.Modifiers);
 			g_CameraSource = source;
 			g_RigPreview = preview;
 			g_LastRigPose = last;
@@ -2672,7 +2721,7 @@ bool MirvCam_EditAttachment(std::uint64_t id, int entity, const char *bone, int 
 	}
 	else if (!updated.Rig.Attach(current, anchor, updated.Rig.InheritRotation, time, pivot))
 		return false;
-	updated.LastWorld = current;
+	updated.LastWorld = updated.BaseWorld = current;
 	updated.Available = true;
 	CameraEditTransaction history;
 	const bool legacy =
@@ -2740,6 +2789,69 @@ bool MirvCam_EditMotion(std::uint64_t id, const advancedfx::CameraMotion &motion
 	camera.AimDirty = true;
 	return true;
 }
+std::vector<MirvCameraModifier> MirvCam_Modifiers()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	return g_CameraModifiers;
+}
+bool MirvCam_SetModifier(MirvCameraModifier &modifier)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	CamPath checked;
+	if (modifier.Name.empty() || modifier.Name.size() > 128 || !checked.SetModifiers({modifier.Settings}) ||
+		(modifier.Settings.Type != CamPath::ModifierType::Noise &&
+		 modifier.Settings.Type != CamPath::ModifierType::Oscillation))
+		return false;
+	auto found = std::find_if(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+							  [&](const auto &m) { return m.Id == modifier.Id; });
+	if (modifier.Id && found == g_CameraModifiers.end())
+		return false;
+	if (!modifier.Id && g_CameraModifiers.size() >= 128)
+		return false;
+	CameraEditTransaction history;
+	if (!modifier.Id)
+	{
+		modifier.Id = g_NextModifierId++;
+		g_CameraModifiers.push_back(modifier);
+	}
+	else
+		*found = modifier;
+	++g_CameraCaptureRevision;
+	return true;
+}
+bool MirvCam_RemoveModifier(std::uint64_t id)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	auto found = std::find_if(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+							  [&](const auto &m) { return m.Id == id; });
+	if (found == g_CameraModifiers.end())
+		return false;
+	CameraEditTransaction history;
+	for (auto &entry : g_CameraRigs)
+	{
+		auto &links = entry.second.Modifiers;
+		links.erase(std::remove_if(links.begin(), links.end(), [&](const auto &l) { return l.Id == id; }),
+					links.end());
+	}
+	g_CameraModifiers.erase(found);
+	++g_CameraCaptureRevision;
+	return true;
+}
+bool MirvCam_SetModifierLinks(std::uint64_t camera, const std::vector<advancedfx::CameraModifierLink> &links)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	auto found = FindRig(std::to_string(camera));
+	if (found == g_CameraRigs.end() || links.size() > 64)
+		return false;
+	for (const auto &link : links)
+		if (!std::isfinite(link.Influence) || link.Influence < 0 || link.Influence > 1 ||
+			std::none_of(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+						 [&](const auto &m) { return m.Id == link.Id; }))
+			return false;
+	CameraEditTransaction history;
+	found->second.Modifiers = links;
+	return true;
+}
 bool MirvCam_EditCamera(std::uint64_t id, const advancedfx::CameraPose &pose)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
@@ -2771,8 +2883,10 @@ std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
 		advancedfx::CameraInfo info;
 		info.Id = rig.Id;
 		info.Index = cameras.size();
+		info.Modifiers = rig.Modifiers;
 		info.Name = CameraDisplayName(entry.first, rig);
 		info.Pose = rig.LastWorld;
+		info.BasePose = rig.BaseWorld;
 		info.Attached = rig.Rig.Attached;
 		info.Available = rig.Available;
 		info.Motion = rig.Rig.Motion;

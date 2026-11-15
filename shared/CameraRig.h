@@ -139,13 +139,24 @@ struct CameraRig
 		return true;
 	}
 };
+struct CameraModifierLink
+{
+	std::uint64_t Id = 0;
+	double Influence = 1;
+	bool Enabled = true;
+	bool operator==(const CameraModifierLink &o) const
+	{
+		return Id == o.Id && Influence == o.Influence && Enabled == o.Enabled;
+	}
+};
 // Plain-value snapshots: UI and queued drawing never retain registry iterators or target pointers.
 struct CameraInfo
 {
 	std::uint64_t Id = 0;
 	size_t Index = 0;
+	std::vector<CameraModifierLink> Modifiers;
 	std::string Name;
-	CameraPose Pose;
+	CameraPose Pose, BasePose;
 	CameraMotion Motion;
 	bool Attached = false, Available = true, Selected = false, Viewed = false;
 	int EntityAddress = -1, AttachMode = 0, BoneIndex = -1;

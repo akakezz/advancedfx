@@ -146,3 +146,9 @@ void MirvCam_CaptureCameras(double time, int frame, double step,
 std::string MirvCam_BakeStatus();
 
 void MirvCam_BeginFreeCamera();
+
+#include <shared/CameraModifier.h>
+std::vector<MirvCameraModifier> MirvCam_Modifiers();
+bool MirvCam_SetModifier(MirvCameraModifier &modifier);
+bool MirvCam_RemoveModifier(std::uint64_t id);
+bool MirvCam_SetModifierLinks(std::uint64_t camera, const std::vector<advancedfx::CameraModifierLink> &links);

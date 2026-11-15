@@ -2075,6 +2075,15 @@ void ApplyFilterModifier(CamPathValue &value, const CamPath::NoiseModifier &m, d
 }
 
 } // namespace
+bool CamPath::ApplyPoseModifier(CamPathValue &pose, const Modifier &modifier, double time)
+{
+	if (!std::isfinite(time) ||
+		(modifier.Type != ModifierType::Noise && modifier.Type != ModifierType::Oscillation) ||
+		!ValidModifiers({modifier}))
+		return false;
+	ApplyAdditiveModifier(pose, modifier, time);
+	return true;
+}
 void CamPath::BuildModifierCurves()
 {
 	if (m_ModifierRevision == m_GeometryRevision)

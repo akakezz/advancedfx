@@ -307,6 +307,7 @@ public:
 		return m_Modifiers;
 	}
 	bool SetModifiers(const std::vector<NoiseModifier> &modifiers);
+	static bool ApplyPoseModifier(CamPathValue &pose, const Modifier &modifier, double time);
 	static double ModifierInfluence(const NoiseModifier &modifier, double time);
 	static const char *ModifierTypeName(ModifierType type);
 	static double ModifierEase(const Modifier &modifier, double progress);

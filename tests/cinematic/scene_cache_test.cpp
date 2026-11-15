@@ -202,8 +202,10 @@ int main()
  camera.Id = 0;
  camera.Definition = 1;
  camera.Pose.Position[0] = 10;
+ camera.HasBasePose=true;camera.BasePose.Position[0]=1;camera.BasePose.Fov=80;
  c0.Cameras.push_back(camera);
  camera.Pose.Position[0] = 20;
+ camera.BasePose.Position[0]=3;camera.BasePose.Fov=100;
  camera.Pose.Fov = 110;
  c1.Cameras.push_back(camera);
  assert(cameraCache.Append(c0) && cameraCache.Append(c1));
@@ -211,6 +213,8 @@ int main()
  assert(cameraCache.Sample(.025, cameraBlendResult) && cameraBlendResult.Cameras.size() == 1 &&
 		std::abs(cameraBlendResult.Cameras[0].Pose.Position[0] - 15) < 1e-6 &&
 		std::abs(cameraBlendResult.Cameras[0].Pose.Fov - 100) < 1e-6);
+ assert(cameraBlendResult.Cameras[0].HasBasePose&&std::abs(cameraBlendResult.Cameras[0].BasePose.Position[0]-2)<1e-6&&std::abs(cameraBlendResult.Cameras[0].BasePose.Fov-90)<1e-6);
+ Cache invalidBase;auto invalidCameraFrame=c0;invalidCameraFrame.Cameras[0].BasePose.Fov=0;assert(!invalidBase.Append(invalidCameraFrame));
  const auto cameraBytes = cameraCache.Bytes();
  c1.Cameras[0].Definition = 2;
  cameraCache.Clear();

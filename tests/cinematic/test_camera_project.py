@@ -46,10 +46,11 @@ int main(){
  command({"mirv_cam","add","A \\"quoted\\" camera"});auto name=g_CameraRigName;auto id=g_CameraRigs.at(name).Id;
  advancedfx::CameraClip clip;clip.Time=0;clip.Target=id;assert(MirvCam_EditClip(clip));
  auto marker=g_CommandSystem.AddTickMarker(50,"A command","echo \\"hello\\"; echo next\\nline");assert(marker);g_CommandSystem.EnableTickMarkers(true);
+ MirvCameraModifier persistedEffect;persistedEffect.Name="Persisted shake";persistedEffect.Settings.Begin=0;persistedEffect.Settings.End=10;persistedEffect.Settings.Amplitude[4]=2;assert(MirvCam_SetModifier(persistedEffect));assert(MirvCam_SetModifierLinks(g_CameraRigs.begin()->second.Id,{{persistedEffect.Id,.7,true}}));
  assert(MirvCam_SaveProject(file.c_str()));assert(MirvCam_SaveProject(file.c_str()));
  command({"mirv_cam","remove"});path.Clear();g_CommandSystem.ClearTickMarkers();
- assert(MirvCam_LoadProject(file.c_str()));assert(g_CameraRigs.count(name)&&g_CameraRigs.at(name).Id==id);assert(path.GetSize()==2&&g_CameraClips.size()==1);assert(g_CommandSystem.GetTickMarkers().size()==1&&!g_CommandSystem.TickMarkersEnabled()&&!path.Enabled_get());assert(!g_RigPreview&&!g_Hook_VClient_RenderView.m_CamPaths.CanUndo());
- assert(g_CommandSystem.GetTickMarkers().front().Command.find("\\nline")!=std::string::npos);
+ assert(MirvCam_LoadProject(file.c_str()));assert(MirvCam_Modifiers().size()==1&&g_CameraRigs.at(name).Modifiers.size()==1&&g_CameraRigs.at(name).Modifiers[0].Influence==.7);assert(g_CameraRigs.count(name)&&g_CameraRigs.at(name).Id==id);assert(path.GetSize()==2&&g_CameraClips.size()==1);assert(g_CommandSystem.GetTickMarkers().size()==1&&!g_CommandSystem.TickMarkersEnabled()&&!path.Enabled_get());assert(!g_RigPreview&&!g_Hook_VClient_RenderView.m_CamPaths.CanUndo());
+ assert(g_CommandSystem.GetTickMarkers().front().Command.find("\\nline")!=std::string::npos);assert(MirvCam_SetModifierLinks(id,{}));
  const auto saved=g_CameraRigs.size();std::ofstream bad(std::filesystem::path(file),std::ios::trunc);bad<<"HLAE_CINEMATIC 99\\n";bad.close();assert(!MirvCam_LoadProject(file.c_str())&&g_CameraRigs.size()==saved&&path.GetSize()==2);
  assert(MirvCam_Bake(bake.c_str(),std::to_string(id).c_str(),0,1,.1));assert(MirvCam_BakeStatus().find("from camera #"+std::to_string(id))!=std::string::npos);CamPath baked;assert(baked.Load(bake.c_str()));assert(std::abs(baked.Eval(.5).X-1)<1e-6);
  MirvCam_ClearCameraSelection();assert(g_CameraRigName.empty());assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(MirvCam_BakeStatus().find("Sampled 1 of 1 sequence clips")!=std::string::npos);assert(MirvCam_BakeStatus().find("Clip #0 camera #")!=std::string::npos);

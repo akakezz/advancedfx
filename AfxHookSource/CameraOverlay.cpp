@@ -1061,7 +1061,8 @@ static bool g_PreviewHudEnabled = true;
 static bool g_CameraClipsEditing = false;
 static std::uint64_t g_SelectedCameraClip = ~std::uint64_t(0);
 static bool g_OpenCameraClips = false;
-static bool g_ShowCameraGuides=false,g_CameraFrustums=true,g_FocusCameras=false,g_CamerasTabActive=false;
+static bool g_ShowCameraGuides = false, g_CameraFrustums = true, g_FocusCameras = false,
+			g_CamerasTabActive = false, g_ModifiersTabActive = false;
 static std::atomic<bool> g_CameraGuidesPublished{false},g_CameraFrustumsPublished{true};
 static ImGuizmo::OPERATION g_GizmoOp = ImGuizmo::TRANSLATE;
 static ImGuizmo::MODE g_GizmoMode = ImGuizmo::LOCAL;
@@ -6346,7 +6347,7 @@ bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
 static bool CameraHistoryOwnsUi()
 {
 	auto focused = ImGui::GetCurrentContext()->NavWindow;
-	return g_CamerasTabActive || MirvCam_RigNavigation() ||
+	return g_CamerasTabActive || g_ModifiersTabActive || MirvCam_RigNavigation() ||
 		   (g_ShowSequencer && g_CameraClipsEditing && focused && focused->RootWindow &&
 			std::strcmp(focused->RootWindow->Name, "HLAE Sequencer") == 0);
 }
@@ -6551,6 +6552,107 @@ static void DrawSharedCollisionOptions()
 		Afx_ExecClientCmd(command);
 	}
 }
+static void DrawSharedModifiersTab()
+{
+	g_ModifiersTabActive = ImGui::BeginTabItem("Modifiers");
+	if (!g_ModifiersTabActive)
+		return;
+	auto modifiers = MirvCam_Modifiers();
+	static std::uint64_t selected = 0;
+	static MirvCameraModifier draft, baseline;
+	static std::uint64_t draftId = ~std::uint64_t(0);
+	static char name[129]{};
+	if (ImGui::Button("New modifier"))
+	{
+		MirvCameraModifier m;
+		m.Name = "Shake";
+		m.Settings.Begin = MirvCam_SequencePreviewActive() ? MirvCam_SequencePreviewTime()
+														   : EditingClientTime(g_MirvTime.GetTime());
+		m.Settings.End = m.Settings.Begin + 10;
+		m.Settings.Frequency = 4;
+		m.Settings.Amplitude[4] = m.Settings.Amplitude[5] = 1;
+		if (MirvCam_SetModifier(m))
+		{
+			selected = m.Id;
+			draftId = ~std::uint64_t(0);
+		}
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Duplicate modifier") && selected)
+	{
+		auto found =
+			std::find_if(modifiers.begin(), modifiers.end(), [&](const auto &m) { return m.Id == selected; });
+		if (found != modifiers.end())
+		{
+			auto copy = *found;
+			copy.Id = 0;
+			copy.Name += " copy";
+			if (MirvCam_SetModifier(copy))
+			{
+				selected = copy.Id;
+				draftId = ~std::uint64_t(0);
+			}
+		}
+	}
+	for (const auto &m : modifiers)
+	{
+		ImGui::PushID(std::to_string(m.Id).c_str());
+		if (ImGui::Selectable(m.Name.c_str(), selected == m.Id))
+		{
+			selected = m.Id;
+			draftId = ~std::uint64_t(0);
+		}
+		ImGui::PopID();
+	}
+	auto found =
+		std::find_if(modifiers.begin(), modifiers.end(), [&](const auto &m) { return m.Id == selected; });
+	if (found != modifiers.end())
+	{
+		if (draftId != selected || baseline.Name != found->Name || !(baseline.Settings == found->Settings))
+		{
+			baseline = *found;
+			draft = *found;
+			std::snprintf(name, sizeof(name), "%s", draft.Name.c_str());
+			draftId = selected;
+		}
+		ImGui::InputText("Modifier name", name, sizeof(name));
+		int type = draft.Settings.Type == CamPath::ModifierType::Oscillation ? 1 : 0;
+		const char *types[] = {"Noise / shake", "Oscillation"};
+		ImGui::Combo("Modifier type", &type, types, 2);
+		draft.Settings.Type = type ? CamPath::ModifierType::Oscillation : CamPath::ModifierType::Noise;
+		auto &m = draft.Settings;
+		ImGui::Checkbox("Modifier enabled", &m.Enabled);
+		ImGui::Checkbox("Camera space", &m.CameraSpace);
+		ImGui::InputDouble("Begin (client seconds)", &m.Begin);
+		ImGui::InputDouble("End (client seconds)", &m.End);
+		ImGui::InputDouble("Fade in (s)", &m.FadeIn);
+		ImGui::InputDouble("Fade out (s)", &m.FadeOut);
+		ImGui::InputDouble("Strength", &m.Strength);
+		ImGui::InputDouble("Frequency (Hz)", &m.Frequency);
+		ImGui::InputScalar("Seed", ImGuiDataType_U32, &m.Seed);
+		ImGui::InputScalarN("Position amplitude (X/Y/Z)", ImGuiDataType_Double, m.Amplitude, 3);
+		ImGui::InputDouble("FOV amplitude", &m.Amplitude[3]);
+		ImGui::InputScalarN("Angle amplitude (pitch/yaw/roll)", ImGuiDataType_Double, m.Amplitude + 4, 3);
+		if (ImGui::Button("Apply shared modifier"))
+		{
+			draft.Name = name;
+			g_DocumentStatus = MirvCam_SetModifier(draft)
+								   ? "Shared modifier updated on every linked camera."
+								   : "Invalid modifier settings; retained previous values.";
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Delete modifier"))
+		{
+			MirvCam_RemoveModifier(selected);
+			selected = 0;
+		}
+	}
+	ImGui::TextWrapped("Noise and oscillation use the existing campath modifier evaluator. Settings are "
+					   "shared; link order, influence and enabled state belong to each camera. Time uses "
+					   "client seconds, including cached and sequence preview.");
+	ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
+	ImGui::EndTabItem();
+}
 static void DrawCamerasTab()
 {
 	g_CamerasTabActive = ImGui::BeginTabItem("Cameras", nullptr, g_FocusCameras ? ImGuiTabItemFlags_SetSelected : 0);
@@ -6741,6 +6843,91 @@ static void DrawCamerasTab()
 								   ? "Camera recaptured."
 								   : "Camera could not be recaptured; its target is unavailable.";
 
+		if (ImGui::CollapsingHeader("Modifier stack"))
+		{
+			auto definitions = MirvCam_Modifiers();
+			if (ImGui::BeginCombo("Add modifier", "Choose shared modifier"))
+			{
+				for (const auto &m : definitions)
+				{
+					ImGui::PushID(std::to_string(m.Id).c_str());
+					if (ImGui::Selectable(m.Name.c_str()))
+					{
+						editSelected(
+							[&](auto id)
+							{
+								auto camera = std::find_if(cameras.begin(), cameras.end(),
+														   [&](const auto &c) { return c.Id == id; });
+								if (camera == cameras.end())
+									return false;
+								auto links = camera->Modifiers;
+								links.push_back({m.Id, 1, true});
+								return MirvCam_SetModifierLinks(id, links);
+							});
+					}
+					ImGui::PopID();
+				}
+				ImGui::EndCombo();
+			}
+			if (selectedIds.size() == 1)
+			{
+				for (size_t i = 0; i < found->Modifiers.size(); ++i)
+				{
+					auto links = found->Modifiers;
+					auto &link = links[i];
+					ImGui::PushID(int(i));
+					auto definition = std::find_if(definitions.begin(), definitions.end(),
+												   [&](const auto &m) { return m.Id == link.Id; });
+					ImGui::TextUnformatted(definition == definitions.end() ? "Missing modifier"
+																		   : definition->Name.c_str());
+					bool changed = ImGui::Checkbox("Enabled", &link.Enabled);
+					ImGui::SameLine();
+					float influence = float(link.Influence);
+					if (ImGui::SliderFloat("Influence", &influence, 0, 1, "%.2f"))
+					{
+						link.Influence = influence;
+						changed = true;
+					}
+					if (ImGui::Button("Up") && i)
+					{
+						std::swap(links[i], links[i - 1]);
+						changed = true;
+					}
+					ImGui::SameLine();
+					if (ImGui::Button("Down") && i + 1 < links.size())
+					{
+						std::swap(links[i], links[i + 1]);
+						changed = true;
+					}
+					ImGui::SameLine();
+					if (ImGui::Button("Unlink"))
+					{
+						links.erase(links.begin() + i);
+						changed = true;
+					}
+					ImGui::SameLine();
+					if (ImGui::Button("Make independent") && definition != definitions.end())
+					{
+						auto copy = *definition;
+						copy.Id = 0;
+						copy.Name += " copy";
+						MirvCam_EditCameras({selected},
+											[&](auto id)
+											{
+												if (!MirvCam_SetModifier(copy))
+													return false;
+												links[i].Id = copy.Id;
+												return MirvCam_SetModifierLinks(id, links);
+											});
+					}
+					if (changed)
+						MirvCam_SetModifierLinks(selected, links);
+					ImGui::PopID();
+				}
+			}
+			ImGui::TextDisabled(
+				"Create shared effects in Modifiers. Adding a link applies to all selected cameras.");
+		}
 		if (ImGui::CollapsingHeader("Camera pose"))
 		{
 			static std::uint64_t poseId = ~std::uint64_t(0);
@@ -6751,12 +6938,15 @@ static void DrawCamerasTab()
 			{
 				poseId = selected;
 				for (int axis = 0; axis < 3; ++axis)
-					position[axis] = found->Pose.Position[axis];
-				const auto rotation = found->Pose.Rotation.ToQREulerAngles().ToQEulerAngles();
+					position[axis] =
+						(found->Modifiers.empty() ? found->Pose : found->BasePose).Position[axis];
+				const auto rotation = (found->Modifiers.empty() ? found->Pose : found->BasePose)
+										  .Rotation.ToQREulerAngles()
+										  .ToQEulerAngles();
 				angles[0] = rotation.Pitch;
 				angles[1] = rotation.Yaw;
 				angles[2] = rotation.Roll;
-				fov = found->Pose.Fov;
+				fov = (found->Modifiers.empty() ? found->Pose : found->BasePose).Fov;
 				std::copy(position, position + 3, basePosition);
 				std::copy(angles, angles + 3, baseAngles);
 				baseFov = fov;
@@ -6790,7 +6980,7 @@ static void DrawCamerasTab()
 													   [&](const auto &c) { return c.Id == id; });
 							if (camera == cameras.end())
 								return false;
-							auto updated = camera->Pose;
+							auto updated = camera->Modifiers.empty() ? camera->Pose : camera->BasePose;
 							const auto euler = updated.Rotation.ToQREulerAngles().ToQEulerAngles();
 							double updatedAngles[3] = {euler.Pitch, euler.Yaw, euler.Roll};
 							bool changed = false, rotationChanged = false;
@@ -7142,7 +7332,8 @@ void Draw()
 	{
 		g_GraphRightCtrlHeld = false;
 		if (!g_GraphRightCtrlChord && !ImGui::GetIO().WantTextInput &&
-			(MirvCam_SequencePreviewActive() || !MirvCam_RigNavigation()) && !g_CamerasTabActive)
+			(MirvCam_SequencePreviewActive() || !MirvCam_RigNavigation()) && !g_CamerasTabActive &&
+			!g_ModifiersTabActive)
 			MirvCampathPreview_Seek();
 	}
 	if (MirvCam_SequencePreviewActive() &&
@@ -7188,7 +7379,8 @@ void Draw()
 				}
 			}
 		}
-		if (!g_CamerasTabActive && !MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_E, false))
+		if (!g_CamerasTabActive && !g_ModifiersTabActive && !MirvCam_RigNavigation() &&
+			ImGui::IsKeyPressed(ImGuiKey_E, false))
 		{
 			if (ImGui::GetIO().KeyCtrl)
 			{
@@ -7198,15 +7390,18 @@ void Draw()
 			else
 				PreviewCapture(ImGui::GetIO().KeyShift);
 		}
-		if (!g_CamerasTabActive && !MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+		if (!g_CamerasTabActive && !g_ModifiersTabActive && !MirvCam_RigNavigation() &&
+			ImGui::IsKeyPressed(ImGuiKey_Delete, false))
 		{
 			CancelEditGesture();
 			g_Hook_VClient_RenderView.m_CamPath.DeleteSelected();
 		}
-		if (!g_CamerasTabActive && !MirvCam_RigNavigation() && ImGui::IsKeyPressed(ImGuiKey_Y, false))
+		if (!g_CamerasTabActive && !g_ModifiersTabActive && !MirvCam_RigNavigation() &&
+			ImGui::IsKeyPressed(ImGuiKey_Y, false))
 			PreviewHold(ImGui::GetIO().KeyShift);
 
-		if (!g_CamerasTabActive && !MirvCam_RigNavigation() && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false))
+		if (!g_CamerasTabActive && !g_ModifiersTabActive && !MirvCam_RigNavigation() &&
+			ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false))
 		{
 			if (ImGui::GetIO().KeyShift)
 				PreviewAnchor();
@@ -7456,6 +7651,7 @@ void Draw()
 		}
 
 		DrawCamerasTab();
+		DrawSharedModifiersTab();
 		if (ImGui::BeginTabItem("Project"))
 		{
 			DrawCinematicFileButtons();

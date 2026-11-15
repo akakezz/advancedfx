@@ -280,7 +280,8 @@ public:
 	struct CameraSample
 	{
 		std::uint64_t Id = 0, Definition = 0;
-		CameraPose Pose;
+		CameraPose Pose, BasePose;
+		bool HasBasePose = false;
 	};
 	struct Frame
 	{
@@ -472,7 +473,8 @@ public:
 			if (frame.Cameras[i - 1].Id == frame.Cameras[i].Id)
 				return false;
 		for (const auto &camera : frame.Cameras)
-			if (!camera.Pose.Valid() || !camera.Definition)
+			if (!camera.Pose.Valid() || (camera.HasBasePose && !camera.BasePose.Valid()) ||
+				!camera.Definition)
 				return false;
 		for (const auto &entity : frame.Entities)
 		{
@@ -573,13 +575,23 @@ public:
 				if (a.Id == b.Id && a.Definition == b.Definition)
 				{
 					CameraSample sample = a;
-					for (int i = 0; i < 3; ++i)
-						sample.Pose.Position[i] += f * (b.Pose.Position[i] - a.Pose.Position[i]);
-					auto q = b.Pose.Rotation.Normalized(), p = a.Pose.Rotation.Normalized();
-					if (p.W * q.W + p.X * q.X + p.Y * q.Y + p.Z * q.Z < 0)
-						q = Afx::Math::Quaternion(-q.W, -q.X, -q.Y, -q.Z);
-					sample.Pose.Rotation = p.Slerp(q, f).Normalized();
-					sample.Pose.Fov += f * (b.Pose.Fov - a.Pose.Fov);
+					auto interpolate = [&](const CameraPose &from, const CameraPose &to)
+					{
+						auto result = from;
+						for (int i = 0; i < 3; ++i)
+							result.Position[i] += f * (to.Position[i] - from.Position[i]);
+						auto q = to.Rotation.Normalized(), p = from.Rotation.Normalized();
+						if (p.W * q.W + p.X * q.X + p.Y * q.Y + p.Z * q.Z < 0)
+							q = Afx::Math::Quaternion(-q.W, -q.X, -q.Y, -q.Z);
+						result.Rotation = p.Slerp(q, f).Normalized();
+						result.Fov += f * (to.Fov - from.Fov);
+						return result;
+					};
+					sample.Pose = interpolate(a.Pose, b.Pose);
+					sample.HasBasePose = a.HasBasePose && b.HasBasePose;
+					if (sample.HasBasePose)
+						sample.BasePose = interpolate(a.BasePose, b.BasePose);
+
 					if (sample.Pose.Valid())
 						out.Cameras.push_back(sample);
 					break;
