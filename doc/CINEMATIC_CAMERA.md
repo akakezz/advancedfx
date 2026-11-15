@@ -2764,3 +2764,55 @@ phases of an update and ignores roundoff-sized leftover time. Previously a later
 phase could overwrite earlier motion, including after very small timing changes.
 Zero/nonpositive limits stop smoothing motion instead of entering zero-duration
 phases. The same corrected routine is used by legacy aiming and calculator callers.
+
+### Attachment framing, bone controls and camera presets
+
+In **Cameras → Motion**, **Preserve subject framing** uses the existing attachment
+framing solver after follow and collision to retain the physical attachment
+anchor's captured screen direction, including off-centre composition. It does
+not need `mirv_aim`. Positional lag yields as the anchor approaches the safe margin
+of the authored view. Margin is a fraction of each frame edge (default 0.1),
+used when the anchor is initially inside that region. This protects an anchor
+point; it does not guarantee the full player's silhouette or visibility through
+obstacles. Capture an offset from the anchor: a coincident head-mounted camera
+cannot show its own attachment point. World attachment keeps its fixed heading.
+
+When explicit aiming is active it owns the final yaw/pitch. Attachment still
+moves the boom, but its angular framing/history stage is bypassed. The existing
+aiming up setting controls roll, and soft deactivation returns toward the
+attachment's framed orientation. Changing follow settings retains active aiming
+history rather than resetting it to the bone heading.
+
+**Follow bone half-life** now filters bone movement in entity-root coordinates.
+With root follow at zero, translation and turning of the entity remain direct;
+only relative bone animation is damped. **Bone influence and framing limits**
+contains position/rotation influence (0..1), displacement/angle soft limits
+(0 disables), and the framing margin. Influence scales deviation from a captured
+bone reference, so zero position influence retains the captured head height.
+Soft limits bound that deviation without a hard stop. Recapture and retarget
+update the reference through the existing camera editing pipeline.
+
+Motion presets reuse those settings: **Rigid attachment**, **Stable head mount**
+(no root lag; damped/reduced bone motion), and **Soft shoulder follow**. Applying
+a preset, numeric edits, console edits and undo/redo share the same motion API.
+The shared modifier library also offers **Camera modifier preset**: Handheld,
+Impact shake and Oscillation. Handheld/Impact reuse `CamPath::MakeModifierPreset`;
+link them to source clips as usual. Preset fades initialize editable clip fades.
+
+```text
+mirv_cam edit 0 preset stable-head
+mirv_cam edit 0 follow preserveFraming 1
+mirv_cam edit 0 follow framingMargin 0.1
+mirv_cam edit 0 follow bonePositionInfluence 0.25
+mirv_cam edit 0 follow boneRotationInfluence 0.25
+mirv_cam edit 0 follow bonePositionLimit 4
+mirv_cam edit 0 follow boneRotationLimit 10
+```
+
+Cinematic project format 6 saves these settings and the root-relative bone
+reference. Older formats still load; their previous framing option remains off
+until enabled or a motion preset is applied. Cached follow replays the same
+controller and reference through its existing checkpoints, without live collision
+queries. Camera guides, normal viewing, saved projects and recapture use the same
+attachment calculations. Recorded aimed-camera samples retain their existing
+re-record-after-edit requirements. Full-subject bounds framing remains deferred.

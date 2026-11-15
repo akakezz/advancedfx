@@ -6678,6 +6678,15 @@ static void DrawCameraClipsPanel()
 					link.Id = m.Id;
 					auto next = std::next(found);
 					link.End = next != clips.end() ? next->Time - clip.Time : (std::max)(1.0, clip.Blend);
+					if (m.Settings.End > m.Settings.Begin)
+					{
+						link.FadeIn =
+							std::clamp(m.Settings.FadeIn / (m.Settings.End - m.Settings.Begin) * link.End,
+									   0.0, link.End);
+						link.FadeOut =
+							std::clamp(m.Settings.FadeOut / (m.Settings.End - m.Settings.Begin) * link.End,
+									   0.0, link.End);
+					}
 					auto existing = std::find_if(clip.Modifiers.begin(), clip.Modifiers.end(),
 												 [&](const auto &l) { return l.Id == m.Id; });
 					if (existing == clip.Modifiers.end())
@@ -6840,6 +6849,33 @@ static void DrawCameraModifierLibrary()
 	static MirvCameraModifier draft, baseline;
 	static std::uint64_t draftId = ~std::uint64_t(0);
 	static char name[129]{};
+	static int cameraPreset = 0;
+	const char *cameraPresets[] = {"Handheld", "Impact shake", "Oscillation"};
+	const char *cameraPresetIds[] = {"handheld", "impact", nullptr};
+	ImGui::SetNextItemWidth(180);
+	ImGui::Combo("Camera modifier preset", &cameraPreset, cameraPresets, 3);
+	ImGui::SameLine();
+	if (ImGui::Button("Create modifier from preset"))
+	{
+		MirvCameraModifier preset;
+		preset.Name = cameraPresets[cameraPreset];
+		bool ok = true;
+		if (cameraPresetIds[cameraPreset])
+			ok = CamPath::MakeModifierPreset(cameraPresetIds[cameraPreset], 0, 1, preset.Settings);
+		else
+		{
+			preset.Settings.Type = CamPath::ModifierType::Oscillation;
+			preset.Settings.Begin = 0;
+			preset.Settings.End = 1;
+			preset.Settings.Amplitude[4] = preset.Settings.Amplitude[5] = 1;
+		}
+		if (ok && MirvCam_SetModifier(preset))
+		{
+			selected = preset.Id;
+			draftId = ~std::uint64_t(0);
+			modifiers = MirvCam_Modifiers();
+		}
+	}
 	if (ImGui::Button("New modifier"))
 	{
 		MirvCameraModifier m;
@@ -7376,6 +7412,22 @@ static void DrawCamerasTab()
 				motionDirty = false;
 			}
 			ImGui::BeginDisabled(!found->Attached);
+			static int followPreset = 0;
+			const char *followPresets[] = {"Rigid attachment", "Stable head mount", "Soft shoulder follow"};
+			const char *followPresetIds[] = {"rigid", "stable-head", "soft-follow"};
+			ImGui::SetNextItemWidth(180);
+			ImGui::Combo("Motion preset", &followPreset, followPresets, 3);
+			ImGui::SameLine();
+			if (ImGui::Button("Apply motion preset"))
+			{
+				advancedfx::CameraMotion preset;
+				advancedfx::CameraMotion::MakePreset(followPresetIds[followPreset], preset);
+				motionDirty = !editSelected([&](auto id) { return MirvCam_EditMotion(id, preset); });
+				motion = preset;
+			}
+			ImGui::BeginDisabled(found->AttachMode == 3); // World heading remains fixed.
+			motionDirty |= ImGui::Checkbox("Preserve subject framing", &motion.PreserveFraming);
+			ImGui::EndDisabled();
 			motionDirty |= ImGui::InputDouble("Follow half-life (s)", &motion.FollowHalfLife, 0, 0, "%.3f");
 			motionDirty |=
 				ImGui::InputDouble("Follow bone half-life (s)", &motion.BoneHalfLife, 0, 0, "%.3f");
@@ -7387,6 +7439,21 @@ static void DrawCamerasTab()
 			motionDirty |=
 				ImGui::InputDouble("Teleport reset distance", &motion.TeleportDistance, 0, 0, "%.1f");
 			motionDirty |= ImGui::InputDouble("Orbit speed (deg/s)", &motion.OrbitSpeed, 0, 0, "%.3f");
+			ImGui::Indent();
+			if (ImGui::CollapsingHeader("Bone influence and framing limits"))
+			{
+				motionDirty |=
+					ImGui::InputDouble("Framing margin (0..0.45)", &motion.FramingMargin, 0, 0, "%.3f");
+				motionDirty |= ImGui::InputDouble("Bone position influence (0..1)",
+												  &motion.BonePositionInfluence, 0, 0, "%.3f");
+				motionDirty |= ImGui::InputDouble("Bone rotation influence (0..1)",
+												  &motion.BoneRotationInfluence, 0, 0, "%.3f");
+				motionDirty |= ImGui::InputDouble("Bone displacement soft limit (units)",
+												  &motion.BonePositionLimit, 0, 0, "%.2f");
+				motionDirty |= ImGui::InputDouble("Bone rotation soft limit (degrees)",
+												  &motion.BoneRotationLimit, 0, 0, "%.2f");
+			}
+			ImGui::Unindent();
 			if (ImGui::Button("Apply camera motion"))
 			{
 				const bool applied = editSelected(
@@ -7397,10 +7464,17 @@ static void DrawCamerasTab()
 						if (camera == cameras.end())
 							return false;
 						auto updated = camera->Motion;
+						if (motion.PreserveFraming != found->Motion.PreserveFraming)
+							updated.PreserveFraming = motion.PreserveFraming;
 						for (auto field :
 							 {&advancedfx::CameraMotion::FollowHalfLife,
 							  &advancedfx::CameraMotion::BoneHalfLife,
 							  &advancedfx::CameraMotion::RotationHalfLife,
+							  &advancedfx::CameraMotion::FramingMargin,
+							  &advancedfx::CameraMotion::BonePositionInfluence,
+							  &advancedfx::CameraMotion::BoneRotationInfluence,
+							  &advancedfx::CameraMotion::BonePositionLimit,
+							  &advancedfx::CameraMotion::BoneRotationLimit,
 							  &advancedfx::CameraMotion::TurnRate, &advancedfx::CameraMotion::MaxDistance,
 							  &advancedfx::CameraMotion::TeleportDistance,
 							  &advancedfx::CameraMotion::OrbitSpeed})
@@ -7408,10 +7482,9 @@ static void DrawCamerasTab()
 								updated.*field = motion.*field;
 						return MirvCam_EditMotion(id, updated);
 					});
-				g_DocumentStatus =
-					applied
-						? "Camera motion updated."
-						: "Use half-lives 0..10 s, nonnegative distances and orbit speeds -3600..3600 deg/s.";
+				g_DocumentStatus = applied ? "Camera motion updated."
+										   : "Use half-lives 0..10 s, influence 0..1, margin 0..0.45, "
+											 "rotation limit 0..180 degrees and nonnegative distances.";
 				if (applied)
 					motionDirty = false;
 			}
@@ -7426,9 +7499,24 @@ static void DrawCamerasTab()
 			if (!found->Attached)
 				ImGui::TextDisabled("Attach this camera to an entity or bone to use follow and orbit.");
 			ImGui::TextWrapped(
-				"Follow uses the existing attachment controller and its framing correction. Orbit smoothing "
-				"and turn limits apply while root follow is enabled. Orbit speed circles the physical pivot "
-				"on the world up axis; capture an offset first.");
+				"Root follow adds travel lag. Bone follow and influence reduce animation movement.");
+			ImGui::TextDisabled("Attachment framing, limits and orbit (?)");
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::PushTextWrapPos(ImGui::GetFontSize() * 34);
+				ImGui::TextUnformatted(
+					"Framing preserves the attachment anchor's captured screen location. The margin limits "
+					"positional lag when the anchor starts inside that safe region. A camera needs an offset "
+					"to show its own attachment point. Collision and occlusion can make framing "
+					"impossible.\n\nBone influence and soft limits use the captured attachment pose as their "
+					"reference; recapture sets a new reference. Zero limits disable the bound. Explicit "
+					"aiming owns the final heading. World mode retains its fixed heading and ignores angular "
+					"bone controls.\n\nOrbit speed circles the physical pivot on the world-up axis. Capture "
+					"an offset first; orbit smoothing and turn limits apply with root follow.");
+				ImGui::PopTextWrapPos();
+				ImGui::EndTooltip();
+			}
 		}
 		if (ImGui::CollapsingHeader("Aiming"))
 		{

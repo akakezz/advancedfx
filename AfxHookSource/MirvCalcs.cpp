@@ -6339,16 +6339,21 @@ bool MirvCameraAttachedReframe(const double from[3], const double to[3], const d
 bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCameraCollisionSettings &settings,
 								unsigned long long generation, const void *identity, void *entity,
 								const double pivot[3], double sceneTime, float &x, float &y, float &z,
-								const double *entityOrigin, float *angles)
+								const double *entityOrigin, float *angles, const double *rootAngles,
+								const double *targetAngles, const advancedfx::CameraPose *boneReference)
 {
 	if (!identity || !entity ||
-		(!settings.Attached && settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0) ||
+		(!settings.Attached && settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 &&
+		 settings.BonePositionInfluence == 1 && settings.BoneRotationInfluence == 1 &&
+		 settings.BonePositionLimit == 0 && settings.BoneRotationLimit == 0) ||
 		!std::isfinite(sceneTime))
 	{
 		history.Valid = false;
 		return false;
 	}
-	const double desired[3] = {x, y, z};
+	double desired[3] = {x, y, z};
+	const double rawDesired[3] = {x, y, z};
+	float rawAngles[3] = {angles ? angles[0] : 0, angles ? angles[1] : 0, angles ? angles[2] : 0};
 	const double *root = entityOrigin ? entityOrigin : pivot;
 	double rootJump2 = 0;
 	for (int a = 0; a < 3; ++a)
@@ -6387,21 +6392,87 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		    QEulerAngles(std::atan2(-v[2], flat) * 57.29577951308232,
 			             flat > 1e-9 ? std::atan2(v[1], v[0]) * 57.29577951308232 : fallbackYaw, 0)));
 	};
-	auto forward = [](const Quaternion &q, double v[3]) {
+	auto forward = [](const Quaternion &q, double v[3])
+	{
 		const auto rotated = q * Quaternion(0, 1, 0, 0) * q.Conjugate();
 		v[0] = rotated.X;
 		v[1] = rotated.Y;
 		v[2] = rotated.Z;
 	};
-	auto blend = [](const Quaternion &from, Quaternion to, double alpha) {
+	auto blend = [](const Quaternion &from, Quaternion to, double alpha)
+	{
 		if (DotProduct(from, to) < 0)
 			to = -1.0 * to;
 		return from.Slerp(to, alpha).Normalized();
 	};
+	auto rotate = [](const Quaternion &q, const double v[3], double out[3])
+	{
+		const auto r = q * Quaternion(0, v[0], v[1], v[2]) * q.Conjugate();
+		out[0] = r.X;
+		out[1] = r.Y;
+		out[2] = r.Z;
+	};
+	const auto rootRotation = rootAngles ? Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(
+											   {rootAngles[0], rootAngles[1], rootAngles[2]}))
+										 : Quaternion(1, 0, 0, 0);
+	double boneGoal[3] = {pivot[0] - root[0], pivot[1] - root[1], pivot[2] - root[2]};
+	if (rootAngles)
+	{
+		double local[3];
+		rotate(rootRotation.Conjugate(), boneGoal, local);
+		std::copy(local, local + 3, boneGoal);
+	}
+	if (boneReference && boneReference->Valid())
+	{
+		double deviation[3], length2 = 0;
+		for (int a = 0; a < 3; ++a)
+		{
+			deviation[a] = (boneGoal[a] - boneReference->Position[a]) * settings.BonePositionInfluence;
+			length2 += deviation[a] * deviation[a];
+		}
+		const double length = std::sqrt(length2);
+		const double scale =
+			settings.BonePositionLimit > 0 && length > 1e-9
+				? settings.BonePositionLimit * std::tanh(length / settings.BonePositionLimit) / length
+				: 1;
+		for (int a = 0; a < 3; ++a)
+			boneGoal[a] = boneReference->Position[a] + deviation[a] * scale;
+		if (targetAngles && (settings.BoneRotationInfluence != 1 || settings.BoneRotationLimit > 0))
+		{
+			const auto targetRotation = Quaternion::FromQREulerAngles(
+				QREulerAngles::FromQEulerAngles({targetAngles[0], targetAngles[1], targetAngles[2]}));
+			auto delta = (boneReference->Rotation.Conjugate() * rootRotation.Conjugate() * targetRotation)
+							 .Normalized();
+			if (delta.W < 0)
+				delta = -1.0 * delta;
+			const double degrees = 2 * std::acos(std::clamp(delta.W, -1.0, 1.0)) * 57.29577951308232;
+			double amount = settings.BoneRotationInfluence;
+			if (settings.BoneRotationLimit > 0 && degrees * amount > 1e-9)
+				amount *= settings.BoneRotationLimit *
+						  std::tanh(degrees * amount / settings.BoneRotationLimit) / (degrees * amount);
+			const auto weighted =
+				rootRotation * boneReference->Rotation * Quaternion(1, 0, 0, 0).Slerp(delta, amount);
+			const auto correction = (weighted * targetRotation.Conjugate()).Normalized();
+			double boom[3] = {desired[0] - pivot[0], desired[1] - pivot[1], desired[2] - pivot[2]},
+				   adjusted[3];
+			rotate(correction, boom, adjusted);
+			for (int a = 0; a < 3; ++a)
+				desired[a] = pivot[a] + adjusted[a];
+			if (angles)
+			{
+				const auto view = correction * Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(
+												   {angles[0], angles[1], angles[2]}));
+				const auto e = view.ToQREulerAngles().ToQEulerAngles();
+				angles[0] = float(e.Pitch);
+				angles[1] = float(e.Yaw);
+				angles[2] = float(e.Roll);
+			}
+		}
+	}
 	double candidate[3];
 	for (int a = 0; a < 3; ++a)
 	{
-		const double boneOffset = pivot[a] - root[a];
+		const double boneOffset = boneGoal[a];
 		if (!continuous || settings.FollowHalfLife <= 1e-6 || history.FollowHalfLife == 0)
 		{
 			history.FollowPosition[a] = root[a];
@@ -6417,8 +6488,12 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		}
 		else
 			Afx::Math::SpringStep(history.BonePosition[a], history.BoneVelocity[a], boneOffset, dt,
-			                      1.67834699001666 / (6.283185307179586 * settings.BoneHalfLife), 1);
+								  1.67834699001666 / (6.283185307179586 * settings.BoneHalfLife), 1);
 	}
+	double boneWorld[3];
+	rotate(rootRotation, history.BonePosition, boneWorld);
+	double boneGoalWorld[3];
+	rotate(rootRotation, boneGoal, boneGoalWorld);
 	// A lagged world position must not let the subject walk through its own camera.
 	// Limit the steady lag estimated from the filtered velocity. Clamping the
 	// raw root-to-camera difference feeds snapshot jitter straight back into
@@ -6433,7 +6508,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		             : 0;
 		rawLag[a] = lag[a];
 		lag2 += lag[a] * lag[a];
-		anchor[a] = root[a] + history.BonePosition[a];
+		anchor[a] = root[a] + boneWorld[a];
 	}
 	const double rawLength = std::sqrt(offset2), lagLength = std::sqrt(lag2);
 	if (rawLength > 1e-6)
@@ -6494,7 +6569,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 			lag[a] = along * offset[a] / offsetLength + transverse[a] * acrossScale;
 	}
 	for (int a = 0; a < 3; ++a)
-		candidate[a] = history.FollowPosition[a] + history.BonePosition[a] + offset[a] + lag[a] - rawLag[a];
+		candidate[a] = history.FollowPosition[a] + boneWorld[a] + offset[a] + lag[a] - rawLag[a];
 	// The explicit user limit remains a hard bound, including sudden corrections.
 	double actualLag2 = 0;
 	for (int a = 0; a < 3; ++a)
@@ -6514,6 +6589,49 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		const double bounded = (std::max)(-.5 * offsetLength, (std::min)(.5 * offsetLength, along));
 		for (int a = 0; a < 3; ++a)
 			candidate[a] += (bounded - along) * offset[a] / offsetLength;
+	}
+	if (settings.PreserveFraming && angles && rawLength > 1e-3)
+	{
+		double f[3], r[3], u[3];
+		MakeVectors(angles[2], angles[0], angles[1], f, r, u);
+		const double cone = std::tan(std::clamp(settings.FrameFov, 1.0, 179.0) * .008726646259971648) *
+							(1 - 2 * settings.FramingMargin);
+		const double aspect = std::max(.1, settings.FrameAspect);
+		double rigid[3], path[3], ray[3], projection[3] = {}, motion[3] = {};
+		for (int a = 0; a < 3; ++a)
+		{
+			rigid[a] = root[a] + boneGoalWorld[a] + rawOffset[a];
+			path[a] = candidate[a] - rigid[a];
+			ray[a] = pivot[a] - rigid[a];
+			projection[0] += ray[a] * f[a];
+			projection[1] += ray[a] * r[a];
+			projection[2] += ray[a] * u[a];
+			motion[0] -= path[a] * f[a];
+			motion[1] -= path[a] * r[a];
+			motion[2] -= path[a] * u[a];
+		}
+		double allowed = 1e9;
+		bool inside = true;
+		auto boundary = [&](double value, double change)
+		{
+			if (value < 1e-6)
+				inside = false;
+			else if (change < 0)
+				allowed = std::min(allowed, value / -change);
+		};
+		boundary(projection[0], motion[0]);
+		for (int sign : {-1, 1})
+		{
+			boundary(projection[0] * cone + sign * projection[1], motion[0] * cone + sign * motion[1]);
+			boundary(projection[0] * cone / aspect + sign * projection[2],
+					 motion[0] * cone / aspect + sign * motion[2]);
+		}
+		if (inside && allowed < 1e8)
+		{
+			const double weight = allowed * std::tanh(1 / allowed);
+			for (int a = 0; a < 3; ++a)
+				candidate[a] = rigid[a] + path[a] * weight;
+		}
 	}
 	double focus[3];
 	for (int a = 0; a < 3; ++a)
@@ -6710,7 +6828,29 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 	if (!settings.Attached)
 		history.BlockedTime = 0;
 	std::copy(desired, desired + 3, history.Desired);
-	if (angles)
+	if (angles && settings.PreserveFraming && !settings.AimOwnsAngles && rawLength > 1e-3)
+	{
+		double f[3], r[3], u[3], local[3] = {}, direction[3], reference[3];
+		MakeVectors(rawAngles[2], rawAngles[0], rawAngles[1], f, r, u);
+		for (int a = 0; a < 3; ++a)
+		{
+			const double d = pivot[a] - rawDesired[a];
+			local[0] += d * f[a];
+			local[1] += d * r[a];
+			local[2] += d * u[a];
+		}
+		MakeVectors(angles[2], angles[0], angles[1], f, r, u);
+		for (int a = 0; a < 3; ++a)
+		{
+			direction[a] = f[a] * local[0] + r[a] * local[1] + u[a] * local[2];
+			reference[a] = pivot[a] - direction[a];
+		}
+		MirvCameraAttachedReframe(reference, candidate, pivot, angles);
+		history.View =
+			Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({angles[0], angles[1], angles[2]}));
+		std::copy(angles, angles + 3, history.DisplayAngles);
+	}
+	else if (angles && !settings.AimOwnsAngles)
 	{
 		std::copy(angles, angles + 3, history.AuthoredAngles);
 		if (rawLength > 1e-3)
@@ -6772,8 +6912,9 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		    QREulerAngles::FromQEulerAngles(QEulerAngles(angles[0], angles[1], angles[2])));
 		std::copy(angles, angles + 3, history.DisplayAngles);
 	}
-	history.CompositionValid = angles && rawLength > 1e-3;
-	history.HasAngles = angles != nullptr;
+	history.CompositionValid =
+		angles && !settings.AimOwnsAngles && !settings.PreserveFraming && rawLength > 1e-3;
+	history.HasAngles = angles != nullptr && !settings.AimOwnsAngles;
 	x = float(candidate[0]);
 	y = float(candidate[1]);
 	z = float(candidate[2]);

@@ -383,7 +383,8 @@ struct NamedCameraRig
 	std::uint64_t Definition = g_NextCameraDefinition++;
 	int AttachMode = MIRV_TF2_BONEMODE_BONE;
 	advancedfx::CameraRig Rig;
-	advancedfx::CameraPose LastWorld, BaseWorld;
+	advancedfx::CameraPose LastWorld, BaseWorld, BoneReference;
+	bool HasBoneReference = false;
 	MirvCameraAttachedState Follow;
 	std::shared_ptr<CameraFollowCache> FollowCache;
 	std::shared_ptr<IMirvVecAngCalc> Target;
@@ -586,11 +587,23 @@ bool SameCameraDefinitions(const std::map<std::string, NamedCameraRig> &a,
 		const auto &x = left->second;
 		const auto &y = right->second;
 		if (x.Modifiers != y.Modifiers || left->first != right->first || x.Id != y.Id ||
-			x.AttachMode != y.AttachMode || x.Rig.Attached != y.Rig.Attached ||
-			x.Rig.InheritRotation != y.Rig.InheritRotation || !(x.Rig.Motion == y.Rig.Motion) ||
-			x.EntityAddress != y.EntityAddress || x.TargetHandle != y.TargetHandle ||
-			x.CacheIdentity != y.CacheIdentity || x.Target.get() != y.Target.get())
+			x.HasBoneReference != y.HasBoneReference || x.AttachMode != y.AttachMode ||
+			x.Rig.Attached != y.Rig.Attached || x.Rig.InheritRotation != y.Rig.InheritRotation ||
+			!(x.Rig.Motion == y.Rig.Motion) || x.EntityAddress != y.EntityAddress ||
+			x.TargetHandle != y.TargetHandle || x.CacheIdentity != y.CacheIdentity ||
+			x.Target.get() != y.Target.get())
 			return false;
+		if (x.HasBoneReference)
+		{
+			for (int a = 0; a < 3; ++a)
+				if (x.BoneReference.Position[a] != y.BoneReference.Position[a])
+					return false;
+			if (x.BoneReference.Rotation.W != y.BoneReference.Rotation.W ||
+				x.BoneReference.Rotation.X != y.BoneReference.Rotation.X ||
+				x.BoneReference.Rotation.Y != y.BoneReference.Rotation.Y ||
+				x.BoneReference.Rotation.Z != y.BoneReference.Rotation.Z)
+				return false;
+		}
 		const auto &p = x.Rig.Pose;
 		const auto &q = y.Rig.Pose;
 		for (int axis = 0; axis < 3; ++axis)
@@ -742,7 +755,8 @@ double CameraAuthoringTime()
 			   : AfxHookSource::CameraOverlay::EditingClientTime(g_MirvTime.GetTime());
 }
 bool CachedRigTarget(NamedCameraRig &rig, const advancedfx::SceneCache::Frame &frame,
-					 advancedfx::CameraPose &pose, double *pivot = nullptr, double *root = nullptr)
+					 advancedfx::CameraPose &pose, double *pivot = nullptr, double *root = nullptr,
+					 double *rootAngles = nullptr)
 {
 	if (!rig.Target || !rig.CacheIdentity)
 		return false;
@@ -766,6 +780,8 @@ bool CachedRigTarget(NamedCameraRig &rig, const advancedfx::SceneCache::Frame &f
 	SOURCESDK::QAngle angles;
 	if (root)
 		std::copy(entity->Origin, entity->Origin + 3, root);
+	if (rootAngles)
+		std::copy(entity->Angles, entity->Angles + 3, rootAngles);
 	if (!Mirv_Tf2_CalcCachedCamera(rig.Target.get(), *entity, owner, origin, angles, pivot))
 		return false;
 	pose.Position[0] = origin.x;
@@ -798,17 +814,25 @@ bool RigTarget(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 	return pose.Valid();
 }
 bool CameraAttachmentTarget(NamedCameraRig &rig, double, advancedfx::CameraPose &target,
-							double *pivot = nullptr, double *root = nullptr)
+							double *pivot = nullptr, double *root = nullptr, double *rootAngles = nullptr)
 {
 	if (g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive())
 	{
 		auto frame = g_BakingCamera ? g_BakeFrame : AfxHookSource::CameraOverlay::SceneCacheView();
-		return frame && CachedRigTarget(rig, *frame, target, pivot, root);
+		return frame && CachedRigTarget(rig, *frame, target, pivot, root, rootAngles);
 	}
 	if (!RigTarget(rig, target))
 	{
 		rig.Follow.Valid = false;
 		return false;
+	}
+	if (rootAngles)
+	{
+		float origin[3], angles[3];
+		if (Mirv_Tf2_GetEntityOriginAngles(rig.EntityAddress, origin, angles))
+			std::copy(angles, angles + 3, rootAngles);
+		else
+			std::fill(rootAngles, rootAngles + 3, 0.0);
 	}
 	if (pivot || root)
 	{
@@ -823,12 +847,32 @@ bool CameraAttachmentTarget(NamedCameraRig &rig, double, advancedfx::CameraPose 
 	}
 	return true;
 }
+void CaptureBoneReference(NamedCameraRig &rig, const advancedfx::CameraPose &target, const double pivot[3],
+						  const double root[3], const double angles[3])
+{
+	using namespace Afx::Math;
+	const auto rotation =
+		Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({angles[0], angles[1], angles[2]}));
+	const auto local = rotation.Conjugate() *
+					   Quaternion(0, pivot[0] - root[0], pivot[1] - root[1], pivot[2] - root[2]) * rotation;
+	rig.BoneReference.Position[0] = local.X;
+	rig.BoneReference.Position[1] = local.Y;
+	rig.BoneReference.Position[2] = local.Z;
+	rig.BoneReference.Rotation = (rotation.Conjugate() * target.Rotation).Normalized();
+	rig.HasBoneReference = true;
+}
 MirvCameraCollisionSettings RigFollowSettings(const advancedfx::CameraMotion &motion)
 {
 	auto settings = MirvCameraCollisionGet();
 	settings.Attached = false; // Historical geometry is not a live collision world.
 	settings.FollowHalfLife = motion.FollowHalfLife;
 	settings.BoneHalfLife = motion.BoneHalfLife;
+	settings.PreserveFraming = motion.PreserveFraming;
+	settings.FramingMargin = motion.FramingMargin;
+	settings.BonePositionInfluence = motion.BonePositionInfluence;
+	settings.BoneRotationInfluence = motion.BoneRotationInfluence;
+	settings.BonePositionLimit = motion.BonePositionLimit;
+	settings.BoneRotationLimit = motion.BoneRotationLimit;
 	settings.OrbitHalfLife = motion.RotationHalfLife;
 	settings.OrbitSpeed = motion.TurnRate;
 	settings.FollowMaxDistance = motion.MaxDistance > 0 ? motion.MaxDistance : 1e6;
@@ -837,7 +881,7 @@ MirvCameraCollisionSettings RigFollowSettings(const advancedfx::CameraMotion &mo
 }
 bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double time,
 				   const advancedfx::CameraPose &target, const double pivot[3], const double root[3],
-				   advancedfx::CameraPose &pose)
+				   advancedfx::CameraPose &pose, const double rootAngles[3])
 {
 	if (!rig.Rig.Evaluate(&target, pose, time, pivot))
 		return false;
@@ -846,11 +890,29 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 	settings.Attached = MirvCameraCollisionGet().Attached && !g_BakingCamera &&
 						!AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
 						!MirvCam_SequencePreviewActive();
-	if (motion.FollowHalfLife == 0 && motion.BoneHalfLife == 0 && !settings.Attached)
+	settings.AimOwnsAngles = rig.Aim && rig.Aim->Active;
+	if (rig.AttachMode == MIRV_TF2_BONEMODE_WORLD)
+	{
+		settings.BoneRotationInfluence = 1;
+		settings.BoneRotationLimit = 0;
+	}
+	const bool boneControls = settings.BonePositionInfluence != 1 || settings.BoneRotationInfluence != 1 ||
+							  settings.BonePositionLimit > 0 || settings.BoneRotationLimit > 0;
+	settings.PreserveFraming = motion.PreserveFraming && rig.AttachMode != MIRV_TF2_BONEMODE_WORLD;
+	settings.FrameFov = pose.Fov;
+	settings.FrameAspect =
+		g_Hook_VClient_RenderView.LastHeight > 0
+			? double(g_Hook_VClient_RenderView.LastWidth) / g_Hook_VClient_RenderView.LastHeight
+			: 16.0 / 9;
+	if (!rig.HasBoneReference)
+		CaptureBoneReference(rig, target, pivot, root, rootAngles);
+	if (motion.FollowHalfLife == 0 && motion.BoneHalfLife == 0 && !boneControls && !settings.Attached)
 		return true;
 	float x = float(pose.Position[0]), y = float(pose.Position[1]), z = float(pose.Position[2]);
 	const auto rotation = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
 	float angles[3] = {float(rotation.Pitch), float(rotation.Yaw), float(rotation.Roll)};
+	const auto targetRotation = target.Rotation.ToQREulerAngles().ToQEulerAngles();
+	const double targetAngles[3] = {targetRotation.Pitch, targetRotation.Yaw, targetRotation.Roll};
 	// Stable identity across UI copies; live collision receives the actual target entity.
 	const auto token = reinterpret_cast<void *>(static_cast<std::uintptr_t>(rig.Id + 1));
 	void *entity = token;
@@ -861,7 +923,8 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 			return false;
 	}
 	if (!MirvCameraAttachedEvaluate(state, settings, 1, token, entity, pivot, time, x, y, z, root,
-									rig.AttachMode == MIRV_TF2_BONEMODE_WORLD ? nullptr : angles))
+									rig.AttachMode == MIRV_TF2_BONEMODE_WORLD ? nullptr : angles, rootAngles,
+									targetAngles, &rig.BoneReference))
 		return false;
 	pose.Position[0] = x;
 	pose.Position[1] = y;
@@ -873,11 +936,11 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPose &out)
 {
 	advancedfx::CameraPose target;
-	double pivot[3], root[3];
-	if (!CameraAttachmentTarget(rig, time, target, pivot, root))
+	double pivot[3], root[3], rootAngles[3];
+	if (!CameraAttachmentTarget(rig, time, target, pivot, root, rootAngles))
 		return false;
 	const auto &settings = rig.Rig.Motion;
-	if (settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 &&
+	if (settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 && !settings.NeedsBoneControl() &&
 		(!MirvCameraCollisionGet().Attached || g_BakingCamera ||
 		 AfxHookSource::CameraOverlay::SceneCachePreviewActive() || MirvCam_SequencePreviewActive()))
 		return rig.Rig.Evaluate(&target, out, time, pivot);
@@ -887,9 +950,9 @@ bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPos
 		if (MirvCam_SequencePreviewActive())
 		{
 			MirvCameraAttachedState frozen;
-			return RigFollowStep(rig, frozen, time, target, pivot, root, out);
+			return RigFollowStep(rig, frozen, time, target, pivot, root, out, rootAngles);
 		}
-		return RigFollowStep(rig, rig.Follow, time, target, pivot, root, out);
+		return RigFollowStep(rig, rig.Follow, time, target, pivot, root, out, rootAngles);
 	}
 	if (!rig.FollowCache)
 		rig.FollowCache = std::make_shared<CameraFollowCache>();
@@ -901,15 +964,15 @@ bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPos
 			auto stepFrame = [&](MirvCameraAttachedState &state, const auto &frame)
 			{
 				advancedfx::CameraPose raw, result;
-				double physical[3], origin[3];
-				if (!CachedRigTarget(rig, frame, raw, physical, origin) ||
-					!RigFollowStep(rig, state, frame.ClientTime, raw, physical, origin, result))
+				double physical[3], origin[3], bodyAngles[3];
+				if (!CachedRigTarget(rig, frame, raw, physical, origin, bodyAngles) ||
+					!RigFollowStep(rig, state, frame.ClientTime, raw, physical, origin, result, bodyAngles))
 					state.Valid = false;
 			};
 			if (frames.empty())
 			{
 				MirvCameraAttachedState seed;
-				sampled = RigFollowStep(rig, seed, time, target, pivot, root, out);
+				sampled = RigFollowStep(rig, seed, time, target, pivot, root, out, rootAngles);
 				return;
 			}
 			if (cache.Revision != revision || cache.Definition != rig.Definition)
@@ -953,7 +1016,7 @@ bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPos
 			auto state = cache.Checkpoints[checkpoint];
 			for (size_t i = checkpoint * 64 + 1; i <= left; ++i)
 				stepFrame(state, frames[i]);
-			sampled = RigFollowStep(rig, state, time, target, pivot, root, out);
+			sampled = RigFollowStep(rig, state, time, target, pivot, root, out, rootAngles);
 		});
 	return sampled;
 }
@@ -1281,10 +1344,11 @@ bool EditCameraPose(const std::string &name, NamedCameraRig &camera, const advan
 	if (camera.Rig.Attached)
 	{
 		advancedfx::CameraPose target;
-		double pivot[3];
-		if (!CameraAttachmentTarget(camera, CameraAuthoringTime(), target, pivot) ||
+		double pivot[3], root[3], rootAngles[3];
+		if (!CameraAttachmentTarget(camera, CameraAuthoringTime(), target, pivot, root, rootAngles) ||
 			!camera.Rig.Attach(pose, target, camera.Rig.InheritRotation, CameraAuthoringTime(), pivot))
 			return false;
+		CaptureBoneReference(camera, target, pivot, root, rootAngles);
 	}
 	else
 		camera.Rig.Pose = pose;
@@ -1465,10 +1529,11 @@ bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const a
 								 ? std::uint64_t(user)
 								 : (std::uint64_t(1) << 63) | attached.TargetHandle;
 	advancedfx::CameraPose target;
-	double pivot[3];
-	if (!CameraAttachmentTarget(attached, CameraAuthoringTime(), target, pivot) ||
+	double pivot[3], root[3], rootAngles[3];
+	if (!CameraAttachmentTarget(attached, CameraAuthoringTime(), target, pivot, root, rootAngles) ||
 		!attached.Rig.Attach(world, target, true, CameraAuthoringTime(), pivot))
 		return false;
+	CaptureBoneReference(attached, target, pivot, root, rootAngles);
 	attached.LastWorld = attached.BaseWorld = world;
 	std::string name;
 	if (edited != g_CameraRigs.end())
@@ -2451,6 +2516,17 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 					"- Retarget a camera in live playback; keep its framing.\n");
 			return true;
 		}
+		if (args->ArgC() >= 4 && !_stricmp(args->ArgV(3), "preset"))
+		{
+			auto camera = FindCameraReference(args->ArgV(2));
+			advancedfx::CameraMotion motion;
+			bool ok = camera != g_CameraRigs.end() && args->ArgC() == 5 &&
+					  advancedfx::CameraMotion::MakePreset(args->ArgV(4), motion);
+			if (!ok || !MirvCam_EditMotion(camera->second.Id, motion))
+				Tier0_Warning("mirv_cam edit <index/name> preset rigid|stable-head|soft-follow - Apply an "
+							  "attachment motion preset.\n");
+			return true;
+		}
 		if (args->ArgC() >= 4 && (!_stricmp(args->ArgV(3), "follow") || !_stricmp(args->ArgV(3), "orbit")))
 		{
 			auto camera = FindCameraReference(args->ArgV(2));
@@ -2465,6 +2541,26 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			const bool orbit = !_stricmp(args->ArgV(3), "orbit");
 			if (orbit)
 				ok = ok && args->ArgC() == 5 && number(4, motion.OrbitSpeed);
+			else if (args->ArgC() == 6 && !_stricmp(args->ArgV(4), "preserveFraming"))
+			{
+				double value = 0;
+				ok = ok && number(5, value) && (value == 0 || value == 1);
+				motion.PreserveFraming = value == 1;
+			}
+			else if (args->ArgC() == 6 && (!_stricmp(args->ArgV(4), "framingMargin") ||
+										   !_stricmp(args->ArgV(4), "bonePositionInfluence") ||
+										   !_stricmp(args->ArgV(4), "boneRotationInfluence") ||
+										   !_stricmp(args->ArgV(4), "bonePositionLimit") ||
+										   !_stricmp(args->ArgV(4), "boneRotationLimit")))
+			{
+				double *field =
+					!_stricmp(args->ArgV(4), "framingMargin")			? &motion.FramingMargin
+					: !_stricmp(args->ArgV(4), "bonePositionInfluence") ? &motion.BonePositionInfluence
+					: !_stricmp(args->ArgV(4), "boneRotationInfluence") ? &motion.BoneRotationInfluence
+					: !_stricmp(args->ArgV(4), "bonePositionLimit")		? &motion.BonePositionLimit
+																		: &motion.BoneRotationLimit;
+				ok = ok && number(5, *field);
+			}
 			else if (args->ArgC() == 6 &&
 					 (!_stricmp(args->ArgV(4), "boneHalfLife") || !_stricmp(args->ArgV(4), "orbitHalfLife") ||
 					  !_stricmp(args->ArgV(4), "orbitSpeed") || !_stricmp(args->ArgV(4), "maxDistance") ||
@@ -2488,10 +2584,18 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			}
 			ok = ok && MirvCam_EditMotion(camera->second.Id, motion);
 			if (!ok)
-				Tier0_Warning("mirv_cam edit <index/name> follow <root half-life> [orbit half-life [max "
-							  "lag teleport distance]] - Attached camera damping; seconds, 0 disables.\n"
-							  "mirv_cam edit <index/name> orbit <degrees/second> - Orbit around the "
-							  "attachment's world-up axis; 0 stops.\n");
+				Tier0_Warning(
+					"mirv_cam edit <index/name> follow <root half-life> [orbit half-life [max "
+					"lag teleport distance]] - Attached camera damping; seconds, 0 disables.\n"
+					"mirv_cam edit <index/name> follow preserveFraming 0|1 - Preserve the attachment "
+					"anchor's screen direction.\n"
+					"mirv_cam edit <index/name> follow framingMargin <0..0.45> - Safe frame margin.\n"
+					"mirv_cam edit <index/name> follow bonePositionInfluence|boneRotationInfluence <0..1> - "
+					"Scale bone motion.\n"
+					"mirv_cam edit <index/name> follow bonePositionLimit|boneRotationLimit <value> - Soft "
+					"motion bounds; 0 disables.\n"
+					"mirv_cam edit <index/name> orbit <degrees/second> - Orbit around the "
+					"attachment's world-up axis; 0 stops.\n");
 			return true;
 		}
 		if (args->ArgC() == 10)
@@ -2509,6 +2613,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 				"mirv_cam edit <index/name> attach <entity> [bone] [mode] - Change this camera's "
 				"attachment.\n"
 				"mirv_cam edit <index/name> follow [...] - Configure existing attachment follow.\n"
+				"mirv_cam edit <index/name> preset rigid|stable-head|soft-follow - Apply a motion preset.\n"
 				"mirv_cam edit <index/name> orbit <degrees/second> - Configure attached-camera orbit.\n");
 			return true;
 		}
@@ -2795,8 +2900,8 @@ bool MirvCam_EditAttachment(std::uint64_t id, int entity, const char *bone, int 
 	updated.AimDirty = true;
 	updated.AimTime = -1;
 	advancedfx::CameraPose anchor;
-	double pivot[3];
-	if (!CameraAttachmentTarget(updated, time, anchor, pivot))
+	double pivot[3], root[3], rootAngles[3];
+	if (!CameraAttachmentTarget(updated, time, anchor, pivot, root, rootAngles))
 		return false;
 	if (found->second.Rig.Attached)
 	{
@@ -2805,6 +2910,7 @@ bool MirvCam_EditAttachment(std::uint64_t id, int entity, const char *bone, int 
 	}
 	else if (!updated.Rig.Attach(current, anchor, updated.Rig.InheritRotation, time, pivot))
 		return false;
+	CaptureBoneReference(updated, anchor, pivot, root, rootAngles);
 	updated.LastWorld = updated.BaseWorld = current;
 	updated.Available = true;
 	CameraEditTransaction history;
@@ -2864,12 +2970,18 @@ bool MirvCam_EditMotion(std::uint64_t id, const advancedfx::CameraMotion &motion
 							   settings.RotationHalfLife != camera.Rig.Motion.RotationHalfLife ||
 							   settings.MaxDistance != camera.Rig.Motion.MaxDistance ||
 							   settings.TeleportDistance != camera.Rig.Motion.TeleportDistance ||
-							   settings.TurnRate != camera.Rig.Motion.TurnRate;
+							   settings.TurnRate != camera.Rig.Motion.TurnRate ||
+							   settings.PreserveFraming != camera.Rig.Motion.PreserveFraming ||
+							   settings.FramingMargin != camera.Rig.Motion.FramingMargin ||
+							   settings.BonePositionInfluence != camera.Rig.Motion.BonePositionInfluence ||
+							   settings.BoneRotationInfluence != camera.Rig.Motion.BoneRotationInfluence ||
+							   settings.BonePositionLimit != camera.Rig.Motion.BonePositionLimit ||
+							   settings.BoneRotationLimit != camera.Rig.Motion.BoneRotationLimit;
 	camera.Rig.Motion = settings;
 	if (followChanged)
 		camera.Follow = {};
 	camera.FollowCache.reset();
-	camera.AimTime = -1;
+	// Follow owns position; changing its settings must not reseed active aim from bone angles.
 	camera.AimDirty = true;
 	return true;
 }

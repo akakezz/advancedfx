@@ -29,23 +29,67 @@ struct CameraMotion
 	double FollowHalfLife = 0, RotationHalfLife = 0;
 	double MaxDistance = 128, TeleportDistance = 1024;
 	double BoneHalfLife = 0, TurnRate = 360;
+	bool PreserveFraming = true;
+	double FramingMargin = .1;
+	double BonePositionInfluence = 1, BoneRotationInfluence = 1;
+	double BonePositionLimit = 0, BoneRotationLimit = 0;
+	static bool MakePreset(const std::string &name, CameraMotion &out)
+	{
+		CameraMotion value;
+		if (name == "stable-head")
+		{
+			value.BoneHalfLife = .08;
+			value.BonePositionInfluence = .25;
+			value.BoneRotationInfluence = .25;
+			value.BonePositionLimit = 4;
+			value.BoneRotationLimit = 10;
+		}
+		else if (name == "soft-follow")
+		{
+			value.FollowHalfLife = .15;
+			value.BoneHalfLife = .05;
+			value.BonePositionInfluence = .5;
+			value.BoneRotationInfluence = .5;
+			value.BonePositionLimit = 12;
+			value.BoneRotationLimit = 20;
+		}
+		else if (name != "rigid")
+			return false;
+		out = value;
+		return true;
+	}
+	bool NeedsBoneControl() const
+	{
+		return BonePositionInfluence != 1 || BoneRotationInfluence != 1 || BonePositionLimit > 0 ||
+			   BoneRotationLimit > 0;
+	}
 	double OrbitSpeed = 0, OrbitEpoch = 0;
 	bool Valid() const
 	{
-		return std::isfinite(BoneHalfLife) && BoneHalfLife >= 0 && BoneHalfLife <= 10 &&
-			   std::isfinite(TurnRate) && TurnRate >= 0 && TurnRate <= 1e6 && std::isfinite(FollowHalfLife) &&
-			   FollowHalfLife >= 0 && FollowHalfLife <= 10 && std::isfinite(RotationHalfLife) &&
-			   RotationHalfLife >= 0 && RotationHalfLife <= 10 && std::isfinite(MaxDistance) &&
-			   MaxDistance >= 0 && MaxDistance <= 1048576 && std::isfinite(TeleportDistance) &&
-			   TeleportDistance >= 0 && TeleportDistance <= 1048576 && std::isfinite(OrbitSpeed) &&
-			   std::abs(OrbitSpeed) <= 3600 && std::isfinite(OrbitEpoch) && std::abs(OrbitEpoch) <= 1e9;
+		return std::isfinite(FramingMargin) && FramingMargin >= 0 && FramingMargin <= .45 &&
+			   std::isfinite(BonePositionInfluence) && BonePositionInfluence >= 0 &&
+			   BonePositionInfluence <= 1 && std::isfinite(BoneRotationInfluence) &&
+			   BoneRotationInfluence >= 0 && BoneRotationInfluence <= 1 && std::isfinite(BonePositionLimit) &&
+			   BonePositionLimit >= 0 && BonePositionLimit <= 1048576 && std::isfinite(BoneRotationLimit) &&
+			   BoneRotationLimit >= 0 && BoneRotationLimit <= 180 && std::isfinite(BoneHalfLife) &&
+			   BoneHalfLife >= 0 && BoneHalfLife <= 10 && std::isfinite(TurnRate) && TurnRate >= 0 &&
+			   TurnRate <= 1e6 && std::isfinite(FollowHalfLife) && FollowHalfLife >= 0 &&
+			   FollowHalfLife <= 10 && std::isfinite(RotationHalfLife) && RotationHalfLife >= 0 &&
+			   RotationHalfLife <= 10 && std::isfinite(MaxDistance) && MaxDistance >= 0 &&
+			   MaxDistance <= 1048576 && std::isfinite(TeleportDistance) && TeleportDistance >= 0 &&
+			   TeleportDistance <= 1048576 && std::isfinite(OrbitSpeed) && std::abs(OrbitSpeed) <= 3600 &&
+			   std::isfinite(OrbitEpoch) && std::abs(OrbitEpoch) <= 1e9;
 	}
 	bool operator==(const CameraMotion &v) const
 	{
-		return BoneHalfLife == v.BoneHalfLife && TurnRate == v.TurnRate &&
-			   FollowHalfLife == v.FollowHalfLife && RotationHalfLife == v.RotationHalfLife &&
-			   MaxDistance == v.MaxDistance && TeleportDistance == v.TeleportDistance &&
-			   OrbitSpeed == v.OrbitSpeed && OrbitEpoch == v.OrbitEpoch;
+		return PreserveFraming == v.PreserveFraming && FramingMargin == v.FramingMargin &&
+			   BonePositionInfluence == v.BonePositionInfluence &&
+			   BoneRotationInfluence == v.BoneRotationInfluence && BonePositionLimit == v.BonePositionLimit &&
+			   BoneRotationLimit == v.BoneRotationLimit && BoneHalfLife == v.BoneHalfLife &&
+			   TurnRate == v.TurnRate && FollowHalfLife == v.FollowHalfLife &&
+			   RotationHalfLife == v.RotationHalfLife && MaxDistance == v.MaxDistance &&
+			   TeleportDistance == v.TeleportDistance && OrbitSpeed == v.OrbitSpeed &&
+			   OrbitEpoch == v.OrbitEpoch;
 	}
 	double OrbitAngle(double time) const
 	{

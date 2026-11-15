@@ -625,7 +625,11 @@ std::map<int,advancedfx::CameraPose> targets;int liveCalcs=0,liveTargetReads=0,c
 std::map<int,int>playerUsers{{5,6}};std::map<int,std::string>targetModels;
 std::map<int,unsigned> generations;void*Mirv_Tf2_DiagnosticEntity(int e){auto f=targets.find(e);return f==targets.end()?nullptr:&f->second;}unsigned Mirv_Tf2_EntityHandle(const void*p){for(auto&e:targets)if(&e.second==p)return unsigned(e.first)*100+generations[e.first];return 0xffffffffu;}unsigned Mirv_Tf2_HandleForAddress(int e){return Mirv_Tf2_EntityHandle(Mirv_Tf2_DiagnosticEntity(e));}
 
-struct IMirvVecAngCalc {double Shift[3]{};int Refs=0,Entity,Bone=-1,Mode=0;IMirvVecAngCalc(int e):Entity(e){++liveCalcs;}void Console_PrintBegin(){}void Console_PrintEnd(){}void AddRef(){++Refs;}void Release(){if(!--Refs){--liveCalcs;delete this;}}bool CalcVecAng(SOURCESDK::Vector&o,SOURCESDK::QAngle&a){++liveTargetReads;auto f=targets.find(Entity);if(f==targets.end())return false;o.x=f->second.Position[0]+Shift[0];o.y=f->second.Position[1]+Shift[1];o.z=f->second.Position[2]+Shift[2];auto r=f->second.Rotation.ToQREulerAngles().ToQEulerAngles();a.x=r.Pitch;a.y=r.Yaw;a.z=r.Roll;return true;}};
+
+bool fixtureAnimatedHead=false;
+advancedfx::CameraPose FixtureHeadPose(const advancedfx::CameraPose&root){auto pose=root;pose.Position[0]+=std::sin(root.Position[0]*.03)*3;pose.Position[2]+=64+std::sin(root.Position[0]*.05)*3;pose.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({std::sin(root.Position[0]*.04)*10,std::sin(root.Position[0]*.02)*20,0}));return pose;}
+struct IMirvVecAngCalc {double Shift[3]{};int Refs=0,Entity,Bone=-1,Mode=0;IMirvVecAngCalc(int e):Entity(e){++liveCalcs;}void Console_PrintBegin(){}void Console_PrintEnd(){}void AddRef(){++Refs;}void Release(){if(!--Refs){--liveCalcs;delete this;}}bool CalcVecAng(SOURCESDK::Vector&o,SOURCESDK::QAngle&a){++liveTargetReads;auto f=targets.find(Entity);if(f==targets.end())return false;if(fixtureAnimatedHead&&Bone>=0){auto h=FixtureHeadPose(f->second);o.x=h.Position[0]+Shift[0];o.y=h.Position[1]+Shift[1];o.z=h.Position[2]+Shift[2];auto r=h.Rotation.ToQREulerAngles().ToQEulerAngles();a.x=r.Pitch;a.y=r.Yaw;a.z=r.Roll;return true;}o.x=f->second.Position[0]+Shift[0];o.y=f->second.Position[1]+Shift[1];o.z=f->second.Position[2]+Shift[2];auto r=f->second.Rotation.ToQREulerAngles().ToQEulerAngles();a.x=r.Pitch;a.y=r.Yaw;a.z=r.Roll;return true;}};
+bool Mirv_Tf2_GetEntityOriginAngles(int entity,float origin[3],float angles[3]){auto f=targets.find(entity);if(f==targets.end())return false;for(int a=0;a<3;++a){origin[a]=float(f->second.Position[a]);angles[a]=0;}return true;}
 struct Calcs{IMirvVecAngCalc*GetByName(const char*){return nullptr;}int Entity=-1,Bone=-2,Mode=-1;IMirvVecAngCalc*NewTf2EntityIndexCalc(const char*,int e,int b=-1,int m=0){Entity=e;Bone=b;Mode=m;auto c=new IMirvVecAngCalc(e);c->Bone=b;c->Mode=m;return c;}}g_MirvVecAngCalcs;
 constexpr int SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2,MIRV_TF2_BONEMODE_BONE=0;int g_SourceSdkVer=1;
 bool Mirv_Tf2_ParseBoneArg(int,const char*s,int&bone){bone=std::atoi(s);return bone>=-1;}
@@ -642,8 +646,8 @@ bool Mirv_Tf2_GetPlayerInfo(int,char*,size_t,int*);
 std::shared_ptr<const advancedfx::SceneCache::Frame>cachedFrame;
 std::deque<advancedfx::SceneCache::Frame> cameraFrames;std::uint64_t cameraFramesRevision=0;
 bool cached=false;namespace AfxHookSource{namespace CameraOverlay{void VisitCameraSceneFrames(const std::function<void(const std::deque<advancedfx::SceneCache::Frame>&,std::uint64_t)>&fn){fn(cameraFrames,cameraFramesRevision);}double EditingClientTime(double t){return t;}void SceneCacheFollowCameraTime(double){}bool guides=false,frustums=true;void SetCameraGuides(bool v){guides=v;}void SetCameraFrustums(bool v){frustums=v;}bool CameraGuidesEnabled(){return guides;}bool CameraFrustumsEnabled(){return frustums;}bool SceneCachePreviewActive(){return cached;}std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView(){return cachedFrame;}}}
-bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc*c,const advancedfx::SceneCache::Entity&e,const advancedfx::SceneCache::Entity*,SOURCESDK::Vector&o,SOURCESDK::QAngle&a,double*pivot=nullptr){if(pivot)std::copy(e.Origin,e.Origin+3,pivot);++cachedTargetReads;o.x=e.Origin[0]+c->Shift[0];o.y=e.Origin[1]+c->Shift[1];o.z=e.Origin[2]+c->Shift[2];a.x=e.Angles[0];a.y=e.Angles[1];a.z=e.Angles[2];return true;}
-bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc*c,double*pivot,void*&entity,double*root,int*mode=nullptr){auto f=targets.find(c->Entity);if(f==targets.end())return false;entity=&f->second;for(int i=0;i<3;++i)pivot[i]=root[i]=f->second.Position[i];if(mode)*mode=c->Mode;return true;}
+bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc*c,const advancedfx::SceneCache::Entity&e,const advancedfx::SceneCache::Entity*,SOURCESDK::Vector&o,SOURCESDK::QAngle&a,double*pivot=nullptr){if(fixtureAnimatedHead&&c->Bone>=0){advancedfx::CameraPose root;std::copy(e.Origin,e.Origin+3,root.Position);auto h=FixtureHeadPose(root);if(pivot)std::copy(h.Position,h.Position+3,pivot);o.x=h.Position[0]+c->Shift[0];o.y=h.Position[1]+c->Shift[1];o.z=h.Position[2]+c->Shift[2];auto r=h.Rotation.ToQREulerAngles().ToQEulerAngles();a.x=r.Pitch;a.y=r.Yaw;a.z=r.Roll;return true;}if(pivot)std::copy(e.Origin,e.Origin+3,pivot);++cachedTargetReads;o.x=e.Origin[0]+c->Shift[0];o.y=e.Origin[1]+c->Shift[1];o.z=e.Origin[2]+c->Shift[2];a.x=e.Angles[0];a.y=e.Angles[1];a.z=e.Angles[2];return true;}
+bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc*c,double*pivot,void*&entity,double*root,int*mode=nullptr){auto f=targets.find(c->Entity);if(f==targets.end())return false;entity=&f->second;for(int i=0;i<3;++i)pivot[i]=root[i]=f->second.Position[i];if(fixtureAnimatedHead&&c->Bone>=0){auto h=FixtureHeadPose(f->second);std::copy(h.Position,h.Position+3,pivot);}if(mode)*mode=c->Mode;return true;}
 IMirvVecAngCalc*Mirv_Tf2_RetargetCamera(IMirvVecAngCalc*old,int entity,int bone,int mode){auto c=new IMirvVecAngCalc(entity);std::copy(old->Shift,old->Shift+3,c->Shift);c->Bone=bone;c->Mode=mode;return c;}
 bool Mirv_Tf2_CameraBone(IMirvVecAngCalc*c,int&bone,std::string&name){bone=c->Bone;name=bone>=0?"fixture_bone":"";return true;}
 bool MirvCam_EditCamera(std::uint64_t,const advancedfx::CameraPose&);
@@ -657,7 +661,7 @@ struct PathKeys{size_t Count=2;bool Enabled=true;bool Enabled_get(){return Enabl
 struct FixturePathValue{double X=0,Y=0,Z=0;Afx::Math::Quaternion R{1,0,0,0};double Fov=80;};
 struct PlaybackPath{bool Enabled=false,Hold=true;double Offset=0,Base=0;bool Evaluable=true;bool CanEval(){return Evaluable;}double GetOffset(){return Offset;}bool GetHold(){return Hold;}double GetLowerBound(){return 0;}double GetUpperBound(){return 1000;}FixturePathValue Eval(double time){FixturePathValue v;v.X=Base+time;return v;}};
 struct PlaybackPaths{PlaybackPath Path,Other;size_t Active=0;bool Exists=true;std::string GetName(size_t i){return i?"Other":"Fixture path";}size_t GetActive(){return Active;}size_t GetCount(){return 2;}unsigned long long GetId(size_t i){return i;}PlaybackPath*GetPath(size_t i){return i==0?(Exists?&Path:nullptr):&Other;}PlaybackPath*GetPlaybackPath(double){return Path.Enabled?&Path:nullptr;}};
-struct View{PlaybackPaths m_CamPaths;PathKeys m_CamPath;double LastCameraOrigin[3]{1,2,3},LastCameraAngles[3]{},LastCameraFov=65;Input*m_MirvInput=&rigInput;void*GetGlobals(){return this;}}g_Hook_VClient_RenderView;
+struct View{int LastWidth=1280,LastHeight=720;PlaybackPaths m_CamPaths;PathKeys m_CamPath;double LastCameraOrigin[3]{1,2,3},LastCameraAngles[3]{},LastCameraFov=65;Input*m_MirvInput=&rigInput;void*GetGlobals(){return this;}}g_Hook_VClient_RenderView;
 '''
 # Reuse the real aiming implementation and command parser in the camera registry fixture.
 aim_source=(root/'AfxHookSource/aiming.cpp').read_bytes().decode('latin1')
@@ -683,10 +687,10 @@ motion_header=calcs_motion_header[calcs_motion_header.index('struct MirvCameraCo
 motion_stubs=r"""
 struct MirvTf2Trace_t{bool startSolid=false,allSolid=false;float fraction=1;};
 MirvCameraCollisionSettings fixtureFollowSettings;MirvCameraCollisionSettings MirvCameraCollisionGet(){return fixtureFollowSettings;}
-bool fixtureCollisionAllowed=false;int fixtureCollisionQueries=0;
+bool fixtureCollisionAllowed=false;int fixtureCollisionQueries=0;double fixtureCollisionShift=0;
 bool CameraCollisionClear(const double*,const MirvCameraCollisionSettings&,void* =nullptr){assert(fixtureCollisionAllowed);++fixtureCollisionQueries;return true;}
 bool CameraCollisionTrace(const double*,const double*,const MirvCameraCollisionSettings&,MirvTf2Trace_t&trace,void* =nullptr,void* =nullptr){assert(fixtureCollisionAllowed);++fixtureCollisionQueries;trace={};return true;}
-bool CameraCollisionMove(const double*,const double*to,const MirvCameraCollisionSettings&,double*out,void* =nullptr){assert(fixtureCollisionAllowed);++fixtureCollisionQueries;std::copy(to,to+3,out);return true;}
+bool CameraCollisionMove(const double*,const double*to,const MirvCameraCollisionSettings&,double*out,void* =nullptr){assert(fixtureCollisionAllowed);++fixtureCollisionQueries;std::copy(to,to+3,out);out[1]+=fixtureCollisionShift;return true;}
 void CameraReturnTarget(const double*,const double*,double,double,double,double*){std::abort();}
 """
 rig_preamble+=motion_header+motion_stubs+motion_function(calcs_motion,'bool MirvCameraAttachedReframe(')+motion_function(calcs_motion,'bool MirvCameraAttachedEvaluate(')
@@ -945,6 +949,69 @@ for(double velocity:{-180.,-90.,0.,90.,180.})for(double distance:{-180.,-1.,-.1,
  for(auto limits:{std::array<double,2>{0,90},std::array<double,2>{360,0}}){double moved=1,velocity=50;CalcDeltaSmooth(.1,10,moved,velocity,limits[0],limits[1]);assert(moved==0&&velocity==0);}
 }
 
+
+// Preserve the captured anchor projection under root/bone motion and soft
+// influence limits, using the production framing/collision controller.
+{
+ using namespace Afx::Math;
+ auto rotate=[](const Quaternion&q,const double v[3],double out[3]){auto r=q*Quaternion(0,v[0],v[1],v[2])*q.Conjugate();out[0]=r.X;out[1]=r.Y;out[2]=r.Z;};
+ auto projection=[](const double camera[3],const float angles[3],const double target[3]){
+  double f[3],r[3],u[3];MakeVectors(angles[2],angles[0],angles[1],f,r,u);std::array<double,3> value{};
+  for(int a=0;a<3;++a){double d=target[a]-camera[a];value[0]+=d*f[a];value[1]+=d*r[a];value[2]+=d*u[a];}return value;
+ };
+ MirvCameraCollisionSettings cfg;cfg.PreserveFraming=true;cfg.FollowHalfLife=.5;cfg.BoneHalfLife=.08;cfg.FollowTeleportDistance=0;
+ cfg.BonePositionInfluence=cfg.BoneRotationInfluence=.25;cfg.BonePositionLimit=4;cfg.BoneRotationLimit=10;
+ advancedfx::CameraPose reference;reference.Position[2]=64;
+ MirvCameraAttachedState state;
+ for(int i=0;i<240;++i){
+  const double root[3]={i*.9,std::sin(i*.03)*30,0},bodyAngles[3]={0,i*.4,0};
+  auto body=Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({0,bodyAngles[1],0}));
+  auto head=body*Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({std::sin(i*.13)*12,std::sin(i*.07)*20,std::sin(i*.11)*5}));
+  double boneLocal[3]={std::sin(i*.1)*3,0,64+std::sin(i*.2)*3},bone[3],pivot[3],boom[3]={-100,-25,0},offset[3];rotate(body,boneLocal,bone);rotate(head,boom,offset);
+  for(int a=0;a<3;++a)pivot[a]=root[a]+bone[a];
+  float x=float(pivot[0]+offset[0]),y=float(pivot[1]+offset[1]),z=float(pivot[2]+offset[2]);auto e=head.ToQREulerAngles().ToQEulerAngles();
+  float angles[3]={float(e.Pitch),float(e.Yaw),float(e.Roll)};double headAngles[3]={e.Pitch,e.Yaw,e.Roll};
+  assert(MirvCameraAttachedEvaluate(state,cfg,1,(void*)1,(void*)2,pivot,300+i/66.,x,y,z,root,angles,bodyAngles,headAngles,&reference));
+  const double camera[3]={x,y,z};auto local=projection(camera,angles,pivot);assert(local[0]>0);
+  assert(std::abs(local[1]/local[0]+.25)<2e-5&&std::abs(local[2]/local[0])<2e-5);
+ }
+ // Bone-only damping must follow root translation/rotation directly.
+ cfg={};cfg.BoneHalfLife=.1;cfg.AimOwnsAngles=true;state={};reference.Position[0]=10;reference.Position[1]=4;
+ for(int i=0;i<120;++i){
+  double root[3]={i*4.,0,0},a[3]={0,i*2.,0};auto q=Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({0,a[1],0}));
+  double bone[3],pivot[3];rotate(q,reference.Position,bone);for(int j=0;j<3;++j)pivot[j]=root[j]+bone[j];
+  float x=float(pivot[0]),y=float(pivot[1]),z=float(pivot[2]),angles[3]={0,float(a[1]),0};
+  assert(MirvCameraAttachedEvaluate(state,cfg,1,(void*)1,(void*)2,pivot,400+i/66.,x,y,z,root,angles,a,a,&reference));
+  for(int j=0;j<3;++j)assert(std::abs(state.BonePosition[j]-reference.Position[j])<1e-8);
+  assert(std::abs(x-pivot[0])<1e-4&&std::abs(y-pivot[1])<1e-4&&std::abs(z-pivot[2])<1e-4);
+ }
+
+ // Positional lag yields to the safe margin before final framing correction.
+ auto lagged=[&](bool preserve){MirvCameraCollisionSettings value;value.FollowHalfLife=.5;value.PreserveFraming=preserve;MirvCameraAttachedState h;double root[3]={0,0,0},pivot[3]={0,0,64};float x=-100,y=0,z=64,a[3]={};assert(MirvCameraAttachedEvaluate(h,value,1,(void*)1,(void*)2,pivot,450,x,y,z,root,a));root[1]=pivot[1]=200;x=-100;y=200;z=64;a[0]=a[1]=a[2]=0;assert(MirvCameraAttachedEvaluate(h,value,1,(void*)1,(void*)2,pivot,450.1,x,y,z,root,a));return std::abs(200-y);};
+ const double constrained=lagged(true),unconstrained=lagged(false);assert(constrained<=80.001&&constrained<unconstrained);
+ // Collision may move the final camera; framing must be solved afterwards.
+ cfg={};cfg.Attached=true;cfg.PreserveFraming=true;state={};fixtureCollisionAllowed=true;fixtureCollisionShift=0;
+ for(int i=0;i<2;++i){double root[3]={0,0,0},pivot[3]={0,0,64};float x=-100,y=-25,z=64,angles[3]={};fixtureCollisionShift=i?12:0;assert(MirvCameraAttachedEvaluate(state,cfg,1,(void*)1,(void*)2,pivot,460+i*.1,x,y,z,root,angles));double camera[3]={x,y,z};auto local=projection(camera,angles,pivot);assert(std::abs(local[1]/local[0]+.25)<2e-5);}
+ fixtureCollisionShift=0;fixtureCollisionAllowed=false;
+
+ // Zero influence retains captured head height, rather than collapsing to root.
+ cfg={};cfg.BonePositionInfluence=cfg.BoneRotationInfluence=0;cfg.AimOwnsAngles=true;state={};reference={};reference.Position[2]=64;
+ double root[3]={0,0,0},body[3]={0,0,0},head[3]={0,90,0},pivot[3]={30,0,70};float x=30,y=-100,z=70,angles[3]={0,90,0};
+ assert(MirvCameraAttachedEvaluate(state,cfg,1,(void*)1,(void*)2,pivot,500,x,y,z,root,angles,body,head,&reference));
+ assert(std::abs(x+100)<1e-4&&std::abs(y)<1e-4&&std::abs(z-64)<1e-4&&std::abs(angles[1])<1e-4);
+ // Soft limits bound the contribution while explicit aim owns the final heading.
+ cfg.BonePositionInfluence=cfg.BoneRotationInfluence=1;cfg.BonePositionLimit=2;cfg.BoneRotationLimit=10;state={};x=30;y=-100;z=70;angles[1]=90;
+ assert(MirvCameraAttachedEvaluate(state,cfg,1,(void*)1,(void*)2,pivot,501,x,y,z,root,angles,body,head,&reference));
+ assert(std::hypot(state.BonePosition[0],state.BonePosition[2]-64)<=2.00001&&std::abs(angles[1])<=10.0001&&!state.HasAngles);
+
+ // World mode must not acquire body rotation through bone influence controls.
+ {NamedCameraRig world;world.Id=9999;world.Rig.Attached=true;world.Rig.InheritRotation=false;world.AttachMode=MIRV_TF2_BONEMODE_WORLD;world.Rig.Pose.Position[0]=-100;world.Rig.Motion.BoneRotationInfluence=.25;world.Rig.Motion.BoneRotationLimit=5;
+  world.HasBoneReference=true;world.BoneReference.Position[2]=64;advancedfx::CameraPose target,out;target.Position[2]=64;double physical[3]={0,0,64},root[3]={0,0,0},bodyAngles[3]={0,90,0};MirvCameraAttachedState state;
+  assert(RigFollowStep(world,state,10,target,physical,root,out,bodyAngles));assert(std::abs(out.Position[0]+100)<1e-8&&std::abs(out.Position[1])<1e-8&&std::abs(out.Rotation.Z)<1e-8);}
+ advancedfx::CameraMotion preset;assert(advancedfx::CameraMotion::MakePreset("stable-head",preset)&&preset.Valid()&&preset.FollowHalfLife==0&&preset.BoneHalfLife>0&&preset.PreserveFraming);
+ assert(advancedfx::CameraMotion::MakePreset("soft-follow",preset)&&preset.Valid());assert(!advancedfx::CameraMotion::MakePreset("missing",preset));
+}
+
 // Follow + smooth aiming must use one scene-time sample. Match the existing
 // controllers in order, including the reported .5-second aligned head setup.
 {
@@ -979,6 +1046,37 @@ for(double velocity:{-180.,-90.,0.,90.,180.})for(double distance:{-180.,-1.,-.1,
   assert(1-std::abs(Afx::Math::DotProduct(paused.Rotation,duplicate.Rotation))<1e-10);
  }
  targets[5]=savedTarget;g_CameraRigs.at(motionName).Target->Shift[2]=savedShift;
+}
+
+
+
+// Animated-head influence/framing replay matches live evaluation in either
+// scrub direction, including checkpoint boundaries. Only input acquisition is faked.
+{
+ const auto oldTarget=targets[5];const auto oldFrame=cachedFrame;const auto oldFrames=cameraFrames;
+ auto live=g_CameraRigs.at(motionName);auto calc=Mirv_Tf2_RetargetCamera(live.Target.get(),5,0,MIRV_TF2_BONEMODE_ALIGNED);calc->AddRef();live.Target=std::shared_ptr<IMirvVecAngCalc>(calc,[](auto*p){p->Release();});std::fill(calc->Shift,calc->Shift+3,0.0);
+ live.AttachMode=MIRV_TF2_BONEMODE_ALIGNED;live.Rig.InheritRotation=true;live.Rig.Motion={};live.Rig.Motion.FollowHalfLife=.2;live.Rig.Motion.BoneHalfLife=.08;live.Rig.Motion.BonePositionInfluence=.4;live.Rig.Motion.BoneRotationInfluence=.25;live.Rig.Motion.BonePositionLimit=4;live.Rig.Motion.BoneRotationLimit=10;
+ live.Rig.Pose.Position[0]=-100;live.Rig.Pose.Position[1]=-20;live.Rig.Pose.Position[2]=0;live.Rig.Pose.Rotation=Quaternion(1,0,0,0);live.Follow={};live.FollowCache.reset();live.Aim.reset();live.HasBoneReference=false;fixtureAnimatedHead=true;
+ cameraFrames.clear();std::vector<advancedfx::CameraPose> expected;
+ for(int i=0;i<=180;++i){targets[5]={};targets[5].Position[0]=2*i;g_CameraEvaluationTime=600+i/66.;advancedfx::CameraPose pose;assert(EvaluateNamedRig(live,pose));expected.push_back(pose);advancedfx::SceneCache::Frame frame;frame.ClientTime=frame.DemoTime=g_CameraEvaluationTime;advancedfx::SceneCache::Entity entity;entity.Identity=live.CacheIdentity;entity.Origin[0]=2*i;frame.Entities.push_back(entity);cameraFrames.push_back(frame);}
+ ++cameraFramesRevision;auto replay=live;replay.Follow={};replay.FollowCache.reset();cached=true;
+ for(int i:{0,63,64,179,20,90,1,180,42}){cachedFrame=std::make_shared<advancedfx::SceneCache::Frame>(cameraFrames[i]);g_CameraEvaluationTime=cachedFrame->ClientTime;advancedfx::CameraPose pose;assert(EvaluateNamedRig(replay,pose));for(int a=0;a<3;++a)assert(std::abs(pose.Position[a]-expected[i].Position[a])<1e-5);assert(1-std::abs(DotProduct(pose.Rotation,expected[i].Rotation))<1e-9);}
+ cached=false;fixtureAnimatedHead=false;targets[5]=oldTarget;cameraFrames=oldFrames;cachedFrame=oldFrame;++cameraFramesRevision;
+}
+
+// Console and overlay-facing APIs edit the same motion settings, with undo.
+{
+ auto original=g_CameraRigs.at(motionName);advancedfx::CameraMotion preset;
+ command({"mirv_cam","edit",motionName.c_str(),"preset","stable-head"});
+ assert(g_CameraRigs.at(motionName).Rig.Motion.FollowHalfLife==0&&g_CameraRigs.at(motionName).Rig.Motion.BonePositionInfluence==.25);
+ command({"mirv_cam","edit",motionName.c_str(),"follow","preserveFraming","0"});assert(!g_CameraRigs.at(motionName).Rig.Motion.PreserveFraming);
+ command({"mirv_cam","edit",motionName.c_str(),"follow","framingMargin","0.2"});assert(g_CameraRigs.at(motionName).Rig.Motion.FramingMargin==.2);
+ command({"mirv_cam","edit",motionName.c_str(),"follow","bonePositionLimit","8"});assert(g_CameraRigs.at(motionName).Rig.Motion.BonePositionLimit==8);
+ auto before=g_CameraRigs.at(motionName).Rig.Motion;command({"mirv_cam","edit",motionName.c_str(),"follow","boneRotationInfluence","2"});assert(g_CameraRigs.at(motionName).Rig.Motion==before);
+ assert(MirvCam_HistoryUndo(false));assert(g_CameraRigs.at(motionName).Rig.Motion.BonePositionLimit==4);assert(MirvCam_HistoryUndo(true));
+ auto &camera=g_CameraRigs.at(motionName);camera.Aim=std::make_shared<Aiming>();camera.Aim->Active=true;camera.Aim->SnapTo=false;camera.Aim->Reset(12,37,0);camera.AimTime=300;camera.AimFrame=10;
+ auto adjusted=camera.Rig.Motion;adjusted.BoneHalfLife=.15;assert(MirvCam_EditMotion(camera.Id,adjusted));assert(camera.AimTime==300&&camera.AimFrame==10);double p=12,y=37,r=0;camera.Aim->Aim(1./66,Vector3(0,0,0),p,y,r);assert(std::abs(y-37)<1e-8); // No reseeding from bone heading.
+ camera=original;
 }
 
 // Display order is independent of persistent clip/camera references.

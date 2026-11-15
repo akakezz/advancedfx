@@ -321,6 +321,9 @@ struct MirvCameraCollisionSettings
 	double Radius = 6, ReturnHalfLife = .2, ReturnSpeed = 300, FollowHalfLife = 0, FollowMaxDistance = 128;
 	double BoneHalfLife = 0, FollowTeleportDistance = 1024, AttachedSoftDistance = 24;
 	double OrbitHalfLife = .15, OrbitSpeed = 360, FollowRecoveryDelay = 1;
+	bool PreserveFraming = false, AimOwnsAngles = false;
+	double FramingMargin = .1, FrameFov = 90, FrameAspect = 16.0 / 9;
+	double BonePositionInfluence = 1, BoneRotationInfluence = 1, BonePositionLimit = 0, BoneRotationLimit = 0;
 };
 struct MirvCameraAttachedState
 {
@@ -346,7 +349,9 @@ struct MirvCameraAttachedState
 bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &state, const MirvCameraCollisionSettings &settings,
 								unsigned long long generation, const void *identity, void *entity,
 								const double pivot[3], double sceneTime, float &x, float &y, float &z,
-								const double *entityOrigin = nullptr, float *angles = nullptr);
+								const double *entityOrigin = nullptr, float *angles = nullptr,
+								const double *rootAngles = nullptr, const double *targetAngles = nullptr,
+								const advancedfx::CameraPose *boneReference = nullptr);
 MirvCameraCollisionSettings MirvCameraCollisionGet();
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);
 void MirvCameraCollisionReset();

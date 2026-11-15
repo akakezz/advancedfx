@@ -31,6 +31,12 @@ bool ProjectRig(std::ostream &out, const NamedCameraRig &r, int depth = 0)
 	out << motion.FollowHalfLife << ' ' << motion.RotationHalfLife << ' ' << motion.MaxDistance << ' '
 		<< motion.TeleportDistance << ' ' << motion.OrbitSpeed << ' ' << motion.OrbitEpoch << ' '
 		<< motion.BoneHalfLife << ' ' << motion.TurnRate << '\n';
+	out << motion.PreserveFraming << ' ' << motion.FramingMargin << ' ' << motion.BonePositionInfluence << ' '
+		<< motion.BoneRotationInfluence << ' ' << motion.BonePositionLimit << ' ' << motion.BoneRotationLimit
+		<< '\n';
+	out << r.HasBoneReference << '\n';
+	if (r.HasBoneReference && !ProjectPose(out, r.BoneReference))
+		return false;
 	out << r.Modifiers.size() << '\n';
 	for (const auto &link : r.Modifiers)
 		out << link.Id << ' ' << link.Influence << ' ' << link.Enabled << '\n';
@@ -74,6 +80,18 @@ bool ProjectRig(std::istream &in, NamedCameraRig &r, int version, int depth = 0)
 	if (version >= 3)
 		if (!(in >> r.Rig.Motion.BoneHalfLife >> r.Rig.Motion.TurnRate) || !r.Rig.Motion.Valid())
 			return false;
+	if (version >= 6)
+	{
+		auto &m = r.Rig.Motion;
+		if (!(in >> m.PreserveFraming >> m.FramingMargin >> m.BonePositionInfluence >>
+			  m.BoneRotationInfluence >> m.BonePositionLimit >> m.BoneRotationLimit) ||
+			!m.Valid() || !(in >> r.HasBoneReference))
+			return false;
+		if (r.HasBoneReference && !ProjectPose(in, r.BoneReference))
+			return false;
+	}
+	else
+		r.Rig.Motion.PreserveFraming = false; // Keep previously authored follow behavior on import.
 	if (version >= 4)
 	{
 		size_t count;
@@ -186,7 +204,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	SyncRigLevel();
 	std::ostringstream out;
 	out.imbue(std::locale::classic());
-	out << std::setprecision(17) << "HLAE_CINEMATIC 5\n";
+	out << std::setprecision(17) << "HLAE_CINEMATIC 6\n";
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto state = paths.CaptureState();
 	out << state.Paths.size() << ' ' << state.Active << '\n';
@@ -252,7 +270,7 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	int version;
 	size_t count;
 	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" ||
-		(version != 1 && version != 2 && version != 3 && version != 4 && version != 5))
+		(version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6))
 		return false;
 	CamPathCollection::State paths;
 	std::set<unsigned long long> pathIds, rigIds, clipIds;
