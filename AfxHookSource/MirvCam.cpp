@@ -2808,7 +2808,19 @@ bool MirvCam_SetModifier(MirvCameraModifier &modifier)
 		return false;
 	if (!modifier.Id && g_CameraModifiers.size() >= 128)
 		return false;
+	std::string uniqueName = modifier.Name;
+	if (!modifier.Id)
+	{
+		unsigned suffix = 2;
+		while (std::any_of(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+						   [&](const auto &m) { return m.Name == uniqueName; }))
+			uniqueName = modifier.Name.substr(0, 120) + " " + std::to_string(suffix++);
+	}
+	else if (modifier.Name != found->Name && std::any_of(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+						 [&](const auto &m) { return m.Id != modifier.Id && m.Name == modifier.Name; }))
+		return false;
 	CameraEditTransaction history;
+	modifier.Name = uniqueName;
 	if (!modifier.Id)
 	{
 		modifier.Id = g_NextModifierId++;
@@ -2878,6 +2890,7 @@ std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
 				sample.Aim = rig.Aim->CloneState();
 			EvaluateNamedRig(sample, pose);
 			rig.LastWorld = sample.LastWorld;
+			rig.BaseWorld = sample.BaseWorld;
 			rig.Available = sample.Available;
 		}
 		advancedfx::CameraInfo info;

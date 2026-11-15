@@ -2660,10 +2660,11 @@ deferred task; this consolidation does not claim to resolve them.
 
 ### Shared camera modifiers (initial version)
 
-Open **Modifiers**, choose **New modifier**, name it, and select Noise/shake or
+Open **Cameras → Camera modifiers**, choose **New modifier**, name it, and select Noise/shake or
 Oscillation. Set its range in client seconds, strength, frequency, seed and
-position/FOV/angle amplitudes, then **Apply shared modifier**. A new effect starts
-at the current demo/cache/sequence-preview time and lasts ten seconds by default.
+position/FOV/angle amplitudes, then **Apply shared modifier**. New effects cover the demo by default. The editor shows the current client time
+and whether the saved effect is active. **Move range here** moves a custom range;
+**Whole demo range** restores the default range. Apply to save these changes.
 
 In **Cameras**, select one or more cameras and open **Modifier stack → Add
 modifier**. This links the shared definition to every selected camera. Editing
@@ -2682,3 +2683,9 @@ Definitions and links participate in camera undo/redo and cinematic project file
 New files use format 4; versions 1–3 still load. This initial version deliberately
 exposes only the existing additive effects. History-dependent and path-retiming
 modifiers are not yet offered for procedural cameras.
+
+Applying a shared effect that is already linked enables that existing link instead
+of adding a duplicate. Unlinking retains the definition; deleting removes it from
+the library and all camera stacks. The status message reports deletion success.
+Camera effects are visible in camera/sequence preview and playback; free-camera
+editing displays the base pose.
