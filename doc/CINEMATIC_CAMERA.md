@@ -2793,7 +2793,7 @@ Soft limits bound that deviation without a hard stop. Recapture and retarget
 update the reference through the existing camera editing pipeline.
 
 Motion presets reuse those settings: **Rigid attachment**, **Stable head mount**
-(no root lag; damped/reduced bone motion), and **Soft shoulder follow**. Applying
+(no root lag; damped/reduced bone motion), and **Soft follow**. Applying
 a preset, numeric edits, console edits and undo/redo share the same motion API.
 The shared modifier library also offers **Camera modifier preset**: Handheld,
 Impact shake and Oscillation. Handheld/Impact reuse `CamPath::MakeModifierPreset`;
@@ -2816,3 +2816,17 @@ controller and reference through its existing checkpoints, without live collisio
 queries. Camera guides, normal viewing, saved projects and recapture use the same
 attachment calculations. Recorded aimed-camera samples retain their existing
 re-record-after-edit requirements. Full-subject bounds framing remains deferred.
+
+### Classic bake verification
+
+Camera baking uses the same individual-camera evaluator as preview, including
+timed clip modifiers. Sequence baking uses the shared sequence evaluator. Poses
+are assembled in one batch and preserve quaternion orientation directly. Classic
+export reloads its generated XML and checks every exported pose before replacing
+the destination file. Successful camera bake reports include
+`XML reload verified for every exported pose.`
+
+This check validates serialized position, orientation and FOV; it does not confirm
+the in-game view or renderer. Loading a bake into an existing source path replaces
+that path's keys. Sequence playback can still override ordinary path playback;
+the baked file itself contains no camera bindings or commands.

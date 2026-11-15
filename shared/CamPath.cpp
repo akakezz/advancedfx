@@ -3024,6 +3024,22 @@ bool CamPath::ExportClassic(const wchar_t *fileName, double interval)
 	}
 	std::string xml;
 	rapidxml::print(std::back_inserter(xml), doc);
+	// Verify through the same parser and evaluator used by classic path loading
+	// before replacing the destination. A successful write must represent every
+	// sampled pose, rather than merely produce syntactically valid XML.
+	CamPath reloaded;
+	if (!reloaded.LoadFromString(xml) || reloaded.GetSize() != samples.size() || !reloaded.CanEval())
+		return false;
+	for (const auto &sample : samples)
+	{
+		const auto actual = reloaded.Eval(sample.first);
+		const auto &expected = sample.second;
+		const double dot = std::abs(DotProduct(actual.R, expected.R) / (actual.R.Norm() * expected.R.Norm()));
+		if (!ValidValue(actual) || std::abs(actual.X - expected.X) > 1e-6 ||
+			std::abs(actual.Y - expected.Y) > 1e-6 || std::abs(actual.Z - expected.Z) > 1e-6 ||
+			std::abs(actual.Fov - expected.Fov) > 1e-6 || 1 - dot > 1e-10)
+			return false;
+	}
 	return WritePathFile(std::filesystem::path(fileName), xml);
 }
 bool CamPath::Load(wchar_t const *fileName)

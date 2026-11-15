@@ -7413,7 +7413,7 @@ static void DrawCamerasTab()
 			}
 			ImGui::BeginDisabled(!found->Attached);
 			static int followPreset = 0;
-			const char *followPresets[] = {"Rigid attachment", "Stable head mount", "Soft shoulder follow"};
+			const char *followPresets[] = {"Rigid attachment", "Stable head mount", "Soft follow"};
 			const char *followPresetIds[] = {"rigid", "stable-head", "soft-follow"};
 			ImGui::SetNextItemWidth(180);
 			ImGui::Combo("Motion preset", &followPreset, followPresets, 3);

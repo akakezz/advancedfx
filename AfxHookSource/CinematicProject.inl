@@ -436,8 +436,8 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 	if (!std::isfinite(begin) || !std::isfinite(end) || !std::isfinite(step) || begin >= end || step <= 0 ||
 		(end - begin) / step > 50000)
 		return false;
-	const bool sequence = !std::strcmp(source, "sequence");
-	auto original = FindRig(source);
+	const bool sequence = source && !std::strcmp(source, "sequence");
+	auto original = source ? FindRig(source) : g_CameraRigs.end();
 	if (!sequence && original == g_CameraRigs.end())
 		return false;
 	if (sequence && g_CameraClips.empty())
@@ -491,6 +491,7 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 	baked.PositionInterpMethod_set(CamPath::DI_LINEAR);
 	baked.RotationInterpMethod_set(CamPath::QI_SLINEAR);
 	baked.FovInterpMethod_set(CamPath::DI_LINEAR);
+	auto bakedState = baked.CaptureState();
 	advancedfx::CameraPose previous;
 	bool first = true;
 	size_t changes = 0;
@@ -505,7 +506,7 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 		advancedfx::CameraPose pose;
 		auto rig = FindRig(std::to_string(id));
 		if (!(sequence ? EvaluateSequence(time, pose)
-					   : rig != g_CameraRigs.end() && EvaluateNamedRig(rig->second, pose)))
+					   : rig != g_CameraRigs.end() && EvaluateIndividualCamera(rig->second, pose)))
 		{
 			g_CameraBakeReport = "Bake failed at client time " + std::to_string(time) + ": " + g_CameraFailureReason +
 								 ". Existing file retained.";
@@ -531,15 +532,19 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 		}
 		previous = pose;
 		first = false;
-		const auto a = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
-		baked.Add(time,
-				  CamPathValue(pose.Position[0], pose.Position[1], pose.Position[2], a.Pitch, a.Yaw, a.Roll, pose.Fov));
+		const auto q = pose.Rotation.Normalized();
+		bakedState.Keys.emplace(time, CamPathValue(pose.Position[0], pose.Position[1], pose.Position[2], q.W,
+												   q.X, q.Y, q.Z, pose.Fov, false));
 	}
+	// Install once: Add copies and validates the entire map on each insertion.
+	baked.RestoreState(bakedState);
 	const bool saved = baked.ExportClassic(file, step);
 	g_CameraBakeReport = (saved ? "Saved " : "Failed to save ") + std::to_string(times.size()) + " poses from " +
 						 (sequence ? std::string("whole sequence") : "camera #" + std::to_string(id)) +
 						 ", client seconds " + std::to_string(begin) + " .. " + std::to_string(end) + "; " +
 						 std::to_string(changes) + " changed samples.";
+	if (saved)
+		g_CameraBakeReport += " XML reload verified for every exported pose.";
 	if (saved && !changes)
 		g_CameraBakeReport += " All sampled poses are identical.";
 	if (saved && sequence)
