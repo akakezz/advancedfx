@@ -6850,10 +6850,14 @@ static void DrawCameraModifierLibrary()
 	static std::uint64_t draftId = ~std::uint64_t(0);
 	static char name[129]{};
 	static int cameraPreset = 0;
-	const char *cameraPresets[] = {"Handheld", "Impact shake", "Oscillation"};
-	const char *cameraPresetIds[] = {"handheld", "impact", nullptr};
+	const char *cameraPresets[] = {"Handheld",		 "Impact shake", "Oscillation", "Subtle handheld",
+								   "Heavy handheld", "Gentle drift", "FOV punch",	"Recoil",
+								   "Dolly",			 "Slide",		 "Roll / bank"};
+	const char *cameraPresetIds[] = {"handheld",	   "impact",	   nullptr,		 "subtle-handheld",
+									 "heavy-handheld", "camera-drift", "zoom-punch", "recoil",
+									 "dolly",		   "slide",		   "bank"};
 	ImGui::SetNextItemWidth(180);
-	ImGui::Combo("Camera modifier preset", &cameraPreset, cameraPresets, 3);
+	ImGui::Combo("Camera modifier preset", &cameraPreset, cameraPresets, IM_ARRAYSIZE(cameraPresets));
 	ImGui::SameLine();
 	if (ImGui::Button("Create modifier from preset"))
 	{
@@ -6973,6 +6977,13 @@ static void DrawCameraModifierLibrary()
 		ImGui::Checkbox("Camera space", &m.CameraSpace);
 		ImGui::InputDouble("Strength", &m.Strength);
 		ImGui::InputDouble("Frequency (Hz)", &m.Frequency);
+		ImGui::InputDouble("Phase (cycles)", &m.Phase);
+		ImGui::InputScalar("Octaves", ImGuiDataType_U32, &m.Octaves);
+		ImGui::InputDouble("Roughness", &m.Roughness);
+		DrawModifierEnvelope(m);
+		ImGui::TextWrapped("Gesture presets use zero frequency and phase 0.25; edit their strength envelope "
+						   "to shape movement. Camera-space X/Y/Z means forward/right/up. Clip timing and "
+						   "fades are edited in the sequencer.");
 		ImGui::InputScalar("Seed", ImGuiDataType_U32, &m.Seed);
 		ImGui::InputScalarN("Position amplitude (X/Y/Z)", ImGuiDataType_Double, m.Amplitude, 3);
 		ImGui::InputDouble("FOV amplitude", &m.Amplitude[3]);

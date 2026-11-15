@@ -1595,9 +1595,31 @@ void rangeEasingModifiers()
 		near(path.Eval(i * .025).X, baked.Eval(i * .025).X, .03);
 	std::filesystem::remove(exportFile);
 
-	for (const char *name : {"handheld", "impact", "expo-in", "expo-out", "expo-in-out", "bounce-out",
-	                         "elastic-out", "stabilize", "fov-punch", "fov-safe", "pitch-safe", "slow-pan",
-		"stepped-12fps", "loop-position", "ping-pong-position", "reduce-roll", "widen-fov"})
+	for (const char *name : {"subtle-handheld",
+							 "heavy-handheld",
+							 "camera-drift",
+							 "zoom-punch",
+							 "recoil",
+							 "dolly",
+							 "slide",
+							 "bank",
+							 "handheld",
+							 "impact",
+							 "expo-in",
+							 "expo-out",
+							 "expo-in-out",
+							 "bounce-out",
+							 "elastic-out",
+							 "stabilize",
+							 "fov-punch",
+							 "fov-safe",
+							 "pitch-safe",
+							 "slow-pan",
+							 "stepped-12fps",
+							 "loop-position",
+							 "ping-pong-position",
+							 "reduce-roll",
+							 "widen-fov"})
 	{
 		CamPath::Modifier preset;
 		check(CamPath::MakeModifierPreset(name, 1, 5, preset), "Built-in modifier preset validates");
@@ -1609,6 +1631,61 @@ void rangeEasingModifiers()
 		      "Preset remains ordinary editable saved settings");
 		for (double t : {1.1, 2.4, 4.8})
 			check(std::isfinite(path.Eval(t).X), "Preset evaluates safely");
+	}
+	// Camera gestures are ordinary additive effects with duration-independent envelopes.
+	for (const char *name : {"zoom-punch", "recoil", "dolly", "slide", "bank"})
+	{
+		CamPath::Modifier gesture;
+		check(CamPath::MakeModifierPreset(name, 10, 14, gesture), "Camera gesture preset exists");
+		CamPathValue base(0, 0, 0, 0, 90, 0, 90), start = base, finish = base, middle = base;
+		check(CamPath::ApplyPoseModifier(start, gesture, 10) &&
+				  CamPath::ApplyPoseModifier(finish, gesture, 14) &&
+				  CamPath::ApplyPoseModifier(middle, gesture, 12),
+			  "Camera gesture uses shared pose evaluator");
+		near(start.X, base.X);
+		near(finish.X, base.X);
+		near(start.Fov, base.Fov);
+		near(finish.Fov, base.Fov);
+		if (!strcmp(name, "dolly"))
+		{
+			near(middle.X, 0, 1e-6);
+			near(middle.Y, 24, 1e-6);
+		}
+		if (!strcmp(name, "slide"))
+			check(std::abs(middle.X) > 23.9, "Slide uses the camera right axis");
+		if (!strcmp(name, "zoom-punch"))
+			check(middle.Fov < 90, "FOV punch zooms in");
+		if (!strcmp(name, "bank"))
+			check(std::abs(middle.GetEulerAngles().Roll) > 7.9, "Bank adds roll");
+		CamPath gesturePath;
+		gesturePath.PositionInterpMethod_set(CamPath::DI_LINEAR);
+		gesturePath.RotationInterpMethod_set(CamPath::QI_SLINEAR);
+		gesturePath.FovInterpMethod_set(CamPath::DI_LINEAR);
+		gesturePath.Add(10, base);
+		gesturePath.Add(14, base);
+		gesturePath.SetModifiers({gesture});
+		const auto gestureFile = std::filesystem::temp_directory_path() / "hlae-camera-gesture.xml";
+		check(gesturePath.ExportClassic(gestureFile.wstring().c_str(), .01),
+			  "Gesture exports as classic XML");
+		CamPath gestureReload;
+		check(gestureReload.Load(gestureFile.wstring().c_str()), "Gesture bake reloads");
+		for (double time : {10.0, 10.32, 11.6, 12.0, 14.0})
+		{
+			const auto expected = gesturePath.Eval(time), actual = gestureReload.Eval(time);
+			near(actual.X, expected.X, 1e-5);
+			near(actual.Y, expected.Y, 1e-5);
+			near(actual.Fov, expected.Fov, 1e-5);
+			check(1 - std::abs(Afx::Math::DotProduct(actual.R, expected.R)) < 1e-8,
+				  "Gesture baked orientation matches preview");
+		}
+		std::filesystem::remove(gestureFile);
+		CamPath::Modifier longer;
+		check(CamPath::MakeModifierPreset(name, 20, 28, longer), "Long camera gesture validates");
+		auto scaled = base;
+		CamPath::ApplyPoseModifier(scaled, longer, 24);
+		near(scaled.X, middle.X);
+		near(scaled.Y, middle.Y);
+		near(scaled.Fov, middle.Fov);
 	}
 	CamPath::Modifier sentinel;
 	sentinel.Seed = 42;

@@ -1663,7 +1663,9 @@ bool CamPath::ValidModifiers(const std::vector<NoiseModifier> &modifiers)
 			!std::isfinite(m.End - m.Begin) || !std::isfinite((m.End - m.Begin) * m.Frequency) ||
 			(m.End - m.Begin) * m.Frequency > 1e12 || !std::isfinite(m.FadeIn) || !std::isfinite(m.FadeOut) ||
 			m.FadeIn < 0 || m.FadeOut < 0 || m.FadeIn > m.End - m.Begin || m.FadeOut > m.End - m.Begin ||
-			!std::isfinite(m.Frequency) || m.Frequency <= 0 || m.Frequency > 1000 || m.Seed > 1000000000)
+			!std::isfinite(m.Frequency) || m.Frequency < 0 ||
+			(m.Frequency == 0 && m.Type != ModifierType::Oscillation) || m.Frequency > 1000 ||
+			m.Seed > 1000000000)
 			return false;
 		for (double amplitude : m.Amplitude)
 			if (!std::isfinite(amplitude) || std::abs(amplitude) > 1000000 ||
@@ -1821,6 +1823,53 @@ bool CamPath::MakeModifierPreset(const char *name, double begin, double end, Mod
 		m.Amplitude[4] = .2;
 		m.Amplitude[5] = .35;
 		m.Amplitude[6] = .2;
+	}
+	else if (!_stricmp(name, "subtle-handheld") || !_stricmp(name, "heavy-handheld"))
+	{
+		if (!MakeModifierPreset("handheld", begin, end, m))
+			return false;
+		const double scale = !_stricmp(name, "subtle-handheld") ? .4 : 3;
+		for (double &amplitude : m.Amplitude)
+			amplitude *= scale;
+	}
+	else if (!_stricmp(name, "camera-drift"))
+	{
+		m.CameraSpace = true;
+		m.Frequency = .15;
+		m.Octaves = 2;
+		m.Amplitude[0] = 1;
+		m.Amplitude[1] = 2;
+		m.Amplitude[2] = .5;
+		m.Amplitude[4] = .3;
+		m.Amplitude[5] = .5;
+	}
+	else if (!_stricmp(name, "zoom-punch") || !_stricmp(name, "recoil") || !_stricmp(name, "dolly") ||
+			 !_stricmp(name, "slide") || !_stricmp(name, "bank"))
+	{
+		// A constant carrier lets the existing normalized strength envelope shape
+		// a single gesture at any clip duration, without a separate effect engine.
+		m.Type = ModifierType::Oscillation;
+		m.Frequency = 0;
+		m.Phase = .25;
+		m.CameraSpace = true;
+		m.FadeIn = m.FadeOut = 0;
+		if (!_stricmp(name, "zoom-punch") || !_stricmp(name, "recoil"))
+		{
+			m.Envelope = {{0, 0}, {.08, 1}, {.35, .3}, {1, 0}};
+			if (!_stricmp(name, "zoom-punch"))
+				m.Amplitude[3] = -8;
+			else
+			{
+				m.Amplitude[0] = -2;
+				m.Amplitude[4] = -2;
+			}
+		}
+		else
+		{
+			m.Envelope = {{0, 0}, {.4, 1}, {.6, 1}, {1, 0}};
+			m.Amplitude[!_stricmp(name, "dolly") ? 0 : (!_stricmp(name, "slide") ? 1 : 6)] =
+				!_stricmp(name, "bank") ? 8 : 24;
+		}
 	}
 	else if (!_stricmp(name, "impact"))
 	{
@@ -2946,7 +2995,8 @@ bool CamPath::ExportClassic(const wchar_t *fileName, double interval)
 					if (begin <= t && t <= end)
 						samples[t] = Eval(t);
 				}
-			const double step = (std::min)(interval, 1.0 / (ModifierSampleRate(m) * 8));
+			const double rate = ModifierSampleRate(m);
+			const double step = rate > 0 ? (std::min)(interval, 1.0 / (rate * 8)) : interval;
 			if ((b - a) / step > 100000 || samples.size() + (size_t)std::ceil((b - a) / step) > 100000)
 				return false;
 			for (size_t i = 0; i <= (size_t)std::ceil((b - a) / step); ++i)

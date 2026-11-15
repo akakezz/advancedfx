@@ -2830,3 +2830,25 @@ This check validates serialized position, orientation and FOV; it does not confi
 the in-game view or renderer. Loading a bake into an existing source path replaces
 that path's keys. Sequence playback can still override ordinary path playback;
 the baked file itself contains no camera bindings or commands.
+
+### Camera effect presets
+
+Cameras > Camera modifiers offers Subtle handheld, Heavy handheld, Gentle drift,
+FOV punch, Recoil, Dolly, Slide and Roll / bank, alongside the existing presets.
+They are shared editable noise/oscillation definitions, using the same evaluator
+as campath modifiers. Link them in Camera clips; time their ranges and fades in
+the sequencer. Impact and recoil are manually timed, without event detection.
+
+Dolly moves forward and back, Slide moves sideways and back, and Roll / bank
+tilts and returns. Their strength envelope controls the gesture, including a
+short plateau at maximum displacement. Negative amplitudes reverse direction.
+These gestures and FOV punch use frequency zero with phase 0.25 so their envelope
+scales with the clip range. FOV punch narrows the FOV briefly; recoil moves back
+and pitches upward. Frequency remains in Hz for handheld and drift.
+
+The camera library exposes Phase, Octaves, Roughness and the existing Strength
+envelope editor. Changes require Apply shared modifier and affect every link.
+Console campath preset IDs are subtle-handheld, heavy-handheld, camera-drift,
+zoom-punch, recoil, dolly, slide and bank. Existing fov-punch retains its original
+oscillation behavior. Preview, undo, projects and classic baking use the same
+settings and require no additional effect system.
