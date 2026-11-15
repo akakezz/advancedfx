@@ -872,6 +872,17 @@ CamPathValue expectedEffect(100,0,0,0,0,0,90);auto effectSettings=clipEffect.Set
 assert(CamPath::ApplyPoseModifier(expectedEffect,effectSettings,.5));assert(std::abs(effectPose.Position[0]-expectedEffect.X)<1e-6);
 auto shifted=effected;shifted.Time+=100;assert(EvaluateClipSource(shifted,110.5,effectPose)&&std::abs(effectPose.Position[0]-expectedEffect.X)<1e-6);
 assert(EvaluateClipSource(effected,13,effectPose)&&effectPose.Position[0]==100);
+
+// Individual camera preview reuses clip envelopes with sequence playback OFF.
+assert(MirvCam_EnableSequence(false));command({"mirv_cam","preview","Sequence A"});assert(!MirvCam_SequenceEnabled()&&MirvCam_RigPreviewActive()&&!MirvCam_SequencePreviewActive());
+assert(MirvCam_EvaluateRig(10.5,effectPose)&&std::abs(effectPose.Position[0]-expectedEffect.X)<1e-6);
+auto individualCameras=MirvCam_Cameras(true);auto individualInfo=std::find_if(individualCameras.begin(),individualCameras.end(),[&](const auto&c){return c.Id==clipAId;});assert(individualInfo!=individualCameras.end()&&individualInfo->BasePose.Position[0]==100&&std::abs(individualInfo->Pose.Position[0]-expectedEffect.X)<1e-6);
+assert(MirvCam_CameraAction("capture",clipAId));assert(g_CameraRigs.at("Sequence A").Rig.Pose.Position[0]==100); // Do not bake the effect into its own source.
+cached=true;assert(MirvCam_EvaluateRig(10.5,effectPose)&&std::abs(effectPose.Position[0]-expectedEffect.X)<1e-6);cached=false;
+assert(MirvCam_EvaluateRig(13,effectPose)&&effectPose.Position[0]==100);
+auto repeated=effected;repeated.Id=~std::uint64_t(0);repeated.Time=30;assert(MirvCam_EditClip(repeated));
+assert(CameraModifierClip(g_CameraRigs.at("Sequence A"),31)->Id==repeated.Id);assert(CameraModifierClip(g_CameraRigs.at("Sequence A"),10.5)->Id==effected.Id);
+assert(MirvCam_RemoveClip(repeated.Id));MirvCam_EndRigPreview();assert(MirvCam_EnableSequence(true));
 auto invalidEffect=effected;invalidEffect.Modifiers[0].End=0;assert(!MirvCam_EditClip(invalidEffect));
 assert(MirvCam_RemoveModifier(clipEffect.Id)&&MirvCam_Clips().front().Modifiers.empty());assert(MirvCam_HistoryUndo(false)&&MirvCam_Clips().front().Modifiers.size()==1);assert(MirvCam_HistoryUndo(true)&&MirvCam_Clips().front().Modifiers.empty());
 // Preview uses an independent cursor even while the real demo clock remains frozen.
@@ -925,7 +936,7 @@ command({"mirv_cam","remove","0"});orderedInfo=MirvCam_Cameras(false);assert(ord
 command({"mirv_cam","edit","1","orbit","20"});assert(FindRig(std::to_string(lastId))->second.Rig.Motion.OrbitSpeed==20&&FindRig(std::to_string(middleId))->second.Rig.Motion.OrbitSpeed==0);
 assert(MirvCam_SelectCamera(lastId));MirvCam_EndRigPreview();g_RigPreview=false;g_EditingCameraName.clear();MirvCam_ReleaseLiveAttachment();
 g_CameraEvaluationTime=g_MirvTime.Now;for(int i=0;i<3;++i){g_Hook_VClient_RenderView.LastCameraOrigin[0]=50+i*5;command({"mirv_cam","capture"});advancedfx::CameraPose captured;assert(EvaluateNamedRig(FindRig(std::to_string(lastId))->second,captured)&&std::abs(captured.Position[0]-(50+i*5))<.001);}
-const auto undoBeforeGroup=g_CameraUndo.size();std::vector<std::uint64_t>group{middleId,lastId};assert(MirvCam_EditCameras(group,[](auto id){return MirvCam_CameraAction("remove",id);}));assert(g_CameraRigs.empty()&&g_CameraUndo.size()==undoBeforeGroup+1);assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.size()==2&&MirvCam_Clips()[0].Target==lastId);
+const auto undoBeforeGroup=g_CameraUndo.size();std::vector<std::uint64_t>group{middleId,lastId};assert(MirvCam_EditCameras(group,[](auto id){return MirvCam_CameraAction("remove",id);}));assert(g_CameraRigs.empty()&&g_CameraUndo.size()==(std::min)(size_t(64),undoBeforeGroup+1));assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.size()==2&&MirvCam_Clips()[0].Target==lastId);
 const auto originalFov=FindRig(std::to_string(middleId))->second.Rig.Pose.Fov;const auto undoBeforeFailure=g_CameraUndo.size();assert(!MirvCam_EditCameras(group,[&](auto id){if(id==lastId)return false;auto changed=FindRig(std::to_string(id))->second.LastWorld;changed.Fov=123;return MirvCam_EditCamera(id,changed);}));assert(FindRig(std::to_string(middleId))->second.Rig.Pose.Fov==originalFov&&g_CameraUndo.size()==undoBeforeFailure);
 
 // Saved attachments share live collision, while historical preview never traces the live world.

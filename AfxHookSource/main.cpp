@@ -951,9 +951,11 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 	case SOURCESDK::TF2::FRAME_RENDER_START:
 		MirvFix_PlayerAngleTraceFrame(1);
 		MirvFix_RecorderSoundUpdate();
-		AfxHookSource::CameraOverlay::SceneCacheFrame();
 		break;
 	case SOURCESDK::TF2::FRAME_RENDER_END:
+		// Copy completed render poses only after the engine has drawn this frame.
+		// Capturing at RENDER_START could preempt Source's normal bone setup/interpolation.
+		AfxHookSource::CameraOverlay::SceneCacheFrame();
 		MirvFix_PlayerAngleTraceFrame(2);
 		Shared_AfterFrameRenderEnd();
 		break;

@@ -71,6 +71,10 @@ namespace ImGui
 
         ImVector<ImGuiID> TimelineStack;
         ImVector<ImGuiID> GroupStack;
+        ImVector<ImVec2> GroupOrigins;
+        ImGuiID LastGroupHeaderId = 0;
+        ImVec2 LastGroupHeaderCursor{};
+        float LastGroupHeaderHeight = 0;
 
         FrameIndexType CurrentFrame = 0;
         double DisplayFrame = 0, DragFrame = 0;
@@ -1246,6 +1250,29 @@ namespace ImGui
                context.SelectedTimeline == openTimeline;
     }
 
+    static void finishSpanTooltip(ImGuiNeoSequencerInternalData &context)
+    {
+        if (!context.SpanCaption.empty() && BeginTooltip())
+        {
+            TextUnformatted(context.SpanCaption.c_str());
+            if (context.SpanBegin == context.SpanEnd)
+                Text("Tick %d", context.SpanBegin);
+            else
+                Text("%d - %d ticks", context.SpanBegin, context.SpanEnd);
+            EndTooltip();
+        }
+        context.SpanCaption.clear();
+    }
+    static void drawGroupBorder(const ImGuiNeoSequencerInternalData &context, ImVec2 origin, float bottom)
+    {
+        if (!style.GroupBorders)
+            return;
+        auto *draw = GetWindowDrawList();
+        ImVec2 end(context.TopLeftCursor.x + context.Size.x - 1, bottom);
+        draw->AddRect(origin + ImVec2(1, 1), end, GetColorU32(ImGuiCol_Border), 3);
+        draw->AddRectFilled(origin + ImVec2(1, 2), ImVec2(origin.x + 4, bottom - 1),
+                            IM_COL32(150, 100, 210, 180), 2);
+    }
     bool BeginNeoTimelineEx(const char* label, bool* open, ImGuiNeoTimelineFlags flags)
     {
         IM_ASSERT(inSequencer && "Not in active sequencer!");
@@ -1253,7 +1280,7 @@ namespace ImGui
         const bool closable = open != nullptr;
 
         auto& context = sequencerData[currentSequencer];
-        context.SpanCaption.clear();
+        finishSpanTooltip(context);
         context.SpanHoverDistance = FLT_MAX;
         const auto& imStyle = GetStyle();
         ImGuiWindow* window = GetCurrentWindow();
@@ -1286,6 +1313,27 @@ namespace ImGui
         const auto result = !closable || (*open);
         context.LastTimelineOpenned = result;
 
+        if (style.TrackSeparators)
+        {
+            auto *draw = GetWindowDrawList();
+            const float bottom = context.ValuesCursor.y + currentTimelineHeight;
+            draw->AddLine(ImVec2(context.TopBarStartCursor.x, bottom),
+                          ImVec2(context.TopLeftCursor.x + context.Size.x, bottom),
+                          GetColorU32(ImGuiCol_Border, .65f));
+        }
+        if (currentTimelineDepth > 0 && style.TreeGuides && !context.GroupOrigins.empty())
+        {
+            auto *draw = GetWindowDrawList();
+            const float x = context.TopBarStartCursor.x + imStyle.FramePadding.x +
+                            (currentTimelineDepth - .5f) * style.DepthItemSpacing;
+            const float y = context.ValuesCursor.y + currentTimelineHeight * .5f;
+            const float tip = x + style.DepthItemSpacing * .35f;
+            const ImU32 color = GetColorU32(ImGuiCol_TextDisabled);
+            draw->AddLine(ImVec2(x, context.ValuesCursor.y), ImVec2(x, y), color);
+            draw->AddLine(ImVec2(x, y), ImVec2(tip, y), color);
+            draw->AddLine(ImVec2(tip - 3, y - 3), ImVec2(tip, y), color);
+            draw->AddLine(ImVec2(tip - 3, y + 3), ImVec2(tip, y), color);
+        }
         if (addRes)
         {
             RenderNeoTimelane(id == context.SelectedTimeline,
@@ -1315,7 +1363,15 @@ namespace ImGui
             context.TimelineStack.push_back(id);
 
         if (isGroup)
-        { // Group requires special behaviour if its closed
+        { // Source spans can still draw on this header when the group is collapsed.
+            context.LastGroupHeaderId = id;
+            context.LastGroupHeaderCursor = context.ValuesCursor;
+            context.LastGroupHeaderHeight = currentTimelineHeight;
+            if (result)
+                context.GroupOrigins.push_back(context.ValuesCursor);
+            else
+                drawGroupBorder(context, context.ValuesCursor,
+                                context.ValuesCursor.y + currentTimelineHeight);
             context.ValuesCursor.y += currentTimelineHeight;
             if (result)
             {
@@ -1353,26 +1409,19 @@ namespace ImGui
 
         IM_ASSERT(context.TimelineStack.size() > 0 && "Timeline stack push/pop missmatch!");
 
-        // Resolve overlapping hover targets once, showing only the nearest marker/range.
-        if (!context.SpanCaption.empty() && BeginTooltip())
+        finishSpanTooltip(context);
+        const bool closingGroup =
+            !context.GroupStack.empty() && context.TimelineStack.back() == context.GroupStack.back();
+        if (closingGroup)
         {
-            TextUnformatted(context.SpanCaption.c_str());
-            if (context.SpanBegin == context.SpanEnd) Text("Tick %d", context.SpanBegin);
-            else Text("%d - %d ticks", context.SpanBegin, context.SpanEnd);
-            EndTooltip();
-        }
-        context.SpanCaption.clear();
-        context.ValuesCursor.x += imStyle.FramePadding.x + (float) currentTimelineDepth * style.DepthItemSpacing;
-        context.ValuesCursor.y += currentTimelineHeight;
-
-        finishPreviousTimeline(context);
-
-        if (!context.TimelineStack.empty() && !context.GroupStack.empty() &&
-            context.TimelineStack.back() == context.GroupStack.back())
-        {
-            currentTimelineDepth--;
+            drawGroupBorder(context, context.GroupOrigins.back(), context.ValuesCursor.y);
+            context.GroupOrigins.pop_back();
+            --currentTimelineDepth;
             context.GroupStack.pop_back();
         }
+        else
+            context.ValuesCursor.y += currentTimelineHeight;
+        finishPreviousTimeline(context);
 
         context.TimelineStack.pop_back();
     }
@@ -1441,11 +1490,12 @@ namespace ImGui
                GetIO().MousePos.y < context.ValuesCursor.y + currentTimelineHeight;
     }
 
-    bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption, bool *hovered, bool block, bool selected, FrameIndexType blendEnd)
+    bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption,
+                         bool *hovered, bool block, bool selected, FrameIndexType blendEnd, bool groupHeader)
     {
         IM_ASSERT(inSequencer);
         auto &context = sequencerData[currentSequencer];
-        IM_ASSERT(!context.TimelineStack.empty());
+        IM_ASSERT(groupHeader || !context.TimelineStack.empty());
         if (hovered) *hovered = false;
         if (end < begin)
             return false;
@@ -1457,7 +1507,9 @@ namespace ImGui
             return false;
         x0 = ImMax(left, x0);
         x1 = ImMin(right, x1);
-        const float y0 = context.ValuesCursor.y + 3, y1 = context.ValuesCursor.y + currentTimelineHeight - 3;
+        const float rowY = groupHeader ? context.LastGroupHeaderCursor.y : context.ValuesCursor.y;
+        const float height = groupHeader ? context.LastGroupHeaderHeight : currentTimelineHeight;
+        const float y0 = rowY + 3, y1 = rowY + height - 3;
         ImRect bounds(ImVec2(x0, y0), ImVec2(ImMax(x0 + 3, x1), y1));
         auto *draw = GetWindowDrawList();
         draw->PushClipRect(ImVec2(left, y0), ImVec2(right, y1), true);
@@ -1501,7 +1553,7 @@ namespace ImGui
                            IsMouseHoveringRect(bounds.Min, bounds.Max);
         // Span markers are part of the existing timeline-row item. Claim its
         // ID so ImGui does not interpret a marker drag as moving the window.
-        const ImGuiID rowId = context.TimelineStack.back();
+        const ImGuiID rowId = groupHeader ? context.LastGroupHeaderId : context.TimelineStack.back();
         if (GetActiveID() == rowId && !IsMouseDown(ImGuiMouseButton_Left))
             ClearActiveID();
         if (hover)

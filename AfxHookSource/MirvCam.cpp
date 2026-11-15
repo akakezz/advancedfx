@@ -1015,6 +1015,52 @@ bool ValidClipModifiers(const std::vector<advancedfx::CameraClipModifier> &links
 	}
 	return true;
 }
+bool ApplyClipModifiers(const advancedfx::CameraClip &clip, double time, advancedfx::CameraPose &pose)
+{
+	for (const auto &link : clip.Modifiers)
+		if (link.Enabled && link.Influence > 0)
+		{
+			auto definition = std::find_if(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+										   [&](const auto &m) { return m.Id == link.Id; });
+			if (definition == g_CameraModifiers.end())
+				return false;
+			auto settings = definition->Settings;
+			settings.Begin = link.Begin;
+			settings.End = link.End;
+			settings.FadeIn = link.FadeIn;
+			settings.FadeOut = link.FadeOut;
+			settings.Strength *= link.Influence;
+			if (!ApplyCameraPoseModifier(pose, settings, time - clip.Time))
+				return false;
+		}
+	return pose.Valid();
+}
+const advancedfx::CameraClip *CameraModifierClip(const NamedCameraRig &camera, double time)
+{
+	if ((!g_SequenceDemo.empty() && g_SequenceDemo != g_CameraDemoKey) ||
+		(g_SequenceDemo.empty() && g_SequenceLevel != g_LevelInitCount))
+		return nullptr;
+	const advancedfx::CameraClip *selected = nullptr;
+	for (const auto &clip : g_CameraClips)
+		if (!clip.Campath && clip.Target == camera.Id)
+		{
+			if (!selected || clip.Time <= time)
+				selected = &clip;
+			if (clip.Time > time)
+				break;
+		}
+	return selected;
+}
+bool EvaluateIndividualCamera(NamedCameraRig &camera, advancedfx::CameraPose &pose)
+{
+	if (!EvaluateNamedRig(camera, pose))
+		return false;
+	const auto *clip = CameraModifierClip(camera, g_CameraEvaluationTime);
+	if (clip && !ApplyClipModifiers(*clip, g_CameraEvaluationTime, pose))
+		return false;
+	camera.LastWorld = pose;
+	return true;
+}
 bool EvaluateClipSource(const advancedfx::CameraClip &clip, double time, advancedfx::CameraPose &pose)
 {
 	if (clip.Campath)
@@ -1033,23 +1079,7 @@ bool EvaluateClipSource(const advancedfx::CameraClip &clip, double time, advance
 		if (!EvaluateNamedRig(found->second, pose))
 			return false;
 	}
-	for (const auto &link : clip.Modifiers)
-		if (link.Enabled && link.Influence > 0)
-		{
-			auto definition = std::find_if(g_CameraModifiers.begin(), g_CameraModifiers.end(),
-										   [&](const auto &m) { return m.Id == link.Id; });
-			if (definition == g_CameraModifiers.end())
-				return false;
-			auto settings = definition->Settings;
-			settings.Begin = link.Begin;
-			settings.End = link.End;
-			settings.FadeIn = link.FadeIn;
-			settings.FadeOut = link.FadeOut;
-			settings.Strength *= link.Influence;
-			if (!ApplyCameraPoseModifier(pose, settings, time - clip.Time))
-				return false;
-		}
-	return pose.Valid();
+	return ApplyClipModifiers(clip, time, pose);
 }
 // Shared by explicit transitions, sequencer clips, preview and sequence export.
 bool BlendCameraPoses(const advancedfx::CameraPose &from, const advancedfx::CameraPose &to, double fraction,
@@ -1571,10 +1601,11 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 	g_CameraFailureReason.clear();
 	advancedfx::CameraPose evaluated;
 	auto found = g_CameraRigs.find(g_CameraRigName);
-	const bool valid = g_CameraSource == CameraSource::Sequence ? EvaluateSequence(clientTime, evaluated)
-					   : g_CameraSource == CameraSource::Playback
-						   ? EvaluatePlaybackPose(clientTime, evaluated, g_CampathSourceId)
-						   : found != g_CameraRigs.end() && EvaluateNamedRig(found->second, evaluated);
+	const bool valid =
+		g_CameraSource == CameraSource::Sequence ? EvaluateSequence(clientTime, evaluated)
+		: g_CameraSource == CameraSource::Playback
+			? EvaluatePlaybackPose(clientTime, evaluated, g_CampathSourceId)
+			: found != g_CameraRigs.end() && EvaluateIndividualCamera(found->second, evaluated);
 	if (!valid && g_CameraFailureReason.empty())
 		g_CameraFailureReason = "The selected camera no longer exists.";
 	std::string failure = valid ? std::string{} : "Incoming source: " + g_CameraFailureReason;
@@ -1591,9 +1622,9 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 		{
 			auto outgoing = g_CameraRigs.find(g_BlendFromCamera);
 			advancedfx::CameraPose from;
-			blendValid = g_BlendFromPlayback
-							 ? EvaluatePlaybackPose(clientTime, from, g_BlendPathId)
-							 : outgoing != g_CameraRigs.end() && EvaluateNamedRig(outgoing->second, from);
+			blendValid = g_BlendFromPlayback ? EvaluatePlaybackPose(clientTime, from, g_BlendPathId)
+											 : outgoing != g_CameraRigs.end() &&
+												   EvaluateIndividualCamera(outgoing->second, from);
 			if (g_BlendFromView)
 			{
 				from = g_BlendViewPose;
@@ -2627,8 +2658,8 @@ bool MirvCam_CameraAction(const char *action, std::uint64_t id)
 	if (!std::strcmp(action, "capture"))
 	{
 		auto pose = RigCapture();
-		if (!found->second.Modifiers.empty() && g_RigPreview && g_CameraSource == CameraSource::Rig &&
-			g_CameraRigName == found->first)
+		if ((!found->second.Modifiers.empty() || CameraModifierClip(found->second, g_CameraEvaluationTime)) &&
+			g_RigPreview && g_CameraSource == CameraSource::Rig && g_CameraRigName == found->first)
 		{
 			advancedfx::CameraPose rendered;
 			if (!EvaluateNamedRig(found->second, rendered))
@@ -2937,7 +2968,7 @@ std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
 			auto sample = rig;
 			if (rig.Aim)
 				sample.Aim = rig.Aim->CloneState();
-			EvaluateNamedRig(sample, pose);
+			EvaluateIndividualCamera(sample, pose);
 			rig.LastWorld = sample.LastWorld;
 			rig.BaseWorld = sample.BaseWorld;
 			rig.Available = sample.Available;

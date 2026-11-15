@@ -78,6 +78,9 @@ struct ImGuiNeoSequencerStyle {
     bool        TopBarShowFrameLines    = true;                 // Show line for every frame in top bar
     bool        TopBarShowFrameTexts    = true;                 // Show frame number every 10th frame
     ImVec2      ItemSpacing             = {4.0f,0.5f};
+    bool TrackSeparators = false;
+    bool GroupBorders = false;
+    bool TreeGuides = false;
     float       DepthItemSpacing        = 10.0f;                // Amount of text offset per depth level in timeline values
     float       TopBarSpacing           = 3.0f;                 // Space between top bar and timeline
     float       TimelineBorderSize      = 1.0f;
@@ -127,9 +130,10 @@ namespace ImGui {
     IMGUI_API void NeoKeyframe(int32_t* value);
     IMGUI_API void NeoSetKeyframeSelected(int32_t *value, bool selected);
     // Read-only ranges / markers share the ruler transform without retaining editable pointers.
-    IMGUI_API bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color,
-                                   const char *caption = nullptr, bool *hovered = nullptr, bool block = false,
-                                   bool selected = false, FrameIndexType blendEnd = -1);
+    IMGUI_API bool NeoTimelineSpan(
+        FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption = nullptr,
+        bool *hovered = nullptr, bool block = false, bool selected = false, FrameIndexType blendEnd = -1,
+        bool groupHeader = false); // Header spans may follow a closed BeginNeoGroup.
     IMGUI_API void NeoCancelSelection();
 
     IMGUI_API bool IsNeoKeyframeHovered();

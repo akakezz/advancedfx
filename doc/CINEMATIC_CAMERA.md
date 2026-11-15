@@ -2715,3 +2715,27 @@ the same pose editor used by the overlay. With no argument it uses the selected
 camera; an explicit reference captures another camera. `mirv_cam attach capture`
 has been removed. Fly the free camera to the desired framing, capture, and use
 `mirv_input end` to return to playback.
+
+### Camera preview, modifier names and grouped tracks
+
+Camera clip modifiers also evaluate when previewing an individual camera with
+sequence playback disabled. Their envelopes still follow the current demo/cache
+clock. A camera referenced more than once uses its latest camera clip at or before
+that time (or its first clip before any begin). This reuses the sequence's effect
+evaluator; it does not run the sequence or switch the view to another source.
+Guide poses include the effects, while numeric editing and recapture retain the
+base pose. Default Shake/Oscillation names follow type changes and reuse available
+suffixes; custom names are retained.
+
+All sequencer tracks use subtle horizontal separators. Groups add a border,
+accent gutter, disclosure control and indented child arrows. When multiple paths
+are visible they share a Paths group; a lone path stays directly accessible.
+Camera sources can collapse modifier children without hiding their source blocks.
+Group expansion state is saved with the overlay preferences. Modifier blocks show
+their effect names rather than repeated drag instructions.
+
+Scene capture now runs after the engine's FRAME_RENDER_END notification, before
+frame retirement. Previously it requested bone poses at FRAME_RENDER_START,
+which could preempt the live renderer's normal interpolated bone setup. The
+capture-stage fixture checks that the engine finishes rendering before any scene
+pose capture. Visual improvement still requires testing in the game.
