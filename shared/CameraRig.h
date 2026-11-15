@@ -166,11 +166,34 @@ struct CameraInfo
 	std::array<double, 3> AimPoint{}, AimOffset{};
 	double AimVelocity = 360, AimAcceleration = 90;
 };
+struct CameraClipModifier : CameraModifierLink
+{
+	// Seconds relative to clip start; moving the clip carries its envelope.
+	double Begin = 0, End = 1, FadeIn = 0, FadeOut = 0;
+	bool Valid() const
+	{
+		return std::isfinite(Influence) && Influence >= 0 && Influence <= 1 && std::isfinite(Begin) &&
+			   std::isfinite(End) && Begin >= 0 && End > Begin && End <= 1e9 && std::isfinite(FadeIn) &&
+			   std::isfinite(FadeOut) && FadeIn >= 0 && FadeOut >= 0 && FadeIn <= End - Begin &&
+			   FadeOut <= End - Begin;
+	}
+	bool operator==(const CameraClipModifier &o) const
+	{
+		return CameraModifierLink::operator==(o) && Begin == o.Begin && End == o.End && FadeIn == o.FadeIn &&
+			   FadeOut == o.FadeOut;
+	}
+};
 struct CameraClip
 {
 	std::uint64_t Id = ~std::uint64_t(0), Target = 0;
 	double Time = 0, Blend = 0;
 	bool Campath = false;
+	std::vector<CameraClipModifier> Modifiers;
+	bool operator==(const CameraClip &o) const
+	{
+		return Id == o.Id && Target == o.Target && Time == o.Time && Blend == o.Blend &&
+			   Campath == o.Campath && Modifiers == o.Modifiers;
+	}
 };
 struct CameraGuideLine
 {

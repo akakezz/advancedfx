@@ -109,6 +109,14 @@ namespace ImGui
     static bool fitNextSequencer = false;
     void SetNextNeoSequencerFit() { fitNextSequencer = true; }
 
+    static bool viewNextSequencer = false;
+    static FrameIndexType nextViewStart = 0, nextViewEnd = 1;
+    void SetNextNeoSequencerView(FrameIndexType start, FrameIndexType end)
+    {
+        nextViewStart = start;
+        nextViewEnd = ImMax(start, end);
+        viewNextSequencer = true;
+    }
     // Navigate the existing view rather than modifying demo/keyframe times.
     static void navigateView(ImGuiNeoSequencerInternalData& context)
     {
@@ -123,10 +131,25 @@ namespace ImGui
             context.OffsetFrame = 0;
             fitNextSequencer = false;
         }
-        if (hovered && context.StateOfSelection == SelectionState::Idle && !context.HoldingCurrentFrame && !context.HoldingZoomSlider)
+        if (viewNextSequencer)
         {
-            if ((io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f) &&
-                io.MousePos.x >= context.TopLeftCursor.x + context.ValuesWidth)
+            const double span = ImMax(1.0, double(nextViewEnd) - nextViewStart + 1);
+            context.Zoom = float(ImClamp(total / span, 1.0, total));
+            context.OffsetFrame =
+                FrameIndexType(ImClamp(double(nextViewStart) - context.StartFrame, 0.0, total - 1));
+            viewNextSequencer = false;
+        }
+        // Claim every hovered frame, including at zoom limits and while dragging.
+        // ImGui dispatches window scrolling at NewFrame, before this frame's wheel handler.
+        if (hovered)
+        {
+            SetKeyOwner(ImGuiKey_MouseWheelY, context.Id);
+            SetKeyOwner(ImGuiKey_MouseWheelX, context.Id);
+        }
+        if (hovered && context.StateOfSelection == SelectionState::Idle && !context.HoldingCurrentFrame &&
+            !context.HoldingZoomSlider)
+        {
+            if (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f)
             {
                 SetKeyOwner(ImGuiKey_MouseWheelY, context.Id);
                 SetKeyOwner(ImGuiKey_MouseWheelX, context.Id);

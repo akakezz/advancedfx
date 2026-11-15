@@ -797,7 +797,7 @@ Physical geometry overlapping the camera can still require immediate correction.
 
 `attachMode entity` uses entity-facing angles at the bone position; `bone` uses
 bone angles; `aligned` initially aligns with the entity and then follows bone
-rotation. This distinction also applies after `mirv_cam attach capture`: entity
+rotation. This distinction also applies after `mirv_cam capture`: entity
 mode preserves the camera relative to entity facing, without inheriting bone
 pitch, yaw or roll. Bone damping controls position, while bone/aligned modes still
 inherit their chosen bone rotation, approached through the orbit response when
@@ -823,7 +823,7 @@ mirv_cam attach follow 0.15
 mirv_cam attach follow boneHalfLife 0.08
 ```
 
-`mirv_cam attach capture` also works in `world` mode: the captured camera heading
+`mirv_cam capture` also works in `world` mode: the captured camera heading
 and world-space offset stay fixed while the target translates. Recapturing the
 current attached view preserves its authored pose and filter history, avoiding
 repeated collision compression. Capturing a newly moved free camera starts fresh.
@@ -2017,7 +2017,7 @@ mirv_cam attach 2050
 mirv_listbones 2050
 // Existing bone/offset/capture syntax remains available:
 mirv_cam attach 2050 0
-mirv_cam attach capture
+mirv_cam capture
 mirv_cam attach clear
 ```
 
@@ -2191,7 +2191,7 @@ arm it for later retargeting. Otherwise each successful attach creates a new cam
 The command enters the live attachment view, ending free-camera control.
 It preserves the current `mirv_cam attachMode` and existing optional offsets.
 
-`mirv_cam attach capture` updates the registered camera as well as the live
+`mirv_cam capture` updates the registered camera as well as the live
 attachment. `mirv_cam attach clear` detaches the selected/edited camera, or the
 current live attachment, at its evaluated pose. A live attachment detaches into
 the free camera at the displayed pose. `remove <ID/name>` deletes a camera;
@@ -2626,7 +2626,7 @@ Edits apply only fields changed from the primary camera; other values are retain
 per camera, so a batch FOV change preserves each camera’s position. Recapture
 applies the full current world view to all selected cameras. Rename is available for a single selection.
 
-`mirv_cam attach capture` can repeatedly recapture the selected attached camera,
+`mirv_cam capture` can repeatedly recapture the selected attached camera,
 including after leaving camera editing or switching away from the legacy live
 attachment controller. No new attachment is required between captures.
 
@@ -2637,8 +2637,7 @@ panels. Cinematic projects already include command markers.
 
 ### Shared behavior audit
 
-All active camera recapture entry points—`mirv_cam attach capture`,
-`mirv_cam capture`, and the overlay—use `MirvCam_EditCamera` / `EditCameraPose`.
+The `mirv_cam capture` command and overlay recapture action use `MirvCam_EditCamera` / `EditCameraPose`.
 The pose is stored once relative to the attachment frame. Recapture no longer
 mutates the legacy attachment calculator and mirrors another offset into the rig.
 An active legacy attachment hands evaluation to its saved camera; a running
@@ -2658,34 +2657,61 @@ different data/state adapters; they do not introduce another follow, aiming or
 blend algorithm. Classic baking's previously reported problems remain a separate,
 deferred task; this consolidation does not claim to resolve them.
 
-### Shared camera modifiers (initial version)
+### Shared modifiers and clip timing
 
-Open **Cameras → Camera modifiers**, choose **New modifier**, name it, and select Noise/shake or
-Oscillation. Set its range in client seconds, strength, frequency, seed and
-position/FOV/angle amplitudes, then **Apply shared modifier**. New effects cover the demo by default. The editor shows the current client time
-and whether the saved effect is active. **Move range here** moves a custom range;
-**Whole demo range** restores the default range. Apply to save these changes.
+Open **Cameras → Camera modifiers**, choose **New modifier**, and select Noise/shake or
+Oscillation. Set strength, frequency, seed and position/FOV/angle amplitudes, then
+**Apply shared modifier**. Names commit when leaving the name field; applying the
+other settings is not required to rename an effect. Default names reuse available
+numbers after deletion.
 
-In **Cameras**, select one or more cameras and open **Modifier stack → Add
-modifier**. This links the shared definition to every selected camera. Editing
-the definition updates all links. On a single camera, links have independent
-enabled/influence controls, Up/Down ordering, Unlink, and **Make independent**
-(which copies that definition for just this link). Deleting a definition unlinks
-it everywhere; undo restores it and its links.
+Select a source block in the sequencer, then open **Camera clips → Clip modifiers →
+Link modifier**. The definition is shared; each clip owns its instance's enabled
+state, influence, order, range and fades. Start/end are demo ticks; fade lengths
+are ticks. Moving the source clip carries its modifier timing with it. Reapplying
+an existing definition enables its existing instance instead of duplicating it.
+Unlink retains the definition. Deleting the definition removes all its instances;
+undo restores them.
 
-The stack runs after attachment, follow, orbit and aiming, before source blending.
-Noise and oscillation call the existing campath additive evaluator; their output
-is deterministic at the preview/demo client time. Base poses are retained for
-pose editing, recapture and cached tracking, so effects are not applied twice and
-editing a modifier does not invalidate recorded base-camera movement.
+Only the selected source clip displays its modifier lanes. Drag a block to move
+its range, its boundaries to resize, or its fade markers to adjust the envelope.
+A drag commits as one undoable edit on release. Numeric tick fields provide precise
+editing. The source's own duration is still defined by the next source clip; a
+modifier range does not change that duration.
 
-Definitions and links participate in camera undo/redo and cinematic project files.
-New files use format 4; versions 1–3 still load. This initial version deliberately
-exposes only the existing additive effects. History-dependent and path-retiming
-modifiers are not yet offered for procedural cameras.
+Effects use the existing campath additive evaluator after attachment, follow,
+orbit and aiming, before blending sources. Local clip time makes forward/backward
+scrubbing deterministic. Old camera-owned links remain functional under **Legacy
+camera modifier stack** when opening existing projects; new instances are authored
+on clips. Free-camera editing continues to display the base pose.
 
-Applying a shared effect that is already linked enables that existing link instead
-of adding a duplicate. Unlinking retains the definition; deleting removes it from
-the library and all camera stacks. The status message reports deletion success.
-Camera effects are visible in camera/sequence preview and playback; free-camera
-editing displays the base pose.
+Cinematic project format 5 saves clip instances and envelopes. Versions 1–4 still
+load, retaining their existing camera-linked effects. Classic baking remains a
+separate deferred task. Only existing additive noise and oscillation are exposed.
+
+### Sequencer visibility and navigation
+
+Empty tracks hide automatically. Demo events are opt-in. **Tracks** provides
+Auto (hide empty), Hidden and Shown overrides for each track; **Show all** reveals
+all tracks and paths, and **Reset tracks** restores the compact defaults. These
+preferences are saved in the overlay's INI settings. The Commands, Events and
+other detail tabs remain accessible even when their timeline rows are hidden.
+
+The path selector offers **Active path**, **Selected paths** (active plus paths
+with selected keys), and **All paths**. Modifier lanes appear only for the selected
+camera-source clip. **Frame selection** fits selected keys and the selected clip;
+**Frame authored content** fits path keys, holds, source clips and modifier ranges,
+without including the full demo or its event stream. **Fit demo** restores the full
+range. Framing never changes authored timing.
+
+Wheel up/down zoom around the pointer, Shift+wheel or horizontal wheel pans, and
+middle-button drag pans. The sequencer claims wheel input while hovered, including
+its labels and zoom limits, so either direction stays out of the parent menu.
+
+### Unified recapture command
+
+`mirv_cam capture [index/name]` recaptures stationary or attached cameras through
+the same pose editor used by the overlay. With no argument it uses the selected
+camera; an explicit reference captures another camera. `mirv_cam attach capture`
+has been removed. Fly the free camera to the desired framing, capture, and use
+`mirv_input end` to return to playback.

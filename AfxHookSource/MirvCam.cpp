@@ -36,7 +36,7 @@ extern WrpVEngineClient *g_VEngineClient;
 // How mirv_cam attach gets the angles when a bone is used.
 static int g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ALIGNED;
 
-// The calc made by the last mirv_cam attach (used by mirv_cam attach capture).
+// The calc made by the last mirv_cam attach.
 static IMirvVecAngCalc * g_MirvCamAttachCalc = 0;
 
 static void MirvCam_SetAttachCalc(IMirvVecAngCalc * calc)
@@ -989,17 +989,67 @@ bool EvaluatePlaybackPose(double clientTime, advancedfx::CameraPose &pose, unsig
 	return true;
 }
 bool EvaluateNamedRig(NamedCameraRig &, advancedfx::CameraPose &);
+bool ApplyCameraPoseModifier(advancedfx::CameraPose &pose, const CamPath::Modifier &settings, double time)
+{
+	auto angles = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
+	CamPathValue value(pose.Position[0], pose.Position[1], pose.Position[2], angles.Pitch, angles.Yaw,
+					   angles.Roll, pose.Fov);
+	if (!CamPath::ApplyPoseModifier(value, settings, time))
+		return false;
+	pose.Position[0] = value.X;
+	pose.Position[1] = value.Y;
+	pose.Position[2] = value.Z;
+	pose.Rotation = value.R;
+	pose.Fov = std::clamp(value.Fov, 1.0, 179.0);
+	return pose.Valid();
+}
+bool ValidClipModifiers(const std::vector<advancedfx::CameraClipModifier> &links)
+{
+	if (links.size() > 64)
+		return false;
+	for (const auto &link : links)
+	{
+		if (!link.Valid() || std::none_of(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+										  [&](const auto &m) { return m.Id == link.Id; }))
+			return false;
+	}
+	return true;
+}
 bool EvaluateClipSource(const advancedfx::CameraClip &clip, double time, advancedfx::CameraPose &pose)
 {
 	if (clip.Campath)
-		return EvaluatePlaybackPose(time, pose, clip.Target);
-	auto found = FindRig(std::to_string(clip.Target));
-	if (found == g_CameraRigs.end())
 	{
-		g_CameraFailureReason = "A camera referenced by the sequence was removed.";
-		return false;
+		if (!EvaluatePlaybackPose(time, pose, clip.Target))
+			return false;
 	}
-	return EvaluateNamedRig(found->second, pose);
+	else
+	{
+		auto found = FindRig(std::to_string(clip.Target));
+		if (found == g_CameraRigs.end())
+		{
+			g_CameraFailureReason = "A camera referenced by the sequence was removed.";
+			return false;
+		}
+		if (!EvaluateNamedRig(found->second, pose))
+			return false;
+	}
+	for (const auto &link : clip.Modifiers)
+		if (link.Enabled && link.Influence > 0)
+		{
+			auto definition = std::find_if(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+										   [&](const auto &m) { return m.Id == link.Id; });
+			if (definition == g_CameraModifiers.end())
+				return false;
+			auto settings = definition->Settings;
+			settings.Begin = link.Begin;
+			settings.End = link.End;
+			settings.FadeIn = link.FadeIn;
+			settings.FadeOut = link.FadeOut;
+			settings.Strength *= link.Influence;
+			if (!ApplyCameraPoseModifier(pose, settings, time - clip.Time))
+				return false;
+		}
+	return pose.Valid();
 }
 // Shared by explicit transitions, sequencer clips, preview and sequence export.
 bool BlendCameraPoses(const advancedfx::CameraPose &from, const advancedfx::CameraPose &to, double fraction,
@@ -1137,16 +1187,8 @@ bool FinishCameraPose(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 				return false;
 			auto settings = definition->Settings;
 			settings.Strength *= link.Influence;
-			auto angles = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
-			CamPathValue value(pose.Position[0], pose.Position[1], pose.Position[2], angles.Pitch, angles.Yaw,
-							   angles.Roll, pose.Fov);
-			if (!CamPath::ApplyPoseModifier(value, settings, g_CameraEvaluationTime))
+			if (!ApplyCameraPoseModifier(pose, settings, g_CameraEvaluationTime))
 				return false;
-			pose.Position[0] = value.X;
-			pose.Position[1] = value.Y;
-			pose.Position[2] = value.Z;
-			pose.Rotation = value.R;
-			pose.Fov = std::clamp(value.Fov, 1.0, 179.0);
 		}
 	if (!pose.Valid())
 		return false;
@@ -1347,13 +1389,14 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 			Tier0_Warning("Camera target unavailable; pose retained.\n");
 		return;
 	}
-	Tier0_Msg("mirv_cam add [name] - Add a camera at the current view.\n"
-			  "mirv_cam list - List session cameras.\n"
-			  "mirv_cam undo - Undo a camera edit.\n"
-			  "mirv_cam redo - Redo a camera edit.\n"
-			  "mirv_cam capture <index/name> - Recapture a camera from the current view.\n"
-			  "mirv_cam remove [index/name] - Remove a camera, or the selected camera when omitted.\n"
-			  "mirv_cam edit <index/name> [...] - Edit a camera.\n");
+	Tier0_Msg(
+		"mirv_cam add [name] - Add a camera at the current view.\n"
+		"mirv_cam list - List session cameras.\n"
+		"mirv_cam undo - Undo a camera edit.\n"
+		"mirv_cam redo - Redo a camera edit.\n"
+		"mirv_cam capture [index/name] - Recapture a camera (selected if omitted) from the current view.\n"
+		"mirv_cam remove [index/name] - Remove a camera, or the selected camera when omitted.\n"
+		"mirv_cam edit <index/name> [...] - Edit a camera.\n");
 }
 // Legacy attach remains the live evaluator (including follow/collision). Keep an
 // independent camera definition so the same attachment is available in preview.
@@ -1593,8 +1636,8 @@ bool MirvCam_EditClip(advancedfx::CameraClip &clip)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
-	if (!std::isfinite(clip.Time) || std::abs(clip.Time) > 1e9 || !std::isfinite(clip.Blend) ||
-		clip.Blend < 0 || clip.Blend > 3600)
+	if (!ValidClipModifiers(clip.Modifiers) || !std::isfinite(clip.Time) || std::abs(clip.Time) > 1e9 ||
+		!std::isfinite(clip.Blend) || clip.Blend < 0 || clip.Blend > 3600)
 		return false;
 	if ((!g_SequenceDemo.empty() && g_SequenceDemo != g_CameraDemoKey) ||
 		(!g_CameraClips.empty() && g_SequenceDemo.empty() && g_SequenceLevel != g_LevelInitCount))
@@ -1626,6 +1669,8 @@ bool MirvCam_EditClip(advancedfx::CameraClip &clip)
 			std::find_if(candidate.begin(), candidate.end(), [&](const auto &c) { return c.Id == clip.Id; });
 		if (found == candidate.end())
 			return false;
+		if (*found == clip)
+			return true;
 		*found = clip;
 	}
 	std::sort(candidate.begin(), candidate.end(),
@@ -2472,7 +2517,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 	}
 	if (action == "capture" || action == "remove" || action == "list")
 	{
-		if (action == "remove" && args->ArgC() == 2)
+		if ((action == "remove" || action == "capture") && args->ArgC() == 2)
 		{
 			if (g_CameraRigs.find(g_CameraRigName) == g_CameraRigs.end())
 			{
@@ -2845,6 +2890,10 @@ bool MirvCam_RemoveModifier(std::uint64_t id)
 		links.erase(std::remove_if(links.begin(), links.end(), [&](const auto &l) { return l.Id == id; }),
 					links.end());
 	}
+	for (auto &clip : g_CameraClips)
+		clip.Modifiers.erase(std::remove_if(clip.Modifiers.begin(), clip.Modifiers.end(),
+											[&](const auto &link) { return link.Id == id; }),
+							 clip.Modifiers.end());
 	g_CameraModifiers.erase(found);
 	++g_CameraCaptureRevision;
 	return true;
@@ -3397,19 +3446,6 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				return;
 			}
 
-			if (3 <= argc && 0 == _stricmp("capture", args->ArgV(2)))
-			{
-				auto selected = g_CameraRigs.find(g_CameraRigName);
-				if (selected == g_CameraRigs.end() || !selected->second.Rig.Attached)
-				{
-					Tier0_Warning("Select an attached camera first. Use mirv_cam capture <index/name> for a "
-								  "stationary camera.\n");
-					return;
-				}
-				if (!MirvCam_CameraAction("capture", selected->second.Id))
-					Tier0_Warning("Camera target unavailable or pose invalid; camera retained.\n");
-				return;
-			}
 
 			if (AfxHookSource::CameraOverlay::SceneCachePreviewActive())
 			{
@@ -3578,9 +3614,6 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				"mirv_cam attach <entityIndex or part of player name> [<iBoneIndex or part of bone name> [<fXForward> "
 				"<fYLeft> <fZUp> [<fRotXForward> <fRotYLeft> <fRotZUp>]]] - (TF2) Use the entity (or its bone) as "
 				"camera source, optionally with offset (same as mirv_cam offset). Use -1 as bone for no bone.\n"
-				"mirv_cam attach capture - Use the current camera (i.e. the free camera from mirv_input camera) as the "
-				"camera's position and angles relative to the attached target. Do mirv_cam attach first, fly the free "
-				"camera to the framing you want, then capture and end the free camera with mirv_input end.\n"
 				"mirv_cam attach clear - Detach the selected camera at its current pose and clear the live "
 				"attachment.\n"
 				"mirv_cam attach follow [...] - Optional demo-time positional following; 0 keeps rigid attachment.\n"
@@ -3631,7 +3664,7 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 		"mirv_cam remove [index/name] - Remove a camera, or the selected camera when omitted.\n"
 		"mirv_cam rename <index/name> <name> - Rename a camera.\n"
 		"mirv_cam edit <index/name> [...] - Edit a camera with the free camera or numeric pose values.\n"
-		"mirv_cam capture <index/name> - Recapture a camera from the current view.\n"
+		"mirv_cam capture [index/name] - Recapture a camera (selected if omitted) from the current view.\n"
 		"mirv_cam preview [...] - Control camera and keyframe preview.\n"
 		"mirv_cam transition <ID/name|campath> <seconds> - Transition to a camera or active campath.\n"
 		"mirv_cam sequence [...] - Control sequencer camera clips.\n"

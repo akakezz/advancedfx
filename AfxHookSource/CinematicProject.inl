@@ -186,7 +186,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	SyncRigLevel();
 	std::ostringstream out;
 	out.imbue(std::locale::classic());
-	out << std::setprecision(17) << "HLAE_CINEMATIC 4\n";
+	out << std::setprecision(17) << "HLAE_CINEMATIC 5\n";
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto state = paths.CaptureState();
 	out << state.Paths.size() << ' ' << state.Active << '\n';
@@ -211,7 +211,13 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	}
 	out << std::quoted(g_SequenceDemo) << ' ' << g_CameraClips.size() << '\n';
 	for (auto &c : g_CameraClips)
+	{
 		out << c.Id << ' ' << c.Target << ' ' << c.Time << ' ' << c.Blend << ' ' << c.Campath << '\n';
+		out << c.Modifiers.size() << '\n';
+		for (const auto &m : c.Modifiers)
+			out << m.Id << ' ' << m.Influence << ' ' << m.Enabled << ' ' << m.Begin << ' ' << m.End << ' '
+				<< m.FadeIn << ' ' << m.FadeOut << '\n';
+	}
 	auto &markers = g_CommandSystem.GetTickMarkers();
 	out << markers.size() << '\n';
 	for (auto &m : markers)
@@ -246,7 +252,7 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	int version;
 	size_t count;
 	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" ||
-		(version != 1 && version != 2 && version != 3 && version != 4))
+		(version != 1 && version != 2 && version != 3 && version != 4 && version != 5))
 		return false;
 	CamPathCollection::State paths;
 	std::set<unsigned long long> pathIds, rigIds, clipIds;
@@ -299,6 +305,20 @@ bool MirvCam_LoadProject(const wchar_t *file)
 			!clipIds.insert(c.Id).second || !std::isfinite(c.Time) || std::abs(c.Time) > 1e9 ||
 			!std::isfinite(c.Blend) || c.Blend < 0 || c.Blend > 3600)
 			return false;
+		if (version >= 5)
+		{
+			size_t links;
+			if (!(in >> links) || links > 64)
+				return false;
+			for (size_t n = 0; n < links; ++n)
+			{
+				advancedfx::CameraClipModifier m;
+				if (!(in >> m.Id >> m.Influence >> m.Enabled >> m.Begin >> m.End >> m.FadeIn >> m.FadeOut) ||
+					!m.Valid())
+					return false;
+				c.Modifiers.push_back(m);
+			}
+		}
 		// Missing references are retained, visibly unavailable, so removed sources can be corrected.
 		if (!clips.empty() &&
 			(c.Time - clips.back().Time < 1e-9 || clips.back().Time + clips.back().Blend > c.Time + 1e-9))
@@ -341,6 +361,10 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	}
 	for (const auto &entry : rigs)
 		for (const auto &link : entry.second.Modifiers)
+			if (!modifierIds.count(link.Id))
+				return false;
+	for (const auto &clip : clips)
+		for (const auto &link : clip.Modifiers)
 			if (!modifierIds.count(link.Id))
 				return false;
 	if (!(in >> magic) || magic != "END")
