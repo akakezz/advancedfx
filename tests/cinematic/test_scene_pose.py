@@ -644,6 +644,7 @@ bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc*c,const advancedfx::SceneCache::E
 bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc*c,double*pivot,void*&entity,double*root,int*mode=nullptr){auto f=targets.find(c->Entity);if(f==targets.end())return false;entity=&f->second;for(int i=0;i<3;++i)pivot[i]=root[i]=f->second.Position[i];if(mode)*mode=c->Mode;return true;}
 IMirvVecAngCalc*Mirv_Tf2_RetargetCamera(IMirvVecAngCalc*old,int entity,int bone,int mode){auto c=new IMirvVecAngCalc(entity);std::copy(old->Shift,old->Shift+3,c->Shift);c->Bone=bone;c->Mode=mode;return c;}
 bool Mirv_Tf2_CameraBone(IMirvVecAngCalc*c,int&bone,std::string&name){bone=c->Bone;name=bone>=0?"fixture_bone":"";return true;}
+bool MirvCam_EditCamera(std::uint64_t,const advancedfx::CameraPose&);
 bool MirvCam_EditAttachment(std::uint64_t,int,const char*,int);
 bool MirvCam_EditMotion(std::uint64_t,const advancedfx::CameraMotion&);
 bool MirvCam_SelectedCameraAction(const char*);
@@ -708,7 +709,8 @@ void MirvCam_SetAttachCalc(IMirvVecAngCalc*p){if(p)p->AddRef();if(g_MirvCamAttac
 const char*MirvCam_AttachModeName(int mode){static const char*names[]={"bone","entity","aligned","world"};return mode>=0&&mode<4?names[mode]:"unknown";}
 void MirvCameraAttachedReset(){}void MirvCameraAttachFollowCommand(advancedfx::ICommandArgs*){}
 bool MirvCameraAttachedCapturePose(IMirvVecAngCalc*,const double*,const double*){return false;}
-bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc*c,const double*o,const double*,float*offset){auto f=targets.find(c->Entity);if(f==targets.end())return false;for(int i=0;i<3;++i)offset[i]=c->Shift[i]=o[i]-f->second.Position[i];return true;}
+int legacyCaptureCalls=0;
+bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc*c,const double*o,const double*,float*offset){++legacyCaptureCalls;auto f=targets.find(c->Entity);if(f==targets.end())return false;for(int i=0;i<3;++i)offset[i]=c->Shift[i]=o[i]-f->second.Position[i];return true;}
 int Mirv_Tf2_GetMaxPlayers(){return 8;}bool Mirv_Tf2_GetPlayerInfo(int e,char*name,size_t n,int*user){if(!playerUsers.count(e))return false;if(name&&n)snprintf(name,n,"Subject");if(user)*user=playerUsers[e];return true;}
 '''
 legacy_fixture+=r'''
@@ -821,7 +823,7 @@ assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.count("Remove selected"));assert
 const auto historyBefore=g_CameraUndo.size();command({"mirv_cam","list"});assert(g_CameraUndo.size()==historyBefore);
 command({"mirv_cam","add","History pose"});const auto historyId=g_CameraRigs.at("History pose").Id;const auto originalPose=g_CameraRigs.at("History pose").Rig.Pose;auto changed=originalPose;changed.Position[0]=1234;changed.Fov=100;assert(MirvCam_EditCamera(historyId,changed));assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.at("History pose").Rig.Pose.Position[0]==originalPose.Position[0]);assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.at("History pose").Rig.Pose.Position[0]==1234);
 assert(MirvCam_RenameCamera(historyId,"History renamed"));assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.count("History pose"));assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.count("History renamed"));assert(MirvCam_HistoryUndo(false));changed.Fov=110;assert(MirvCam_EditCamera(historyId,changed)&&!MirvCam_HistoryUndo(true));
-targets[5]=target;playerUsers[5]=6;command({"mirv_cam","attach","5","-1","0","0","0"});const auto capturedName=g_CameraRigName;const auto beforeShift=g_CameraRigs.at(capturedName).Target->Shift[0];g_Hook_VClient_RenderView.LastCameraOrigin[0]=333;command({"mirv_cam","attach","capture"});assert(g_CameraRigs.at(capturedName).Target->Shift[0]!=beforeShift);assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.at(capturedName).Target->Shift[0]==beforeShift);assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.at(capturedName).Target->Shift[0]!=beforeShift);
+targets[5]=target;playerUsers[5]=6;command({"mirv_cam","attach","5","-1","0","0","0"});const auto capturedName=g_CameraRigName;const auto beforeShift=g_CameraRigs.at(capturedName).Target->Shift[0];const auto beforeCaptureX=g_CameraRigs.at(capturedName).Rig.Pose.Position[0];g_Hook_VClient_RenderView.LastCameraOrigin[0]=333;command({"mirv_cam","attach","capture"});assert(g_CameraRigs.at(capturedName).Target->Shift[0]==beforeShift&&g_CameraRigs.at(capturedName).Rig.Pose.Position[0]!=beforeCaptureX);assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.at(capturedName).Rig.Pose.Position[0]==beforeCaptureX);assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.at(capturedName).Rig.Pose.Position[0]!=beforeCaptureX);
 // A stationary camera aims independently, and its settings participate in camera undo.
 command({"mirv_cam","add","Aimed"});const auto aimedId=g_CameraRigs.at("Aimed").Id;const auto stationary=g_CameraRigs.at("Aimed").Rig.Pose.Position[0];
 assert(aimCommand({"mirv_aim","camera","Aimed","point","abs","333","1000","0"}));assert(aimCommand({"mirv_aim","camera","Aimed","active","1"}));command({"mirv_cam","preview","Aimed"});MirvCam_EvaluateRig(100,pose);assert(pose.Position[0]==stationary&&pose.Rotation.ToQREulerAngles().ToQEulerAngles().Yaw>0);assert(!g_Aiming.Active);
@@ -913,6 +915,36 @@ const auto originalFov=FindRig(std::to_string(middleId))->second.Rig.Pose.Fov;co
 
 // Saved attachments share live collision, while historical preview never traces the live world.
 assert(MirvCam_SelectCamera(lastId));assert(MirvCam_CameraAction("preview",lastId));fixtureFollowSettings.Attached=true;fixtureCollisionAllowed=true;const auto collisionBefore=fixtureCollisionQueries;assert(MirvCam_EvaluateRig(111,pose)&&fixtureCollisionQueries>collisionBefore);const auto afterLiveCollision=fixtureCollisionQueries;cached=true;cachedFrame=std::make_shared<advancedfx::SceneCache::Frame>();auto collisionFrame=std::const_pointer_cast<advancedfx::SceneCache::Frame>(cachedFrame);collisionFrame->ClientTime=111;advancedfx::SceneCache::Entity collisionSubject;collisionSubject.Identity=6;collisionFrame->Entities.push_back(collisionSubject);assert(MirvCam_EvaluateRig(111,pose)&&fixtureCollisionQueries==afterLiveCollision);cached=false;cachedFrame.reset();fixtureFollowSettings.Attached=false;fixtureCollisionAllowed=false;
+
+// Console aliases and the menu action must capture identical poses without changing the legacy calc.
+MirvCam_ClearClips();g_SequencePlaying=false;g_MirvTime.Now=900;g_CameraEvaluationTime=900;
+for(int entity:{5,2050})for(int mode=0;mode<4;++mode){
+ std::vector<advancedfx::CameraPose> reference;
+ for(int entry=0;entry<3;++entry){
+  targets[entity]=advancedfx::CameraPose{};g_MirvCamAttachMode=mode;g_EditingCameraName.clear();
+  g_MirvTime.Now=900;g_CameraEvaluationTime=900;
+  g_Hook_VClient_RenderView.LastCameraOrigin[0]=30;g_Hook_VClient_RenderView.LastCameraOrigin[1]=5;g_Hook_VClient_RenderView.LastCameraOrigin[2]=20;
+  g_Hook_VClient_RenderView.LastCameraAngles[0]=-10;g_Hook_VClient_RenderView.LastCameraAngles[1]=40;g_Hook_VClient_RenderView.LastCameraAngles[2]=5;g_Hook_VClient_RenderView.LastCameraFov=97;
+  command({"mirv_cam","attach",std::to_string(entity).c_str(),"-1","-25","7","11"});const auto id=g_CameraRigs.at(g_CameraRigName).Id;
+  auto settings=g_CameraRigs.at(g_CameraRigName).Rig.Motion;settings.FollowHalfLife=.15;settings.OrbitSpeed=45;assert(MirvCam_EditMotion(id,settings));
+  const auto targetCalc=g_CameraRigs.at(g_CameraRigName).Target;const auto shift=targetCalc->Shift[0];
+  auto captureEntry=[&]{Args request;const auto reference="@"+std::to_string(id);if(entry==0){request.v={"mirv_cam","attach","capture"};LegacyAttachCommand(&request);}else if(entry==1)MirvCam_CameraAction("capture",id);else {request.v={"mirv_cam","capture",reference.c_str()};MirvCam_CameraCommand(&request);}};
+  auto sample=[&](double time){advancedfx::CameraPose value;assert(MirvCam_EvaluateRig(time,value)&&!g_RigUnavailable);return value;};
+  rigInput.Enabled=true;captureEntry();assert(rigInput.Enabled&&!g_RigPreview&&!g_MirvCam.Source_get()&&!g_MirvCamAttachCalc&&targetCalc->Shift[0]==shift);assert(!MirvCam_EvaluateRig(900,pose));
+  rigInput.Enabled=false;std::vector<advancedfx::CameraPose> poses{sample(900)};assert(std::abs(poses[0].Position[0]-30)<.001&&poses[0].Fov==97);
+  targets[entity].Position[0]+=50;poses.push_back(sample(900.1));
+  g_MirvTime.Now=900.2;g_Hook_VClient_RenderView.LastCameraOrigin[0]=155;g_Hook_VClient_RenderView.LastCameraFov=105;
+  rigInput.Enabled=true;captureEntry();assert(rigInput.Enabled&&targetCalc->Shift[0]==shift);rigInput.Enabled=false;poses.push_back(sample(900.2));assert(std::abs(poses.back().Position[0]-155)<.001&&poses.back().Fov==105);
+  if(entry==0)reference=poses;else for(size_t i=0;i<poses.size();++i){for(int a=0;a<3;++a)assert(std::abs(reference[i].Position[a]-poses[i].Position[a])<1e-5);assert(std::abs(std::abs(Afx::Math::DotProduct(reference[i].Rotation,poses[i].Rotation))-1)<1e-6&&reference[i].Fov==poses[i].Fov);}
+  assert(MirvCam_HistoryUndo(false)&&g_CameraSource==CameraSource::Rig&&!g_RigPreview);assert(MirvCam_HistoryUndo(true)&&g_CameraSource==CameraSource::Rig&&!g_RigPreview);assert(std::abs(sample(900.2).Position[0]-155)<.001);
+  const auto oldLocal=g_CameraRigs.at(g_CameraRigName).Rig.Pose;const auto undoCount=g_CameraUndo.size();const auto oldTarget=targets[entity];targets.erase(entity);captureEntry();assert(g_CameraRigs.at(g_CameraRigName).Rig.Pose.Position[0]==oldLocal.Position[0]&&g_CameraUndo.size()==undoCount);targets[entity]=oldTarget;command({"mirv_cam","attach","clear"});assert(!g_CameraRigs.at(g_CameraRigName).Rig.Attached&&!g_MirvCam.Source_get());
+ }
+}
+assert(legacyCaptureCalls==0);
+advancedfx::CameraPose blendFrom,blendTo,blended;blendFrom.Position[0]=10;blendTo.Position[0]=110;blendFrom.Fov=60;blendTo.Fov=120;
+blendFrom.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,179,0}));blendTo.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,-179,0}));
+assert(BlendCameraPoses(blendFrom,blendTo,.5,blended)&&std::abs(blended.Position[0]-60)<1e-8&&blended.Fov==90&&std::abs(blended.Rotation.ToQREulerAngles().ToQEulerAngles().Yaw)>179.9);
+assert(BlendCameraPoses(blendFrom,blendTo,.25,blended)&&std::abs(blended.Position[0]-25.625)<1e-8);const auto validBlend=blended;blendTo.Fov=0;assert(!BlendCameraPoses(blendFrom,blendTo,.5,blended)&&blended.Fov==validBlend.Fov);
 std::cout<<"Consolidated camera commands, legacy attach registration and preview switching checks passed\n";}
 '''
 source=out/'camera_rig_adapter.cpp';source.write_text(rig_preamble+legacy_fixture+rig_adapter+legacy_methods+attach_command+aim_parser+rig_tests)

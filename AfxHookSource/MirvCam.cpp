@@ -994,6 +994,26 @@ bool EvaluateClipSource(const advancedfx::CameraClip &clip, double time, advance
 	}
 	return EvaluateNamedRig(found->second, pose);
 }
+// Shared by explicit transitions, sequencer clips, preview and sequence export.
+bool BlendCameraPoses(const advancedfx::CameraPose &from, const advancedfx::CameraPose &to, double fraction,
+					  advancedfx::CameraPose &out)
+{
+	if (!from.Valid() || !to.Valid() || !std::isfinite(fraction))
+		return false;
+	const double t = std::clamp(fraction, 0.0, 1.0), weight = t * t * (3 - 2 * t);
+	auto result = to;
+	for (int i = 0; i < 3; ++i)
+		result.Position[i] = from.Position[i] + weight * (to.Position[i] - from.Position[i]);
+	auto a = from.Rotation.Normalized(), b = to.Rotation.Normalized();
+	if (a.W * b.W + a.X * b.X + a.Y * b.Y + a.Z * b.Z < 0)
+		b = Afx::Math::Quaternion(-b.W, -b.X, -b.Y, -b.Z);
+	result.Rotation = a.Slerp(b, weight).Normalized();
+	result.Fov = from.Fov + weight * (to.Fov - from.Fov);
+	if (!result.Valid())
+		return false;
+	out = result;
+	return true;
+}
 bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 {
 	g_SequenceCamera = ~0ull;
@@ -1018,16 +1038,7 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	advancedfx::CameraPose from;
 	if (!EvaluateClipSource(*std::prev(current), time, from))
 		return false;
-	const double t = std::clamp((time - current->Time) / current->Blend, 0.0, 1.0);
-	const double weight = t * t * (3 - 2 * t);
-	for (int i = 0; i < 3; ++i)
-		pose.Position[i] = from.Position[i] + weight * (pose.Position[i] - from.Position[i]);
-	auto a = from.Rotation.Normalized(), b = pose.Rotation.Normalized();
-	if (a.W * b.W + a.X * b.X + a.Y * b.Y + a.Z * b.Z < 0)
-		b = Afx::Math::Quaternion(-b.W, -b.X, -b.Y, -b.Z);
-	pose.Rotation = a.Slerp(b, weight).Normalized();
-	pose.Fov = from.Fov + weight * (pose.Fov - from.Fov);
-	return pose.Valid();
+	return BlendCameraPoses(from, pose, (time - current->Time) / current->Blend, pose);
 }
 bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 {
@@ -1169,6 +1180,20 @@ bool EditCameraPose(const std::string &name, NamedCameraRig &camera, const advan
 	camera.AimTime = -1;
 	camera.LastWorld = pose;
 	camera.Available = true;
+	if (camera.Rig.Attached && g_LegacyCameraName == name && g_MirvCamAttachCalc == camera.Target.get() &&
+		g_MirvCam.Source_get() == camera.Target.get())
+	{
+		MirvCam_ReleaseLiveAttachment();
+		g_LegacyCameraName.clear();
+		g_MirvCam.m_OffsetForwad = g_MirvCam.m_OffsetLeft = g_MirvCam.m_OffsetUp = 0;
+		g_MirvCam.m_OffsetForwardRot = g_MirvCam.m_OffseLeftRot = g_MirvCam.m_OffsetUpRot = 0;
+		if (g_CameraSource == CameraSource::Legacy)
+		{
+			g_CameraRigName = name;
+			g_CameraSource = CameraSource::Rig;
+			g_LastRigPose = pose;
+		}
+	}
 	if (g_EditingCameraName == name)
 		g_EditingCameraName.clear();
 	return true;
@@ -1250,28 +1275,8 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 		}
 		if (!_stricmp(action, "capture"))
 		{
-			auto pose = RigCapture();
-			if (!pose.Valid())
-				return;
-			if (found->second.Rig.Attached)
-			{
-				advancedfx::CameraPose target;
-				double pivot[3];
-				if (!CameraAttachmentTarget(found->second, CameraAuthoringTime(), target, pivot) ||
-					!found->second.Rig.Attach(pose, target, found->second.Rig.InheritRotation,
-											  CameraAuthoringTime(), pivot))
-				{
-					Tier0_Warning("Camera target unavailable; pose retained.\n");
-					return;
-				}
-			}
-			else
-				found->second.Rig.Pose = pose;
-			found->second.Follow = {};
-			found->second.FollowCache.reset();
-			found->second.LastWorld = pose;
-			if (g_EditingCameraName == found->first)
-				g_EditingCameraName.clear();
+			if (!MirvCam_EditCamera(found->second.Id, RigCapture()))
+				Tier0_Warning("Camera target unavailable or pose invalid; camera retained.\n");
 			return;
 		}
 	}
@@ -1372,22 +1377,11 @@ bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const a
 			  CameraDisplayName(name, g_CameraRigs.at(name)).c_str());
 	return true;
 }
-void CaptureLegacyCamera(const advancedfx::CameraPose &world)
-{
-	auto found = g_CameraRigs.find(g_LegacyCameraName);
-	advancedfx::CameraPose target;
-	double pivot[3];
-	if (found != g_CameraRigs.end() &&
-		CameraAttachmentTarget(found->second, CameraAuthoringTime(), target, pivot) &&
-		found->second.Rig.Attach(world, target, true, CameraAuthoringTime(), pivot))
-	{
-		++g_CameraCaptureRevision;
-		found->second.LastWorld = world;
-	}
-}
 void ClearCameraAttachment(bool liveSource)
 {
-	const auto name = (g_RigPreview || !g_EditingCameraName.empty()) ? g_CameraRigName : g_LegacyCameraName;
+	const auto name =
+  (g_CameraSource == CameraSource::Rig || g_RigPreview || !g_EditingCameraName.empty())
+   ? g_CameraRigName : g_LegacyCameraName;
 	auto found = g_CameraRigs.find(name);
 	if (found != g_CameraRigs.end() && found->second.Rig.Attached)
 	{
@@ -1481,6 +1475,10 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 			EvaluateNamedRig(camera, background);
 		}
 	}
+	if (!g_RigPreview && g_CameraSource == CameraSource::Rig)
+		if (auto input = g_Hook_VClient_RenderView.m_MirvInput)
+			if (input->GetCameraControlMode())
+				return false;
 	if (g_SequencePlaying && !g_RigPreview)
 	{
 		auto input = g_Hook_VClient_RenderView.m_MirvInput;
@@ -1530,17 +1528,7 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 					(g_CameraFailureReason.empty() ? std::string("camera no longer exists.") : g_CameraFailureReason);
 			if (blendValid)
 			{
-				const double weight = fraction * fraction * (3 - 2 * fraction);
-				for (int axis = 0; axis < 3; ++axis)
-					evaluated.Position[axis] =
-						from.Position[axis] + weight * (evaluated.Position[axis] - from.Position[axis]);
-				const auto start = from.Rotation.Normalized();
-				auto end = evaluated.Rotation.Normalized();
-				if (start.W * end.W + start.X * end.X + start.Y * end.Y + start.Z * end.Z < 0)
-					end = Afx::Math::Quaternion(-end.W, -end.X, -end.Y, -end.Z);
-				evaluated.Rotation = start.Slerp(end, weight).Normalized();
-				evaluated.Fov = from.Fov + weight * (evaluated.Fov - from.Fov);
-				blendValid = evaluated.Valid();
+				blendValid = BlendCameraPoses(from, evaluated, fraction, evaluated);
 				if (!blendValid)
 					failure = "The blended pose is invalid.";
 			}
@@ -1784,6 +1772,7 @@ bool MirvCam_HistoryUndo(bool redo)
 	const bool sequence = g_CameraSource == CameraSource::Sequence;
 	const bool playback = g_CameraSource == CameraSource::Playback;
 	const bool viewing = g_RigPreview || (!g_LegacyCameraName.empty() && g_MirvCam.Source_get());
+	const bool following = !g_RigPreview && g_CameraSource == CameraSource::Rig;
 	unsigned long long selectedId = ~0ull;
 	auto selected = g_CameraRigs.find(g_CameraRigName);
 	if (selected != g_CameraRigs.end())
@@ -1812,6 +1801,8 @@ bool MirvCam_HistoryUndo(bool redo)
 									 : playback ? CameraSource::Playback
 												: CameraSource::Rig)
 								  : CameraSource::Legacy;
+	if (following && g_CameraRigs.count(g_CameraRigName))
+		g_CameraSource = CameraSource::Rig;
 	if (g_CameraClips.empty())
 		g_SequencePlaying = false;
 	g_RigUnavailable = false;
@@ -2552,11 +2543,8 @@ bool MirvCam_CameraAction(const char *action, std::uint64_t id)
 	if (found == g_CameraRigs.end())
 		return false;
 	if (!std::strcmp(action, "capture"))
-	{
-		advancedfx::CameraPose target;
-		if (!RigCapture().Valid() || (found->second.Rig.Attached && !RigTarget(found->second, target)))
-			return false;
-	}
+		return MirvCam_EditCamera(id, RigCapture());
+
 	struct Args : advancedfx::ICommandArgs
 	{
 		const char *Action;
@@ -3284,71 +3272,15 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 
 			if (3 <= argc && 0 == _stricmp("capture", args->ArgV(2)))
 			{
-				if (AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+				auto selected = g_CameraRigs.find(g_CameraRigName);
+				if (selected == g_CameraRigs.end() || !selected->second.Rig.Attached)
 				{
-					MirvCam_SelectedCameraAction("capture");
+					Tier0_Warning("Select an attached camera first. Use mirv_cam capture <index/name> for a "
+								  "stationary camera.\n");
 					return;
 				}
-				// In camera editing/preview, capture belongs to that camera, not a hidden previous attachment.
-				if (g_RigPreview || !g_EditingCameraName.empty())
-				{
-					auto selected = g_CameraRigs.find(g_CameraRigName);
-					advancedfx::CameraPose target;
-					if (selected == g_CameraRigs.end() || !selected->second.Rig.Attached || !RigTarget(selected->second, target))
-					{
-						Tier0_Warning("The selected camera has no available attachment. Use mirv_cam capture "
-									  "<index/name> for a stationary camera.\n");
-						return;
-					}
-					auto calc = selected->second.Target.get();
-					g_MirvCam.Source_set(calc);
-					if (g_MirvCamAttachCalc != calc) MirvCam_SetAttachCalc(calc);
-					g_LegacyCameraName = selected->first;
-				}
-				if (!g_MirvCamAttachCalc || g_MirvCam.Source_get() != g_MirvCamAttachCalc)
-				{
-					auto selected = g_CameraRigs.find(g_CameraRigName);
-					if (selected != g_CameraRigs.end() && selected->second.Rig.Attached)
-					{
-						if (!MirvCam_CameraAction("capture", selected->second.Id))
-							Tier0_Warning("The attached camera target is unavailable; pose retained.\n");
-						return;
-					}
-					Tier0_Warning(
-						"The camera is not attached, use mirv_cam attach <target> [<bone>] first.\n");
-					return;
-				}
-
-				float localOffset[3];
-
-				double origin[3], angles[3];
-				std::copy(g_Hook_VClient_RenderView.LastCameraOrigin, g_Hook_VClient_RenderView.LastCameraOrigin + 3,
-						  origin);
-				std::copy(g_Hook_VClient_RenderView.LastCameraAngles, g_Hook_VClient_RenderView.LastCameraAngles + 3,
-						  angles);
-				const bool recaptured = MirvCameraAttachedCapturePose(g_MirvCamAttachCalc, origin, angles);
-				if (!Mirv_Tf2_CaptureCamera(g_MirvCamAttachCalc, origin, angles, localOffset))
-				{
-					Tier0_Warning("Could not capture the camera, the target is not available right now.\n");
-					return;
-				}
-
-				CaptureLegacyCamera(RigCapture());
-				g_EditingCameraName.clear();
-				if (!recaptured)
-					MirvCameraAttachedReset();
-				// The captured pose already includes everything, so the offsets must not be applied on top of it.
-				g_MirvCam.m_OffsetForwad = 0;
-				g_MirvCam.m_OffsetLeft = 0;
-				g_MirvCam.m_OffsetUp = 0;
-				g_MirvCam.m_OffsetForwardRot = 0;
-				g_MirvCam.m_OffseLeftRot = 0;
-				g_MirvCam.m_OffsetUpRot = 0;
-
-				Tier0_Msg("Captured the current camera relative to the target (forward %.2f, left %.2f, up %.2f), it "
-						  "now follows the target.\n"
-						  "mirv_cam offset was cleared. If you used the free camera, end it with mirv_input end.\n",
-						  localOffset[0], localOffset[1], localOffset[2]);
+				if (!MirvCam_CameraAction("capture", selected->second.Id))
+					Tier0_Warning("Camera target unavailable or pose invalid; camera retained.\n");
 				return;
 			}
 

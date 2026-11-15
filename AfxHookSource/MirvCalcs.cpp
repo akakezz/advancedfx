@@ -2293,19 +2293,16 @@ public:
 	}
 	IMirvVecAngCalc *RebindCamera(int entity) const
 	{
-		auto result = new CMirvVecAngTf2EntityIndexCalc(nullptr, entity, m_BoneIndex, m_Mode);
+		auto result =
+			static_cast<CMirvVecAngTf2EntityIndexCalc *>(RetargetCamera(entity, m_BoneIndex, m_Mode));
 		result->m_BoneName = m_BoneName;
-		result->m_Calibrated = m_Calibrated;
-		result->m_Captured = m_Captured;
-		std::memcpy(result->m_Fix, m_Fix, sizeof(m_Fix));
-		std::memcpy(result->m_Offset, m_Offset, sizeof(m_Offset));
 		return result;
 	}
 	IMirvVecAngCalc *RetargetCamera(int entity, int bone, int mode) const
 	{
 		auto result = new CMirvVecAngTf2EntityIndexCalc(nullptr, entity, bone, mode);
 		result->m_Captured = m_Captured;
-		if (m_Calibrated && (m_Mode == mode || m_Captured))
+		if (m_Mode == mode || m_Captured)
 		{
 			result->m_Calibrated = m_Calibrated;
 			std::memcpy(result->m_Fix, m_Fix, sizeof(m_Fix));

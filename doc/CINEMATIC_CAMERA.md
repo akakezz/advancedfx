@@ -2634,3 +2634,26 @@ The **Project** tab contains cinematic-project save/open, campath XML/collection
 files, classic export/baking, and standalone command-track file import/export.
 Camera clips and Cameras contain editing controls rather than duplicate save
 panels. Cinematic projects already include command markers.
+
+### Shared behavior audit
+
+All active camera recapture entry points—`mirv_cam attach capture`,
+`mirv_cam capture`, and the overlay—use `MirvCam_EditCamera` / `EditCameraPose`.
+The pose is stored once relative to the attachment frame. Recapture no longer
+mutates the legacy attachment calculator and mirrors another offset into the rig.
+An active legacy attachment hands evaluation to its saved camera; a running
+free camera remains editable until `mirv_input end`.
+
+Explicit transitions and camera-source clips share `BlendCameraPoses`; sequence
+preview and export use the same sequence evaluator. Attachment restoration and
+retargeting share the calculator-copy implementation, retaining calibration and
+captured data from older projects.
+
+The audit also checked the existing shared paths: saved cameras use `Aiming`
+for aiming, `MirvCameraAttachedEvaluate` for follow/collision, and `CameraRig`
+for attachment/orbit transforms. Scene-cache and entity labels share the entity
+classifier. Keyframe replacement and gizmo edits use `CamPath::ReplacePose`.
+Live target lookup, cached-pose replay and the independent preview clock remain
+different data/state adapters; they do not introduce another follow, aiming or
+blend algorithm. Classic baking's previously reported problems remain a separate,
+deferred task; this consolidation does not claim to resolve them.
