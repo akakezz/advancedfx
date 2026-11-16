@@ -1989,6 +1989,18 @@ double CamPath::ModifierInfluence(const NoiseModifier &m, double time)
 }
 namespace
 {
+double LimitModifierValue(double value, const CamPath::Modifier &m)
+{
+	double x = std::clamp(value, m.Lower, m.Upper);
+	if (m.Softness > 0)
+	{
+		if (x < m.Lower + m.Softness)
+			x = m.Lower + m.Softness * std::exp((value - m.Lower - m.Softness) / m.Softness);
+		else if (x > m.Upper - m.Softness)
+			x = m.Upper - m.Softness * std::exp((m.Upper - m.Softness - value) / m.Softness);
+	}
+	return x;
+}
 void ApplyAdditiveModifier(CamPathValue &value, const CamPath::NoiseModifier &m, double time)
 {
 	const double influence = CamPath::ModifierInfluence(m, time);
@@ -2126,13 +2138,27 @@ void ApplyFilterModifier(CamPathValue &value, const CamPath::NoiseModifier &m, d
 } // namespace
 bool CamPath::ApplyPoseModifier(CamPathValue &pose, const Modifier &modifier, double time)
 {
-	if (!std::isfinite(time) ||
-		(modifier.Type != ModifierType::Noise && modifier.Type != ModifierType::Oscillation) ||
-		!ValidModifiers({modifier}))
+	if (!std::isfinite(time) || !ValidModifiers({modifier}))
 		return false;
-	ApplyAdditiveModifier(pose, modifier, time);
+	if (modifier.Type == ModifierType::Noise || modifier.Type == ModifierType::Oscillation)
+	{
+		ApplyAdditiveModifier(pose, modifier, time);
+		return true;
+	}
+	if (modifier.Type != ModifierType::Limits && modifier.Type != ModifierType::Remap)
+		return false;
+	double target[7];
+	for (int ch = 0; ch < 7; ++ch)
+	{
+		double value = GetChannelValue(pose, Channel(ch));
+		target[ch] = modifier.Type == ModifierType::Limits
+						 ? LimitModifierValue(value, modifier)
+						 : modifier.Pivot + (value - modifier.Pivot) * modifier.Scale + modifier.Offset;
+	}
+	ApplyFilterModifier(pose, modifier, time, target);
 	return true;
 }
+
 void CamPath::BuildModifierCurves()
 {
 	if (m_ModifierRevision == m_GeometryRevision)
@@ -2367,17 +2393,7 @@ void CamPath::BuildModifierCurves()
 							continue;
 						if (m.Type == ModifierType::Limits)
 						{
-							double x = std::clamp(source[i], m.Lower, m.Upper);
-							if (m.Softness > 0)
-							{
-								if (x < m.Lower + m.Softness)
-									x = m.Lower + m.Softness * std::exp((source[i] - m.Lower - m.Softness) /
-									                                    m.Softness);
-								else if (x > m.Upper - m.Softness)
-									x = m.Upper - m.Softness * std::exp((m.Upper - m.Softness - source[i]) /
-									                                    m.Softness);
-							}
-							v[i] = x;
+							v[i] = LimitModifierValue(source[i], m);
 						}
 						else if (m.Type == ModifierType::Slew && i)
 						{

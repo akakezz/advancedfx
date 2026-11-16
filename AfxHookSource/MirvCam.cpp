@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <limits>
 
 #include "MirvCam.h"
 #include "MirvTime.h"
@@ -1146,11 +1147,14 @@ bool EvaluateClipSource(const advancedfx::CameraClip &clip, double time, advance
 }
 // Shared by explicit transitions, sequencer clips, preview and sequence export.
 bool BlendCameraPoses(const advancedfx::CameraPose &from, const advancedfx::CameraPose &to, double fraction,
-					  advancedfx::CameraPose &out)
+					  advancedfx::CameraPose &out, int curve = 0)
 {
 	if (!from.Valid() || !to.Valid() || !std::isfinite(fraction))
 		return false;
-	const double t = std::clamp(fraction, 0.0, 1.0), weight = t * t * (3 - 2 * t);
+	const double t = std::clamp(fraction, 0.0, 1.0), weight = curve == 1 ? t
+															  : curve == 2
+																  ? t * t * t * (t * (t * 6 - 15) + 10)
+																  : t * t * (3 - 2 * t);
 	auto result = to;
 	for (int i = 0; i < 3; ++i)
 		result.Position[i] = from.Position[i] + weight * (to.Position[i] - from.Position[i]);
@@ -1188,7 +1192,7 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	advancedfx::CameraPose from;
 	if (!EvaluateClipSource(*std::prev(current), time, from))
 		return false;
-	return BlendCameraPoses(from, pose, (time - current->Time) / current->Blend, pose);
+	return BlendCameraPoses(from, pose, (time - current->Time) / current->Blend, pose, current->BlendCurve);
 }
 bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 {
@@ -1740,8 +1744,9 @@ bool MirvCam_EditClip(advancedfx::CameraClip &clip)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
-	if (!ValidClipModifiers(clip.Modifiers) || !std::isfinite(clip.Time) || std::abs(clip.Time) > 1e9 ||
-		!std::isfinite(clip.Blend) || clip.Blend < 0 || clip.Blend > 3600)
+	if (clip.BlendCurve < 0 || clip.BlendCurve > 2 || !ValidClipModifiers(clip.Modifiers) ||
+		!std::isfinite(clip.Time) || std::abs(clip.Time) > 1e9 || !std::isfinite(clip.Blend) ||
+		clip.Blend < 0 || clip.Blend > 3600)
 		return false;
 	if ((!g_SequenceDemo.empty() && g_SequenceDemo != g_CameraDemoKey) ||
 		(!g_CameraClips.empty() && g_SequenceDemo.empty() && g_SequenceLevel != g_LevelInitCount))
@@ -2278,9 +2283,9 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 	{
 		if (args->ArgC() != 7)
 		{
-			Tier0_Msg(
-				"mirv_cam bake <index/name|sequence> <file> <start client seconds> <end client seconds> "
-				"<step seconds> - Export classic campath using cached targets.\n");
+			Tier0_Msg("mirv_cam bake <index/name|campath|sequence> <file> <start client seconds> <end client "
+					  "seconds> "
+					  "<step seconds> - Export classic campath using cached targets.\n");
 			return true;
 		}
 		double values[3];
@@ -2996,7 +3001,9 @@ bool MirvCam_SetModifier(MirvCameraModifier &modifier)
 	CamPath checked;
 	if (modifier.Name.empty() || modifier.Name.size() > 128 || !checked.SetModifiers({modifier.Settings}) ||
 		(modifier.Settings.Type != CamPath::ModifierType::Noise &&
-		 modifier.Settings.Type != CamPath::ModifierType::Oscillation))
+		 modifier.Settings.Type != CamPath::ModifierType::Oscillation &&
+		 modifier.Settings.Type != CamPath::ModifierType::Limits &&
+		 modifier.Settings.Type != CamPath::ModifierType::Remap))
 		return false;
 	auto found = std::find_if(g_CameraModifiers.begin(), g_CameraModifiers.end(),
 							  [&](const auto &m) { return m.Id == modifier.Id; });

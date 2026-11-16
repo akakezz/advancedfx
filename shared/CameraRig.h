@@ -231,12 +231,13 @@ struct CameraClip
 {
 	std::uint64_t Id = ~std::uint64_t(0), Target = 0;
 	double Time = 0, Blend = 0;
+	int BlendCurve = 0; // 0 smoothstep, 1 linear, 2 smootherstep
 	bool Campath = false;
 	std::vector<CameraClipModifier> Modifiers;
 	bool operator==(const CameraClip &o) const
 	{
 		return Id == o.Id && Target == o.Target && Time == o.Time && Blend == o.Blend &&
-			   Campath == o.Campath && Modifiers == o.Modifiers;
+			   BlendCurve == o.BlendCurve && Campath == o.Campath && Modifiers == o.Modifiers;
 	}
 };
 struct CameraGuideLine

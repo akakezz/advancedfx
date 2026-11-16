@@ -2770,6 +2770,7 @@ static void DrawModifierControls(CamPath &path)
 	    "pitch-safe",  "slow-pan",    "stepped-12fps", "loop-position", "ping-pong-position",
 	    "reduce-roll", "widen-fov"};
 	ImGui::Combo("Modifier preset", &preset, presets, (int)(sizeof(presets) / sizeof(presets[0])));
+	const bool presetHovered = ImGui::IsItemHovered();
 	const char *controlDescriptions[] = {
 	    "Softly bounds FOV without changing camera position or angles.",
 	    "Softly bounds pitch; yaw and roll remain unchanged. This is not an Euler repair tool.",
@@ -2782,8 +2783,20 @@ static void DrawModifierControls(CamPath &path)
 		"timing.",
 	    "Halves roll around zero, blending at the range edges. Pitch and yaw are unchanged.",
 	    "Adds 10 degrees of FOV, blending at the range edges. Geometry is unchanged."};
-	if (preset >= 9)
-		ImGui::TextWrapped("%s", controlDescriptions[preset - 9]);
+	const char *effectDescriptions[] = {"Small irregular position and angle movement.",
+										"Manually timed shake with a decaying envelope.",
+										"Accelerates movement through the range.",
+										"Decelerates movement through the range.",
+										"Eases movement at both ends.",
+										"Adds bounce timing to vertical movement.",
+										"Adds elastic timing to FOV.",
+										"Smooths authored angular movement.",
+										"Adds an oscillating FOV accent."};
+	const char *presetDescription =
+		preset >= 9 ? controlDescriptions[preset - 9] : effectDescriptions[preset];
+	ImGui::TextWrapped("%s", presetDescription);
+	if (presetHovered || ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", presetDescription);
 	if (ImGui::Button("Add preset to range"))
 	{
 		CamPath::Modifier m;
@@ -6404,6 +6417,21 @@ static bool CameraHistoryOwnsUi()
 		   (g_ShowSequencer && g_CameraClipsEditing && focused && focused->RootWindow &&
 			std::strcmp(focused->RootWindow->Name, "HLAE Sequencer") == 0);
 }
+static std::string CameraClipSourceName(bool campath, std::uint64_t target)
+{
+	if (campath)
+	{
+		auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+		for (size_t i = 0; i < paths.GetCount(); ++i)
+			if (paths.GetId(i) == target)
+				return paths.GetName(i);
+	}
+	else
+		for (const auto &camera : MirvCam_Cameras(false))
+			if (camera.Id == target)
+				return camera.Name;
+	return std::string("Missing ") + (campath ? "campath #" : "camera #") + std::to_string(target);
+}
 static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visibleStart, int visibleEnd)
 {
 	const bool wasOpen = g_SequencerSourcesOpen;
@@ -6411,7 +6439,35 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 	if (wasOpen != g_SequencerSourcesOpen)
 		ImGui::MarkIniSettingsDirty();
 	auto clips = MirvCam_Clips();
-	auto cameras=MirvCam_Cameras();
+	static std::uint64_t moving = ~std::uint64_t(0);
+	static advancedfx::CameraClip originalMove, pendingMove;
+	static int moveMouse = 0;
+	int mouseTick = 0;
+	const bool haveMouseTick =
+		ImGui::GetNeoSequencerMouseFrame(&mouseTick, ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+	if (moving != ~std::uint64_t(0))
+	{
+		auto found = std::find_if(clips.begin(), clips.end(), [&](const auto &c) { return c.Id == moving; });
+		if (found == clips.end() || g_SelectedCameraClip != moving || !(*found == originalMove) ||
+			ImGui::IsKeyPressed(ImGuiKey_Escape) || (!ImGui::IsMouseDown(0) && !ImGui::IsMouseReleased(0)))
+			moving = ~std::uint64_t(0);
+		else if (haveMouseTick && ImGui::IsMouseDown(0))
+		{
+			pendingMove = originalMove;
+			double originalDemo = 0;
+			if (CinematicClock(originalMove.Time, true, originalDemo, SceneCachePreviewActive()))
+				CinematicClock(originalDemo + (mouseTick - moveMouse) * SceneTickInterval(), false,
+							   pendingMove.Time, SceneCachePreviewActive());
+			*found = pendingMove;
+			ImGui::NeoCancelSelection();
+		}
+		else if (ImGui::IsMouseReleased(0))
+		{
+			if (!(pendingMove == originalMove) && !MirvCam_EditClip(pendingMove))
+				g_DocumentStatus = "Clip move rejected: check neighboring clips and blend overlap.";
+			moving = ~std::uint64_t(0);
+		}
+	}
 	for (size_t i = 0; i < clips.size(); ++i)
 	{
 		const auto &clip = clips[i];
@@ -6419,9 +6475,7 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		const int end = i + 1 < clips.size() ? tick(clips[i + 1].Time) : (std::max)(begin + 1, visibleEnd);
 		if (begin > visibleEnd || end < visibleStart)
 			continue;
-		std::string label=(clip.Campath?"Campath #":"Camera #")+std::to_string(clip.Target);
-		if(clip.Campath){auto &paths=g_Hook_VClient_RenderView.m_CamPaths;for(size_t n=0;n<paths.GetCount();++n)if(paths.GetId(n)==clip.Target)label=paths.GetName(n);}
-		else for(const auto &camera:cameras)if(camera.Id==clip.Target)label=camera.Name;
+		std::string label = CameraClipSourceName(clip.Campath, clip.Target);
 		if(i && clip.Blend>0){char blend[64];snprintf(blend,sizeof(blend)," | Blend %.2f s",clip.Blend);label+=blend;}
 		const bool choose = ImGui::NeoTimelineSpan(
 			begin, end, IM_COL32(90, 65, 125, 230), label.c_str(), nullptr, true,
@@ -6430,6 +6484,13 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		{
 			g_SelectedCameraClip = clip.Id;
 			g_OpenCameraClips = true;
+			if (haveMouseTick)
+			{
+				moving = clip.Id;
+				originalMove = pendingMove = clip;
+				moveMouse = mouseTick;
+				ImGui::NeoCancelSelection();
+			}
 		}
 	}
 	if (!childrenOpen)
@@ -6565,6 +6626,7 @@ static void DrawCameraClipsPanel()
 	static std::uint64_t loaded = ~std::uint64_t(0);
 	static int tick = 0;
 	static double blend = 0;
+	static int blendCurve = 0;
 	static bool campath = true;
 	static std::uint64_t target =
 		g_Hook_VClient_RenderView.m_CamPaths.GetId(g_Hook_VClient_RenderView.m_CamPaths.GetActive());
@@ -6573,8 +6635,8 @@ static void DrawCameraClipsPanel()
 		std::find_if(clips.begin(), clips.end(), [](const auto &c) { return c.Id == g_SelectedCameraClip; });
 	if (found != clips.end() && mapping &&
 		(loaded != g_SelectedCameraClip || found->Time != loadedValue.Time ||
-		 found->Blend != loadedValue.Blend || found->Target != loadedValue.Target ||
-		 found->Campath != loadedValue.Campath))
+		 found->Blend != loadedValue.Blend || found->BlendCurve != loadedValue.BlendCurve ||
+		 found->Target != loadedValue.Target || found->Campath != loadedValue.Campath))
 	{
 		loadedValue = *found;
 		loaded = g_SelectedCameraClip;
@@ -6582,6 +6644,7 @@ static void DrawCameraClipsPanel()
 		CinematicClock(found->Time, true, clipDemo, SceneCachePreviewActive());
 		tick = (std::max)(0, int(llround(clipDemo / interval)));
 		blend = found->Blend;
+		blendCurve = found->BlendCurve;
 		campath = found->Campath;
 		target = found->Target;
 	}
@@ -6592,31 +6655,50 @@ static void DrawCameraClipsPanel()
 		g_SelectedCameraClip=loaded=~std::uint64_t(0);
 		clipStatus="Choose a start tick and source, then add the new camera clip.";
 	}
+	if (ImGui::Button("New camera clip at playhead") && mapping)
+	{
+		double client = MirvCampathPreview_IsActive()
+							? MirvCampathPreview_GetTime() + g_Hook_VClient_RenderView.m_CamPath.GetOffset()
+							: now;
+		double playheadDemo = demo;
+		if (CinematicClock(client, true, playheadDemo, SceneCachePreviewActive()))
+		{
+			tick = (std::max)(0, int(llround(playheadDemo / interval)));
+			g_SelectedCameraClip = loaded = ~std::uint64_t(0);
+			clipStatus = "Start tick set to playhead; choose a source and press Add camera clip.";
+		}
+	}
 	ImGui::InputInt("Start tick", &tick);
 	tick = (std::max)(0, tick);
 	ImGui::InputDouble("Blend into this source (s)", &blend, 0, 0, "%.3f");
+	const char *blendCurves[] = {"Smooth", "Linear", "Smoother"};
+	ImGui::Combo("Blend interpolation", &blendCurve, blendCurves, 3);
 	auto cameras = MirvCam_Cameras();
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
-	std::string selectedName = (campath ? "Campath #" : "Camera #") + std::to_string(target);
+	std::string selectedName = CameraClipSourceName(campath, target);
 	if (ImGui::BeginCombo("Camera clip source", selectedName.c_str()))
 	{
 		for (const auto &c : cameras)
 		{
-			const auto name = "Camera " + std::to_string(c.Index) + ": " + c.Name;
+			const auto name = c.Name;
+			ImGui::PushID(("camera_source_" + std::to_string(c.Id)).c_str());
 			if (ImGui::Selectable(name.c_str(), !campath && target == c.Id))
 			{
 				campath = false;
 				target = c.Id;
 			}
+			ImGui::PopID();
 		}
 		for (size_t i = 0; i < paths.GetCount(); ++i)
 		{
-			const auto name = "Campath " + std::to_string(paths.GetId(i)) + ": " + paths.GetName(i);
+			const auto name = paths.GetName(i);
+			ImGui::PushID(("path_source_" + std::to_string(paths.GetId(i))).c_str());
 			if (ImGui::Selectable(name.c_str(), campath && target == paths.GetId(i)))
 			{
 				campath = true;
 				target = paths.GetId(i);
 			}
+			ImGui::PopID();
 		}
 		ImGui::EndCombo();
 	}
@@ -6627,6 +6709,7 @@ static void DrawCameraClipsPanel()
 		clip.Id = g_SelectedCameraClip;
 		CinematicClock(tick * interval, false, clip.Time, SceneCachePreviewActive());
 		clip.Blend = blend;
+		clip.BlendCurve = blendCurve;
 		clip.Campath = campath;
 		clip.Target = target;
 		clipStatus.clear();
@@ -6826,7 +6909,10 @@ static std::string CameraModifierLabel(const MirvCameraModifier &modifier,
 }
 static const char *CameraModifierDefaultName(CamPath::ModifierType type)
 {
-	return type == CamPath::ModifierType::Oscillation ? "Oscillation" : "Shake";
+	return type == CamPath::ModifierType::Remap			? "Remap"
+		   : type == CamPath::ModifierType::Limits		? "Limits"
+		   : type == CamPath::ModifierType::Oscillation ? "Oscillation"
+														: "Shake";
 }
 static bool CameraModifierHasDefaultName(const std::string &name, CamPath::ModifierType type)
 {
@@ -6850,12 +6936,25 @@ static void DrawCameraModifierLibrary()
 	static std::uint64_t draftId = ~std::uint64_t(0);
 	static char name[129]{};
 	static int cameraPreset = 0;
-	const char *cameraPresets[] = {"Handheld",		 "Impact shake", "Oscillation", "Subtle handheld",
-								   "Heavy handheld", "Gentle drift", "FOV punch",	"Recoil",
-								   "Dolly",			 "Slide",		 "Roll / bank"};
+	const char *cameraPresets[] = {"Handheld",
+								   "Impact shake",
+								   "Oscillation",
+								   "Subtle handheld",
+								   "Heavy handheld",
+								   "Gentle drift",
+								   "FOV punch",
+								   "Recoil",
+								   "Dolly",
+								   "Slide",
+								   "Roll / bank",
+								   "FOV soft bounds",
+								   "Pitch soft bounds",
+								   "Half roll",
+								   "Widen FOV"};
 	const char *cameraPresetIds[] = {"handheld",	   "impact",	   nullptr,		 "subtle-handheld",
 									 "heavy-handheld", "camera-drift", "zoom-punch", "recoil",
-									 "dolly",		   "slide",		   "bank"};
+									 "dolly",		   "slide",		   "bank",		 "fov-safe",
+									 "pitch-safe",	   "reduce-roll",  "widen-fov"};
 	ImGui::SetNextItemWidth(180);
 	ImGui::Combo("Camera modifier preset", &cameraPreset, cameraPresets, IM_ARRAYSIZE(cameraPresets));
 	ImGui::SameLine();
@@ -6950,12 +7049,26 @@ static void DrawCameraModifierLibrary()
 				g_DocumentStatus = "Use a unique modifier name.";
 			}
 		}
-		int type = draft.Settings.Type == CamPath::ModifierType::Oscillation ? 1 : 0;
-		const char *types[] = {"Noise / shake", "Oscillation"};
+		int type = draft.Settings.Type == CamPath::ModifierType::Remap		   ? 3
+				   : draft.Settings.Type == CamPath::ModifierType::Limits	   ? 2
+				   : draft.Settings.Type == CamPath::ModifierType::Oscillation ? 1
+																			   : 0;
+		const char *types[] = {"Noise / shake", "Oscillation", "Value limits", "Value remap"};
 		const auto oldType = draft.Settings.Type;
-		if (ImGui::Combo("Modifier type", &type, types, 2))
+		if (ImGui::Combo("Modifier type", &type, types, 4))
 		{
-			draft.Settings.Type = type ? CamPath::ModifierType::Oscillation : CamPath::ModifierType::Noise;
+			draft.Settings.Type = type == 3	  ? CamPath::ModifierType::Remap
+								  : type == 2 ? CamPath::ModifierType::Limits
+								  : type	  ? CamPath::ModifierType::Oscillation
+											  : CamPath::ModifierType::Noise;
+			if (type >= 2)
+			{
+				draft.Settings.CameraSpace = false;
+				if (draft.Settings.Frequency <= 0)
+					draft.Settings.Frequency = 1;
+				std::fill(draft.Settings.Amplitude, draft.Settings.Amplitude + 7, 0.0);
+				draft.Settings.Amplitude[3] = 1;
+			}
 			if (CameraModifierHasDefaultName(draft.Name, oldType))
 			{
 				auto renamed = *found;
@@ -6974,7 +7087,22 @@ static void DrawCameraModifierLibrary()
 		}
 		auto &m = draft.Settings;
 		ImGui::Checkbox("Modifier enabled", &m.Enabled);
+		if (m.Type == CamPath::ModifierType::Limits)
+		{
+			ImGui::InputDouble("Lower bound", &m.Lower);
+			ImGui::InputDouble("Upper bound", &m.Upper);
+			ImGui::InputDouble("Softness", &m.Softness);
+		}
+		if (m.Type == CamPath::ModifierType::Remap)
+		{
+			ImGui::InputDouble("Scale", &m.Scale);
+			ImGui::InputDouble("Offset", &m.Offset);
+			ImGui::InputDouble("Pivot", &m.Pivot);
+		}
+		ImGui::BeginDisabled(m.Type == CamPath::ModifierType::Limits ||
+							 m.Type == CamPath::ModifierType::Remap);
 		ImGui::Checkbox("Camera space", &m.CameraSpace);
+		ImGui::EndDisabled();
 		ImGui::InputDouble("Strength", &m.Strength);
 		ImGui::InputDouble("Frequency (Hz)", &m.Frequency);
 		ImGui::InputDouble("Phase (cycles)", &m.Phase);
@@ -8152,7 +8280,9 @@ void Draw()
 						file += ".xml";
 					if (g_ExportClassic)
 						g_DocumentStatus =
-							path.ExportClassic(file.wstring().c_str(), 1 / g_ExportFps)
+							MirvCam_Bake(file.wstring().c_str(), "campath",
+										 path.GetLowerBound() + path.GetOffset(),
+										 path.GetUpperBound() + path.GetOffset(), 1 / g_ExportFps)
 								? "Exported sampled classic XML. Editing data and savepoint retained."
 								: "Classic export failed (unplayable path, excessive sample count or "
 								  "unwritable "

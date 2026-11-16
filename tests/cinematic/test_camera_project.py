@@ -1,12 +1,13 @@
 """Round-trip real project persistence and classic baking against isolated engine fixtures."""
 from pathlib import Path
 from types import SimpleNamespace
-import argparse, subprocess, os, re, json
+import argparse, subprocess, os, re, json, sys
 parser=argparse.ArgumentParser()
 parser.add_argument('--build-dir',type=Path,default=Path('/tmp/hlae-camera-project-tests'))
 parser.add_argument('--sanitize',action='store_true')
 parser.add_argument('--project',type=Path,help='Optional real project to reproduce missing tracking coverage')
 parser.add_argument('--baked',type=Path,help='Optional classic XML to verify through the collection loader')
+parser.add_argument('--stock-ref',help='Compare newly baked mixed sequence with this unmodified HLAE revision')
 args=parser.parse_args();root=Path(__file__).resolve().parents[2];out=args.build_dir.resolve();out.mkdir(parents=True,exist_ok=True)
 # Reuse the native camera/aim adapter fixture, replacing only its fake path model
 # with the real CamPathCollection. Generate it without invoking its separate tests.
@@ -54,6 +55,7 @@ int main(){
  assert(g_CameraClips.front().Modifiers.size()==1&&g_CameraClips.front().Modifiers[0].Begin==.25&&g_CameraClips.front().Modifiers[0].FadeOut==.5);g_CameraClips.front().Modifiers.clear();assert(g_CommandSystem.GetTickMarkers().front().Command.find("\\nline")!=std::string::npos);assert(MirvCam_SetModifierLinks(id,{}));
  const auto saved=g_CameraRigs.size();std::ofstream bad(std::filesystem::path(file),std::ios::trunc);bad<<"HLAE_CINEMATIC 99\\n";bad.close();assert(!MirvCam_LoadProject(file.c_str())&&g_CameraRigs.size()==saved&&path.GetSize()==2);
  assert(MirvCam_Bake(bake.c_str(),std::to_string(id).c_str(),0,1,.1));assert(MirvCam_BakeStatus().find("from camera #"+std::to_string(id))!=std::string::npos);CamPath baked;assert(baked.Load(bake.c_str()));assert(std::abs(baked.Eval(.5).X-1)<1e-6);
+ {const auto before=path.CaptureState();path.SetOffset(25);assert(MirvCam_Bake(bake.c_str(),"campath",25+path.GetLowerBound(),25+path.GetUpperBound(),.1));CamPath exported;assert(exported.Load(bake.c_str()));assert(std::abs(exported.Eval(25.5).X-path.Eval(.5).X)<1e-6);path.RestoreState(before);}
  MirvCam_ClearCameraSelection();assert(g_CameraRigName.empty());assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(MirvCam_BakeStatus().find("Sampled 1 of 1 sequence clips")!=std::string::npos);assert(MirvCam_BakeStatus().find("Clip #0 camera #")!=std::string::npos);
  // Selected-camera baking includes its timed clip effects, just like individual preview.
  {MirvCameraModifier effect;effect.Name="Bake test";effect.Settings.Type=CamPath::ModifierType::Oscillation;effect.Settings.Begin=0;effect.Settings.End=1;effect.Settings.FadeIn=effect.Settings.FadeOut=0;effect.Settings.Frequency=.5;effect.Settings.Amplitude[0]=10;assert(MirvCam_SetModifier(effect));
@@ -62,7 +64,8 @@ int main(){
  clip.Modifiers.clear();assert(MirvCam_RemoveModifier(effect.Id));}
  // Bake blends and near-instant cuts using the common source evaluator.
  g_Hook_VClient_RenderView.LastCameraOrigin[0]=100;command({"mirv_cam","add","B"});advancedfx::CameraClip next;next.Time=.5;next.Blend=.2;next.Target=g_CameraRigs.at("B").Id;assert(MirvCam_EditClip(next));
- assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(MirvCam_BakeStatus().find("from whole sequence")!=std::string::npos);assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.6).X-50.5)<.01);assert(MirvCam_BakeStatus().find("Sampled 2 of 2 sequence clips")!=std::string::npos);
+ assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(MirvCam_BakeStatus().find("from whole sequence")!=std::string::npos);assert(baked.Load(bake.c_str())&&baked.GetHold()&&std::abs(baked.Eval(.6).X-50.5)<.01);assert(MirvCam_BakeStatus().find("Sampled 2 of 2 sequence clips")!=std::string::npos);
+ for(int curve=0;curve<3;++curve){next.BlendCurve=curve;assert(MirvCam_EditClip(next));g_CameraEvaluationTime=.55;advancedfx::CameraPose blendPose;assert(EvaluateSequence(.55,blendPose));const double u=.25,w=curve==1?u:curve==2?u*u*u*(u*(u*6-15)+10):u*u*(3-2*u);assert(std::abs(blendPose.Position[0]-(1+99*w))<1e-7);assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.05));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.55).X-blendPose.Position[0])<1e-6);}
  next.Blend=0;assert(MirvCam_EditClip(next));assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.499998).X-1)<.01&&std::abs(baked.Eval(.5).X-100)<.01);g_Hook_VClient_RenderView.LastCameraOrigin[0]=1;
  // Exercise the actual mixed camera -> path -> camera export, including rotation and FOV.
  auto changedCamera=g_CameraRigs.at("B").Rig.Pose;changedCamera.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,90,0}));changedCamera.Fov=110;assert(MirvCam_EditCamera(g_CameraRigs.at("B").Id,changedCamera));
@@ -76,6 +79,12 @@ int main(){
  command({"mirv_cam","preview","B"});g_SequencePlaying=true;assert(paths.LoadOne(bake.c_str()));auto marker=path.GetBegin();
  for(const auto &sample:expected){assert(marker!=path.GetEnd()&&std::abs(marker.GetTime()-sample.first)<1e-9);const auto &value=marker.GetValue();const auto evaluated=path.Eval(sample.first);assert(std::abs(value.X-sample.second.Position[0])<1e-6&&std::abs(value.Y-sample.second.Position[1])<1e-6&&std::abs(value.Z-sample.second.Position[2])<1e-6);assert(std::abs(evaluated.X-value.X)<1e-6&&std::abs(evaluated.Fov-sample.second.Fov)<1e-6);assert(1-std::abs(Afx::Math::DotProduct(evaluated.R,sample.second.Rotation))<1e-9);++marker;}
  assert(marker==path.GetEnd());paths.RestoreState(before);g_SequencePlaying=false;MirvCam_EndRigPreview();}
+ // Pose-local filters share the native campath filter math and survive projects.
+ for(auto type:{CamPath::ModifierType::Limits,CamPath::ModifierType::Remap}){
+ MirvCameraModifier filter;filter.Name="Filter test";filter.Settings.Type=type;filter.Settings.Begin=0;filter.Settings.End=2;filter.Settings.FadeIn=filter.Settings.FadeOut=0;filter.Settings.Amplitude[3]=1;filter.Settings.Lower=50;filter.Settings.Upper=80;filter.Settings.Softness=5;filter.Settings.Scale=.5;filter.Settings.Offset=3;assert(MirvCam_SetModifier(filter));
+ CamPathValue pose(0,0,0,0,0,0,100);auto filtered=pose;assert(CamPath::ApplyPoseModifier(filtered,filter.Settings,1));CamPath native;native.PositionInterpMethod_set(CamPath::DI_LINEAR);native.RotationInterpMethod_set(CamPath::QI_SLINEAR);native.FovInterpMethod_set(CamPath::DI_LINEAR);native.Add(0,pose);native.Add(2,pose);assert(native.SetModifiers({filter.Settings}));assert(std::abs(native.Eval(1).Fov-filtered.Fov)<1e-6);
+ assert(MirvCam_SaveProject(file.c_str()));assert(MirvCam_LoadProject(file.c_str()));assert(MirvCam_Modifiers().back().Settings.Type==type);assert(MirvCam_RemoveModifier(filter.Id));}
+ assert(g_CameraClips[1].BlendCurve==2);
  // Attached/aimed settings and identity survive save/load with unavailable live entities.
  advancedfx::CameraPose target;target.Position[0]=100;targets[5]=target;playerUsers[5]=6;
  command({"mirv_cam","attach","5","-1","0","0","0"});const auto attached=g_CameraRigName;const auto identity=g_CameraRigs.at(attached).CacheIdentity;advancedfx::CameraMotion savedMotion;savedMotion.FollowHalfLife=.2;savedMotion.RotationHalfLife=.1;savedMotion.BoneHalfLife=.075;savedMotion.TurnRate=135;savedMotion.OrbitSpeed=30;savedMotion.PreserveFraming=true;savedMotion.FramingMargin=.2;savedMotion.BonePositionInfluence=.4;savedMotion.BoneRotationInfluence=.3;savedMotion.BonePositionLimit=6;savedMotion.BoneRotationLimit=15;assert(MirvCam_EditMotion(g_CameraRigs.at(attached).Id,savedMotion));savedMotion=g_CameraRigs.at(attached).Rig.Motion;
@@ -112,6 +121,8 @@ if args.baked:
  CamPath direct;assert(direct.Load(BAKED));assert(g_Hook_VClient_RenderView.m_CamPaths.LoadOne(BAKED));assert(direct.CaptureState().Keys==g_Hook_VClient_RenderView.m_CamPath.CaptureState().Keys);auto &imported=g_Hook_VClient_RenderView.m_CamPath;assert(imported.GetSize()>2&&imported.CanEval());const auto importedFirst=imported.Eval(imported.GetLowerBound()),importedLast=imported.Eval(imported.GetUpperBound());assert(std::abs(importedFirst.X-importedLast.X)+std::abs(importedFirst.Y-importedLast.Y)+std::abs(importedFirst.Z-importedLast.Z)>1);std::cout<<"Supplied classic XML through collection loader: "<<imported.GetSize()<<" keys; first position "<<importedFirst.X<<", "<<importedFirst.Y<<", "<<importedFirst.Z<<"; last position "<<importedLast.X<<", "<<importedLast.Y<<", "<<importedLast.Z<<"\n";
  '''.replace('BAKED','L'+json.dumps(str(args.baked.resolve())))
  s=s.replace(' std::filesystem::remove(std::filesystem::path(file));',injected+' std::filesystem::remove(std::filesystem::path(file));',1)
+if args.stock_ref:
+ s=s.replace(' // Full bake -> collection load', ' std::filesystem::copy_file(std::filesystem::path(bake), std::filesystem::path(STOCKFILE),std::filesystem::copy_options::overwrite_existing);\n // Full bake -> collection load'.replace('STOCKFILE','L'+json.dumps(str(out/'mixed-sequence.xml'))))
 source=out/'project.cpp';source.write_text(s)
 cmd=['g++','-std=c++17','-O1','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp'),str(root/'shared/CommandSystem.cpp'),str(root/'shared/AfxConsole.cpp'),'-o',str(out/'project')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
@@ -129,4 +140,6 @@ cmd=base+[str(source)]+objects+['-o',str(out/'project')]
 r=subprocess.run(cmd,capture_output=True,text=True)
 if r.returncode:print(r.stderr[-8000:]);raise SystemExit(r.returncode)
 r=subprocess.run([str(out/'project')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'));print(r.stdout+r.stderr)
+if r.returncode==0 and args.stock_ref:
+ subprocess.run([sys.executable,str(root/'tests/cinematic/test_stock_bake.py'),str(out/'mixed-sequence.xml'),'--ref',args.stock_ref],check=True)
 raise SystemExit(r.returncode)

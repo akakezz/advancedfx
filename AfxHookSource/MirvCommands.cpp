@@ -2379,7 +2379,9 @@ CON_COMMAND(mirv_campath, "camera paths")
 				fps = strtod(args->ArgV(3), &end);
 			std::wstring file;
 			ok = (!end || (end != args->ArgV(3) && !*end)) && std::isfinite(fps) && fps > 0 && fps <= 1000 &&
-				 UTF8StringToWideString(args->ArgV(2), file) && path.ExportClassic(file.c_str(), 1 / fps);
+				 UTF8StringToWideString(args->ArgV(2), file) &&
+				 MirvCam_Bake(file.c_str(), "campath", path.GetLowerBound() + path.GetOffset(),
+							  path.GetUpperBound() + path.GetOffset(), 1 / fps);
 		}
 		if (!ok)
 			Tier0_Warning("mirv_campath exportClassic <file.xml> [sample fps=120] - Export selected path as "

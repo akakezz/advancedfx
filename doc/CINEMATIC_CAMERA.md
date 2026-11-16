@@ -2852,3 +2852,39 @@ Console campath preset IDs are subtle-handheld, heavy-handheld, camera-drift,
 zoom-punch, recoil, dolly, slide and bank. Existing fov-punch retains its original
 oscillation behavior. Preview, undo, projects and classic baking use the same
 settings and require no additional effect system.
+
+### Camera clips and export audit
+
+Clip source selectors use the same displayed names as the Cameras list. Drag
+a source block to move its start tick; the whole move is one existing clip edit,
+including undo and relative modifier timing. Escape cancels; invalid overlapping
+blends are rejected. New camera clip at playhead fills the start tick for a new
+clip; explicit tick entry remains available.
+
+Blend interpolation offers Smooth (the existing smoothstep), Linear, and Smoother
+(smootherstep). Blend duration zero remains a cut. Project format 7 stores the
+curve per clip; older projects retain Smooth. All preview, playback and baking
+use the same mixer.
+
+Camera modifiers also support Value limits and Value remap through the existing
+campath filter calculations. Filter channel amplitudes are weights from 0 to 1;
+Camera space is unavailable for filters. Smooth, spring and timing modifiers still
+require authored curve/history input and are not exposed as per-pose filters.
+All curve presets now have descriptions, including the earlier effect presets.
+
+Classic export entry points for paths, cameras and sequences now route through
+MirvCam_Bake and the existing classic XML writer. Their sources still need different
+evaluators; the sampling, quaternion output and XML verification are shared.
+Path export uses the selected path and its offset, without requiring scene cache.
+The stock-HLAE compatibility regression compiles the unmodified loader and
+interpolators from commit 7c52c93f (HLAE 2.189.6) with compiler portability
+adapters. It checks every XML key and interval midpoint, including orientation.
+This verifies file/interpolation compatibility, not the game session clock or
+paused-time settings; those remain relevant when a bake plays at the wrong tick.
+
+Baked cameras/sequences carry the classic endpoint hold flag, matching sequence
+pre-roll/post-roll. Path baking preserves that path's hold setting. Cut guards
+are at least one float clock step apart, rather than collapsing into the same
+representable playback time in stock HLAE. This does not replace testing a newly
+reported file: the earlier supplied XML matches stock 2.189.6 at every key and
+midpoint; the reported missing-motion case still needs its current XML to isolate.

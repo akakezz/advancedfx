@@ -204,7 +204,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	SyncRigLevel();
 	std::ostringstream out;
 	out.imbue(std::locale::classic());
-	out << std::setprecision(17) << "HLAE_CINEMATIC 6\n";
+	out << std::setprecision(17) << "HLAE_CINEMATIC 7\n";
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto state = paths.CaptureState();
 	out << state.Paths.size() << ' ' << state.Active << '\n';
@@ -230,7 +230,8 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	out << std::quoted(g_SequenceDemo) << ' ' << g_CameraClips.size() << '\n';
 	for (auto &c : g_CameraClips)
 	{
-		out << c.Id << ' ' << c.Target << ' ' << c.Time << ' ' << c.Blend << ' ' << c.Campath << '\n';
+		out << c.Id << ' ' << c.Target << ' ' << c.Time << ' ' << c.Blend << ' ' << c.Campath << ' '
+			<< c.BlendCurve << '\n';
 		out << c.Modifiers.size() << '\n';
 		for (const auto &m : c.Modifiers)
 			out << m.Id << ' ' << m.Influence << ' ' << m.Enabled << ' ' << m.Begin << ' ' << m.End << ' '
@@ -270,7 +271,8 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	int version;
 	size_t count;
 	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" ||
-		(version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6))
+		(version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 &&
+		 version != 7))
 		return false;
 	CamPathCollection::State paths;
 	std::set<unsigned long long> pathIds, rigIds, clipIds;
@@ -323,6 +325,8 @@ bool MirvCam_LoadProject(const wchar_t *file)
 			!clipIds.insert(c.Id).second || !std::isfinite(c.Time) || std::abs(c.Time) > 1e9 ||
 			!std::isfinite(c.Blend) || c.Blend < 0 || c.Blend > 3600)
 			return false;
+		if (version >= 7 && (!(in >> c.BlendCurve) || c.BlendCurve < 0 || c.BlendCurve > 2))
+			return false;
 		if (version >= 5)
 		{
 			size_t links;
@@ -372,7 +376,9 @@ bool MirvCam_LoadProject(const wchar_t *file)
 				return false;
 			m.Settings = data.GetModifiers()[0];
 			if (m.Settings.Type != CamPath::ModifierType::Noise &&
-				m.Settings.Type != CamPath::ModifierType::Oscillation)
+				m.Settings.Type != CamPath::ModifierType::Oscillation &&
+				m.Settings.Type != CamPath::ModifierType::Limits &&
+				m.Settings.Type != CamPath::ModifierType::Remap)
 				return false;
 			modifiers.push_back(m);
 		}
@@ -437,12 +443,13 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 		(end - begin) / step > 50000)
 		return false;
 	const bool sequence = source && !std::strcmp(source, "sequence");
+	const bool campath = source && !std::strcmp(source, "campath");
 	auto original = source ? FindRig(source) : g_CameraRigs.end();
-	if (!sequence && original == g_CameraRigs.end())
+	if (!sequence && !campath && original == g_CameraRigs.end())
 		return false;
 	if (sequence && g_CameraClips.empty())
 		return false;
-	const auto id = sequence ? 0 : original->second.Id;
+	const auto id = sequence || campath ? 0 : original->second.Id;
 	struct Restore
 	{
 		std::map<std::string, NamedCameraRig> Rigs;
@@ -483,11 +490,44 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 			{
 				times.insert(c.Time);
 				if (c.Blend == 0 && c.Time > begin)
-					times.insert((std::max)(begin, c.Time - 1e-6));
+				{
+					const double previousClock =
+						double(std::nextafter(float(c.Time), -std::numeric_limits<float>::infinity()));
+					const double padding = (std::max)(1e-6, c.Time - previousClock);
+					times.insert((std::max)(begin, c.Time - padding));
+				}
 				if (c.Time + c.Blend <= end)
 					times.insert(c.Time + c.Blend);
 			}
+	// Preserve authored key/hold boundaries when routing path exports through
+	// the same sampler as camera sequences.
+	if (campath || sequence)
+	{
+		auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+		for (size_t index = 0; index < paths.GetCount(); ++index)
+		{
+			if (campath && index != paths.GetActive())
+				continue;
+			if (sequence && std::none_of(g_CameraClips.begin(), g_CameraClips.end(), [&](const auto &clip)
+										 { return clip.Campath && clip.Target == paths.GetId(index); }))
+				continue;
+			auto path = paths.GetPath(index);
+			if (!path)
+				continue;
+			for (auto key = path->GetBegin(); key != path->GetEnd(); ++key)
+				for (double t : {key.GetTime() + path->GetOffset(),
+								 key.GetTime() + key.GetValue().HoldDuration + path->GetOffset()})
+					if (begin <= t && t <= end)
+						times.insert(t);
+		}
+	}
+	if (times.size() > 100000)
+	{
+		g_CameraBakeReport = "Bake failed: too many sample boundaries.";
+		return false;
+	}
 	CamPath baked;
+	baked.SetHold(!campath || g_Hook_VClient_RenderView.m_CamPath.GetHold());
 	baked.PositionInterpMethod_set(CamPath::DI_LINEAR);
 	baked.RotationInterpMethod_set(CamPath::QI_SLINEAR);
 	baked.FovInterpMethod_set(CamPath::DI_LINEAR);
@@ -499,14 +539,17 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 	for (double time : times)
 	{
 		advancedfx::SceneCache::Frame frame;
-		g_BakeFrame = AfxHookSource::CameraOverlay::SampleCameraScene(time, frame)
+		g_BakeFrame = !campath && AfxHookSource::CameraOverlay::SampleCameraScene(time, frame)
 						  ? std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame))
 						  : nullptr;
 		g_CameraEvaluationTime = time;
 		advancedfx::CameraPose pose;
 		auto rig = FindRig(std::to_string(id));
-		if (!(sequence ? EvaluateSequence(time, pose)
-					   : rig != g_CameraRigs.end() && EvaluateIndividualCamera(rig->second, pose)))
+		if (!(sequence	? EvaluateSequence(time, pose)
+			  : campath ? EvaluatePlaybackPose(time, pose,
+											   g_Hook_VClient_RenderView.m_CamPaths.GetId(
+												   g_Hook_VClient_RenderView.m_CamPaths.GetActive()))
+						: rig != g_CameraRigs.end() && EvaluateIndividualCamera(rig->second, pose)))
 		{
 			g_CameraBakeReport = "Bake failed at client time " + std::to_string(time) + ": " + g_CameraFailureReason +
 								 ". Existing file retained.";
@@ -539,8 +582,11 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 	// Install once: Add copies and validates the entire map on each insertion.
 	baked.RestoreState(bakedState);
 	const bool saved = baked.ExportClassic(file, step);
-	g_CameraBakeReport = (saved ? "Saved " : "Failed to save ") + std::to_string(times.size()) + " poses from " +
-						 (sequence ? std::string("whole sequence") : "camera #" + std::to_string(id)) +
+	g_CameraBakeReport = (saved ? "Saved " : "Failed to save ") + std::to_string(times.size()) +
+						 " poses from " +
+						 (sequence	? std::string("whole sequence")
+						  : campath ? std::string("active campath")
+									: "camera #" + std::to_string(id)) +
 						 ", client seconds " + std::to_string(begin) + " .. " + std::to_string(end) + "; " +
 						 std::to_string(changes) + " changed samples.";
 	if (saved)
