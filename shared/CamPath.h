@@ -818,6 +818,7 @@ class CamPathCollection
 		m_UndoIndices.clear();
 		m_RedoIndices.clear();
 		m_RedoGeneration = CinematicRedoGeneration();
+		m_PendingEditIndex = 0;
 		m_FileName.clear();
 		m_Last = CaptureState();
 		m_Before = m_Last;
@@ -849,7 +850,7 @@ class CamPathCollection
 	bool m_HistoryReady = false, m_Editing = false;
 	std::vector<State> m_Undo, m_Redo;
 	std::vector<std::uint64_t> m_UndoIndices, m_RedoIndices;
-	std::uint64_t m_RedoGeneration = 0;
+	std::uint64_t m_RedoGeneration = 0, m_PendingEditIndex = 0;
 	std::vector<std::unique_ptr<CamPath>> m_Caches;
 	std::vector<std::shared_ptr<const CamPath::State>> m_CacheStates;
 	mutable unsigned long long m_LastActiveRevision = ~0ull;
