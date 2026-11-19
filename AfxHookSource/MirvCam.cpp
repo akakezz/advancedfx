@@ -1199,8 +1199,24 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	if (current == g_CameraClips.begin() || current->Blend <= 0 || time >= current->Time + current->Blend)
 		return true;
 	advancedfx::CameraPose from;
-	if (!EvaluateClipSource(*std::prev(current), time, from))
-		return false;
+	const auto &outgoingClip = *std::prev(current);
+	if (!EvaluateClipSource(outgoingClip, time, from))
+	{
+		// The outgoing subject can die or disappear during a camera -> path
+		// transition. A failed outgoing source must not stall the incoming path.
+		// Prefer the last successfully evaluated camera pose; if unavailable,
+		// cut to the valid incoming pose instead of holding an old mixed view.
+		from = {};
+		if (!outgoingClip.Campath)
+		{
+			auto previous = FindRig(std::to_string(outgoingClip.Target));
+			if (previous != g_CameraRigs.end() && previous->second.LastWorld.Valid())
+				from = previous->second.LastWorld;
+		}
+		if (!from.Valid())
+			from = pose;
+		g_CameraFailureReason.clear();
+	}
 	return BlendCameraPoses(from, pose, (time - current->Time) / current->Blend, pose, current->BlendCurve);
 }
 bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
