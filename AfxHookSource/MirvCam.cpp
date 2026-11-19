@@ -295,7 +295,7 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 		          "collision and moving clear.\n");
 }
 static void SyncOpenFortressAttachedCameraFollow(const MirvCameraCollisionSettings &settings);
-static void PrintOpenFortressAttachmentRoute();
+static bool PrintOpenFortressAttachmentRoute();
 static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 {
 	auto settings = MirvCameraCollisionGet();
@@ -352,8 +352,8 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 	          settings.OrbitHalfLife, settings.OrbitSpeed, settings.FollowRecoveryDelay);
 	if (g_OpenFortressLegacyMode)
 	{
-		PrintOpenFortressAttachmentRoute();
-		MirvCameraAttachedPrintRuntimeStatus();
+		if (PrintOpenFortressAttachmentRoute())
+			MirvCameraAttachedPrintRuntimeStatus();
 	}
 	if (argc == 3 || !valid)
 		Tier0_Msg("mirv_cam attach follow <seconds> - Root movement smoothing; 0 restores rigid orbit and "
@@ -1669,7 +1669,7 @@ void ClearCameraAttachment(bool liveSource)
 } // namespace
 // Legacy attach and named rigs have separate follow settings. Keep them in
 // sync for explicit Open Fortress mode without changing TF2/TF2C behavior.
-static void PrintOpenFortressAttachmentRoute()
+static bool PrintOpenFortressAttachmentRoute()
 {
     const auto source = g_MirvCam.Source_get();
     const bool hasSource = source != nullptr;
@@ -1707,6 +1707,8 @@ static void PrintOpenFortressAttachmentRoute()
     }
     else if (g_CameraSource == CameraSource::Legacy && !legacyLive)
         Tier0_Msg("Open Fortress follow: no active legacy attachment; reattach a valid entity before testing.\n");
+    // Legacy telemetry is irrelevant when a named rig drives the view.
+    return g_CameraSource == CameraSource::Legacy;
 }
 
 // The active named rig and legacy camera source have independent filter state.
