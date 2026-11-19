@@ -1125,6 +1125,12 @@ bool CaptureHotkey(unsigned int key)
 		if (ImGui::GetCurrentContext()) ImGui::MarkIniSettingsDirty();
 		return true;
 	}
+	// Do not consume the operating system's window-management chords.
+	if ((GetKeyState(VK_MENU) & 0x8000) &&
+		(key == VK_TAB || key == VK_F4 || key == VK_ESCAPE))
+		return false;
+	if (key == VK_LWIN || key == VK_RWIN)
+		return false;
 	if (RecordModifierKey(key))
 		return true;
 	// F8 owns the overlay toggle, and Windows keys/system shortcuts are not
