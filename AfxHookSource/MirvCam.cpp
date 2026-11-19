@@ -295,6 +295,7 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 		          "collision and moving clear.\n");
 }
 static void SyncOpenFortressAttachedCameraFollow(const MirvCameraCollisionSettings &settings);
+static void PrintOpenFortressAttachmentRoute();
 static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 {
 	auto settings = MirvCameraCollisionGet();
@@ -351,8 +352,7 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 	          settings.OrbitHalfLife, settings.OrbitSpeed, settings.FollowRecoveryDelay);
 	if (g_OpenFortressLegacyMode)
 	{
-		const bool liveAttached = g_MirvCamAttachCalc && g_MirvCam.Source_get() == g_MirvCamAttachCalc;
-		Tier0_Msg("Open Fortress follow: live source attached %d.\n", liveAttached ? 1 : 0);
+		PrintOpenFortressAttachmentRoute();
 		MirvCameraAttachedPrintRuntimeStatus();
 	}
 	if (argc == 3 || !valid)
@@ -1609,12 +1609,45 @@ void ClearCameraAttachment(bool liveSource)
 } // namespace
 // Legacy attach and named rigs have separate follow settings. Keep them in
 // sync for explicit Open Fortress mode without changing TF2/TF2C behavior.
+static void PrintOpenFortressAttachmentRoute()
+{
+    const auto source = g_MirvCam.Source_get();
+    const bool hasSource = source != nullptr;
+    const bool hasLastAttachment = g_MirvCamAttachCalc != nullptr;
+    const bool legacyLive = hasLastAttachment && source == g_MirvCamAttachCalc;
+    const auto selected = g_CameraRigs.find(g_CameraRigName);
+    const auto legacy = g_CameraRigs.find(g_LegacyCameraName);
+    const bool selectedAttached = selected != g_CameraRigs.end() && selected->second.Rig.Attached;
+    const bool legacyAttached = legacy != g_CameraRigs.end() && legacy->second.Rig.Attached;
+    const bool rigDriving = g_CameraSource == CameraSource::Rig && selectedAttached;
+    const char *controller = g_CameraSource == CameraSource::Legacy ? "legacy" :
+        g_CameraSource == CameraSource::Rig ? "rig" :
+        g_CameraSource == CameraSource::Sequence ? "sequence" : "playback";
+    Tier0_Msg("Open Fortress camera route: %s, preview %d; source %d, last attachment %d, "
+              "live match %d; selected attached %d, legacy attached %d.\n",
+              controller, g_RigPreview ? 1 : 0, hasSource ? 1 : 0,
+              hasLastAttachment ? 1 : 0, legacyLive ? 1 : 0,
+              selectedAttached ? 1 : 0, legacyAttached ? 1 : 0);
+    if (rigDriving)
+        Tier0_Msg("Open Fortress active rig follow: %.3f s, bone %.3f s.\n",
+                  selected->second.Rig.Motion.FollowHalfLife,
+                  selected->second.Rig.Motion.BoneHalfLife);
+    else if (g_CameraSource == CameraSource::Legacy && !legacyLive)
+        Tier0_Msg("Open Fortress follow: no active legacy attachment; reattach a valid entity before testing.\n");
+}
+
+// The active named rig and legacy camera source have independent filter state.
+// Route follow edits to the actually viewed rig, when one is driving the view.
+// Otherwise keep the most recently attached camera in sync for legacy use.
 static void SyncOpenFortressAttachedCameraFollow(const MirvCameraCollisionSettings &settings)
 {
-    auto it = g_CameraRigs.find(g_LegacyCameraName);
+    auto active = g_CameraRigs.find(g_CameraRigName);
+    const bool activeRig = g_CameraSource == CameraSource::Rig &&
+        active != g_CameraRigs.end() && active->second.Rig.Attached;
+    auto it = activeRig ? active : g_CameraRigs.find(g_LegacyCameraName);
     if (it == g_CameraRigs.end() || !it->second.Rig.Attached)
     {
-        Tier0_Msg("Open Fortress follow: no attached camera definition (legacy filter only).\n");
+        Tier0_Msg("Open Fortress follow: no attached camera definition; setting stored for the live filter.\n");
         return;
     }
     auto motion = it->second.Rig.Motion;
@@ -1634,7 +1667,8 @@ static void SyncOpenFortressAttachedCameraFollow(const MirvCameraCollisionSettin
     it->second.FollowCache.reset();
     it->second.AimDirty = true;
     MirvCameraAttachedReset();
-    Tier0_Msg("Open Fortress follow: set both live and rig filters to %.3f seconds.\n", settings.FollowHalfLife);
+    Tier0_Msg("Open Fortress follow: updated %s attached camera (half-life %.3f s).\n",
+              activeRig ? "viewed rig" : "legacy-registered", settings.FollowHalfLife);
 }
 void MirvCam_CaptureCameras(double time, int frame, double step,
 							std::vector<advancedfx::SceneCache::CameraSample> &samples)
