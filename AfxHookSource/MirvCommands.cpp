@@ -7742,19 +7742,19 @@ CON_COMMAND(mirv_spec_player_key, "Spectate player by spectatorslot index") {
 
 #endif //#ifndef _WIN64
 
-CON_COMMAND(mirv_overlay, "TF2 camera workspace (F8).")
+CON_COMMAND(mirv_overlay, "Cinematic workspace (supported games only).")
 {
 	if (args->ArgC() == 2 && (!_stricmp(args->ArgV(1), "0") || !_stricmp(args->ArgV(1), "1")))
 	{
 		if (!AfxHookSource::Gui::SetOverlayOpen(atoi(args->ArgV(1)) != 0))
-			Tier0_Warning("TF2 overlay is unavailable.\n");
+			Tier0_Warning("Cinematic overlay unavailable (unsupported game or GUI not initialized).\n");
 		return;
 	}
 	if (args->ArgC() == 1)
 	{
 		if (!AfxHookSource::Gui::SetOverlayOpen(!AfxHookSource::CameraOverlay::IsOpen()))
-			Tier0_Warning("TF2 overlay is unavailable.\n");
+			Tier0_Warning("Cinematic overlay unavailable (unsupported game or GUI not initialized).\n");
 		return;
 	}
-	Tier0_Msg("mirv_overlay [0|1] - Toggle or set the TF2 camera overlay.\n");
+	Tier0_Msg("mirv_overlay [0|1] - Toggle or set the cinematic workspace.\n");
 }
