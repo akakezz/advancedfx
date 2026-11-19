@@ -2535,11 +2535,31 @@ void modifierCacheEdits()
 		  "Camera-space dependencies invalidate positional samples conservatively");
 	compare();
 }
+void globalEditChronology()
+{
+	CamPath path;
+	CamPathCollection collection(path);
+	collection.Observe();
+	path.Add(1, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	collection.Observe();
+	const auto first = CinematicSessionEditIndex();
+	check(first > 0, "Path edit receives an edit index as soon as observed");
+	const auto cameraEdit = CinematicNewEditIndex();
+	check(cameraEdit > first, "Camera edit index follows the pending path edit");
+	collection.FinishEdit();
+	check(collection.LastHistoryIndex() == first, "Path edit retains its original index");
+	check(collection.Undo(), "Path edit can be undone");
+	check(collection.LastHistoryIndex(true) == first, "Redo retains the original index");
+	path.Add(2, CamPathValue(0, 0, 0, 0, 0, 0, 90));
+	collection.FinishEdit();
+	check(!collection.CanUndo(true), "New edits invalidate stale redo history");
+}
 } // namespace
 int main()
 {
 	try
 	{
+		globalEditChronology();
 		proceduralRigPoses();
 		recapturedEulerTangentsAndHistory();
 		capturedEulerRegressionMatrix();
