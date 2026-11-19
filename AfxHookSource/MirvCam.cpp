@@ -1718,6 +1718,11 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 				from = g_BlendViewPose;
 				blendValid = from.Valid();
 			}
+			// Retain the last actual outgoing pose while its subject is available.
+			// If it disappears later, continuing from here avoids a jump back
+			// to the pose captured when the transition began.
+			if (blendValid && !g_BlendFromView)
+				g_BlendViewPose = from;
 			if (!blendValid)
 				failure =
 					"Outgoing blend source: " +
