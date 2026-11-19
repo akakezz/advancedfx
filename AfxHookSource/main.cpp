@@ -962,6 +962,31 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 	}
 }
 
+// Open Fortress uses the Source SDK 2013 MP VClient017 ABI. The
+// matching client.dll (2021-06-24) has FrameStageNotify at CHLClient slot 35.
+// Keep this callback separate from TF2-specific MirvFix / repair hooks.
+#ifndef _WIN64
+typedef void (__fastcall* CVClient_FrameStageNotify_OpenFortress_t)(
+    void* This, void* Edx, SOURCESDK::TF2::ClientFrameStage_t curStage);
+CVClient_FrameStageNotify_OpenFortress_t old_CVClient_FrameStageNotify_OpenFortress = nullptr;
+
+void __fastcall new_CVClient_FrameStageNotify_OpenFortress(
+    void* This, void* Edx, SOURCESDK::TF2::ClientFrameStage_t curStage)
+{
+    if (curStage == SOURCESDK::TF2::FRAME_RENDER_START)
+        Shared_BeforeFrameRenderStart();
+
+    old_CVClient_FrameStageNotify_OpenFortress(This, Edx, curStage);
+
+    if (curStage == SOURCESDK::TF2::FRAME_RENDER_END)
+    {
+        // Observe completed render poses only after Source has drawn them.
+        AfxHookSource::CameraOverlay::SceneCacheFrame();
+        Shared_AfterFrameRenderEnd();
+    }
+}
+#endif // !_WIN64
+
 typedef void(__fastcall* CVClient_FrameStageNotify_CSS_t)(void* This,
 #ifndef _WIN64
 	void* Edx,
@@ -2253,6 +2278,14 @@ void* new_Client_CreateInterface(const char *pName, int *pReturnCode)
 					break;
 				case SourceSdkVer_HL2MP:
 					AfxDetourPtr((PVOID*) & (vtable[2]), new_CVClient_Shutdown, (PVOID*)&old_CVClient_Shutdown);
+#ifndef _WIN64
+					if (g_OpenFortressLegacyMode && 0 == strcmp(g_Info_VClient, CLIENT_DLL_INTERFACE_VERSION_017))
+					{
+						// Verified against the matching 32-bit Open Fortress CHLClient vtable.
+						AfxDetourPtr((PVOID*) & (vtable[35]), new_CVClient_FrameStageNotify_OpenFortress,
+							(PVOID*)&old_CVClient_FrameStageNotify_OpenFortress);
+					}
+#endif
 					break;
 				}
 			}
@@ -2273,6 +2306,18 @@ void* new_Client_CreateInterface(const char *pName, int *pReturnCode)
 			if (SOURCESDK::TF2::IClientTools * iface = (SOURCESDK::TF2::IClientTools *)old_Client_CreateInterface(SOURCESDK_TF2_VCLIENTTOOLS_INTERFACE_VERSION, NULL))
 				new CClientToolsTf2(iface);
 		}
+#ifndef _WIN64
+		// Open Fortress advertises VCLIENTTOOLS001 in its 32-bit client.dll.
+		// Reuse the existing Source entity tools adapter, not a second overlay.
+		if (g_OpenFortressLegacyMode)
+		{
+			if (SOURCESDK::TF2::IClientTools * iface =
+				(SOURCESDK::TF2::IClientTools *)old_Client_CreateInterface(SOURCESDK_TF2_VCLIENTTOOLS_INTERFACE_VERSION, NULL))
+				new CClientToolsTf2(iface);
+			else
+				Tier0_Warning("Open Fortress: VCLIENTTOOLS001 unavailable; entity camera/cache features disabled.\n");
+		}
+#endif
 #ifndef _WIN64		
 		if (SourceSdkVer_Momentum == g_SourceSdkVer) {
 
