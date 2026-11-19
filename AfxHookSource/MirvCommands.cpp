@@ -3224,6 +3224,16 @@ void mirv_print_entity(int index, double dist, SOURCESDK::C_BaseEntity_csgo * be
 
 #endif //#ifndef _WIN64
 
+// The legacy Open Fortress client uses the Source SDK VCLIENTTOOLS001 ABI,
+// although the game runs through HLAE's HL2MP engine hook path. This gate
+// enables entity inspection only, not unrelated TF2-specific fixes or UI.
+static bool MirvCommands_SupportsTf2EntityInspection()
+{
+	return SourceSdkVer_TF2 == g_SourceSdkVer ||
+		SourceSdkVer_TF2Classified == g_SourceSdkVer ||
+		(SourceSdkVer_HL2MP == g_SourceSdkVer && g_OpenFortressLegacyMode);
+}
+
 // TF2: List entities through IClientTools. Only what IClientTools exposes is available
 // (entity index, class name, model name, player flag and position; no entity names,
 // entity handles or player info).
@@ -3362,9 +3372,9 @@ static void mirv_listentities_tf2(IWrpCommandArgs * args)
 	);
 }
 
-CON_COMMAND(mirv_listentities, "Print info about currently active entites. (CS:GO and TF2)")
+CON_COMMAND(mirv_listentities, "Print info about currently active entities. (CS:GO, TF2, TF2C, Open Fortress)")
 {
-	if (SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer)
+	if (MirvCommands_SupportsTf2EntityInspection())
 	{
 		mirv_listentities_tf2(args);
 		return;
@@ -3482,9 +3492,9 @@ static bool mirv_listplayers_dist_compare(const MirvListPlayersEntry_t & first, 
 	return a < b;
 }
 
-CON_COMMAND(mirv_listplayers, "Print players with their entity index and name. (TF2)")
+CON_COMMAND(mirv_listplayers, "Print players with their entity index and name. (TF2, TF2C, Open Fortress)")
 {
-	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+	if (!MirvCommands_SupportsTf2EntityInspection())
 	{
 		Tier0_Warning("Not supported for your engine!\n");
 		return;
@@ -3561,9 +3571,9 @@ static bool MirvCommands_ContainsNoCase(const char * hay, const char * needle)
 	return std::string::npos != h.find(n);
 }
 
-CON_COMMAND(mirv_listbones, "Print the bones of an entity with their names and positions. (TF2)")
+CON_COMMAND(mirv_listbones, "Print the bones of an entity with their names and positions. (TF2, TF2C, Open Fortress)")
 {
-	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+	if (!MirvCommands_SupportsTf2EntityInspection())
 	{
 		Tier0_Warning("Not supported for your engine!\n");
 		return;
