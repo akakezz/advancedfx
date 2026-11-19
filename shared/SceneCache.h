@@ -289,6 +289,11 @@ public:
 		// with current rig settings even when a player model was filtered
 		// out of the visual Scene Cache capture.
 		bool HasTarget = false;
+		// Binding identity survives edits to camera offsets, smoothing or FOV.
+		// It changes when the target entity/bone or attachment mode changes.
+		std::uint64_t TargetIdentity = 0;
+		int TargetMode = -1;
+		std::string TargetBoneName;
 		CameraPose TargetPose;
 		double TargetPivot[3]{}, TargetRoot[3]{}, TargetAngles[3]{};
 	};
