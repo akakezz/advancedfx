@@ -3717,9 +3717,9 @@ CON_COMMAND(mirv_listbones, "Print the bones of an entity with their names and p
 	Tier0_Msg("Attach the camera to a bone with: mirv_cam attach %i <iBoneIndex or part of bone name>\n", entityIndex);
 }
 
-CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view. (TF2)")
+CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view. (TF2, TF2C, Open Fortress)")
 {
-	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+	if (!MirvCommands_SupportsTf2EntityInspection())
 	{
 		Tier0_Warning("Not supported for your engine!\n");
 		return;
