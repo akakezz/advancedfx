@@ -1171,8 +1171,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		if (!bodies && args->ArgC() == 2)
 		{
 			advancedfx::Message(
-			    "Filter: %s; %zu selected. Use mirv_cache filter all|none|set|add|remove <indices...>.\n",
-			    g_ScenePlayerFilter ? "selected players" : "all players", g_ScenePlayers.size());
+			    "Filter: %s; %s selected. Use mirv_cache filter all|none|set|add|remove <indices...>.\n",
+			    g_ScenePlayerFilter ? "selected players" : "all players", std::to_string(g_ScenePlayers.size()).c_str());
 			return;
 		}
 		if (args->ArgC() == 3 &&
@@ -1396,10 +1396,10 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		advancedfx::Warning("Scene cache command rejected. Use mirv_cache help for syntax.\n");
 		return;
 	}
-	advancedfx::Message("Scene cache: record %d, preview %d; rate %d ticks/s; tick %d; %zu frames, %.2f MiB "
+	advancedfx::Message("Scene cache: record %d, preview %d; rate %d ticks/s; tick %d; %s frames, %.2f MiB "
 	                    "payload; coverage at cursor %s.\n",
 	                    int(g_SceneRecord), int(g_ScenePreview), g_SceneScrubRate, int(g_SequencerFrame),
-	                    g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0,
+	                    std::to_string(g_SceneCache.Count()).c_str(), g_SceneCache.Bytes() / 1048576.0,
 	                    SceneCacheView() ? "yes" : "no");
 	if (_stricmp(op, "status"))
 	{
@@ -1408,11 +1408,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		return;
 	}
 
-	advancedfx::Message("Scene pose: players %d; filter %s (%zu selected); captured %llu, unavailable %llu; "
+	advancedfx::Message("Scene pose: players %d; filter %s (%s selected); captured %s, unavailable %s; "
 	                    "models %d; projectiles %d; weapons %d; cosmetics %d; ragdolls %d; gibs %d; "
 	                    "buildings %d; props %d; animation %s. %s\n",
 	                    int(g_ScenePlayerModels), g_ScenePlayerFilter ? "selected" : "all",
-	                    g_ScenePlayers.size(), g_ScenePoseCaptured, g_ScenePoseFailures,
+	                    std::to_string(g_ScenePlayers.size()).c_str(), std::to_string(g_ScenePoseCaptured).c_str(), std::to_string(g_ScenePoseFailures).c_str(),
 	                    int(g_SceneDrawModels.load()), int(g_SceneProjectiles), int(g_SceneWeapons),
 	                    int(g_SceneCosmetics), int(g_SceneRagdolls), int(g_SceneGibs), int(g_SceneBuildings),
 	                    int(g_SceneProps), g_SceneSmoothAnimation ? "smooth" : "nearest",
@@ -1421,10 +1421,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		advancedfx::Message("Capture range: %d .. %d inclusive%s.\n", g_SceneRangeFirst, g_SceneRangeLast,
 		                    g_SceneRecord ? " (armed)" : " (stopped)");
 	advancedfx::Message(
-	    "Capture cost: last %.3f ms, mean %.3f ms, peak %.3f ms over %llu observed frames; "
-	    "%zu unique retained poses, %zu unchanged poses reused.\n",
+	    "Capture cost: last %.3f ms, mean %.3f ms, peak %.3f ms over %s observed frames; "
+	    "%s unique retained poses, %s unchanged poses reused.\n",
 	    g_SceneCaptureMs, g_SceneCaptureFrames ? g_SceneCaptureTotalMs / g_SceneCaptureFrames : 0,
-	    g_SceneCapturePeakMs, g_SceneCaptureFrames, g_SceneCache.PoseCount(), g_SceneCache.ReusedPoses());
+	    g_SceneCapturePeakMs, std::to_string(g_SceneCaptureFrames).c_str(),
+	    std::to_string(g_SceneCache.PoseCount()).c_str(), std::to_string(g_SceneCache.ReusedPoses()).c_str());
 	if (g_ScenePreview)
 		if (auto status = std::atomic_load(&g_SceneModelStatus))
 			advancedfx::Message("%s\n", status->c_str());
