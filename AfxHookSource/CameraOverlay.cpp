@@ -883,7 +883,15 @@ void HistoryUndo(bool redo)
 	g_CurveKeyDrag = false;
 	g_GestureStart.reset();
 	g_CancelGesture = ImGui::GetCurrentContext() && ImGui::IsMouseDown(0);
-	g_Hook_VClient_RenderView.m_CamPaths.Undo(redo);
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	// Commit pending path gestures before comparing their edit index to camera edits.
+	paths.FinishEdit();
+	const auto pathIndex = paths.LastHistoryIndex(redo);
+	const auto cameraIndex = MirvCam_HistoryIndex(redo);
+	if (cameraIndex && (!pathIndex || (redo ? cameraIndex < pathIndex : cameraIndex > pathIndex)))
+		MirvCam_HistoryUndo(redo);
+	else if (pathIndex)
+		paths.Undo(redo);
 }
 static std::filesystem::path RecoveryDirectory()
 {
@@ -7927,19 +7935,14 @@ void Draw()
 		}
 	}
 	if (ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z, false))
-	{
-		if (CameraHistoryOwnsUi())
-			MirvCam_HistoryUndo(ImGui::GetIO().KeyShift);
-		else
-			HistoryUndo(ImGui::GetIO().KeyShift);
-	}
+		HistoryUndo(ImGui::GetIO().KeyShift);
 
 	if (g_Docking)
 		ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 	// Diagnostic watermark
 	ImGui::GetForegroundDrawList()->AddText(
 		ImVec2(8, 8), IM_COL32(255, 255, 255, 255),
-		"TF2 camera overlay | F8 closes | RMB outside panels moves camera", nullptr);
+		"HLAE Camera Overlay | F8 closes | RMB outside panels moves camera", nullptr);
 
 	if (!s_campathDialogsInit)
 	{
@@ -7953,22 +7956,14 @@ void Draw()
 	ImGuizmo::BeginFrame();
 	ImGui::SetNextWindowPos(ImVec2(20, 30), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSizeConstraints(ImVec2(540, 200), ImVec2(900, ImGui::GetIO().DisplaySize.y - 50));
-	ImGui::Begin("TF2 Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::Begin("HLAE Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 	if (ImGui::Button("Undo"))
-	{
-		if (CameraHistoryOwnsUi())
-			MirvCam_HistoryUndo(false);
-		else
-			HistoryUndo(false);
-	}
+		HistoryUndo(false);
 	ImGui::SameLine();
 	if (ImGui::Button("Redo"))
-	{
-		if (CameraHistoryOwnsUi())
-			MirvCam_HistoryUndo(true);
-		else
-			HistoryUndo(true);
-	}
+		HistoryUndo(true);
+	ImGui::SameLine();
+	ImGui::TextDisabled("Session edit #%llu", static_cast<unsigned long long>(CinematicSessionEditIndex()));
 	if (ImGui::BeginTabBar("##hlae_tabs"))
 	{
 		// Campath tab

@@ -14,12 +14,32 @@
 #include <locale>
 #include <functional>
 #include <chrono>
+#include <atomic>
 #include <limits>
 #include <iterator>
 #include <stdexcept>
 #include <stdio.h>
 
 #include <math.h>
+
+namespace
+{
+std::atomic<std::uint64_t> g_CinematicEditIndex{0};
+std::atomic<std::uint64_t> g_CinematicRedoGeneration{0};
+}
+std::uint64_t CinematicNewEditIndex()
+{
+	g_CinematicRedoGeneration.fetch_add(1, std::memory_order_relaxed);
+	return g_CinematicEditIndex.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+std::uint64_t CinematicRedoGeneration()
+{
+	return g_CinematicRedoGeneration.load(std::memory_order_relaxed);
+}
+std::uint64_t CinematicSessionEditIndex()
+{
+	return g_CinematicEditIndex.load(std::memory_order_relaxed);
+}
 
 #ifdef min
 #undef min
@@ -5068,21 +5088,44 @@ void CamPathCollection::FinishEdit()
 	if (m_Editing && !SameContent(m_Before, m_Last))
 	{
 		PushHistory(m_Undo, m_Before);
+		m_UndoIndices.push_back(CinematicNewEditIndex());
+		if (m_UndoIndices.size() > m_Undo.size())
+			m_UndoIndices.erase(m_UndoIndices.begin(), m_UndoIndices.begin() + (m_UndoIndices.size() - m_Undo.size()));
 		m_Redo.clear();
+		m_RedoIndices.clear();
+		m_RedoGeneration = CinematicRedoGeneration();
 	}
 	m_Editing = false;
 }
 bool CamPathCollection::CanUndo(bool redo) const
 {
-	return !(redo ? m_Redo : m_Undo).empty();
+	return redo ? m_RedoGeneration == CinematicRedoGeneration() && !m_Redo.empty()
+				: !m_Undo.empty();
+}
+std::uint64_t CamPathCollection::LastHistoryIndex(bool redo) const
+{
+	const auto &indices = redo ? m_RedoIndices : m_UndoIndices;
+	return (!CanUndo(redo) || indices.empty()) ? 0 : indices.back();
 }
 bool CamPathCollection::Undo(bool redo)
 {
 	FinishEdit();
+	if (m_RedoGeneration != CinematicRedoGeneration())
+	{
+		m_Redo.clear();
+		m_RedoIndices.clear();
+		m_RedoGeneration = CinematicRedoGeneration();
+	}
 	auto &from = redo ? m_Redo : m_Undo, &to = redo ? m_Undo : m_Redo;
-	if (from.empty())
+	auto &fromIndices = redo ? m_RedoIndices : m_UndoIndices;
+	auto &toIndices = redo ? m_UndoIndices : m_RedoIndices;
+	if (from.empty() || fromIndices.empty())
 		return false;
 	PushHistory(to, CaptureState());
+	toIndices.push_back(fromIndices.back());
+	if (toIndices.size() > to.size())
+		toIndices.erase(toIndices.begin(), toIndices.begin() + (toIndices.size() - to.size()));
+	fromIndices.pop_back();
 	auto state = from.back();
 	from.pop_back();
 	for (auto &restored : state.Paths)

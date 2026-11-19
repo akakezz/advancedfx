@@ -7,6 +7,13 @@
 #include <string>
 #include <limits>
 #include <memory>
+#include <cstdint>
+
+// Shared session edit counter for both camera and campath history.
+// A new edit invalidates redo entries across both domains.
+std::uint64_t CinematicNewEditIndex();
+std::uint64_t CinematicRedoGeneration();
+std::uint64_t CinematicSessionEditIndex();
 
 using namespace Afx;
 using namespace Afx::Math;
@@ -808,6 +815,9 @@ class CamPathCollection
 	{
 		m_Undo.clear();
 		m_Redo.clear();
+		m_UndoIndices.clear();
+		m_RedoIndices.clear();
+		m_RedoGeneration = CinematicRedoGeneration();
 		m_FileName.clear();
 		m_Last = CaptureState();
 		m_Before = m_Last;
@@ -826,6 +836,7 @@ class CamPathCollection
 	void FinishEdit();
 	bool Undo(bool redo = false);
 	bool CanUndo(bool redo = false) const;
+	std::uint64_t LastHistoryIndex(bool redo = false) const;
 	static bool SameContent(const State &a, const State &b);
 
   private:
@@ -837,6 +848,8 @@ class CamPathCollection
 	State m_Saved, m_Last, m_Before;
 	bool m_HistoryReady = false, m_Editing = false;
 	std::vector<State> m_Undo, m_Redo;
+	std::vector<std::uint64_t> m_UndoIndices, m_RedoIndices;
+	std::uint64_t m_RedoGeneration = 0;
 	std::vector<std::unique_ptr<CamPath>> m_Caches;
 	std::vector<std::shared_ptr<const CamPath::State>> m_CacheStates;
 	mutable unsigned long long m_LastActiveRevision = ~0ull;

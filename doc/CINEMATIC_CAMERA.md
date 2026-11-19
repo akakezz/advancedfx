@@ -1,4 +1,4 @@
-# TF2 camera overlay — Paper port
+# HLAE cinematic camera overlay — Paper port
 
 This feature is based on Paper's overlay and the original HLAE base commit
 `3906a61e` (upstream HLAE 2.192.10, `8abc2719`). It uses ordinary `mirv_campath` keys and the classic path renderer.
@@ -2145,9 +2145,8 @@ Attached cameras retain their target and mode; unavailable targets reject edits
 without changing their saved pose. **Manage cameras** in the Campath tab opens it.
 Selecting a row leaves the current view alone unless camera preview is already
 active; in that case it switches the viewed camera. Removal asks for confirmation
-and remains pinned to the chosen ID even if selection changes. Camera edits have their own bounded undo/redo history. The Undo/Redo buttons
-and Ctrl+Z / Ctrl+Shift+Z operate on cameras while the Cameras tab or camera
-preview navigation is active; otherwise they operate on campaths. Keyframe
+and remains pinned to the chosen ID even if selection changes. Camera and campath edits share chronological session undo/redo ordering (up to each domain's retained history limit). The Undo/Redo buttons
+and Ctrl+Z / Ctrl+Shift+Z undo the latest edit across cameras and campaths, regardless of panel or preview selection. Keyframe
 editing shortcuts remain disabled while managing cameras.
 
 **Show camera guides** optionally draws small camera icons independently of

@@ -547,6 +547,8 @@ struct CameraHistoryState
 	std::vector<MirvCameraModifier> Modifiers;
 };
 std::vector<CameraHistoryState> g_CameraUndo, g_CameraRedo;
+std::vector<std::uint64_t> g_CameraUndoIndices, g_CameraRedoIndices;
+std::uint64_t g_CameraRedoGeneration = 0;
 unsigned g_CameraEditDepth = 0;
 unsigned long long g_CameraCaptureRevision = 0;
 NamedCameraRig CloneCameraDefinition(const NamedCameraRig &source)
@@ -681,9 +683,16 @@ class CameraEditTransaction
 				entry.second.Definition = g_NextCameraDefinition++;
 		}
 		if (g_CameraUndo.size() == 64)
+		{
 			g_CameraUndo.erase(g_CameraUndo.begin());
+			if (!g_CameraUndoIndices.empty())
+				g_CameraUndoIndices.erase(g_CameraUndoIndices.begin());
+		}
 		g_CameraUndo.push_back(std::move(Snapshot));
+		g_CameraUndoIndices.push_back(CinematicNewEditIndex());
 		g_CameraRedo.clear();
+		g_CameraRedoIndices.clear();
+		g_CameraRedoGeneration = CinematicRedoGeneration();
 	}
 
   private:
@@ -1702,8 +1711,10 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 			blendValid = g_BlendFromPlayback ? EvaluatePlaybackPose(clientTime, from, g_BlendPathId)
 											 : outgoing != g_CameraRigs.end() &&
 												   EvaluateIndividualCamera(outgoing->second, from);
-			if (g_BlendFromView)
+			if (g_BlendFromView || (!blendValid && !g_BlendFromPlayback && g_BlendViewPose.Valid()))
 			{
+				// Never cancel a valid incoming path because the outgoing camera
+				// disappeared; hold its last displayed pose for the rest of the blend.
 				from = g_BlendViewPose;
 				blendValid = from.Valid();
 			}
@@ -1949,13 +1960,29 @@ bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advanced
 	}
 	return true;
 }
+std::uint64_t MirvCam_HistoryIndex(bool redo)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	const auto &indices = redo ? g_CameraRedoIndices : g_CameraUndoIndices;
+	if (redo && g_CameraRedoGeneration != CinematicRedoGeneration())
+		return 0;
+	return indices.empty() ? 0 : indices.back();
+}
 bool MirvCam_HistoryUndo(bool redo)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
+	if (g_CameraRedoGeneration != CinematicRedoGeneration())
+	{
+		g_CameraRedo.clear();
+		g_CameraRedoIndices.clear();
+		g_CameraRedoGeneration = CinematicRedoGeneration();
+	}
 	auto &from = redo ? g_CameraRedo : g_CameraUndo;
 	auto &to = redo ? g_CameraUndo : g_CameraRedo;
-	if (from.empty())
+	auto &fromIndices = redo ? g_CameraRedoIndices : g_CameraUndoIndices;
+	auto &toIndices = redo ? g_CameraUndoIndices : g_CameraRedoIndices;
+	if (from.empty() || fromIndices.empty())
 		return false;
 	const bool sequence = g_CameraSource == CameraSource::Sequence;
 	const bool playback = g_CameraSource == CameraSource::Playback;
@@ -1967,6 +1994,8 @@ bool MirvCam_HistoryUndo(bool redo)
 		selectedId = selected->second.Id;
 	to.push_back(CloneCameraState(
 		{g_CameraRigs, g_CameraRigName, g_CameraClips, g_SequenceDemo, g_SequenceLevel, g_CameraModifiers}));
+	toIndices.push_back(fromIndices.back());
+	fromIndices.pop_back();
 	auto state = std::move(from.back());
 	from.pop_back();
 	MirvCam_ReleaseLiveAttachment();
@@ -2329,7 +2358,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 	if (action == "undo" || action == "redo")
 	{
 		if (args->ArgC() == 2)
-			MirvCam_HistoryUndo(action == "redo");
+			AfxHookSource::CameraOverlay::HistoryUndo(action == "redo");
 		else
 			Tier0_Msg("mirv_cam %s - Restore the previous camera edit.\n", action.c_str());
 		return true;
@@ -2447,7 +2476,9 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		const auto outgoingSource = g_CameraSource;
 		std::string outgoing = outgoingSource == CameraSource::Rig ? g_CameraRigName : std::string{};
 		const auto outgoingPath = g_CampathSourceId;
-		const auto currentView = RigCapture();
+		auto currentView = RigCapture();
+		if (!currentView.Valid() && g_LastRigPose.Valid())
+			currentView = g_LastRigPose;
 		const double commandTime = AfxHookSource::CameraOverlay::EditingClientTime(g_MirvTime.GetTime());
 		const bool interrupted = (!g_BlendFromCamera.empty() || g_BlendFromPlayback || g_BlendFromView) &&
 								 (!g_BlendStarted || commandTime < g_BlendStart + g_BlendDuration);

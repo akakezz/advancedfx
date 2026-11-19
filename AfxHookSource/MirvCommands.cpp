@@ -2214,10 +2214,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		if (down && !g_CampathPreviewUndoHeld && !CampathPreview_IsRepeatKey(lParam))
 		{
 			g_CampathPreviewUndoHeld = true;
-			if (MirvCam_RigPreviewActive() && (MirvCam_RigNavigation() || MirvCam_SequencePreviewActive()))
-				MirvCam_HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
-			else
-				AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+			AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
 			// Undo may leave preview and release its held keys; keep this chord owned until key-up.
 			g_CampathPreviewUndoHeld = true;
 		}

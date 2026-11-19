@@ -124,6 +124,7 @@ bool MirvCam_EditCameras(const std::vector<std::uint64_t> &ids,
 						 const std::function<bool(std::uint64_t)> &edit);
 bool MirvCam_EditAttachment(std::uint64_t id, int entity, const char *bone, int mode);
 bool MirvCam_HistoryUndo(bool redo);
+std::uint64_t MirvCam_HistoryIndex(bool redo);
 
 class Aiming;
 bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advancedfx::ICommandArgs *, Aiming &));
