@@ -223,4 +223,45 @@ int main()
  assert(cameraBytes >= 2 * sizeof(Cache::CameraSample));
  cameraCache.SetLimit(0);
  assert(cameraCache.Count() == 0 && cameraCache.Bytes() == 0);
+
+ // Cached availability is evaluated at the requested timestamp, not at
+ // the last frame visited by the user while scrubbing. Death/disappearance
+ // must not be hidden by an earlier successful camera sample.
+ Cache availabilityHistory;
+ Cache::Frame state;
+ Cache::Entity player;
+ player.Identity = 57;
+ player.Category = 0;
+ Cache::CameraSample tracked;
+ tracked.Id = 9;
+ tracked.Definition = 37;
+ for (int tick = 0; tick != 6; ++tick)
+ {
+  state = {};
+  state.DemoTime = state.ClientTime = tick * .05;
+  const bool exists = tick < 2 || tick >= 4;
+  if (exists)
+  {
+   player.Origin[0] = float(tick);
+   tracked.Pose.Position[0] = tick;
+   state.Entities.push_back(player);
+   state.Cameras.push_back(tracked);
+  }
+  assert(availabilityHistory.Append(state));
+ }
+ auto availabilityAt = [&](double time)
+ {
+  Cache::Frame sampled;
+  assert(availabilityHistory.Sample(time, sampled));
+  return std::make_pair(!sampled.Entities.empty(), !sampled.Cameras.empty());
+ };
+ assert(availabilityAt(.025) == std::make_pair(true, true));
+ assert(availabilityAt(.075) == std::make_pair(false, false));
+ assert(availabilityAt(.125) == std::make_pair(false, false));
+ assert(availabilityAt(.175) == std::make_pair(false, false));
+ assert(availabilityAt(.225) == std::make_pair(true, true));
+ // Reverse and repeat: availability must not depend on the prior cursor.
+ assert(availabilityAt(.025) == std::make_pair(true, true));
+ assert(availabilityAt(.175) == std::make_pair(false, false));
+ assert(availabilityAt(.225) == std::make_pair(true, true));
 }
