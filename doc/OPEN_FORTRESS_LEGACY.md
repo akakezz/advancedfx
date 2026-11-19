@@ -114,3 +114,13 @@ mirv_drawentities enabled 0
 Check that numeric labels appear above entities, follow movement, and that turning them off restores the original view. Entity category classification may require Open Fortress-specific additions even if indices and positions are correct. Do not assume that this enables the Scene Cache wireframe or full cinematic UI; these remain separate dependencies within the same workspace.
 
 **Status:** source patched; not built or tested in-game yet.
+
+## Attachment regression: second attach hard crash (2026-11-19)
+
+The user reports that a first Open Fortress `mirv_cam attach` works, but a second attachment to the same or another entity crashes. The `mirv_cam attach follow` setting also appears ineffective. Treat repeat attachment as **unsafe** pending a symbolized crash report.
+
+Source inspection identified two separate follow-state consumers: legacy live attachment uses `MirvCameraCollisionGet()`, while the registered named-camera rig uses `rig.Rig.Motion`. A provisional Open Fortress-only synchronization of these settings was added, leaving TF2/TF2C behavior unchanged. This is not in-game validated.
+
+Repeat-attach processing goes through `CameraEditTransaction` / `CloneCameraState` (which clones existing attached camera target calculators), `RegisterAttachedCamera` and the live source handoff. Open Fortress-only console breadcrumbs (`[OF attach] ...`) now bracket these stages for the next debug build. A crash in any of these regions is currently **hypothetical**; do not attribute the crash without a matching minidump.
+
+The `sentry.zip` archive available during this review contained only the older 09:22/09:31 UTC material-system crashes and cannot identify the newer attachment crash. Obtain a fresh Sentry `.dmp` and the corresponding 32-bit `AfxHookSource.pdb`, preferably with `last_crash_console_log.txt`. Avoid repeated attachments in important demo sessions until resolved.
