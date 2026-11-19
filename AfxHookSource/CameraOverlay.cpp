@@ -3262,7 +3262,7 @@ static void DrawObserving()
 {
 	if (!ImGui::BeginTabItem("Observing"))
 		return;
-	ImGui::TextUnformatted("Click a player to spectate in STV. Select a bone below for attachments.");
+	ImGui::TextUnformatted("Select a player to inspect. Spectating and camera attachment are separate actions.");
 	if (ImGui::Button("Detach"))
 		Afx_ExecClientCmd("mirv_cam attach clear");
 	ImGui::SameLine();
@@ -3329,19 +3329,7 @@ static void DrawObserving()
 					bone = -1;
 				selectedEntity = i;
 				selectedUser = user;
-				if (g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV())
-					traceStatus = "Native spectating requires an STV demo. This player remains selected for bone attachments.";
-				else if (user > 0)
-				{
-					MirvCampathPreview_SetActive(false);
-					g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
-					char cmd[192];
-					sprintf_s(cmd, "mirv_campath preview exit; mirv_cam attach clear; mirv_input end; spec_autodirector 0; spec_mode 4; spec_player \"#%d\"", user);
-					Afx_ExecClientCmd(cmd);
-					traceStatus = "Requested spectating " + std::string(name) + ".";
-				}
-				else
-					traceStatus = "Player has no current user ID; select them again after the demo has loaded.";
+				traceStatus = "Selected " + std::string(name) + ". Camera and spectator view unchanged.";
 			}
 			ImGui::PopID();
 		}
@@ -3349,19 +3337,25 @@ static void DrawObserving()
 	}
 	if (selectedEntity > 0)
 	{
-		if (g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV())
+		ImGui::Separator();
+		const bool stv = g_VEngineClient && g_VEngineClient->IsPlayingDemo() && g_VEngineClient->IsHLTV();
+		if (stv && selectedUser > 0)
 		{
-			ImGui::Separator();
-			ImGui::TextWrapped("POV demo: native spectator switching is unavailable. "
-				"Use a camera attached to the selected player without changing the demo viewpoint.");
-			if (ImGui::Button("Observe selected with HLAE camera"))
+			if (ImGui::Button("Spectate selected (STV)"))
 			{
+				MirvCampathPreview_SetActive(false);
+				g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
 				char cmd[192];
-				std::snprintf(cmd, sizeof(cmd), "mirv_campath preview exit; mirv_input end; mirv_cam attach %d -1", selectedEntity);
+				std::snprintf(cmd, sizeof(cmd),
+					"mirv_campath preview exit; mirv_cam attach clear; mirv_input end; spec_autodirector 0; spec_mode 4; spec_player \"#%d\"",
+					selectedUser);
 				Afx_ExecClientCmd(cmd);
-				traceStatus = "Requested a player-attached camera; this is not the selected player's first-person POV.";
+				traceStatus = "Requested STV spectating for the selected player.";
 			}
 		}
+		else if (g_VEngineClient && g_VEngineClient->IsPlayingDemo())
+			ImGui::TextWrapped("POV demo: native player spectating is unavailable. Selecting players does not change the view. "
+				"Use Attach selected only when you explicitly want an HLAE camera attachment.");
 		ImGui::Separator();
 		ImGui::Text("Selected entity: %d", selectedEntity);
 		ImGui::InputFloat3("Forward / left / up", offset);
