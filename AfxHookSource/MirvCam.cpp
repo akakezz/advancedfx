@@ -34,15 +34,6 @@
 
 extern WrpVEngineClient *g_VEngineClient;
 
-// Diagnostic breadcrumbs are enabled only during an explicit OF attach command.
-// They identify the last completed operation if a repeat attach hard-crashes.
-static bool g_OpenFortressAttachTrace = false;
-static void OFAttachStage(const char *stage)
-{
-    if (g_OpenFortressAttachTrace) Tier0_Msg("[OF attach] %s\n", stage);
-}
-
-
 // Open Fortress uses the Source SDK 2013 entity and bone APIs but retains
 // HL2MP engine hooks. Keep standard HL2MP behavior unchanged.
 static bool MirvCam_SupportsSourceEntityCameras()
@@ -664,15 +655,12 @@ class CameraEditTransaction
 	{
 		if (!enabled)
 			return;
-		OFAttachStage("history opened");
 		Owner = ++g_CameraEditDepth == 1;
 		if (Owner)
 		{
 			Before = {g_CameraRigs,	  g_CameraRigName, g_CameraClips,
 					  g_SequenceDemo, g_SequenceLevel, g_CameraModifiers};
-			OFAttachStage("history cloning previous cameras");
 			Snapshot = CloneCameraState(Before);
-			OFAttachStage("history clone complete");
 			CaptureRevision = g_CameraCaptureRevision;
 		}
 		Enabled = true;
@@ -681,7 +669,6 @@ class CameraEditTransaction
 	{
 		if (!Enabled)
 			return;
-		OFAttachStage("history closing");
 		--g_CameraEditDepth;
 		if (!Owner || (CaptureRevision == g_CameraCaptureRevision && !AimChanged() &&
 					   SameCameraDefinitions(Before.Cameras, g_CameraRigs)))
@@ -709,7 +696,6 @@ class CameraEditTransaction
 		if (g_CameraUndo.size() == 64)
 			g_CameraUndo.erase(g_CameraUndo.begin());
 		g_CameraUndo.push_back(std::move(Snapshot));
-		OFAttachStage("history saved");
 		g_CameraRedo.clear();
 	}
 
@@ -1413,7 +1399,7 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 	if (argc == 2 && !_stricmp(args->ArgV(1), "list"))
 	{
 		for (auto camera : OrderedCameras())
-			Tier0_Msg("%zu: %s (%s)%s\n", CameraIndex(camera->second.Id),
+			Tier0_Msg("%u: %s (%s)%s\n", static_cast<unsigned>(CameraIndex(camera->second.Id)),
 					  CameraDisplayName(camera->first, camera->second).c_str(),
 					  camera->second.Rig.Attached ? "attached" : "fixed",
 					  g_CameraSource == CameraSource::Rig && g_CameraRigName == camera->first ? " [viewing]"
@@ -1535,9 +1521,7 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 // independent camera definition so the same attachment is available in preview.
 bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const advancedfx::CameraPose &world)
 {
-	OFAttachStage("register entered");
 	CameraEditTransaction history;
-	OFAttachStage("register history prepared");
 	SyncRigLevel();
 	auto edited = g_CameraRigs.find(g_EditingCameraName);
 	if (!calc || !world.Valid() || (edited == g_CameraRigs.end() && g_CameraRigs.size() >= 128))
@@ -1563,7 +1547,6 @@ bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const a
 								 : (std::uint64_t(1) << 63) | attached.TargetHandle;
 	advancedfx::CameraPose target;
 	double pivot[3], root[3], rootAngles[3];
-	OFAttachStage("register evaluating target");
 	if (!CameraAttachmentTarget(attached, CameraAuthoringTime(), target, pivot, root, rootAngles) ||
 		!attached.Rig.Attach(world, target, true, CameraAuthoringTime(), pivot))
 		return false;
@@ -1582,13 +1565,11 @@ bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const a
 		attached.Id = g_NextCameraId++;
 		name = "Camera " + std::to_string(attached.Id);
 	}
-	OFAttachStage("register committing camera");
 	g_CameraRigs.insert_or_assign(name, std::move(attached));
-	OFAttachStage("register committed");
 	g_CameraRigName = g_LegacyCameraName = name;
 	g_EditingCameraName.clear();
 	g_RigNavigation = true;
-	Tier0_Msg("Attached camera %zu: %s.\n", CameraIndex(g_CameraRigs.at(name).Id),
+	Tier0_Msg("Attached camera %u: %s.\n", static_cast<unsigned>(CameraIndex(g_CameraRigs.at(name).Id)),
 			  CameraDisplayName(name, g_CameraRigs.at(name)).c_str());
 	return true;
 }
@@ -1620,8 +1601,8 @@ void ClearCameraAttachment(bool liveSource)
 	g_LegacyCameraName.clear();
 }
 } // namespace
-// Legacy attach and the named camera registry keep separate follow state.
-// Synchronize them for Open Fortress while retaining existing TF2C behavior.
+// Legacy attach and named rigs have separate follow settings. Keep them in
+// sync for explicit Open Fortress mode without changing TF2/TF2C behavior.
 static void SyncOpenFortressAttachedCameraFollow(const MirvCameraCollisionSettings &settings)
 {
     auto it = g_CameraRigs.find(g_LegacyCameraName);
@@ -2445,7 +2426,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		if (g_CameraRigs.size() > count)
 		{
 			auto added = g_CameraRigs.find(command.Words[2]);
-			Tier0_Msg("Added camera %zu: %s.\n", CameraIndex(added->second.Id),
+			Tier0_Msg("Added camera %u: %s.\n", static_cast<unsigned>(CameraIndex(added->second.Id)),
 					  CameraDisplayName(added->first, added->second).c_str());
 			MirvCam_EndRigPreview();
 			g_RigNavigation = previousNavigation;
@@ -3306,22 +3287,6 @@ void MirvCam_NotifyDemoFile(const char *file, const char *gameDirectory)
 CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
-	const bool traceAttach = g_OpenFortressLegacyMode && args->ArgC() >= 3 &&
-		!_stricmp(args->ArgV(1), "attach") && _stricmp(args->ArgV(2), "follow");
-	struct OFAttachScope
-	{
-		bool Old;
-		explicit OFAttachScope(bool enabled) : Old(g_OpenFortressAttachTrace)
-		{
-			g_OpenFortressAttachTrace = enabled;
-			OFAttachStage("command entered");
-		}
-		~OFAttachScope()
-		{
-			OFAttachStage("command fully returned");
-			g_OpenFortressAttachTrace = Old;
-		}
-	} traceScope(traceAttach);
 	CameraEditTransaction history(args->ArgC() >= 3 && !_stricmp(args->ArgV(1), "attach") &&
 								  _stricmp(args->ArgV(2), "follow"));
 	if (MirvCam_CameraCommand(args)) return;
@@ -3800,7 +3765,6 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 					}
 				}
 
-				OFAttachStage("constructing target calculator");
 				// Register first; an unavailable target must not replace the current source.
 				auto calc = g_MirvVecAngCalcs.NewTf2EntityIndexCalc(0, entityIndex, boneIndex, g_MirvCamAttachMode);
 				if (!calc)
@@ -3826,19 +3790,15 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				world.Position[2] = z;
 				world.Rotation = Afx::Math::Quaternion::FromQREulerAngles(
 					Afx::Math::QREulerAngles::FromQEulerAngles({pitch, yaw, roll}));
-				OFAttachStage("calling register");
 				if (!RegisterAttachedCamera(calc, entityIndex, g_MirvCamAttachMode, world))
 				{
 					restoreOffsets();
 					Tier0_Warning("Could not register attached camera (target unavailable or camera limit reached).\n");
 					return;
 				}
-				OFAttachStage("replacing live source");
 				MirvCam_EndRigPreview();
 				g_MirvCam.Source_set(calc);
-				OFAttachStage("source replaced");
 				MirvCam_SetAttachCalc(calc);
-				OFAttachStage("attachment installed");
 				if (g_Hook_VClient_RenderView.m_MirvInput)
 					g_Hook_VClient_RenderView.m_MirvInput->SetCameraControlMode(false);
 
