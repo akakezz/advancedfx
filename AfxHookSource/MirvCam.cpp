@@ -768,34 +768,6 @@ bool CachedRigTarget(NamedCameraRig &rig, const advancedfx::SceneCache::Frame &f
 					 advancedfx::CameraPose &pose, double *pivot = nullptr, double *root = nullptr,
 					 double *rootAngles = nullptr)
 {
-	// Camera attachment samples are captured directly from the live calc,
-	// even if the player was not rendered or selected for visual capture.
-	// This allows re-authoring the rig in cached preview without depending
-	// on scene model visibility, while preserving real recorded availability.
-	if (rig.Id)
-	{
-		int boneIndex = -1;
-		std::string boneName;
-		if (rig.Target)
-			Mirv_Tf2_CameraBone(rig.Target.get(), boneIndex, boneName);
-		for (const auto &sample : frame.Cameras)
-			if (sample.Id == rig.Id && sample.HasAvailability &&
-				sample.TargetIdentity == rig.CacheIdentity &&
-				sample.TargetMode == rig.AttachMode && sample.TargetBoneName == boneName)
-			{
-				if (!sample.Available)
-					return false;
-				if (sample.HasTarget)
-				{
-					pose = sample.TargetPose;
-					if (pivot) std::copy(sample.TargetPivot, sample.TargetPivot + 3, pivot);
-					if (root) std::copy(sample.TargetRoot, sample.TargetRoot + 3, root);
-					if (rootAngles) std::copy(sample.TargetAngles, sample.TargetAngles + 3, rootAngles);
-					return pose.Valid();
-				}
-				break; // Live camera was available but an anchor was not captured.
-			}
-	}
 	if (!rig.Target || !rig.CacheIdentity)
 		return false;
 	const advancedfx::SceneCache::Entity *entity = nullptr, *owner = nullptr;
@@ -1219,8 +1191,6 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	if (g_CameraClips.empty())
 		return false;
 	auto current = next == g_CameraClips.begin() ? g_CameraClips.begin() : std::prev(next);
-	// The current clip's availability must follow the selected cached frame.
-	// Never replace its failure with a historical pose from another timestamp.
 	if (!EvaluateClipSource(*current, time, pose))
 		return false;
 	if (!current->Campath)
@@ -1229,50 +1199,12 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	if (current == g_CameraClips.begin() || current->Blend <= 0 || time >= current->Time + current->Blend)
 		return true;
 	advancedfx::CameraPose from;
-	const auto &outgoingClip = *std::prev(current);
-	if (!EvaluateClipSource(outgoingClip, time, from))
+	if (!EvaluateClipSource(*std::prev(current), time, from))
 	{
-		// A missing *outgoing* source may still contribute its last observed
-		// pose to the fade. This does not change the camera's availability
-		// at the current cached time and never overrides the incoming campath.
-		bool haveFrom = false;
-		if (AfxHookSource::CameraOverlay::SceneCachePreviewActive() && !outgoingClip.Campath)
-		{
-			auto rig = FindRig(std::to_string(outgoingClip.Target));
-			if (rig != g_CameraRigs.end())
-				AfxHookSource::CameraOverlay::VisitCameraSceneFrames(
-					[&](const auto &frames, std::uint64_t)
-					{
-						for (auto it = frames.rbegin(); it != frames.rend(); ++it)
-						{
-							if (it->ClientTime > time + 1e-6 ||
-								it->ClientTime < outgoingClip.Time - 1e-6)
-								continue;
-							for (const auto &sample : it->Cameras)
-								if (sample.Id == rig->second.Id &&
-									sample.Definition == rig->second.Definition &&
-									(!sample.HasAvailability || sample.Available) &&
-									sample.Pose.Valid())
-								{
-									from = sample.Pose;
-									haveFrom = ApplyClipModifiers(outgoingClip, it->ClientTime, from);
-									if (haveFrom) return;
-								}
-						}
-					});
-		}
-		else if (!outgoingClip.Campath)
-		{
-			auto rig = FindRig(std::to_string(outgoingClip.Target));
-			if (rig != g_CameraRigs.end() && rig->second.LastWorld.Valid())
-			{
-				from = rig->second.LastWorld;
-				haveFrom = true;
-			}
-		}
-		if (!haveFrom)
-			from = pose;
+		// The incoming source is valid even if the outgoing camera disappears.
+		// End the fade without freezing the incoming camera/path.
 		g_CameraFailureReason.clear();
+		return true;
 	}
 	return BlendCameraPoses(from, pose, (time - current->Time) / current->Blend, pose, current->BlendCurve);
 }
@@ -1386,28 +1318,16 @@ bool FinishCameraPose(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
 	rig.Available = false;
-	if (g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+	if (rig.Aim && rig.Aim->Active &&
+		(g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive()))
 	{
 		auto frame = g_BakingCamera ? g_BakeFrame : AfxHookSource::CameraOverlay::SceneCacheView();
 		if (frame)
 			for (const auto &sample : frame->Cameras)
 				if (sample.Id == rig.Id && sample.Definition == rig.Definition)
 				{
-					if (sample.HasAvailability && !sample.Available)
-					{
-						g_CameraFailureReason = "Camera " + std::to_string(rig.Id) +
-							": recorded as unavailable at the current cached frame.";
-						return false;
-					}
-					// Preserve the existing recorded-aim behavior. Ordinary attached
-					// rigs re-evaluate from the captured target and current settings.
-					if (rig.Aim && rig.Aim->Active ||
-						(sample.HasAvailability && rig.Rig.Attached && !sample.HasTarget))
-					{
-						pose = sample.HasBasePose ? sample.BasePose : sample.Pose;
-						return FinishCameraPose(rig, pose);
-					}
-					break;
+					pose = sample.HasBasePose ? sample.BasePose : sample.Pose;
+					return FinishCameraPose(rig, pose);
 				}
 	}
 	const auto camera = "Camera " + std::to_string(rig.Id) + ": ";
@@ -1697,47 +1617,12 @@ void MirvCam_CaptureCameras(double time, int frame, double step,
 	g_CameraEvaluationFrame = frame;
 	g_CameraEvaluationStep = step;
 	for (auto &entry : g_CameraRigs)
-		if (entry.second.Rig.Attached || (entry.second.Aim && entry.second.Aim->Active))
+		if (entry.second.Aim && entry.second.Aim->Active)
 		{
-			auto &rig = entry.second;
-			advancedfx::SceneCache::CameraSample sample;
-			sample.Id = rig.Id;
-			sample.Definition = rig.Definition;
-			sample.HasAvailability = true;
-			if (rig.Rig.Attached)
-			{
-				sample.TargetIdentity = rig.CacheIdentity;
-				sample.TargetMode = rig.AttachMode;
-				int boneIndex = -1;
-				if (rig.Target)
-					Mirv_Tf2_CameraBone(rig.Target.get(), boneIndex, sample.TargetBoneName);
-			}
 			advancedfx::CameraPose pose;
-			sample.Available = EvaluateNamedRig(rig, pose);
-			// An unavailable camera still gets an explicit tick-level state.
-			// Its last pose is stored for transitions, never as proof of availability.
-			sample.Pose = sample.Available ? pose : rig.LastWorld;
-			if (!sample.Pose.Valid())
-				sample.Pose = advancedfx::CameraPose{};
-			if (sample.Available)
-			{
-				sample.BasePose = rig.BaseWorld;
-				sample.HasBasePose = sample.BasePose.Valid();
-				if (rig.Rig.Attached)
-				{
-					advancedfx::CameraPose target;
-					double pivot[3], root[3], angles[3];
-					if (CameraAttachmentTarget(rig, time, target, pivot, root, angles))
-					{
-						sample.HasTarget = true;
-						sample.TargetPose = target;
-						std::copy(pivot, pivot + 3, sample.TargetPivot);
-						std::copy(root, root + 3, sample.TargetRoot);
-						std::copy(angles, angles + 3, sample.TargetAngles);
-					}
-				}
-			}
-			samples.push_back(std::move(sample));
+			if (EvaluateNamedRig(entry.second, pose))
+				samples.push_back(
+					{entry.second.Id, entry.second.Definition, pose, entry.second.BaseWorld, true});
 		}
 	g_CameraEvaluationTime = previousTime;
 	g_CameraEvaluationFrame = previousFrame;
@@ -1831,23 +1716,19 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 			blendValid = g_BlendFromPlayback ? EvaluatePlaybackPose(clientTime, from, g_BlendPathId)
 											 : outgoing != g_CameraRigs.end() &&
 												   EvaluateIndividualCamera(outgoing->second, from);
-			if (g_BlendFromView || (!blendValid && !g_BlendFromPlayback && g_BlendViewPose.Valid()))
+			if (g_BlendFromView)
 			{
-				// Never cancel a valid incoming path because the outgoing camera
-				// disappeared; hold its last displayed pose for the rest of the blend.
 				from = g_BlendViewPose;
 				blendValid = from.Valid();
 			}
-			// Retain the last actual outgoing pose while its subject is available.
-			// If it disappears later, continuing from here avoids a jump back
-			// to the pose captured when the transition began.
-			if (blendValid && !g_BlendFromView)
-				g_BlendViewPose = from;
 			if (!blendValid)
-				failure =
-					"Outgoing blend source: " +
-					(g_CameraFailureReason.empty() ? std::string("camera no longer exists.") : g_CameraFailureReason);
-			if (blendValid)
+			{
+				// The valid incoming source must continue when the outgoing
+				// source disappears. There is no second view to blend from.
+				blendValid = true;
+				g_CameraFailureReason.clear();
+			}
+			else
 			{
 				blendValid = BlendCameraPoses(from, evaluated, fraction, evaluated);
 				if (!blendValid)
@@ -2601,9 +2482,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		const auto outgoingSource = g_CameraSource;
 		std::string outgoing = outgoingSource == CameraSource::Rig ? g_CameraRigName : std::string{};
 		const auto outgoingPath = g_CampathSourceId;
-		auto currentView = RigCapture();
-		if (!currentView.Valid() && g_LastRigPose.Valid())
-			currentView = g_LastRigPose;
+		const auto currentView = RigCapture();
 		const double commandTime = AfxHookSource::CameraOverlay::EditingClientTime(g_MirvTime.GetTime());
 		const bool interrupted = (!g_BlendFromCamera.empty() || g_BlendFromPlayback || g_BlendFromView) &&
 								 (!g_BlendStarted || commandTime < g_BlendStart + g_BlendDuration);
