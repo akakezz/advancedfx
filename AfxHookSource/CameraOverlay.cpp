@@ -8396,17 +8396,7 @@ void Draw()
 			}
 			ImGui::SetNextItemWidth(ImGui::CalcTextSize("00000").x + st.FramePadding.x * 3.0f);
 			ImGui::InputText("Record FPS", s_fpsText, sizeof(s_fpsText));
-			ImGui::TextUnformatted("FPS presets:");
-			ImGui::SameLine();
-			for (int preset : {24, 30, 60, 120, 240})
-			{
-				char caption[24];
-				std::snprintf(caption, sizeof(caption), "%d##recfps", preset);
-				if (ImGui::SmallButton(caption))
-					std::snprintf(s_fpsText, sizeof(s_fpsText), "%d", preset);
-				ImGui::SameLine();
-			}
-			ImGui::NewLine();
+
 			static bool s_recCloseOverlay = true, s_recResumeDemo = false, s_recFreezeAfter = false;
 			static bool s_recForceScreen = true, s_recResetHostRate = true;
 			if (ImGui::CollapsingHeader("Recording behavior", ImGuiTreeNodeFlags_DefaultOpen))
@@ -8440,77 +8430,15 @@ void Draw()
 					Afx_ExecClientCmd(screenEnabled ? "mirv_streams record screen enabled 1"
 													: "mirv_streams record screen enabled 0");
 				}
-				ImGui::TextUnformatted("Record screen profile");
-				ImGui::SameLine();
-				static const char *s_screenProfile = "Select profile...";
-				if (ImGui::BeginCombo("##screen_profiles", s_screenProfile))
+				const auto currentProfile = Recording::CurrentProfile();
+				if (ImGui::BeginCombo("Record screen profile", currentProfile.c_str()))
 				{
-					if (ImGui::Selectable("TGA Sequence"))
-					{
-						s_screenProfile = "TGA Sequence";
-						Afx_ExecClientCmd(R"(mirv_streams record screen settings afxClassic)");
-					}
-					if (ImGui::Selectable("FFmpeg YUV420p"))
-					{
-						s_screenProfile = "FFMPEG YUV420p";
-						Afx_ExecClientCmd(R"(mirv_streams record screen settings afxFfmpegYuv420p)");
-					}
-					if (ImGui::Selectable("FFmpeg Lossless Best"))
-					{
-						s_screenProfile = "FFMPEG Lossless Best";
-						Afx_ExecClientCmd(R"(mirv_streams record screen settings afxFfmpegLosslessBest)");
-					}
-					if (ImGui::Selectable("ProRes 4444"))
-					{
-						s_screenProfile = "ProRes 4444";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperProRes4444 "-c:v prores_ks -profile:v 4 -pix_fmt yuva444p10le {QUOTE}{AFX_STREAM_PATH}\video.mov{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperProRes4444");
-					}
-					if (ImGui::Selectable("ProRes 422 HQ"))
-					{
-						s_screenProfile = "ProRes 422 HQ";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperProResHQ "-c:v prores_ks -profile:v 3 -pix_fmt yuv422p10le {QUOTE}{AFX_STREAM_PATH}\video.mov{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperProResHQ");
-					}
-					if (ImGui::Selectable("ProRes 422"))
-					{
-						s_screenProfile = "ProRes 422";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperProRes422 "-c:v prores_ks -profile:v 2 -pix_fmt yuv422p10le {QUOTE}{AFX_STREAM_PATH}\video.mov{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperProRes422");
-					}
-					if (ImGui::Selectable("x264 Lossless"))
-					{
-						s_screenProfile = "x264 Lossless";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX264Lossless "-c:v libx264 -preset ultrafast -qp 0 -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX264Lossless");
-					}
-					if (ImGui::Selectable("x264 HQ"))
-					{
-						s_screenProfile = "x264 HQ";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX264HQ "-c:v libx264 -preset slow -crf 16 -pix_fmt yuv420p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX264HQ");
-					}
-					if (ImGui::Selectable("x265 Lossless"))
-					{
-						s_screenProfile = "x265 Lossless";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX265Lossless "-c:v libx265 -preset ultrafast -x265-params lossless=1 -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX265Lossless");
-					}
-					if (ImGui::Selectable("x265 HQ"))
-					{
-						s_screenProfile = "x265 HQ";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX265HQ "-c:v libx265 -preset medium -crf 18 -pix_fmt yuv420p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX265HQ");
-					}
+					for (const auto &name : Recording::GetProfiles())
+						if (ImGui::Selectable(name.c_str(), name == currentProfile))
+							Recording::SetProfile(name.c_str());
 					ImGui::EndCombo();
 				}
+				ImGui::TextDisabled("Includes built-in and custom mirv_streams settings. The menu always reads the active profile.");
 
 				ImGui::Separator();
 				if (ImGui::Button("Start Recording"))
