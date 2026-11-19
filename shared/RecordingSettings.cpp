@@ -11,6 +11,16 @@ namespace advancedfx {
 
 CRecordingSettings::CShared CRecordingSettings::m_Shared;
 
+std::vector<std::string> CRecordingSettings::GetNames()
+{
+	std::vector<std::string> result;
+	result.reserve(m_Shared.m_NamedSettings.size());
+	for (const auto &setting : m_Shared.m_NamedSettings)
+		if (setting.second.Settings)
+			result.emplace_back(setting.second.Settings->GetName());
+	return result;
+}
+
 CRecordingSettings::CShared::CShared()
 {
 	CRecordingSettings * classicSettings = new CClassicRecordingSettings();
