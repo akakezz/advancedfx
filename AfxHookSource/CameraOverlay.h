@@ -72,6 +72,7 @@ bool ScreenEnabled();
 bool IsActive();
 bool Toggle();
 bool HandleHotkey(unsigned int key);
+bool CaptureHotkey(unsigned int key);
 std::vector<std::string> GetProfiles();
 std::string CurrentProfile();
 bool SetProfile(const char *name);
