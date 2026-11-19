@@ -145,3 +145,21 @@ mirv_cam attach clear
 ```
 
 Confirm the second attachment no longer crashes, `mirv_cam list` prints valid indices/names, and smoothing is visible when the subject moves. Retain a fresh dump if any crash remains. The overlay support gate is unchanged; this does not claim the unified workspace is ready.
+
+## Follow smoothing runtime diagnostics (2026-11-19)
+
+The user confirmed that **re-attaching no longer crashes** after the Tier0 `%zu` formatting fix. However, `mirv_cam attach follow` is still not visibly smoothing the camera. The previous Open Fortress-only synchronization of the legacy filter and registered camera motion remains, but we have not established why the live render result appears rigid.
+
+The experimental branch now adds Open Fortress-only runtime counters printed by `mirv_cam attach follow status`. These distinguish settings being accepted from the live render callback receiving the attachment anchor and applying a filtered position. Status reports cumulative `calls`, successful `applied`, `continuous` evaluations, `advancing` evaluations with a positive time delta, `anchor` (1 = currently valid), last scene `t`, last `dt` (-1 = state reset), current configured half-life, and accumulated changed `correction` frames / peak positional difference (Source units). The counters are read-only atomics and do not print per-frame spam or enable unverified trace/collision hooks.
+
+To diagnose with a rebuilt **x86** hook, use a moving player in an offline demo, then enter:
+
+```text
+mirv_cam attach <playerIndex> <boneName>
+mirv_cam attach follow 1.0
+mirv_cam attach follow status
+```
+
+After allowing the demo to run for several seconds, call `mirv_cam attach follow status` again and copy the two `OF follow runtime` / `OF follow camera correction` lines and any `Attachment follow edit rejected` or `Open Fortress follow:` warnings. A count of zero applied frames points to input/anchor/routing; continuous but non-advancing time points to the demo-time source; growing advancing frames and zero corrected frames points to the smoothing math, while nonzero peak correction demonstrates an applied change (even if visually subtle). Use `mirv_cam attach follow 0` to reset the setting afterward.
+
+**Status:** source-checked only; not Windows-built or runtime-verified. No unproven change to the filter algorithm has been made, and the unified overlay remains gated.
