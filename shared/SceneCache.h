@@ -285,6 +285,12 @@ public:
 		// Camera capture is independent of visible scene entities. Older
 		// camera samples without this flag retain their original behavior.
 		bool HasAvailability = false, Available = true;
+		// Raw attachment data lets the editor re-evaluate camera motion
+		// with current rig settings even when a player model was filtered
+		// out of the visual Scene Cache capture.
+		bool HasTarget = false;
+		CameraPose TargetPose;
+		double TargetPivot[3]{}, TargetRoot[3]{}, TargetAngles[3]{};
 	};
 	struct Frame
 	{
@@ -476,9 +482,16 @@ public:
 			if (frame.Cameras[i - 1].Id == frame.Cameras[i].Id)
 				return false;
 		for (const auto &camera : frame.Cameras)
+		{
 			if (!camera.Pose.Valid() || (camera.HasBasePose && !camera.BasePose.Valid()) ||
-				!camera.Definition)
+				!camera.Definition || (camera.HasTarget && (!camera.Available || !camera.TargetPose.Valid())))
 				return false;
+			if (camera.HasTarget)
+				for (int i = 0; i < 3; ++i)
+					if (!std::isfinite(camera.TargetPivot[i]) ||
+						!std::isfinite(camera.TargetRoot[i]) || !std::isfinite(camera.TargetAngles[i]))
+						return false;
+		}
 		for (const auto &entity : frame.Entities)
 		{
 			if (!entity.Identity || entity.Category < 0 || entity.Category >= CategoryCount ||
@@ -600,6 +613,17 @@ public:
 						return result;
 					};
 					sample.Pose = interpolate(a.Pose, b.Pose);
+					sample.HasTarget = a.HasTarget && b.HasTarget;
+					if (sample.HasTarget)
+					{
+						sample.TargetPose = interpolate(a.TargetPose, b.TargetPose);
+						for (int axis = 0; axis < 3; ++axis)
+						{
+							sample.TargetPivot[axis] += f * (b.TargetPivot[axis] - a.TargetPivot[axis]);
+							sample.TargetRoot[axis] += f * (b.TargetRoot[axis] - a.TargetRoot[axis]);
+							sample.TargetAngles[axis] += f * std::remainder(b.TargetAngles[axis] - a.TargetAngles[axis], 360.0);
+						}
+					}
 					sample.HasBasePose = a.HasBasePose && b.HasBasePose;
 					if (sample.HasBasePose)
 						sample.BasePose = interpolate(a.BasePose, b.BasePose);
