@@ -34,6 +34,15 @@
 
 extern WrpVEngineClient *g_VEngineClient;
 
+// Open Fortress uses the Source SDK 2013 entity and bone APIs but retains
+// HL2MP engine hooks. Keep standard HL2MP behavior unchanged.
+static bool MirvCam_SupportsSourceEntityCameras()
+{
+	return g_SourceSdkVer == SourceSdkVer_TF2 ||
+		g_SourceSdkVer == SourceSdkVer_TF2Classified ||
+		(g_SourceSdkVer == SourceSdkVer_HL2MP && g_OpenFortressLegacyMode);
+}
+
 // How mirv_cam attach gets the angles when a bone is used.
 static int g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ALIGNED;
 
@@ -324,7 +333,7 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 	else if (argc != 3 && !(argc == 4 && !_stricmp(args->ArgV(3), "status")))
 		valid = false;
 	if (!valid || (changed && !MirvCameraCollisionSet(settings)))
-		Tier0_Warning("Attachment follow edit rejected: requires TF2/TF2C, finite half-life 0..10 s and "
+		Tier0_Warning("Attachment follow edit rejected: requires TF2/TF2C/Open Fortress, finite half-life 0..10 s and "
 		              "maxDistance 1..10000 units, boneHalfLife/orbitHalfLife 0..10 s, teleportDistance "
 		              "0..1000000 units, "
 		              "orbitSpeed 0..1000000 deg/s, recoveryDelay 0..60 s.\n");
@@ -3299,10 +3308,10 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				{
 					if (4 <= argc)
 					{
-						if (SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer)
+						if (MirvCam_SupportsSourceEntityCameras())
 						{
 							Tier0_Warning(
-								"mirv_cam source handle is not supported for TF2.\n"
+								"mirv_cam source handle is not supported for this engine.\n"
 								"Use mirv_calcs vecAng add tf2Entity <sName> <iEntityIndex> [<iBoneIndex>] and mirv_cam source calcVecAng <sName> instead.\n"
 							);
 							return;
@@ -3590,9 +3599,9 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				MirvCameraAttachFollowCommand(args);
 				return;
 			}
-			if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+			if (!(MirvCam_SupportsSourceEntityCameras()))
 			{
-				Tier0_Warning("mirv_cam attach is only supported for TF2.\n");
+				Tier0_Warning("mirv_cam attach requires TF2, TF2C or Open Fortress.\n");
 				return;
 			}
 
@@ -3770,7 +3779,7 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 
 			Tier0_Msg(
 				"mirv_cam attach <entityIndex or part of player name> [<iBoneIndex or part of bone name> [<fXForward> "
-				"<fYLeft> <fZUp> [<fRotXForward> <fRotYLeft> <fRotZUp>]]] - (TF2) Use the entity (or its bone) as "
+				"<fYLeft> <fZUp> [<fRotXForward> <fRotYLeft> <fRotZUp>]]] - Use the entity (or its bone) as "
 				"camera source, optionally with offset (same as mirv_cam offset). Use -1 as bone for no bone.\n"
 				"mirv_cam attach clear - Detach the selected camera at its current pose and clear the live "
 				"attachment.\n"
