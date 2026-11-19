@@ -224,9 +224,8 @@ int main()
  cameraCache.SetLimit(0);
  assert(cameraCache.Count() == 0 && cameraCache.Bytes() == 0);
 
- // Cached availability is evaluated at the requested timestamp, not at
- // the last frame visited by the user while scrubbing. Death/disappearance
- // must not be hidden by an earlier successful camera sample.
+ // Camera availability is recorded independently of the visually captured
+ // player. A hidden/filter-excluded player can still be a valid live camera.
  Cache availabilityHistory;
  Cache::Frame state;
  Cache::Entity player;
@@ -235,33 +234,52 @@ int main()
  Cache::CameraSample tracked;
  tracked.Id = 9;
  tracked.Definition = 37;
+ tracked.HasAvailability = true;
+ tracked.TargetIdentity = 57;
+ tracked.TargetMode = 2;
+ tracked.TargetBoneName = "bip_head";
  for (int tick = 0; tick != 6; ++tick)
  {
   state = {};
   state.DemoTime = state.ClientTime = tick * .05;
-  const bool exists = tick < 2 || tick >= 4;
-  if (exists)
-  {
-   player.Origin[0] = float(tick);
-   tracked.Pose.Position[0] = tick;
+  const bool cameraAvailable = tick < 2 || tick >= 4;
+  tracked.Available = cameraAvailable;
+  tracked.HasTarget = cameraAvailable;
+  tracked.Pose.Position[0] = tick;
+  tracked.TargetPose.Position[0] = tick;
+  tracked.TargetPivot[0] = tick;
+  tracked.TargetRoot[0] = tick;
+  if (cameraAvailable && tick != 1 && tick != 4)
    state.Entities.push_back(player);
-   state.Cameras.push_back(tracked);
-  }
+  // Even when unavailable, the camera's state is explicitly recorded.
+  state.Cameras.push_back(tracked);
   assert(availabilityHistory.Append(state));
  }
  auto availabilityAt = [&](double time)
  {
   Cache::Frame sampled;
   assert(availabilityHistory.Sample(time, sampled));
-  return std::make_pair(!sampled.Entities.empty(), !sampled.Cameras.empty());
+  assert(sampled.Cameras.size() == 1 && sampled.Cameras[0].HasAvailability);
+  return sampled;
  };
- assert(availabilityAt(.025) == std::make_pair(true, true));
- assert(availabilityAt(.075) == std::make_pair(false, false));
- assert(availabilityAt(.125) == std::make_pair(false, false));
- assert(availabilityAt(.175) == std::make_pair(false, false));
- assert(availabilityAt(.225) == std::make_pair(true, true));
- // Reverse and repeat: availability must not depend on the prior cursor.
- assert(availabilityAt(.025) == std::make_pair(true, true));
- assert(availabilityAt(.175) == std::make_pair(false, false));
- assert(availabilityAt(.225) == std::make_pair(true, true));
+ auto first = availabilityAt(.025);
+ assert(first.Cameras[0].Available && first.Cameras[0].HasTarget);
+ assert(std::abs(first.Cameras[0].TargetPose.Position[0] - .5) < .001);
+ assert(first.Cameras[0].TargetIdentity == 57 && first.Cameras[0].TargetBoneName == "bip_head");
+ // Player model filtered/hidden at tick one: camera remains available.
+ assert(availabilityAt(.05).Entities.empty() && availabilityAt(.05).Cameras[0].Available);
+ // Hold the live left-tick state until the next captured tick.
+ assert(availabilityAt(.075).Cameras[0].Available);
+ assert(!availabilityAt(.1).Cameras[0].Available);
+ assert(!availabilityAt(.125).Cameras[0].Available);
+ assert(!availabilityAt(.175).Cameras[0].Available);
+ assert(availabilityAt(.2).Cameras[0].Available);
+ assert(availabilityAt(.2).Entities.empty());
+ assert(availabilityAt(.225).Cameras[0].Available);
+ // Reverse, jump, repeat: no stale availability can leak across cursor visits.
+ assert(!availabilityAt(.125).Cameras[0].Available);
+ assert(availabilityAt(.025).Cameras[0].Available);
+ assert(!availabilityAt(.125).Cameras[0].Available);
+ assert(availabilityAt(.225).Cameras[0].Available);
+
 }
