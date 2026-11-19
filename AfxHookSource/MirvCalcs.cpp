@@ -6956,7 +6956,7 @@ void MirvCameraAttachedPrintRuntimeStatus()
 	if (!g_OpenFortressLegacyMode)
 		return;
 	Tier0_Msg("OF follow runtime: calls %u, applied %u, continuous %u, anchor %d; "
-			  "last t %.3f s, dt %.4f s (-1 = reset), half-life %.3f s, correction %.3f units.\\n",
+			  "last t %.3f s, dt %.4f s (-1 = reset), half-life %.3f s, correction %.3f units.\n",
 			  g_OfAttachCalls.load(), g_OfAttachApplied.load(), g_OfAttachContinuous.load(),
 			  g_OfAttachHasAnchor.load(), g_OfAttachLastTime.load(), g_OfAttachLastDt.load(),
 			  g_OfAttachLastHalfLife.load(), g_OfAttachLastCorrection.load());
