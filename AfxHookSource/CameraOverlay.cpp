@@ -1083,7 +1083,7 @@ bool HandleHotkey(unsigned int key)
 {
 	if (!g_RecordHotkey || key != g_RecordHotkey || !g_VEngineClient ||
 		g_VEngineClient->Con_IsVisible() ||
-		(ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput()))
+		(ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput))
 		return false;
 	g_RecordTogglePending.store(true);
 	return true;
