@@ -813,6 +813,15 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 		NativeInput_EatKey(unsigned(wParam));
 		return true;
 	}
+	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam < 256 &&
+		!(lParam & (1LL << 30)) && !(GetKeyState(VK_CONTROL) & 0x8000) &&
+		!(GetKeyState(VK_MENU) & 0x8000) &&
+		CameraOverlay::Recording::HandleHotkey((unsigned int)wParam))
+	{
+		m_KeyDownEaten[wParam] = true;
+		NativeInput_EatKey(unsigned(wParam));
+		return true;
+	}
 	if (msg == WM_RBUTTONDOWN && CameraOverlay::IsOpen() && !SourceOwnsUi() &&
 		!ImGui::GetIO().WantCaptureMouse && g_Hook_VClient_RenderView.m_MirvInput &&
 		g_Hook_VClient_RenderView.m_MirvInput->GetCameraControlMode())
