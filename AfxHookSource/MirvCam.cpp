@@ -1154,51 +1154,6 @@ bool EvaluateClipSource(const advancedfx::CameraClip &clip, double time, advance
 	}
 	return ApplyClipModifiers(clip, time, pose);
 }
-// When cached entities disappear, recover the last pose from the recorded timeline,
-// not from LastWorld (which depends on the user's previous scrub position).
-bool CachedClipLastAvailablePose(const advancedfx::CameraClip &clip, double time, advancedfx::CameraPose &pose)
-{
-	if (!AfxHookSource::CameraOverlay::SceneCachePreviewActive() || clip.Campath)
-		return false;
-	auto rig = FindRig(std::to_string(clip.Target));
-	if (rig == g_CameraRigs.end())
-		return false;
-	bool found = false;
-	AfxHookSource::CameraOverlay::VisitCameraSceneFrames(
-		[&](const auto &frames, std::uint64_t)
-		{
-			for (auto it = frames.rbegin(); it != frames.rend(); ++it)
-			{
-				if (it->ClientTime > time + 1e-6)
-					continue;
-				advancedfx::CameraPose sample;
-				bool valid = false;
-				// Recorded camera samples preserve the exact aim / smoothing result.
-				for (const auto &camera : it->Cameras)
-					if (camera.Id == rig->second.Id && camera.Definition == rig->second.Definition &&
-						camera.Pose.Valid())
-					{
-						sample = camera.Pose;
-						valid = true;
-						break;
-					}
-				if (!valid && rig->second.Rig.Attached)
-				{
-					advancedfx::CameraPose target;
-					double pivot[3];
-					if (CachedRigTarget(rig->second, *it, target, pivot))
-						valid = rig->second.Rig.Evaluate(&target, sample, it->ClientTime, pivot);
-				}
-				if (!valid || !sample.Valid() ||
-					!ApplyClipModifiers(clip, it->ClientTime, sample))
-					continue;
-				pose = sample;
-				found = true;
-				return;
-			}
-		});
-	return found;
-}
 // Shared by explicit transitions, sequencer clips, preview and sequence export.
 bool BlendCameraPoses(const advancedfx::CameraPose &from, const advancedfx::CameraPose &to, double fraction,
 					  advancedfx::CameraPose &out, int curve = 0)
@@ -1236,8 +1191,9 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	if (g_CameraClips.empty())
 		return false;
 	auto current = next == g_CameraClips.begin() ? g_CameraClips.begin() : std::prev(next);
-	if (!EvaluateClipSource(*current, time, pose) &&
-		!CachedClipLastAvailablePose(*current, time, pose))
+	// The current clip's availability must follow the selected cached frame.
+	// Never replace its failure with a historical pose from another timestamp.
+	if (!EvaluateClipSource(*current, time, pose))
 		return false;
 	if (!current->Campath)
 		g_SequenceCamera = current->Target;
@@ -1248,15 +1204,12 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	const auto &outgoingClip = *std::prev(current);
 	if (!EvaluateClipSource(outgoingClip, time, from))
 	{
-		// The outgoing subject can die or disappear during a camera -> path
-		// transition. A failed outgoing source must not stall the incoming path.
-		// Prefer the last successfully evaluated camera pose; if unavailable,
-		// cut to the valid incoming pose instead of holding an old mixed view.
-		// CameraPose{} is a valid pose at the world origin. Track whether a
-		// real historical pose was found rather than testing Valid() alone.
-		bool haveFrom = CachedClipLastAvailablePose(outgoingClip, time, from);
-		if (!haveFrom && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
-			!outgoingClip.Campath)
+		// The outgoing source may disappear before the blend finishes.
+		// Never freeze the entire mixer or borrow a pose from another cached
+		// timestamp. Cached preview is deliberately an immediate cut to the
+		// valid incoming pose until a deterministic boundary-pose blend exists.
+		bool haveFrom = false;
+		if (!AfxHookSource::CameraOverlay::SceneCachePreviewActive() && !outgoingClip.Campath)
 		{
 			auto previous = FindRig(std::to_string(outgoingClip.Target));
 			if (previous != g_CameraRigs.end() && previous->second.LastWorld.Valid())
