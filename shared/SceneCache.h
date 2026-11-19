@@ -282,6 +282,9 @@ public:
 		std::uint64_t Id = 0, Definition = 0;
 		CameraPose Pose, BasePose;
 		bool HasBasePose = false;
+		// Camera capture is independent of visible scene entities. Older
+		// camera samples without this flag retain their original behavior.
+		bool HasAvailability = false, Available = true;
 	};
 	struct Frame
 	{
@@ -575,6 +578,15 @@ public:
 				if (a.Id == b.Id && a.Definition == b.Definition)
 				{
 					CameraSample sample = a;
+					// Availability is a tick-level fact, not something to infer
+					// from scene visibility or blend across alive/dead frames.
+					// Hold the left tick's state until the right tick is reached.
+					if (a.HasAvailability && b.HasAvailability &&
+						(!a.Available || !b.Available))
+					{
+						out.Cameras.push_back(sample);
+						break;
+					}
 					auto interpolate = [&](const CameraPose &from, const CameraPose &to)
 					{
 						auto result = from;
