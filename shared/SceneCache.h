@@ -600,7 +600,9 @@ public:
 					// from scene visibility or blend across alive/dead frames.
 					// Hold the left tick's state until the right tick is reached.
 					if (a.HasAvailability && b.HasAvailability &&
-						(!a.Available || !b.Available))
+						(!a.Available || !b.Available ||
+						 a.TargetIdentity != b.TargetIdentity || a.TargetMode != b.TargetMode ||
+						 a.TargetBoneName != b.TargetBoneName))
 					{
 						out.Cameras.push_back(sample);
 						break;
