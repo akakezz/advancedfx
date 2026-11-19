@@ -34,6 +34,15 @@
 
 extern WrpVEngineClient *g_VEngineClient;
 
+// Diagnostic breadcrumbs are enabled only during an explicit OF attach command.
+// They identify the last completed operation if a repeat attach hard-crashes.
+static bool g_OpenFortressAttachTrace = false;
+static void OFAttachStage(const char *stage)
+{
+    if (g_OpenFortressAttachTrace) Tier0_Msg("[OF attach] %s\n", stage);
+}
+
+
 // Open Fortress uses the Source SDK 2013 entity and bone APIs but retains
 // HL2MP engine hooks. Keep standard HL2MP behavior unchanged.
 static bool MirvCam_SupportsSourceEntityCameras()
@@ -294,6 +303,7 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 		          "Correction changes only the live view. Deeply embedded starts may require disabling "
 		          "collision and moving clear.\n");
 }
+static void SyncOpenFortressAttachedCameraFollow(const MirvCameraCollisionSettings &settings);
 static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 {
 	auto settings = MirvCameraCollisionGet();
@@ -332,12 +342,15 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 	}
 	else if (argc != 3 && !(argc == 4 && !_stricmp(args->ArgV(3), "status")))
 		valid = false;
-	if (!valid || (changed && !MirvCameraCollisionSet(settings)))
+	const bool accepted = valid && (!changed || MirvCameraCollisionSet(settings));
+	if (!accepted)
 		Tier0_Warning("Attachment follow edit rejected: requires TF2/TF2C/Open Fortress, finite half-life 0..10 s and "
 		              "maxDistance 1..10000 units, boneHalfLife/orbitHalfLife 0..10 s, teleportDistance "
 		              "0..1000000 units, "
 		              "orbitSpeed 0..1000000 deg/s, recoveryDelay 0..60 s.\n");
 	settings = MirvCameraCollisionGet();
+	if (changed && accepted && g_OpenFortressLegacyMode)
+		SyncOpenFortressAttachedCameraFollow(settings);
 	Tier0_Msg("Attachment smooth follow: entity half-life %.3f s, bone half-life %.3f s (0 = rigid), "
 	          "maximum entity lag %.1f units, teleport reset %.1f units (0 = disabled).\n",
 	          settings.FollowHalfLife, settings.BoneHalfLife, settings.FollowMaxDistance,
@@ -1597,6 +1610,35 @@ void ClearCameraAttachment(bool liveSource)
 	g_LegacyCameraName.clear();
 }
 } // namespace
+// Legacy attach and the named camera registry keep separate follow state.
+// Synchronize them for Open Fortress while retaining existing TF2C behavior.
+static void SyncOpenFortressAttachedCameraFollow(const MirvCameraCollisionSettings &settings)
+{
+    auto it = g_CameraRigs.find(g_LegacyCameraName);
+    if (it == g_CameraRigs.end() || !it->second.Rig.Attached)
+    {
+        Tier0_Msg("Open Fortress follow: no attached camera definition (legacy filter only).\n");
+        return;
+    }
+    auto motion = it->second.Rig.Motion;
+    motion.FollowHalfLife = settings.FollowHalfLife;
+    motion.BoneHalfLife = settings.BoneHalfLife;
+    motion.MaxDistance = settings.FollowMaxDistance;
+    motion.TeleportDistance = settings.FollowTeleportDistance;
+    motion.RotationHalfLife = settings.OrbitHalfLife;
+    motion.TurnRate = settings.OrbitSpeed;
+    if (!motion.Valid())
+    {
+        Tier0_Warning("Open Fortress follow: rig motion values rejected.\n");
+        return;
+    }
+    it->second.Rig.Motion = motion;
+    it->second.Follow = {};
+    it->second.FollowCache.reset();
+    it->second.AimDirty = true;
+    MirvCameraAttachedReset();
+    Tier0_Msg("Open Fortress follow: set both live and rig filters to %.3f seconds.\n", settings.FollowHalfLife);
+}
 void MirvCam_CaptureCameras(double time, int frame, double step,
 							std::vector<advancedfx::SceneCache::CameraSample> &samples)
 {
