@@ -1331,7 +1331,13 @@ This uses TF2's `EngineTraceClient003`; the original console command
 
 ## Recording, files and settings
 
-The Recording tab uses TF2 screen recording through `mirv_streams`. Choose a
+The Recording tab now offers FPS presets and opt-in start/stop behaviors: resume/freeze demo, keep a preconfigured screen stream, and control overlay closure or host-framerate reset. Defaults retain the original recording workflow.
+
+The Observing tab offers **Observe selected with HLAE camera** in POV demos. This invokes the existing entity-attachment mechanism without requiring native STV spectator switching; it is not another player's true first-person POV and requires the target entity to be available.
+
+
+
+The Recording tab uses Source 1 screen recording through `mirv_streams`. Choose a
 record directory, FPS and screen profile. TGA, HLAE's built-in FFmpeg profiles,
 ProRes and x264/x265 profiles are available. Start Recording closes the overlay;
 reopen it with F8 to stop. Recording uses the chosen screen profile directly.
