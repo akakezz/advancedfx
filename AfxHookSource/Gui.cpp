@@ -713,7 +713,7 @@ void UpdateGraphInputOwnership()
 		// Use the OS/hardware cursor rather than the frame-delayed ImGui cursor.
 		// The UI still renders at frame rate, but mouse movement is immediate.
 		ImGui::GetIO().MouseDrawCursor = false;
-		SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+		SetCursor(LoadCursor(nullptr, IDC_ARROW));
 		POINT client = m_GameCursorPos;
 		ScreenToClient(g_hWnd, &client);
 		ImGui::GetIO().MousePos = ImVec2(float(client.x), float(client.y));
@@ -779,7 +779,7 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 	// normal window events and frames, never by querying Source from this callback.
 	if (msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT && m_GraphInputOwned)
 	{
-		SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+		SetCursor(LoadCursor(nullptr, IDC_ARROW));
 		return true;
 	}
 
