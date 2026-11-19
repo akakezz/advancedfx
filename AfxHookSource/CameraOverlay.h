@@ -70,6 +70,8 @@ const char *GetName();
 void SetName(const char *value);
 bool ScreenEnabled();
 bool IsActive();
+bool Toggle();
+bool HandleHotkey(unsigned int key);
 std::vector<std::string> GetProfiles();
 std::string CurrentProfile();
 bool SetProfile(const char *name);
