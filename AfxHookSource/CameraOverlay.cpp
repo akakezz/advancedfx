@@ -3281,6 +3281,19 @@ static void DrawObserving()
 	}
 	if (selectedEntity > 0)
 	{
+		if (g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV())
+		{
+			ImGui::Separator();
+			ImGui::TextWrapped("POV demo: native spectator switching is unavailable. "
+				"Use a camera attached to the selected player without changing the demo viewpoint.");
+			if (ImGui::Button("Observe selected with HLAE camera"))
+			{
+				char cmd[192];
+				std::snprintf(cmd, sizeof(cmd), "mirv_campath preview exit; mirv_input end; mirv_cam attach %d -1", selectedEntity);
+				Afx_ExecClientCmd(cmd);
+				traceStatus = "Requested a player-attached camera; this is not the selected player's first-person POV.";
+			}
+		}
 		ImGui::Separator();
 		ImGui::Text("Selected entity: %d", selectedEntity);
 		ImGui::InputFloat3("Forward / left / up", offset);
@@ -6418,13 +6431,6 @@ void SetCameraFrustums(bool enabled)
 }
 bool CameraGuidesEnabled() { return g_CameraGuidesPublished.load(); }
 bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
-static bool CameraHistoryOwnsUi()
-{
-	auto focused = ImGui::GetCurrentContext()->NavWindow;
-	return g_CamerasTabActive || MirvCam_RigNavigation() ||
-		   (g_ShowSequencer && g_CameraClipsEditing && focused && focused->RootWindow &&
-			std::strcmp(focused->RootWindow->Name, "HLAE Sequencer") == 0);
-}
 static std::string CameraClipSourceName(bool campath, std::uint64_t target)
 {
 	if (campath)
@@ -8390,6 +8396,28 @@ void Draw()
 			}
 			ImGui::SetNextItemWidth(ImGui::CalcTextSize("00000").x + st.FramePadding.x * 3.0f);
 			ImGui::InputText("Record FPS", s_fpsText, sizeof(s_fpsText));
+			ImGui::TextUnformatted("FPS presets:");
+			ImGui::SameLine();
+			for (int preset : {24, 30, 60, 120, 240})
+			{
+				char caption[24];
+				std::snprintf(caption, sizeof(caption), "%d##recfps", preset);
+				if (ImGui::SmallButton(caption))
+					std::snprintf(s_fpsText, sizeof(s_fpsText), "%d", preset);
+				ImGui::SameLine();
+			}
+			ImGui::NewLine();
+			static bool s_recCloseOverlay = true, s_recResumeDemo = false, s_recFreezeAfter = false;
+			static bool s_recForceScreen = true, s_recResetHostRate = true;
+			if (ImGui::CollapsingHeader("Recording behavior", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				ImGui::Checkbox("Close overlay on record start", &s_recCloseOverlay);
+				ImGui::Checkbox("Resume demo when recording starts", &s_recResumeDemo);
+				ImGui::Checkbox("Freeze demo when recording stops", &s_recFreezeAfter);
+				ImGui::Checkbox("Enable screen stream automatically", &s_recForceScreen);
+				ImGui::Checkbox("Reset host framerate on stop", &s_recResetHostRate);
+				ImGui::TextDisabled("Keep screen stream disabled to record custom mirv_streams layers only.");
+			}
 
 			// Common HUD toggles
 			ImGui::Separator();
@@ -8493,17 +8521,21 @@ void Draw()
 					if (!std::isfinite(fps) || fps <= 0.0f || fps > 100000.0f)
 						fps = 60.0f;
 					char cmd[512];
-					sprintf_s(cmd,
-							  "host_framerate %.0f; mirv_streams record fps %.0f; mirv_streams record screen "
-							  "enabled 1; mirv_streams record start",
-							  fps, fps);
-					AfxHookSource::Gui::SetOverlayOpen(false);
+					std::snprintf(cmd, sizeof(cmd),
+						"host_framerate %.6g; mirv_streams record fps %.6g; %smirv_streams record start%s",
+						fps, fps, s_recForceScreen ? "mirv_streams record screen enabled 1; " : "",
+						s_recResumeDemo ? "; demo_timescale 1; demo_resume" : "");
+					if (s_recCloseOverlay)
+						AfxHookSource::Gui::SetOverlayOpen(false);
 					Afx_ExecClientCmd(cmd);
 				}
 				ImGui::SameLine();
 				if (ImGui::Button("Stop"))
 				{
-					Afx_ExecClientCmd("mirv_streams record end; host_framerate 0");
+					std::string cmd = "mirv_streams record end";
+					if (s_recResetHostRate) cmd += "; host_framerate 0";
+					if (s_recFreezeAfter) cmd += "; demo_timescale 0; demo_resume";
+					Afx_ExecClientCmd(cmd.c_str());
 				}
 			}
 
