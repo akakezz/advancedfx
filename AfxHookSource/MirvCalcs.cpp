@@ -6162,7 +6162,7 @@ bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings)
 	    settings.AttachedSoftDistance < 0 || settings.AttachedSoftDistance > 256 ||
 	    ((settings.Free || settings.Campath || settings.Attached) && !CameraCollisionTraceInterface()) ||
 	    ((settings.FollowHalfLife > 0 || settings.BoneHalfLife > 0) && g_SourceSdkVer != SourceSdkVer_TF2 &&
-	     g_SourceSdkVer != SourceSdkVer_TF2Classified))
+	     g_SourceSdkVer != SourceSdkVer_TF2Classified && !g_OpenFortressLegacyMode))
 		return false;
 	{
 		std::lock_guard<std::mutex> lock(g_CameraCollisionMutex);
