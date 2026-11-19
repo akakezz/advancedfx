@@ -1346,12 +1346,18 @@ camera unavailable in cached preview even if it worked in live playback.
 For bone-attached cameras, capture player model poses as needed. Aiming
 cameras may also have independent, recorded camera samples.
 
-**Transition regression status:** All experimental outgoing-camera
-fallbacks have been removed to restore the original, live-editable cached
-preview behavior. The original transition mixer remains unchanged: if an
-outgoing camera becomes unavailable during a blend, the view may hold rather
-than finish the fade. This remains an open issue and should be addressed
-independently, without altering camera or Scene Cache availability rules.
+**Transition test revision:** The outgoing-camera fade fallback is
+reapplied in the transition evaluators only. When an outgoing camera disappears,
+live evaluation can hold its last pose while the configured fade advances.
+Cached preview can re-evaluate the outgoing camera using earlier recorded
+entity frames with the current editable camera settings. This affects only
+the outgoing blend contribution, not camera availability or Scene Cache data.
+If no outgoing pose can be recovered, the incoming source continues directly.
+
+**Capture note:** Avoid fast-forwarding with scene-cache recording enabled:
+discontinuous capture intervals can leave missing preview coverage. Stop
+recording, seek, clear the history, then begin recording at the desired start
+point. This is a workaround, not an automatic seek-handling fix.
 
 ## Recording, files and settings
 
