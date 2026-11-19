@@ -768,6 +768,27 @@ bool CachedRigTarget(NamedCameraRig &rig, const advancedfx::SceneCache::Frame &f
 					 advancedfx::CameraPose &pose, double *pivot = nullptr, double *root = nullptr,
 					 double *rootAngles = nullptr)
 {
+	// Camera attachment samples are captured directly from the live calc,
+	// even if the player was not rendered or selected for visual capture.
+	// This allows re-authoring the rig in cached preview without depending
+	// on scene model visibility, while preserving real recorded availability.
+	if (rig.Id)
+		for (const auto &sample : frame.Cameras)
+			if (sample.Id == rig.Id && sample.Definition == rig.Definition &&
+				sample.HasAvailability)
+			{
+				if (!sample.Available)
+					return false;
+				if (sample.HasTarget)
+				{
+					pose = sample.TargetPose;
+					if (pivot) std::copy(sample.TargetPivot, sample.TargetPivot + 3, pivot);
+					if (root) std::copy(sample.TargetRoot, sample.TargetRoot + 3, root);
+					if (rootAngles) std::copy(sample.TargetAngles, sample.TargetAngles + 3, rootAngles);
+					return pose.Valid();
+				}
+				break; // Live camera was available but an anchor was not captured.
+			}
 	if (!rig.Target || !rig.CacheIdentity)
 		return false;
 	const advancedfx::SceneCache::Entity *entity = nullptr, *owner = nullptr;
@@ -1204,17 +1225,41 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	const auto &outgoingClip = *std::prev(current);
 	if (!EvaluateClipSource(outgoingClip, time, from))
 	{
-		// The outgoing source may disappear before the blend finishes.
-		// Never freeze the entire mixer or borrow a pose from another cached
-		// timestamp. Cached preview is deliberately an immediate cut to the
-		// valid incoming pose until a deterministic boundary-pose blend exists.
+		// A missing *outgoing* source may still contribute its last observed
+		// pose to the fade. This does not change the camera's availability
+		// at the current cached time and never overrides the incoming campath.
 		bool haveFrom = false;
-		if (!AfxHookSource::CameraOverlay::SceneCachePreviewActive() && !outgoingClip.Campath)
+		if (AfxHookSource::CameraOverlay::SceneCachePreviewActive() && !outgoingClip.Campath)
 		{
-			auto previous = FindRig(std::to_string(outgoingClip.Target));
-			if (previous != g_CameraRigs.end() && previous->second.LastWorld.Valid())
+			auto rig = FindRig(std::to_string(outgoingClip.Target));
+			if (rig != g_CameraRigs.end())
+				AfxHookSource::CameraOverlay::VisitCameraSceneFrames(
+					[&](const auto &frames, std::uint64_t)
+					{
+						for (auto it = frames.rbegin(); it != frames.rend(); ++it)
+						{
+							if (it->ClientTime > time + 1e-6 ||
+								it->ClientTime < outgoingClip.Time - 1e-6)
+								continue;
+							for (const auto &sample : it->Cameras)
+								if (sample.Id == rig->second.Id &&
+									sample.Definition == rig->second.Definition &&
+									(!sample.HasAvailability || sample.Available) &&
+									sample.Pose.Valid())
+								{
+									from = sample.Pose;
+									haveFrom = ApplyClipModifiers(outgoingClip, it->ClientTime, from);
+									if (haveFrom) return;
+								}
+						}
+					});
+		}
+		else if (!outgoingClip.Campath)
+		{
+			auto rig = FindRig(std::to_string(outgoingClip.Target));
+			if (rig != g_CameraRigs.end() && rig->second.LastWorld.Valid())
 			{
-				from = previous->second.LastWorld;
+				from = rig->second.LastWorld;
 				haveFrom = true;
 			}
 		}
@@ -1334,16 +1379,28 @@ bool FinishCameraPose(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 bool EvaluateNamedRig(NamedCameraRig &rig, advancedfx::CameraPose &pose)
 {
 	rig.Available = false;
-	if (rig.Aim && rig.Aim->Active &&
-		(g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive()))
+	if (g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive())
 	{
 		auto frame = g_BakingCamera ? g_BakeFrame : AfxHookSource::CameraOverlay::SceneCacheView();
 		if (frame)
 			for (const auto &sample : frame->Cameras)
 				if (sample.Id == rig.Id && sample.Definition == rig.Definition)
 				{
-					pose = sample.HasBasePose ? sample.BasePose : sample.Pose;
-					return FinishCameraPose(rig, pose);
+					if (sample.HasAvailability && !sample.Available)
+					{
+						g_CameraFailureReason = "Camera " + std::to_string(rig.Id) +
+							": recorded as unavailable at the current cached frame.";
+						return false;
+					}
+					// Preserve the existing recorded-aim behavior. Ordinary attached
+					// rigs re-evaluate from the captured target and current settings.
+					if (rig.Aim && rig.Aim->Active ||
+						(sample.HasAvailability && rig.Rig.Attached && !sample.HasTarget))
+					{
+						pose = sample.HasBasePose ? sample.BasePose : sample.Pose;
+						return FinishCameraPose(rig, pose);
+					}
+					break;
 				}
 	}
 	const auto camera = "Camera " + std::to_string(rig.Id) + ": ";
@@ -1633,12 +1690,39 @@ void MirvCam_CaptureCameras(double time, int frame, double step,
 	g_CameraEvaluationFrame = frame;
 	g_CameraEvaluationStep = step;
 	for (auto &entry : g_CameraRigs)
-		if (entry.second.Aim && entry.second.Aim->Active)
+		if (entry.second.Rig.Attached || (entry.second.Aim && entry.second.Aim->Active))
 		{
+			auto &rig = entry.second;
+			advancedfx::SceneCache::CameraSample sample;
+			sample.Id = rig.Id;
+			sample.Definition = rig.Definition;
+			sample.HasAvailability = true;
 			advancedfx::CameraPose pose;
-			if (EvaluateNamedRig(entry.second, pose))
-				samples.push_back(
-					{entry.second.Id, entry.second.Definition, pose, entry.second.BaseWorld, true});
+			sample.Available = EvaluateNamedRig(rig, pose);
+			// An unavailable camera still gets an explicit tick-level state.
+			// Its last pose is stored for transitions, never as proof of availability.
+			sample.Pose = sample.Available ? pose : rig.LastWorld;
+			if (!sample.Pose.Valid())
+				sample.Pose = advancedfx::CameraPose{};
+			if (sample.Available)
+			{
+				sample.BasePose = rig.BaseWorld;
+				sample.HasBasePose = sample.BasePose.Valid();
+				if (rig.Rig.Attached)
+				{
+					advancedfx::CameraPose target;
+					double pivot[3], root[3], angles[3];
+					if (CameraAttachmentTarget(rig, time, target, pivot, root, angles))
+					{
+						sample.HasTarget = true;
+						sample.TargetPose = target;
+						std::copy(pivot, pivot + 3, sample.TargetPivot);
+						std::copy(root, root + 3, sample.TargetRoot);
+						std::copy(angles, angles + 3, sample.TargetAngles);
+					}
+				}
+			}
+			samples.push_back(std::move(sample));
 		}
 	g_CameraEvaluationTime = previousTime;
 	g_CameraEvaluationFrame = previousFrame;
