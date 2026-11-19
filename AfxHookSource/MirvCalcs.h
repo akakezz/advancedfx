@@ -362,6 +362,8 @@ bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long l
 	double sceneTime, double pathTime, const double seed[3], float &x, float &y, float &z);
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3],
 	double sceneTime, float &x, float &y, float &z, const double *entityOrigin = nullptr, float *angles = nullptr);
+// Live Open Fortress attachment filter diagnostics (prints counters only, no engine calls).
+void MirvCameraAttachedPrintRuntimeStatus();
 // Preserve target framing after a position correction without advancing mirv_aim twice.
 bool MirvCameraAttachedReframe(const double from[3], const double to[3], const double target[3], float angles[3]);
 // End optional TF2 camera collision.
