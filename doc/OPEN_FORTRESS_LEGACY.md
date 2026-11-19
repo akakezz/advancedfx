@@ -48,3 +48,26 @@ The explicit `-afxGame` switch is required for this Open Fortress-specific selec
 ## User test: campath drawing and recording confirmed (2026-11-19)
 
 After selecting `-afxGame openfortress` and updating the Open Fortress-specific render queue accessor, the user confirmed that campath drawing renders a green 3D guide in the game and that HLAE recording works. The earlier campath-drawing hard crash no longer reproduced in that test. The user also reported `mirv_overlay` returning an unavailable message. That is expected with the current `Gui::IsSupported` gate, which supports only TF2 and TF2 Classified, not Open Fortress. A generic diagnostic message was added; the overlay itself remains disabled. A future workspace port should keep TF2-specific player, attachment, and Scene Cache paths gated until separately verified.
+
+## Integrated cinematic overlay port: source and binary audit (2026-11-19)
+
+The objective is **one existing cinematic workspace**, not an Open Fortress-specific duplicate. UI enablement is deferred until its engine dependencies are connected and validated together.
+
+Evidence from the supplied Source SDK Base 2013 MP / Open Fortress binaries:
+
+- `client.dll` advertises `VClient017`, `VCLIENTTOOLS001` and `VClientEntityList003`. MSVC RTTI identifies genuine `CHLClient` and `CClientTools` vtables.
+- `CHLClient` vtable slot **35** points into the game's frame-stage dispatcher (the function handles stages 0..6), matching the hook location used by HLAE's TF2 VClient017 path.
+- `engine.dll`, `shaderapidx9.dll` and `vguimatsurface.dll` are 32-bit modules; the available interfaces and rendering path support the already working campath drawing and recording.
+- These observations do **not** prove every TF2 player/model method is ABI-compatible. In particular, model setup, client tool enumeration, render queues and gameplay-specific repair controls need in-game verification.
+
+Infrastructure change: `main.cpp` installs an **Open Fortress-only** VClient017 frame-stage hook (render start/end), calls the existing completed-frame scene-cache entry point, and constructs the existing `CClientToolsTf2` entity adapter from `VCLIENTTOOLS001` if the interface is present. These are shared-tool interfaces, not a duplicate workspace. They remain opt-in via `-afxGame openfortress`; normal HL2MP and TF2/TF2C behavior is unchanged.
+
+Remaining integration checks before opening `Gui::IsSupported()`:
+
+1. `mirv_cam` game gating, target rebind and entity/bone offsets on Open Fortress player classes
+2. Scene Cache entity classification, bone/model capture, queued cached-model rendering, and seek/replay lifecycle
+3. Open Fortress camera input/cursor ownership and 32-bit Direct3D9 overlay rendering
+4. Sequencer, project persistence, clip transitions, demo observation and recording UI
+5. TF2-only `MirvFix` controls: adapt equivalents where possible rather than assuming they work in Open Fortress
+
+**Status:** source committed; not yet compiled or validated in Open Fortress. This is preparatory integration code, not an enabled or completed overlay port. Do not claim parity until runtime tests pass.
