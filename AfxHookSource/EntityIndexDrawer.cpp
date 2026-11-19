@@ -192,7 +192,8 @@ void CEntityIndexDrawer::OnPostRenderAllTools_EngineThread(void)
 	if (!m_Enabled)
 		return;
 
-	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer ||
+		(SourceSdkVer_HL2MP == g_SourceSdkVer && g_OpenFortressLegacyMode)))
 		return;
 
 	if (!g_VEngineClient)
