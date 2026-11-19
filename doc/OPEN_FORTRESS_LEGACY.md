@@ -77,3 +77,24 @@ Remaining integration checks before opening `Gui::IsSupported()`:
 The first Open Fortress integration smoke test showed the original recording/campath functionality still works, but `mirv_listplayers`, `mirv_listentities` and `mirv_listbones` all printed `Not supported for your engine!`. Investigation confirmed that the **commands themselves** reject every engine except TF2/TF2C: they never reach the recently wired Open Fortress entity-tools adapter. This message therefore did **not** establish that the hooks or interfaces failed.
 
 The command gates now also accept only an explicitly selected Open Fortress legacy mode, while preserving the CS:GO route and all other engine restrictions. In order of escalating engine calls, test `mirv_listplayers`, `mirv_listentities isPlayer=1`, then `mirv_listbones <valid player index>`. A missing tools warning, an empty result, a crash, or a valid result each provide different diagnostic evidence. The full cinematic overlay remains deliberately gated and is **not** part of this command-routing patch.
+
+## Attached camera integration (2026-11-19)
+
+The user has now confirmed that all three entity inspection commands work in the Open Fortress build and that `mirv_listbones` shows recognizable bone names with plausible world-space coordinates. This validates the path through `VCLIENTTOOLS001`, player enumeration, model information and the per-frame bone transforms used by the existing camera code.
+
+This branch now enables `mirv_cam attach` for explicit Open Fortress legacy mode by using the existing TF2/TF2C `Mirv_Tf2_` entity and bone camera calculations. The unsupported `mirv_cam source handle` path remains blocked, avoiding the CS:GO-style handle route. Pure mathematical attached-camera follow smoothing is allowed, but camera collision and trace-ray hooks remain gated until their ABI is verified.
+
+Retest in an offline demo with a valid entity index from `mirv_listplayers`:
+
+```text
+mirv_cam attach <playerIndex>
+mirv_cam attach clear
+mirv_cam attach <playerIndex> <boneNameFromMirvListbones>
+mirv_cam attach follow 0.15
+mirv_cam attach follow 0
+mirv_cam attach clear
+```
+
+Check that a moving target is followed without crashes, that a named bone remains stable during animation, that camera clears return to the appropriate pose, and that a demo seek or target disappearance does not produce a hard crash. Do not turn on collision until a separate verification. The existing overlay support gate stays closed pending complete integration.
+
+**Status:** static source checks passed; awaiting a Windows build and in-game attached-camera tests. These changes do not yet prove target rebinding or cached Scene Cache preview.
