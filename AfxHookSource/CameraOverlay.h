@@ -2,6 +2,8 @@
 #include <shared/SceneCache.h>
 #include <memory>
 #include <functional>
+#include <string>
+#include <vector>
 namespace advancedfx { class ICommandArgs; }
 namespace AfxHookSource
 {
@@ -68,6 +70,9 @@ const char *GetName();
 void SetName(const char *value);
 bool ScreenEnabled();
 bool IsActive();
+std::vector<std::string> GetProfiles();
+std::string CurrentProfile();
+bool SetProfile(const char *name);
 } // namespace Recording
 
 } // namespace CameraOverlay
