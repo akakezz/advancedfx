@@ -6944,6 +6944,9 @@ namespace
 std::atomic<unsigned int> g_OfAttachCalls{0};
 std::atomic<unsigned int> g_OfAttachApplied{0};
 std::atomic<unsigned int> g_OfAttachContinuous{0};
+std::atomic<unsigned int> g_OfAttachAdvancing{0};
+std::atomic<unsigned int> g_OfAttachCorrectedFrames{0};
+std::atomic<float> g_OfAttachPeakCorrection{0.0f};
 std::atomic<int> g_OfAttachHasAnchor{0};
 std::atomic<float> g_OfAttachLastTime{0.0f};
 std::atomic<float> g_OfAttachLastDt{-1.0f};
@@ -6955,11 +6958,14 @@ void MirvCameraAttachedPrintRuntimeStatus()
 {
 	if (!g_OpenFortressLegacyMode)
 		return;
-	Tier0_Msg("OF follow runtime: calls %u, applied %u, continuous %u, anchor %d; "
-			  "last t %.3f s, dt %.4f s (-1 = reset), half-life %.3f s, correction %.3f units.\n",
+	Tier0_Msg("OF follow runtime: calls %u, applied %u, continuous %u, advancing %u, anchor %d; "
+			  "last t %.3f s, dt %.4f s (-1 = reset), half-life %.3f s.\n",
 			  g_OfAttachCalls.load(), g_OfAttachApplied.load(), g_OfAttachContinuous.load(),
-			  g_OfAttachHasAnchor.load(), g_OfAttachLastTime.load(), g_OfAttachLastDt.load(),
-			  g_OfAttachLastHalfLife.load(), g_OfAttachLastCorrection.load());
+			  g_OfAttachAdvancing.load(), g_OfAttachHasAnchor.load(), g_OfAttachLastTime.load(),
+			  g_OfAttachLastDt.load(), g_OfAttachLastHalfLife.load());
+	Tier0_Msg("OF follow camera correction: frames %u, last %.3f, peak %.3f units.\n",
+			  g_OfAttachCorrectedFrames.load(), g_OfAttachLastCorrection.load(),
+			  g_OfAttachPeakCorrection.load());
 }
 
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
@@ -6980,7 +6986,11 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 			sceneTime - prior.Time <= MirvCameraAttachedState::MaxContinuousGap;
 		g_OfAttachLastDt.store(continuous ? float(sceneTime - prior.Time) : -1.0f);
 		if (continuous)
+		{
 			++g_OfAttachContinuous;
+			if (sceneTime > prior.Time)
+				++g_OfAttachAdvancing;
+		}
 	}
 	if (!g_VEngineClient || !g_VEngineClient->IsInGame() || g_VEngineClient->IsDrawingLoadingImage())
 	{
@@ -6996,7 +7006,14 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 		if (applied)
 			++g_OfAttachApplied;
 		const double dx = double(x) - originalX, dy = double(y) - originalY, dz = double(z) - originalZ;
-		g_OfAttachLastCorrection.store(applied ? float(std::sqrt(dx * dx + dy * dy + dz * dz)) : 0.0f);
+		const float correction = applied ? float(std::sqrt(dx * dx + dy * dy + dz * dz)) : 0.0f;
+		g_OfAttachLastCorrection.store(correction);
+		if (correction > 0.01f)
+		{
+			++g_OfAttachCorrectedFrames;
+			float peak = g_OfAttachPeakCorrection.load();
+			while (correction > peak && !g_OfAttachPeakCorrection.compare_exchange_weak(peak, correction)) {}
+		}
 	}
 	return applied;
 }
