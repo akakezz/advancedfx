@@ -163,3 +163,15 @@ mirv_cam attach follow status
 After allowing the demo to run for several seconds, call `mirv_cam attach follow status` again and copy the two `OF follow runtime` / `OF follow camera correction` lines and any `Attachment follow edit rejected` or `Open Fortress follow:` warnings. A count of zero applied frames points to input/anchor/routing; continuous but non-advancing time points to the demo-time source; growing advancing frames and zero corrected frames points to the smoothing math, while nonzero peak correction demonstrates an applied change (even if visually subtle). Use `mirv_cam attach follow 0` to reset the setting afterward.
 
 **Status:** source-checked only; not Windows-built or runtime-verified. No unproven change to the filter algorithm has been made, and the unified overlay remains gated.
+
+## Follow runtime result: no active live source (2026-11-19)
+
+The user's `mirv_cam attach follow status` after a 1.0-second half-life showed **calls 8552, applied 0, continuous 0, advancing 0, anchor 0, half-life 1.000, zero position correction**, and **live source attached 0**. The setting was accepted, but the legacy render filter never received a live attachment identity and entity. It is incorrect to interpret that output as an optical or smoothing-math failure.
+
+Source review identified two camera routes: the live legacy `g_MirvCam` calculator and the separately registered `g_CameraRigs` camera controller. Under explicit Open Fortress mode, `mirv_cam attach follow` now updates the **active attached named rig** if it is controlling the camera (`CameraSource::Rig`), otherwise the legacy registered attachment. TF2/TF2C are unchanged. No unverified collision tracing is enabled.
+
+The status now prints `Open Fortress camera route: ...` with controller, preview state, whether a live source and an attachment calculator exist, their pointer identity match, and whether the selected/legacy registered camera is attached. For an active attached rig it also prints the rig's own follow half-life. No recovery of stale entity pointers is attempted. The legacy evaluator telemetry remains unchanged.
+
+**Next test, after rebuilding the x86 hook:** In an offline demo with a moving target, execute `mirv_cam attach <playerIndex>` and then **immediately** `mirv_cam attach follow 1.0` and `mirv_cam attach follow status`; let the demo play and repeat the status, then try `mirv_cam list`. Copy `Open Fortress camera route:`, `Open Fortress active rig follow:` (if present), `OF follow runtime:`, and `OF follow camera correction:` lines. If the controller is legacy with no live attachment, reattach to a valid entity in the current demo rather than expecting follow to create an attachment itself.
+
+**Status:** static source review complete; no Windows build or in-game validation yet. The unified cinematic overlay remains gated.
