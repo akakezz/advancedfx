@@ -1252,16 +1252,20 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 		// transition. A failed outgoing source must not stall the incoming path.
 		// Prefer the last successfully evaluated camera pose; if unavailable,
 		// cut to the valid incoming pose instead of holding an old mixed view.
-		from = {};
-		const bool cached = CachedClipLastAvailablePose(outgoingClip, time, from);
-		if (!cached && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
+		// CameraPose{} is a valid pose at the world origin. Track whether a
+		// real historical pose was found rather than testing Valid() alone.
+		bool haveFrom = CachedClipLastAvailablePose(outgoingClip, time, from);
+		if (!haveFrom && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
 			!outgoingClip.Campath)
 		{
 			auto previous = FindRig(std::to_string(outgoingClip.Target));
 			if (previous != g_CameraRigs.end() && previous->second.LastWorld.Valid())
+			{
 				from = previous->second.LastWorld;
+				haveFrom = true;
+			}
 		}
-		if (!from.Valid())
+		if (!haveFrom)
 			from = pose;
 		g_CameraFailureReason.clear();
 	}
