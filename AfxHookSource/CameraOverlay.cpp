@@ -715,6 +715,35 @@ static char g_RecordFps[64] = "60";
 static bool g_RecordAutoResume = true, g_RecordAutoPause = true;
 static bool g_RecordAutoClose = true, g_RecordAutoStopOnOpen = false;
 static unsigned int g_RecordHotkey = 0; // Disabled until explicitly chosen.
+static unsigned int g_RecordHotkeyMods = 0; // Shift=1, Ctrl=2, Alt=4
+static bool g_RecordCapturingHotkey = false;
+static bool RecordModifierKey(unsigned int key)
+{
+	return key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT ||
+		key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL ||
+		key == VK_MENU || key == VK_LMENU || key == VK_RMENU ||
+		key == VK_LWIN || key == VK_RWIN;
+}
+static unsigned int RecordModifiers()
+{
+	return (GetKeyState(VK_SHIFT) & 0x8000 ? 1u : 0u) |
+		(GetKeyState(VK_CONTROL) & 0x8000 ? 2u : 0u) |
+		(GetKeyState(VK_MENU) & 0x8000 ? 4u : 0u);
+}
+static std::string RecordHotkeyLabel()
+{
+	if (!g_RecordHotkey) return "Not bound";
+	std::string result;
+	if (g_RecordHotkeyMods & 2) result += "Ctrl+";
+	if (g_RecordHotkeyMods & 1) result += "Shift+";
+	if (g_RecordHotkeyMods & 4) result += "Alt+";
+	char name[80] = {};
+	const UINT scan = MapVirtualKeyA(g_RecordHotkey, MAPVK_VK_TO_VSC);
+	const LONG code = LONG(scan) << 16;
+	if (!scan || !GetKeyNameTextA(code, name, sizeof(name)))
+		std::snprintf(name, sizeof(name), "VK %u", g_RecordHotkey);
+	return result + name;
+}
 static std::atomic_bool g_RecordTogglePending{false};
 static bool g_CurveKeyDrag = false, g_CancelGesture = false;
 static std::unique_ptr<CamPathCollection::State> g_GestureStart;
@@ -1079,9 +1108,39 @@ bool Toggle()
 	}
 	return true;
 }
+bool CaptureHotkey(unsigned int key)
+{
+	if (!g_RecordCapturingHotkey)
+		return false;
+	if (key == VK_ESCAPE)
+	{
+		g_RecordCapturingHotkey = false;
+		return true;
+	}
+	if (key == VK_BACK)
+	{
+		g_RecordHotkey = 0;
+		g_RecordHotkeyMods = 0;
+		g_RecordCapturingHotkey = false;
+		if (ImGui::GetCurrentContext()) ImGui::MarkIniSettingsDirty();
+		return true;
+	}
+	if (RecordModifierKey(key))
+		return true;
+	// F8 owns the overlay toggle, and Windows keys/system shortcuts are not
+	// suitable single-key recording binds. Other keyboard keys are accepted.
+	if (key == VK_F8 || key == VK_SNAPSHOT || key == VK_CANCEL)
+		return true;
+	g_RecordHotkey = key;
+	g_RecordHotkeyMods = RecordModifiers();
+	g_RecordCapturingHotkey = false;
+	if (ImGui::GetCurrentContext()) ImGui::MarkIniSettingsDirty();
+	return true;
+}
 bool HandleHotkey(unsigned int key)
 {
-	if (!g_RecordHotkey || key != g_RecordHotkey || !g_VEngineClient ||
+	if (g_RecordCapturingHotkey || !g_RecordHotkey || key != g_RecordHotkey ||
+		RecordModifiers() != g_RecordHotkeyMods || !g_VEngineClient ||
 		g_VEngineClient->Con_IsVisible() ||
 		(ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput))
 		return false;
@@ -1952,11 +2011,12 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 	else if (key == "RecordAutoPause") g_RecordAutoPause = atoi(val.c_str()) != 0;
 	else if (key == "RecordAutoClose") g_RecordAutoClose = atoi(val.c_str()) != 0;
 	else if (key == "RecordAutoStopOnOpen") g_RecordAutoStopOnOpen = atoi(val.c_str()) != 0;
+	else if (key == "RecordHotkeyMods")
+		g_RecordHotkeyMods = (unsigned int)atoi(val.c_str()) & 7u;
 	else if (key == "RecordHotkey")
 	{
 		int value = atoi(val.c_str());
-		if (value == 0 || (value >= VK_F5 && value <= VK_F7) ||
-			(value >= VK_F9 && value <= VK_F12))
+		if (value >= 0 && value <= 255 && value != VK_F8 && !RecordModifierKey((unsigned int)value))
 			g_RecordHotkey = (unsigned int)value;
 	}
 }
@@ -1976,9 +2036,9 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("Autosave=%d\nAutosaveSeconds=%.3f\n", g_Autosave ? 1 : 0, g_AutosaveSeconds);
 	out_buf->appendf("UiScale=%.3f\nFont=%d\nDocking=%d\n", g_UiScale, g_FontChoice, g_Docking ? 1 : 0);
 	out_buf->appendf("RecordFps=%s\nRecordAutoResume=%d\nRecordAutoPause=%d\n"
-		"RecordAutoClose=%d\nRecordAutoStopOnOpen=%d\nRecordHotkey=%u\n\n",
+		"RecordAutoClose=%d\nRecordAutoStopOnOpen=%d\nRecordHotkey=%u\nRecordHotkeyMods=%u\n\n",
 		g_RecordFps, (int)g_RecordAutoResume, (int)g_RecordAutoPause,
-		(int)g_RecordAutoClose, (int)g_RecordAutoStopOnOpen, g_RecordHotkey);
+		(int)g_RecordAutoClose, (int)g_RecordAutoStopOnOpen, g_RecordHotkey, g_RecordHotkeyMods);
 	out_buf->appendf("SequencerSourcesOpen=%d\nSequencerPathsOpen=%d\n", int(g_SequencerSourcesOpen),
 					 int(g_SequencerPathsOpen));
 	out_buf->appendf("SequencerTracks=%d %d %d %d %d %d %d\nSequencerPathMode=%d\n", g_SequencerTracks[0],
@@ -8452,15 +8512,17 @@ void Draw()
 			if (ImGui::InputText("Record FPS", g_RecordFps, sizeof(g_RecordFps),
 				ImGuiInputTextFlags_CharsDecimal))
 				ImGui::MarkIniSettingsDirty();
-			const unsigned int recordKeys[] = {0, VK_F5, VK_F6, VK_F7, VK_F9, VK_F10, VK_F11, VK_F12};
-			const char *keyNames[] = {"None", "F5", "F6", "F7", "F9", "F10", "F11", "F12"};
-			int keyIndex = 0;
-			for (int i = 0; i < 8; ++i)
-				if (g_RecordHotkey == recordKeys[i])
-					keyIndex = i;
-			if (ImGui::Combo("Record hotkey (toggle)", &keyIndex, keyNames, 8))
+			const auto keyLabel = g_RecordCapturingHotkey
+				? std::string("Press a key... (Esc cancel, Backspace clear)")
+				: RecordHotkeyLabel();
+			if (ImGui::Button(keyLabel.c_str()))
+				g_RecordCapturingHotkey = true;
+			ImGui::SameLine();
+			ImGui::TextDisabled("Record hotkey");
+			if (g_RecordHotkey && ImGui::SmallButton("Clear bind"))
 			{
-				g_RecordHotkey = recordKeys[keyIndex];
+				g_RecordHotkey = g_RecordHotkeyMods = 0;
+				g_RecordCapturingHotkey = false;
 				ImGui::MarkIniSettingsDirty();
 			}
 			if (ImGui::CollapsingHeader("Recording behavior", ImGuiTreeNodeFlags_DefaultOpen))
