@@ -1329,16 +1329,30 @@ block the trace. The panel reports hits, misses and unavailable engine hooks.
 This uses TF2's `EngineTraceClient003`; the original console command
 `mirv_traceentity` is CS:GO-specific in this HLAE base.
 
-### Missing camera targets during cached sequence transitions
+### Cached camera availability and missing targets
 
-When a cached sequence camera disappears (for example, when a player dies),
-the source clip recovers the latest valid camera sample or attachment pose
-from earlier recorded scene frames. The lookup is based on recorded client
-time, not the most recently visited preview position, so reverse scrubbing
-does not change the fallback. If no historical pose is available, a valid
-incoming campath continues rather than freezing the mixer. Reconstructed
-attachment fallback without an explicit recorded camera sample uses rigid
-attachment and does not reproduce all procedural smoothing/aiming.
+**The currently active camera is evaluated only against the sampled scene at
+the current preview time.** An attached camera becomes unavailable when its
+recorded target or required bone data is absent and becomes available again
+when scrubbing back to a timestamp containing usable target data. Do not
+substitute a pose from an earlier or later scene frame to report the current
+camera as available.
+
+The Scene Cache records time-stamped entities by stable identity; it only
+interpolates across adjacent frames with a matching identity and within the
+configured gap and travel limits. Player filters, off-screen/first-person
+visibility, missing captured bone matrices, and recording gaps can make a
+camera unavailable in cached preview even if it worked in live playback.
+For bone-attached cameras, capture player model poses as needed. Aiming
+cameras may also have independent, recorded camera samples.
+
+If the **outgoing** camera disappears during a camera-to-campath transition,
+the currently available campath continues. For now, cached preview cuts to
+the valid incoming pose if the outgoing pose is missing; a smooth,
+time-deterministic frozen-outgoing transition requires a separately tested
+design. Live playback can retain its last actually evaluated outgoing pose.
+This conservative rule avoids reviving unavailable cameras by searching
+historical samples outside the selected cursor time.
 
 ## Recording, files and settings
 
