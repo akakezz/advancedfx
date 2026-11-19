@@ -1329,6 +1329,17 @@ block the trace. The panel reports hits, misses and unavailable engine hooks.
 This uses TF2's `EngineTraceClient003`; the original console command
 `mirv_traceentity` is CS:GO-specific in this HLAE base.
 
+### Missing camera targets during cached sequence transitions
+
+When a cached sequence camera disappears (for example, when a player dies),
+the source clip recovers the latest valid camera sample or attachment pose
+from earlier recorded scene frames. The lookup is based on recorded client
+time, not the most recently visited preview position, so reverse scrubbing
+does not change the fallback. If no historical pose is available, a valid
+incoming campath continues rather than freezing the mixer. Reconstructed
+attachment fallback without an explicit recorded camera sample uses rigid
+attachment and does not reproduce all procedural smoothing/aiming.
+
 ## Recording, files and settings
 
 The Recording tab now reads the live HLAE recording settings registry, including
@@ -1336,9 +1347,12 @@ user-created profiles, and shows the current screen profile even when configured
 from the console. Encoder presets are no longer hard-coded in the UI. FPS remains
 an editable text field with no preset buttons.
 
-Start/Stop and the optional F5/F6/F7/F9–F12 toggle hotkey use the same
-recording routine. The hotkey is disabled by default; it works when the overlay
-is closed, but is ignored while entering text or using the game console.
+Start/Stop and the configurable keyboard recording hotkey use the same
+recording routine. Click the hotkey field, press a key (optionally with
+Ctrl/Shift/Alt), use Escape to cancel or Backspace to clear. F8 stays reserved
+for opening the overlay; unsupported system shortcuts are not captured.
+The hotkey is disabled by default; it works when the overlay is closed,
+but is ignored while entering text or using the game console.
 Options include automatically resuming the demo on start, pausing on stop,
 closing the overlay on start, and stopping the recording when opening the overlay.
 These options and the hotkey persist in the overlay's ImGui settings.
