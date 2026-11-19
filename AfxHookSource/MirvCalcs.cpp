@@ -6937,17 +6937,68 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 	history.ArmLength = std::sqrt(history.ArmLength);
 	return true;
 }
+namespace
+{
+// These atomics expose read-only, frame-level diagnostics from the render
+// path without reading live history from a console command on another thread.
+std::atomic<unsigned int> g_OfAttachCalls{0};
+std::atomic<unsigned int> g_OfAttachApplied{0};
+std::atomic<unsigned int> g_OfAttachContinuous{0};
+std::atomic<int> g_OfAttachHasAnchor{0};
+std::atomic<float> g_OfAttachLastTime{0.0f};
+std::atomic<float> g_OfAttachLastDt{-1.0f};
+std::atomic<float> g_OfAttachLastCorrection{0.0f};
+std::atomic<float> g_OfAttachLastHalfLife{0.0f};
+} // namespace
+
+void MirvCameraAttachedPrintRuntimeStatus()
+{
+	if (!g_OpenFortressLegacyMode)
+		return;
+	Tier0_Msg("OF follow runtime: calls %u, applied %u, continuous %u, anchor %d; "
+			  "last t %.3f s, dt %.4f s (-1 = reset), half-life %.3f s, correction %.3f units.\\n",
+			  g_OfAttachCalls.load(), g_OfAttachApplied.load(), g_OfAttachContinuous.load(),
+			  g_OfAttachHasAnchor.load(), g_OfAttachLastTime.load(), g_OfAttachLastDt.load(),
+			  g_OfAttachLastHalfLife.load(), g_OfAttachLastCorrection.load());
+}
+
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
 							 float &x, float &y, float &z, const double *entityOrigin, float *angles)
 {
+	const auto settings = MirvCameraCollisionGet();
+	const auto generation = g_AttachedCameraGeneration.load();
+	if (g_OpenFortressLegacyMode)
+	{
+		++g_OfAttachCalls;
+		const bool anchor = identity != nullptr && entity != nullptr;
+		g_OfAttachHasAnchor.store(anchor ? 1 : 0);
+		g_OfAttachLastTime.store(float(sceneTime));
+		g_OfAttachLastHalfLife.store(float(settings.FollowHalfLife));
+		const auto &prior = g_AttachedCameraHistory;
+		const bool continuous = prior.Valid && prior.Identity == identity && prior.Entity == entity &&
+			prior.Generation == generation && sceneTime >= prior.Time &&
+			sceneTime - prior.Time <= MirvCameraAttachedState::MaxContinuousGap;
+		g_OfAttachLastDt.store(continuous ? float(sceneTime - prior.Time) : -1.0f);
+		if (continuous)
+			++g_OfAttachContinuous;
+	}
 	if (!g_VEngineClient || !g_VEngineClient->IsInGame() || g_VEngineClient->IsDrawingLoadingImage())
 	{
 		g_AttachedCameraHistory.Valid = false;
 		return false;
 	}
-	return MirvCameraAttachedEvaluate(g_AttachedCameraHistory, MirvCameraCollisionGet(),
-									  g_AttachedCameraGeneration.load(), identity, entity, pivot, sceneTime,
+	const float originalX = x, originalY = y, originalZ = z;
+	const bool applied = MirvCameraAttachedEvaluate(g_AttachedCameraHistory, settings,
+									  generation, identity, entity, pivot, sceneTime,
 									  x, y, z, entityOrigin, angles);
+	if (g_OpenFortressLegacyMode)
+	{
+		if (applied)
+			++g_OfAttachApplied;
+		const double dx = double(x) - originalX, dy = double(y) - originalY, dz = double(z) - originalZ;
+		g_OfAttachLastCorrection.store(applied ? float(std::sqrt(dx * dx + dy * dy + dz * dz)) : 0.0f);
+	}
+	return applied;
 }
 
 // End optional camera collision implementation.
