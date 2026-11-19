@@ -5075,6 +5075,7 @@ void CamPathCollection::Observe()
 	{
 		m_Before = m_Last;
 		m_Editing = true;
+		m_PendingEditIndex = CinematicNewEditIndex();
 	}
 	m_Last = std::move(state);
 }
@@ -5088,7 +5089,7 @@ void CamPathCollection::FinishEdit()
 	if (m_Editing && !SameContent(m_Before, m_Last))
 	{
 		PushHistory(m_Undo, m_Before);
-		m_UndoIndices.push_back(CinematicNewEditIndex());
+		m_UndoIndices.push_back(m_PendingEditIndex ? m_PendingEditIndex : CinematicNewEditIndex());
 		if (m_UndoIndices.size() > m_Undo.size())
 			m_UndoIndices.erase(m_UndoIndices.begin(), m_UndoIndices.begin() + (m_UndoIndices.size() - m_Undo.size()));
 		m_Redo.clear();
@@ -5096,6 +5097,7 @@ void CamPathCollection::FinishEdit()
 		m_RedoGeneration = CinematicRedoGeneration();
 	}
 	m_Editing = false;
+	m_PendingEditIndex = 0;
 }
 bool CamPathCollection::CanUndo(bool redo) const
 {
