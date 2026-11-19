@@ -98,3 +98,19 @@ mirv_cam attach clear
 Check that a moving target is followed without crashes, that a named bone remains stable during animation, that camera clears return to the appropriate pose, and that a demo seek or target disappearance does not produce a hard crash. Do not turn on collision until a separate verification. The existing overlay support gate stays closed pending complete integration.
 
 **Status:** static source checks passed; awaiting a Windows build and in-game attached-camera tests. These changes do not yet prove target rebinding or cached Scene Cache preview.
+
+## Entity-index visual inspection (2026-11-19)
+
+The existing `mirv_drawentities` command and engine-thread `EntityIndexDrawer` were also explicitly restricted to TF2/TF2C. They now recognize only opt-in Open Fortress mode (while other HL2MP installations remain unchanged). This uses the source-backed entity collector and the same queued D3D9 material-system rendering path whose 2021 Open Fortress vtable mismatch was previously repaired.
+
+For an offline demo, after confirming the three `mirv_list*` commands:
+
+```text
+mirv_drawentities enabled 1
+mirv_drawentities status
+mirv_drawentities enabled 0
+```
+
+Check that numeric labels appear above entities, follow movement, and that turning them off restores the original view. Entity category classification may require Open Fortress-specific additions even if indices and positions are correct. Do not assume that this enables the Scene Cache wireframe or full cinematic UI; these remain separate dependencies within the same workspace.
+
+**Status:** source patched; not built or tested in-game yet.
