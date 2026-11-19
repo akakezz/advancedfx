@@ -349,6 +349,12 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 	Tier0_Msg("Orbit half-life %.3f s, maximum turn rate %.1f deg/s; blocked recovery cut after %.3f demo "
 	          "seconds (0 = disabled).\n",
 	          settings.OrbitHalfLife, settings.OrbitSpeed, settings.FollowRecoveryDelay);
+	if (g_OpenFortressLegacyMode)
+	{
+		const bool liveAttached = g_MirvCamAttachCalc && g_MirvCam.Source_get() == g_MirvCamAttachCalc;
+		Tier0_Msg("Open Fortress follow: live source attached %d.\n", liveAttached ? 1 : 0);
+		MirvCameraAttachedPrintRuntimeStatus();
+	}
 	if (argc == 3 || !valid)
 		Tier0_Msg("mirv_cam attach follow <seconds> - Root movement smoothing; 0 restores rigid orbit and "
 		          "framing.\n"
