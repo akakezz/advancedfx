@@ -773,9 +773,15 @@ bool CachedRigTarget(NamedCameraRig &rig, const advancedfx::SceneCache::Frame &f
 	// This allows re-authoring the rig in cached preview without depending
 	// on scene model visibility, while preserving real recorded availability.
 	if (rig.Id)
+	{
+		int boneIndex = -1;
+		std::string boneName;
+		if (rig.Target)
+			Mirv_Tf2_CameraBone(rig.Target.get(), boneIndex, boneName);
 		for (const auto &sample : frame.Cameras)
-			if (sample.Id == rig.Id && sample.Definition == rig.Definition &&
-				sample.HasAvailability)
+			if (sample.Id == rig.Id && sample.HasAvailability &&
+				sample.TargetIdentity == rig.CacheIdentity &&
+				sample.TargetMode == rig.AttachMode && sample.TargetBoneName == boneName)
 			{
 				if (!sample.Available)
 					return false;
@@ -789,6 +795,7 @@ bool CachedRigTarget(NamedCameraRig &rig, const advancedfx::SceneCache::Frame &f
 				}
 				break; // Live camera was available but an anchor was not captured.
 			}
+	}
 	if (!rig.Target || !rig.CacheIdentity)
 		return false;
 	const advancedfx::SceneCache::Entity *entity = nullptr, *owner = nullptr;
@@ -1697,6 +1704,14 @@ void MirvCam_CaptureCameras(double time, int frame, double step,
 			sample.Id = rig.Id;
 			sample.Definition = rig.Definition;
 			sample.HasAvailability = true;
+			if (rig.Rig.Attached)
+			{
+				sample.TargetIdentity = rig.CacheIdentity;
+				sample.TargetMode = rig.AttachMode;
+				int boneIndex = -1;
+				if (rig.Target)
+					Mirv_Tf2_CameraBone(rig.Target.get(), boneIndex, sample.TargetBoneName);
+			}
 			advancedfx::CameraPose pose;
 			sample.Available = EvaluateNamedRig(rig, pose);
 			// An unavailable camera still gets an explicit tick-level state.
