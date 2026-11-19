@@ -175,3 +175,27 @@ The status now prints `Open Fortress camera route: ...` with controller, preview
 **Next test, after rebuilding the x86 hook:** In an offline demo with a moving target, execute `mirv_cam attach <playerIndex>` and then **immediately** `mirv_cam attach follow 1.0` and `mirv_cam attach follow status`; let the demo play and repeat the status, then try `mirv_cam list`. Copy `Open Fortress camera route:`, `Open Fortress active rig follow:` (if present), `OF follow runtime:`, and `OF follow camera correction:` lines. If the controller is legacy with no live attachment, reattach to a valid entity in the current demo rather than expecting follow to create an attachment itself.
 
 **Status:** static source review complete; no Windows build or in-game validation yet. The unified cinematic overlay remains gated.
+
+## Open Fortress named rig follow jitter (2026-11-19)
+
+The user's second follow status confirmed the active camera route is **rig**, not legacy: `source 0, last attachment 0, live match 0; selected attached 1, legacy attached 0`, and `Open Fortress active rig follow: 1.000 s, bone 0.000 s`. They observed that the camera started responding to the attached player but repeatedly jittered/corrected itself. The `OF follow runtime: applied 0, anchor 0` readings are expected when the legacy filter is inactive; they do **not** imply the named rig was unfiltered.
+
+Source inspection found that `MirvCam_EvaluateRig` warms **all** attached camera definitions by calling `EvaluateNamedRig` before it evaluates the current selected rig again to draw it. On explicit Open Fortress mode, the selected named rig now **skips the redundant background warm** and is evaluated only for the displayed view. Nonselected cameras continue warming; TF2 and TF2C are untouched. This is a plausible, but **unproven**, cause of repeat correction from double target/bone sampling at the same timestamp.
+
+The `mirv_cam attach follow status` report now shows actual `OF rig filter` and `OF rig correction` counts for the active named-camera route, including evaluations, successful filter applications, target losses, resets, same-time samples, advancing-time samples, last delta, last/peak positional correction, history validity, and current `PreserveFraming`. The old `MirvCameraAttachedApply` telemetry appears only when the legacy camera route is selected, avoiding confusion.
+
+For the next x86 build, use a moving player and compare:
+
+```text
+mirv_cam attach <playerIndex> <boneName>
+mirv_cam attach follow 1.0
+mirv_cam attach follow status
+mirv_cam list
+mirv_cam edit <cameraIndex> follow preserveFraming 0
+mirv_cam attach follow boneHalfLife 0.10
+mirv_cam attach follow status
+```
+
+Watch movement for several seconds, then repeat status. `preserveFraming 0` removes screen-direction correction but retains root smoothing; `boneHalfLife 0.10` separately smooths animated bone motion (previously 0 = rigid). Test each change independently if possible. Use `mirv_cam edit <cameraIndex> follow preserveFraming 1` and `mirv_cam attach follow boneHalfLife 0` to restore previous settings. If jitter remains, supply both `OF rig filter` and `OF rig correction` status lines and any `Camera mixer unavailable` warnings to identify continuity resets or lost targets.
+
+**Status:** source patches validated by inspection only, not Windows-built or runtime-tested. The unified overlay remains gated; no separate workspace is being introduced.
