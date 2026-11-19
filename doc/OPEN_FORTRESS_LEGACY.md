@@ -115,12 +115,33 @@ Check that numeric labels appear above entities, follow movement, and that turni
 
 **Status:** source patched; not built or tested in-game yet.
 
-## Attachment regression: second attach hard crash (2026-11-19)
+## Repeat-attachment crash: root cause identified and patched (2026-11-19)
 
-The user reports that a first Open Fortress `mirv_cam attach` works, but a second attachment to the same or another entity crashes. The `mirv_cam attach follow` setting also appears ineffective. Treat repeat attachment as **unsafe** pending a symbolized crash report.
+The user uploaded `sentry(2).zip` containing four repeat-attachment crashes between 15:44 and 15:52 **Asia/Riyadh** local time (12:44–12:52 UTC), and matching `AfxHookSource(1).pdb`.
 
-Source inspection identified two separate follow-state consumers: legacy live attachment uses `MirvCameraCollisionGet()`, while the registered named-camera rig uses `rig.Rig.Motion`. A provisional Open Fortress-only synchronization of these settings was added, leaving TF2/TF2C behavior unchanged. This is not in-game validated.
+**Verified evidence:**
 
-Repeat-attach processing goes through `CameraEditTransaction` / `CloneCameraState` (which clones existing attached camera target calculators), `RegisterAttachedCamera` and the live source handoff. Open Fortress-only console breadcrumbs (`[OF attach] ...`) now bracket these stages for the next debug build. A crash in any of these regions is currently **hypothetical**; do not attribute the crash without a matching minidump.
+- All four minidumps are x86 access violations (`0xC0000005`) **reading address `0x00000001`** in Source SDK 2013's `tier0.dll + 0x21A48`, with the same HLAE command-dispatch stack: `AfxHookSource.dll + 0x162C00 / + 0x166225 / + 0x18FBC5`.
+- All dumps' loaded HLAE CodeView GUID and age (**133**) match the supplied PDB.
+- The PDB's public symbol map identifies a literal string at `AfxHookSource.dll + 0x35B080`: `"Attached camera %zu: %s.\\n"`. This string appears on the crash stack, and the log recorded `Attached camera zu: (null).` on the first attachment.
+- Source SDK 2013's legacy `Tier0_Msg` printf parser does not recognize `%zu`. It treats `zu` as text and passes the camera index (0 for the first registration, 1 for the second) as the next `%s` argument. Index 0 prints `(null)`; index 1 becomes a bad string pointer to address `0x1` and crashes.
 
-The `sentry.zip` archive available during this review contained only the older 09:22/09:31 UTC material-system crashes and cannot identify the newer attachment crash. Obtain a fresh Sentry `.dmp` and the corresponding 32-bit `AfxHookSource.pdb`, preferably with `last_crash_console_log.txt`. Avoid repeated attachments in important demo sessions until resolved.
+**Fix:** the experimental branch replaces all three affected `Tier0_Msg` camera-index `%zu` format specifiers with `%u`, explicitly casting the bounded camera index to `unsigned`: attached-camera registration, camera list, and newly added camera messages. The unrelated camera-history instrumentation from the initial hypothesis was removed. Console Scene Cache status messages also now stringify `size_t` and 64-bit counts before printing, avoiding this older formatter bug (and the prior `zu frames` output).
+
+The reported `mirv_cam attach follow` issue was **separate**: live legacy attachment and the registered named-camera rig store their follow parameters independently. The Open Fortress-only source change synchronizes those values. **This smoothing fix and the corrected repeated-attachment handling are not yet Windows-built or game-tested.**
+
+Next smoke test on a rebuilt 32-bit hook in an offline demo:
+
+```text
+mirv_cam attach <playerIndex> <boneName>
+mirv_cam attach <playerIndex> <boneName>
+mirv_cam list
+mirv_cam attach clear
+mirv_cam attach <otherPlayerIndex>
+mirv_cam attach follow 0.15
+mirv_cam attach follow boneHalfLife 0.15
+mirv_cam attach follow 0
+mirv_cam attach clear
+```
+
+Confirm the second attachment no longer crashes, `mirv_cam list` prints valid indices/names, and smoothing is visible when the subject moves. Retain a fresh dump if any crash remains. The overlay support gate is unchanged; this does not claim the unified workspace is ready.
