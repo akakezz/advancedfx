@@ -2781,6 +2781,7 @@ void CommonHooks()
 					// Experimental Source SDK Base 2013 MP compatibility mode.
 					// Do not assume TF2 client ABI or enable TF2-only scene/overlay hooks.
 					g_SourceSdkVer = SourceSdkVer_HL2MP;
+					g_OpenFortressLegacyMode = true;
 				}
 				else if (0 == _wcsicmp(L"csgo", game))
 					g_SourceSdkVer = SourceSdkVer_CSGO;
@@ -2873,7 +2874,10 @@ void CommonHooks()
 				else if (0 == _wcsicmp(L"tf2classified", game))
 					g_SourceSdkVer = SourceSdkVer_TF2Classified;
 				else if (0 == _wcsicmp(L"openfortress", game) || 0 == _wcsicmp(L"open_fortress", game))
+				{
 					g_SourceSdkVer = SourceSdkVer_HL2MP;
+					g_OpenFortressLegacyMode = true;
+				}
 				else if (0 == _wcsicmp(L"cstrike", game))
 					g_SourceSdkVer = SourceSdkVer_CSS;
 				else if (0 == _wcsicmp(L"garrysmod", game))
