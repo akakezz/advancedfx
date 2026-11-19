@@ -1346,13 +1346,13 @@ camera unavailable in cached preview even if it worked in live playback.
 For bone-attached cameras, capture player model poses as needed. Aiming
 cameras may also have independent, recorded camera samples.
 
-If the **outgoing** camera disappears during a camera-to-campath transition,
-the currently available campath continues. For now, cached preview cuts to
-the valid incoming pose if the outgoing pose is missing; a smooth,
-time-deterministic frozen-outgoing transition requires a separately tested
-design. Live playback can retain its last actually evaluated outgoing pose.
-This conservative rule avoids reviving unavailable cameras by searching
-historical samples outside the selected cursor time.
+If the **outgoing** camera disappears during a transition, the incoming
+source keeps its original blend duration and curve. Live transitions retain
+the last valid outgoing pose. Cached preview searches earlier recorded scene
+frames **only to evaluate the outgoing blend pose** using the current camera
+settings; that lookup does not change the camera's availability at the
+selected time or cache camera paths and edits. If no historical outgoing
+pose can be reconstructed, the valid incoming source continues directly.
 
 ## Recording, files and settings
 
