@@ -6971,6 +6971,11 @@ void MirvCameraAttachedPrintRuntimeStatus()
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
 							 float &x, float &y, float &z, const double *entityOrigin, float *angles)
 {
+	if (!g_VEngineClient || !g_VEngineClient->IsInGame() || g_VEngineClient->IsDrawingLoadingImage())
+	{
+		g_AttachedCameraHistory.Valid = false;
+		return false;
+	}
 	const auto settings = MirvCameraCollisionGet();
 	const auto generation = g_AttachedCameraGeneration.load();
 	if (g_OpenFortressLegacyMode)
@@ -6991,11 +6996,6 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 			if (sceneTime > prior.Time)
 				++g_OfAttachAdvancing;
 		}
-	}
-	if (!g_VEngineClient || !g_VEngineClient->IsInGame() || g_VEngineClient->IsDrawingLoadingImage())
-	{
-		g_AttachedCameraHistory.Valid = false;
-		return false;
 	}
 	const float originalX = x, originalY = y, originalZ = z;
 	const bool applied = MirvCameraAttachedEvaluate(g_AttachedCameraHistory, settings,
