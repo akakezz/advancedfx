@@ -448,6 +448,17 @@ advancedfx::CameraPose g_BlendViewPose;
 double g_CameraEvaluationTime = 0;
 int g_CameraEvaluationFrame = -1;
 double g_CameraEvaluationStep = 0;
+// Live named-camera telemetry. Unlike MirvCameraAttachedApply's counters,
+// these follow the actual rig driver, including its own separate history.
+struct OpenFortressRigFollowStats
+{
+	std::uint64_t CameraId = ~std::uint64_t(0);
+	unsigned Calls = 0, Applied = 0, Failed = 0, LostTarget = 0;
+	unsigned Resets = 0, SameTime = 0, Advancing = 0;
+	double LastTime = 0, LastDt = -1, LastCorrection = 0, PeakCorrection = 0;
+};
+OpenFortressRigFollowStats g_OfRigFollowStats;
+
 std::vector<advancedfx::CameraClip> g_CameraClips;
 unsigned long long g_NextClipId = 0;
 bool g_SequencePlaying = false;
@@ -903,8 +914,34 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 				   const advancedfx::CameraPose &target, const double pivot[3], const double root[3],
 				   advancedfx::CameraPose &pose, const double rootAngles[3])
 {
+	const auto viewed = g_CameraRigs.find(g_CameraRigName);
+	const bool inspect = g_OpenFortressLegacyMode && g_CameraSource == CameraSource::Rig &&
+		!g_BakingCamera && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
+		!MirvCam_SequencePreviewActive() && viewed != g_CameraRigs.end() && &viewed->second == &rig;
+	if (inspect)
+	{
+		auto &stats = g_OfRigFollowStats;
+		if (stats.CameraId != rig.Id)
+		{
+			stats = {};
+			stats.CameraId = rig.Id;
+		}
+		++stats.Calls;
+		stats.LastTime = time;
+		stats.LastDt = state.Valid ? time - state.Time : -1.0;
+		if (!state.Valid || stats.LastDt < 0 || stats.LastDt > MirvCameraAttachedState::MaxContinuousGap)
+			++stats.Resets;
+		else if (stats.LastDt == 0)
+			++stats.SameTime;
+		else
+			++stats.Advancing;
+	}
 	if (!rig.Rig.Evaluate(&target, pose, time, pivot))
+	{
+		if (inspect)
+			++g_OfRigFollowStats.Failed;
 		return false;
+	}
 	const auto &motion = rig.Rig.Motion;
 	auto settings = RigFollowSettings(motion);
 	settings.Attached = MirvCameraCollisionGet().Attached && !g_BakingCamera &&
@@ -945,7 +982,21 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 	if (!MirvCameraAttachedEvaluate(state, settings, 1, token, entity, pivot, time, x, y, z, root,
 									rig.AttachMode == MIRV_TF2_BONEMODE_WORLD ? nullptr : angles, rootAngles,
 									targetAngles, &rig.BoneReference))
+	{
+		if (inspect)
+			++g_OfRigFollowStats.Failed;
 		return false;
+	}
+	if (inspect)
+	{
+		auto &stats = g_OfRigFollowStats;
+		++stats.Applied;
+		const double dx = double(x) - pose.Position[0];
+		const double dy = double(y) - pose.Position[1];
+		const double dz = double(z) - pose.Position[2];
+		stats.LastCorrection = std::sqrt(dx * dx + dy * dy + dz * dz);
+		stats.PeakCorrection = (std::max)(stats.PeakCorrection, stats.LastCorrection);
+	}
 	pose.Position[0] = x;
 	pose.Position[1] = y;
 	pose.Position[2] = z;
@@ -958,7 +1009,16 @@ bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPos
 	advancedfx::CameraPose target;
 	double pivot[3], root[3], rootAngles[3];
 	if (!CameraAttachmentTarget(rig, time, target, pivot, root, rootAngles))
+	{
+		if (g_OpenFortressLegacyMode && g_CameraSource == CameraSource::Rig &&
+			!g_BakingCamera && !AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+		{
+			auto viewed = g_CameraRigs.find(g_CameraRigName);
+			if (viewed != g_CameraRigs.end() && &viewed->second == &rig)
+				++g_OfRigFollowStats.LostTarget;
+		}
 		return false;
+	}
 	const auto &settings = rig.Rig.Motion;
 	if (settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 && !settings.NeedsBoneControl() &&
 		(!MirvCameraCollisionGet().Attached || g_BakingCamera ||
@@ -1629,9 +1689,22 @@ static void PrintOpenFortressAttachmentRoute()
               hasLastAttachment ? 1 : 0, legacyLive ? 1 : 0,
               selectedAttached ? 1 : 0, legacyAttached ? 1 : 0);
     if (rigDriving)
-        Tier0_Msg("Open Fortress active rig follow: %.3f s, bone %.3f s.\n",
+    {
+        Tier0_Msg("Open Fortress active rig follow: %.3f s, bone %.3f s; framing %d, valid %d.\n",
                   selected->second.Rig.Motion.FollowHalfLife,
-                  selected->second.Rig.Motion.BoneHalfLife);
+                  selected->second.Rig.Motion.BoneHalfLife,
+                  selected->second.Rig.Motion.PreserveFraming ? 1 : 0,
+                  selected->second.Follow.Valid ? 1 : 0);
+        const auto &stats = g_OfRigFollowStats;
+        Tier0_Msg("OF rig filter: calls %u, applied %u, failed %u, lost target %u; "
+                  "resets %u, same time %u, advancing %u.\n",
+                  stats.Calls, stats.Applied, stats.Failed, stats.LostTarget,
+                  stats.Resets, stats.SameTime, stats.Advancing);
+        Tier0_Msg("OF rig correction: last t %.3f s, dt %.5f s (-1 = reset), "
+                  "last %.3f, peak %.3f units; unavailable %d.\n",
+                  stats.LastTime, stats.LastDt, stats.LastCorrection, stats.PeakCorrection,
+                  g_RigUnavailable ? 1 : 0);
+    }
     else if (g_CameraSource == CameraSource::Legacy && !legacyLive)
         Tier0_Msg("Open Fortress follow: no active legacy attachment; reattach a valid entity before testing.\n");
 }
@@ -1728,14 +1801,20 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 	for (auto &entry : g_CameraRigs)
 	{
 		auto &camera = entry.second;
+		// The selected OF rig is evaluated below for the actual view. Avoid
+		// evaluating the same attachment/bones a second time at the same
+		// camera timestamp in this background warm pass.
+		const bool selectedOpenFortressRig = g_OpenFortressLegacyMode &&
+			g_CameraSource == CameraSource::Rig && entry.first == g_CameraRigName;
 		const bool warmFollow =
 			camera.Rig.Attached &&
 			(camera.Rig.Motion.FollowHalfLife > 0 || camera.Rig.Motion.BoneHalfLife > 0) &&
 			!g_InspectingSequence && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
 			(!camera.Follow.Valid || camera.Follow.Time != clientTime);
-		if (warmFollow ||
-			(camera.Aim && (camera.Aim->Active || camera.Aim->SoftDeactivate) &&
-			 (camera.AimDirty || camera.AimTime != clientTime || (frame >= 0 && camera.AimFrame != frame))))
+		if (!selectedOpenFortressRig &&
+			(warmFollow ||
+			 (camera.Aim && (camera.Aim->Active || camera.Aim->SoftDeactivate) &&
+			  (camera.AimDirty || camera.AimTime != clientTime || (frame >= 0 && camera.AimFrame != frame)))))
 		{
 			advancedfx::CameraPose background;
 			EvaluateNamedRig(camera, background);
