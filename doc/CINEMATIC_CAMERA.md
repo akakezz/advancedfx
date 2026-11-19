@@ -1309,13 +1309,13 @@ translation and **R** rotation when a text field is not active. Local/world mode
 and Ctrl snapping are available. **C** toggles free-camera control. Camera Control
 also provides FOV, roll and keyboard speed sliders.
 
-The **Observing** tab is a player list with a text filter. Click a player name to
-select and spectate them in an STV demo. The command uses the player's explicit
-`#userid`, which is different from their entity slot. Selecting a player clears
-path preview, free-camera and attachment overrides, disables automatic directing,
-and switches to TF2's in-eye spectator camera. There are no buttons inside the
-player rows. Native spectator targeting follows living players; POV demos cannot
-switch their recorded spectator target, and the panel reports that restriction.
+The **Observing** tab is a player list with a text filter. Clicking a player
+only changes the selected row; it does not create an HLAE camera, detach an
+existing one, or switch the spectator view. In STV demos, the explicit
+**Spectate selected (STV)** action targets the player's `#userid` and switches
+to TF2's in-eye spectator mode. POV demos cannot change their recorded native
+spectator target. A separate POV spectator view override (without a persistent
+camera rig) is not yet implemented.
 
 The selected player still exposes named bones and forward/left/up offsets below
 the list. Choose a **Bone** (or **Entity origin**) and use **Attach selected** for
@@ -1331,11 +1331,21 @@ This uses TF2's `EngineTraceClient003`; the original console command
 
 ## Recording, files and settings
 
-The Recording tab now offers FPS presets and opt-in start/stop behaviors: resume/freeze demo, keep a preconfigured screen stream, and control overlay closure or host-framerate reset. Defaults retain the original recording workflow.
+The Recording tab now reads the live HLAE recording settings registry, including
+user-created profiles, and shows the current screen profile even when configured
+from the console. Encoder presets are no longer hard-coded in the UI. FPS remains
+an editable text field with no preset buttons.
 
-The Observing tab offers **Observe selected with HLAE camera** in POV demos. This invokes the existing entity-attachment mechanism without requiring native STV spectator switching; it is not another player's true first-person POV and requires the target entity to be available.
+Start/Stop and the optional F5/F6/F7/F9–F12 toggle hotkey use the same
+recording routine. The hotkey is disabled by default; it works when the overlay
+is closed, but is ignored while entering text or using the game console.
+Options include automatically resuming the demo on start, pausing on stop,
+closing the overlay on start, and stopping the recording when opening the overlay.
+These options and the hotkey persist in the overlay's ImGui settings.
 
-
+TF2 x64 multi-stream separation (world, HUD, viewmodels, players and depth)
+is **not implemented** in this change. The legacy HLAE render-view stream
+classes are behind 32-bit build guards and need a validated TF2 x64 hook port.
 
 The Recording tab uses Source 1 screen recording through `mirv_streams`. Choose a
 record directory, FPS and screen profile. TGA, HLAE's built-in FFmpeg profiles,
