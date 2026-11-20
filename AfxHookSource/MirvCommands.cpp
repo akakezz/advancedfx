@@ -4961,6 +4961,7 @@ struct OfPreDemoInterpolationRatio
     bool Armed = false;
     bool SawDemo = false;
     bool WarnedMismatch = false;
+    bool WarnedRestore = false;
     float Original = 0;
     float Applied = 0;
 };
@@ -4994,7 +4995,9 @@ bool OfRatioAccess(bool write, float input, float &ratio, float &updateRate)
         if (!std::isfinite(rate) || rate < 1 || rate > 1000) return false;
         if (write)
         {
-            if (!std::isfinite(input) || input < 1 || input > 8) return false;
+            // Allow restoring a previously present game value outside our
+            // experimental public 1..8 input range.
+            if (!std::isfinite(input) || input < 0 || input > 64) return false;
             ratioVar->SetValue(input);
         }
         ratio = ratioVar->GetFloat();
@@ -5088,8 +5091,11 @@ void OfRatioFrame()
     // Never reset its ratio until a demo has played and we are disconnected.
     if (g_OfPreDemoRatio.SawDemo && OfRatioCanWrite())
     {
-        if (!OfRatioDefault())
+        if (!OfRatioDefault() && !g_OfPreDemoRatio.WarnedRestore)
+        {
             Tier0_Warning("OF pre-demo interpolation ratio was not restored; run 'mirv_fix playerInterpolation ofRatio default' from disconnected menu.\n");
+            g_OfPreDemoRatio.WarnedRestore = true; // Don't spam every FRAME_START.
+        }
     }
 }
 void OfRatioPrintStatus()
