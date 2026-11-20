@@ -618,6 +618,143 @@ void SceneCacheDrawModels()
 	}
 	if (!view)
 		return;
+
+	if (g_OpenFortressLegacyMode)
+	{
+		// Diagnostic isolation for the experimental OF replay path only.
+		// Keep all reads of the published frame before the first studio call:
+		// a bad engine-side submission must not invalidate a later entity read.
+		using Entity = advancedfx::SceneCache::Entity;
+		using Pose = advancedfx::SceneCache::Pose;
+		using Model = advancedfx::SceneCache::Model;
+		struct ReplayCandidate
+		{
+			size_t Index;
+			Entity Snapshot;
+		};
+		static unsigned long long tracedEpoch = ~0ull;
+		static unsigned tracedFrames = 0;
+		if (tracedEpoch != epoch)
+		{
+			tracedEpoch = epoch;
+			tracedFrames = 0;
+		}
+		const bool trace = tracedFrames++ < 12;
+		const auto &entities = view->Entities;
+		if (trace)
+			Tier0_Msg("[OF replay] preflight epoch=%llu frame=%p count=%zu data=%p\n",
+			          epoch, static_cast<const void *>(view.get()), entities.size(),
+			          static_cast<const void *>(entities.data()));
+		if (entities.size() > 4096 ||
+		    (!entities.empty() && reinterpret_cast<std::uintptr_t>(entities.data()) % alignof(Entity)))
+		{
+			Tier0_Msg("[OF replay] invalid cached entity vector: count=%zu data=%p\n",
+			          entities.size(), static_cast<const void *>(entities.data()));
+			SceneModelStatus("OF replay paused: invalid cached entity vector; see console diagnostics.");
+			return;
+		}
+		std::vector<ReplayCandidate> candidates;
+		candidates.reserve((std::min)(size_t(128), entities.size()));
+		size_t invalid = 0, brush = 0;
+		for (size_t i = 0; i < entities.size(); ++i)
+		{
+			// A readable page is not proof of a valid object, but probing before
+			// dereferencing prevents repeatable crashes from an unmapped vector.
+			const auto *row = entities.data() + i;
+			std::array<unsigned char, sizeof(Entity)> probe{};
+			SIZE_T copied = 0;
+			if (!ReadProcessMemory(GetCurrentProcess(), row, probe.data(), probe.size(), &copied) ||
+			    copied != probe.size())
+			{
+				Tier0_Msg("[OF replay] unreadable cached entity %zu at %p\n", i,
+				          static_cast<const void *>(row));
+				SceneModelStatus("OF replay paused: unreadable cached entity; see console diagnostics.");
+				return;
+			}
+			const auto &entity = *row;
+			const auto *pose = entity.ModelPose.get();
+			if (!pose)
+				continue;
+			std::array<unsigned char, sizeof(Pose)> poseProbe{};
+			copied = 0;
+			if (!ReadProcessMemory(GetCurrentProcess(), pose, poseProbe.data(), poseProbe.size(), &copied) ||
+			    copied != poseProbe.size())
+			{
+				Tier0_Msg("[OF replay] unreadable pose at entity %zu: %p\n", i,
+				          static_cast<const void *>(pose));
+				SceneModelStatus("OF replay paused: unreadable cached pose; see console diagnostics.");
+				return;
+			}
+			const auto *model = pose->ModelInfo.get();
+			std::array<unsigned char, sizeof(Model)> modelProbe{};
+			copied = 0;
+			if (!model ||
+			    !ReadProcessMemory(GetCurrentProcess(), model, modelProbe.data(), modelProbe.size(), &copied) ||
+			    copied != modelProbe.size())
+			{
+				Tier0_Msg("[OF replay] unreadable model metadata at entity %zu: pose=%p model=%p\n", i,
+				          static_cast<const void *>(pose), static_cast<const void *>(model));
+				SceneModelStatus("OF replay paused: unreadable model metadata; see console diagnostics.");
+				return;
+			}
+			if (!advancedfx::SceneCache::ValidPose(*pose))
+			{
+				++invalid;
+				continue;
+			}
+			if (!model->WireEdges.empty())
+			{
+				++brush;
+				continue;
+			}
+			if (candidates.size() < 128)
+				candidates.push_back({i, entity}); // Own the shared pose before engine submission.
+		}
+		if (trace)
+			Tier0_Msg("[OF replay] preflight complete: studio=%zu brush=%zu invalid=%zu\n",
+			          candidates.size(), brush, invalid);
+		if (candidates.empty())
+		{
+			SceneModelStatus(brush ? "Cached brush meshes use the shared line renderer."
+			                       : "No valid OF studio-model pose at this cursor.");
+			return;
+		}
+		if (!g_SceneDrawModels.load() || !SceneCanDrawModels() || epoch != g_SceneDrawEpoch.load())
+			return;
+		const auto &selected = candidates.front();
+		Entity ownerSnapshot;
+		const Entity *owner = nullptr;
+		const auto &entity = selected.Snapshot;
+		if (entity.OwnerIdentity)
+		{
+			const auto found = std::lower_bound(entities.begin(), entities.end(), entity.OwnerIdentity,
+			                                    [](const Entity &row, std::uint64_t id) {
+				                                    return row.Identity < id;
+			                                    });
+			if (found != entities.end() && found->Identity == entity.OwnerIdentity)
+			{
+				ownerSnapshot = *found;
+				owner = &ownerSnapshot;
+			}
+		}
+		std::string status;
+		if (trace)
+		{
+			unsigned outstanding = 0, peak = 0;
+			Mirv_Tf2_SceneRenderStatus(outstanding, peak);
+			Tier0_Msg("[OF replay] submit index=%zu id=%llu pose=%p model=%p queued=%u peak=%u\n",
+			          selected.Index, static_cast<unsigned long long>(entity.Identity),
+			          static_cast<const void *>(entity.ModelPose.get()),
+			          static_cast<const void *>(entity.ModelPose->ModelInfo.get()),
+			          outstanding, peak);
+		}
+		const bool submitted = Mirv_Tf2_DrawScenePose(entity, status, owner);
+		if (trace)
+			Tier0_Msg("[OF replay] returned submitted=%d status=%s\n", int(submitted), status.c_str());
+		if (epoch == g_SceneDrawEpoch.load())
+			SceneModelStatus(status);
+		return; // One studio submission per frame while diagnosing OF-only crashes.
+	}
 	if (std::none_of(view->Entities.begin(), view->Entities.end(), [](const auto &entity) {
 		    return entity.ModelPose && entity.ModelPose->ModelInfo->WireEdges.empty();
 	    }))
