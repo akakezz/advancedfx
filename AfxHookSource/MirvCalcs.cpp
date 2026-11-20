@@ -10867,6 +10867,8 @@ struct SceneRetirement
 };
 static std::atomic<SceneRetirement *> g_SceneCompleted{nullptr};
 static std::atomic<unsigned> g_SceneOutstanding{0}, g_SceneOutstandingPeak{0};
+static std::atomic<unsigned long long> g_SceneSubmitted{0}, g_SceneCallbacksInvoked{0},
+    g_SceneCompletionSignaled{0}, g_SceneRetired{0};
 static constexpr unsigned SceneMaxOutstanding = 512;
 static void SceneReleaseResources(SceneRetirement *data)
 {
@@ -10894,6 +10896,7 @@ public:
 	void Submit()
 	{
 		Submitted = true;
+		g_SceneSubmitted.fetch_add(1, std::memory_order_relaxed);
 		unsigned count = ++g_SceneOutstanding, peak = g_SceneOutstandingPeak.load();
 		while (count > peak && !g_SceneOutstandingPeak.compare_exchange_weak(peak, count))
 		{
@@ -10901,6 +10904,7 @@ public:
 	}
 	void operator()() override
 	{
+		g_SceneCallbacksInvoked.fetch_add(1, std::memory_order_relaxed);
 		Complete();
 	}
 
@@ -10915,6 +10919,8 @@ private:
 			SceneReleaseResources(data);
 			return;
 		} // Pre-draw errors, on engine thread.
+		// Either operator() ran, or the source queue released a discarded functor.
+		g_SceneCompletionSignaled.fetch_add(1, std::memory_order_relaxed);
 		auto head = g_SceneCompleted.load(std::memory_order_relaxed);
 		do
 		{
@@ -11547,6 +11553,7 @@ void Mirv_Tf2_SceneRenderFrame()
 	{
 		auto next = data->Next;
 		SceneReleaseResources(data);
+		g_SceneRetired.fetch_add(1, std::memory_order_relaxed);
 		--g_SceneOutstanding;
 		data = next;
 	}
@@ -11555,6 +11562,17 @@ void Mirv_Tf2_SceneRenderStatus(unsigned &outstanding, unsigned &peak)
 {
 	outstanding = g_SceneOutstanding.load();
 	peak = g_SceneOutstandingPeak.load();
+}
+MirvTf2SceneRenderDiagnostics Mirv_Tf2_SceneRenderDiagnostics()
+{
+	MirvTf2SceneRenderDiagnostics result;
+	result.Outstanding = g_SceneOutstanding.load(std::memory_order_relaxed);
+	result.Peak = g_SceneOutstandingPeak.load(std::memory_order_relaxed);
+	result.Submitted = g_SceneSubmitted.load(std::memory_order_relaxed);
+	result.CallbacksInvoked = g_SceneCallbacksInvoked.load(std::memory_order_relaxed);
+	result.CompletionSignaled = g_SceneCompletionSignaled.load(std::memory_order_relaxed);
+	result.Retired = g_SceneRetired.load(std::memory_order_relaxed);
+	return result;
 }
 void Mirv_Tf2_ReleaseSceneMaterials()
 {
