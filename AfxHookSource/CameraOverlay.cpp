@@ -8494,8 +8494,9 @@ void Draw()
 
 			if (ImGui::CollapsingHeader("Demo fixes"))
 			{
-				// OF initially exposes only the native cvar-based interpolation fix.
-				// The TF2 client proxy and recorder-sound paths remain out of scope.
+				// OF's separate native-entity interpolation override persists via
+				// the same preferences as TF2/TF2C cvar fixes. Other TF2-specific
+				// recorder-sound and player-repair paths remain out of scope.
 				if (!g_OpenFortressLegacyMode)
 				{
 				bool muteRecorder = g_DemoMute;
