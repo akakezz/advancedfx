@@ -658,8 +658,8 @@ void SceneCacheDrawModels()
 		if (entities.size() > 4096 ||
 		    (!entities.empty() && reinterpret_cast<std::uintptr_t>(entities.data()) % alignof(Entity)))
 		{
-			Tier0_Msg("[OF replay] invalid cached entity vector: count=%u data=%p\n",
-			          unsigned(entities.size()), static_cast<const void *>(entities.data()));
+			log("[OF replay] invalid cached entity vector: count=" + std::to_string(entities.size()) +
+			    " data=" + address(entities.data()));
 			SceneModelStatus("OF replay paused: invalid cached entity vector; see console diagnostics.");
 			return;
 		}
@@ -676,8 +676,8 @@ void SceneCacheDrawModels()
 			if (!ReadProcessMemory(GetCurrentProcess(), row, probe.data(), probe.size(), &copied) ||
 			    copied != probe.size())
 			{
-				Tier0_Msg("[OF replay] unreadable cached entity %u at %p\n", unsigned(i),
-				          static_cast<const void *>(row));
+				log("[OF replay] unreadable cached entity " + std::to_string(i) +
+				    " at " + address(row));
 				SceneModelStatus("OF replay paused: unreadable cached entity; see console diagnostics.");
 				return;
 			}
@@ -690,8 +690,8 @@ void SceneCacheDrawModels()
 			if (!ReadProcessMemory(GetCurrentProcess(), pose, poseProbe.data(), poseProbe.size(), &copied) ||
 			    copied != poseProbe.size())
 			{
-				Tier0_Msg("[OF replay] unreadable pose at entity %u: %p\n", unsigned(i),
-				          static_cast<const void *>(pose));
+				log("[OF replay] unreadable pose at entity " + std::to_string(i) +
+				    ": " + address(pose));
 				SceneModelStatus("OF replay paused: unreadable cached pose; see console diagnostics.");
 				return;
 			}
@@ -702,8 +702,8 @@ void SceneCacheDrawModels()
 			    !ReadProcessMemory(GetCurrentProcess(), model, modelProbe.data(), modelProbe.size(), &copied) ||
 			    copied != modelProbe.size())
 			{
-				Tier0_Msg("[OF replay] unreadable model metadata at entity %u: pose=%p model=%p\n", unsigned(i),
-				          static_cast<const void *>(pose), static_cast<const void *>(model));
+				log("[OF replay] unreadable model metadata at entity " + std::to_string(i) +
+				    ": pose=" + address(pose) + " model=" + address(model));
 				SceneModelStatus("OF replay paused: unreadable model metadata; see console diagnostics.");
 				return;
 			}
