@@ -23,6 +23,7 @@ extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 #include "AfxStreams.h"
 #include "CameraOverlay.h"
 #include "MirvCam.h"
+#include "MirvCalcs.h"
 #include "CampathDrawer.h"
 #include "Gui.h"
 #include "addresses.h"
@@ -780,6 +781,16 @@ CON_COMMAND(mirv_streams, "Access to streams system.")
 					return;
 				}
 				else
+				if(g_OpenFortressLegacyMode && !_stricmp(cmd2, "toggle"))
+				{
+					// OF-only record hotkey; reuse HLAE's established recorder.
+					if(g_AfxStreams.IsRecording())
+						g_AfxStreams.Console_Record_End();
+					else
+						g_AfxStreams.Console_Record_Start();
+					return;
+				}
+				else
 				if(!_stricmp(cmd2, "start"))
 				{
 					g_AfxStreams.Console_Record_Start();
@@ -1044,6 +1055,8 @@ CON_COMMAND(mirv_streams, "Access to streams system.")
 				"mirv_streams record format [...] - Set/get file format.\n"
 				"mirv_streams record fps [...] - Allows to override input FPS for games where we can not detect it (not needed for CS:GO).\n"
 			);
+			if (g_OpenFortressLegacyMode)
+				Tier0_Msg("mirv_streams record toggle - Start or end recording (bind to a key).\n");
 #ifndef _WIN64			
 			if (bIsCsgo) Tier0_Msg(
 				"mirv_streams record presentOnScreen [...] - Controls screen presentation during recording.\n"
@@ -2214,10 +2227,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		if (down && !g_CampathPreviewUndoHeld && !CampathPreview_IsRepeatKey(lParam))
 		{
 			g_CampathPreviewUndoHeld = true;
-			if (MirvCam_RigPreviewActive() && (MirvCam_RigNavigation() || MirvCam_SequencePreviewActive()))
-				MirvCam_HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
-			else
-				AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+			AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
 			// Undo may leave preview and release its held keys; keep this chord owned until key-up.
 			g_CampathPreviewUndoHeld = true;
 		}
@@ -3224,6 +3234,16 @@ void mirv_print_entity(int index, double dist, SOURCESDK::C_BaseEntity_csgo * be
 
 #endif //#ifndef _WIN64
 
+// The legacy Open Fortress client uses the Source SDK VCLIENTTOOLS001 ABI,
+// although the game runs through HLAE's HL2MP engine hook path. This gate
+// enables entity inspection only, not unrelated TF2-specific fixes or UI.
+static bool MirvCommands_SupportsTf2EntityInspection()
+{
+	return SourceSdkVer_TF2 == g_SourceSdkVer ||
+		SourceSdkVer_TF2Classified == g_SourceSdkVer ||
+		(SourceSdkVer_HL2MP == g_SourceSdkVer && g_OpenFortressLegacyMode);
+}
+
 // TF2: List entities through IClientTools. Only what IClientTools exposes is available
 // (entity index, class name, model name, player flag and position; no entity names,
 // entity handles or player info).
@@ -3362,9 +3382,9 @@ static void mirv_listentities_tf2(IWrpCommandArgs * args)
 	);
 }
 
-CON_COMMAND(mirv_listentities, "Print info about currently active entites. (CS:GO and TF2)")
+CON_COMMAND(mirv_listentities, "Print info about currently active entities. (CS:GO, TF2, TF2C, Open Fortress)")
 {
-	if (SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer)
+	if (MirvCommands_SupportsTf2EntityInspection())
 	{
 		mirv_listentities_tf2(args);
 		return;
@@ -3482,9 +3502,9 @@ static bool mirv_listplayers_dist_compare(const MirvListPlayersEntry_t & first, 
 	return a < b;
 }
 
-CON_COMMAND(mirv_listplayers, "Print players with their entity index and name. (TF2)")
+CON_COMMAND(mirv_listplayers, "Print players with their entity index and name. (TF2, TF2C, Open Fortress)")
 {
-	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+	if (!MirvCommands_SupportsTf2EntityInspection())
 	{
 		Tier0_Warning("Not supported for your engine!\n");
 		return;
@@ -3561,9 +3581,9 @@ static bool MirvCommands_ContainsNoCase(const char * hay, const char * needle)
 	return std::string::npos != h.find(n);
 }
 
-CON_COMMAND(mirv_listbones, "Print the bones of an entity with their names and positions. (TF2)")
+CON_COMMAND(mirv_listbones, "Print the bones of an entity with their names and positions. (TF2, TF2C, Open Fortress)")
 {
-	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+	if (!MirvCommands_SupportsTf2EntityInspection())
 	{
 		Tier0_Warning("Not supported for your engine!\n");
 		return;
@@ -3707,9 +3727,9 @@ CON_COMMAND(mirv_listbones, "Print the bones of an entity with their names and p
 	Tier0_Msg("Attach the camera to a bone with: mirv_cam attach %i <iBoneIndex or part of bone name>\n", entityIndex);
 }
 
-CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view. (TF2)")
+CON_COMMAND(mirv_drawentities, "Draw the entity index over entities in the view. (TF2, TF2C, Open Fortress)")
 {
-	if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+	if (!MirvCommands_SupportsTf2EntityInspection())
 	{
 		Tier0_Warning("Not supported for your engine!\n");
 		return;
@@ -4873,19 +4893,51 @@ void MirvFix_RecorderSoundUpdate()
 // WrpConVarRef currently wraps only CS:GO's encoded ConVar representation.
 namespace
 {
+// OF may ship cl_interp_ratio without cl_interp. This is an estimated
+// ratio/updaterate delay, not proof that demo entities use that delay.
+bool g_OfInterpolationRatioOnly = false;
+float g_OfInterpolationUpdateRate = 0;
 bool Tf2InterpolationValues(float values[3], bool write)
 {
-	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
+	// OF shares the supported native Source ICvar interface, not CS:GO's encoded wrapper.
+	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified &&
+		!(g_SourceSdkVer == SourceSdkVer_HL2MP && g_OpenFortressLegacyMode))
 		return false;
 	auto access = [&](auto *iface)
 	{
 		if (!iface)
 			return false;
 		const char *names[] = {"cl_interpolate", "cl_interp", "cl_interp_ratio"};
-		decltype(iface->FindVar(names[0])) vars[3];
-		for (int i = 0; i < 3; ++i)
-			if (!(vars[i] = iface->FindVar(names[i])))
+		decltype(iface->FindVar(names[0])) vars[3] = {
+			iface->FindVar(names[0]), iface->FindVar(names[1]), iface->FindVar(names[2])};
+		const bool of = g_SourceSdkVer == SourceSdkVer_HL2MP && g_OpenFortressLegacyMode;
+		if (of && !vars[1])
+		{
+			// Source SDK 2013 normally computes a minimum interpolation interval
+			// from cl_interp_ratio / cl_updaterate. OF may omit cl_interp itself.
+			// Keep that assumption isolated to OF and verify every cvar write.
+			auto *updateRate = iface->FindVar("cl_updaterate");
+			if (!vars[2] || !updateRate)
 				return false;
+			const float rate = updateRate->GetFloat();
+			if (!std::isfinite(rate) || rate < 1 || rate > 1000)
+				return false;
+			g_OfInterpolationRatioOnly = true;
+			g_OfInterpolationUpdateRate = rate;
+			// OF explicitly refuses cl_interp_ratio edits while playing
+			// (reported by the game's own console). Do not attempt blocked
+			// cvar writes from HLAE or imply that this fixes demo playback.
+			if (write)
+				return false;
+			values[0] = vars[0] ? vars[0]->GetFloat() : 1.0f;
+			values[2] = vars[2]->GetFloat();
+			values[1] = values[2] / rate; // Approximate, not a sampled visual latency.
+			return std::isfinite(values[0]) && std::isfinite(values[1]) && std::isfinite(values[2]);
+		}
+		if (!vars[0] || !vars[1] || !vars[2])
+			return false;
+		if (of)
+			g_OfInterpolationRatioOnly = false;
 		for (int i = 0; i < 3; ++i)
 		{
 			if (write)
@@ -4911,6 +4963,7 @@ bool MirvFix_PlayerInterpolationAvailable()
 	float values[3];
 	return g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsDrawingLoadingImage()
 		&& Tf2InterpolationValues(values, false) &&
+		   !(g_OpenFortressLegacyMode && g_OfInterpolationRatioOnly) &&
 		   std::isfinite(values[0]) && std::isfinite(values[1]) && std::isfinite(values[2]);
 }
 double MirvFix_GetPlayerInterpolation()
@@ -4965,8 +5018,14 @@ bool MirvFix_SetPlayerInterpolation(double seconds)
 	g_Tf2InterpolationActive = true;
 	return true;
 }
+#ifndef _WIN64
+static void OfEngineInterpolationFrame(); // Deactivate bypass after leaving demo.
+#endif
 void MirvFix_Update()
 {
+#ifndef _WIN64
+    OfEngineInterpolationFrame();
+#endif
 	// FRAME_START also runs when there is no rendered world. Release audio
 	// ownership here; query/mute after network updates at FRAME_RENDER_START.
 	if (g_Tf2RecorderSoundMute && (!g_VEngineClient || !g_VEngineClient->IsDrawingLoadingImage()) &&
@@ -5004,17 +5063,491 @@ static void MirvFix_PrintPlayerInterpolationStatus()
 	          : playing ? (g_VEngineClient->IsHLTV() ? "STV/HLTV" : "POV/other demo")
 	                    : "no demo");
 	if (g_Tf2InterpolationActive)
-		Tier0_Msg("Requested cl_interp: %.6g seconds; native settings: %s.\n", g_Tf2InterpolationApplied[1],
+		Tier0_Msg("Requested interpolation: %.6g seconds; native settings: %s.\n", g_Tf2InterpolationApplied[1],
 		          available ? (matches ? "match" : "overridden") : "unavailable");
 	if (available)
-		Tier0_Msg("Native cl_interpolate=%.6g, cl_interp=%.6g, cl_interp_ratio=%.6g.\n", values[0], values[1],
-		          values[2]);
+	{
+		if (g_OpenFortressLegacyMode && g_OfInterpolationRatioOnly)
+		{
+			Tier0_Msg("OF read-only ratio diagnostic: cl_interp absent; cl_interp_ratio=%.6g / cl_updaterate=%.6g => estimated %.6g s.\n",
+			          values[2], g_OfInterpolationUpdateRate, values[1]);
+			Tier0_Msg("OF blocks ratio changes while playing. HLAE playerInterpolation cannot enable demo smoothing through these cvars.\n");
+		}
+		else
+			Tier0_Msg("Native cl_interpolate=%.6g, cl_interp=%.6g, cl_interp_ratio=%.6g.\n", values[0], values[1],
+			          values[2]);
+	}
 	else
-		Tier0_Msg("Native interpolation variables are unavailable.\n");
+		Tier0_Msg("Native interpolation variables unavailable. OF requires cl_interp_ratio and cl_updaterate for the ratio-only fallback.\n");
 	Tier0_Msg(
 	    "These are engine cvar values, not a measurement of rendered delay. POV prediction and "
 	    "per-entity interpolation rules can differ; compare the same movement with default settings.\n");
 }
+
+// OF-only readback sampled after FRAME_RENDER_END. No cvar writes, hooks,
+// SetupBones calls or mutations of game entity data are performed here.
+// This probe observes post-render player origin; it cannot validate bones.
+namespace
+{
+struct OfClockEvent
+{
+    int FromTick = -1, ToTick = -1, FromFrame = -1, ToFrame = -1;
+    double MirvDt = 0, EngineDt = 0, PausedDt = 0, RootStep = 0;
+    float OldFraction = 0, NewFraction = 0;
+};
+struct OfInterpolationProbe
+{
+    int PlayerIndex = 0;
+    int LastTick = -1, LastFrame = -1;
+    double LastClientTime = 0;
+    float LastInterpolationFraction = 0;
+    float LastEngineTime = 0, LastPausedOffset = 0;
+    float LastOrigin[3] = {};
+    bool HaveLast = false;
+    unsigned long long Samples = 0, Missing = 0, DuplicateCallbacks = 0;
+    unsigned long long SameTickAdvancing = 0, SameTickMoved = 0, SameTickStatic = 0;
+    unsigned long long SameTickPaused = 0, FrozenTimeMoved = 0, FrozenTimeStatic = 0;
+    unsigned long long FrozenTimeFractionChanged = 0;
+    unsigned long long TickMoved = 0, TickStatic = 0;
+    unsigned long long Discontinuities = 0, BackwardTicks = 0, SkippedTicks = 0, RewoundTime = 0;
+    unsigned long long EngineRewinds = 0, PausedOffsetChanges = 0, SameTickRewinds = 0;
+    unsigned long long RewindMoved = 0, RewindStatic = 0, FrozenRuns = 0;
+    unsigned int CurrentFrozenRun = 0, LongestFrozenRun = 0;
+    double MaxRewindRootStep = 0;
+    OfClockEvent RewindEvents[16];
+    int LargestTickSkip = 0, LastDiscontinuityFromTick = -1, LastDiscontinuityToTick = -1;
+    double LastDiscontinuityTimeDelta = 0;
+    double LastDistance = 0, MaxSameTickDistance = 0, TotalSameTickDistance = 0;
+    double MaxTickDistance = 0, MaxFrozenTimeDistance = 0;
+    double MinSameTickTimeDelta = 0, MaxSameTickTimeDelta = 0;
+    double MaxStepTimeDelta = 0;
+    int MaxStepTick = -1, MaxStepFrameGap = 0;
+};
+OfInterpolationProbe g_OfInterpolationProbe;
+}
+void MirvFix_OfInterpolationProbeFrame()
+{
+    auto &probe = g_OfInterpolationProbe;
+    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP || !probe.PlayerIndex)
+        return;
+    if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+        g_VEngineClient->IsDrawingLoadingImage() || g_VEngineClient->IsSkippingDemo())
+    {
+        probe.HaveLast = false;
+        return;
+    }
+    auto *globals = g_Hook_VClient_RenderView.GetGlobals();
+    if (!globals) return;
+    int tick = -1;
+    if (!GetCurrentDemoTick(tick) || tick < 0)
+    {
+        probe.HaveLast = false;
+        ++probe.Missing;
+        return;
+    }
+    const double clientTime = g_MirvTime.GetTime();
+    const float engineTime = globals->curtime_get();
+    const float pausedOffset = g_MirvTime.GetPausedTime();
+    if (!std::isfinite(clientTime) || !std::isfinite(engineTime) || !std::isfinite(pausedOffset))
+        return;
+    // Source's interpolation_amount is a useful *diagnostic*, not a claim that
+    // all entity classes use that fraction or that the fraction itself is smooth.
+    const float interpolationFraction = globals->interpolation_amount_get();
+    const int renderFrame = globals->framecount_get();
+    if (probe.HaveLast && renderFrame == probe.LastFrame &&
+        tick == probe.LastTick && std::abs(clientTime - probe.LastClientTime) < 1e-8)
+    {
+        ++probe.DuplicateCallbacks;
+        return;
+    }
+    float origin[3], angles[3], mins[3], maxs[3];
+    if (!Mirv_Tf2_GetSceneEntity(probe.PlayerIndex, origin, angles, mins, maxs) ||
+        !std::isfinite(origin[0]) || !std::isfinite(origin[1]) || !std::isfinite(origin[2]))
+    {
+        ++probe.Missing;
+        probe.HaveLast = false;
+        return;
+    }
+    if (probe.HaveLast)
+    {
+        const double dx = double(origin[0]) - probe.LastOrigin[0];
+        const double dy = double(origin[1]) - probe.LastOrigin[1];
+        const double dz = double(origin[2]) - probe.LastOrigin[2];
+        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const double deltaTime = clientTime - probe.LastClientTime;
+        const double engineDt = double(engineTime) - probe.LastEngineTime;
+        const double pausedDt = double(pausedOffset) - probe.LastPausedOffset;
+        probe.LastDistance = distance;
+        const bool tickRewind = tick < probe.LastTick;
+        const bool tickSkip = tick > probe.LastTick + 1;
+        const bool timeRewind = deltaTime < -1e-6;
+        if (!timeRewind && tick == probe.LastTick && std::abs(deltaTime) <= 1e-7)
+        {
+            if (probe.CurrentFrozenRun++ == 0) ++probe.FrozenRuns;
+            probe.LongestFrozenRun = (std::max)(probe.LongestFrozenRun, probe.CurrentFrozenRun);
+        }
+        else probe.CurrentFrozenRun = 0;
+        if (tickRewind || tickSkip || timeRewind)
+        {
+            ++probe.Discontinuities;
+            if (tickRewind) ++probe.BackwardTicks;
+            if (tickSkip)
+            {
+                ++probe.SkippedTicks;
+                probe.LargestTickSkip = (std::max)(probe.LargestTickSkip, tick - probe.LastTick - 1);
+            }
+            if (timeRewind)
+            {
+                ++probe.RewoundTime;
+                if (tick == probe.LastTick) ++probe.SameTickRewinds;
+                if (engineDt < -1e-6) ++probe.EngineRewinds;
+                if (std::abs(pausedDt) > 1e-6) ++probe.PausedOffsetChanges;
+                if (distance > 1e-4)
+                {
+                    ++probe.RewindMoved;
+                    probe.MaxRewindRootStep = (std::max)(probe.MaxRewindRootStep, distance);
+                }
+                else ++probe.RewindStatic;
+                // Fixed-size ring, no console spam or allocations in the frame hook.
+                auto &event = probe.RewindEvents[(probe.RewoundTime - 1) % 16];
+                event.FromTick = probe.LastTick;
+                event.ToTick = tick;
+                event.FromFrame = probe.LastFrame;
+                event.ToFrame = renderFrame;
+                event.MirvDt = deltaTime;
+                event.EngineDt = engineDt;
+                event.PausedDt = pausedDt;
+                event.RootStep = distance;
+                event.OldFraction = probe.LastInterpolationFraction;
+                event.NewFraction = interpolationFraction;
+            }
+            probe.LastDiscontinuityFromTick = probe.LastTick;
+            probe.LastDiscontinuityToTick = tick;
+            probe.LastDiscontinuityTimeDelta = deltaTime;
+            // Never classify seek, missed-tick or time-reset movement as interpolation.
+        }
+        else if (tick == probe.LastTick)
+        {
+            if (deltaTime > 1e-7)
+            {
+                ++probe.SameTickAdvancing;
+                if (probe.MinSameTickTimeDelta == 0 || deltaTime < probe.MinSameTickTimeDelta)
+                    probe.MinSameTickTimeDelta = deltaTime;
+                probe.MaxSameTickTimeDelta = (std::max)(probe.MaxSameTickTimeDelta, deltaTime);
+                if (distance > 1e-4)
+                {
+                    ++probe.SameTickMoved;
+                    probe.TotalSameTickDistance += distance;
+                    if (distance > probe.MaxSameTickDistance)
+                    {
+                        probe.MaxSameTickDistance = distance;
+                        probe.MaxStepTick = tick;
+                        probe.MaxStepTimeDelta = deltaTime;
+                        probe.MaxStepFrameGap = renderFrame - probe.LastFrame;
+                    }
+                }
+                else ++probe.SameTickStatic;
+            }
+            else
+            {
+                ++probe.SameTickPaused;
+                if (distance > 1e-4)
+                {
+                    ++probe.FrozenTimeMoved;
+                    probe.MaxFrozenTimeDistance = (std::max)(probe.MaxFrozenTimeDistance, distance);
+                }
+                else ++probe.FrozenTimeStatic;
+                if (std::isfinite(interpolationFraction) &&
+                    std::isfinite(probe.LastInterpolationFraction) &&
+                    std::abs(interpolationFraction - probe.LastInterpolationFraction) > 1e-6f)
+                    ++probe.FrozenTimeFractionChanged;
+            }
+        }
+        else
+        {
+            if (distance > 1e-4)
+            {
+                ++probe.TickMoved;
+                probe.MaxTickDistance = (std::max)(probe.MaxTickDistance, distance);
+            }
+            else ++probe.TickStatic;
+        }
+    }
+    ++probe.Samples;
+    probe.LastTick = tick;
+    probe.LastFrame = renderFrame;
+    probe.LastClientTime = clientTime;
+    probe.LastInterpolationFraction = interpolationFraction;
+    probe.LastEngineTime = engineTime;
+    probe.LastPausedOffset = pausedOffset;
+    std::copy(origin, origin + 3, probe.LastOrigin);
+    probe.HaveLast = true;
+}
+static void MirvFix_PrintOfInterpolationProbe()
+{
+    const auto &p = g_OfInterpolationProbe;
+    Tier0_Msg("OF interpolation probe: %s, entity %d; successful samples %s; unavailable %s; duplicate stage callbacks %s; discontinuities %s.\n",
+        p.PlayerIndex ? "armed (read-only)" : "off", p.PlayerIndex,
+        std::to_string(p.Samples).c_str(), std::to_string(p.Missing).c_str(),
+        std::to_string(p.DuplicateCallbacks).c_str(), std::to_string(p.Discontinuities).c_str());
+    Tier0_Msg("OF interpolation probe sub-tick: advancing same-tick pairs %s; moved %s; static %s; unchanged-time pairs %s; max step %.6g units.\n",
+        std::to_string(p.SameTickAdvancing).c_str(), std::to_string(p.SameTickMoved).c_str(),
+        std::to_string(p.SameTickStatic).c_str(), std::to_string(p.SameTickPaused).c_str(),
+        p.MaxSameTickDistance);
+    Tier0_Msg("OF interpolation probe tick boundary: moved %s; static %s; max step %.6g units; last delta %.6g; last tick %d; client time %.6f.\n",
+        std::to_string(p.TickMoved).c_str(), std::to_string(p.TickStatic).c_str(),
+        p.MaxTickDistance, p.LastDistance, p.LastTick, p.LastClientTime);
+    Tier0_Msg("OF interpolation probe frozen client time: moved %s; static %s; engine interpolation fraction changed %s; largest movement %.6g units.\n",
+        std::to_string(p.FrozenTimeMoved).c_str(), std::to_string(p.FrozenTimeStatic).c_str(),
+        std::to_string(p.FrozenTimeFractionChanged).c_str(), p.MaxFrozenTimeDistance);
+    Tier0_Msg("OF interpolation probe time steps: advancing same-tick min %.9g s, max %.9g s; largest moving same-tick step at tick %d, client dt %.9g s, frame gap %d.\n",
+        p.MinSameTickTimeDelta, p.MaxSameTickTimeDelta, p.MaxStepTick,
+        p.MaxStepTimeDelta, p.MaxStepFrameGap);
+    Tier0_Msg("OF interpolation probe discontinuities: backward ticks %s; skipped ticks %s (max missed %d); backward client time %s; last %d -> %d (client dt %.9g s). Causes may overlap.\n",
+        std::to_string(p.BackwardTicks).c_str(), std::to_string(p.SkippedTicks).c_str(),
+        p.LargestTickSkip, std::to_string(p.RewoundTime).c_str(),
+        p.LastDiscontinuityFromTick, p.LastDiscontinuityToTick, p.LastDiscontinuityTimeDelta);
+    Tier0_Msg("OF probe time origins: same-tick rewinds %s; raw engine rewinds %s; paused offset changes %s; rewind root moved %s; static %s; largest step %.6g units.\n",
+        std::to_string(p.SameTickRewinds).c_str(), std::to_string(p.EngineRewinds).c_str(),
+        std::to_string(p.PausedOffsetChanges).c_str(), std::to_string(p.RewindMoved).c_str(),
+        std::to_string(p.RewindStatic).c_str(), p.MaxRewindRootStep);
+    Tier0_Msg("OF probe frozen-time runs: %s; longest consecutive repeated pairs %u. Use 'mirv_fix playerInterpolation probe events' to show recent rewinds.\n",
+        std::to_string(p.FrozenRuns).c_str(), p.LongestFrozenRun);
+    Tier0_Msg("Interpretation: frozen/rewound time and repeated roots warrant testing against captured frames; this does not establish actual on-screen model visibility, animation or POV behavior.\n");
+}
+
+
+static void MirvFix_PrintOfInterpolationProbeEvents()
+{
+    const auto &p = g_OfInterpolationProbe;
+    const int count = static_cast<int>((std::min)(p.RewoundTime, 16ull));
+    Tier0_Msg("OF probe: %d most recent backward-HLAE-time events, total %s.\n",
+        count, std::to_string(p.RewoundTime).c_str());
+    for (int i = count; i > 0; --i)
+    {
+        const auto &e = p.RewindEvents[(p.RewoundTime - i) % 16];
+        Tier0_Msg("  ticks %d->%d frame %d->%d HLAE dt %.9g engine dt %.9g paused dt %.9g root step %.6g fraction %.6g->%.6g\n",
+            e.FromTick, e.ToTick, e.FromFrame, e.ToFrame, e.MirvDt, e.EngineDt, e.PausedDt,
+            e.RootStep, e.OldFraction, e.NewFraction);
+    }
+}
+
+
+// Verified against the user-supplied OF PE32 client.dll dated 2024-08-08:
+// sha256 8ba1210f5d721084fdc0c225cee3c40e1812dba996de69d1e5d93028bf869ea1.
+// Source SDK-like C_BaseEntity::GetInterpolationAmount(int flags) is at RVA BFF10.
+// Its call to GetClientInterpAmount() at RVA 1091A0, plus calls from the global
+// interpolation-change loop, are independently checked by CALL byte signatures.
+// Never use these RVAs in other games/builds. All override paths require an
+// actively playing offline demo; setting default restores original call results.
+#ifndef _WIN64
+namespace
+{
+using OfGetClientInterp_t = float (__cdecl *)(void);
+using OfGetEntityInterp_t = float (__thiscall *)(void *, int);
+
+OfGetClientInterp_t g_OfNativeGetClientInterp = nullptr;
+OfGetEntityInterp_t g_OfNativeGetEntityInterp = nullptr;
+bool g_OfEngineHookInstalled = false;
+bool g_OfEngineSawDemo = false;
+std::atomic<bool> g_OfEngineEnabled{false};
+std::atomic<bool> g_OfEngineIncludePredictable{false};
+std::atomic<float> g_OfEngineSeconds{0};
+std::atomic<unsigned long long> g_OfClientCalls{0}, g_OfEntityCalls{0};
+std::atomic<unsigned long long> g_OfEntityExtended{0};
+const char *g_OfEngineInstallStatus = "Not installed; opt in from an OF demo.";
+
+bool OfEngineDemoOnly()
+{
+    return g_OpenFortressLegacyMode && g_SourceSdkVer == SourceSdkVer_HL2MP &&
+        g_OfEngineEnabled.load(std::memory_order_relaxed) &&
+        g_VEngineClient && g_VEngineClient->IsPlayingDemo() &&
+        !g_VEngineClient->IsDrawingLoadingImage() &&
+        !g_VEngineClient->IsSkippingDemo();
+}
+float __cdecl OfGetClientInterpOverride()
+{
+    const float native = g_OfNativeGetClientInterp();
+    if (!OfEngineDemoOnly())
+        return native;
+    ++g_OfClientCalls;
+    const float seconds = g_OfEngineSeconds.load(std::memory_order_relaxed);
+    // Keep the engine's longer interpolation when appropriate. A finite
+    // bounded delay provides actual extra history without cvar mutation.
+    return std::isfinite(native) ? (std::max)(native, seconds) : native;
+}
+float __fastcall OfGetEntityInterpOverride(void *entity, void *, int flags)
+{
+    const float native = g_OfNativeGetEntityInterp(entity, flags);
+    if (!OfEngineDemoOnly())
+        return native;
+    ++g_OfEntityCalls;
+    if (!g_OfEngineIncludePredictable.load(std::memory_order_relaxed))
+        return native;
+    const float seconds = g_OfEngineSeconds.load(std::memory_order_relaxed);
+    if (std::isfinite(native) && native < seconds)
+    {
+        ++g_OfEntityExtended;
+        return seconds;
+    }
+    return native;
+}
+bool OfEngineBinaryMatches(HMODULE module)
+{
+    if (!module || sizeof(void *) != 4)
+        return false;
+    const auto *base = reinterpret_cast<const unsigned char *>(module);
+    const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 ||
+        dos->e_lfanew > 0x1000)
+        return false;
+    const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS32 *>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
+        nt->FileHeader.TimeDateStamp != 0x66b4fe85 ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+        nt->OptionalHeader.SizeOfImage != 0x00a27000)
+        return false;
+    const auto match = [&](unsigned rva, const unsigned char *expected, size_t size) -> bool
+    {
+        return rva < nt->OptionalHeader.SizeOfImage &&
+            size <= nt->OptionalHeader.SizeOfImage - rva &&
+            !std::memcmp(base + rva, expected, size);
+    };
+    // No addresses in these patterns are subject to base relocation.
+    const unsigned char getClientStart[] = {0x55,0x8b,0xec,0x6a,0xff};
+    const unsigned char getEntityStart[] = {
+        0x55,0x8b,0xec,0x83,0xec,0x08,0x53,0x56,0x57,0x8b,0xd9,
+        0xe8,0x30,0x8b,0xfc,0xff};
+    const unsigned char entityCallsClient[] = {0xe8,0x22,0x92,0x04,0x00};
+    const unsigned char updaterCallsClient[] = {0xe8,0xf4,0xb9,0x04,0x00};
+    return match(0x1091a0, getClientStart, sizeof(getClientStart)) &&
+        match(0x0bff10, getEntityStart, sizeof(getEntityStart)) &&
+        match(0x0bff79, entityCallsClient, sizeof(entityCallsClient)) &&
+        match(0x0bd7a7, updaterCallsClient, sizeof(updaterCallsClient));
+}
+bool OfEngineInstall()
+{
+    if (g_OfEngineHookInstalled) return true;
+    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP)
+    {
+        g_OfEngineInstallStatus = "Requires explicit 32-bit Open Fortress mode.";
+        return false;
+    }
+    HMODULE module = GetModuleHandleA("client.dll");
+    if (!OfEngineBinaryMatches(module))
+    {
+        g_OfEngineInstallStatus = "Unsupported client.dll: OF 2024-08-08 PE32 timestamp, image size or function signatures differ.";
+        return false;
+    }
+    const auto *base = reinterpret_cast<unsigned char *>(module);
+    g_OfNativeGetClientInterp = reinterpret_cast<OfGetClientInterp_t>(base + 0x1091a0);
+    g_OfNativeGetEntityInterp = reinterpret_cast<OfGetEntityInterp_t>(base + 0x0bff10);
+    LONG error = DetourTransactionBegin();
+    if (error == NO_ERROR)
+    {
+        error = DetourUpdateThread(GetCurrentThread());
+        if (error == NO_ERROR)
+            error = DetourAttach(reinterpret_cast<PVOID *>(&g_OfNativeGetClientInterp),
+                reinterpret_cast<PVOID>(OfGetClientInterpOverride));
+        if (error == NO_ERROR)
+            error = DetourAttach(reinterpret_cast<PVOID *>(&g_OfNativeGetEntityInterp),
+                reinterpret_cast<PVOID>(OfGetEntityInterpOverride));
+        if (error == NO_ERROR)
+            error = DetourTransactionCommit();
+        else DetourTransactionAbort();
+    }
+    if (error != NO_ERROR)
+    {
+        g_OfNativeGetClientInterp = nullptr;
+        g_OfNativeGetEntityInterp = nullptr;
+        g_OfEngineInstallStatus = "Detours installation failed; native behavior unchanged.";
+        Tier0_Warning("OF entity interpolation hook installation failed (Detours error %ld).\n",
+            static_cast<long>(error));
+        return false;
+    }
+    g_OfEngineHookInstalled = true;
+    g_OfEngineInstallStatus = "Installed for exact matching OF x86 build; native passthrough unless enabled in a demo.";
+    return true;
+}
+void OfEngineDisable()
+{
+    // Disable first: existing detours now call through with native values.
+    g_OfEngineEnabled.store(false, std::memory_order_relaxed);
+    g_OfEngineSeconds.store(0, std::memory_order_relaxed);
+    g_OfEngineIncludePredictable.store(false, std::memory_order_relaxed);
+    g_OfEngineSawDemo = false;
+}
+bool OfEngineSet(double seconds, bool includePredictable)
+{
+    if (!std::isfinite(seconds) || seconds < 0.016 || seconds > 0.25 ||
+        !g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP ||
+        !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+        g_VEngineClient->IsDrawingLoadingImage() ||
+        g_VEngineClient->IsSkippingDemo() || !OfEngineInstall())
+        return false;
+    g_OfClientCalls.store(0, std::memory_order_relaxed);
+    g_OfEntityCalls.store(0, std::memory_order_relaxed);
+    g_OfEntityExtended.store(0, std::memory_order_relaxed);
+    g_OfEngineSeconds.store(static_cast<float>(seconds), std::memory_order_relaxed);
+    g_OfEngineIncludePredictable.store(includePredictable, std::memory_order_relaxed);
+    g_OfEngineSawDemo = true;
+    g_OfEngineEnabled.store(true, std::memory_order_relaxed);
+    return true;
+}
+void OfEnginePrint()
+{
+    const bool active = g_OfEngineEnabled.load(std::memory_order_relaxed);
+    Tier0_Msg("OF direct entity interpolation override: %s; mode %s; requested %.6g s; hook %s.\n",
+        active ? "enabled" : "default/pass-through",
+        g_OfEngineIncludePredictable.load(std::memory_order_relaxed)
+            ? "all entity intervals" : "client/networked interval only",
+        g_OfEngineSeconds.load(std::memory_order_relaxed), g_OfEngineInstallStatus);
+    Tier0_Msg("OF engine override calls since enable: client interpolation %s, entity interpolation %s, entity extended %s. Native cl_interp_ratio remains unchanged.\n",
+        std::to_string(g_OfClientCalls.load(std::memory_order_relaxed)).c_str(),
+        std::to_string(g_OfEntityCalls.load(std::memory_order_relaxed)).c_str(),
+        std::to_string(g_OfEntityExtended.load(std::memory_order_relaxed)).c_str());
+    Tier0_Msg("Usage (inside offline OF demo): mirv_fix playerInterpolation ofEngine 0.10 [all] | default | status. Experimental; all also extends predictable/locally created entity intervals. Does not invent snapshots.\n");
+}
+} // namespace
+// Expose the existing validated demo-only engine hook to the overlay. These
+// wrappers do not persist preferences or bypass the hook's runtime guards.
+bool MirvFix_OfEngineSet(double seconds, bool allEntityIntervals)
+{
+    return OfEngineSet(seconds, allEntityIntervals);
+}
+void MirvFix_OfEngineDisable()
+{
+    OfEngineDisable();
+}
+bool MirvFix_OfEngineEnabled()
+{
+    return g_OfEngineEnabled.load(std::memory_order_relaxed);
+}
+double MirvFix_OfEngineSeconds()
+{
+    return g_OfEngineSeconds.load(std::memory_order_relaxed);
+}
+bool MirvFix_OfEngineAllEntities()
+{
+    return g_OfEngineIncludePredictable.load(std::memory_order_relaxed);
+}
+static void OfEngineInterpolationFrame()
+{
+    if (!g_OfEngineEnabled.load(std::memory_order_relaxed))
+        return;
+    if (g_VEngineClient && g_VEngineClient->IsPlayingDemo())
+    {
+        g_OfEngineSawDemo = true;
+        return;
+    }
+    // Backward seeking can temporarily drop IsPlayingDemo while loading.
+    if (g_VEngineClient && g_VEngineClient->IsDrawingLoadingImage())
+        return;
+    if (g_OfEngineSawDemo)
+        OfEngineDisable();
+}
+#endif // !_WIN64
+
 // End TF2 demo interpolation controls.
 
 // TF2 POV deathcam control. Public Source SDK receive-table layouts; resolve
@@ -5079,12 +5612,21 @@ bool g_Tf2PovDeathcam = false;
 Tf2FixProxy g_Tf2ObserverProxy = nullptr;
 unsigned int g_Tf2DeathcamBlocked = 0;
 
+// OF is the only HL2MP-derived game admitted. Its VClient017 ABI is
+// selected explicitly and the matching receive property is still required.
+static bool Tf2ObserverFixClientSupported()
+{
+	return g_SourceSdkVer == SourceSdkVer_TF2 ||
+		g_SourceSdkVer == SourceSdkVer_TF2Classified ||
+		(g_SourceSdkVer == SourceSdkVer_HL2MP && g_OpenFortressLegacyMode);
+}
+
 void Tf2FixObserverMode(const Tf2FixProxyData *data, void *object, void *out)
 {
 	// TF2 shareddefs.h and inspected TF2C x64 client: deathcam=1, freezecam=2, POI=6, roaming=7.
 	if (g_Tf2PovDeathcam && data && data->Prop && data->Prop->Name &&
 	    !std::strcmp(data->Prop->Name, "m_iObserverMode") &&
-	    (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified) &&
+	    Tf2ObserverFixClientSupported() &&
 	    g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV() &&
 	    data->ObjectId > 0 && data->ObjectId == g_VEngineClient->GetLocalPlayer() &&
 	    (data->Value.Int == 1 || data->Value.Int == 2))
@@ -5257,9 +5799,9 @@ bool MirvFix_SetPovDeathcam(bool enabled)
 		g_Tf2PovDeathcam = false;
 		return true;
 	}
-	if ((g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified) || !g_Tf2FixClient)
+	if (!Tf2ObserverFixClientSupported() || !g_Tf2FixClient)
 	{
-		Tier0_Warning("POV deathcam: the TF2/TF2C VClient017 interface is unavailable.\n");
+		Tier0_Warning("POV deathcam: a compatible VClient017 observer interface is unavailable.\n");
 		return false;
 	}
 	if (!g_Tf2ObserverProxy)
@@ -6565,8 +7107,8 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			if (argc == 3 && (!std::strcmp(args->ArgV(2), "0") || !std::strcmp(args->ArgV(2), "1")))
 			{
 				if (!MirvFix_SetPovDeathcam(!std::strcmp(args->ArgV(2), "1")))
-					Tier0_Warning("POV deathcam fix unavailable: requires TF2/TF2C VClient017 observer receive tables and a successful proxy hook.\n");
-				else
+					Tier0_Warning("POV deathcam fix unavailable: requires compatible VClient017 observer receive tables and a successful proxy hook.\n");
+				else if (!g_OpenFortressLegacyMode)
 					AfxHookSource::CameraOverlay::RememberDemoFixPreference(
 					    AfxHookSource::CameraOverlay::DemoFixPreference::Deathcam,
 					    !std::strcmp(args->ArgV(2), "1"));
@@ -6575,7 +7117,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				Tier0_Warning("Usage: mirv_fix povDeathcam 0|1|status\n");
 			Tier0_Msg("POV deathcam suppression: %s; proxy %s; blocked updates %u.\n",
 				g_Tf2PovDeathcam ? "enabled" : "disabled", g_Tf2ObserverProxy ? "installed" : "not installed", g_Tf2DeathcamBlocked);
-			Tier0_Msg("Enable before death. Local TF2/TF2C POV death/freeze modes use roaming instead, allowing HLAE camera control "
+			Tier0_Msg("Enable before death. In supported POV demos, death/freeze observer modes use roaming instead, allowing HLAE camera control "
 				"without freeze-frame/mixer entry. Live play and STV pass through. If already frozen, seek before death after enabling.\n");
 			return;
 		}
@@ -6689,6 +7231,91 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		// TF2 interpolation command.
 		if (!_stricmp(cmd1, "playerInterpolation"))
 		{
+
+#ifndef _WIN64
+            // Actual compiled OF client interpolation bypass, not cvar editing.
+            if (argc >= 3 && !_stricmp(args->ArgV(2), "ofEngine"))
+            {
+                if (argc == 4 && !_stricmp(args->ArgV(3), "status"))
+                {
+                    OfEnginePrint();
+                    return;
+                }
+                if (argc == 4 && !_stricmp(args->ArgV(3), "default"))
+                {
+                    OfEngineDisable();
+                    // Explicit console default must also turn off any saved
+                    // overlay preference, or PreferencesFrame would re-arm it.
+                    if (g_OpenFortressLegacyMode && g_SourceSdkVer == SourceSdkVer_HL2MP)
+                        AfxHookSource::CameraOverlay::RememberOfEngineFixPreference(false, -1, false);
+                    OfEnginePrint();
+                    return;
+                }
+                if (argc == 4 || argc == 5)
+                {
+                    char *end = nullptr;
+                    errno = 0;
+                    const double seconds = std::strtod(args->ArgV(3), &end);
+                    const bool all = argc == 5 && !_stricmp(args->ArgV(4), "all");
+                    if (!errno && end != args->ArgV(3) && !*end &&
+                        (argc == 4 || all) && OfEngineSet(seconds, all))
+                    {
+                        AfxHookSource::CameraOverlay::RememberOfEngineFixPreference(true, seconds, all);
+                        Tier0_Msg("OF direct interpolation override armed at %.6g s (mode %s). Preference saved for future OF demos.\n",
+                            seconds, all ? "all" : "networked");
+                    }
+                    else
+                        Tier0_Warning("OF direct interpolation override rejected. Requires a compatible OF 2024-08-08 x86 client, a playing offline demo and 0.016..0.25 seconds. Check status.\n");
+                    OfEnginePrint();
+                    return;
+                }
+                OfEnginePrint();
+                return;
+            }
+#endif
+
+			// OF motion probe, which never edits protected cvars or changes interpolation.
+			if (argc >= 3 && !_stricmp(args->ArgV(2), "probe"))
+			{
+			    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP)
+			    {
+			        Tier0_Warning("The motion probe is only available in explicit Open Fortress legacy mode.\n");
+			        return;
+			    }
+			    if (argc == 3 || (argc == 4 && !_stricmp(args->ArgV(3), "status")))
+			    {
+			        MirvFix_PrintOfInterpolationProbe();
+			        return;
+			    }
+			    if (argc == 4 && !_stricmp(args->ArgV(3), "events"))
+			    {
+			        MirvFix_PrintOfInterpolationProbeEvents();
+			        return;
+			    }
+			    if (argc == 4 && !_stricmp(args->ArgV(3), "off"))
+			    {
+			        g_OfInterpolationProbe = {};
+			        MirvFix_PrintOfInterpolationProbe();
+			        return;
+			    }
+			    if (argc == 4)
+			    {
+			        char *end = nullptr;
+			        errno = 0;
+			        const long index = std::strtol(args->ArgV(3), &end, 10);
+			        if (!errno && end != args->ArgV(3) && !*end && index > 0 &&
+			            index <= Mirv_Tf2_GetMaxPlayers() && g_VEngineClient &&
+			            g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsDrawingLoadingImage())
+			        {
+			            g_OfInterpolationProbe = {};
+			            g_OfInterpolationProbe.PlayerIndex = int(index);
+			            Tier0_Msg("OF read-only motion probe armed for entity %d; record normal demo playback, then use probe status.\n", int(index));
+			            return;
+			        }
+			    }
+			    Tier0_Warning("Usage: mirv_fix playerInterpolation probe <playerIndex|status|events|off> (OF offline demos only).\n");
+			    return;
+			}
 			if (argc == 3 && !_stricmp(args->ArgV(2), "status"))
 			{
 				MirvFix_PrintPlayerInterpolationStatus();
@@ -6709,7 +7336,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				char *end = nullptr;
 				double seconds = std::strtod(args->ArgV(2), &end);
 				if (end == args->ArgV(2) || *end || !MirvFix_SetPlayerInterpolation(seconds))
-					Tier0_Warning("Interpolation edit rejected. Requires a TF2 demo, writable interpolation "
+					Tier0_Warning("Interpolation edit rejected. Requires a compatible demo, writable interpolation "
 					              "cvars and 0.001..1 seconds. Existing settings retained.\n");
 				else
 					AfxHookSource::CameraOverlay::RememberDemoFixPreference(
@@ -6717,7 +7344,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				MirvFix_PrintPlayerInterpolationStatus();
 				return;
 			}
-			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status\nUses TF2 interpolation for "
+			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status|probe <playerIndex|status|events|off>|ofEngine <0.016..0.25 [all]|default|status>\nUses native Source interpolation for "
 					  "uneven player movement; 0.1 seconds is a starting point. Adds presentation delay; "
 					  "cannot reconstruct missing snapshots.\nCurrent: %s, requested cl_interp %.3f seconds. "
 					  "Automatically restores settings when the demo ends.\n",
@@ -7742,19 +8369,19 @@ CON_COMMAND(mirv_spec_player_key, "Spectate player by spectatorslot index") {
 
 #endif //#ifndef _WIN64
 
-CON_COMMAND(mirv_overlay, "TF2 camera workspace (F8).")
+CON_COMMAND(mirv_overlay, "Cinematic workspace (supported games only).")
 {
 	if (args->ArgC() == 2 && (!_stricmp(args->ArgV(1), "0") || !_stricmp(args->ArgV(1), "1")))
 	{
 		if (!AfxHookSource::Gui::SetOverlayOpen(atoi(args->ArgV(1)) != 0))
-			Tier0_Warning("TF2 overlay is unavailable.\n");
+			Tier0_Warning("Cinematic overlay unavailable (unsupported game or GUI not initialized).\n");
 		return;
 	}
 	if (args->ArgC() == 1)
 	{
 		if (!AfxHookSource::Gui::SetOverlayOpen(!AfxHookSource::CameraOverlay::IsOpen()))
-			Tier0_Warning("TF2 overlay is unavailable.\n");
+			Tier0_Warning("Cinematic overlay unavailable (unsupported game or GUI not initialized).\n");
 		return;
 	}
-	Tier0_Msg("mirv_overlay [0|1] - Toggle or set the TF2 camera overlay.\n");
+	Tier0_Msg("mirv_overlay [0|1] - Toggle or set the cinematic workspace.\n");
 }

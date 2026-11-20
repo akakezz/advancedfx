@@ -72,7 +72,8 @@ struct CUSTOMVERTEX
 bool IsSupported()
 {
 	return ImGui::GetCurrentContext() != nullptr &&
-		   (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified);
+		   (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified ||
+			(g_SourceSdkVer == SourceSdkVer_HL2MP && g_OpenFortressLegacyMode));
 }
 
 class CImGuiRenderCacheManager
@@ -684,7 +685,9 @@ RECT m_GameClip = {};
 bool m_GameClipEnabled = false;
 HWND m_GameCapture = nullptr;
 int m_GameCursorDisplayCount = 0;
-// ImGui renders overlay cursor shapes; the OS cursor is restored when ownership ends.
+// TF2 uses the PR #1 native system cursor. OF's game input can still hide
+// that cursor during ImGui ownership, so OF draws an ImGui cursor instead.
+// Restore the original OS cursor visibility/count on release.
 static bool m_PreviousDrawCursor = false;
 
 void UpdateGraphInputOwnership()
@@ -710,8 +713,19 @@ void UpdateGraphInputOwnership()
 		if (GetCapture() == g_hWnd)
 			ReleaseCapture();
 		m_PreviousDrawCursor = ImGui::GetIO().MouseDrawCursor;
-		ImGui::GetIO().MouseDrawCursor = true;
-		SetCursor(nullptr);
+		// OF's Source cursor state can override the hardware cursor between
+		// WM_SETCURSOR events. Use ImGui's software cursor for OF only; the
+		// existing native pointer remains the default for TF2 and TF2C.
+		ImGui::GetIO().MouseDrawCursor = g_OpenFortressLegacyMode;
+		if (g_OpenFortressLegacyMode)
+		{
+			SetCursor(nullptr);
+			int count = ShowCursor(FALSE);
+			while (count >= 0)
+				count = ShowCursor(FALSE);
+		}
+		else
+			SetCursor(LoadCursor(nullptr, IDC_ARROW));
 		POINT client = m_GameCursorPos;
 		ScreenToClient(g_hWnd, &client);
 		ImGui::GetIO().MousePos = ImVec2(float(client.x), float(client.y));
@@ -777,8 +791,7 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 	// normal window events and frames, never by querying Source from this callback.
 	if (msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT && m_GraphInputOwned)
 	{
-		if (GetCursor() != nullptr)
-			SetCursor(nullptr);
+		SetCursor(g_OpenFortressLegacyMode ? nullptr : LoadCursor(nullptr, IDC_ARROW));
 		return true;
 	}
 
@@ -805,10 +818,25 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 			ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
 		return true;
 	}
+	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam < 256 &&
+		!(lParam & (1LL << 30)) && CameraOverlay::Recording::CaptureHotkey((unsigned int)wParam))
+	{
+		m_KeyDownEaten[wParam] = true;
+		NativeInput_EatKey(unsigned(wParam));
+		return true;
+	}
 	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam == VK_F8)
 	{
 		if (!(lParam & (1LL << 30)))
 			SetOverlayOpen(!CameraOverlay::IsOpen());
+		m_KeyDownEaten[wParam] = true;
+		NativeInput_EatKey(unsigned(wParam));
+		return true;
+	}
+	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam < 256 &&
+		!(lParam & (1LL << 30)) &&
+		CameraOverlay::Recording::HandleHotkey((unsigned int)wParam))
+	{
 		m_KeyDownEaten[wParam] = true;
 		NativeInput_EatKey(unsigned(wParam));
 		return true;
@@ -1231,6 +1259,7 @@ bool OnGameFrameRenderEnd()
 	ImGui::Render();
 
 	CacheRenderDrawData(ImGui::GetDrawData());
+	CameraOverlay::ProcessExternalActions();
 	g_LastOverlayFrame = GetTickCount();
 
 	return true;

@@ -5,6 +5,7 @@
 #include "CampathDrawer.h"
 #include "Gui.h"
 #include "MirvCalcs.h"
+#include "addresses.h"
 #include "MirvCam.h"
 #include "MirvTime.h"
 #include "RenderView.h"
@@ -47,6 +48,8 @@ namespace AfxHookSource
 namespace CameraOverlay
 {
 static std::atomic_bool g_Open{false}, g_MouseLook{false};
+// Requests from ImGui are launched only after EndFrame/Render on the UI thread.
+static std::wstring g_RecordingFolderPending;
 static std::recursive_mutex g_SceneMutex;
 static advancedfx::SceneCache g_SceneCache;
 static bool g_SceneRecord = false, g_ScenePreview = false;
@@ -64,6 +67,11 @@ static bool g_SceneSmoothAnimation = true;
 static bool g_SceneProjectiles = false, g_SceneWeapons = false, g_SceneCosmetics = false;
 static bool g_SceneRagdolls = false, g_SceneGibs = false;
 static bool g_SceneBuildings = false, g_SceneProps = false;
+// OF extended Scene Cache is explicitly opt-in, session-only, default off.
+// Avoid persisting risky engine-facing studio work across HLAE launches.
+static bool g_SceneOfExtended = false, g_SceneOfPoses = false;
+static bool g_SceneOfReplay = false, g_SceneOfSkeleton = false;
+static bool g_SceneOfStudioEverUsed = false;
 static std::string g_ScenePoseStatus = "Pose capture disabled.";
 static std::shared_ptr<const std::string> g_SceneModelStatus;
 static void SceneModelStatus(const std::string &value)
@@ -97,10 +105,18 @@ void SceneCacheDevicePresent(bool success)
 		++g_SceneDrawEpoch;
 	}
 }
-static bool SceneCanDrawModels()
+static bool SceneCanDrawLines()
 {
+	// Common bounds/trails use the already supported overlay DX9 lines;
+	// do not confuse this with OF studio-model submission.
 	return g_SceneFocused.load() && g_SceneDeviceReady.load() &&
 	       g_SceneReadyEpoch == g_SceneLifecycleEpoch.load() && g_SceneReadyFrames >= 2;
+}
+static bool SceneCanDrawModels()
+{
+	return SceneCanDrawLines() &&
+	       (!g_OpenFortressLegacyMode ||
+	        (g_SceneOfReplay && Mirv_Of_SceneInterfacesSupported(true)));
 }
 
 static unsigned long long g_ScenePoseCaptured = 0, g_ScenePoseFailures = 0;
@@ -283,7 +299,10 @@ void SceneCacheFrame(bool capture)
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	if (capture)
 	{
-		Mirv_Tf2_SceneRenderFrame();
+		// Retire resources from an explicitly enabled OF studio attempt too.
+		// Keep the known-good bounds-only mode free of renderer calls.
+		if (!g_OpenFortressLegacyMode || g_SceneOfStudioEverUsed)
+			Mirv_Tf2_SceneRenderFrame();
 		const auto epoch = g_SceneLifecycleEpoch.load();
 		if (g_SceneReadyEpoch != epoch)
 		{
@@ -314,8 +333,11 @@ void SceneCacheFrame(bool capture)
 	}
 	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
 	{
-		if (capture)
+		if (capture && (!g_OpenFortressLegacyMode || g_SceneOfStudioEverUsed))
+		{
+			Mirv_Tf2_SceneRenderFrame();
 			Mirv_Tf2_ReleaseSceneMaterials();
+		}
 		if (g_ScenePreview)
 			++g_SceneDrawEpoch;
 		g_SceneSampleReady = false;
@@ -324,7 +346,8 @@ void SceneCacheFrame(bool capture)
 		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 		return;
 	}
-	if (capture && g_SceneDeviceReady.load() && g_SceneRecord && !g_VEngineClient->IsSkippingDemo() &&
+	if (capture && g_SceneDeviceReady.load() && g_SceneRecord &&
+	    !g_VEngineClient->IsSkippingDemo() &&
 	    GetCurrentDemoTick(tick) && GetCurrentDemoTime(time) && SceneCaptureTick(tick))
 	{
 		const auto captureStart = std::chrono::steady_clock::now();
@@ -339,6 +362,87 @@ void SceneCacheFrame(bool capture)
 		if (auto globals = g_Hook_VClient_RenderView.GetGlobals())
 			MirvCam_CaptureCameras(frame.ClientTime, globals->framecount_get(),
 								   globals->absoluteframetime_get(), frame.Cameras);
+		if (g_OpenFortressLegacyMode)
+		{
+			// Stage 1 remains the fallback. Stage 2 is optional, known-client
+			// extended enumeration plus immutable bone poses; no live pointer is
+			// retained beyond this capture callback.
+			const bool advanced = g_SceneOfExtended && Mirv_Of_SceneInterfacesSupported(false);
+			if (advanced)
+			{
+				std::vector<MirvTf2SceneEntity> observed;
+				Mirv_Of_CollectSceneEntities(g_ScenePlayerModels, g_SceneProjectiles,
+				    g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls, g_SceneGibs,
+				    g_SceneBuildings, g_SceneProps, observed);
+				unsigned captured = 0, poses = 0, failed = 0;
+				std::string issue;
+				for (auto &row : observed)
+				{
+					const bool player = row.Snapshot.Category == MIRV_TF2_ENTITY_PLAYER;
+					if (player && !ScenePlayerMatches(row.Snapshot.Identity, row.Index))
+						continue;
+					// Bound per-frame studio work; categories can include many props.
+					if (g_SceneOfPoses && poses + failed < 128)
+					{
+						std::string status;
+						if (Mirv_Tf2_CaptureScenePose(row.Index, row.Snapshot, status, row.ObservedObject))
+						{
+							++poses;
+							++g_ScenePoseCaptured;
+						}
+						else
+						{
+							++failed;
+							++g_ScenePoseFailures;
+							issue = std::move(status);
+						}
+					}
+					frame.Entities.push_back(std::move(row.Snapshot));
+					++captured;
+				}
+				g_ScenePoseStatus = "OF extended tick " + std::to_string(tick) + ": " +
+				    std::to_string(captured) + " entities, " + std::to_string(poses) +
+				    " poses; " + std::to_string(failed) + " pose failures. " + issue;
+			}
+			else
+			{
+			// OF phase 1: reuse observed player render origins and bounds.
+			// No TF2 studio-model ABI, SetupBones, or class/categorization calls.
+			size_t discovered = 0, captured = 0;
+			if (g_ScenePlayerModels)
+				for (int index = 1, count = (std::min)(Mirv_Tf2_GetMaxPlayers(), 128); index <= count; ++index)
+				{
+					int user = 0;
+					if (!Mirv_Tf2_GetPlayerInfo(index, nullptr, 0, &user) || user <= 0)
+						continue;
+					++discovered;
+					if (!ScenePlayerMatches(static_cast<std::uint64_t>(user), index))
+						continue;
+					advancedfx::SceneCache::Entity entity;
+					entity.Identity = static_cast<std::uint64_t>(user);
+					entity.Category = 0; // Stable demo-local player identity.
+					if (!Mirv_Tf2_GetSceneEntity(index, entity.Origin, entity.Angles, entity.Mins, entity.Maxs))
+						continue;
+					bool finite = true;
+					for (int axis = 0; axis < 3; ++axis)
+						finite &= std::isfinite(entity.Origin[axis]) && std::isfinite(entity.Angles[axis]) &&
+						          std::isfinite(entity.Mins[axis]) && std::isfinite(entity.Maxs[axis]) &&
+						          entity.Mins[axis] <= entity.Maxs[axis];
+					if (!finite)
+						continue;
+					frame.Entities.push_back(std::move(entity));
+					++captured;
+				}
+			g_ScenePoseStatus = "OF bounds-only tick " + std::to_string(tick) + ": " +
+			    std::to_string(captured) + " player bounds from " + std::to_string(discovered) +
+			    " player slots; " + std::to_string(frame.Cameras.size()) +
+			    " cameras; no studio meshes.";
+			if (g_SceneOfExtended)
+				g_ScenePoseStatus += " Extended capture unavailable on this OF build.";
+			} // End safe OF player-bounds fallback.
+		}
+		else
+		{
 		size_t selectedSeen = 0;
 		std::vector<MirvTf2SceneEntity> entities;
 		Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls,
@@ -413,6 +517,7 @@ void SceneCacheFrame(bool capture)
 		if (g_ScenePlayerFilter && g_ScenePlayerModels && selectedSeen < g_ScenePlayers.size())
 			g_ScenePoseStatus += " " + std::to_string(selectedSeen) + "/" +
 			                     std::to_string(g_ScenePlayers.size()) + " selected players available.";
+		} // TF2 / TF2C studio-model scene capture ends here.
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
@@ -458,10 +563,11 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	static std::shared_ptr<const advancedfx::SceneCache::Frame> last;
 	static advancedfx::SceneCache::DrawingOptions previous;
+	static bool previousSkeleton = false;
 	static std::uint64_t revision = ~0ull;
 	static std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> lines;
 	const auto view = SceneCacheView();
-	if (!view || !SceneCanDrawModels())
+	if (!view || !SceneCanDrawLines())
 	{
 		last.reset();
 		lines.reset();
@@ -469,20 +575,38 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 	}
 	auto options = g_SceneDrawing;
 	options.Meshes = g_SceneDrawModels.load();
-	if (last != view || !(previous == options) || revision != g_SceneCache.Revision())
+	if (last != view || !(previous == options) || revision != g_SceneCache.Revision() ||
+	    previousSkeleton != g_SceneOfSkeleton)
 	{
+		previousSkeleton = g_SceneOfSkeleton;
 		last = view;
 		previous = options;
 		revision = g_SceneCache.Revision();
-		lines = std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(
+		auto built = std::make_shared<std::vector<advancedfx::SceneCache::Line>>(
 		    g_SceneCache.Drawing(*view, options));
+		if (g_OpenFortressLegacyMode && g_SceneOfSkeleton)
+			for (const auto &entity : view->Entities)
+			{
+				const auto it = std::lower_bound(view->Entities.begin(), view->Entities.end(),
+				    entity.OwnerIdentity, [](const auto &row, std::uint64_t identity) {
+				        return row.Identity < identity;
+				    });
+				const auto *owner = entity.OwnerIdentity && it != view->Entities.end() &&
+				    it->Identity == entity.OwnerIdentity ? &*it : nullptr;
+				Mirv_Tf2_SceneBoneLines(entity, owner, *built);
+			}
+		lines = std::move(built);
 	}
 	return lines;
 }
 void SceneCacheDrawModels()
 {
-	if (!g_SceneDrawModels.load() || !SceneCanDrawModels())
+	// OF replay is controlled independently from TF2's persisted model toggle.
+	if ((!g_OpenFortressLegacyMode && !g_SceneDrawModels.load()) ||
+	    !SceneCanDrawModels())
 		return;
+	if (g_OpenFortressLegacyMode)
+		g_SceneOfStudioEverUsed = true;
 	std::shared_ptr<const advancedfx::SceneCache::Frame> view;
 	unsigned long long epoch;
 	{
@@ -710,6 +834,41 @@ static void DrawSceneCoverage()
 	ImGui::EndNeoTimeLine();
 }
 static bool g_Docking = true;
+// Recording options remain independent of the active overlay tab.
+static char g_RecordFps[64] = "60";
+static bool g_RecordAutoResume = true, g_RecordAutoPause = true;
+static bool g_RecordAutoClose = true, g_RecordAutoStopOnOpen = false;
+static unsigned int g_RecordHotkey = 0; // Disabled until explicitly chosen.
+static unsigned int g_RecordHotkeyMods = 0; // Shift=1, Ctrl=2, Alt=4
+static bool g_RecordCapturingHotkey = false;
+static bool RecordModifierKey(unsigned int key)
+{
+	return key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT ||
+		key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL ||
+		key == VK_MENU || key == VK_LMENU || key == VK_RMENU ||
+		key == VK_LWIN || key == VK_RWIN;
+}
+static unsigned int RecordModifiers()
+{
+	return (GetKeyState(VK_SHIFT) & 0x8000 ? 1u : 0u) |
+		(GetKeyState(VK_CONTROL) & 0x8000 ? 2u : 0u) |
+		(GetKeyState(VK_MENU) & 0x8000 ? 4u : 0u);
+}
+static std::string RecordHotkeyLabel()
+{
+	if (!g_RecordHotkey) return "Not bound";
+	std::string result;
+	if (g_RecordHotkeyMods & 2) result += "Ctrl+";
+	if (g_RecordHotkeyMods & 1) result += "Shift+";
+	if (g_RecordHotkeyMods & 4) result += "Alt+";
+	char name[80] = {};
+	const UINT scan = MapVirtualKeyA(g_RecordHotkey, MAPVK_VK_TO_VSC);
+	const LONG code = LONG(scan) << 16;
+	if (!scan || !GetKeyNameTextA(code, name, sizeof(name)))
+		std::snprintf(name, sizeof(name), "VK %u", g_RecordHotkey);
+	return result + name;
+}
+static std::atomic_bool g_RecordTogglePending{false};
 static bool g_CurveKeyDrag = false, g_CancelGesture = false;
 static std::unique_ptr<CamPathCollection::State> g_GestureStart;
 static unsigned long long g_GestureOwner = 0, g_GestureRevision = 0;
@@ -829,6 +988,8 @@ bool IsOpen()
 }
 void SetOpen(bool value)
 {
+	if (value && !g_Open && g_RecordAutoStopOnOpen && Recording::IsActive())
+		g_RecordTogglePending.store(true);
 	const bool wasOpen = g_Open.load();
 	if (!value)
 	{
@@ -883,7 +1044,15 @@ void HistoryUndo(bool redo)
 	g_CurveKeyDrag = false;
 	g_GestureStart.reset();
 	g_CancelGesture = ImGui::GetCurrentContext() && ImGui::IsMouseDown(0);
-	g_Hook_VClient_RenderView.m_CamPaths.Undo(redo);
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	// Commit pending path gestures before comparing their edit index to camera edits.
+	paths.FinishEdit();
+	const auto pathIndex = paths.LastHistoryIndex(redo);
+	const auto cameraIndex = MirvCam_HistoryIndex(redo);
+	if (cameraIndex && (!pathIndex || (redo ? cameraIndex < pathIndex : cameraIndex > pathIndex)))
+		MirvCam_HistoryUndo(redo);
+	else if (pathIndex)
+		paths.Undo(redo);
 }
 static std::filesystem::path RecoveryDirectory()
 {
@@ -1036,6 +1205,80 @@ static inline void Afx_GotoDemoTick(int tick)
 	MirvCampathPreview_SeekTick(tick);
 }
 
+namespace Recording
+{
+bool Toggle()
+{
+	if (!g_VEngineClient)
+		return false;
+	if (IsActive())
+	{
+		std::string command = "mirv_streams record end; host_framerate 0";
+		if (g_RecordAutoPause)
+			command += "; demo_pause";
+		g_VEngineClient->ClientCmd_Unrestricted(command.c_str());
+	}
+	else
+	{
+		const double fps = std::strtod(g_RecordFps, nullptr);
+		const double rate = std::isfinite(fps) && fps >= 1 && fps <= 10000 ? fps : 60.0;
+		char command[256];
+		std::snprintf(command, sizeof(command),
+			"host_framerate %.7g; mirv_streams record fps %.7g; mirv_streams record start%s",
+			rate, rate, g_RecordAutoResume ? "; demo_resume" : "");
+		g_VEngineClient->ClientCmd_Unrestricted(command);
+		if (g_RecordAutoClose)
+			AfxHookSource::Gui::SetOverlayOpen(false);
+	}
+	return true;
+}
+bool CaptureHotkey(unsigned int key)
+{
+	if (!g_RecordCapturingHotkey)
+		return false;
+	if (key == VK_ESCAPE)
+	{
+		g_RecordCapturingHotkey = false;
+		return true;
+	}
+	if (key == VK_BACK)
+	{
+		g_RecordHotkey = 0;
+		g_RecordHotkeyMods = 0;
+		g_RecordCapturingHotkey = false;
+		if (ImGui::GetCurrentContext()) ImGui::MarkIniSettingsDirty();
+		return true;
+	}
+	// Do not consume the operating system's window-management chords.
+	if ((GetKeyState(VK_MENU) & 0x8000) &&
+		(key == VK_TAB || key == VK_F4 || key == VK_ESCAPE))
+		return false;
+	if (key == VK_LWIN || key == VK_RWIN)
+		return false;
+	if (RecordModifierKey(key))
+		return true;
+	// F8 owns the overlay toggle, and Windows keys/system shortcuts are not
+	// suitable single-key recording binds. Other keyboard keys are accepted.
+	if (key == VK_F8 || key == VK_SNAPSHOT || key == VK_CANCEL)
+		return true;
+	g_RecordHotkey = key;
+	g_RecordHotkeyMods = RecordModifiers();
+	g_RecordCapturingHotkey = false;
+	if (ImGui::GetCurrentContext()) ImGui::MarkIniSettingsDirty();
+	return true;
+}
+bool HandleHotkey(unsigned int key)
+{
+	if (g_RecordCapturingHotkey || !g_RecordHotkey || key != g_RecordHotkey ||
+		RecordModifiers() != g_RecordHotkeyMods || !g_VEngineClient ||
+		g_VEngineClient->Con_IsVisible() ||
+		(ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput))
+		return false;
+	g_RecordTogglePending.store(true);
+	return true;
+}
+} // namespace Recording
+
 static inline const char *AfxStreams_GetRecordNameUtf8()
 {
 	return Recording::GetName();
@@ -1089,8 +1332,28 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	bool ok = false;
 	if (!_stricmp(op, "record") && integer(value) && (value == 0 || value == 1))
 	{
+		// OF supports camera and selected player-bounds capture, not studio poses.
 		g_SceneRecord = value != 0;
 		ok = true;
+	}
+	else if (g_OpenFortressLegacyMode && integer(value) && (value == 0 || value == 1) &&
+	         (!_stricmp(op, "ofExtended") || !_stricmp(op, "ofPoses") ||
+	          !_stricmp(op, "ofReplay") || !_stricmp(op, "ofSkeleton")))
+	{
+		bool *setting = !_stricmp(op, "ofExtended") ? &g_SceneOfExtended :
+		                !_stricmp(op, "ofPoses") ? &g_SceneOfPoses :
+		                !_stricmp(op, "ofReplay") ? &g_SceneOfReplay : &g_SceneOfSkeleton;
+		if (!value || Mirv_Of_SceneInterfacesSupported(!_stricmp(op, "ofReplay")))
+		{
+			*setting = value != 0;
+			if (value && (!_stricmp(op, "ofPoses") || !_stricmp(op, "ofReplay")))
+				g_SceneOfExtended = true;
+			++g_SceneDrawEpoch;
+			SceneCacheFrame(false);
+			ok = true;
+		}
+		else
+			advancedfx::Warning("OF advanced Scene Cache unavailable: requires the verified 2024 x86 client/interfaces.\n");
 	}
 	else if (!_stricmp(op, "range"))
 	{
@@ -1171,8 +1434,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		if (!bodies && args->ArgC() == 2)
 		{
 			advancedfx::Message(
-			    "Filter: %s; %zu selected. Use mirv_cache filter all|none|set|add|remove <indices...>.\n",
-			    g_ScenePlayerFilter ? "selected players" : "all players", g_ScenePlayers.size());
+			    "Filter: %s; %s selected. Use mirv_cache filter all|none|set|add|remove <indices...>.\n",
+			    g_ScenePlayerFilter ? "selected players" : "all players", std::to_string(g_ScenePlayers.size()).c_str());
 			return;
 		}
 		if (args->ArgC() == 3 &&
@@ -1388,6 +1651,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
+		    "  OF only: mirv_cache ofExtended|ofPoses|ofReplay|ofSkeleton <0|1>.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
 	}
@@ -1396,10 +1660,10 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		advancedfx::Warning("Scene cache command rejected. Use mirv_cache help for syntax.\n");
 		return;
 	}
-	advancedfx::Message("Scene cache: record %d, preview %d; rate %d ticks/s; tick %d; %zu frames, %.2f MiB "
+	advancedfx::Message("Scene cache: record %d, preview %d; rate %d ticks/s; tick %d; %s frames, %.2f MiB "
 	                    "payload; coverage at cursor %s.\n",
 	                    int(g_SceneRecord), int(g_ScenePreview), g_SceneScrubRate, int(g_SequencerFrame),
-	                    g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0,
+	                    std::to_string(g_SceneCache.Count()).c_str(), g_SceneCache.Bytes() / 1048576.0,
 	                    SceneCacheView() ? "yes" : "no");
 	if (_stricmp(op, "status"))
 	{
@@ -1408,11 +1672,17 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		return;
 	}
 
-	advancedfx::Message("Scene pose: players %d; filter %s (%zu selected); captured %llu, unavailable %llu; "
+	if (g_OpenFortressLegacyMode)
+		advancedfx::Message("OF Scene Cache: extended %d, studio poses %d, studio replay %d, skeleton %d; "
+		                    "OF 2024 x86 capture compatible %d; replay interfaces compatible %d.\n",
+		                    int(g_SceneOfExtended), int(g_SceneOfPoses), int(g_SceneOfReplay),
+		                    int(g_SceneOfSkeleton), int(Mirv_Of_SceneInterfacesSupported(false)),
+		                    int(Mirv_Of_SceneInterfacesSupported(true)));
+	advancedfx::Message("Scene pose: players %d; filter %s (%s selected); captured %s, unavailable %s; "
 	                    "models %d; projectiles %d; weapons %d; cosmetics %d; ragdolls %d; gibs %d; "
 	                    "buildings %d; props %d; animation %s. %s\n",
 	                    int(g_ScenePlayerModels), g_ScenePlayerFilter ? "selected" : "all",
-	                    g_ScenePlayers.size(), g_ScenePoseCaptured, g_ScenePoseFailures,
+	                    std::to_string(g_ScenePlayers.size()).c_str(), std::to_string(g_ScenePoseCaptured).c_str(), std::to_string(g_ScenePoseFailures).c_str(),
 	                    int(g_SceneDrawModels.load()), int(g_SceneProjectiles), int(g_SceneWeapons),
 	                    int(g_SceneCosmetics), int(g_SceneRagdolls), int(g_SceneGibs), int(g_SceneBuildings),
 	                    int(g_SceneProps), g_SceneSmoothAnimation ? "smooth" : "nearest",
@@ -1421,10 +1691,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		advancedfx::Message("Capture range: %d .. %d inclusive%s.\n", g_SceneRangeFirst, g_SceneRangeLast,
 		                    g_SceneRecord ? " (armed)" : " (stopped)");
 	advancedfx::Message(
-	    "Capture cost: last %.3f ms, mean %.3f ms, peak %.3f ms over %llu observed frames; "
-	    "%zu unique retained poses, %zu unchanged poses reused.\n",
+	    "Capture cost: last %.3f ms, mean %.3f ms, peak %.3f ms over %s observed frames; "
+	    "%s unique retained poses, %s unchanged poses reused.\n",
 	    g_SceneCaptureMs, g_SceneCaptureFrames ? g_SceneCaptureTotalMs / g_SceneCaptureFrames : 0,
-	    g_SceneCapturePeakMs, g_SceneCaptureFrames, g_SceneCache.PoseCount(), g_SceneCache.ReusedPoses());
+	    g_SceneCapturePeakMs, std::to_string(g_SceneCaptureFrames).c_str(),
+	    std::to_string(g_SceneCache.PoseCount()).c_str(), std::to_string(g_SceneCache.ReusedPoses()).c_str());
 	if (g_ScenePreview)
 		if (auto status = std::atomic_load(&g_SceneModelStatus))
 			advancedfx::Message("%s\n", status->c_str());
@@ -1600,6 +1871,10 @@ static double g_ExportFps = 120;
 static bool g_OverlayPreferencesReady = false;
 static bool g_DemoMute = false, g_DemoDeathcam = false, g_DemoSmooth = false;
 static double g_DemoInterpolation = .1;
+// OF engine interpolation bypass: independently remembered from the TF2/TF2C
+// cvar-based player interpolation fix. No detour is installed on startup.
+static bool g_DemoOfEngine = false, g_DemoOfEngineAll = false;
+static double g_DemoOfEngineSeconds = .1;
 static auto g_DemoFixAttempt = std::chrono::steady_clock::time_point{};
 static std::pair<std::uint64_t, size_t> g_OverlayPreferenceStamp{};
 static double g_SavedTrailSeconds = 2;
@@ -1610,7 +1885,8 @@ static std::pair<std::uint64_t, size_t> OverlayPreferenceStamp()
 	for (bool value : {g_ScenePlayerModels, g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics,
 	                   g_SceneRagdolls, g_SceneGibs, g_SceneBuildings, g_SceneProps, g_SceneSmoothAnimation,
 	                   g_SceneDrawModels.load(), g_ShowSequencer, g_ShowCameraControl, g_ShowCurveEditor,
-	                   g_ShowGizmo, g_PreviewHudEnabled, g_ShowCameraGuides, g_CameraFrustums, g_DemoMute, g_DemoDeathcam, g_DemoSmooth})
+	                   g_ShowGizmo, g_PreviewHudEnabled, g_ShowCameraGuides, g_CameraFrustums, g_DemoMute, g_DemoDeathcam, g_DemoSmooth,
+	                   g_DemoOfEngine, g_DemoOfEngineAll})
 	{
 		if (value)
 			bits |= 1ull << bit;
@@ -1674,8 +1950,23 @@ void RememberDemoFixPreference(DemoFixPreference setting, double value)
 	if (ImGui::GetCurrentContext())
 		ImGui::MarkIniSettingsDirty();
 }
+void RememberOfEngineFixPreference(bool enabled, double seconds, bool allEntityIntervals)
+{
+	g_DemoOfEngine = enabled;
+	// A console "default" preserves the user's last delay/mode selection.
+	if (std::isfinite(seconds) && seconds >= .016 && seconds <= .25)
+	{
+		g_DemoOfEngineSeconds = seconds;
+		g_DemoOfEngineAll = allEntityIntervals;
+	}
+	g_DemoFixAttempt = {};
+	if (ImGui::GetCurrentContext())
+		ImGui::MarkIniSettingsDirty();
+}
 void PreferencesFrame()
 {
+	if (g_RecordTogglePending.exchange(false))
+		Recording::Toggle();
 	if (!g_OverlayPreferencesReady)
 		return;
 	CheckOverlayPreferences();
@@ -1683,13 +1974,27 @@ void PreferencesFrame()
 	if (now - g_DemoFixAttempt < std::chrono::seconds(1))
 		return;
 	g_DemoFixAttempt = now;
-	MirvFix_ArmRecorderSoundMute(g_DemoMute);
-	if (g_DemoDeathcam && !MirvFix_GetPovDeathcam())
-		MirvFix_SetPovDeathcam(true);
+	if (!g_OpenFortressLegacyMode)
+	{
+		MirvFix_ArmRecorderSoundMute(g_DemoMute);
+		if (g_DemoDeathcam && !MirvFix_GetPovDeathcam())
+			MirvFix_SetPovDeathcam(true);
+	}
 	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || g_VEngineClient->IsDrawingLoadingImage())
 		return;
-	if (g_DemoMute && !g_VEngineClient->IsHLTV() && !MirvFix_GetRecorderSoundMute())
+	if (!g_OpenFortressLegacyMode && g_DemoMute && !g_VEngineClient->IsHLTV() && !MirvFix_GetRecorderSoundMute())
 		MirvFix_SetRecorderSoundMute(true);
+#ifndef _WIN64
+	// The preference survives the previous demo, but each engine override
+	// automatically shuts off when a demo ends. Re-apply only to a playing OF
+	// demo, from FRAME_START even when the overlay UI is closed.
+	if (g_OpenFortressLegacyMode && g_DemoOfEngine &&
+	    !g_VEngineClient->IsSkippingDemo() &&
+	    (!MirvFix_OfEngineEnabled() ||
+	     std::abs(MirvFix_OfEngineSeconds() - g_DemoOfEngineSeconds) > 1e-5 ||
+	     MirvFix_OfEngineAllEntities() != g_DemoOfEngineAll))
+		MirvFix_OfEngineSet(g_DemoOfEngineSeconds, g_DemoOfEngineAll);
+#endif
 	if (g_DemoSmooth && MirvFix_PlayerInterpolationAvailable() &&
 	    std::abs(MirvFix_GetPlayerInterpolation() - g_DemoInterpolation) > 1e-6)
 		MirvFix_SetPlayerInterpolation(g_DemoInterpolation);
@@ -1816,6 +2121,10 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		option = &g_DemoDeathcam;
 	if (key == "FixSmoothMovement")
 		option = &g_DemoSmooth;
+	if (key == "FixOfEngineEnabled")
+		option = &g_DemoOfEngine;
+	if (key == "FixOfEngineAll")
+		option = &g_DemoOfEngineAll;
 	if (option)
 	{
 		if (val == "0" || val == "1")
@@ -1843,6 +2152,14 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		const double seconds = std::strtod(val.c_str(), &end);
 		if (end != val.c_str() && !*end && std::isfinite(seconds) && seconds >= .001 && seconds <= 1)
 			g_DemoInterpolation = seconds;
+		return;
+	}
+	if (key == "FixOfEngineSeconds")
+	{
+		char *end = nullptr;
+		const double seconds = std::strtod(val.c_str(), &end);
+		if (end != val.c_str() && !*end && std::isfinite(seconds) && seconds >= .016 && seconds <= .25)
+			g_DemoOfEngineSeconds = seconds;
 		return;
 	}
 	if (key == "CampathDir")
@@ -1887,6 +2204,23 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 	}
 	else if (key == "Docking")
 		g_Docking = atoi(val.c_str()) != 0;
+	else if (key == "RecordFps")
+	{
+		if (!val.empty() && val.size() < sizeof(g_RecordFps))
+			std::snprintf(g_RecordFps, sizeof(g_RecordFps), "%s", val.c_str());
+	}
+	else if (key == "RecordAutoResume") g_RecordAutoResume = atoi(val.c_str()) != 0;
+	else if (key == "RecordAutoPause") g_RecordAutoPause = atoi(val.c_str()) != 0;
+	else if (key == "RecordAutoClose") g_RecordAutoClose = atoi(val.c_str()) != 0;
+	else if (key == "RecordAutoStopOnOpen") g_RecordAutoStopOnOpen = atoi(val.c_str()) != 0;
+	else if (key == "RecordHotkeyMods")
+		g_RecordHotkeyMods = (unsigned int)atoi(val.c_str()) & 7u;
+	else if (key == "RecordHotkey")
+	{
+		int value = atoi(val.c_str());
+		if (value >= 0 && value <= 255 && value != VK_F8 && !RecordModifierKey((unsigned int)value))
+			g_RecordHotkey = (unsigned int)value;
+	}
 }
 static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler, ImGuiTextBuffer *out_buf)
 {
@@ -1902,7 +2236,11 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("SeekMode=%d\nSeekScale=%.6f\n", MirvCampathPreview_GetSeekMode(),
 					 MirvCampathPreview_GetSeekScale());
 	out_buf->appendf("Autosave=%d\nAutosaveSeconds=%.3f\n", g_Autosave ? 1 : 0, g_AutosaveSeconds);
-	out_buf->appendf("UiScale=%.3f\nFont=%d\nDocking=%d\n\n", g_UiScale, g_FontChoice, g_Docking ? 1 : 0);
+	out_buf->appendf("UiScale=%.3f\nFont=%d\nDocking=%d\n", g_UiScale, g_FontChoice, g_Docking ? 1 : 0);
+	out_buf->appendf("RecordFps=%s\nRecordAutoResume=%d\nRecordAutoPause=%d\n"
+		"RecordAutoClose=%d\nRecordAutoStopOnOpen=%d\nRecordHotkey=%u\nRecordHotkeyMods=%u\n\n",
+		g_RecordFps, (int)g_RecordAutoResume, (int)g_RecordAutoPause,
+		(int)g_RecordAutoClose, (int)g_RecordAutoStopOnOpen, g_RecordHotkey, g_RecordHotkeyMods);
 	out_buf->appendf("SequencerSourcesOpen=%d\nSequencerPathsOpen=%d\n", int(g_SequencerSourcesOpen),
 					 int(g_SequencerPathsOpen));
 	out_buf->appendf("SequencerTracks=%d %d %d %d %d %d %d\nSequencerPathMode=%d\n", g_SequencerTracks[0],
@@ -1935,6 +2273,8 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("FixRecorderMute=%d\n", int(g_DemoMute));
 	out_buf->appendf("FixDeathcam=%d\n", int(g_DemoDeathcam));
 	out_buf->appendf("FixSmoothMovement=%d\n", int(g_DemoSmooth));
+	out_buf->appendf("FixOfEngineEnabled=%d\nFixOfEngineAll=%d\nFixOfEngineSeconds=%.6f\n",
+	                 int(g_DemoOfEngine), int(g_DemoOfEngineAll), g_DemoOfEngineSeconds);
 	out_buf->appendf("CacheBudgetMiB=%zu\nFixInterpolationSeconds=%.6f\n\n", g_SceneCache.Limit() / 1048576,
 	                 g_DemoInterpolation);
 }
@@ -3186,7 +3526,7 @@ static void DrawObserving()
 {
 	if (!ImGui::BeginTabItem("Observing"))
 		return;
-	ImGui::TextUnformatted("Click a player to spectate in STV. Select a bone below for attachments.");
+	ImGui::TextUnformatted("Select a player to inspect. Spectating and camera attachment are separate actions.");
 	if (ImGui::Button("Detach"))
 		Afx_ExecClientCmd("mirv_cam attach clear");
 	ImGui::SameLine();
@@ -3253,19 +3593,7 @@ static void DrawObserving()
 					bone = -1;
 				selectedEntity = i;
 				selectedUser = user;
-				if (g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV())
-					traceStatus = "Native spectating requires an STV demo. This player remains selected for bone attachments.";
-				else if (user > 0)
-				{
-					MirvCampathPreview_SetActive(false);
-					g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
-					char cmd[192];
-					sprintf_s(cmd, "mirv_campath preview exit; mirv_cam attach clear; mirv_input end; spec_autodirector 0; spec_mode 4; spec_player \"#%d\"", user);
-					Afx_ExecClientCmd(cmd);
-					traceStatus = "Requested spectating " + std::string(name) + ".";
-				}
-				else
-					traceStatus = "Player has no current user ID; select them again after the demo has loaded.";
+				traceStatus = "Selected " + std::string(name) + ". Camera and spectator view unchanged.";
 			}
 			ImGui::PopID();
 		}
@@ -3273,6 +3601,25 @@ static void DrawObserving()
 	}
 	if (selectedEntity > 0)
 	{
+		ImGui::Separator();
+		const bool stv = g_VEngineClient && g_VEngineClient->IsPlayingDemo() && g_VEngineClient->IsHLTV();
+		if (stv && selectedUser > 0)
+		{
+			if (ImGui::Button("Spectate selected (STV)"))
+			{
+				MirvCampathPreview_SetActive(false);
+				g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
+				char cmd[192];
+				std::snprintf(cmd, sizeof(cmd),
+					"mirv_campath preview exit; mirv_cam attach clear; mirv_input end; spec_autodirector 0; spec_mode 4; spec_player \"#%d\"",
+					selectedUser);
+				Afx_ExecClientCmd(cmd);
+				traceStatus = "Requested STV spectating for the selected player.";
+			}
+		}
+		else if (g_VEngineClient && g_VEngineClient->IsPlayingDemo())
+			ImGui::TextWrapped("POV demo: native player spectating is unavailable. Selecting players does not change the view. "
+				"Use Attach selected only when you explicitly want an HLAE camera attachment.");
 		ImGui::Separator();
 		ImGui::Text("Selected entity: %d", selectedEntity);
 		ImGui::InputFloat3("Forward / left / up", offset);
@@ -5528,7 +5875,12 @@ static void SceneCategoryFilters(std::array<bool, advancedfx::SceneCache::Catego
 }
 static void DrawSceneCacheMenu(int playhead)
 {
+	// OF shares the camera/timeline/bounds preview, not studio-model capture.
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (g_OpenFortressLegacyMode)
+		ImGui::TextWrapped("OF Scene Cache: camera/player bounds capture is validated. "
+		                   "The extended entity, pose and studio-model paths below are experimental "
+		                   "and enabled only for the verified Open Fortress x86 client.");
 	ImGui::Text("%s | %zu frames | %.2f MiB", g_SceneRecord ? "Recording / armed" : "Stopped",
 	            g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0);
 	if (g_SceneCache.Count() > 1)
@@ -5536,12 +5888,39 @@ static void DrawSceneCacheMenu(int playhead)
 		                    g_SceneCache.Frames().back().DemoTime - g_SceneCache.Frames().front().DemoTime);
 	if (ImGui::CollapsingHeader("Capture", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::TextDisabled("Choose categories; checked colors match the preview.");
-		if (ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
+		ImGui::TextDisabled(g_OpenFortressLegacyMode
+		    ? "Enable player bounds below; camera history is always captured."
+		    : "Choose categories; checked colors match the preview.");
+		if (g_OpenFortressLegacyMode)
+		{
+			ImGui::Checkbox("Capture OF player bounds", &g_ScenePlayerModels);
+			bool extended = g_SceneOfExtended;
+			if (ImGui::Checkbox("OF extended entity categories (experimental)", &extended))
+			{
+				if (!extended || Mirv_Of_SceneInterfacesSupported(false))
+					g_SceneOfExtended = extended;
+				else g_DocumentStatus = "Requires verified OF 2024 x86 client and model info interface.";
+			}
+			if (g_SceneOfExtended)
+			{
+				bool poses = g_SceneOfPoses;
+				if (ImGui::Checkbox("Capture OF studio poses / animated bones (experimental)", &poses))
+				{
+					if (!poses || Mirv_Of_SceneInterfacesSupported(false))
+						g_SceneOfPoses = poses;
+					else g_DocumentStatus = "OF studio pose capture is unavailable for this client.";
+				}
+				ImGui::TextDisabled("Per observed tick: up to 128 pose attempts; rest remain bounds-only.");
+			}
+		}
+		if ((!g_OpenFortressLegacyMode || g_SceneOfExtended) &&
+		    ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
 		{
 			bool players = g_ScenePlayerModels;
 			ImGui::TableNextColumn();
-			if (SceneCategoryCheckbox("Player models", players, 0,
+			if (g_OpenFortressLegacyMode)
+				ImGui::TextDisabled("Players: use OF player checkbox above.");
+			else if (SceneCategoryCheckbox("Player models", players, 0,
 			                          "Full player bodies; defaults to all players. Off retains lightweight "
 			                          "player bounds. Optional filtering also scopes held gear."))
 				g_ScenePlayerModels = players;
@@ -5570,7 +5949,7 @@ static void DrawSceneCacheMenu(int playhead)
 			                      "Doors, payloads, intelligence and props, including brush surface meshes.");
 			ImGui::EndTable();
 		}
-		if ((g_ScenePlayerModels || g_SceneWeapons || g_SceneCosmetics) &&
+		if ((g_ScenePlayerModels || (!g_OpenFortressLegacyMode && (g_SceneWeapons || g_SceneCosmetics))) &&
 		    ImGui::TreeNode("Player filter (optional)"))
 		{
 			ImGui::Checkbox("Only selected players", &g_ScenePlayerFilter);
@@ -5660,13 +6039,30 @@ static void DrawSceneCacheMenu(int playhead)
 		if (ImGui::Checkbox("Smooth cached animation", &g_SceneSmoothAnimation))
 			SceneCacheFrame(false);
 		bool models = g_SceneDrawModels.load();
-		if (ImGui::Checkbox("Draw cached models", &models))
+		if (!g_OpenFortressLegacyMode && ImGui::Checkbox("Draw cached models", &models))
 		{
 			g_SceneDrawModels.store(models);
 			++g_SceneDrawEpoch;
 			SceneModelStatus(models ? "Cached model drawing enabled." : "Cached model drawing disabled.");
 		}
 
+		if (g_OpenFortressLegacyMode)
+		{
+			if (ImGui::Checkbox("OF cached animated skeleton lines", &g_SceneOfSkeleton))
+				SceneCacheFrame(false);
+			bool replay = g_SceneOfReplay;
+			if (ImGui::Checkbox("Draw OF cached studio models (experimental)", &replay))
+			{
+				if (!replay || Mirv_Of_SceneInterfacesSupported(true))
+				{
+					g_SceneOfReplay = replay;
+					if (replay) g_SceneOfExtended = true;
+					++g_SceneDrawEpoch;
+				}
+				else g_DocumentStatus = "VStudioRender025 / MDLCache004 or render queue unavailable.";
+			}
+			ImGui::TextDisabled("OF studio replay is opt-in and session-only. Default stays bounds-only.");
+		}
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
 		if (g_SceneDrawing.Bounds && ImGui::TreeNode("Bounding box filters"))
 		{
@@ -5807,8 +6203,10 @@ static void DrawSceneCacheMenu(int playhead)
 		unsigned pending = 0, peak = 0;
 		Mirv_Tf2_SceneRenderStatus(pending, peak);
 		ImGui::Text("Pending cached draws: %u (peak %u)", pending, peak);
-		if (!SceneCanDrawModels())
+		if (!SceneCanDrawModels() && !g_OpenFortressLegacyMode)
 			ImGui::TextDisabled("Cached model drawing suspended during focus/device recovery.");
+		if (g_OpenFortressLegacyMode && !SceneCanDrawLines())
+			ImGui::TextDisabled("Cached bounds drawing suspended during focus/device recovery.");
 		if (ImGui::TreeNode("Animation diagnostics"))
 		{
 			ImGui::Text("Cached tick %.3f", g_SceneCursor / SceneTickInterval());
@@ -6334,7 +6732,8 @@ static void DrawSequencerDetails(int playhead)
 		}
 		ImGui::EndTabItem();
 	}
-	DrawPlayerRepairEditor(playhead);
+	if (!g_OpenFortressLegacyMode)
+		DrawPlayerRepairEditor(playhead);
 	ImGui::EndTabBar();
 }
 
@@ -6410,13 +6809,6 @@ void SetCameraFrustums(bool enabled)
 }
 bool CameraGuidesEnabled() { return g_CameraGuidesPublished.load(); }
 bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
-static bool CameraHistoryOwnsUi()
-{
-	auto focused = ImGui::GetCurrentContext()->NavWindow;
-	return g_CamerasTabActive || MirvCam_RigNavigation() ||
-		   (g_ShowSequencer && g_CameraClipsEditing && focused && focused->RootWindow &&
-			std::strcmp(focused->RootWindow->Name, "HLAE Sequencer") == 0);
-}
 static std::string CameraClipSourceName(bool campath, std::uint64_t target)
 {
 	if (campath)
@@ -7754,7 +8146,7 @@ static void DrawCamerasTab()
 	}
 	if (found == cameras.end())
 		DrawCameraModifierLibrary();
-	if (ImGui::CollapsingHeader("Attached camera collision"))
+	if (!g_OpenFortressLegacyMode && ImGui::CollapsingHeader("Attached camera collision"))
 	{
 		auto collision = MirvCameraCollisionGet();
 
@@ -7797,6 +8189,199 @@ static void DrawCamerasTab()
 	ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
 	ImGui::EndTabItem();
 }
+// Do not launch ShellExecute/Explorer from inside an ImGui widget callback.
+// ShellExecute can synchronously invoke window hooks while ImGui is mid-frame.
+// CreateProcess with the absolute Windows Explorer path avoids that reentrancy.
+void ProcessExternalActions()
+{
+	if (g_RecordingFolderPending.empty())
+		return;
+	std::wstring folder;
+	folder.swap(g_RecordingFolderPending);
+	std::error_code error;
+	if (!std::filesystem::is_directory(std::filesystem::path(folder), error))
+	{
+		g_DocumentStatus = "Recording folder does not exist or cannot be opened. Choose an existing folder.";
+		return;
+	}
+	wchar_t windowsPath[MAX_PATH] = {};
+	const UINT length = GetWindowsDirectoryW(windowsPath, MAX_PATH);
+	if (!length || length >= MAX_PATH)
+	{
+		g_DocumentStatus = "Unable to locate Windows Explorer.";
+		return;
+	}
+	const std::wstring explorer = std::wstring(windowsPath) + L"\\explorer.exe";
+	std::wstring command;
+	command.push_back(L'"');
+	command.append(explorer);
+	command.push_back(L'"');
+	command.push_back(L' ');
+	command.push_back(L'"');
+	command.append(folder);
+	// CommandLineToArgvW requires trailing backslashes to be doubled
+	// before a closing quote (for example a selected drive root).
+	size_t trailingSlashes = 0;
+	while (trailingSlashes < folder.size() && folder[folder.size() - trailingSlashes - 1] == wchar_t(92))
+		++trailingSlashes;
+	command.append(trailingSlashes, wchar_t(92));
+	command.push_back(L'"');
+	std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+	mutableCommand.push_back(0);
+	STARTUPINFOW startup = {};
+	startup.cb = sizeof(startup);
+	PROCESS_INFORMATION process = {};
+	if (!CreateProcessW(explorer.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE, 0,
+	                    nullptr, nullptr, &startup, &process))
+	{
+		g_DocumentStatus = "Unable to open Explorer (Windows error " + std::to_string(GetLastError()) + ").";
+		return;
+	}
+	CloseHandle(process.hThread);
+	CloseHandle(process.hProcess);
+}
+
+// The profile editor reads the *same* live registry as mirv_streams. Draft
+// changes are applied explicitly, never on each ImGui frame or during a take.
+static void DrawRecordingProfileEditor(const std::string &selected)
+{
+	advancedfx::RecordingProfileInfo current;
+	if (!Recording::GetProfileInfo(selected.c_str(), current))
+	{
+		ImGui::TextDisabled("Profile not found in the recording settings registry.");
+		return;
+	}
+	static std::string editingName, status;
+	static advancedfx::RecordingProfileInfo draft;
+	static char copyName[64] = {};
+	static char ffmpegOptions[4096] = {};
+	if (editingName != current.Name)
+	{
+		editingName = current.Name;
+		draft = current;
+		copyName[0] = 0;
+		std::snprintf(ffmpegOptions, sizeof(ffmpegOptions), "%s", draft.FfmpegOptions.c_str());
+		status.clear();
+	}
+	if (!ImGui::CollapsingHeader("Recording profile details / editor", ImGuiTreeNodeFlags_DefaultOpen))
+		return;
+
+	const bool recording = Recording::IsActive();
+	const bool editable = !current.Protected && !recording;
+	const bool supported = current.Type != advancedfx::RecordingProfileInfo::Kind::Other;
+	ImGui::Text("Profile: %s", current.Name.c_str());
+	ImGui::SameLine();
+	ImGui::TextDisabled(current.Protected ? "(built-in, read-only)" : "(custom)");
+	if (recording)
+		ImGui::TextDisabled("Stop the current recording before changing any profile.");
+	if (current.Type == advancedfx::RecordingProfileInfo::Kind::Sampler)
+	{
+		ImGui::TextUnformatted("Sampler: captures at the input FPS and blends to its own output FPS.");
+		if (!editable) ImGui::BeginDisabled();
+		ImGui::SetNextItemWidth(120);
+		ImGui::InputFloat("Sampler output FPS", &draft.OutputFps, 0, 0, "%.3f");
+		ImGui::Combo("Sampling method", &draft.Method, "Rectangle\0Trapezoid\0");
+		ImGui::SetNextItemWidth(120);
+		ImGui::InputDouble("Exposure (shutter fraction)", &draft.Exposure, 0, 0, "%.3f");
+		ImGui::SliderFloat("Cross-frame strength", &draft.Strength, 0.0f, 1.0f, "%.3f");
+		if (ImGui::BeginCombo("Sampler output settings", draft.OutputSettings.c_str()))
+		{
+			for (const auto &name : Recording::GetProfiles())
+			{
+				if (name == current.Name) continue;
+				if (ImGui::Selectable(name.c_str(), name == draft.OutputSettings))
+					draft.OutputSettings = name;
+			}
+			ImGui::EndCombo();
+		}
+		if (!editable) ImGui::EndDisabled();
+		const double capture = std::strtod(g_RecordFps, nullptr);
+		if (std::isfinite(capture) && capture > 0 && std::isfinite(draft.OutputFps) && draft.OutputFps > 0)
+		{
+			ImGui::Text("Capture: %.3g FPS  ->  Output: %.3g FPS  (%.3g:1)",
+				capture, double(draft.OutputFps), capture / draft.OutputFps);
+			if (capture <= draft.OutputFps)
+				ImGui::TextDisabled("Capture FPS should exceed output FPS for temporal supersampling.");
+		}
+		ImGui::TextDisabled("Input FPS is set above; this sampler's output FPS is independent.");
+	}
+	else if (current.Type == advancedfx::RecordingProfileInfo::Kind::Ffmpeg ||
+			 current.Type == advancedfx::RecordingProfileInfo::Kind::FfmpegEx)
+	{
+		ImGui::TextUnformatted(current.Type == advancedfx::RecordingProfileInfo::Kind::FfmpegEx ?
+			"Extended FFmpeg output options" : "FFmpeg output options");
+		if (!editable) ImGui::BeginDisabled();
+		ImGui::InputTextMultiline("##record_ffmpeg_options", ffmpegOptions, sizeof(ffmpegOptions),
+			ImVec2(-1.0f, ImGui::GetTextLineHeight() * 4));
+		if (!editable) ImGui::EndDisabled();
+		draft.FfmpegOptions = ffmpegOptions;
+		ImGui::TextDisabled("Use HLAE's {QUOTE} / {AFX_STREAM_PATH} variables; applies to future takes.");
+	}
+	else
+		ImGui::TextDisabled("This profile type is not editable here. Use mirv_streams settings edit.");
+
+	if (supported && !current.Protected)
+	{
+		if (!editable) ImGui::BeginDisabled();
+		if (ImGui::Button("Apply profile changes"))
+		{
+			status = Recording::ApplyProfileEdits(draft)
+				? "Profile updated in the live HLAE settings registry."
+				: "Profile edit rejected: check values, downstream profile and dependency cycles.";
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Revert unsaved edits"))
+		{
+			draft = current;
+			std::snprintf(ffmpegOptions, sizeof(ffmpegOptions), "%s", current.FfmpegOptions.c_str());
+			status = "Restored the latest saved-in-session profile values.";
+		}
+		if (!editable) ImGui::EndDisabled();
+	}
+
+	if (supported)
+	{
+		ImGui::Separator();
+		ImGui::TextDisabled("Built-in profiles cannot be modified. Duplicate one to make an editable copy.");
+		ImGui::SetNextItemWidth(220);
+		ImGui::InputText("New profile name", copyName, sizeof(copyName));
+		if (recording) ImGui::BeginDisabled();
+		if (ImGui::Button("Duplicate as editable profile"))
+		{
+			if (Recording::DuplicateProfile(current.Name.c_str(), copyName) &&
+				Recording::SetProfile(copyName))
+			{
+				editingName.clear(); // Read new profile from registry next frame.
+				status = "Editable profile created; settings are session-only until recreated on startup.";
+			}
+			else
+				status = "Could not duplicate. Use a unique name (letters, digits, _ or -; not beginning with afx).";
+		}
+		if (recording) ImGui::EndDisabled();
+	}
+	if (!current.Protected)
+	{
+		ImGui::SameLine();
+		if (recording) ImGui::BeginDisabled();
+		if (ImGui::Button("Delete custom profile"))
+		{
+			// The active screen profile holds a registry reference; release it
+			// before trying to delete. Other dependent presets may still block removal.
+			if (Recording::SetProfile("afxDefault") && Recording::RemoveProfile(current.Name.c_str()))
+			{
+				editingName.clear();
+				status = "Custom profile removed.";
+			}
+			else
+				status = "Profile still referenced by another setting, or removal failed.";
+		}
+		if (recording) ImGui::EndDisabled();
+	}
+	if (!status.empty())
+		ImGui::TextWrapped("%s", status.c_str());
+	ImGui::TextDisabled("Custom profiles exist only in this session; recreate them in autoexec.cfg to persist.");
+}
+
 void Draw()
 {
 	CheckOverlayPreferences();
@@ -7927,19 +8512,15 @@ void Draw()
 		}
 	}
 	if (ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z, false))
-	{
-		if (CameraHistoryOwnsUi())
-			MirvCam_HistoryUndo(ImGui::GetIO().KeyShift);
-		else
-			HistoryUndo(ImGui::GetIO().KeyShift);
-	}
+		HistoryUndo(ImGui::GetIO().KeyShift);
 
 	if (g_Docking)
 		ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 	// Diagnostic watermark
 	ImGui::GetForegroundDrawList()->AddText(
 		ImVec2(8, 8), IM_COL32(255, 255, 255, 255),
-		"TF2 camera overlay | F8 closes | RMB outside panels moves camera", nullptr);
+		g_OpenFortressLegacyMode ? "Open Fortress camera workspace (experimental) | F8 closes"
+								 : "HLAE Camera Overlay | F8 closes | RMB outside panels moves camera", nullptr);
 
 	if (!s_campathDialogsInit)
 	{
@@ -7953,22 +8534,17 @@ void Draw()
 	ImGuizmo::BeginFrame();
 	ImGui::SetNextWindowPos(ImVec2(20, 30), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSizeConstraints(ImVec2(540, 200), ImVec2(900, ImGui::GetIO().DisplaySize.y - 50));
-	ImGui::Begin("TF2 Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::Begin(g_OpenFortressLegacyMode ? "Open Fortress Camera" : "HLAE Camera", nullptr,
+				 ImGuiWindowFlags_AlwaysAutoResize);
+	if (g_OpenFortressLegacyMode)
+		ImGui::TextDisabled("Experimental OF integration: model replay, collision and player repair are not yet validated.");
 	if (ImGui::Button("Undo"))
-	{
-		if (CameraHistoryOwnsUi())
-			MirvCam_HistoryUndo(false);
-		else
-			HistoryUndo(false);
-	}
+		HistoryUndo(false);
 	ImGui::SameLine();
 	if (ImGui::Button("Redo"))
-	{
-		if (CameraHistoryOwnsUi())
-			MirvCam_HistoryUndo(true);
-		else
-			HistoryUndo(true);
-	}
+		HistoryUndo(true);
+	ImGui::SameLine();
+	ImGui::TextDisabled("Session edit #%llu", static_cast<unsigned long long>(CinematicSessionEditIndex()));
 	if (ImGui::BeginTabBar("##hlae_tabs"))
 	{
 		// Campath tab
@@ -8079,7 +8655,7 @@ void Draw()
 			if (ImGui::Button("Anchor selection here"))
 				PreviewAnchor();
 			DrawSeekSettings();
-			if (ImGui::CollapsingHeader("Camera collision"))
+			if (!g_OpenFortressLegacyMode && ImGui::CollapsingHeader("Camera collision"))
 			{
 				auto collision = MirvCameraCollisionGet();
 				if (ImGui::Checkbox("Free camera collision", &collision.Free))
@@ -8095,6 +8671,11 @@ void Draw()
 
 			if (ImGui::CollapsingHeader("Demo fixes"))
 			{
+				// OF's separate native-entity interpolation override persists via
+				// the same preferences as TF2/TF2C cvar fixes. Other TF2-specific
+				// recorder-sound and player-repair paths remain out of scope.
+				if (!g_OpenFortressLegacyMode)
+				{
 				bool muteRecorder = g_DemoMute;
 				if (ImGui::Checkbox("Mute recorder sounds", &muteRecorder))
 				{
@@ -8116,35 +8697,87 @@ void Draw()
 					ImGui::TextDisabled("Saved; waiting for the TF2/TF2C client hooks.");
 				ImGui::TextWrapped("Prevents POV death/freeze camera effects from freezing the HLAE view or "
 				                   "selecting the freeze-cam sound mixer. Enable before death.");
-				bool active = g_DemoSmooth;
-				if (ImGui::Checkbox("Smooth player movement", &active))
-				{
-					RememberDemoFixPreference(DemoFixPreference::PlayerInterpolation,
-					                          active ? g_DemoInterpolation : -1);
-					MirvFix_SetPlayerInterpolation(active ? g_DemoInterpolation : -1);
 				}
-				double interpolation = g_DemoInterpolation;
-				if (ImGui::InputDouble("Player interpolation (seconds)", &interpolation, 0, 0, "%.3f"))
+				else
 				{
-					if (std::isfinite(interpolation) && interpolation >= .001 && interpolation <= 1)
+					ImGui::TextDisabled("OF: experimental native interpolation and opt-in POV deathcam. Recorder sound and player repair remain unsupported.");
+					bool deathcam = MirvFix_GetPovDeathcam();
+					if (ImGui::Checkbox("Suppress POV deathcam (OF experimental)", &deathcam))
+						if (!MirvFix_SetPovDeathcam(deathcam))
+							g_DocumentStatus = "OF deathcam suppression unavailable: VClient017 observer property/proxy not verified.";
+					ImGui::TextDisabled("Session-only; disabled on startup. Enable before the death event, then seek back to retest.");
+				}
+				if (!g_OpenFortressLegacyMode)
+				{
+					bool active = g_DemoSmooth;
+					if (ImGui::Checkbox("Smooth player movement", &active))
 					{
-						g_DemoInterpolation = interpolation;
-						g_DemoFixAttempt = {};
-						ImGui::MarkIniSettingsDirty();
-						if (g_DemoSmooth)
-							MirvFix_SetPlayerInterpolation(interpolation);
+						RememberDemoFixPreference(DemoFixPreference::PlayerInterpolation,
+						                          active ? g_DemoInterpolation : -1);
+						MirvFix_SetPlayerInterpolation(active ? g_DemoInterpolation : -1);
 					}
-					else
-						g_DocumentStatus =
-						    "Use 0.001..1 seconds; existing interpolation preference retained.";
+					double interpolation = g_DemoInterpolation;
+					if (ImGui::InputDouble("Player interpolation (seconds)", &interpolation, 0, 0, "%.3f"))
+					{
+						if (std::isfinite(interpolation) && interpolation >= .001 && interpolation <= 1)
+						{
+							g_DemoInterpolation = interpolation;
+							g_DemoFixAttempt = {};
+							ImGui::MarkIniSettingsDirty();
+							if (g_DemoSmooth)
+								MirvFix_SetPlayerInterpolation(interpolation);
+						}
+						else
+							g_DocumentStatus = "Use 0.001..1 seconds; existing interpolation preference retained.";
+					}
+					if (g_DemoSmooth && MirvFix_GetPlayerInterpolation() < 0)
+						ImGui::TextDisabled("Saved; waiting for compatible demo playback.");
+					if (ImGui::Button("Interpolation status") && g_VEngineClient)
+						g_VEngineClient->ClientCmd_Unrestricted("mirv_fix playerInterpolation status");
+					ImGui::TextWrapped("Adds presentation delay using the game's native interpolation when supported; "
+					                   "not a frame-blending or player pose repair feature. Restore native settings on demo exit.");
 				}
-				if (g_DemoSmooth && MirvFix_GetPlayerInterpolation() < 0)
-					ImGui::TextDisabled("Saved; waiting for compatible demo playback.");
-				if (ImGui::Button("Interpolation status") && g_VEngineClient)
-					g_VEngineClient->ClientCmd_Unrestricted("mirv_fix playerInterpolation status");
-				ImGui::TextWrapped("Adds presentation delay using TF2 interpolation; cannot reconstruct "
-				                   "missing snapshots. Native settings restore when playback ends; the saved "
-				                   "preference applies to the next demo.");
+#ifndef _WIN64
+				else
+				{
+					bool active = g_DemoOfEngine;
+					if (ImGui::Checkbox("Smooth player movement (OF engine override)", &active))
+					{
+						RememberOfEngineFixPreference(active, g_DemoOfEngineSeconds, g_DemoOfEngineAll);
+						if (active)
+							MirvFix_OfEngineSet(g_DemoOfEngineSeconds, g_DemoOfEngineAll);
+						else
+							MirvFix_OfEngineDisable();
+					}
+					double seconds = g_DemoOfEngineSeconds;
+					if (ImGui::InputDouble("OF interpolation delay (seconds)", &seconds, 0, 0, "%.3f"))
+					{
+						if (std::isfinite(seconds) && seconds >= .016 && seconds <= .25)
+						{
+							RememberOfEngineFixPreference(g_DemoOfEngine, seconds, g_DemoOfEngineAll);
+							if (g_DemoOfEngine)
+								MirvFix_OfEngineSet(seconds, g_DemoOfEngineAll);
+						}
+						else
+							g_DocumentStatus = "OF engine interpolation delay must be 0.016..0.25 seconds.";
+					}
+					bool all = g_DemoOfEngineAll;
+					if (ImGui::Checkbox("Extend all entity intervals (experimental)", &all))
+					{
+						RememberOfEngineFixPreference(g_DemoOfEngine, g_DemoOfEngineSeconds, all);
+						if (g_DemoOfEngine)
+							MirvFix_OfEngineSet(g_DemoOfEngineSeconds, all);
+					}
+					if (g_DemoOfEngine && !MirvFix_OfEngineEnabled())
+						ImGui::TextDisabled("Saved; waiting for compatible OF demo and supported x86 client.");
+					if (ImGui::Button("OF engine interpolation status") && g_VEngineClient)
+						g_VEngineClient->ClientCmd_Unrestricted("mirv_fix playerInterpolation ofEngine status");
+					ImGui::TextWrapped("Bypasses the OF demo interpolation cvar lock without changing cvars. "
+					                   "The selected delay and mode are saved across sessions and re-applied "
+					                   "to compatible offline demos. The engine hook automatically disables at demo end. "
+					                   "No guarantee of improved captured smoothness.");
+				}
+#endif
 			}
 
 			auto &path = g_Hook_VClient_RenderView.m_CamPath;
@@ -8381,20 +9014,40 @@ void Draw()
 					}
 				}
 				if (!wPath.empty())
-					ShellExecuteW(nullptr, L"open", wPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+					g_RecordingFolderPending = std::move(wPath);
+				else
+					g_DocumentStatus = "Choose a recording folder first.";
 			}
 
 			ImGui::Separator();
-			// FPS input (interpreted differently depending on mode)
-			static char s_fpsText[64] = {0};
-			static bool fpsInit = false;
-			if (!fpsInit)
+			ImGui::SetNextItemWidth(110);
+			if (ImGui::InputText("Capture FPS (input)", g_RecordFps, sizeof(g_RecordFps),
+				ImGuiInputTextFlags_CharsDecimal))
+				ImGui::MarkIniSettingsDirty();
+			const auto keyLabel = g_RecordCapturingHotkey
+				? std::string("Press a key... (Esc cancel, Backspace clear)")
+				: RecordHotkeyLabel();
+			if (ImGui::Button(keyLabel.c_str()))
+				g_RecordCapturingHotkey = true;
+			ImGui::SameLine();
+			ImGui::TextDisabled("Record hotkey");
+			if (g_RecordHotkey && ImGui::SmallButton("Clear bind"))
 			{
-				strncpy_s(s_fpsText, "60", _TRUNCATE);
-				fpsInit = true;
+				g_RecordHotkey = g_RecordHotkeyMods = 0;
+				g_RecordCapturingHotkey = false;
+				ImGui::MarkIniSettingsDirty();
 			}
-			ImGui::SetNextItemWidth(ImGui::CalcTextSize("00000").x + st.FramePadding.x * 3.0f);
-			ImGui::InputText("Record FPS", s_fpsText, sizeof(s_fpsText));
+			if (ImGui::CollapsingHeader("Recording behavior", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				bool changed = false;
+				changed |= ImGui::Checkbox("Auto-resume demo on start", &g_RecordAutoResume);
+				changed |= ImGui::Checkbox("Auto-pause demo on stop", &g_RecordAutoPause);
+				changed |= ImGui::Checkbox("Close menu on start", &g_RecordAutoClose);
+				changed |= ImGui::Checkbox("Stop recording when opening menu", &g_RecordAutoStopOnOpen);
+				if (changed)
+					ImGui::MarkIniSettingsDirty();
+				ImGui::TextDisabled("Recording uses the screen stream and encoder settings already configured below.");
+			}
 
 			// Common HUD toggles
 			ImGui::Separator();
@@ -8417,99 +9070,23 @@ void Draw()
 					Afx_ExecClientCmd(screenEnabled ? "mirv_streams record screen enabled 1"
 													: "mirv_streams record screen enabled 0");
 				}
-				ImGui::TextUnformatted("Record screen profile");
-				ImGui::SameLine();
-				static const char *s_screenProfile = "Select profile...";
-				if (ImGui::BeginCombo("##screen_profiles", s_screenProfile))
+				const auto currentProfile = Recording::CurrentProfile();
+				if (ImGui::BeginCombo("Record screen profile", currentProfile.c_str()))
 				{
-					if (ImGui::Selectable("TGA Sequence"))
-					{
-						s_screenProfile = "TGA Sequence";
-						Afx_ExecClientCmd(R"(mirv_streams record screen settings afxClassic)");
-					}
-					if (ImGui::Selectable("FFmpeg YUV420p"))
-					{
-						s_screenProfile = "FFMPEG YUV420p";
-						Afx_ExecClientCmd(R"(mirv_streams record screen settings afxFfmpegYuv420p)");
-					}
-					if (ImGui::Selectable("FFmpeg Lossless Best"))
-					{
-						s_screenProfile = "FFMPEG Lossless Best";
-						Afx_ExecClientCmd(R"(mirv_streams record screen settings afxFfmpegLosslessBest)");
-					}
-					if (ImGui::Selectable("ProRes 4444"))
-					{
-						s_screenProfile = "ProRes 4444";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperProRes4444 "-c:v prores_ks -profile:v 4 -pix_fmt yuva444p10le {QUOTE}{AFX_STREAM_PATH}\video.mov{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperProRes4444");
-					}
-					if (ImGui::Selectable("ProRes 422 HQ"))
-					{
-						s_screenProfile = "ProRes 422 HQ";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperProResHQ "-c:v prores_ks -profile:v 3 -pix_fmt yuv422p10le {QUOTE}{AFX_STREAM_PATH}\video.mov{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperProResHQ");
-					}
-					if (ImGui::Selectable("ProRes 422"))
-					{
-						s_screenProfile = "ProRes 422";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperProRes422 "-c:v prores_ks -profile:v 2 -pix_fmt yuv422p10le {QUOTE}{AFX_STREAM_PATH}\video.mov{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperProRes422");
-					}
-					if (ImGui::Selectable("x264 Lossless"))
-					{
-						s_screenProfile = "x264 Lossless";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX264Lossless "-c:v libx264 -preset ultrafast -qp 0 -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX264Lossless");
-					}
-					if (ImGui::Selectable("x264 HQ"))
-					{
-						s_screenProfile = "x264 HQ";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX264HQ "-c:v libx264 -preset slow -crf 16 -pix_fmt yuv420p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX264HQ");
-					}
-					if (ImGui::Selectable("x265 Lossless"))
-					{
-						s_screenProfile = "x265 Lossless";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX265Lossless "-c:v libx265 -preset ultrafast -x265-params lossless=1 -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX265Lossless");
-					}
-					if (ImGui::Selectable("x265 HQ"))
-					{
-						s_screenProfile = "x265 HQ";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX265HQ "-c:v libx265 -preset medium -crf 18 -pix_fmt yuv420p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX265HQ");
-					}
+					for (const auto &name : Recording::GetProfiles())
+						if (ImGui::Selectable(name.c_str(), name == currentProfile))
+							Recording::SetProfile(name.c_str());
 					ImGui::EndCombo();
 				}
+				ImGui::TextDisabled("Includes built-in and custom mirv_streams settings. The menu always reads the active profile.");
+				DrawRecordingProfileEditor(Recording::CurrentProfile());
 
 				ImGui::Separator();
-				if (ImGui::Button("Start Recording"))
-				{
-					// host_framerate X; mirv_streams record fps X; mirv_streams record screen enabled 1;
-					// mirv_streams record start
-					float fps = (float)atof(s_fpsText);
-					if (!std::isfinite(fps) || fps <= 0.0f || fps > 100000.0f)
-						fps = 60.0f;
-					char cmd[512];
-					sprintf_s(cmd,
-							  "host_framerate %.0f; mirv_streams record fps %.0f; mirv_streams record screen "
-							  "enabled 1; mirv_streams record start",
-							  fps, fps);
-					AfxHookSource::Gui::SetOverlayOpen(false);
-					Afx_ExecClientCmd(cmd);
-				}
+				if (ImGui::Button("Start Recording") && !Recording::IsActive())
+					Recording::Toggle();
 				ImGui::SameLine();
-				if (ImGui::Button("Stop"))
-				{
-					Afx_ExecClientCmd("mirv_streams record end; host_framerate 0");
-				}
+				if (ImGui::Button("Stop") && Recording::IsActive())
+					Recording::Toggle();
 			}
 
 			ImGui::EndTabItem();
@@ -9368,7 +9945,7 @@ void Draw()
 					if (SequencerTrackVisible(3, !g_SceneCache.Frames().empty()))
 						DrawSceneCoverage();
 					DrawSequencerExtraTracks(visibleStart, visibleEnd);
-					if (SequencerTrackVisible(6, SequencerRepairPopulated()))
+					if (!g_OpenFortressLegacyMode && SequencerTrackVisible(6, SequencerRepairPopulated()))
 						DrawPlayerRepairTrack(visibleStart, visibleEnd);
 					DrawSequencerSeekContext(keyframeContextOpened);
 					if (choosePath < document.GetCount())

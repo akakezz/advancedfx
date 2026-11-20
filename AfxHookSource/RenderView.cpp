@@ -209,7 +209,8 @@ Hook_VClient_RenderView::~Hook_VClient_RenderView() {
 bool Hook_VClient_RenderView::UiCursorStatus(bool & available, bool & visible) const
 {
 	// Other games may expose a different surface ABI.
-	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
+	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified &&
+		!(g_SourceSdkVer == SourceSdkVer_HL2MP && g_OpenFortressLegacyMode))
 	{
 		available = false;
 		visible = false;
@@ -233,7 +234,7 @@ bool Hook_VClient_RenderView::GetSuspendMirvInput() {
 	if (!m_MirvInput || !m_MirvInput->GetCameraControlMode()) return false;
 	if (FreecamMenuVisible()) return true;
 
-	// Optionally yield freecam input while TF2's UI cursor is visible.
+	// Optionally yield freecam input while a compatible Source UI cursor is visible.
 	if (m_UiCursorSuspend)
 	{
 		bool available = false, visible = false;

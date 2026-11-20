@@ -10270,6 +10270,23 @@ void CAfxStreams::CDrawingRecordScreenOutput::ProcessingThreadFunc() {
 	m_OutVideoStreamCreator->Release();
 }
 
+const char *CAfxStreams::GetRecordScreenSettingsName() const
+{
+	return m_RecordScreen && m_RecordScreen->Settings ? m_RecordScreen->Settings->GetName() : "";
+}
+bool CAfxStreams::SetRecordScreenSettings(const char *name)
+{
+	if (!m_RecordScreen || !name)
+		return false;
+	auto *settings = advancedfx::CRecordingSettings::GetByName(name);
+	if (!settings)
+		return false;
+	settings->AddRef();
+	m_RecordScreen->Settings->Release();
+	m_RecordScreen->Settings = settings;
+	return true;
+}
+
 // Lightweight overlay readbacks keep graphics/stream internals out of the editor.
 namespace AfxHookSource
 {
@@ -10292,6 +10309,34 @@ bool ScreenEnabled()
 bool IsActive()
 {
 	return g_AfxStreams.IsRecording();
+}
+std::vector<std::string> GetProfiles()
+{
+	return advancedfx::CRecordingSettings::GetNames();
+}
+std::string CurrentProfile()
+{
+	return g_AfxStreams.GetRecordScreenSettingsName();
+}
+bool SetProfile(const char *name)
+{
+	return !IsActive() && g_AfxStreams.SetRecordScreenSettings(name);
+}
+bool GetProfileInfo(const char *name, advancedfx::RecordingProfileInfo &out)
+{
+	return advancedfx::CRecordingSettings::Describe(name, out);
+}
+bool DuplicateProfile(const char *source, const char *name)
+{
+	return !IsActive() && advancedfx::CRecordingSettings::DuplicateEditable(source, name);
+}
+bool ApplyProfileEdits(const advancedfx::RecordingProfileInfo &info)
+{
+	return !IsActive() && advancedfx::CRecordingSettings::ApplyEdits(info);
+}
+bool RemoveProfile(const char *name)
+{
+	return !IsActive() && advancedfx::CRecordingSettings::RemoveEditable(name);
 }
 } // namespace Recording
 } // namespace CameraOverlay

@@ -34,6 +34,15 @@
 
 extern WrpVEngineClient *g_VEngineClient;
 
+// Open Fortress uses the Source SDK 2013 entity and bone APIs but retains
+// HL2MP engine hooks. Keep standard HL2MP behavior unchanged.
+static bool MirvCam_SupportsSourceEntityCameras()
+{
+	return g_SourceSdkVer == SourceSdkVer_TF2 ||
+		g_SourceSdkVer == SourceSdkVer_TF2Classified ||
+		(g_SourceSdkVer == SourceSdkVer_HL2MP && g_OpenFortressLegacyMode);
+}
+
 // How mirv_cam attach gets the angles when a bone is used.
 static int g_MirvCamAttachMode = MIRV_TF2_BONEMODE_ALIGNED;
 
@@ -285,11 +294,31 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 		          "Correction changes only the live view. Deeply embedded starts may require disabling "
 		          "collision and moving clear.\n");
 }
+static void SyncOpenFortressAttachedCameraFollow(const MirvCameraCollisionSettings &settings);
+static bool PrintOpenFortressAttachmentRoute();
+// OF-only A/B switch for repeated render evaluations at one demo timestamp.
+static bool g_OfReuseSameTimeFollow = true;
 static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 {
 	auto settings = MirvCameraCollisionGet();
 	const int argc = args->ArgC();
 	bool changed = false, valid = true;
+	if (argc == 5 && !_stricmp(args->ArgV(3), "reuseSameTime"))
+	{
+		if (!g_OpenFortressLegacyMode)
+		{
+			Tier0_Warning("reuseSameTime is available only in Open Fortress legacy mode.\n");
+			return;
+		}
+		if (strcmp(args->ArgV(4), "0") && strcmp(args->ArgV(4), "1"))
+		{
+			Tier0_Warning("Usage: mirv_cam attach follow reuseSameTime <0|1>\n");
+			return;
+		}
+		g_OfReuseSameTimeFollow = args->ArgV(4)[0] == '1';
+		Tier0_Msg("Open Fortress same-time follow reuse: %s.\n", g_OfReuseSameTimeFollow ? "on" : "off");
+		return;
+	}
 	if (argc == 4 && !_stricmp(args->ArgV(3), "reset"))
 	{
 		MirvCameraAttachedReset();
@@ -323,12 +352,15 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 	}
 	else if (argc != 3 && !(argc == 4 && !_stricmp(args->ArgV(3), "status")))
 		valid = false;
-	if (!valid || (changed && !MirvCameraCollisionSet(settings)))
-		Tier0_Warning("Attachment follow edit rejected: requires TF2/TF2C, finite half-life 0..10 s and "
+	const bool accepted = valid && (!changed || MirvCameraCollisionSet(settings));
+	if (!accepted)
+		Tier0_Warning("Attachment follow edit rejected: requires TF2/TF2C/Open Fortress, finite half-life 0..10 s and "
 		              "maxDistance 1..10000 units, boneHalfLife/orbitHalfLife 0..10 s, teleportDistance "
 		              "0..1000000 units, "
 		              "orbitSpeed 0..1000000 deg/s, recoveryDelay 0..60 s.\n");
 	settings = MirvCameraCollisionGet();
+	if (changed && accepted && g_OpenFortressLegacyMode)
+		SyncOpenFortressAttachedCameraFollow(settings);
 	Tier0_Msg("Attachment smooth follow: entity half-life %.3f s, bone half-life %.3f s (0 = rigid), "
 	          "maximum entity lag %.1f units, teleport reset %.1f units (0 = disabled).\n",
 	          settings.FollowHalfLife, settings.BoneHalfLife, settings.FollowMaxDistance,
@@ -336,6 +368,11 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 	Tier0_Msg("Orbit half-life %.3f s, maximum turn rate %.1f deg/s; blocked recovery cut after %.3f demo "
 	          "seconds (0 = disabled).\n",
 	          settings.OrbitHalfLife, settings.OrbitSpeed, settings.FollowRecoveryDelay);
+	if (g_OpenFortressLegacyMode)
+	{
+		if (PrintOpenFortressAttachmentRoute())
+			MirvCameraAttachedPrintRuntimeStatus();
+	}
 	if (argc == 3 || !valid)
 		Tier0_Msg("mirv_cam attach follow <seconds> - Root movement smoothing; 0 restores rigid orbit and "
 		          "framing.\n"
@@ -350,6 +387,7 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 		          "blocking; 0 disables.\n"
 		          "mirv_cam attach follow reset - Reset the follow shot.\n"
 		          "mirv_cam attach follow status - Show settings.\n"
+		          "mirv_cam attach follow reuseSameTime <0|1> - OF-only duplicate-time render pose reuse.\n"
 		          "Damping uses demo time. Framing follows the corrected position; world mode retains its "
 		          "heading. Seeks/cuts reset history.\n");
 }
@@ -387,6 +425,11 @@ struct NamedCameraRig
 	advancedfx::CameraPose LastWorld, BaseWorld, BoneReference;
 	bool HasBoneReference = false;
 	MirvCameraAttachedState Follow;
+	// Filter output before aim and modifiers, reused only on repeated OF demo time.
+	advancedfx::CameraPose OfLastFilteredPose;
+	double OfLastFilteredTime = 0;
+	std::uint64_t OfLastFilteredDefinition = 0;
+	bool OfLastFilteredValid = false;
 	std::shared_ptr<CameraFollowCache> FollowCache;
 	std::shared_ptr<IMirvVecAngCalc> Target;
 	int EntityAddress = -1, TargetLevel = -1;
@@ -429,6 +472,18 @@ advancedfx::CameraPose g_BlendViewPose;
 double g_CameraEvaluationTime = 0;
 int g_CameraEvaluationFrame = -1;
 double g_CameraEvaluationStep = 0;
+// Live named-camera telemetry. Unlike MirvCameraAttachedApply's counters,
+// these follow the actual rig driver, including its own separate history.
+struct OpenFortressRigFollowStats
+{
+	std::uint64_t CameraId = ~std::uint64_t(0);
+	unsigned Calls = 0, Applied = 0, Failed = 0, LostTarget = 0, Reused = 0;
+	unsigned Resets = 0, SameTime = 0, Advancing = 0;
+	unsigned InvalidHistory = 0, BackwardTime = 0, LongGap = 0;
+	double LastTime = 0, LastDt = -1, LastCorrection = 0, PeakCorrection = 0;
+};
+OpenFortressRigFollowStats g_OfRigFollowStats;
+
 std::vector<advancedfx::CameraClip> g_CameraClips;
 unsigned long long g_NextClipId = 0;
 bool g_SequencePlaying = false;
@@ -547,6 +602,8 @@ struct CameraHistoryState
 	std::vector<MirvCameraModifier> Modifiers;
 };
 std::vector<CameraHistoryState> g_CameraUndo, g_CameraRedo;
+std::vector<std::uint64_t> g_CameraUndoIndices, g_CameraRedoIndices;
+std::uint64_t g_CameraRedoGeneration = 0;
 unsigned g_CameraEditDepth = 0;
 unsigned long long g_CameraCaptureRevision = 0;
 NamedCameraRig CloneCameraDefinition(const NamedCameraRig &source)
@@ -681,9 +738,16 @@ class CameraEditTransaction
 				entry.second.Definition = g_NextCameraDefinition++;
 		}
 		if (g_CameraUndo.size() == 64)
+		{
 			g_CameraUndo.erase(g_CameraUndo.begin());
+			if (!g_CameraUndoIndices.empty())
+				g_CameraUndoIndices.erase(g_CameraUndoIndices.begin());
+		}
 		g_CameraUndo.push_back(std::move(Snapshot));
+		g_CameraUndoIndices.push_back(CinematicNewEditIndex());
 		g_CameraRedo.clear();
+		g_CameraRedoIndices.clear();
+		g_CameraRedoGeneration = CinematicRedoGeneration();
 	}
 
   private:
@@ -827,6 +891,22 @@ bool CameraAttachmentTarget(NamedCameraRig &rig, double, advancedfx::CameraPose 
 		rig.Follow.Valid = false;
 		return false;
 	}
+	// On OF, read the bone pivot, entity root and body orientation from the
+	// single CalcVecAng sample above. A separate entity calc can disagree with
+	// the bone snapshot and make the follow camera correct itself every frame.
+	// TF2/TF2C keep their established attachment evaluation path unchanged.
+	if (g_OpenFortressLegacyMode && rootAngles)
+	{
+		double physical[3], origin[3];
+		void *entity = nullptr;
+		if (!Mirv_Tf2_GetAttachAnchor(rig.Target.get(), physical, entity, origin, nullptr, rootAngles))
+			return false;
+		if (pivot)
+			std::copy(physical, physical + 3, pivot);
+		if (root)
+			std::copy(origin, origin + 3, root);
+		return true;
+	}
 	if (rootAngles)
 	{
 		float origin[3], angles[3];
@@ -884,8 +964,47 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 				   const advancedfx::CameraPose &target, const double pivot[3], const double root[3],
 				   advancedfx::CameraPose &pose, const double rootAngles[3])
 {
+	const auto viewed = g_CameraRigs.find(g_CameraRigName);
+	const bool inspect = g_OpenFortressLegacyMode && g_CameraSource == CameraSource::Rig &&
+		!g_BakingCamera && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
+		!MirvCam_SequencePreviewActive() && viewed != g_CameraRigs.end() && &viewed->second == &rig;
+	if (inspect)
+	{
+		auto &stats = g_OfRigFollowStats;
+		if (stats.CameraId != rig.Id)
+		{
+			stats = {};
+			stats.CameraId = rig.Id;
+		}
+		++stats.Calls;
+		stats.LastTime = time;
+		stats.LastDt = state.Valid ? time - state.Time : -1.0;
+		if (!state.Valid)
+		{
+			++stats.Resets;
+			++stats.InvalidHistory;
+		}
+		else if (stats.LastDt < 0)
+		{
+			++stats.Resets;
+			++stats.BackwardTime;
+		}
+		else if (stats.LastDt > MirvCameraAttachedState::MaxContinuousGap)
+		{
+			++stats.Resets;
+			++stats.LongGap;
+		}
+		else if (stats.LastDt == 0)
+			++stats.SameTime;
+		else
+			++stats.Advancing;
+	}
 	if (!rig.Rig.Evaluate(&target, pose, time, pivot))
+	{
+		if (inspect)
+			++g_OfRigFollowStats.Failed;
 		return false;
+	}
 	const auto &motion = rig.Rig.Motion;
 	auto settings = RigFollowSettings(motion);
 	settings.Attached = MirvCameraCollisionGet().Attached && !g_BakingCamera &&
@@ -926,7 +1045,21 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 	if (!MirvCameraAttachedEvaluate(state, settings, 1, token, entity, pivot, time, x, y, z, root,
 									rig.AttachMode == MIRV_TF2_BONEMODE_WORLD ? nullptr : angles, rootAngles,
 									targetAngles, &rig.BoneReference))
+	{
+		if (inspect)
+			++g_OfRigFollowStats.Failed;
 		return false;
+	}
+	if (inspect)
+	{
+		auto &stats = g_OfRigFollowStats;
+		++stats.Applied;
+		const double dx = double(x) - pose.Position[0];
+		const double dy = double(y) - pose.Position[1];
+		const double dz = double(z) - pose.Position[2];
+		stats.LastCorrection = std::sqrt(dx * dx + dy * dy + dz * dz);
+		stats.PeakCorrection = (std::max)(stats.PeakCorrection, stats.LastCorrection);
+	}
 	pose.Position[0] = x;
 	pose.Position[1] = y;
 	pose.Position[2] = z;
@@ -936,10 +1069,36 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 }
 bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPose &out)
 {
+	const auto viewed = g_CameraRigs.find(g_CameraRigName);
+	const bool liveOfSelectedRig = g_OpenFortressLegacyMode && g_CameraSource == CameraSource::Rig &&
+		!g_RigPreview && !g_BakingCamera && !MirvCam_SequencePreviewActive() &&
+		!AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
+		viewed != g_CameraRigs.end() && &viewed->second == &rig;
+	// OF can render multiple times at the same demo time. A fresh bone sample
+	// with dt == 0 can change the pose without advancing smoothing. Reuse the
+	// first successful filtered pose for that time without changing the filter.
+	// Paused camera authoring is excluded so edits at fixed time remain visible.
+	if (liveOfSelectedRig && g_OfReuseSameTimeFollow && !g_MirvTime.IsPaused() &&
+		rig.OfLastFilteredValid && rig.Follow.Valid && rig.Follow.Time == time &&
+		rig.OfLastFilteredTime == time && rig.OfLastFilteredDefinition == rig.Definition)
+	{
+		out = rig.OfLastFilteredPose;
+		++g_OfRigFollowStats.Reused;
+		return true;
+	}
 	advancedfx::CameraPose target;
 	double pivot[3], root[3], rootAngles[3];
 	if (!CameraAttachmentTarget(rig, time, target, pivot, root, rootAngles))
+	{
+		if (g_OpenFortressLegacyMode && g_CameraSource == CameraSource::Rig &&
+			!g_BakingCamera && !AfxHookSource::CameraOverlay::SceneCachePreviewActive())
+		{
+			auto viewed = g_CameraRigs.find(g_CameraRigName);
+			if (viewed != g_CameraRigs.end() && &viewed->second == &rig)
+				++g_OfRigFollowStats.LostTarget;
+		}
 		return false;
+	}
 	const auto &settings = rig.Rig.Motion;
 	if (settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 && !settings.NeedsBoneControl() &&
 		(!MirvCameraCollisionGet().Attached || g_BakingCamera ||
@@ -953,7 +1112,18 @@ bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPos
 			MirvCameraAttachedState frozen;
 			return RigFollowStep(rig, frozen, time, target, pivot, root, out, rootAngles);
 		}
-		return RigFollowStep(rig, rig.Follow, time, target, pivot, root, out, rootAngles);
+		const bool ok = RigFollowStep(rig, rig.Follow, time, target, pivot, root, out, rootAngles);
+		if (liveOfSelectedRig)
+		{
+			rig.OfLastFilteredValid = ok;
+			if (ok)
+			{
+				rig.OfLastFilteredPose = out;
+				rig.OfLastFilteredTime = time;
+				rig.OfLastFilteredDefinition = rig.Definition;
+			}
+		}
+		return ok;
 	}
 	if (!rig.FollowCache)
 		rig.FollowCache = std::make_shared<CameraFollowCache>();
@@ -1145,6 +1315,48 @@ bool EvaluateClipSource(const advancedfx::CameraClip &clip, double time, advance
 	}
 	return ApplyClipModifiers(clip, time, pose);
 }
+// Recover the last available outgoing view from historical *entity* frames.
+// Keep camera definitions and the current cached-preview view untouched.
+bool RecoverCachedOutgoing(NamedCameraRig &rig, double start, double time,
+						   advancedfx::CameraPose &pose, const advancedfx::CameraClip *clip = nullptr)
+{
+	std::vector<double> candidates;
+	AfxHookSource::CameraOverlay::VisitCameraSceneFrames(
+		[&](const auto &frames, std::uint64_t)
+		{
+			for (auto it = frames.rbegin(); it != frames.rend(); ++it)
+				if (it->ClientTime >= start - .1 && it->ClientTime <= time + 1e-6 &&
+					(std::any_of(it->Entities.begin(), it->Entities.end(),
+						[&](const auto &entity) { return entity.Identity == rig.CacheIdentity; }) ||
+					 std::any_of(it->Cameras.begin(), it->Cameras.end(),
+						[&](const auto &camera) { return camera.Id == rig.Id && camera.Definition == rig.Definition; })))
+					candidates.push_back(it->ClientTime);
+		});
+	std::sort(candidates.begin(), candidates.end(), std::greater<double>());
+	if (candidates.size() > 128) candidates.resize(128);
+	const auto savedFrame = g_BakeFrame;
+	const bool savedBaking = g_BakingCamera;
+	const double savedTime = g_CameraEvaluationTime;
+	bool recovered = false;
+	for (double sampleTime : candidates)
+	{
+		advancedfx::SceneCache::Frame frame;
+		if (!AfxHookSource::CameraOverlay::SampleCameraScene(sampleTime, frame))
+			continue;
+		g_BakeFrame = std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame));
+		g_BakingCamera = true;
+		g_CameraEvaluationTime = sampleTime;
+		auto probe = rig;
+		if (probe.Aim) probe.Aim = probe.Aim->CloneState();
+		recovered = clip ? EvaluateNamedRig(probe, pose) : EvaluateIndividualCamera(probe, pose);
+		if (recovered && clip) recovered = ApplyClipModifiers(*clip, sampleTime, pose);
+		if (recovered) break;
+	}
+	g_CameraEvaluationTime = savedTime;
+	g_BakingCamera = savedBaking;
+	g_BakeFrame = savedFrame;
+	return recovered;
+}
 // Shared by explicit transitions, sequencer clips, preview and sequence export.
 bool BlendCameraPoses(const advancedfx::CameraPose &from, const advancedfx::CameraPose &to, double fraction,
 					  advancedfx::CameraPose &out, int curve = 0)
@@ -1190,8 +1402,26 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	if (current == g_CameraClips.begin() || current->Blend <= 0 || time >= current->Time + current->Blend)
 		return true;
 	advancedfx::CameraPose from;
-	if (!EvaluateClipSource(*std::prev(current), time, from))
-		return false;
+	const auto &outgoing = *std::prev(current);
+	if (!EvaluateClipSource(outgoing, time, from))
+	{
+		bool recovered = false;
+		if (!outgoing.Campath)
+		{
+			auto rig = FindRig(std::to_string(outgoing.Target));
+			if (rig != g_CameraRigs.end())
+			{
+				const bool cached = AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+				recovered = cached
+					? RecoverCachedOutgoing(rig->second, current->Time, time, from, &outgoing)
+					: (from = rig->second.LastWorld, from.Valid());
+				if (recovered && !cached) recovered = ApplyClipModifiers(outgoing, time, from);
+			}
+		}
+		if (!recovered)
+			return true; // No valid outgoing pose exists; do not stall the path.
+		g_CameraFailureReason.clear();
+	}
 	return BlendCameraPoses(from, pose, (time - current->Time) / current->Blend, pose, current->BlendCurve);
 }
 bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
@@ -1386,7 +1616,7 @@ void CameraStorageCommand(advancedfx::ICommandArgs *args)
 	if (argc == 2 && !_stricmp(args->ArgV(1), "list"))
 	{
 		for (auto camera : OrderedCameras())
-			Tier0_Msg("%zu: %s (%s)%s\n", CameraIndex(camera->second.Id),
+			Tier0_Msg("%u: %s (%s)%s\n", static_cast<unsigned>(CameraIndex(camera->second.Id)),
 					  CameraDisplayName(camera->first, camera->second).c_str(),
 					  camera->second.Rig.Attached ? "attached" : "fixed",
 					  g_CameraSource == CameraSource::Rig && g_CameraRigName == camera->first ? " [viewing]"
@@ -1556,7 +1786,7 @@ bool RegisterAttachedCamera(IMirvVecAngCalc *calc, int entity, int mode, const a
 	g_CameraRigName = g_LegacyCameraName = name;
 	g_EditingCameraName.clear();
 	g_RigNavigation = true;
-	Tier0_Msg("Attached camera %zu: %s.\n", CameraIndex(g_CameraRigs.at(name).Id),
+	Tier0_Msg("Attached camera %u: %s.\n", static_cast<unsigned>(CameraIndex(g_CameraRigs.at(name).Id)),
 			  CameraDisplayName(name, g_CameraRigs.at(name)).c_str());
 	return true;
 }
@@ -1588,6 +1818,87 @@ void ClearCameraAttachment(bool liveSource)
 	g_LegacyCameraName.clear();
 }
 } // namespace
+// Legacy attach and named rigs have separate follow settings. Keep them in
+// sync for explicit Open Fortress mode without changing TF2/TF2C behavior.
+static bool PrintOpenFortressAttachmentRoute()
+{
+    const auto source = g_MirvCam.Source_get();
+    const bool hasSource = source != nullptr;
+    const bool hasLastAttachment = g_MirvCamAttachCalc != nullptr;
+    const bool legacyLive = hasLastAttachment && source == g_MirvCamAttachCalc;
+    const auto selected = g_CameraRigs.find(g_CameraRigName);
+    const auto legacy = g_CameraRigs.find(g_LegacyCameraName);
+    const bool selectedAttached = selected != g_CameraRigs.end() && selected->second.Rig.Attached;
+    const bool legacyAttached = legacy != g_CameraRigs.end() && legacy->second.Rig.Attached;
+    const bool rigDriving = g_CameraSource == CameraSource::Rig && selectedAttached;
+    const char *controller = g_CameraSource == CameraSource::Legacy ? "legacy" :
+        g_CameraSource == CameraSource::Rig ? "rig" :
+        g_CameraSource == CameraSource::Sequence ? "sequence" : "playback";
+    Tier0_Msg("Open Fortress camera route: %s, preview %d; source %d, last attachment %d, "
+              "live match %d; selected attached %d, legacy attached %d.\n",
+              controller, g_RigPreview ? 1 : 0, hasSource ? 1 : 0,
+              hasLastAttachment ? 1 : 0, legacyLive ? 1 : 0,
+              selectedAttached ? 1 : 0, legacyAttached ? 1 : 0);
+    if (rigDriving)
+    {
+        Tier0_Msg("Open Fortress active rig follow: %.3f s, bone %.3f s; framing %d, valid %d.\n",
+                  selected->second.Rig.Motion.FollowHalfLife,
+                  selected->second.Rig.Motion.BoneHalfLife,
+                  selected->second.Rig.Motion.PreserveFraming ? 1 : 0,
+                  selected->second.Follow.Valid ? 1 : 0);
+        const auto &stats = g_OfRigFollowStats;
+        Tier0_Msg("OF rig filter: calls %u, applied %u, failed %u, lost target %u; "
+                  "resets %u, same time %u, advancing %u.\n",
+                  stats.Calls, stats.Applied, stats.Failed, stats.LostTarget,
+                  stats.Resets, stats.SameTime, stats.Advancing);
+        Tier0_Msg("OF rig same-time reuse: %s, reused %u; reset details invalid %u, backwards %u, gap %u.\n",
+		              g_OfReuseSameTimeFollow ? "on" : "off", stats.Reused,
+		              stats.InvalidHistory, stats.BackwardTime, stats.LongGap);
+		Tier0_Msg("OF rig correction: last t %.3f s, dt %.5f s (-1 = reset), "
+                  "last %.3f, peak %.3f units; unavailable %d.\n",
+                  stats.LastTime, stats.LastDt, stats.LastCorrection, stats.PeakCorrection,
+                  g_RigUnavailable ? 1 : 0);
+    }
+    else if (g_CameraSource == CameraSource::Legacy && !legacyLive)
+        Tier0_Msg("Open Fortress follow: no active legacy attachment; reattach a valid entity before testing.\n");
+    // Legacy telemetry is irrelevant when a named rig drives the view.
+    return g_CameraSource == CameraSource::Legacy;
+}
+
+// The active named rig and legacy camera source have independent filter state.
+// Route follow edits to the actually viewed rig, when one is driving the view.
+// Otherwise keep the most recently attached camera in sync for legacy use.
+static void SyncOpenFortressAttachedCameraFollow(const MirvCameraCollisionSettings &settings)
+{
+    auto active = g_CameraRigs.find(g_CameraRigName);
+    const bool activeRig = g_CameraSource == CameraSource::Rig &&
+        active != g_CameraRigs.end() && active->second.Rig.Attached;
+    auto it = activeRig ? active : g_CameraRigs.find(g_LegacyCameraName);
+    if (it == g_CameraRigs.end() || !it->second.Rig.Attached)
+    {
+        Tier0_Msg("Open Fortress follow: no attached camera definition; setting stored for the live filter.\n");
+        return;
+    }
+    auto motion = it->second.Rig.Motion;
+    motion.FollowHalfLife = settings.FollowHalfLife;
+    motion.BoneHalfLife = settings.BoneHalfLife;
+    motion.MaxDistance = settings.FollowMaxDistance;
+    motion.TeleportDistance = settings.FollowTeleportDistance;
+    motion.RotationHalfLife = settings.OrbitHalfLife;
+    motion.TurnRate = settings.OrbitSpeed;
+    if (!motion.Valid())
+    {
+        Tier0_Warning("Open Fortress follow: rig motion values rejected.\n");
+        return;
+    }
+    it->second.Rig.Motion = motion;
+    it->second.Follow = {};
+    it->second.FollowCache.reset();
+    it->second.AimDirty = true;
+    MirvCameraAttachedReset();
+    Tier0_Msg("Open Fortress follow: updated %s attached camera (half-life %.3f s).\n",
+              activeRig ? "viewed rig" : "legacy-registered", settings.FollowHalfLife);
+}
 void MirvCam_CaptureCameras(double time, int frame, double step,
 							std::vector<advancedfx::SceneCache::CameraSample> &samples)
 {
@@ -1646,14 +1957,20 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 	for (auto &entry : g_CameraRigs)
 	{
 		auto &camera = entry.second;
+		// The selected OF rig is evaluated below for the actual view. Avoid
+		// evaluating the same attachment/bones a second time at the same
+		// camera timestamp in this background warm pass.
+		const bool selectedOpenFortressRig = g_OpenFortressLegacyMode &&
+			g_CameraSource == CameraSource::Rig && entry.first == g_CameraRigName;
 		const bool warmFollow =
 			camera.Rig.Attached &&
 			(camera.Rig.Motion.FollowHalfLife > 0 || camera.Rig.Motion.BoneHalfLife > 0) &&
 			!g_InspectingSequence && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
 			(!camera.Follow.Valid || camera.Follow.Time != clientTime);
-		if (warmFollow ||
-			(camera.Aim && (camera.Aim->Active || camera.Aim->SoftDeactivate) &&
-			 (camera.AimDirty || camera.AimTime != clientTime || (frame >= 0 && camera.AimFrame != frame))))
+		if (!selectedOpenFortressRig &&
+			(warmFollow ||
+			 (camera.Aim && (camera.Aim->Active || camera.Aim->SoftDeactivate) &&
+			  (camera.AimDirty || camera.AimTime != clientTime || (frame >= 0 && camera.AimFrame != frame)))))
 		{
 			advancedfx::CameraPose background;
 			EvaluateNamedRig(camera, background);
@@ -1702,15 +2019,16 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 			blendValid = g_BlendFromPlayback ? EvaluatePlaybackPose(clientTime, from, g_BlendPathId)
 											 : outgoing != g_CameraRigs.end() &&
 												   EvaluateIndividualCamera(outgoing->second, from);
-			if (g_BlendFromView)
+			if (!g_BlendFromView && blendValid)
+				g_BlendViewPose = from; // Hold the latest outgoing pose when it disappears.
+			if (!blendValid && AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
+				!g_BlendFromPlayback && outgoing != g_CameraRigs.end())
+				blendValid = RecoverCachedOutgoing(outgoing->second, g_BlendStart, clientTime, from);
+			if (g_BlendFromView || !blendValid)
 			{
 				from = g_BlendViewPose;
 				blendValid = from.Valid();
 			}
-			if (!blendValid)
-				failure =
-					"Outgoing blend source: " +
-					(g_CameraFailureReason.empty() ? std::string("camera no longer exists.") : g_CameraFailureReason);
 			if (blendValid)
 			{
 				blendValid = BlendCameraPoses(from, evaluated, fraction, evaluated);
@@ -1949,13 +2267,29 @@ bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advanced
 	}
 	return true;
 }
+std::uint64_t MirvCam_HistoryIndex(bool redo)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	const auto &indices = redo ? g_CameraRedoIndices : g_CameraUndoIndices;
+	if (redo && g_CameraRedoGeneration != CinematicRedoGeneration())
+		return 0;
+	return indices.empty() ? 0 : indices.back();
+}
 bool MirvCam_HistoryUndo(bool redo)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
+	if (g_CameraRedoGeneration != CinematicRedoGeneration())
+	{
+		g_CameraRedo.clear();
+		g_CameraRedoIndices.clear();
+		g_CameraRedoGeneration = CinematicRedoGeneration();
+	}
 	auto &from = redo ? g_CameraRedo : g_CameraUndo;
 	auto &to = redo ? g_CameraUndo : g_CameraRedo;
-	if (from.empty())
+	auto &fromIndices = redo ? g_CameraRedoIndices : g_CameraUndoIndices;
+	auto &toIndices = redo ? g_CameraUndoIndices : g_CameraRedoIndices;
+	if (from.empty() || fromIndices.empty())
 		return false;
 	const bool sequence = g_CameraSource == CameraSource::Sequence;
 	const bool playback = g_CameraSource == CameraSource::Playback;
@@ -1967,6 +2301,8 @@ bool MirvCam_HistoryUndo(bool redo)
 		selectedId = selected->second.Id;
 	to.push_back(CloneCameraState(
 		{g_CameraRigs, g_CameraRigName, g_CameraClips, g_SequenceDemo, g_SequenceLevel, g_CameraModifiers}));
+	toIndices.push_back(fromIndices.back());
+	fromIndices.pop_back();
 	auto state = std::move(from.back());
 	from.pop_back();
 	MirvCam_ReleaseLiveAttachment();
@@ -2384,7 +2720,7 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 		if (g_CameraRigs.size() > count)
 		{
 			auto added = g_CameraRigs.find(command.Words[2]);
-			Tier0_Msg("Added camera %zu: %s.\n", CameraIndex(added->second.Id),
+			Tier0_Msg("Added camera %u: %s.\n", static_cast<unsigned>(CameraIndex(added->second.Id)),
 					  CameraDisplayName(added->first, added->second).c_str());
 			MirvCam_EndRigPreview();
 			g_RigNavigation = previousNavigation;
@@ -3299,10 +3635,10 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				{
 					if (4 <= argc)
 					{
-						if (SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer)
+						if (MirvCam_SupportsSourceEntityCameras())
 						{
 							Tier0_Warning(
-								"mirv_cam source handle is not supported for TF2.\n"
+								"mirv_cam source handle is not supported for this engine.\n"
 								"Use mirv_calcs vecAng add tf2Entity <sName> <iEntityIndex> [<iBoneIndex>] and mirv_cam source calcVecAng <sName> instead.\n"
 							);
 							return;
@@ -3590,9 +3926,9 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 				MirvCameraAttachFollowCommand(args);
 				return;
 			}
-			if (!(SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer))
+			if (!(MirvCam_SupportsSourceEntityCameras()))
 			{
-				Tier0_Warning("mirv_cam attach is only supported for TF2.\n");
+				Tier0_Warning("mirv_cam attach requires TF2, TF2C or Open Fortress.\n");
 				return;
 			}
 
@@ -3770,7 +4106,7 @@ CON_COMMAND(mirv_cam, "Control camera source entity and offset.")
 
 			Tier0_Msg(
 				"mirv_cam attach <entityIndex or part of player name> [<iBoneIndex or part of bone name> [<fXForward> "
-				"<fYLeft> <fZUp> [<fRotXForward> <fRotYLeft> <fRotZUp>]]] - (TF2) Use the entity (or its bone) as "
+				"<fYLeft> <fZUp> [<fRotXForward> <fRotYLeft> <fRotZUp>]]] - Use the entity (or its bone) as "
 				"camera source, optionally with offset (same as mirv_cam offset). Use -1 as bone for no bone.\n"
 				"mirv_cam attach clear - Detach the selected camera at its current pose and clear the live "
 				"attachment.\n"

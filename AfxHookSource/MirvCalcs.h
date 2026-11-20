@@ -362,6 +362,8 @@ bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long l
 	double sceneTime, double pathTime, const double seed[3], float &x, float &y, float &z);
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3],
 	double sceneTime, float &x, float &y, float &z, const double *entityOrigin = nullptr, float *angles = nullptr);
+// Live Open Fortress attachment filter diagnostics (prints counters only, no engine calls).
+void MirvCameraAttachedPrintRuntimeStatus();
 // Preserve target framing after a position correction without advancing mirv_aim twice.
 bool MirvCameraAttachedReframe(const double from[3], const double to[3], const double target[3], float angles[3]);
 // End optional TF2 camera collision.
@@ -374,7 +376,7 @@ bool Mirv_Tf2_TraceEntity(const double origin[3], const double angles[3], int & 
 bool Mirv_Tf2_ParseBoneArg(int entityIndex, const char * arg, int & outBone);
 
 // Cached bone/entity pivot and entity origin from the latest attachment evaluation.
-bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode = nullptr);
+bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode = nullptr, double *entityAngles = nullptr);
 
 /// <summary>Makes the camera pose (e.g. from a free camera) the fixed pose of the camera relative to the target of a TF2 entity calc (created with NewTf2EntityIndexCalc).
 /// From now on position and angles follow the target (entity or bone) and keep this relative pose.</summary>
@@ -476,6 +478,9 @@ bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc *calc, const advancedfx::SceneCac
 IMirvVecAngCalc *Mirv_Tf2_RetargetCamera(IMirvVecAngCalc *calc, int entity, int bone, int mode);
 bool Mirv_Tf2_CameraBone(IMirvVecAngCalc *calc, int &index, std::string &name);
 // Engine-thread submission only: Source queues the draw; HLAE queues resource retirement.
+void Mirv_Tf2_SceneBoneLines(const advancedfx::SceneCache::Entity &entity,
+                            const advancedfx::SceneCache::Entity *owner,
+                            std::vector<advancedfx::SceneCache::Line> &lines);
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
  const advancedfx::SceneCache::Entity *owner = nullptr);
 
@@ -488,6 +493,12 @@ struct MirvTf2SceneEntity
 	advancedfx::SceneCache::Entity Snapshot;
 };
 // One tools-list traversal per observed tick, with serial-aware transient identities.
+// Known Open Fortress PE32 extended scene capture, default-off by caller.
+bool Mirv_Of_SceneInterfacesSupported(bool draw);
+void Mirv_Of_CollectSceneEntities(bool players, bool projectiles, bool weapons,
+                                  bool cosmetics, bool ragdolls, bool gibs,
+                                  bool buildings, bool props,
+                                  std::vector<MirvTf2SceneEntity> &out);
 void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs, bool buildings, bool props,
 	std::vector<MirvTf2SceneEntity> &out);
 void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued references remain pinned.

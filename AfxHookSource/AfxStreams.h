@@ -3483,6 +3483,8 @@ public:
 	void OnClientEntityDeleted(SOURCESDK::C_BaseEntity_csgo* ent);
 #endif //#ifndef _WIN64
 
+	const char *GetRecordScreenSettingsName() const;
+	bool SetRecordScreenSettings(const char *name);
 	bool GetRecordScreenEnabled() const
 	{
 		return m_RecordScreen && m_RecordScreen->Enabled;

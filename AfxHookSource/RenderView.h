@@ -171,6 +171,16 @@ bool MirvFix_PlayerInterpolationAvailable();
 double MirvFix_GetPlayerInterpolation();
 bool MirvFix_SetPlayerInterpolation(double seconds);
 void MirvFix_Update();
+#ifndef _WIN64
+// Experimental 32-bit OF native interpolation detours; direct API is shared
+// with the console and saved overlay preferences.
+bool MirvFix_OfEngineSet(double seconds, bool allEntityIntervals);
+void MirvFix_OfEngineDisable();
+bool MirvFix_OfEngineEnabled();
+double MirvFix_OfEngineSeconds();
+bool MirvFix_OfEngineAllEntities();
+#endif
+void MirvFix_OfInterpolationProbeFrame(); // Read-only OF rendered-root sample at FRAME_RENDER_END.
 void MirvFix_InitializeTf2Client(void *client);
 namespace advancedfx { class PlayerRepair; }
 advancedfx::PlayerRepair &MirvFix_PlayerRepairModel();

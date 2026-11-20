@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
+#include <cctype>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -2481,12 +2482,15 @@ public:
 	}
 
   public:
-	bool GetAttachAnchor(double origin[3], void *&entity, double entityOrigin[3], int *mode = nullptr) const
+	bool GetAttachAnchor(double origin[3], void *&entity, double entityOrigin[3], int *mode = nullptr,
+						 double *entityAngles = nullptr) const
 	{
 		if (!m_AnchorValid || !m_AnchorEntity)
 			return false;
 		std::copy(m_Anchor, m_Anchor + 3, origin);
 		std::copy(m_AnchorRoot, m_AnchorRoot + 3, entityOrigin);
+		if (entityAngles)
+			std::copy(m_AnchorRootAngles, m_AnchorRootAngles + 3, entityAngles);
 		entity = m_AnchorEntity;
 		if (mode) *mode = m_Mode;
 		return true;
@@ -2584,7 +2588,7 @@ private:
 		       Mirv_Tf2_EntityHandle(entity) == m_ClientHandle;
 	}
 	bool m_AnchorValid = false;
-	double m_Anchor[3] = {}, m_AnchorRoot[3] = {};
+	double m_Anchor[3] = {}, m_AnchorRoot[3] = {}, m_AnchorRootAngles[3] = {};
 	void *m_AnchorEntity = nullptr;
 	int m_EntityIndex;
 	int m_BoneIndex;
@@ -2745,6 +2749,11 @@ private:
 				}
 			}
 
+			// Keep the body's facing with the pivot and root read from this same
+			// entity sample. OF's live rig must not query it a second time.
+			m_AnchorRootAngles[0] = facing.x;
+			m_AnchorRootAngles[1] = facing.y;
+			m_AnchorRootAngles[2] = facing.z;
 			if (m_BoneIndex < 0)
 			{
 				pos = absOrigin;
@@ -6162,7 +6171,7 @@ bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings)
 	    settings.AttachedSoftDistance < 0 || settings.AttachedSoftDistance > 256 ||
 	    ((settings.Free || settings.Campath || settings.Attached) && !CameraCollisionTraceInterface()) ||
 	    ((settings.FollowHalfLife > 0 || settings.BoneHalfLife > 0) && g_SourceSdkVer != SourceSdkVer_TF2 &&
-	     g_SourceSdkVer != SourceSdkVer_TF2Classified))
+	     g_SourceSdkVer != SourceSdkVer_TF2Classified && !g_OpenFortressLegacyMode))
 		return false;
 	{
 		std::lock_guard<std::mutex> lock(g_CameraCollisionMutex);
@@ -6937,6 +6946,37 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 	history.ArmLength = std::sqrt(history.ArmLength);
 	return true;
 }
+namespace
+{
+// These atomics expose read-only, frame-level diagnostics from the render
+// path without reading live history from a console command on another thread.
+std::atomic<unsigned int> g_OfAttachCalls{0};
+std::atomic<unsigned int> g_OfAttachApplied{0};
+std::atomic<unsigned int> g_OfAttachContinuous{0};
+std::atomic<unsigned int> g_OfAttachAdvancing{0};
+std::atomic<unsigned int> g_OfAttachCorrectedFrames{0};
+std::atomic<float> g_OfAttachPeakCorrection{0.0f};
+std::atomic<int> g_OfAttachHasAnchor{0};
+std::atomic<float> g_OfAttachLastTime{0.0f};
+std::atomic<float> g_OfAttachLastDt{-1.0f};
+std::atomic<float> g_OfAttachLastCorrection{0.0f};
+std::atomic<float> g_OfAttachLastHalfLife{0.0f};
+} // namespace
+
+void MirvCameraAttachedPrintRuntimeStatus()
+{
+	if (!g_OpenFortressLegacyMode)
+		return;
+	Tier0_Msg("OF follow runtime: calls %u, applied %u, continuous %u, advancing %u, anchor %d; "
+			  "last t %.3f s, dt %.4f s (-1 = reset), half-life %.3f s.\n",
+			  g_OfAttachCalls.load(), g_OfAttachApplied.load(), g_OfAttachContinuous.load(),
+			  g_OfAttachAdvancing.load(), g_OfAttachHasAnchor.load(), g_OfAttachLastTime.load(),
+			  g_OfAttachLastDt.load(), g_OfAttachLastHalfLife.load());
+	Tier0_Msg("OF follow camera correction: frames %u, last %.3f, peak %.3f units.\n",
+			  g_OfAttachCorrectedFrames.load(), g_OfAttachLastCorrection.load(),
+			  g_OfAttachPeakCorrection.load());
+}
+
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
 							 float &x, float &y, float &z, const double *entityOrigin, float *angles)
 {
@@ -6945,9 +6985,46 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 		g_AttachedCameraHistory.Valid = false;
 		return false;
 	}
-	return MirvCameraAttachedEvaluate(g_AttachedCameraHistory, MirvCameraCollisionGet(),
-									  g_AttachedCameraGeneration.load(), identity, entity, pivot, sceneTime,
+	const auto settings = MirvCameraCollisionGet();
+	const auto generation = g_AttachedCameraGeneration.load();
+	if (g_OpenFortressLegacyMode)
+	{
+		++g_OfAttachCalls;
+		const bool anchor = identity != nullptr && entity != nullptr;
+		g_OfAttachHasAnchor.store(anchor ? 1 : 0);
+		g_OfAttachLastTime.store(float(sceneTime));
+		g_OfAttachLastHalfLife.store(float(settings.FollowHalfLife));
+		const auto &prior = g_AttachedCameraHistory;
+		const bool continuous = prior.Valid && prior.Identity == identity && prior.Entity == entity &&
+			prior.Generation == generation && sceneTime >= prior.Time &&
+			sceneTime - prior.Time <= MirvCameraAttachedState::MaxContinuousGap;
+		g_OfAttachLastDt.store(continuous ? float(sceneTime - prior.Time) : -1.0f);
+		if (continuous)
+		{
+			++g_OfAttachContinuous;
+			if (sceneTime > prior.Time)
+				++g_OfAttachAdvancing;
+		}
+	}
+	const float originalX = x, originalY = y, originalZ = z;
+	const bool applied = MirvCameraAttachedEvaluate(g_AttachedCameraHistory, settings,
+									  generation, identity, entity, pivot, sceneTime,
 									  x, y, z, entityOrigin, angles);
+	if (g_OpenFortressLegacyMode)
+	{
+		if (applied)
+			++g_OfAttachApplied;
+		const double dx = double(x) - originalX, dy = double(y) - originalY, dz = double(z) - originalZ;
+		const float correction = applied ? float(std::sqrt(dx * dx + dy * dy + dz * dz)) : 0.0f;
+		g_OfAttachLastCorrection.store(correction);
+		if (correction > 0.01f)
+		{
+			++g_OfAttachCorrectedFrames;
+			float peak = g_OfAttachPeakCorrection.load();
+			while (correction > peak && !g_OfAttachPeakCorrection.compare_exchange_weak(peak, correction)) {}
+		}
+	}
+	return applied;
 }
 
 // End optional camera collision implementation.
@@ -7251,9 +7328,9 @@ IMirvVecAngCalc *Mirv_Tf2_LoadCamera(std::istream &in)
 	return CMirvVecAngTf2EntityIndexCalc::LoadCamera(in);
 }
 
-bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode)
+bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode, double *entityAngles)
 {
-	return calc && static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->GetAttachAnchor(origin, entity, entityOrigin, mode);
+	return calc && static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->GetAttachAnchor(origin, entity, entityOrigin, mode, entityAngles);
 }
 
 bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc * calc, const double camOrigin[3], const double camAngles[3], float outLocalOffset[3])
@@ -11504,6 +11581,38 @@ static bool SceneCachedBoneFrame(const advancedfx::SceneCache::Entity &entity,
 	out = bones[std::distance(names.begin(), found)];
 	return true;
 }
+
+// Render cached animated skeletons through the already working 3D line
+// drawer, with no IStudioRender calls or live entity pointer dependencies.
+void Mirv_Tf2_SceneBoneLines(const advancedfx::SceneCache::Entity &entity,
+                            const advancedfx::SceneCache::Entity *owner,
+                            std::vector<advancedfx::SceneCache::Line> &lines)
+{
+    if (!entity.ModelPose || !advancedfx::SceneCache::ValidPose(*entity.ModelPose) ||
+        !entity.ModelPose->ModelInfo->WireEdges.empty()) return;
+    SOURCESDK::matrix3x4_t matrices[advancedfx::SceneCache::MaxBones]{};
+    if (!SceneBuildMatrices(entity, owner, matrices)) return;
+    const auto &parents = entity.ModelPose->ModelInfo->Parents;
+    for (size_t i = 0; i < parents.size() && lines.size() < 65536; ++i)
+    {
+        const int parent = parents[i];
+        if (parent < 0 || parent >= int(i)) continue;
+        const auto &a = matrices[size_t(parent)].m_flMatVal;
+        const auto &b = matrices[i].m_flMatVal;
+        advancedfx::SceneCache::Line line{};
+        line.Category = entity.Category;
+        line.Alpha = 220;
+        bool finite = true;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            line.A[axis] = a[axis][3];
+            line.B[axis] = b[axis][3];
+            finite &= std::isfinite(line.A[axis]) && std::isfinite(line.B[axis]);
+        }
+        if (finite) lines.push_back(line);
+    }
+}
+
 // End selected-player scene-pose prototype.
 
 IMirvVecAngCalc *Mirv_Tf2_RetargetCamera(IMirvVecAngCalc *calc, int entity, int bone, int mode)
@@ -11754,6 +11863,161 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 	};
 	out.erase(std::remove_if(out.begin(), out.end(), orphan), out.end());
 }
+
+// OF Scene Cache, version-checked and read-only. Studio calls are opt-in.
+bool Mirv_Of_SceneInterfacesSupported(bool draw)
+{
+#ifndef _WIN64
+    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP)
+        return false;
+    HMODULE module = GetModuleHandleA("client.dll");
+    if (!module) return false;
+    const auto *base = reinterpret_cast<const unsigned char *>(module);
+    const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 0x1000)
+        return false;
+    const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS32 *>(base + dos->e_lfanew);
+    // Exact OF PE32 build already tested by the interpolation hook.
+    if (nt->Signature != IMAGE_NT_SIGNATURE ||
+        nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
+        nt->FileHeader.TimeDateStamp != 0x66b4fe85 ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+        nt->OptionalHeader.SizeOfImage != 0x00a27000 ||
+        !g_AppSystemFactory || !Mirv_Tf2_GetModelInfo())
+        return false;
+    // Distinguish the exact tested code from a repacked client with matching
+    // timestamp/size. These prologues are independent of base relocations.
+    static const unsigned char entityStart[] = {
+        0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x53, 0x56, 0x57, 0x8b, 0xd9,
+        0xe8, 0x30, 0x8b, 0xfc, 0xff
+    };
+    static const unsigned char clientStart[] = {0x55, 0x8b, 0xec, 0x6a, 0xff};
+    if (std::memcmp(base + 0x0bff10, entityStart, sizeof(entityStart)) ||
+        std::memcmp(base + 0x1091a0, clientStart, sizeof(clientStart)))
+        return false;
+    return !draw || (g_AppSystemFactory("VStudioRender025", nullptr) &&
+                     g_AppSystemFactory("MDLCache004", nullptr) &&
+                     MaterialSystem_CanExecuteOnRenderThread());
+#else
+    (void)draw;
+    return false;
+#endif
+}
+static bool OfSceneCopyString(const char *pointer, char *out, size_t capacity)
+{
+    if (!pointer || !out || capacity < 2) return false;
+    SIZE_T copied = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), pointer, out, capacity - 1, &copied) ||
+        copied != capacity - 1) return false;
+    out[capacity - 1] = 0;
+    return std::memchr(out, 0, capacity - 1) != nullptr;
+}
+static std::string OfSceneLower(const char *value)
+{
+    std::string out = value ? value : "";
+    for (auto &c : out) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+static int OfSceneCategory(const std::string &cls, const std::string &model)
+{
+    auto has = [&](const char *needle) { return cls.find(needle) != std::string::npos ||
+                                                model.find(needle) != std::string::npos; };
+    if (has("viewmodel") || has("c_arms") || has("/v_") ||
+        has("particle") || has("sprite") || has("worldspawn")) return -1;
+    if (has("ragdoll")) return MIRV_TF2_ENTITY_RAGDOLL;
+    if (has("gib") || has("debris")) return MIRV_TF2_ENTITY_GIB;
+    if (has("wearable") || has("cosmetic") || has("/player/items/") || has("/hats/"))
+        return MIRV_TF2_ENTITY_COSMETIC;
+    if (has("projectile") || has("rocket") || has("pipebomb") || has("grenade") ||
+        has("arrow") || has("flare") || has("missile")) return MIRV_TF2_ENTITY_PROJECTILE;
+    if (has("sentry") || has("dispenser") || has("teleporter") ||
+        has("buildable") || has("obj_")) return MIRV_TF2_ENTITY_BUILDING;
+    if (has("weapon") || has("/weapons/") || has("ammo") || has("pickup"))
+        return MIRV_TF2_ENTITY_WEAPON;
+    return MIRV_TF2_ENTITY_PROP; // Other visible models, when props is selected.
+}
+void Mirv_Of_CollectSceneEntities(bool players, bool projectiles, bool weapons,
+                                  bool cosmetics, bool ragdolls, bool gibs,
+                                  bool buildings, bool props,
+                                  std::vector<MirvTf2SceneEntity> &out)
+{
+    out.clear();
+    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP) return;
+    auto tools = CClientToolsTf2::Instance();
+    auto iface = tools ? tools->GetClientTools() : nullptr;
+    if (!iface) return;
+    const int maxPlayers = (std::min)(Mirv_Tf2_GetMaxPlayers(), 128);
+    size_t visited = 0;
+    for (auto object = iface->FirstEntity(); object && visited++ < 4096;
+         object = iface->NextEntity(object))
+    {
+        const int index = iface->GetEntIndex(object);
+        if (index == 0) continue;
+        auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
+        auto renderable = unknown->GetClientRenderable();
+        if (!renderable || !renderable->GetModel() || !renderable->ShouldDraw()) continue;
+        MirvTf2SceneEntity row;
+        row.Index = index;
+        row.ObservedObject = object;
+        if (index > 0 && index <= maxPlayers && iface->IsPlayer(object))
+        {
+            if (!players) continue;
+            int user = 0;
+            if (!Mirv_Tf2_GetPlayerInfo(index, nullptr, 0, &user) || user <= 0) continue;
+            row.Snapshot.Identity = static_cast<unsigned int>(user);
+            row.Snapshot.Category = MIRV_TF2_ENTITY_PLAYER;
+        }
+        else
+        {
+            const auto handle = Mirv_Tf2_EntityHandle(object);
+            if (handle == 0xffffffffu || (index > 0 && index < 2048 &&
+                (handle & SOURCESDK_TF2_ENT_ENTRY_MASK) != unsigned(index))) continue;
+            char cls[96]{}, model[260]{};
+            if (auto networkable = unknown->GetClientNetworkable())
+            {
+                const auto *clientClass = SceneInterfaceCall<const char *>(networkable, 2);
+                if (clientClass)
+                {
+                    const char *pointer = nullptr;
+                    SIZE_T read = 0;
+                    if (ReadProcessMemory(GetCurrentProcess(), clientClass + 2 * sizeof(void *),
+                                          &pointer, sizeof(pointer), &read) && read == sizeof(pointer))
+                        OfSceneCopyString(pointer, cls, sizeof(cls));
+                }
+            }
+            auto info = Mirv_Tf2_GetModelInfo();
+            if (info)
+                OfSceneCopyString(info->GetModelName(renderable->GetModel()), model, sizeof(model));
+            if (!cls[0] && !model[0]) continue;
+            const int category = OfSceneCategory(OfSceneLower(cls), OfSceneLower(model));
+            if (!((category == MIRV_TF2_ENTITY_PROJECTILE && projectiles) ||
+                  (category == MIRV_TF2_ENTITY_WEAPON && weapons) ||
+                  (category == MIRV_TF2_ENTITY_COSMETIC && cosmetics) ||
+                  (category == MIRV_TF2_ENTITY_RAGDOLL && ragdolls) ||
+                  (category == MIRV_TF2_ENTITY_GIB && gibs) ||
+                  (category == MIRV_TF2_ENTITY_BUILDING && buildings) ||
+                  (category == MIRV_TF2_ENTITY_PROP && props))) continue;
+            row.Snapshot.Identity = (std::uint64_t(1) << 63) | handle;
+            row.Snapshot.Category = category;
+        }
+        const auto *origin = static_cast<const float *>(renderable->GetRenderOrigin());
+        const auto *angles = static_cast<const float *>(renderable->GetRenderAngles());
+        if (!origin || !angles) continue;
+        renderable->GetRenderBounds(row.Snapshot.Mins, row.Snapshot.Maxs);
+        bool valid = true;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            row.Snapshot.Origin[axis] = origin[axis];
+            row.Snapshot.Angles[axis] = angles[axis];
+            valid &= std::isfinite(origin[axis]) && std::isfinite(angles[axis]) &&
+                     std::isfinite(row.Snapshot.Mins[axis]) &&
+                     std::isfinite(row.Snapshot.Maxs[axis]) &&
+                     row.Snapshot.Mins[axis] <= row.Snapshot.Maxs[axis];
+        }
+        if (valid) out.push_back(std::move(row));
+    }
+}
+
 // End scene entity enumeration.
 
 // Inspect a live label address without changing its pose or attachment.

@@ -8,6 +8,7 @@
 #include <vector>
 
 SourceSdkVer g_SourceSdkVer = SourceSdkVer_Unknonw;
+bool g_OpenFortressLegacyMode = false;
 
 using namespace Afx::BinUtils;
 
@@ -3250,8 +3251,11 @@ void Addresses_InitMaterialsystemDll(AfxAddr materialsystemDll, SourceSdkVer sou
 			AFXADDR_SET(materialsystem_CFunctor_vtable_size, 4);
 			break;
 		case SourceSdkVer_HL2MP:
-			// Checked 2025-01-19.
-			materialsystem_GetRenderCallQueue_vtable_offset = 148; // 4th last
+			// Standard HL2MP: slot 148. Open Fortress's 2021-06-24 32-bit
+			// MaterialSystem.dll has a shorter CMaterialSystem primary vtable:
+			// GetRenderCallQueue is at slot 143 (4th last). Slot 148 belongs
+			// to a secondary vtable, and invoking it caused an access violation.
+			materialsystem_GetRenderCallQueue_vtable_offset = g_OpenFortressLegacyMode ? 143 : 148;
 			AFXADDR_SET(materialsystem_CFunctor_vtable_size, 4);
 			break;
 #endif //#ifndef _WIN64
