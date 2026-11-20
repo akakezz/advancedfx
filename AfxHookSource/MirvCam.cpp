@@ -602,6 +602,8 @@ struct CameraHistoryState
 	std::vector<MirvCameraModifier> Modifiers;
 };
 std::vector<CameraHistoryState> g_CameraUndo, g_CameraRedo;
+std::vector<std::uint64_t> g_CameraUndoIndices, g_CameraRedoIndices;
+std::uint64_t g_CameraRedoGeneration = 0;
 unsigned g_CameraEditDepth = 0;
 unsigned long long g_CameraCaptureRevision = 0;
 NamedCameraRig CloneCameraDefinition(const NamedCameraRig &source)
@@ -736,9 +738,16 @@ class CameraEditTransaction
 				entry.second.Definition = g_NextCameraDefinition++;
 		}
 		if (g_CameraUndo.size() == 64)
+		{
 			g_CameraUndo.erase(g_CameraUndo.begin());
+			if (!g_CameraUndoIndices.empty())
+				g_CameraUndoIndices.erase(g_CameraUndoIndices.begin());
+		}
 		g_CameraUndo.push_back(std::move(Snapshot));
+		g_CameraUndoIndices.push_back(CinematicNewEditIndex());
 		g_CameraRedo.clear();
+		g_CameraRedoIndices.clear();
+		g_CameraRedoGeneration = CinematicRedoGeneration();
 	}
 
   private:
@@ -1306,6 +1315,48 @@ bool EvaluateClipSource(const advancedfx::CameraClip &clip, double time, advance
 	}
 	return ApplyClipModifiers(clip, time, pose);
 }
+// Recover the last available outgoing view from historical *entity* frames.
+// Keep camera definitions and the current cached-preview view untouched.
+bool RecoverCachedOutgoing(NamedCameraRig &rig, double start, double time,
+						   advancedfx::CameraPose &pose, const advancedfx::CameraClip *clip = nullptr)
+{
+	std::vector<double> candidates;
+	AfxHookSource::CameraOverlay::VisitCameraSceneFrames(
+		[&](const auto &frames, std::uint64_t)
+		{
+			for (auto it = frames.rbegin(); it != frames.rend(); ++it)
+				if (it->ClientTime >= start - .1 && it->ClientTime <= time + 1e-6 &&
+					(std::any_of(it->Entities.begin(), it->Entities.end(),
+						[&](const auto &entity) { return entity.Identity == rig.CacheIdentity; }) ||
+					 std::any_of(it->Cameras.begin(), it->Cameras.end(),
+						[&](const auto &camera) { return camera.Id == rig.Id && camera.Definition == rig.Definition; })))
+					candidates.push_back(it->ClientTime);
+		});
+	std::sort(candidates.begin(), candidates.end(), std::greater<double>());
+	if (candidates.size() > 128) candidates.resize(128);
+	const auto savedFrame = g_BakeFrame;
+	const bool savedBaking = g_BakingCamera;
+	const double savedTime = g_CameraEvaluationTime;
+	bool recovered = false;
+	for (double sampleTime : candidates)
+	{
+		advancedfx::SceneCache::Frame frame;
+		if (!AfxHookSource::CameraOverlay::SampleCameraScene(sampleTime, frame))
+			continue;
+		g_BakeFrame = std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame));
+		g_BakingCamera = true;
+		g_CameraEvaluationTime = sampleTime;
+		auto probe = rig;
+		if (probe.Aim) probe.Aim = probe.Aim->CloneState();
+		recovered = clip ? EvaluateNamedRig(probe, pose) : EvaluateIndividualCamera(probe, pose);
+		if (recovered && clip) recovered = ApplyClipModifiers(*clip, sampleTime, pose);
+		if (recovered) break;
+	}
+	g_CameraEvaluationTime = savedTime;
+	g_BakingCamera = savedBaking;
+	g_BakeFrame = savedFrame;
+	return recovered;
+}
 // Shared by explicit transitions, sequencer clips, preview and sequence export.
 bool BlendCameraPoses(const advancedfx::CameraPose &from, const advancedfx::CameraPose &to, double fraction,
 					  advancedfx::CameraPose &out, int curve = 0)
@@ -1351,8 +1402,26 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	if (current == g_CameraClips.begin() || current->Blend <= 0 || time >= current->Time + current->Blend)
 		return true;
 	advancedfx::CameraPose from;
-	if (!EvaluateClipSource(*std::prev(current), time, from))
-		return false;
+	const auto &outgoing = *std::prev(current);
+	if (!EvaluateClipSource(outgoing, time, from))
+	{
+		bool recovered = false;
+		if (!outgoing.Campath)
+		{
+			auto rig = FindRig(std::to_string(outgoing.Target));
+			if (rig != g_CameraRigs.end())
+			{
+				const bool cached = AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+				recovered = cached
+					? RecoverCachedOutgoing(rig->second, current->Time, time, from, &outgoing)
+					: (from = rig->second.LastWorld, from.Valid());
+				if (recovered && !cached) recovered = ApplyClipModifiers(outgoing, time, from);
+			}
+		}
+		if (!recovered)
+			return true; // No valid outgoing pose exists; do not stall the path.
+		g_CameraFailureReason.clear();
+	}
 	return BlendCameraPoses(from, pose, (time - current->Time) / current->Blend, pose, current->BlendCurve);
 }
 bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
@@ -1950,15 +2019,16 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 			blendValid = g_BlendFromPlayback ? EvaluatePlaybackPose(clientTime, from, g_BlendPathId)
 											 : outgoing != g_CameraRigs.end() &&
 												   EvaluateIndividualCamera(outgoing->second, from);
-			if (g_BlendFromView)
+			if (!g_BlendFromView && blendValid)
+				g_BlendViewPose = from; // Hold the latest outgoing pose when it disappears.
+			if (!blendValid && AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
+				!g_BlendFromPlayback && outgoing != g_CameraRigs.end())
+				blendValid = RecoverCachedOutgoing(outgoing->second, g_BlendStart, clientTime, from);
+			if (g_BlendFromView || !blendValid)
 			{
 				from = g_BlendViewPose;
 				blendValid = from.Valid();
 			}
-			if (!blendValid)
-				failure =
-					"Outgoing blend source: " +
-					(g_CameraFailureReason.empty() ? std::string("camera no longer exists.") : g_CameraFailureReason);
 			if (blendValid)
 			{
 				blendValid = BlendCameraPoses(from, evaluated, fraction, evaluated);
@@ -2197,13 +2267,29 @@ bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advanced
 	}
 	return true;
 }
+std::uint64_t MirvCam_HistoryIndex(bool redo)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	const auto &indices = redo ? g_CameraRedoIndices : g_CameraUndoIndices;
+	if (redo && g_CameraRedoGeneration != CinematicRedoGeneration())
+		return 0;
+	return indices.empty() ? 0 : indices.back();
+}
 bool MirvCam_HistoryUndo(bool redo)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
+	if (g_CameraRedoGeneration != CinematicRedoGeneration())
+	{
+		g_CameraRedo.clear();
+		g_CameraRedoIndices.clear();
+		g_CameraRedoGeneration = CinematicRedoGeneration();
+	}
 	auto &from = redo ? g_CameraRedo : g_CameraUndo;
 	auto &to = redo ? g_CameraUndo : g_CameraRedo;
-	if (from.empty())
+	auto &fromIndices = redo ? g_CameraRedoIndices : g_CameraUndoIndices;
+	auto &toIndices = redo ? g_CameraUndoIndices : g_CameraRedoIndices;
+	if (from.empty() || fromIndices.empty())
 		return false;
 	const bool sequence = g_CameraSource == CameraSource::Sequence;
 	const bool playback = g_CameraSource == CameraSource::Playback;
@@ -2215,6 +2301,8 @@ bool MirvCam_HistoryUndo(bool redo)
 		selectedId = selected->second.Id;
 	to.push_back(CloneCameraState(
 		{g_CameraRigs, g_CameraRigName, g_CameraClips, g_SequenceDemo, g_SequenceLevel, g_CameraModifiers}));
+	toIndices.push_back(fromIndices.back());
+	fromIndices.pop_back();
 	auto state = std::move(from.back());
 	from.pop_back();
 	MirvCam_ReleaseLiveAttachment();
