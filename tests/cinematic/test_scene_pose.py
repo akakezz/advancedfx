@@ -12,6 +12,14 @@ out = args.build_dir.resolve()
 out.mkdir(parents=True, exist_ok=True)
 calcs = (root / 'AfxHookSource/MirvCalcs.cpp').read_text()
 adapter = calcs[calcs.index('// Selected-player scene-pose prototype.'):calcs.index('// End selected-player scene-pose prototype.')]
+# This suite builds the real adapter as a 64-bit fixture. The real OF/080
+# preflight validates a PE32 code pointer in MaterialSystem.dll, which cannot
+# be invoked on Linux; replace only that guard with a success stub here.
+guard_start = adapter.index('static bool SceneOfMaterial080SlotPlausible(void *system)')
+guard_end = adapter.index('// MaterialSystem082 uses', guard_start)
+adapter = (adapter[:guard_start]
+           + 'static bool SceneOfMaterial080SlotPlausible(void *system) { return system != nullptr; }\\n'
+           + adapter[guard_end:])
 reader = calcs[calcs.index('static int Mirv_Tf2_ReadBoneNames('):calcs.index('int Mirv_Tf2_GetBoneNames(')]
 math = (root / 'deps/release/prop/AfxHookSource/SourceSdkShared.cpp').read_text()
 math = math[math.index('void AngleMatrix('):math.index('MdtMatrix::MdtMatrix()', math.index('void AngleMatrix('))]
@@ -37,6 +45,7 @@ void Mirv_Tf2_SceneRenderFrame();
 #include <cstdlib>
 #define _WIN64 1
 #define MIRV_TF2_MAX_BONES 128
+bool g_OpenFortressLegacyMode=false;
 constexpr int MIRV_TF2_ENTITY_PLAYER=0,MIRV_TF2_ENTITY_WEAPON=2,MIRV_TF2_ENTITY_COSMETIC=3,MIRV_TF2_ENTITY_RAGDOLL=5,MIRV_TF2_ENTITY_BUILDING=7,MIRV_TF2_ENTITY_PROP=8;
 #define SOURCESDK_BONE_USED_BY_ANYTHING 0x0007ff00
 namespace SOURCESDK {
@@ -65,7 +74,7 @@ struct Fixture {
  void *StudioSlots[49]{},*CacheSlots[42]{},*NetworkSlots[9]{};
  Object Studio{StudioSlots},Cache{CacheSlots},Network{NetworkSlots};
  std::array<float,3> DrawColor{};bool MaterialInterface=true;void*MaterialSlots[43]{},*MaterialSystemSlots[71]{};Object MaterialSystem{MaterialSystemSlots};
- struct Material: Object {int Refs=0;std::string Color;std::array<float,3> Modulation{1,1,1},Tint{1,1,1};};Material Materials[10];int MaterialCount=0;
+ struct Material: Object {int Refs=0;std::string Color;std::array<float,3> Modulation{1,1,1},Tint{1,1,1};};Material Materials[18];int MaterialCount=0;
 
  void Put(int offset,int value){std::memcpy(Header+offset,&value,4);}
  void InitHeader(){Put(0,0x54534449);Put(4,48);Put(8,123);Put(76,sizeof(Header));Put(156,Count);Put(160,164);for(int i=0;i<Count&&i<8;++i){Put(164+i*216+4,i-1);Put(164+i*216+160,0x400);}}
@@ -94,7 +103,7 @@ struct ModelInfo {int GetModelType(const void*){return fixture.ModelType;}const 
 ModelInfo*Mirv_Tf2_GetModelInfo(){return &modelInfo;}
 struct Globals{float curtime_get(){return 2;}} globals;
 struct View{Globals*GetGlobals(){return &globals;}} g_Hook_VClient_RenderView;
-void*Factory(const char*name,int*){if(!fixture.Interfaces)return nullptr;if(!strcmp(name,"VStudioRender025"))return &fixture.Studio;if(!strcmp(name,"MDLCache004"))return &fixture.Cache;if(!strcmp(name,"VMaterialSystem082"))return fixture.MaterialInterface?&fixture.MaterialSystem:nullptr;if(!strcmp(name,"VBaseFileSystem011"))return fixture.FileSystem;assert(false);return nullptr;}
+void*Factory(const char*name,int*){if(!fixture.Interfaces)return nullptr;if(!strcmp(name,"VStudioRender025"))return &fixture.Studio;if(!strcmp(name,"MDLCache004"))return &fixture.Cache;if(!strcmp(name,"VMaterialSystem082")||!strcmp(name,"VMaterialSystem080"))return fixture.MaterialInterface?&fixture.MaterialSystem:nullptr;if(!strcmp(name,"VBaseFileSystem011"))return fixture.FileSystem;assert(false);return nullptr;}
 auto g_AppSystemFactory=Factory;
 struct BrushEngine {std::string Level,Directory;const char*GetLevelName(){return Level.c_str();}const char*GetGameDirectory(){return Directory.c_str();}} brushEngine;auto*g_VEngineClient=&brushEngine;
 bool queueAvailable=true;
@@ -206,7 +215,32 @@ int main(){
  // Different categories own different immutable materials; the Source override is restored.
  entity.Category=1;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(1);assert(fixture.MaterialCount==2&&!fixture.Override&&fixture.Materials[1].Refs==2&&fixture.Materials[0].Color!=fixture.Materials[1].Color);
  Mirv_Tf2_ReleaseSceneMaterials();assert(fixture.Materials[0].Refs==0&&fixture.Materials[1].Refs==1);ConsumeRenderQueue();assert(fixture.Materials[1].Refs==0);
- fixture.MaterialInterface=false;assert(Mirv_Tf2_DrawScenePose(entity,status)&&!fixture.Override);ConsumeRenderQueue();fixture.MaterialInterface=true;
+ fixture.MaterialInterface=false;
+ assert(Mirv_Tf2_DrawScenePose(entity,status)&&!fixture.Override);
+ ConsumeRenderQueue();
+ fixture.MaterialInterface=true;
+ // The OF-only path must remain opt-in, use isolated 080 materials, respect
+ // recorded category colors and restore the studio override after every call.
+ g_OpenFortressLegacyMode=true;
+ int beforeOf=fixture.MaterialCount;
+ entity.Category=0;
+ assert(Mirv_Tf2_DrawScenePose(entity,status) && fixture.MaterialCount==beforeOf);
+ assert(status.find("default cached wireframe")!=std::string::npos);
+ ConsumeRenderQueue();
+ assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));
+ expectColor(0);
+ assert(fixture.MaterialCount==beforeOf+1 && !fixture.Override);
+ ConsumeRenderQueue();
+ entity.Category=1;
+ assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));
+ expectColor(1);
+ assert(fixture.MaterialCount==beforeOf+2 && !fixture.Override);
+ assert(fixture.Materials[beforeOf].Color!=fixture.Materials[beforeOf+1].Color);
+ ConsumeRenderQueue();
+ Mirv_Tf2_ReleaseSceneMaterials();
+ assert(fixture.Materials[beforeOf].Refs==0 && fixture.Materials[beforeOf+1].Refs==0);
+ g_OpenFortressLegacyMode=false;
+ entity.Category=1;
  // A slow or discarded render queue retains ownership without unbounded growth.
  for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
  assert(!Mirv_Tf2_DrawScenePose(entity,status));unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);assert(pending==SceneMaxOutstanding&&peak==SceneMaxOutstanding);
