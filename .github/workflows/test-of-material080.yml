@@ -18,3 +18,20 @@ jobs:
         run: python3 tests/cinematic/test_scene_pose.py
       - name: AddressSanitizer and UndefinedBehaviorSanitizer
         run: python3 tests/cinematic/test_scene_pose.py --sanitize
+
+  windows-staging-build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/iron
+          check-latest: true
+      - uses: MinoruSekine/setup-scoop@v4
+      - name: Initialize submodules
+        run: git submodule update --init --recursive
+      - name: Install gettext
+        run: scoop install gettext
+      - name: Build staging (same process as main CI)
+        run: cmake -DAFX_MULTIBUILD_STAGING=ON -P cmake/MultiBuild.cmake
