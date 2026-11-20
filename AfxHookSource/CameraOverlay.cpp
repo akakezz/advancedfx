@@ -1883,6 +1883,19 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		advancedfx::Message(
 		    "Cached render: pending %u, peak %u; focus %d, device ready %d, drawing ready %d.\n", pending,
 		    peak, int(g_SceneFocused.load()), int(g_SceneDeviceReady.load()), int(SceneCanDrawModels()));
+		if (g_OpenFortressLegacyMode)
+		{
+			const auto counters = Mirv_Tf2_SceneRenderDiagnostics();
+			// Read only on explicit status; do not dereference cached entities in the render loop.
+			advancedfx::Message(
+			    "OF replay lifecycle (session totals): submitted %s, callbacks invoked %s, "
+			    "completion signaled %s, resources retired %s; outstanding %u, peak %u.\n",
+			    std::to_string(counters.Submitted).c_str(),
+			    std::to_string(counters.CallbacksInvoked).c_str(),
+			    std::to_string(counters.CompletionSignaled).c_str(),
+			    std::to_string(counters.Retired).c_str(),
+			    counters.Outstanding, counters.Peak);
+		}
 		if (auto view = SceneCacheView())
 		{
 			advancedfx::Message("Scene animation at tick %.3f (%s):\n", g_SceneCursor / SceneTickInterval(),
