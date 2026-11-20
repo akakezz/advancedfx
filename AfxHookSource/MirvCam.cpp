@@ -296,11 +296,29 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 }
 static void SyncOpenFortressAttachedCameraFollow(const MirvCameraCollisionSettings &settings);
 static bool PrintOpenFortressAttachmentRoute();
+// OF-only A/B switch for repeated render evaluations at one demo timestamp.
+static bool g_OfReuseSameTimeFollow = true;
 static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 {
 	auto settings = MirvCameraCollisionGet();
 	const int argc = args->ArgC();
 	bool changed = false, valid = true;
+	if (argc == 5 && !_stricmp(args->ArgV(3), "reuseSameTime"))
+	{
+		if (!g_OpenFortressLegacyMode)
+		{
+			Tier0_Warning("reuseSameTime is available only in Open Fortress legacy mode.\n");
+			return;
+		}
+		if (strcmp(args->ArgV(4), "0") && strcmp(args->ArgV(4), "1"))
+		{
+			Tier0_Warning("Usage: mirv_cam attach follow reuseSameTime <0|1>\n");
+			return;
+		}
+		g_OfReuseSameTimeFollow = args->ArgV(4)[0] == '1';
+		Tier0_Msg("Open Fortress same-time follow reuse: %s.\n", g_OfReuseSameTimeFollow ? "on" : "off");
+		return;
+	}
 	if (argc == 4 && !_stricmp(args->ArgV(3), "reset"))
 	{
 		MirvCameraAttachedReset();
@@ -369,6 +387,7 @@ static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 		          "blocking; 0 disables.\n"
 		          "mirv_cam attach follow reset - Reset the follow shot.\n"
 		          "mirv_cam attach follow status - Show settings.\n"
+		          "mirv_cam attach follow reuseSameTime <0|1> - OF-only duplicate-time render pose reuse.\n"
 		          "Damping uses demo time. Framing follows the corrected position; world mode retains its "
 		          "heading. Seeks/cuts reset history.\n");
 }
@@ -406,6 +425,11 @@ struct NamedCameraRig
 	advancedfx::CameraPose LastWorld, BaseWorld, BoneReference;
 	bool HasBoneReference = false;
 	MirvCameraAttachedState Follow;
+	// Filter output before aim and modifiers, reused only on repeated OF demo time.
+	advancedfx::CameraPose OfLastFilteredPose;
+	double OfLastFilteredTime = 0;
+	std::uint64_t OfLastFilteredDefinition = 0;
+	bool OfLastFilteredValid = false;
 	std::shared_ptr<CameraFollowCache> FollowCache;
 	std::shared_ptr<IMirvVecAngCalc> Target;
 	int EntityAddress = -1, TargetLevel = -1;
@@ -453,8 +477,9 @@ double g_CameraEvaluationStep = 0;
 struct OpenFortressRigFollowStats
 {
 	std::uint64_t CameraId = ~std::uint64_t(0);
-	unsigned Calls = 0, Applied = 0, Failed = 0, LostTarget = 0;
+	unsigned Calls = 0, Applied = 0, Failed = 0, LostTarget = 0, Reused = 0;
 	unsigned Resets = 0, SameTime = 0, Advancing = 0;
+	unsigned InvalidHistory = 0, BackwardTime = 0, LongGap = 0;
 	double LastTime = 0, LastDt = -1, LastCorrection = 0, PeakCorrection = 0;
 };
 OpenFortressRigFollowStats g_OfRigFollowStats;
@@ -945,8 +970,21 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 		++stats.Calls;
 		stats.LastTime = time;
 		stats.LastDt = state.Valid ? time - state.Time : -1.0;
-		if (!state.Valid || stats.LastDt < 0 || stats.LastDt > MirvCameraAttachedState::MaxContinuousGap)
+		if (!state.Valid)
+		{
 			++stats.Resets;
+			++stats.InvalidHistory;
+		}
+		else if (stats.LastDt < 0)
+		{
+			++stats.Resets;
+			++stats.BackwardTime;
+		}
+		else if (stats.LastDt > MirvCameraAttachedState::MaxContinuousGap)
+		{
+			++stats.Resets;
+			++stats.LongGap;
+		}
 		else if (stats.LastDt == 0)
 			++stats.SameTime;
 		else
@@ -1022,6 +1060,23 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 }
 bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPose &out)
 {
+	const auto viewed = g_CameraRigs.find(g_CameraRigName);
+	const bool liveOfSelectedRig = g_OpenFortressLegacyMode && g_CameraSource == CameraSource::Rig &&
+		!g_RigPreview && !g_BakingCamera && !MirvCam_SequencePreviewActive() &&
+		!AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
+		viewed != g_CameraRigs.end() && &viewed->second == &rig;
+	// OF can render multiple times at the same demo time. A fresh bone sample
+	// with dt == 0 can change the pose without advancing smoothing. Reuse the
+	// first successful filtered pose for that time without changing the filter.
+	// Paused camera authoring is excluded so edits at fixed time remain visible.
+	if (liveOfSelectedRig && g_OfReuseSameTimeFollow && !g_MirvTime.IsPaused() &&
+		rig.OfLastFilteredValid && rig.Follow.Valid && rig.Follow.Time == time &&
+		rig.OfLastFilteredTime == time && rig.OfLastFilteredDefinition == rig.Definition)
+	{
+		out = rig.OfLastFilteredPose;
+		++g_OfRigFollowStats.Reused;
+		return true;
+	}
 	advancedfx::CameraPose target;
 	double pivot[3], root[3], rootAngles[3];
 	if (!CameraAttachmentTarget(rig, time, target, pivot, root, rootAngles))
@@ -1048,7 +1103,18 @@ bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPos
 			MirvCameraAttachedState frozen;
 			return RigFollowStep(rig, frozen, time, target, pivot, root, out, rootAngles);
 		}
-		return RigFollowStep(rig, rig.Follow, time, target, pivot, root, out, rootAngles);
+		const bool ok = RigFollowStep(rig, rig.Follow, time, target, pivot, root, out, rootAngles);
+		if (liveOfSelectedRig)
+		{
+			rig.OfLastFilteredValid = ok;
+			if (ok)
+			{
+				rig.OfLastFilteredPose = out;
+				rig.OfLastFilteredTime = time;
+				rig.OfLastFilteredDefinition = rig.Definition;
+			}
+		}
+		return ok;
 	}
 	if (!rig.FollowCache)
 		rig.FollowCache = std::make_shared<CameraFollowCache>();
@@ -1716,7 +1782,10 @@ static bool PrintOpenFortressAttachmentRoute()
                   "resets %u, same time %u, advancing %u.\n",
                   stats.Calls, stats.Applied, stats.Failed, stats.LostTarget,
                   stats.Resets, stats.SameTime, stats.Advancing);
-        Tier0_Msg("OF rig correction: last t %.3f s, dt %.5f s (-1 = reset), "
+        Tier0_Msg("OF rig same-time reuse: %s, reused %u; reset details invalid %u, backwards %u, gap %u.\n",
+		              g_OfReuseSameTimeFollow ? "on" : "off", stats.Reused,
+		              stats.InvalidHistory, stats.BackwardTime, stats.LongGap);
+		Tier0_Msg("OF rig correction: last t %.3f s, dt %.5f s (-1 = reset), "
                   "last %.3f, peak %.3f units; unavailable %d.\n",
                   stats.LastTime, stats.LastDt, stats.LastCorrection, stats.PeakCorrection,
                   g_RigUnavailable ? 1 : 0);
