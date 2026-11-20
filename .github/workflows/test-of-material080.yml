@@ -6,6 +6,11 @@ on:
       - experiment/of-colored-studio-v080-2026-11-21
   workflow_dispatch:
 
+# Only the newest commit needs the expensive Windows staging build.
+concurrency:
+  group: of-material080-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   of-material080:
     runs-on: ubuntu-24.04
