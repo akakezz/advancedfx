@@ -10747,6 +10747,38 @@ static_assert(offsetof(SceneStudioInfo, LightCount) == (sizeof(void *) == 8 ? 14
 // wireframe material or its color modulation. 082 is the verified TF2 ABI;
 // older engines retain the default studio wireframe and colored proxy bounds.
 static void *g_SceneMaterials[advancedfx::SceneCache::CategoryCount]{};
+// Older OF materials are deliberately isolated from TF2's verified 082 cache.
+static void *g_SceneOfMaterials080[advancedfx::SceneCache::CategoryCount]{};
+static bool g_SceneOfMaterial080Attempted[advancedfx::SceneCache::CategoryCount]{};
+// This only verifies that the prospective vtable entry is a readable,
+// executable Method in the expected module. It cannot prove ABI semantics.
+static bool SceneOfMaterial080SlotPlausible(void *system)
+{
+#ifndef _WIN64
+	HMODULE module = GetModuleHandleA("materialsystem.dll");
+	if (!module || !system)
+		return false;
+	void **vtable = nullptr;
+	void *function = nullptr;
+	SIZE_T copied = 0;
+	if (!ReadProcessMemory(GetCurrentProcess(), system, &vtable, sizeof(vtable), &copied) ||
+	    copied != sizeof(vtable) || !vtable)
+		return false;
+	copied = 0;
+	if (!ReadProcessMemory(GetCurrentProcess(), vtable + 70, &function, sizeof(function), &copied) ||
+	    copied != sizeof(function) || !function)
+		return false;
+	MEMORY_BASIC_INFORMATION memory{};
+	if (!VirtualQuery(function, &memory, sizeof(memory)) ||
+	    memory.State != MEM_COMMIT || memory.AllocationBase != module)
+		return false;
+	const DWORD protect = memory.Protect & 0xff;
+	return protect == PAGE_EXECUTE || protect == PAGE_EXECUTE_READ ||
+	       protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+#else
+	return false;
+#endif
+}
 // MaterialSystem082 uses Source 2013's KeyValues layout. The older TF2
 // read-only tool-message adapter contains extra local-table fields, so it
 // cannot construct these shader definitions. Source owns the tree after
@@ -10810,15 +10842,25 @@ static bool SceneMaterialString(SceneMaterialKeyValues *root, const char *name, 
 	root->m_pSub = key;
 	return true;
 }
-static void *SceneCategoryMaterial(int category)
+static void *SceneCategoryMaterial(int category, bool ofColor080)
 {
 	if (category < 0 || category >= advancedfx::SceneCache::CategoryCount || !g_AppSystemFactory ||
 	    !SOURCESDK::L4D2::g_pMemAlloc)
 		return nullptr;
-	if (g_SceneMaterials[category])
-		return g_SceneMaterials[category];
-	void *system = g_AppSystemFactory("VMaterialSystem082", nullptr);
-	if (!system)
+	const bool olderOf = g_OpenFortressLegacyMode && ofColor080;
+	// Open Fortress normally stays on its proven cyan engine-wireframe path.
+	if (g_OpenFortressLegacyMode && !olderOf)
+		return nullptr;
+	auto &cached = olderOf ? g_SceneOfMaterials080[category] : g_SceneMaterials[category];
+	if (cached)
+		return cached;
+	if (olderOf && g_SceneOfMaterial080Attempted[category])
+		return nullptr;
+	// Never repeatedly try an unsupported older interface in the draw loop.
+	if (olderOf)
+		g_SceneOfMaterial080Attempted[category] = true;
+	void *system = g_AppSystemFactory(olderOf ? "VMaterialSystem080" : "VMaterialSystem082", nullptr);
+	if (!system || (olderOf && !SceneOfMaterial080SlotPlausible(system)))
 		return nullptr;
 	auto values = SceneMaterialKey("UnlitGeneric");
 	if (!values)
@@ -10831,7 +10873,9 @@ static void *SceneCategoryMaterial(int category)
 	const auto rgb = advancedfx::SceneCache::CategoryColor(category);
 	char color[96], name[96];
 	std::snprintf(color, sizeof(color), "[%.6f %.6f %.6f]", rgb[0] / 255.f, rgb[1] / 255.f, rgb[2] / 255.f);
-	std::snprintf(name, sizeof(name), "__hlae_scene_cache_category_%d_v2", category);
+	std::snprintf(name, sizeof(name),
+	              olderOf ? "__hlae_scene_cache_of080_category_%d_v1" : "__hlae_scene_cache_category_%d_v2",
+	              category);
 	// Studio overwrites IMaterial's $color with its per-draw modulation
 	// (normally white). $color2 is the shader's independent model tint and
 	// survives that update, including when Source executes the draw later.
@@ -10841,8 +10885,10 @@ static void *SceneCategoryMaterial(int category)
 		SceneDeleteMaterialKeys(values);
 		return nullptr;
 	}
-	// IMaterialSystem082::CreateMaterial consumes KeyValues and returns one
-	// caller reference (verified against TF2). Keep it until an idle demo frame.
+	// Slot 70 is verified in TF2/082. Historical 2013 V080 SDK declarations
+	// place CreateMaterial in the same position, but the exact OF binary is not
+	// supplied for symbol verification: this *opt-in* 080 path remains experimental.
+	// CreateMaterial consumes KeyValues and returns one caller reference.
 	void *material =
 	    SceneInterfaceCall<void *, const char *, SceneMaterialKeyValues *>(system, 70, name, values);
 	if (!material)
@@ -10852,7 +10898,7 @@ static void *SceneCategoryMaterial(int category)
 		SceneInterfaceCall<void>(material, 13);
 		return nullptr;
 	}
-	g_SceneMaterials[category] = material;
+	cached = material;
 	return material;
 }
 // The render queue only signals completion. MDL/material APIs are retired
@@ -11415,7 +11461,7 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 	return true;
 }
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
-                            const advancedfx::SceneCache::Entity *owner)
+                            const advancedfx::SceneCache::Entity *owner, bool ofColor080)
 {
 	Mirv_Tf2_SceneRenderFrame();
 	if (g_SceneOutstanding.load() >= SceneMaxOutstanding)
@@ -11509,7 +11555,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		return false;
 	}
 	info.Body = pose->Body;
-	void *material = SceneCategoryMaterial(entity.Category);
+	void *material = SceneCategoryMaterial(entity.Category, ofColor080);
 	if (material)
 	{
 		SceneInterfaceCall<void>(material, 12);
@@ -11542,8 +11588,12 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached model cleanup callback could not be submitted.";
 		return false;
 	}
-	status = material ? "Drawing category-colored cached models."
-	                  : "Drawing default cached wireframe; category material requires VMaterialSystem082.";
+	status = material ? (g_OpenFortressLegacyMode
+	                        ? "OF 080 category material submitted (experimental; verify visible colors)."
+	                        : "Drawing category-colored cached models.")
+	                  : (g_OpenFortressLegacyMode && ofColor080
+	                         ? "OF 080 material unavailable or rejected; default cyan wireframe retained."
+	                         : "Drawing default cached wireframe; category material requires VMaterialSystem082.");
 	return true;
 }
 void Mirv_Tf2_SceneRenderFrame()
@@ -11579,6 +11629,11 @@ void Mirv_Tf2_ReleaseSceneMaterials()
 	for (auto &material : g_SceneMaterials)
 		if (void *value = std::exchange(material, nullptr))
 			SceneInterfaceCall<void>(value, 13);
+	for (auto &material : g_SceneOfMaterials080)
+		if (void *value = std::exchange(material, nullptr))
+			SceneInterfaceCall<void>(value, 13);
+	for (auto &attempt : g_SceneOfMaterial080Attempted)
+		attempt = false;
 }
 // Shared with the camera target provider: reconstruct the same sampled bones
 // used by cached mesh rendering, including parent transforms and bone merges.
