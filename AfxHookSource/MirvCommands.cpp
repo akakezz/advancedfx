@@ -5185,18 +5185,18 @@ void MirvFix_OfInterpolationProbeFrame()
 static void MirvFix_PrintOfInterpolationProbe()
 {
     const auto &p = g_OfInterpolationProbe;
-    Tier0_Msg("OF interpolation probe: %s, entity %d; successful samples %s; unavailable %s; duplicate stage callbacks %s; discontinuities %s.\\n",
+    Tier0_Msg("OF interpolation probe: %s, entity %d; successful samples %s; unavailable %s; duplicate stage callbacks %s; discontinuities %s.\n",
         p.PlayerIndex ? "armed (read-only)" : "off", p.PlayerIndex,
         std::to_string(p.Samples).c_str(), std::to_string(p.Missing).c_str(),
         std::to_string(p.DuplicateCallbacks).c_str(), std::to_string(p.Discontinuities).c_str());
-    Tier0_Msg("OF interpolation probe sub-tick: advancing same-tick pairs %s; moved %s; static %s; unchanged-time pairs %s; max step %.6g units.\\n",
+    Tier0_Msg("OF interpolation probe sub-tick: advancing same-tick pairs %s; moved %s; static %s; unchanged-time pairs %s; max step %.6g units.\n",
         std::to_string(p.SameTickAdvancing).c_str(), std::to_string(p.SameTickMoved).c_str(),
         std::to_string(p.SameTickStatic).c_str(), std::to_string(p.SameTickPaused).c_str(),
         p.MaxSameTickDistance);
-    Tier0_Msg("OF interpolation probe tick boundary: moved %s; static %s; max step %.6g units; last delta %.6g; last tick %d; client time %.6f.\\n",
+    Tier0_Msg("OF interpolation probe tick boundary: moved %s; static %s; max step %.6g units; last delta %.6g; last tick %d; client time %.6f.\n",
         std::to_string(p.TickMoved).c_str(), std::to_string(p.TickStatic).c_str(),
         p.MaxTickDistance, p.LastDistance, p.LastTick, p.LastClientTime);
-    Tier0_Msg("Interpretation: within-tick origin changes indicate rendered root interpolation. Repeated roots do not prove bone animation is static. Sampling is post FRAME_RENDER_END, not an exact GPU presentation timestamp.\\n");
+    Tier0_Msg("Interpretation: within-tick origin changes indicate rendered root interpolation. Repeated roots do not prove bone animation is static. Sampling is post FRAME_RENDER_END, not an exact GPU presentation timestamp.\n");
 }
 
 // End TF2 demo interpolation controls.
@@ -6888,7 +6888,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			{
 			    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP)
 			    {
-			        Tier0_Warning("The motion probe is only available in explicit Open Fortress legacy mode.\\n");
+			        Tier0_Warning("The motion probe is only available in explicit Open Fortress legacy mode.\n");
 			        return;
 			    }
 			    if (argc == 3 || (argc == 4 && !_stricmp(args->ArgV(3), "status")))
@@ -6913,11 +6913,11 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			        {
 			            g_OfInterpolationProbe = {};
 			            g_OfInterpolationProbe.PlayerIndex = int(index);
-			            Tier0_Msg("OF read-only motion probe armed for entity %d; record normal demo playback, then use probe status.\\n", int(index));
+			            Tier0_Msg("OF read-only motion probe armed for entity %d; record normal demo playback, then use probe status.\n", int(index));
 			            return;
 			        }
 			    }
-			    Tier0_Warning("Usage: mirv_fix playerInterpolation probe <playerIndex|status|off> (OF offline demos only).\\n");
+			    Tier0_Warning("Usage: mirv_fix playerInterpolation probe <playerIndex|status|off> (OF offline demos only).\n");
 			    return;
 			}
 			if (argc == 3 && !_stricmp(args->ArgV(2), "status"))
