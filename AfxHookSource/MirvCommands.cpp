@@ -780,6 +780,16 @@ CON_COMMAND(mirv_streams, "Access to streams system.")
 					return;
 				}
 				else
+				if(g_OpenFortressLegacyMode && !_stricmp(cmd2, "toggle"))
+				{
+					// OF-only record hotkey; reuse HLAE's established recorder.
+					if(g_AfxStreams.IsRecording())
+						g_AfxStreams.Console_Record_End();
+					else
+						g_AfxStreams.Console_Record_Start();
+					return;
+				}
+				else
 				if(!_stricmp(cmd2, "start"))
 				{
 					g_AfxStreams.Console_Record_Start();
@@ -1044,6 +1054,8 @@ CON_COMMAND(mirv_streams, "Access to streams system.")
 				"mirv_streams record format [...] - Set/get file format.\n"
 				"mirv_streams record fps [...] - Allows to override input FPS for games where we can not detect it (not needed for CS:GO).\n"
 			);
+			if (g_OpenFortressLegacyMode)
+				Tier0_Msg("mirv_streams record toggle - Start or end recording (bind to a key).\\n");
 #ifndef _WIN64			
 			if (bIsCsgo) Tier0_Msg(
 				"mirv_streams record presentOnScreen [...] - Controls screen presentation during recording.\n"
