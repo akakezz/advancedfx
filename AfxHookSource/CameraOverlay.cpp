@@ -71,6 +71,8 @@ static bool g_SceneBuildings = false, g_SceneProps = false;
 // Avoid persisting risky engine-facing studio work across HLAE launches.
 static bool g_SceneOfExtended = false, g_SceneOfPoses = false;
 static bool g_SceneOfReplay = false, g_SceneOfSkeleton = false;
+// Studio color materials use unverified OF/080 ABI; explicit opt-in only.
+static std::atomic_bool g_SceneOfColor080{false};
 // Counters only; diagnostics never look through cached model pointers.
 static std::atomic<unsigned long long> g_SceneOfReplayDraws{0}, g_SceneOfReplayAttempts{0},
     g_SceneOfReplayAccepted{0}, g_SceneOfReplayRejected{0};
@@ -758,7 +760,8 @@ void SceneCacheDrawModels()
 			const Entity *owner = selected.HasOwner ? &selected.OwnerSnapshot : nullptr;
 			// Avoid unreliable per-model logs and post-draw pointer formatting.
 			g_SceneOfReplayAttempts.fetch_add(1, std::memory_order_relaxed);
-			const bool submitted = Mirv_Tf2_DrawScenePose(entity, status, owner);
+			const bool submitted = Mirv_Tf2_DrawScenePose(
+			    entity, status, owner, g_SceneOfColor080.load(std::memory_order_relaxed));
 			if (submitted)
 				g_SceneOfReplayAccepted.fetch_add(1, std::memory_order_relaxed);
 			else
@@ -1490,6 +1493,13 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		g_SceneRecord = value != 0;
 		ok = true;
 	}
+	else if (g_OpenFortressLegacyMode && !_stricmp(op, "ofColor080") && integer(value) &&
+	         (value == 0 || value == 1))
+	{
+		g_SceneOfColor080.store(value != 0);
+		++g_SceneDrawEpoch;
+		ok = true;
+	}
 	else if (g_OpenFortressLegacyMode && integer(value) && (value == 0 || value == 1) &&
 	         (!_stricmp(op, "ofExtended") || !_stricmp(op, "ofPoses") ||
 	          !_stricmp(op, "ofReplay") || !_stricmp(op, "ofSkeleton")))
@@ -1813,6 +1823,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "  OF only: mirv_cache ofExtended|ofPoses|ofReplay|ofSkeleton <0|1>.\n"
+		    "  OF only: mirv_cache ofColor080 <0|1> (EXPERIMENTAL material ABI; default 0).\n"
 		    "  OF studio replay submits all eligible cached models (queue backpressure retained).\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
@@ -1836,9 +1847,9 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 
 	if (g_OpenFortressLegacyMode)
 	{
-		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d; all eligible studio models.\n",
+		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d, color080 %d; all eligible studio models.\n",
 		                    int(g_SceneOfExtended), int(g_SceneOfPoses),
-		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton));
+		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton), int(g_SceneOfColor080.load()));
 		for (auto stage : {MirvOfSceneStage::Entities, MirvOfSceneStage::Poses, MirvOfSceneStage::Replay})
 		{
 			const char *name = stage == MirvOfSceneStage::Entities ? "entity capture" :
@@ -6253,6 +6264,13 @@ static void DrawSceneCacheMenu(int playhead)
 				}
 				else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Replay);
 			}
+			bool color080 = g_SceneOfColor080.load();
+			if (ImGui::Checkbox("OF category-colored studio wireframes (experimental 080)", &color080))
+			{
+				g_SceneOfColor080.store(color080);
+				++g_SceneDrawEpoch;
+			}
+			ImGui::TextDisabled("Color080 uses an unverified older material ABI; OFF is the proven cyan fallback.");
 			ImGui::TextDisabled("OF studio replay submits all eligible models; outstanding queue work is bounded.");
 		}
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
