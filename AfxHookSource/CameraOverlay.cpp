@@ -71,8 +71,6 @@ static bool g_SceneBuildings = false, g_SceneProps = false;
 // Avoid persisting risky engine-facing studio work across HLAE launches.
 static bool g_SceneOfExtended = false, g_SceneOfPoses = false;
 static bool g_SceneOfReplay = false, g_SceneOfSkeleton = false;
-static std::atomic_int g_SceneOfReplayBatch{1}; // Diagnostic-only, session-local; one studio submission is the safe default.
-static std::atomic_bool g_SceneOfReplayColor{false}; // OF-only opt-in fallback; never persisted.
 // Counters only; diagnostics never look through cached model pointers.
 static std::atomic<unsigned long long> g_SceneOfReplayDraws{0}, g_SceneOfReplayAttempts{0},
     g_SceneOfReplayAccepted{0}, g_SceneOfReplayRejected{0};
@@ -662,7 +660,7 @@ void SceneCacheDrawModels()
 			return;
 		}
 		std::vector<ReplayCandidate> candidates;
-		candidates.reserve((std::min)(size_t(128), entities.size()));
+		candidates.reserve(entities.size());
 		size_t invalid = 0, brush = 0;
 		for (size_t i = 0; i < entities.size(); ++i)
 		{
@@ -715,8 +713,7 @@ void SceneCacheDrawModels()
 				++brush;
 				continue;
 			}
-			if (candidates.size() < 128)
-				candidates.push_back({i, entity, {}, false}); // Own shared pointers before engine submission.
+			candidates.push_back({i, entity, {}, false}); // Own shared pointers before engine submission.
 		}
 		if (trace)
 			Tier0_Msg("[OF replay] preflight complete: studio=%u brush=%u invalid=%u\n",
@@ -746,8 +743,10 @@ void SceneCacheDrawModels()
 				candidate.HasOwner = true;
 			}
 		}
-		const size_t batch = (std::min)(size_t(g_SceneOfReplayBatch.load()), candidates.size());
-		g_SceneOfReplayLastEligible.store(unsigned(candidates.size()), std::memory_order_relaxed);
+		// Process every eligible studio model, including categories that previously
+		// fell after the initial players. Retain the renderer's 512-outstanding guard.
+		const size_t batch = candidates.size();
+		g_SceneOfReplayLastEligible.store(unsigned(batch), std::memory_order_relaxed);
 		g_SceneOfReplayDraws.fetch_add(1, std::memory_order_relaxed);
 		std::string status;
 		for (size_t n = 0; n < batch; ++n)
@@ -757,33 +756,19 @@ void SceneCacheDrawModels()
 			const auto &selected = candidates[n];
 			const auto &entity = selected.Snapshot;
 			const Entity *owner = selected.HasOwner ? &selected.OwnerSnapshot : nullptr;
-			if (trace)
-			{
-				unsigned outstanding = 0, peak = 0;
-				Mirv_Tf2_SceneRenderStatus(outstanding, peak);
-				Tier0_Msg("[OF replay] submit %u/%u index=%u id=%s pose=%p model=%p queued=%u peak=%u\n",
-				          unsigned(n + 1), unsigned(batch), unsigned(selected.Index),
-				          std::to_string(entity.Identity).c_str(),
-				          static_cast<const void *>(entity.ModelPose.get()),
-				          static_cast<const void *>(entity.ModelPose->ModelInfo.get()),
-				          outstanding, peak);
-			}
+			// Avoid unreliable per-model logs and post-draw pointer formatting.
 			g_SceneOfReplayAttempts.fetch_add(1, std::memory_order_relaxed);
-			const bool submitted = Mirv_Tf2_DrawScenePose(entity, status, owner,
-			                                              g_SceneOfReplayColor.load(std::memory_order_relaxed));
+			const bool submitted = Mirv_Tf2_DrawScenePose(entity, status, owner);
 			if (submitted)
 				g_SceneOfReplayAccepted.fetch_add(1, std::memory_order_relaxed);
 			else
 				g_SceneOfReplayRejected.fetch_add(1, std::memory_order_relaxed);
-			if (trace)
-				Tier0_Msg("[OF replay] returned %u/%u submitted=%d status=%s\n",
-				          unsigned(n + 1), unsigned(batch), int(submitted), status.c_str());
 			if (!submitted)
 				break;
 		}
 		if (epoch == g_SceneDrawEpoch.load())
 			SceneModelStatus(status);
-		return; // OF diagnostics: at most the selected batch, default one, per frame.
+		return; // OF: all valid cached studio models, subject to renderer backpressure.
 	}
 	if (std::none_of(view->Entities.begin(), view->Entities.end(), [](const auto &entity) {
 		    return entity.ModelPose && entity.ModelPose->ModelInfo->WireEdges.empty();
@@ -1503,20 +1488,6 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		g_SceneRecord = value != 0;
 		ok = true;
 	}
-	else if (g_OpenFortressLegacyMode && !_stricmp(op, "ofReplayBatch") && integer(value) &&
-	         value >= 1 && value <= 8)
-	{
-		g_SceneOfReplayBatch.store(value);
-		++g_SceneDrawEpoch;
-		ok = true;
-	}
-	else if (g_OpenFortressLegacyMode && !_stricmp(op, "ofReplayColor") && integer(value) &&
-	         (value == 0 || value == 1))
-	{
-		g_SceneOfReplayColor.store(value != 0);
-		++g_SceneDrawEpoch;
-		ok = true;
-	}
 	else if (g_OpenFortressLegacyMode && integer(value) && (value == 0 || value == 1) &&
 	         (!_stricmp(op, "ofExtended") || !_stricmp(op, "ofPoses") ||
 	          !_stricmp(op, "ofReplay") || !_stricmp(op, "ofSkeleton")))
@@ -1840,8 +1811,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "  OF only: mirv_cache ofExtended|ofPoses|ofReplay|ofSkeleton <0|1>.\n"
-		    "  OF only: mirv_cache ofReplayBatch <1..8> (diagnostic submissions/draw, default 1).\n"
-		    "  OF only: mirv_cache ofReplayColor <0|1> (experimental studio tint, default 0).\n"
+		    "  OF studio replay submits all eligible cached models (queue backpressure retained).\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
 	}
@@ -1864,10 +1834,9 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 
 	if (g_OpenFortressLegacyMode)
 	{
-		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d, replay batch %d, color tint %d.\n",
+		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d; all eligible studio models.\n",
 		                    int(g_SceneOfExtended), int(g_SceneOfPoses),
-		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton), g_SceneOfReplayBatch.load(),
-		                    int(g_SceneOfReplayColor.load()));
+		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton));
 		for (auto stage : {MirvOfSceneStage::Entities, MirvOfSceneStage::Poses, MirvOfSceneStage::Replay})
 		{
 			const char *name = stage == MirvOfSceneStage::Entities ? "entity capture" :
@@ -1910,13 +1879,12 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			// Aggregate snapshots only: no extra studio calls or entity dereferences.
 			advancedfx::Message(
 			    "OF replay submission (session totals): calls %s, attempted %s, accepted %s, "
-			    "rejected %s; last eligible %u, configured batch %d.\n",
+			    "rejected %s; last eligible %u (all candidates attempted unless backpressured).\n",
 			    std::to_string(g_SceneOfReplayDraws.load(std::memory_order_relaxed)).c_str(),
 			    std::to_string(g_SceneOfReplayAttempts.load(std::memory_order_relaxed)).c_str(),
 			    std::to_string(g_SceneOfReplayAccepted.load(std::memory_order_relaxed)).c_str(),
 			    std::to_string(g_SceneOfReplayRejected.load(std::memory_order_relaxed)).c_str(),
-			    g_SceneOfReplayLastEligible.load(std::memory_order_relaxed),
-			    g_SceneOfReplayBatch.load(std::memory_order_relaxed));
+			    g_SceneOfReplayLastEligible.load(std::memory_order_relaxed));
 			const auto counters = Mirv_Tf2_SceneRenderDiagnostics();
 			// Read only on explicit status; do not dereference cached entities in the render loop.
 			advancedfx::Message(
@@ -6283,19 +6251,7 @@ static void DrawSceneCacheMenu(int playhead)
 				}
 				else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Replay);
 			}
-			int replayBatch = g_SceneOfReplayBatch.load();
-			if (ImGui::SliderInt("OF studio submissions per draw (diagnostic)", &replayBatch, 1, 8))
-			{
-				g_SceneOfReplayBatch.store(replayBatch);
-				++g_SceneDrawEpoch;
-			}
-			bool replayColor = g_SceneOfReplayColor.load();
-			if (ImGui::Checkbox("OF category tint for studio wireframes (experimental)", &replayColor))
-			{
-				g_SceneOfReplayColor.store(replayColor);
-				++g_SceneDrawEpoch;
-			}
-			ImGui::TextDisabled("OF replay options are session-only; color tint is off by default.");
+			ImGui::TextDisabled("OF studio replay submits all eligible models; outstanding queue work is bounded.");
 		}
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
 		if (g_SceneDrawing.Bounds && ImGui::TreeNode("Bounding box filters"))
