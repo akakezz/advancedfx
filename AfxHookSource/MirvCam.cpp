@@ -224,7 +224,7 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 		const char *field = args->ArgV(2), *value = args->ArgV(3);
 		const bool boolean = !std::strcmp(value, "0") || !std::strcmp(value, "1");
 		if (!_stricmp(field, "free") || !_stricmp(field, "campath") || !_stricmp(field, "players") ||
-		    !_stricmp(field, "attached") || !_stricmp(field, "ignoreLocal"))
+			!_stricmp(field, "attached") || !_stricmp(field, "debug") || !_stricmp(field, "ignoreLocal"))
 		{
 			valid = boolean;
 			if (!_stricmp(field, "free"))
@@ -233,17 +233,24 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 				settings.Campath = !std::strcmp(value, "1");
 			else if (!_stricmp(field, "attached"))
 				settings.Attached = !std::strcmp(value, "1");
+			else if (!_stricmp(field, "debug"))
+				settings.Debug = !std::strcmp(value, "1");
 			else if (!_stricmp(field, "ignoreLocal"))
 				settings.IgnoreLocal = !std::strcmp(value, "1");
 			else
 				settings.Players = !std::strcmp(value, "1");
 		}
 		else if (!_stricmp(field, "radius") || !_stricmp(field, "returnHalfLife") ||
-		         !_stricmp(field, "returnSpeed") || !_stricmp(field, "attachedSoftDistance"))
+				 !_stricmp(field, "returnSpeed") || !_stricmp(field, "subjectClearance") ||
+				 !_stricmp(field, "nearPlane") || !_stricmp(field, "attachedSoftDistance"))
 		{
 			char *end = nullptr;
 			double number = std::strtod(value, &end);
-			if (!_stricmp(field, "radius"))
+			if (!_stricmp(field, "subjectClearance"))
+				settings.SubjectClearance = number;
+			else if (!_stricmp(field, "nearPlane"))
+				settings.NearPlane = number;
+			else if (!_stricmp(field, "radius"))
 				settings.Radius = number;
 			else if (!_stricmp(field, "returnHalfLife"))
 				settings.ReturnHalfLife = number;
@@ -275,15 +282,18 @@ static void MirvCameraCollisionCommand(IWrpCommandArgs *args)
 	    "Attachment collision %d; ignore local %d; return half-life %.3f s, maximum speed %.1f units/s.\n",
 	    settings.Attached, settings.IgnoreLocal, settings.ReturnHalfLife, settings.ReturnSpeed);
 	Tier0_Msg("Attached collision soft zone %.1f units (0 = disabled).\n", settings.AttachedSoftDistance);
+	Tier0_Msg("Minimum subject distance %.2f; near-plane depth %.2f; debug %d.\n", settings.SubjectClearance,
+			  settings.NearPlane, settings.Debug);
 	if (argc == 2 || !valid)
 		Tier0_Msg("mirv_cam collision free|campath|attached|players|ignoreLocal 0|1\n"
-		          "mirv_cam collision radius <1..64> | response stop|slide | returnHalfLife <0..10> | "
-		          "returnSpeed <0..1000000> | attachedSoftDistance <0..256> | reset | status\n"
-		          "All collision switches default off. Local player is ignored by default; other "
-		          "client-solid player "
-		          "hulls are optional.\n"
-		          "Correction changes only the live view. Deeply embedded starts may require disabling "
-		          "collision and moving clear.\n");
+				  "mirv_cam collision radius <1..64> | response stop|slide | returnHalfLife <0..10> | "
+				  "returnSpeed <0..1000000> | attachedSoftDistance <0..256> | subjectClearance <0..256> | "
+				  "nearPlane <0..32> | debug 0|1 | reset | status\n"
+				  "All collision switches default off. Local player is ignored by default; other "
+				  "client-solid player "
+				  "hulls are optional.\n"
+				  "Correction changes only the live view. Deeply embedded starts may require disabling "
+				  "collision and moving clear.\n");
 }
 static void MirvCameraAttachFollowCommand(IWrpCommandArgs *args)
 {
@@ -3090,12 +3100,14 @@ std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
 		auto &entry = *iterator;
 		auto &rig = entry.second;
 		advancedfx::CameraPose pose;
+		auto collisionDebug = rig.Follow;
 		if (evaluate && !(g_CameraSource == CameraSource::Rig && g_RigPreview && entry.first == g_CameraRigName))
 		{
 			auto sample = rig;
 			if (rig.Aim)
 				sample.Aim = rig.Aim->CloneState();
 			EvaluateIndividualCamera(sample, pose);
+			collisionDebug = sample.Follow;
 			rig.LastWorld = sample.LastWorld;
 			rig.BaseWorld = sample.BaseWorld;
 			rig.Available = sample.Available;
@@ -3110,6 +3122,25 @@ std::vector<advancedfx::CameraInfo> MirvCam_Cameras(bool evaluate)
 		info.Attached = rig.Rig.Attached;
 		info.Available = rig.Available;
 		info.Motion = rig.Rig.Motion;
+		if (MirvCameraCollisionGet().Debug && MirvCameraCollisionGet().Attached &&
+			collisionDebug.CollisionActive && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
+			!MirvCam_SequencePreviewActive())
+		{
+			info.CollisionDebug = true;
+			info.CollisionBlocked = collisionDebug.SubjectBlocked || !collisionDebug.Valid;
+			info.CollisionAnchorEmbedded = collisionDebug.AnchorEmbedded;
+			info.CollisionContact = collisionDebug.HasContact;
+			info.CollisionRadius = collisionDebug.CollisionRadius;
+			for (int a = 0; a < 3; ++a)
+			{
+				info.CollisionAnchor[a] = collisionDebug.CollisionAnchor[a];
+				info.CollisionDesired[a] = collisionDebug.CollisionDesired[a];
+				info.CollisionPosition[a] = collisionDebug.Position[a];
+				info.CollisionHit[a] = collisionDebug.Contact[a];
+				info.CollisionNormal[a] = collisionDebug.ContactNormal[a];
+			}
+		}
+
 		if (rig.Target)
 			Mirv_Tf2_CameraBone(rig.Target.get(), info.BoneIndex, info.BoneName);
 		info.Selected = entry.first == g_CameraRigName;

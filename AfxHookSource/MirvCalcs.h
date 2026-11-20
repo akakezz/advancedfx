@@ -318,6 +318,8 @@ int Mirv_Tf2_GetBoneNames(int entityIndex, MirvTf2BoneName_t * outNames);
 struct MirvCameraCollisionSettings
 {
 	bool Free = false, Campath = false, Attached = false, Players = true, Slide = true, IgnoreLocal = true;
+	double SubjectClearance = 0, NearPlane = 0; // Attached anchor distance and optional frustum protection.
+	bool Debug = false;
 	double Radius = 6, ReturnHalfLife = .2, ReturnSpeed = 300, FollowHalfLife = 0, FollowMaxDistance = 128;
 	double BoneHalfLife = 0, FollowTeleportDistance = 1024, AttachedSoftDistance = 24;
 	double OrbitHalfLife = .15, OrbitSpeed = 360, FollowRecoveryDelay = 1;
@@ -329,6 +331,9 @@ struct MirvCameraAttachedState
 {
 	static constexpr double MaxContinuousGap = 10; // Shared follow/aim scene-time reset threshold.
 	bool Valid = false, Retracted = false, Contracting = false;
+	bool CollisionActive = false, AnchorEmbedded = false, SubjectBlocked = false, HasContact = false;
+	double CollisionRadius = 0, CollisionAnchor[3] = {}, CollisionDesired[3] = {}, Contact[3] = {},
+		   ContactNormal[3] = {};
 	double LastAllowed = 0;
 	const void *Identity = nullptr;
 	void *Entity = nullptr;
@@ -359,9 +364,11 @@ void MirvCameraAttachedReset();
 // Recover the authored pose if this is the current corrected view; retain history on success.
 bool MirvCameraAttachedCapturePose(const void *identity, double origin[3], double angles[3]);
 bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,
-	double sceneTime, double pathTime, const double seed[3], float &x, float &y, float &z);
-bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3],
-	double sceneTime, float &x, float &y, float &z, const double *entityOrigin = nullptr, float *angles = nullptr);
+							  double sceneTime, double pathTime, const double seed[3], float &x, float &y,
+							  float &z);
+bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
+							 float &x, float &y, float &z, const double *entityOrigin = nullptr,
+							 float *angles = nullptr, double fov = 90, double aspect = 16.0 / 9);
 // Preserve target framing after a position correction without advancing mirv_aim twice.
 bool MirvCameraAttachedReframe(const double from[3], const double to[3], const double target[3], float angles[3]);
 // End optional TF2 camera collision.

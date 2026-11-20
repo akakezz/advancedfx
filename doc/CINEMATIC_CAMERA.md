@@ -2888,3 +2888,40 @@ are at least one float clock step apart, rather than collapsing into the same
 representable playback time in stock HLAE. This does not replace testing a newly
 reported file: the earlier supplied XML matches stock 2.189.6 at every key and
 midpoint; the reported missing-motion case still needs its current XML to isolate.
+
+### Attached collision reliability and diagnostics
+
+The attachment controller now keeps return damping active when the camera-sized
+hull overlaps geometry at the attachment point (common for gibs near a floor).
+It searches a bounded distance on the existing boom for a clear sweep origin,
+using a point trace to prevent searching through an intervening wall. Moving
+obstacles still require immediate safety corrections; unobstructed return uses
+the existing return half-life and speed cap. Pause freezes that return.
+
+Embedded-start recovery probes upward before away-from-goal escape, preventing
+a goal above a thin floor from first sending an embedded camera underneath it. First-frame results are checked against world geometry;
+deeply embedded starts with no verified clear result report unavailable. A subject
+can occupy all remaining space between camera and wall; world safety wins and
+the diagnostic reports missing subject clearance rather than crossing the wall.
+
+Cameras > Attached camera collision uses the existing shared collision controls:
+
+- Minimum subject distance: optional distance from the physical attachment point.
+  Useful for non-solid gibs that engine traces do not hit; zero keeps engine-only
+  subject checks. This is an explicit exclusion distance, not a visible-mesh fit.
+- Attached near-plane depth: zero keeps radius-only collision. A positive depth
+  expands the existing clearance hull using a roll-safe bound for the attachment
+  pose FOV and viewport aspect. Leave margin for later modifiers that widen FOV.
+  Set it to the depth you want protected; it does not change the game near clip.
+- Draw collision diagnostics: requires camera guides enabled. Draws the requested
+  to corrected displacement, boom, corrected hull and contact normal. Labels
+  identify embedded anchors and impossible subject gaps. Disabled in recording.
+
+Console equivalents are `mirv_cam collision subjectClearance <0..256>`,
+`mirv_cam collision nearPlane <0..32>` and `mirv_cam collision debug 0|1`.
+These are shared live settings, like the existing radius/return settings.
+Return speed zero is unlimited; half-life zero disables exponential easing.
+The existing blocked-follow recovery delay can intentionally cut to a verified
+clear shot after a closed-door obstruction; set it to zero for strict collision.
+Historical world collision remains deferred: cached scrubbing never traces
+against the unrelated live positions of doors or entities.

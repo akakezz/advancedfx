@@ -708,10 +708,11 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 	float attachedAngles[3] = {Rx, Ry, Rz};
 	const bool aimFrame = attachedIdentity && aimAttachment == attachedIdentity;
 	const bool sourceFrame = !(attachedIdentity && aimAngleAttachment == attachedIdentity) &&
-	                         attachedMode != MIRV_TF2_BONEMODE_WORLD && g_MirvCam.m_SourceUseXRotation &&
-	                         g_MirvCam.m_SourceUseYRotation && g_MirvCam.m_SourceUseZRotation;
-	if (MirvCameraAttachedApply(attachedIdentity, attachedEntity, attachedPivot, g_MirvTime.GetCurTime(), Tx, Ty,
-	                            Tz, attachedRoot, sourceFrame && !aimFrame ? attachedAngles : nullptr))
+							 attachedMode != MIRV_TF2_BONEMODE_WORLD && g_MirvCam.m_SourceUseXRotation &&
+							 g_MirvCam.m_SourceUseYRotation && g_MirvCam.m_SourceUseZRotation;
+	if (MirvCameraAttachedApply(attachedIdentity, attachedEntity, attachedPivot, g_MirvTime.GetCurTime(), Tx,
+								Ty, Tz, attachedRoot, sourceFrame && !aimFrame ? attachedAngles : nullptr,
+								Fov, LastHeight > 0 ? double(LastWidth) / LastHeight : 16.0 / 9))
 	{
 		if (aimFrame)
 		{

@@ -203,6 +203,11 @@ struct CameraInfo
 	CameraPose Pose, BasePose;
 	CameraMotion Motion;
 	bool Attached = false, Available = true, Selected = false, Viewed = false;
+	bool CollisionDebug = false, CollisionBlocked = false, CollisionAnchorEmbedded = false,
+		 CollisionContact = false;
+	double CollisionRadius = 0;
+	std::array<double, 3> CollisionAnchor{}, CollisionDesired{}, CollisionPosition{}, CollisionHit{},
+		CollisionNormal{};
 	int EntityAddress = -1, AttachMode = 0, BoneIndex = -1;
 	std::string BoneName;
 	bool AimActive = false, AimSnap = true, AimCustomSource = false;
@@ -244,6 +249,30 @@ struct CameraGuideLine
 {
 	std::array<double, 3> A, B;
 };
+inline std::vector<CameraGuideLine> CameraCollisionGuideLines(const CameraInfo &camera)
+{
+	std::vector<CameraGuideLine> lines;
+	if (!camera.CollisionDebug)
+		return lines;
+	lines.push_back({camera.CollisionDesired, camera.CollisionPosition});
+	lines.push_back({camera.CollisionAnchor, camera.CollisionPosition});
+	std::array<double, 3> corners[8];
+	for (int c = 0; c < 8; ++c)
+		for (int a = 0; a < 3; ++a)
+			corners[c][a] = camera.CollisionPosition[a] + ((c & (1 << a)) ? 1 : -1) * camera.CollisionRadius;
+	for (int c = 0; c < 8; ++c)
+		for (int a = 0; a < 3; ++a)
+			if (!(c & (1 << a)))
+				lines.push_back({corners[c], corners[c | (1 << a)]});
+	if (camera.CollisionContact)
+	{
+		auto end = camera.CollisionHit;
+		for (int a = 0; a < 3; ++a)
+			end[a] += camera.CollisionNormal[a] * 12;
+		lines.push_back({camera.CollisionHit, end});
+	}
+	return lines;
+}
 inline std::vector<CameraGuideLine> CameraGuideLines(const CameraPose &pose, double aspect, bool frustum)
 {
 	std::vector<CameraGuideLine> lines;
