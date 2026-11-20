@@ -133,6 +133,8 @@ int main() {
   assert(queued.empty() && g_SceneOutstanding.load()==2);
   Mirv_Tf2_SceneRenderFrame();
   assert(g_SceneOutstanding.load()==0 && cache.Releases==2 && cache.Unlocks==2 && material.Releases==2);
+  assert(g_SceneSubmitted.load()==2 && g_SceneCallbacksInvoked.load()==2 &&
+         g_SceneCompletionSignaled.load()==2 && g_SceneRetired.load()==2);
 
   // Source may discard a queued callback without invoking operator().
   // Its destructor must still signal completion exactly once.
@@ -140,6 +142,8 @@ int main() {
   Process(false);
   Mirv_Tf2_SceneRenderFrame();
   assert(g_SceneOutstanding.load()==0 && cache.Releases==5 && material.Releases==5);
+  assert(g_SceneCallbacksInvoked.load()==2 && g_SceneCompletionSignaled.load()==5 &&
+         g_SceneRetired.load()==5);
 
   // Completion on a worker can overlap retirement on the engine thread.
   Enqueue(128);
@@ -156,9 +160,12 @@ int main() {
   assert(g_SceneOutstandingPeak.load()==SceneMaxOutstanding);
   Mirv_Tf2_SceneRenderFrame();
   assert(g_SceneOutstanding.load()==SceneMaxOutstanding);
+  assert(g_SceneSubmitted.load()==645 && g_SceneCompletionSignaled.load()==133 &&
+         g_SceneRetired.load()==133);
   Process(false);
   Mirv_Tf2_SceneRenderFrame();
   assert(g_SceneOutstanding.load()==0 && cache.Releases==645);
+  assert(g_SceneCompletionSignaled.load()==645 && g_SceneRetired.load()==645);
 
   // An empty queue executes and retires the functor synchronously.
   emptyRenderQueue=true;
@@ -185,6 +192,8 @@ int main() {
   Process(true);
   Mirv_Tf2_SceneRenderFrame();
   assert(g_SceneOutstanding.load()==0 && cache.Releases==648);
+  assert(g_SceneSubmitted.load()==648 && g_SceneCallbacksInvoked.load()==132 &&
+         g_SceneCompletionSignaled.load()==648 && g_SceneRetired.load()==648);
   std::cout << "Scene replay completion and queue-lifetime regression checks passed: "
             << "processed=" << completedCalls << " queued=" << queuedCalls
             << " retired=" << cache.Releases << " peak=" << g_SceneOutstandingPeak.load() << "\n";
