@@ -1055,7 +1055,7 @@ CON_COMMAND(mirv_streams, "Access to streams system.")
 				"mirv_streams record fps [...] - Allows to override input FPS for games where we can not detect it (not needed for CS:GO).\n"
 			);
 			if (g_OpenFortressLegacyMode)
-				Tier0_Msg("mirv_streams record toggle - Start or end recording (bind to a key).\\n");
+				Tier0_Msg("mirv_streams record toggle - Start or end recording (bind to a key).\n");
 #ifndef _WIN64			
 			if (bIsCsgo) Tier0_Msg(
 				"mirv_streams record presentOnScreen [...] - Controls screen presentation during recording.\n"
