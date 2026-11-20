@@ -5,6 +5,7 @@
 #include "CampathDrawer.h"
 #include "Gui.h"
 #include "MirvCalcs.h"
+#include "addresses.h"
 #include "MirvCam.h"
 #include "MirvTime.h"
 #include "RenderView.h"
@@ -99,7 +100,9 @@ void SceneCacheDevicePresent(bool success)
 }
 static bool SceneCanDrawModels()
 {
-	return g_SceneFocused.load() && g_SceneDeviceReady.load() &&
+	// OF's material render queue works, but cached studio-model playback is
+	// not yet verified. Keep this experimental mesh path disabled in OF.
+	return !g_OpenFortressLegacyMode && g_SceneFocused.load() && g_SceneDeviceReady.load() &&
 	       g_SceneReadyEpoch == g_SceneLifecycleEpoch.load() && g_SceneReadyFrames >= 2;
 }
 
@@ -5661,13 +5664,15 @@ static void DrawSceneCacheMenu(int playhead)
 		if (ImGui::Checkbox("Smooth cached animation", &g_SceneSmoothAnimation))
 			SceneCacheFrame(false);
 		bool models = g_SceneDrawModels.load();
-		if (ImGui::Checkbox("Draw cached models", &models))
+		if (!g_OpenFortressLegacyMode && ImGui::Checkbox("Draw cached models", &models))
 		{
 			g_SceneDrawModels.store(models);
 			++g_SceneDrawEpoch;
 			SceneModelStatus(models ? "Cached model drawing enabled." : "Cached model drawing disabled.");
 		}
 
+		if (g_OpenFortressLegacyMode)
+			ImGui::TextDisabled("Cached model replay and geometry preview are not yet validated for Open Fortress.");
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
 		if (g_SceneDrawing.Bounds && ImGui::TreeNode("Bounding box filters"))
 		{
@@ -6335,7 +6340,8 @@ static void DrawSequencerDetails(int playhead)
 		}
 		ImGui::EndTabItem();
 	}
-	DrawPlayerRepairEditor(playhead);
+	if (!g_OpenFortressLegacyMode)
+		DrawPlayerRepairEditor(playhead);
 	ImGui::EndTabBar();
 }
 
@@ -7755,7 +7761,7 @@ static void DrawCamerasTab()
 	}
 	if (found == cameras.end())
 		DrawCameraModifierLibrary();
-	if (ImGui::CollapsingHeader("Attached camera collision"))
+	if (!g_OpenFortressLegacyMode && ImGui::CollapsingHeader("Attached camera collision"))
 	{
 		auto collision = MirvCameraCollisionGet();
 
@@ -7940,7 +7946,8 @@ void Draw()
 	// Diagnostic watermark
 	ImGui::GetForegroundDrawList()->AddText(
 		ImVec2(8, 8), IM_COL32(255, 255, 255, 255),
-		"TF2 camera overlay | F8 closes | RMB outside panels moves camera", nullptr);
+		g_OpenFortressLegacyMode ? "Open Fortress camera workspace (experimental) | F8 closes"
+								 : "TF2 camera overlay | F8 closes | RMB outside panels moves camera", nullptr);
 
 	if (!s_campathDialogsInit)
 	{
@@ -7954,7 +7961,10 @@ void Draw()
 	ImGuizmo::BeginFrame();
 	ImGui::SetNextWindowPos(ImVec2(20, 30), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSizeConstraints(ImVec2(540, 200), ImVec2(900, ImGui::GetIO().DisplaySize.y - 50));
-	ImGui::Begin("TF2 Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::Begin(g_OpenFortressLegacyMode ? "Open Fortress Camera" : "TF2 Camera", nullptr,
+				 ImGuiWindowFlags_AlwaysAutoResize);
+	if (g_OpenFortressLegacyMode)
+		ImGui::TextDisabled("Experimental OF integration: model replay, collision and player repair are not yet validated.");
 	if (ImGui::Button("Undo"))
 	{
 		if (CameraHistoryOwnsUi())
@@ -8080,7 +8090,7 @@ void Draw()
 			if (ImGui::Button("Anchor selection here"))
 				PreviewAnchor();
 			DrawSeekSettings();
-			if (ImGui::CollapsingHeader("Camera collision"))
+			if (!g_OpenFortressLegacyMode && ImGui::CollapsingHeader("Camera collision"))
 			{
 				auto collision = MirvCameraCollisionGet();
 				if (ImGui::Checkbox("Free camera collision", &collision.Free))
@@ -8094,7 +8104,7 @@ void Draw()
 				ImGui::TextWrapped("TF2/TF2C only; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
 			}
 
-			if (ImGui::CollapsingHeader("Demo fixes"))
+			if (!g_OpenFortressLegacyMode && ImGui::CollapsingHeader("Demo fixes"))
 			{
 				bool muteRecorder = g_DemoMute;
 				if (ImGui::Checkbox("Mute recorder sounds", &muteRecorder))
@@ -9369,7 +9379,7 @@ void Draw()
 					if (SequencerTrackVisible(3, !g_SceneCache.Frames().empty()))
 						DrawSceneCoverage();
 					DrawSequencerExtraTracks(visibleStart, visibleEnd);
-					if (SequencerTrackVisible(6, SequencerRepairPopulated()))
+					if (!g_OpenFortressLegacyMode && SequencerTrackVisible(6, SequencerRepairPopulated()))
 						DrawPlayerRepairTrack(visibleStart, visibleEnd);
 					DrawSequencerSeekContext(keyframeContextOpened);
 					if (choosePath < document.GetCount())

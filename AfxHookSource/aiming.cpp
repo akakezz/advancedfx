@@ -128,9 +128,11 @@ void Aiming::RebuildCalc(void)
 {
 	if (-1 != EntityIndex)
 	{
-		if (SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer)
+		if (SourceSdkVer_TF2 == g_SourceSdkVer || SourceSdkVer_TF2Classified == g_SourceSdkVer ||
+			(SourceSdkVer_HL2MP == g_SourceSdkVer && g_OpenFortressLegacyMode))
 		{
-			// TF2: use IClientTools (abs origin / abs angles only).
+			// TF2/TF2C/explicit OF: use the existing Source IClientTools entity calc.
+			// This is not the CS:GO handle path.
 			Source_set(g_MirvVecAngCalcs.NewTf2EntityIndexCalc(0, EntityIndex));
 			m_Tf2EntitySource = m_Source != nullptr;
 			return;
@@ -233,7 +235,7 @@ bool Aiming::Aim(double deltaT, Vector3 const camOrigin, double &yPitch, double 
 			double reaimZYaw = targetZYaw -LastZYaw;
 			double reaimXRoll = targetXRoll -LastXRoll;
 
-			// Force reaim angles to be in [-180°, 180°)
+			// Force reaim angles to be in [-180Â°, 180Â°)
 
 			reaimYPitch = AngleModDeg(reaimYPitch);
 			reaimZYaw = AngleModDeg(reaimZYaw);
@@ -265,7 +267,7 @@ bool Aiming::Aim(double deltaT, Vector3 const camOrigin, double &yPitch, double 
 		m_XRollVelocity = 0;
 	}
 
-	// Force remembered angels to be in [-180°, 180°)
+	// Force remembered angels to be in [-180Â°, 180Â°)
 
 	LastYPitch = AngleModDeg(yPitch);
 	LastZYaw = AngleModDeg(zYaw);

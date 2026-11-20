@@ -72,7 +72,8 @@ struct CUSTOMVERTEX
 bool IsSupported()
 {
 	return ImGui::GetCurrentContext() != nullptr &&
-		   (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified);
+		   (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified ||
+			(g_SourceSdkVer == SourceSdkVer_HL2MP && g_OpenFortressLegacyMode));
 }
 
 class CImGuiRenderCacheManager

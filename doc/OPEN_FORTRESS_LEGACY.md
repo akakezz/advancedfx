@@ -213,3 +213,11 @@ User testing of the active named camera showed a valid attachment and a working 
 ## OF recording hotkey (2026-11-20)
 
 Added `mirv_streams record toggle` for explicit Open Fortress legacy mode only, dispatching to the existing `mirv_streams record start` and `end` operations depending on the active recorder state. This is designed for a manual Source key binding, for example `bind F9 "mirv_streams record toggle"`. The command does not alter recording FPS, recording settings, stream selection, or existing TF2/TF2C/HL2MP command behavior. It does not auto-assign a key. This is source-reviewed only; verify in a rebuilt x86 Open Fortress demo with an enabled screen recording profile, including that the first press produces an actual take and the second stops it. Because starting non-CS:GO recordings is queued, allow the recorder to enter its active state before toggling again.
+
+## Initial OF cinematic workspace and mirv_aim entity support (2026-11-20)
+
+The existing DX9/ImGui cinematic overlay now accepts `SourceSdkVer_HL2MP` **only** with `g_OpenFortressLegacyMode`. It remains the same workspace, not a separate OF overlay. Start by verifying opening/closing with `mirv_overlay 1` and F8, then Campath, Cameras, Recording, Project, Settings, and timeline interactions. Runtime/render validity are not yet demonstrated by this source change.
+
+The remaining TF2-only gate in `Aiming::RebuildCalc` now also accepts explicit OF and uses the `NewTf2EntityIndexCalc` / `IClientTools` path already verified for OF camera attachments. Test `mirv_aim entityIndex <playerIndex>`, `mirv_aim active 1` and `mirv_aim camera @<id> entityIndex <playerIndex>`. OF does not acquire CS:GO's handle-specific net/view behavior.
+
+Unverified paths are still restricted in OF: the TF2-only demo-fix controls and player-repair editor/timeline track, camera collision UI, and cached studio-model rendering remain disabled or hidden. Scene Cache entity and pose capture, model playback, cursor ownership and other UI interactions require focused offline testing; no full workspace parity is claimed. No other engine's support gates change. Source-reviewed only: no x86 compilation or runtime validation has yet been performed.
