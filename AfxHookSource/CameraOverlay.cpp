@@ -8329,6 +8329,11 @@ void Draw()
 							g_DocumentStatus = "OF deathcam suppression unavailable: VClient017 observer property/proxy not verified.";
 					ImGui::TextDisabled("Session-only; disabled on startup. Enable before the death event, then seek back to retest.");
 				}
+				const bool ofInterpolationAvailable = !g_OpenFortressLegacyMode || MirvFix_PlayerInterpolationAvailable();
+				if (g_OpenFortressLegacyMode && !ofInterpolationAvailable)
+					ImGui::TextDisabled("OF native interpolation unavailable here: cl_interp may be missing and the game locks cl_interp_ratio during playback.");
+				if (g_OpenFortressLegacyMode && !ofInterpolationAvailable)
+					ImGui::BeginDisabled();
 				bool active = g_DemoSmooth;
 				if (ImGui::Checkbox("Smooth player movement", &active))
 				{
@@ -8355,9 +8360,10 @@ void Draw()
 					ImGui::TextDisabled("Saved; waiting for compatible demo playback.");
 				if (ImGui::Button("Interpolation status") && g_VEngineClient)
 					g_VEngineClient->ClientCmd_Unrestricted("mirv_fix playerInterpolation status");
-				ImGui::TextWrapped("Adds presentation delay using the game's native interpolation; cannot reconstruct "
-				                   "missing snapshots. Native settings restore when playback ends; the saved "
-				                   "preference applies to the next demo.");
+				ImGui::TextWrapped("Adds presentation delay using the game's native interpolation when supported; "
+				                   "not a frame-blending or player pose repair feature. Restore native settings on demo exit.");
+				if (g_OpenFortressLegacyMode && !ofInterpolationAvailable)
+					ImGui::EndDisabled();
 			}
 
 			auto &path = g_Hook_VClient_RenderView.m_CamPath;

@@ -4923,22 +4923,14 @@ bool Tf2InterpolationValues(float values[3], bool write)
 				return false;
 			g_OfInterpolationRatioOnly = true;
 			g_OfInterpolationUpdateRate = rate;
+			// OF explicitly refuses cl_interp_ratio edits while playing
+			// (reported by the game's own console). Do not attempt blocked
+			// cvar writes from HLAE or imply that this fixes demo playback.
 			if (write)
-			{
-				const double requestedRatio = double(values[1]) * rate;
-				if (!std::isfinite(requestedRatio) || requestedRatio < 0 || requestedRatio > 1000)
-					return false;
-				if (vars[0])
-					vars[0]->SetValue(values[0]);
-				vars[2]->SetValue(float(requestedRatio));
-				values[2] = float(requestedRatio); // Verify the actual ratio, not TF2's default of 2.
-			}
-			else
-			{
-				values[0] = vars[0] ? vars[0]->GetFloat() : 1.0f;
-				values[2] = vars[2]->GetFloat();
-				values[1] = values[2] / rate; // Approximate, not a sampled visual latency.
-			}
+				return false;
+			values[0] = vars[0] ? vars[0]->GetFloat() : 1.0f;
+			values[2] = vars[2]->GetFloat();
+			values[1] = values[2] / rate; // Approximate, not a sampled visual latency.
 			return std::isfinite(values[0]) && std::isfinite(values[1]) && std::isfinite(values[2]);
 		}
 		if (!vars[0] || !vars[1] || !vars[2])
@@ -4970,6 +4962,7 @@ bool MirvFix_PlayerInterpolationAvailable()
 	float values[3];
 	return g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsDrawingLoadingImage()
 		&& Tf2InterpolationValues(values, false) &&
+		   !(g_OpenFortressLegacyMode && g_OfInterpolationRatioOnly) &&
 		   std::isfinite(values[0]) && std::isfinite(values[1]) && std::isfinite(values[2]);
 }
 double MirvFix_GetPlayerInterpolation()
@@ -5068,8 +5061,11 @@ static void MirvFix_PrintPlayerInterpolationStatus()
 	if (available)
 	{
 		if (g_OpenFortressLegacyMode && g_OfInterpolationRatioOnly)
-			Tier0_Msg("OF ratio-only mode: cl_interp absent; cl_interp_ratio=%.6g / cl_updaterate=%.6g => estimated %.6g s.\n",
+		{
+			Tier0_Msg("OF read-only ratio diagnostic: cl_interp absent; cl_interp_ratio=%.6g / cl_updaterate=%.6g => estimated %.6g s.\n",
 			          values[2], g_OfInterpolationUpdateRate, values[1]);
+			Tier0_Msg("OF blocks ratio changes while playing. HLAE playerInterpolation cannot enable demo smoothing through these cvars.\n");
+		}
 		else
 			Tier0_Msg("Native cl_interpolate=%.6g, cl_interp=%.6g, cl_interp_ratio=%.6g.\n", values[0], values[1],
 			          values[2]);
