@@ -30,7 +30,7 @@ preamble = r'''
 #include "shared/AfxMath.h"
 #include "AfxHookSource/MaterialSystemHooks.h"
 bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&,std::string&,void* = nullptr);
-bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr);
+bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr,bool ofColor080 = false);
 void Mirv_Tf2_SceneRenderFrame();
 #include <thread>
 #include <filesystem>
