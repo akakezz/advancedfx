@@ -973,6 +973,13 @@ CVClient_FrameStageNotify_OpenFortress_t old_CVClient_FrameStageNotify_OpenFortr
 void __fastcall new_CVClient_FrameStageNotify_OpenFortress(
     void* This, void* Edx, SOURCESDK::TF2::ClientFrameStage_t curStage)
 {
+    if (curStage == SOURCESDK::TF2::FRAME_START)
+    {
+        // Source cvar-only demo fixes and persisted overlay preferences.
+        // Do not run TF2-specific player repair, sound or camera hooks here.
+        MirvFix_Update();
+        AfxHookSource::CameraOverlay::PreferencesFrame();
+    }
     if (curStage == SOURCESDK::TF2::FRAME_RENDER_START)
         Shared_BeforeFrameRenderStart();
 
