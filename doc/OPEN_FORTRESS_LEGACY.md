@@ -302,3 +302,19 @@ When testing with the overlay recording controls, use the same capture FPS and p
 **Why not patch interpolation directly yet?** Source SDK 2013's `C_BaseEntity::GetInterpolationAmount` has special local-demo, predictable-entity and animation branches; the actual Open Fortress binary must be matched before a detour to avoid corrupting its ABI. User reports that the OF developers removed `cl_interp` deliberately and require ratio-based interpolation; their Discord explanation is useful context, but not proof of the exact binary control path. Do not bypass protections in live multiplayer. The eventual override should be reversible, default-off, OF-only and offline-demo-only, with a comparison against this baseline before any port to other branches.
 
 **Status:** source patch committed; awaiting Windows x86 build and runtime probe output. No new branch created.
+
+## 480 FPS clean target results and extended probe (2026-11-20)
+
+Same Open Fortress build, now recording **player entity 5**, another player who killed the POV recorder (the recorder subsequently respawned away from the target). Player 5 remained accessible to the probe; no source failure:
+
+```text
+successful samples 10281; unavailable 0; duplicate callbacks 0; discontinuities 46
+advancing same-tick pairs 6260; moved 6247; static 13; unchanged-time pairs 3009; max step 13.0944 units
+tick-boundary moved 964; static 1; max step 11.2881 units
+```
+
+**Interpretation:** 6247/6260 = **99.79%** of *advancing same-tick comparisons* moved. The position is demonstrably changing across sub-tick output frames, so a blanket engine interpolation override is not yet justified. However, **3009 unchanged-client-time comparisons** (about 29.3% of all consecutive samples) were previously counted without checking whether the render origin still moved. The existing **46 discontinuities** count tick skips, tick rewinds and/or time rewinds; it does *not* count unusually large changes in position. Player 5 remained resolvable when the POV recorder died, but observer changes may influence animation culling and presentation, so repeat on a stable interval if needed. A 13.0944-unit same-tick step still deserves timing context; it is not proof of an engine jitter bug.
+
+**New source-only diagnostic extension:** the same `mirv_fix playerInterpolation probe` command now also breaks frozen-time comparisons into **moved/static**; counts whether Source's engine `interpolation_amount` fraction changed; records minimum/maximum advancing same-tick client-time deltas plus tick/time/frame-gap context of the largest same-tick root step; and splits discontinuities into backward ticks, skipped ticks (max gap), and backward client time (non-mutually-exclusive). Zero new engine hooks, cvar writes or overrides. Same command syntax; the status output adds three lines.
+
+**Next offline validation:** Windows x86 rebuild, repeat a short uninterrupted 480 FPS movement segment probing player 5, and provide the full extended status output. Compare with an uninterrupted steady POV segment if useful. Only after isolating any actual frame stalls, time/phase inconsistencies or bone animation defects should we attempt a reversible demo-only OF engine interpolation detour. Existing PR #1 stays untouched.

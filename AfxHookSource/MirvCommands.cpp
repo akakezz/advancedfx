@@ -5080,8 +5080,7 @@ static void MirvFix_PrintPlayerInterpolationStatus()
 
 // OF-only readback sampled after FRAME_RENDER_END. No cvar writes, hooks,
 // SetupBones calls or mutations of game entity data are performed here.
-// A single live player render origin is enough to distinguish repeated
-// render poses from continuous sub-tick movement for the initial experiment.
+// This probe observes post-render player origin; it cannot validate bones.
 namespace
 {
 struct OfInterpolationProbe
@@ -5089,14 +5088,22 @@ struct OfInterpolationProbe
     int PlayerIndex = 0;
     int LastTick = -1, LastFrame = -1;
     double LastClientTime = 0;
+    float LastInterpolationFraction = 0;
     float LastOrigin[3] = {};
     bool HaveLast = false;
     unsigned long long Samples = 0, Missing = 0, DuplicateCallbacks = 0;
     unsigned long long SameTickAdvancing = 0, SameTickMoved = 0, SameTickStatic = 0;
-    unsigned long long SameTickPaused = 0, TickMoved = 0, TickStatic = 0;
-    unsigned long long Discontinuities = 0;
+    unsigned long long SameTickPaused = 0, FrozenTimeMoved = 0, FrozenTimeStatic = 0;
+    unsigned long long FrozenTimeFractionChanged = 0;
+    unsigned long long TickMoved = 0, TickStatic = 0;
+    unsigned long long Discontinuities = 0, BackwardTicks = 0, SkippedTicks = 0, RewoundTime = 0;
+    int LargestTickSkip = 0, LastDiscontinuityFromTick = -1, LastDiscontinuityToTick = -1;
+    double LastDiscontinuityTimeDelta = 0;
     double LastDistance = 0, MaxSameTickDistance = 0, TotalSameTickDistance = 0;
-    double MaxTickDistance = 0;
+    double MaxTickDistance = 0, MaxFrozenTimeDistance = 0;
+    double MinSameTickTimeDelta = 0, MaxSameTickTimeDelta = 0;
+    double MaxStepTimeDelta = 0;
+    int MaxStepTick = -1, MaxStepFrameGap = 0;
 };
 OfInterpolationProbe g_OfInterpolationProbe;
 }
@@ -5122,6 +5129,9 @@ void MirvFix_OfInterpolationProbeFrame()
     }
     const double clientTime = g_MirvTime.GetTime();
     if (!std::isfinite(clientTime)) return;
+    // Source's interpolation_amount is a useful *diagnostic*, not a claim that
+    // all entity classes use that fraction or that the fraction itself is smooth.
+    const float interpolationFraction = globals->interpolation_amount_get();
     const int renderFrame = globals->framecount_get();
     if (probe.HaveLast && renderFrame == probe.LastFrame &&
         tick == probe.LastTick && std::abs(clientTime - probe.LastClientTime) < 1e-8)
@@ -5143,27 +5153,62 @@ void MirvFix_OfInterpolationProbeFrame()
         const double dy = double(origin[1]) - probe.LastOrigin[1];
         const double dz = double(origin[2]) - probe.LastOrigin[2];
         const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const double deltaTime = clientTime - probe.LastClientTime;
         probe.LastDistance = distance;
-        if (tick < probe.LastTick || tick > probe.LastTick + 1 ||
-            clientTime < probe.LastClientTime - 1e-6)
+        const bool tickRewind = tick < probe.LastTick;
+        const bool tickSkip = tick > probe.LastTick + 1;
+        const bool timeRewind = deltaTime < -1e-6;
+        if (tickRewind || tickSkip || timeRewind)
         {
             ++probe.Discontinuities;
-            // Never compare a seeking demo's teleported positions.
+            if (tickRewind) ++probe.BackwardTicks;
+            if (tickSkip)
+            {
+                ++probe.SkippedTicks;
+                probe.LargestTickSkip = (std::max)(probe.LargestTickSkip, tick - probe.LastTick - 1);
+            }
+            if (timeRewind) ++probe.RewoundTime;
+            probe.LastDiscontinuityFromTick = probe.LastTick;
+            probe.LastDiscontinuityToTick = tick;
+            probe.LastDiscontinuityTimeDelta = deltaTime;
+            // Never classify seek, missed-tick or time-reset movement as interpolation.
         }
         else if (tick == probe.LastTick)
         {
-            if (clientTime > probe.LastClientTime + 1e-7)
+            if (deltaTime > 1e-7)
             {
                 ++probe.SameTickAdvancing;
+                if (probe.MinSameTickTimeDelta == 0 || deltaTime < probe.MinSameTickTimeDelta)
+                    probe.MinSameTickTimeDelta = deltaTime;
+                probe.MaxSameTickTimeDelta = (std::max)(probe.MaxSameTickTimeDelta, deltaTime);
                 if (distance > 1e-4)
                 {
                     ++probe.SameTickMoved;
                     probe.TotalSameTickDistance += distance;
-                    probe.MaxSameTickDistance = (std::max)(probe.MaxSameTickDistance, distance);
+                    if (distance > probe.MaxSameTickDistance)
+                    {
+                        probe.MaxSameTickDistance = distance;
+                        probe.MaxStepTick = tick;
+                        probe.MaxStepTimeDelta = deltaTime;
+                        probe.MaxStepFrameGap = renderFrame - probe.LastFrame;
+                    }
                 }
                 else ++probe.SameTickStatic;
             }
-            else ++probe.SameTickPaused;
+            else
+            {
+                ++probe.SameTickPaused;
+                if (distance > 1e-4)
+                {
+                    ++probe.FrozenTimeMoved;
+                    probe.MaxFrozenTimeDistance = (std::max)(probe.MaxFrozenTimeDistance, distance);
+                }
+                else ++probe.FrozenTimeStatic;
+                if (std::isfinite(interpolationFraction) &&
+                    std::isfinite(probe.LastInterpolationFraction) &&
+                    std::abs(interpolationFraction - probe.LastInterpolationFraction) > 1e-6f)
+                    ++probe.FrozenTimeFractionChanged;
+            }
         }
         else
         {
@@ -5179,6 +5224,7 @@ void MirvFix_OfInterpolationProbeFrame()
     probe.LastTick = tick;
     probe.LastFrame = renderFrame;
     probe.LastClientTime = clientTime;
+    probe.LastInterpolationFraction = interpolationFraction;
     std::copy(origin, origin + 3, probe.LastOrigin);
     probe.HaveLast = true;
 }
@@ -5196,7 +5242,17 @@ static void MirvFix_PrintOfInterpolationProbe()
     Tier0_Msg("OF interpolation probe tick boundary: moved %s; static %s; max step %.6g units; last delta %.6g; last tick %d; client time %.6f.\n",
         std::to_string(p.TickMoved).c_str(), std::to_string(p.TickStatic).c_str(),
         p.MaxTickDistance, p.LastDistance, p.LastTick, p.LastClientTime);
-    Tier0_Msg("Interpretation: within-tick origin changes indicate rendered root interpolation. Repeated roots do not prove bone animation is static. Sampling is post FRAME_RENDER_END, not an exact GPU presentation timestamp.\n");
+    Tier0_Msg("OF interpolation probe frozen client time: moved %s; static %s; engine interpolation fraction changed %s; largest movement %.6g units.\n",
+        std::to_string(p.FrozenTimeMoved).c_str(), std::to_string(p.FrozenTimeStatic).c_str(),
+        std::to_string(p.FrozenTimeFractionChanged).c_str(), p.MaxFrozenTimeDistance);
+    Tier0_Msg("OF interpolation probe time steps: advancing same-tick min %.9g s, max %.9g s; largest moving same-tick step at tick %d, client dt %.9g s, frame gap %d.\n",
+        p.MinSameTickTimeDelta, p.MaxSameTickTimeDelta, p.MaxStepTick,
+        p.MaxStepTimeDelta, p.MaxStepFrameGap);
+    Tier0_Msg("OF interpolation probe discontinuities: backward ticks %s; skipped ticks %s (max missed %d); backward client time %s; last %d -> %d (client dt %.9g s). Causes may overlap.\n",
+        std::to_string(p.BackwardTicks).c_str(), std::to_string(p.SkippedTicks).c_str(),
+        p.LargestTickSkip, std::to_string(p.RewoundTime).c_str(),
+        p.LastDiscontinuityFromTick, p.LastDiscontinuityToTick, p.LastDiscontinuityTimeDelta);
+    Tier0_Msg("Interpretation: within-tick origin changes show rendered root interpolation; frozen-time movement can occur even with unchanged rounded client time. This probe does not validate bones or camera, and post FRAME_RENDER_END is not a GPU presentation timestamp.\n");
 }
 
 // End TF2 demo interpolation controls.
