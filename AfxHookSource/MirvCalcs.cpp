@@ -11415,7 +11415,7 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 	return true;
 }
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
-                            const advancedfx::SceneCache::Entity *owner)
+                            const advancedfx::SceneCache::Entity *owner, bool ofWireframeTint)
 {
 	Mirv_Tf2_SceneRenderFrame();
 	if (g_SceneOutstanding.load() >= SceneMaxOutstanding)
@@ -11530,10 +11530,29 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	} restore{studio, overrideMaterial, overrideType, material != nullptr};
 	const int flags = 0x04 | 0x20 | (material ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
+	// VStudioRender025::SetColorModulation is slot 27 in the public Source 2013 ABI,
+	// two slots before the already-used DrawModel slot 29. OF's VMaterialSystem080
+	// cannot safely use TF2's 082 material creation adapter. Try studio modulation
+	// only for OF's existing uncolored wireframe fallback, and only when opted in.
+	const bool useOfTint = g_OpenFortressLegacyMode && ofWireframeTint && !material &&
+	                       entity.Category >= 0 && entity.Category < advancedfx::SceneCache::CategoryCount;
+	if (useOfTint)
+	{
+		const auto rgb = advancedfx::SceneCache::CategoryColor(entity.Category);
+		const float tint[3] = {rgb[0] / 255.f, rgb[1] / 255.f, rgb[2] / 255.f};
+		SceneInterfaceCall<void, const float *>(studio, 27, tint);
+	}
 	resources->Submit();
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
 	                   const SOURCESDK::Vector &, int>(studio, 29, nullptr, info, matrices, nullptr, nullptr,
 	                                                   origin, flags);
+	if (useOfTint)
+	{
+		// No color getter exists on IStudioRender. Reset to neutral after the
+		// submission so subsequent engine models are not intentionally tinted.
+		const float neutral[3] = {1.f, 1.f, 1.f};
+		SceneInterfaceCall<void, const float *>(studio, 27, neutral);
+	}
 	// The capability check above and this enqueue run on the same engine thread;
 	// the material-system hook remains stable for this submission. The helper
 	// owns/deletes the callback on both success and failure.
@@ -11543,7 +11562,8 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		return false;
 	}
 	status = material ? "Drawing category-colored cached models."
-	                  : "Drawing default cached wireframe; category material requires VMaterialSystem082.";
+	                  : useOfTint ? "OF studio wireframe modulation requested (experimental; verify visible tint)."
+	                              : "Drawing default cached wireframe; category material requires VMaterialSystem082.";
 	return true;
 }
 void Mirv_Tf2_SceneRenderFrame()
