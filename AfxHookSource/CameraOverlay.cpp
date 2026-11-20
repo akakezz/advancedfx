@@ -7982,9 +7982,16 @@ void ProcessExternalActions()
 		return;
 	}
 	const std::wstring explorer = std::wstring(windowsPath) + L"\\explorer.exe";
-	const std::wstring command = L"\\\"" + explorer + L"\\\" \\\"" + folder + L"\\\"";
+	std::wstring command;
+	command.push_back(L'"');
+	command.append(explorer);
+	command.push_back(L'"');
+	command.push_back(L' ');
+	command.push_back(L'"');
+	command.append(folder);
+	command.push_back(L'"');
 	std::vector<wchar_t> mutableCommand(command.begin(), command.end());
-	mutableCommand.push_back(L'\\0');
+	mutableCommand.push_back(0);
 	STARTUPINFOW startup = {};
 	startup.cb = sizeof(startup);
 	PROCESS_INFORMATION process = {};
