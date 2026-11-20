@@ -74,3 +74,16 @@ branch, use a short offline demo with cached replay, and compare
 `mirv_cache ofColor080 0` against `mirv_cache ofColor080 1`. Toggle
 back to 0 immediately if rendering artifacts appear. Do not merge this
 branch into PR #2 without successful visual and stability tests.
+
+
+## Exact PE32 binary verification (user-supplied 2026-11-21 files)
+
+Analyzed the uploaded files directly, without executing their DLL entry points. **MaterialSystem(1).dll**: PE32/i386, PE timestamp `0x60d42f70` (2021-06-24 07:08:32 UTC), `SizeOfImage=0x157000`, SHA-256 `ecf494be08c8f380959ecbaa615a2a9aa3d90e3ad2321d0f917af4d6e1d0b95f`. **tier0.dll**: PE32/i386, timestamp `0x60d3e2a2` (2021-06-24 01:40:50 UTC), `SizeOfImage=0x50000`, SHA-256 `0728278672172b4e2cb0ef43941b10f902d48e6c03eb28a8c45a22700e463949`.
+
+Resolved real MSVC RTTI `.?AVCMaterialSystem@@` through CompleteObjectLocator to **primary vtable RVA `0xb7b54`**. Entry `70` points to `CreateMaterial` candidate **RVA `0x45b00`**. Disassembly begins with `55 8B EC 56 57 FF 75 0C 8B F9 68` and ends in `C2 08 00` (`ret 8`), confirming the two-parameter thiscall ABI. Resolved RTTI `.?AVCMaterial@@` to **primary vtable RVA `0xb67f0`**: `IMaterial` slot 12 points to `0x3a2e0` (`lock xadd` increment of `this+0x1c`), slot 13 to `0x391e0` (`lock xadd` decrement), and slot 42 to `0x3aa40` (comparison with the global error-material pointer). These match the functions used by the scene cache.
+
+Also verified that uploaded **tier0.dll exports `g_pMemAlloc`**; the exact MaterialSystem DLL imports that symbol from tier0. **Correction to initial interpretation:** `KeyValuesSystem` is imported by MaterialSystem from **vstdlib.dll**, NOT from tier0. The game's actual `vstdlib.dll` was not uploaded, so we have not directly validated its binary interface. Import resolution and the source-level SDK 2013 KeyValues field layout remain the basis of our proposed adapter.
+
+**Stronger runtime fail-closed gate committed:** The opt-in OF/080 path now checks the loaded `materialsystem.dll` PE32 timestamp, machine type, `SizeOfImage`, primary vtable RVA, slot-70 function RVA, executable memory protection, and function prologue bytes. A different binary remains on the current cyan wireframe fallback; no unknown slot gets called accidentally. These checks materially reduce mistaken-vtable risk but do **not** prove shader tint results, KeyValues ownership, or a crash-free in-game material creation.
+
+**Standalone local static verification already passed** on both exact uploaded DLLs: PE format, timestamps/image sizes, RTTI vtables, slot-70 prologue and `ret 8`, CMaterial refcount/error methods, tier0 export and MaterialSystem's vstdlib import. This does not imply the GitHub fixture workflow or a Windows build has passed. PR #2 (`experiment/open-fortress-legacy-2026-11`) remains unchanged and is the user's verified working fallback.
