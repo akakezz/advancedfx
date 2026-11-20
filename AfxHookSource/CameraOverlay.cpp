@@ -72,6 +72,10 @@ static bool g_SceneBuildings = false, g_SceneProps = false;
 static bool g_SceneOfExtended = false, g_SceneOfPoses = false;
 static bool g_SceneOfReplay = false, g_SceneOfSkeleton = false;
 static std::atomic_int g_SceneOfReplayBatch{1}; // Diagnostic-only, session-local; one studio submission is the safe default.
+// Counters only; diagnostics never look through cached model pointers.
+static std::atomic<unsigned long long> g_SceneOfReplayDraws{0}, g_SceneOfReplayAttempts{0},
+    g_SceneOfReplayAccepted{0}, g_SceneOfReplayRejected{0};
+static std::atomic<unsigned> g_SceneOfReplayLastEligible{0};
 static bool g_SceneOfStudioEverUsed = false;
 static std::string g_ScenePoseStatus = "Pose capture disabled.";
 static std::shared_ptr<const std::string> g_SceneModelStatus;
@@ -742,6 +746,8 @@ void SceneCacheDrawModels()
 			}
 		}
 		const size_t batch = (std::min)(size_t(g_SceneOfReplayBatch.load()), candidates.size());
+		g_SceneOfReplayLastEligible.store(unsigned(candidates.size()), std::memory_order_relaxed);
+		g_SceneOfReplayDraws.fetch_add(1, std::memory_order_relaxed);
 		std::string status;
 		for (size_t n = 0; n < batch; ++n)
 		{
@@ -761,7 +767,12 @@ void SceneCacheDrawModels()
 				          static_cast<const void *>(entity.ModelPose->ModelInfo.get()),
 				          outstanding, peak);
 			}
+			g_SceneOfReplayAttempts.fetch_add(1, std::memory_order_relaxed);
 			const bool submitted = Mirv_Tf2_DrawScenePose(entity, status, owner);
+			if (submitted)
+				g_SceneOfReplayAccepted.fetch_add(1, std::memory_order_relaxed);
+			else
+				g_SceneOfReplayRejected.fetch_add(1, std::memory_order_relaxed);
 			if (trace)
 				Tier0_Msg("[OF replay] returned %u/%u submitted=%d status=%s\n",
 				          unsigned(n + 1), unsigned(batch), int(submitted), status.c_str());
@@ -1885,6 +1896,16 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    peak, int(g_SceneFocused.load()), int(g_SceneDeviceReady.load()), int(SceneCanDrawModels()));
 		if (g_OpenFortressLegacyMode)
 		{
+			// Aggregate snapshots only: no extra studio calls or entity dereferences.
+			advancedfx::Message(
+			    "OF replay submission (session totals): calls %s, attempted %s, accepted %s, "
+			    "rejected %s; last eligible %u, configured batch %d.\n",
+			    std::to_string(g_SceneOfReplayDraws.load(std::memory_order_relaxed)).c_str(),
+			    std::to_string(g_SceneOfReplayAttempts.load(std::memory_order_relaxed)).c_str(),
+			    std::to_string(g_SceneOfReplayAccepted.load(std::memory_order_relaxed)).c_str(),
+			    std::to_string(g_SceneOfReplayRejected.load(std::memory_order_relaxed)).c_str(),
+			    g_SceneOfReplayLastEligible.load(std::memory_order_relaxed),
+			    g_SceneOfReplayBatch.load(std::memory_order_relaxed));
 			const auto counters = Mirv_Tf2_SceneRenderDiagnostics();
 			// Read only on explicit status; do not dereference cached entities in the render loop.
 			advancedfx::Message(
