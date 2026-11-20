@@ -685,7 +685,9 @@ RECT m_GameClip = {};
 bool m_GameClipEnabled = false;
 HWND m_GameCapture = nullptr;
 int m_GameCursorDisplayCount = 0;
-// ImGui renders overlay cursor shapes; the OS cursor is restored when ownership ends.
+// TF2 uses the PR #1 native system cursor. OF's game input can still hide
+// that cursor during ImGui ownership, so OF draws an ImGui cursor instead.
+// Restore the original OS cursor visibility/count on release.
 static bool m_PreviousDrawCursor = false;
 
 void UpdateGraphInputOwnership()
@@ -711,10 +713,19 @@ void UpdateGraphInputOwnership()
 		if (GetCapture() == g_hWnd)
 			ReleaseCapture();
 		m_PreviousDrawCursor = ImGui::GetIO().MouseDrawCursor;
-		// Use the OS/hardware cursor rather than the frame-delayed ImGui cursor.
-		// The UI still renders at frame rate, but mouse movement is immediate.
-		ImGui::GetIO().MouseDrawCursor = false;
-		SetCursor(LoadCursor(nullptr, IDC_ARROW));
+		// OF's Source cursor state can override the hardware cursor between
+		// WM_SETCURSOR events. Use ImGui's software cursor for OF only; the
+		// existing native pointer remains the default for TF2 and TF2C.
+		ImGui::GetIO().MouseDrawCursor = g_OpenFortressLegacyMode;
+		if (g_OpenFortressLegacyMode)
+		{
+			SetCursor(nullptr);
+			int count = ShowCursor(FALSE);
+			while (count >= 0)
+				count = ShowCursor(FALSE);
+		}
+		else
+			SetCursor(LoadCursor(nullptr, IDC_ARROW));
 		POINT client = m_GameCursorPos;
 		ScreenToClient(g_hWnd, &client);
 		ImGui::GetIO().MousePos = ImVec2(float(client.x), float(client.y));
@@ -780,7 +791,7 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 	// normal window events and frames, never by querying Source from this callback.
 	if (msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT && m_GraphInputOwned)
 	{
-		SetCursor(LoadCursor(nullptr, IDC_ARROW));
+		SetCursor(g_OpenFortressLegacyMode ? nullptr : LoadCursor(nullptr, IDC_ARROW));
 		return true;
 	}
 
