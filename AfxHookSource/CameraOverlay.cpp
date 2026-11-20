@@ -100,12 +100,16 @@ void SceneCacheDevicePresent(bool success)
 		++g_SceneDrawEpoch;
 	}
 }
+static bool SceneCanDrawLines()
+{
+	// Common bounds/trails use the already supported overlay DX9 lines;
+	// do not confuse this with OF studio-model submission.
+	return g_SceneFocused.load() && g_SceneDeviceReady.load() &&
+	       g_SceneReadyEpoch == g_SceneLifecycleEpoch.load() && g_SceneReadyFrames >= 2;
+}
 static bool SceneCanDrawModels()
 {
-	// OF's material render queue works, but cached studio-model playback is
-	// not yet verified. Keep this experimental mesh path disabled in OF.
-	return !g_OpenFortressLegacyMode && g_SceneFocused.load() && g_SceneDeviceReady.load() &&
-	       g_SceneReadyEpoch == g_SceneLifecycleEpoch.load() && g_SceneReadyFrames >= 2;
+	return !g_OpenFortressLegacyMode && SceneCanDrawLines();
 }
 
 static unsigned long long g_ScenePoseCaptured = 0, g_ScenePoseFailures = 0;
@@ -332,7 +336,7 @@ void SceneCacheFrame(bool capture)
 		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 		return;
 	}
-	if (capture && !g_OpenFortressLegacyMode && g_SceneDeviceReady.load() && g_SceneRecord &&
+	if (capture && g_SceneDeviceReady.load() && g_SceneRecord &&
 	    !g_VEngineClient->IsSkippingDemo() &&
 	    GetCurrentDemoTick(tick) && GetCurrentDemoTime(time) && SceneCaptureTick(tick))
 	{
@@ -348,6 +352,42 @@ void SceneCacheFrame(bool capture)
 		if (auto globals = g_Hook_VClient_RenderView.GetGlobals())
 			MirvCam_CaptureCameras(frame.ClientTime, globals->framecount_get(),
 								   globals->absoluteframetime_get(), frame.Cameras);
+		if (g_OpenFortressLegacyMode)
+		{
+			// OF phase 1: reuse observed player render origins and bounds.
+			// No TF2 studio-model ABI, SetupBones, or class/categorization calls.
+			size_t discovered = 0, captured = 0;
+			if (g_ScenePlayerModels)
+				for (int index = 1, count = (std::min)(Mirv_Tf2_GetMaxPlayers(), 128); index <= count; ++index)
+				{
+					int user = 0;
+					if (!Mirv_Tf2_GetPlayerInfo(index, nullptr, 0, &user) || user <= 0)
+						continue;
+					++discovered;
+					if (!ScenePlayerMatches(static_cast<std::uint64_t>(user), index))
+						continue;
+					advancedfx::SceneCache::Entity entity;
+					entity.Identity = static_cast<std::uint64_t>(user);
+					entity.Category = 0; // Stable demo-local player identity.
+					if (!Mirv_Tf2_GetSceneEntity(index, entity.Origin, entity.Angles, entity.Mins, entity.Maxs))
+						continue;
+					bool finite = true;
+					for (int axis = 0; axis < 3; ++axis)
+						finite &= std::isfinite(entity.Origin[axis]) && std::isfinite(entity.Angles[axis]) &&
+						          std::isfinite(entity.Mins[axis]) && std::isfinite(entity.Maxs[axis]) &&
+						          entity.Mins[axis] <= entity.Maxs[axis];
+					if (!finite)
+						continue;
+					frame.Entities.push_back(std::move(entity));
+					++captured;
+				}
+			g_ScenePoseStatus = "OF bounds-only tick " + std::to_string(tick) + ": " +
+			    std::to_string(captured) + " player bounds from " + std::to_string(discovered) +
+			    " player slots; " + std::to_string(frame.Cameras.size()) +
+			    " cameras; no studio meshes.";
+		}
+		else
+		{
 		size_t selectedSeen = 0;
 		std::vector<MirvTf2SceneEntity> entities;
 		Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls,
@@ -422,6 +462,7 @@ void SceneCacheFrame(bool capture)
 		if (g_ScenePlayerFilter && g_ScenePlayerModels && selectedSeen < g_ScenePlayers.size())
 			g_ScenePoseStatus += " " + std::to_string(selectedSeen) + "/" +
 			                     std::to_string(g_ScenePlayers.size()) + " selected players available.";
+		} // TF2 / TF2C studio-model scene capture ends here.
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
@@ -470,7 +511,7 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 	static std::uint64_t revision = ~0ull;
 	static std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> lines;
 	const auto view = SceneCacheView();
-	if (!view || !SceneCanDrawModels())
+	if (!view || !SceneCanDrawLines())
 	{
 		last.reset();
 		lines.reset();
@@ -1217,12 +1258,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	bool ok = false;
 	if (!_stricmp(op, "record") && integer(value) && (value == 0 || value == 1))
 	{
-		if (g_OpenFortressLegacyMode && value)
-		{
-			g_SceneRecord = false;
-			advancedfx::Warning("Open Fortress Scene Cache capture is not yet validated. Use the TF2/TF2C capture path only.\n");
-			return;
-		}
+		// OF supports camera and selected player-bounds capture, not studio poses.
 		g_SceneRecord = value != 0;
 		ok = true;
 	}
@@ -5739,15 +5775,11 @@ static void SceneCategoryFilters(std::array<bool, advancedfx::SceneCache::Catego
 }
 static void DrawSceneCacheMenu(int playhead)
 {
-	// The unified workspace is available in OF, but studio-pose capture and
-	// cached model replay have not been validated against this client/engine ABI.
-	// Keep this one module read-only until its capture dependencies are tested.
-	if (g_OpenFortressLegacyMode)
-	{
-		ImGui::TextDisabled("Scene Cache capture and replay require Open Fortress compatibility validation.");
-		return;
-	}
+	// OF shares the camera/timeline/bounds preview, not studio-model capture.
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (g_OpenFortressLegacyMode)
+		ImGui::TextWrapped("OF Scene Cache (experimental): cameras, player bounds, trails and scrubbing. "
+		                   "Studio models, bones and other entity types are not supported yet.");
 	ImGui::Text("%s | %zu frames | %.2f MiB", g_SceneRecord ? "Recording / armed" : "Stopped",
 	            g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0);
 	if (g_SceneCache.Count() > 1)
@@ -5755,8 +5787,13 @@ static void DrawSceneCacheMenu(int playhead)
 		                    g_SceneCache.Frames().back().DemoTime - g_SceneCache.Frames().front().DemoTime);
 	if (ImGui::CollapsingHeader("Capture", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::TextDisabled("Choose categories; checked colors match the preview.");
-		if (ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
+		ImGui::TextDisabled(g_OpenFortressLegacyMode
+		    ? "Enable player bounds below; camera history is always captured."
+		    : "Choose categories; checked colors match the preview.");
+		if (g_OpenFortressLegacyMode)
+			ImGui::Checkbox("Capture OF player bounds", &g_ScenePlayerModels);
+		if (!g_OpenFortressLegacyMode &&
+		    ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
 		{
 			bool players = g_ScenePlayerModels;
 			ImGui::TableNextColumn();
@@ -5789,7 +5826,7 @@ static void DrawSceneCacheMenu(int playhead)
 			                      "Doors, payloads, intelligence and props, including brush surface meshes.");
 			ImGui::EndTable();
 		}
-		if ((g_ScenePlayerModels || g_SceneWeapons || g_SceneCosmetics) &&
+		if ((g_ScenePlayerModels || (!g_OpenFortressLegacyMode && (g_SceneWeapons || g_SceneCosmetics))) &&
 		    ImGui::TreeNode("Player filter (optional)"))
 		{
 			ImGui::Checkbox("Only selected players", &g_ScenePlayerFilter);
@@ -5887,7 +5924,7 @@ static void DrawSceneCacheMenu(int playhead)
 		}
 
 		if (g_OpenFortressLegacyMode)
-			ImGui::TextDisabled("Cached model replay and geometry preview are not yet validated for Open Fortress.");
+			ImGui::TextDisabled("OF: cached bounds and trails available; studio-model replay remains disabled.");
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
 		if (g_SceneDrawing.Bounds && ImGui::TreeNode("Bounding box filters"))
 		{
@@ -6028,8 +6065,10 @@ static void DrawSceneCacheMenu(int playhead)
 		unsigned pending = 0, peak = 0;
 		Mirv_Tf2_SceneRenderStatus(pending, peak);
 		ImGui::Text("Pending cached draws: %u (peak %u)", pending, peak);
-		if (!SceneCanDrawModels())
+		if (!SceneCanDrawModels() && !g_OpenFortressLegacyMode)
 			ImGui::TextDisabled("Cached model drawing suspended during focus/device recovery.");
+		if (g_OpenFortressLegacyMode && !SceneCanDrawLines())
+			ImGui::TextDisabled("Cached bounds drawing suspended during focus/device recovery.");
 		if (ImGui::TreeNode("Animation diagnostics"))
 		{
 			ImGui::Text("Cached tick %.3f", g_SceneCursor / SceneTickInterval());
