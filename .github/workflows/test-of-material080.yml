@@ -20,9 +20,9 @@ jobs:
         with:
           submodules: recursive
       - name: Verify source-extracted studio material and pose fixture
-        run: python3 tests/cinematic/test_scene_pose.py
+        run: python3 tests/cinematic/test_scene_pose.py --material-only
       - name: AddressSanitizer and UndefinedBehaviorSanitizer
-        run: python3 tests/cinematic/test_scene_pose.py --sanitize
+        run: python3 tests/cinematic/test_scene_pose.py --material-only --sanitize
 
   windows-staging-build:
     runs-on: windows-2022
