@@ -10750,23 +10750,42 @@ static void *g_SceneMaterials[advancedfx::SceneCache::CategoryCount]{};
 // Older OF materials are deliberately isolated from TF2's verified 082 cache.
 static void *g_SceneOfMaterials080[advancedfx::SceneCache::CategoryCount]{};
 static bool g_SceneOfMaterial080Attempted[advancedfx::SceneCache::CategoryCount]{};
-// This only verifies that the prospective vtable entry is a readable,
-// executable Method in the expected module. It cannot prove ABI semantics.
+// Strictly opt in only for the exact Open Fortress/Source SDK MP binary
+// whose original PE32 vtables were checked offline. An executable pointer
+// alone is not enough: another build could have a different method in slot 70.
 static bool SceneOfMaterial080SlotPlausible(void *system)
 {
 #ifndef _WIN64
 	HMODULE module = GetModuleHandleA("materialsystem.dll");
 	if (!module || !system)
 		return false;
+	const auto process = GetCurrentProcess();
+	auto read = [process](const void *address, void *target, SIZE_T size) {
+		SIZE_T copied = 0;
+		return ReadProcessMemory(process, address, target, size, &copied) && copied == size;
+	};
+	IMAGE_DOS_HEADER dos{};
+	if (!read(module, &dos, sizeof(dos)) ||
+	    dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0x40 || dos.e_lfanew > 0x1000)
+		return false;
+	IMAGE_NT_HEADERS32 nt{};
+	if (!read(reinterpret_cast<const unsigned char *>(module) + dos.e_lfanew, &nt, sizeof(nt)) ||
+	    nt.Signature != IMAGE_NT_SIGNATURE || nt.FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
+	    nt.FileHeader.TimeDateStamp != 0x60d42f70 || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+	    nt.OptionalHeader.SizeOfImage != 0x157000)
+		return false;
 	void **vtable = nullptr;
 	void *function = nullptr;
-	SIZE_T copied = 0;
-	if (!ReadProcessMemory(GetCurrentProcess(), system, &vtable, sizeof(vtable), &copied) ||
-	    copied != sizeof(vtable) || !vtable)
+	if (!read(system, &vtable, sizeof(vtable)) || !vtable ||
+	    reinterpret_cast<std::uintptr_t>(vtable) - reinterpret_cast<std::uintptr_t>(module) != 0xb7b54 ||
+	    !read(vtable + 70, &function, sizeof(function)) || !function ||
+	    reinterpret_cast<std::uintptr_t>(function) - reinterpret_cast<std::uintptr_t>(module) != 0x45b00)
 		return false;
-	copied = 0;
-	if (!ReadProcessMemory(GetCurrentProcess(), vtable + 70, &function, sizeof(function), &copied) ||
-	    copied != sizeof(function) || !function)
+	// Disassembled CreateMaterial(this, name, KeyValues*) entry from the
+	// uploaded 2021 PE32 binary; the function returns with ret 8.
+	constexpr unsigned char expected[] = {0x55, 0x8b, 0xec, 0x56, 0x57, 0xff, 0x75, 0x0c, 0x8b, 0xf9, 0x68};
+	unsigned char actual[sizeof(expected)]{};
+	if (!read(function, actual, sizeof(actual)) || std::memcmp(actual, expected, sizeof(expected)))
 		return false;
 	MEMORY_BASIC_INFORMATION memory{};
 	if (!VirtualQuery(function, &memory, sizeof(memory)) ||
