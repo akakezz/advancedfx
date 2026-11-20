@@ -71,7 +71,7 @@ static bool g_SceneBuildings = false, g_SceneProps = false;
 // Avoid persisting risky engine-facing studio work across HLAE launches.
 static bool g_SceneOfExtended = false, g_SceneOfPoses = false;
 static bool g_SceneOfReplay = false, g_SceneOfSkeleton = false;
-static int g_SceneOfReplayBatch = 1; // Diagnostic-only, session-local; one studio submission is the safe default.
+static std::atomic_int g_SceneOfReplayBatch{1}; // Diagnostic-only, session-local; one studio submission is the safe default.
 static bool g_SceneOfStudioEverUsed = false;
 static std::string g_ScenePoseStatus = "Pose capture disabled.";
 static std::shared_ptr<const std::string> g_SceneModelStatus;
@@ -741,7 +741,7 @@ void SceneCacheDrawModels()
 				candidate.HasOwner = true;
 			}
 		}
-		const size_t batch = (std::min)(size_t(g_SceneOfReplayBatch), candidates.size());
+		const size_t batch = (std::min)(size_t(g_SceneOfReplayBatch.load()), candidates.size());
 		std::string status;
 		for (size_t n = 0; n < batch; ++n)
 		{
@@ -1493,7 +1493,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	else if (g_OpenFortressLegacyMode && !_stricmp(op, "ofReplayBatch") && integer(value) &&
 	         value >= 1 && value <= 8)
 	{
-		g_SceneOfReplayBatch = value;
+		g_SceneOfReplayBatch.store(value);
 		++g_SceneDrawEpoch;
 		ok = true;
 	}
@@ -1845,7 +1845,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	{
 		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d, replay batch %d.\n",
 		                    int(g_SceneOfExtended), int(g_SceneOfPoses),
-		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton), g_SceneOfReplayBatch);
+		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton), g_SceneOfReplayBatch.load());
 		for (auto stage : {MirvOfSceneStage::Entities, MirvOfSceneStage::Poses, MirvOfSceneStage::Replay})
 		{
 			const char *name = stage == MirvOfSceneStage::Entities ? "entity capture" :
@@ -6238,8 +6238,12 @@ static void DrawSceneCacheMenu(int playhead)
 				}
 				else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Replay);
 			}
-			if (ImGui::SliderInt("OF studio submissions per draw (diagnostic)", &g_SceneOfReplayBatch, 1, 8))
+			int replayBatch = g_SceneOfReplayBatch.load();
+			if (ImGui::SliderInt("OF studio submissions per draw (diagnostic)", &replayBatch, 1, 8))
+			{
+				g_SceneOfReplayBatch.store(replayBatch);
 				++g_SceneDrawEpoch;
+			}
 			ImGui::TextDisabled("OF studio replay is opt-in and session-only. Batch defaults to 1 for safer testing.");
 		}
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
