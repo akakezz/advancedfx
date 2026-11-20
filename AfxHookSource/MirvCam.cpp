@@ -857,6 +857,22 @@ bool CameraAttachmentTarget(NamedCameraRig &rig, double, advancedfx::CameraPose 
 		rig.Follow.Valid = false;
 		return false;
 	}
+	// On OF, read the bone pivot, entity root and body orientation from the
+	// single CalcVecAng sample above. A separate entity calc can disagree with
+	// the bone snapshot and make the follow camera correct itself every frame.
+	// TF2/TF2C keep their established attachment evaluation path unchanged.
+	if (g_OpenFortressLegacyMode && rootAngles)
+	{
+		double physical[3], origin[3];
+		void *entity = nullptr;
+		if (!Mirv_Tf2_GetAttachAnchor(rig.Target.get(), physical, entity, origin, nullptr, rootAngles))
+			return false;
+		if (pivot)
+			std::copy(physical, physical + 3, pivot);
+		if (root)
+			std::copy(origin, origin + 3, root);
+		return true;
+	}
 	if (rootAngles)
 	{
 		float origin[3], angles[3];

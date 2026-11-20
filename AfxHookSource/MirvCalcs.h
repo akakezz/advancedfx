@@ -376,7 +376,7 @@ bool Mirv_Tf2_TraceEntity(const double origin[3], const double angles[3], int & 
 bool Mirv_Tf2_ParseBoneArg(int entityIndex, const char * arg, int & outBone);
 
 // Cached bone/entity pivot and entity origin from the latest attachment evaluation.
-bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode = nullptr);
+bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode = nullptr, double *entityAngles = nullptr);
 
 /// <summary>Makes the camera pose (e.g. from a free camera) the fixed pose of the camera relative to the target of a TF2 entity calc (created with NewTf2EntityIndexCalc).
 /// From now on position and angles follow the target (entity or bone) and keep this relative pose.</summary>

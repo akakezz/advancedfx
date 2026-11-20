@@ -2481,12 +2481,15 @@ public:
 	}
 
   public:
-	bool GetAttachAnchor(double origin[3], void *&entity, double entityOrigin[3], int *mode = nullptr) const
+	bool GetAttachAnchor(double origin[3], void *&entity, double entityOrigin[3], int *mode = nullptr,
+						 double *entityAngles = nullptr) const
 	{
 		if (!m_AnchorValid || !m_AnchorEntity)
 			return false;
 		std::copy(m_Anchor, m_Anchor + 3, origin);
 		std::copy(m_AnchorRoot, m_AnchorRoot + 3, entityOrigin);
+		if (entityAngles)
+			std::copy(m_AnchorRootAngles, m_AnchorRootAngles + 3, entityAngles);
 		entity = m_AnchorEntity;
 		if (mode) *mode = m_Mode;
 		return true;
@@ -2584,7 +2587,7 @@ private:
 		       Mirv_Tf2_EntityHandle(entity) == m_ClientHandle;
 	}
 	bool m_AnchorValid = false;
-	double m_Anchor[3] = {}, m_AnchorRoot[3] = {};
+	double m_Anchor[3] = {}, m_AnchorRoot[3] = {}, m_AnchorRootAngles[3] = {};
 	void *m_AnchorEntity = nullptr;
 	int m_EntityIndex;
 	int m_BoneIndex;
@@ -2745,6 +2748,11 @@ private:
 				}
 			}
 
+			// Keep the body's facing with the pivot and root read from this same
+			// entity sample. OF's live rig must not query it a second time.
+			m_AnchorRootAngles[0] = facing.x;
+			m_AnchorRootAngles[1] = facing.y;
+			m_AnchorRootAngles[2] = facing.z;
 			if (m_BoneIndex < 0)
 			{
 				pos = absOrigin;
@@ -7319,9 +7327,9 @@ IMirvVecAngCalc *Mirv_Tf2_LoadCamera(std::istream &in)
 	return CMirvVecAngTf2EntityIndexCalc::LoadCamera(in);
 }
 
-bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode)
+bool Mirv_Tf2_GetAttachAnchor(IMirvVecAngCalc *calc, double origin[3], void *&entity, double entityOrigin[3], int *mode, double *entityAngles)
 {
-	return calc && static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->GetAttachAnchor(origin, entity, entityOrigin, mode);
+	return calc && static_cast<CMirvVecAngTf2EntityIndexCalc *>(calc)->GetAttachAnchor(origin, entity, entityOrigin, mode, entityAngles);
 }
 
 bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc * calc, const double camOrigin[3], const double camAngles[3], float outLocalOffset[3])
