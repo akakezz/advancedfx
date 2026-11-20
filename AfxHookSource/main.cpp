@@ -989,6 +989,7 @@ void __fastcall new_CVClient_FrameStageNotify_OpenFortress(
     {
         // Observe completed render poses only after Source has drawn them.
         AfxHookSource::CameraOverlay::SceneCacheFrame();
+        MirvFix_OfInterpolationProbeFrame();
         Shared_AfterFrameRenderEnd();
     }
 }

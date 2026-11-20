@@ -278,3 +278,27 @@ Rebuild Open Fortress x86, open Recording, duplicate a built-in sampler to a cus
 ## Scene Cache capture safety gate (2026-11-20)
 
 The OF workspace intentionally hides Scene Cache recording/model replay, but the shared `mirv_cache record 1` console command previously could still arm the TF2-oriented `Mirv_Tf2_CollectSceneEntities` and `Mirv_Tf2_CaptureScenePose` route. That enumerator uses client-networkable and model/renderable virtual calls not yet verified against OF. Now the console explicitly rejects enabling OF Scene Cache capture; the completed-frame observer independently prevents OF capture even if an internal flag were set. OF also skips TF2-specific Scene Cache render-resource retirement. TF2/TF2C remain unchanged, and the existing non-capturing cached-view logic is preserved. This is source-inspected only, not x86-built. Do not interpret this as implemented OF Scene Cache; its ABI validation/port is still outstanding.
+
+## Experimental OF rendered-motion probe (2026-11-20)
+
+The user reports that the newest Open Fortress x86 build works as intended. This includes the live Recording profile editor and the Scene Cache capture safety gate; a complete regression pass and native interpolation improvement have not been established.
+
+The next step is a **read-only, opt-in, Open Fortress-only player motion probe**. The existing `mirv_fix playerInterpolation` cvar control stays disabled in OF where `cl_interp` is absent and `cl_interp_ratio` is playback-locked. No cvar, engine memory, camera settings, player positions or bone data are modified. The OF VClient017 completed-frame hook samples the known `Mirv_Tf2_GetSceneEntity` render-origin interface for a selected index once per rendered frame, comparing adjacent samples with the demo tick and client render time. It records same-tick continuous root updates versus repeats, tick-boundary jumps, gaps and discontinuities without per-frame console spam. Frame-start hooks and TF2/TF2C behavior are unchanged.
+
+**Offline demo test** after rebuilding the x86 hook:
+
+```text
+mirv_listplayers
+mirv_fix playerInterpolation probe <movingPlayerIndex>
+mirv_streams record start
+// play several seconds with an actual moving player at a high capture FPS
+mirv_streams record end
+mirv_fix playerInterpolation probe status
+mirv_fix playerInterpolation probe off
+```
+
+When testing with the overlay recording controls, use the same capture FPS and profile as a normal take; the probe does not itself initiate recording. For an initial baseline, a 240 FPS capture of a 60-tick/s demo gives approximately four rendered frames per tick when the engine can supply them. Ideally gather results from steady movement and compare with normal 60 FPS playback; don't compare across seek/fast-forward. `same-tick advancing pairs` with zero movement suggests repeated *root render origins*, while nonzero movement proves sub-tick root updates are present. It does **not** prove all bones, animation layers, particle effects or POV motion are interpolated. This hook samples after `FRAME_RENDER_END` and is not an exact GPU-present timestamp.
+
+**Why not patch interpolation directly yet?** Source SDK 2013's `C_BaseEntity::GetInterpolationAmount` has special local-demo, predictable-entity and animation branches; the actual Open Fortress binary must be matched before a detour to avoid corrupting its ABI. User reports that the OF developers removed `cl_interp` deliberately and require ratio-based interpolation; their Discord explanation is useful context, but not proof of the exact binary control path. Do not bypass protections in live multiplayer. The eventual override should be reversible, default-off, OF-only and offline-demo-only, with a comparison against this baseline before any port to other branches.
+
+**Status:** source patch committed; awaiting Windows x86 build and runtime probe output. No new branch created.

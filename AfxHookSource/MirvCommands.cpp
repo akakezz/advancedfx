@@ -23,6 +23,7 @@ extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 #include "AfxStreams.h"
 #include "CameraOverlay.h"
 #include "MirvCam.h"
+#include "MirvCalcs.h"
 #include "CampathDrawer.h"
 #include "Gui.h"
 #include "addresses.h"
@@ -5076,6 +5077,128 @@ static void MirvFix_PrintPlayerInterpolationStatus()
 	    "These are engine cvar values, not a measurement of rendered delay. POV prediction and "
 	    "per-entity interpolation rules can differ; compare the same movement with default settings.\n");
 }
+
+// OF-only readback sampled after FRAME_RENDER_END. No cvar writes, hooks,
+// SetupBones calls or mutations of game entity data are performed here.
+// A single live player render origin is enough to distinguish repeated
+// render poses from continuous sub-tick movement for the initial experiment.
+namespace
+{
+struct OfInterpolationProbe
+{
+    int PlayerIndex = 0;
+    int LastTick = -1, LastFrame = -1;
+    double LastClientTime = 0;
+    float LastOrigin[3] = {};
+    bool HaveLast = false;
+    unsigned long long Samples = 0, Missing = 0, DuplicateCallbacks = 0;
+    unsigned long long SameTickAdvancing = 0, SameTickMoved = 0, SameTickStatic = 0;
+    unsigned long long SameTickPaused = 0, TickMoved = 0, TickStatic = 0;
+    unsigned long long Discontinuities = 0;
+    double LastDistance = 0, MaxSameTickDistance = 0, TotalSameTickDistance = 0;
+    double MaxTickDistance = 0;
+};
+OfInterpolationProbe g_OfInterpolationProbe;
+}
+void MirvFix_OfInterpolationProbeFrame()
+{
+    auto &probe = g_OfInterpolationProbe;
+    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP || !probe.PlayerIndex)
+        return;
+    if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+        g_VEngineClient->IsDrawingLoadingImage() || g_VEngineClient->IsSkippingDemo())
+    {
+        probe.HaveLast = false;
+        return;
+    }
+    auto *globals = g_Hook_VClient_RenderView.GetGlobals();
+    if (!globals) return;
+    int tick = -1;
+    if (!GetCurrentDemoTick(tick) || tick < 0)
+    {
+        probe.HaveLast = false;
+        ++probe.Missing;
+        return;
+    }
+    const double clientTime = g_MirvTime.GetTime();
+    if (!std::isfinite(clientTime)) return;
+    const int renderFrame = globals->framecount_get();
+    if (probe.HaveLast && renderFrame == probe.LastFrame &&
+        tick == probe.LastTick && std::abs(clientTime - probe.LastClientTime) < 1e-8)
+    {
+        ++probe.DuplicateCallbacks;
+        return;
+    }
+    float origin[3], angles[3], mins[3], maxs[3];
+    if (!Mirv_Tf2_GetSceneEntity(probe.PlayerIndex, origin, angles, mins, maxs) ||
+        !std::isfinite(origin[0]) || !std::isfinite(origin[1]) || !std::isfinite(origin[2]))
+    {
+        ++probe.Missing;
+        probe.HaveLast = false;
+        return;
+    }
+    if (probe.HaveLast)
+    {
+        const double dx = double(origin[0]) - probe.LastOrigin[0];
+        const double dy = double(origin[1]) - probe.LastOrigin[1];
+        const double dz = double(origin[2]) - probe.LastOrigin[2];
+        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        probe.LastDistance = distance;
+        if (tick < probe.LastTick || tick > probe.LastTick + 1 ||
+            clientTime < probe.LastClientTime - 1e-6)
+        {
+            ++probe.Discontinuities;
+            // Never compare a seeking demo's teleported positions.
+        }
+        else if (tick == probe.LastTick)
+        {
+            if (clientTime > probe.LastClientTime + 1e-7)
+            {
+                ++probe.SameTickAdvancing;
+                if (distance > 1e-4)
+                {
+                    ++probe.SameTickMoved;
+                    probe.TotalSameTickDistance += distance;
+                    probe.MaxSameTickDistance = (std::max)(probe.MaxSameTickDistance, distance);
+                }
+                else ++probe.SameTickStatic;
+            }
+            else ++probe.SameTickPaused;
+        }
+        else
+        {
+            if (distance > 1e-4)
+            {
+                ++probe.TickMoved;
+                probe.MaxTickDistance = (std::max)(probe.MaxTickDistance, distance);
+            }
+            else ++probe.TickStatic;
+        }
+    }
+    ++probe.Samples;
+    probe.LastTick = tick;
+    probe.LastFrame = renderFrame;
+    probe.LastClientTime = clientTime;
+    std::copy(origin, origin + 3, probe.LastOrigin);
+    probe.HaveLast = true;
+}
+static void MirvFix_PrintOfInterpolationProbe()
+{
+    const auto &p = g_OfInterpolationProbe;
+    Tier0_Msg("OF interpolation probe: %s, entity %d; successful samples %s; unavailable %s; duplicate stage callbacks %s; discontinuities %s.\\n",
+        p.PlayerIndex ? "armed (read-only)" : "off", p.PlayerIndex,
+        std::to_string(p.Samples).c_str(), std::to_string(p.Missing).c_str(),
+        std::to_string(p.DuplicateCallbacks).c_str(), std::to_string(p.Discontinuities).c_str());
+    Tier0_Msg("OF interpolation probe sub-tick: advancing same-tick pairs %s; moved %s; static %s; unchanged-time pairs %s; max step %.6g units.\\n",
+        std::to_string(p.SameTickAdvancing).c_str(), std::to_string(p.SameTickMoved).c_str(),
+        std::to_string(p.SameTickStatic).c_str(), std::to_string(p.SameTickPaused).c_str(),
+        p.MaxSameTickDistance);
+    Tier0_Msg("OF interpolation probe tick boundary: moved %s; static %s; max step %.6g units; last delta %.6g; last tick %d; client time %.6f.\\n",
+        std::to_string(p.TickMoved).c_str(), std::to_string(p.TickStatic).c_str(),
+        p.MaxTickDistance, p.LastDistance, p.LastTick, p.LastClientTime);
+    Tier0_Msg("Interpretation: within-tick origin changes indicate rendered root interpolation. Repeated roots do not prove bone animation is static. Sampling is post FRAME_RENDER_END, not an exact GPU presentation timestamp.\\n");
+}
+
 // End TF2 demo interpolation controls.
 
 // TF2 POV deathcam control. Public Source SDK receive-table layouts; resolve
@@ -6759,6 +6882,44 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		// TF2 interpolation command.
 		if (!_stricmp(cmd1, "playerInterpolation"))
 		{
+
+			// OF motion probe, which never edits protected cvars or changes interpolation.
+			if (argc >= 3 && !_stricmp(args->ArgV(2), "probe"))
+			{
+			    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP)
+			    {
+			        Tier0_Warning("The motion probe is only available in explicit Open Fortress legacy mode.\\n");
+			        return;
+			    }
+			    if (argc == 3 || (argc == 4 && !_stricmp(args->ArgV(3), "status")))
+			    {
+			        MirvFix_PrintOfInterpolationProbe();
+			        return;
+			    }
+			    if (argc == 4 && !_stricmp(args->ArgV(3), "off"))
+			    {
+			        g_OfInterpolationProbe = {};
+			        MirvFix_PrintOfInterpolationProbe();
+			        return;
+			    }
+			    if (argc == 4)
+			    {
+			        char *end = nullptr;
+			        errno = 0;
+			        const long index = std::strtol(args->ArgV(3), &end, 10);
+			        if (!errno && end != args->ArgV(3) && !*end && index > 0 &&
+			            index <= Mirv_Tf2_GetMaxPlayers() && g_VEngineClient &&
+			            g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsDrawingLoadingImage())
+			        {
+			            g_OfInterpolationProbe = {};
+			            g_OfInterpolationProbe.PlayerIndex = int(index);
+			            Tier0_Msg("OF read-only motion probe armed for entity %d; record normal demo playback, then use probe status.\\n", int(index));
+			            return;
+			        }
+			    }
+			    Tier0_Warning("Usage: mirv_fix playerInterpolation probe <playerIndex|status|off> (OF offline demos only).\\n");
+			    return;
+			}
 			if (argc == 3 && !_stricmp(args->ArgV(2), "status"))
 			{
 				MirvFix_PrintPlayerInterpolationStatus();
@@ -6787,7 +6948,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				MirvFix_PrintPlayerInterpolationStatus();
 				return;
 			}
-			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status\nUses native Source interpolation for "
+			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status|probe <playerIndex|status|off>\nUses native Source interpolation for "
 					  "uneven player movement; 0.1 seconds is a starting point. Adds presentation delay; "
 					  "cannot reconstruct missing snapshots.\nCurrent: %s, requested cl_interp %.3f seconds. "
 					  "Automatically restores settings when the demo ends.\n",

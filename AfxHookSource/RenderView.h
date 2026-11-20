@@ -171,6 +171,7 @@ bool MirvFix_PlayerInterpolationAvailable();
 double MirvFix_GetPlayerInterpolation();
 bool MirvFix_SetPlayerInterpolation(double seconds);
 void MirvFix_Update();
+void MirvFix_OfInterpolationProbeFrame(); // Read-only OF rendered-root sample at FRAME_RENDER_END.
 void MirvFix_InitializeTf2Client(void *client);
 namespace advancedfx { class PlayerRepair; }
 advancedfx::PlayerRepair &MirvFix_PlayerRepairModel();
