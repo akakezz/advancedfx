@@ -5083,12 +5083,19 @@ static void MirvFix_PrintPlayerInterpolationStatus()
 // This probe observes post-render player origin; it cannot validate bones.
 namespace
 {
+struct OfClockEvent
+{
+    int FromTick = -1, ToTick = -1, FromFrame = -1, ToFrame = -1;
+    double MirvDt = 0, EngineDt = 0, PausedDt = 0, RootStep = 0;
+    float OldFraction = 0, NewFraction = 0;
+};
 struct OfInterpolationProbe
 {
     int PlayerIndex = 0;
     int LastTick = -1, LastFrame = -1;
     double LastClientTime = 0;
     float LastInterpolationFraction = 0;
+    float LastEngineTime = 0, LastPausedOffset = 0;
     float LastOrigin[3] = {};
     bool HaveLast = false;
     unsigned long long Samples = 0, Missing = 0, DuplicateCallbacks = 0;
@@ -5097,6 +5104,11 @@ struct OfInterpolationProbe
     unsigned long long FrozenTimeFractionChanged = 0;
     unsigned long long TickMoved = 0, TickStatic = 0;
     unsigned long long Discontinuities = 0, BackwardTicks = 0, SkippedTicks = 0, RewoundTime = 0;
+    unsigned long long EngineRewinds = 0, PausedOffsetChanges = 0, SameTickRewinds = 0;
+    unsigned long long RewindMoved = 0, RewindStatic = 0, FrozenRuns = 0;
+    unsigned int CurrentFrozenRun = 0, LongestFrozenRun = 0;
+    double MaxRewindRootStep = 0;
+    OfClockEvent RewindEvents[16];
     int LargestTickSkip = 0, LastDiscontinuityFromTick = -1, LastDiscontinuityToTick = -1;
     double LastDiscontinuityTimeDelta = 0;
     double LastDistance = 0, MaxSameTickDistance = 0, TotalSameTickDistance = 0;
@@ -5128,7 +5140,10 @@ void MirvFix_OfInterpolationProbeFrame()
         return;
     }
     const double clientTime = g_MirvTime.GetTime();
-    if (!std::isfinite(clientTime)) return;
+    const float engineTime = globals->curtime_get();
+    const float pausedOffset = g_MirvTime.GetPausedTime();
+    if (!std::isfinite(clientTime) || !std::isfinite(engineTime) || !std::isfinite(pausedOffset))
+        return;
     // Source's interpolation_amount is a useful *diagnostic*, not a claim that
     // all entity classes use that fraction or that the fraction itself is smooth.
     const float interpolationFraction = globals->interpolation_amount_get();
@@ -5154,10 +5169,18 @@ void MirvFix_OfInterpolationProbeFrame()
         const double dz = double(origin[2]) - probe.LastOrigin[2];
         const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
         const double deltaTime = clientTime - probe.LastClientTime;
+        const double engineDt = double(engineTime) - probe.LastEngineTime;
+        const double pausedDt = double(pausedOffset) - probe.LastPausedOffset;
         probe.LastDistance = distance;
         const bool tickRewind = tick < probe.LastTick;
         const bool tickSkip = tick > probe.LastTick + 1;
         const bool timeRewind = deltaTime < -1e-6;
+        if (!timeRewind && tick == probe.LastTick && std::abs(deltaTime) <= 1e-7)
+        {
+            if (probe.CurrentFrozenRun++ == 0) ++probe.FrozenRuns;
+            probe.LongestFrozenRun = (std::max)(probe.LongestFrozenRun, probe.CurrentFrozenRun);
+        }
+        else probe.CurrentFrozenRun = 0;
         if (tickRewind || tickSkip || timeRewind)
         {
             ++probe.Discontinuities;
@@ -5167,7 +5190,31 @@ void MirvFix_OfInterpolationProbeFrame()
                 ++probe.SkippedTicks;
                 probe.LargestTickSkip = (std::max)(probe.LargestTickSkip, tick - probe.LastTick - 1);
             }
-            if (timeRewind) ++probe.RewoundTime;
+            if (timeRewind)
+            {
+                ++probe.RewoundTime;
+                if (tick == probe.LastTick) ++probe.SameTickRewinds;
+                if (engineDt < -1e-6) ++probe.EngineRewinds;
+                if (std::abs(pausedDt) > 1e-6) ++probe.PausedOffsetChanges;
+                if (distance > 1e-4)
+                {
+                    ++probe.RewindMoved;
+                    probe.MaxRewindRootStep = (std::max)(probe.MaxRewindRootStep, distance);
+                }
+                else ++probe.RewindStatic;
+                // Fixed-size ring, no console spam or allocations in the frame hook.
+                auto &event = probe.RewindEvents[(probe.RewoundTime - 1) % 16];
+                event.FromTick = probe.LastTick;
+                event.ToTick = tick;
+                event.FromFrame = probe.LastFrame;
+                event.ToFrame = renderFrame;
+                event.MirvDt = deltaTime;
+                event.EngineDt = engineDt;
+                event.PausedDt = pausedDt;
+                event.RootStep = distance;
+                event.OldFraction = probe.LastInterpolationFraction;
+                event.NewFraction = interpolationFraction;
+            }
             probe.LastDiscontinuityFromTick = probe.LastTick;
             probe.LastDiscontinuityToTick = tick;
             probe.LastDiscontinuityTimeDelta = deltaTime;
@@ -5225,6 +5272,8 @@ void MirvFix_OfInterpolationProbeFrame()
     probe.LastFrame = renderFrame;
     probe.LastClientTime = clientTime;
     probe.LastInterpolationFraction = interpolationFraction;
+    probe.LastEngineTime = engineTime;
+    probe.LastPausedOffset = pausedOffset;
     std::copy(origin, origin + 3, probe.LastOrigin);
     probe.HaveLast = true;
 }
@@ -5252,7 +5301,29 @@ static void MirvFix_PrintOfInterpolationProbe()
         std::to_string(p.BackwardTicks).c_str(), std::to_string(p.SkippedTicks).c_str(),
         p.LargestTickSkip, std::to_string(p.RewoundTime).c_str(),
         p.LastDiscontinuityFromTick, p.LastDiscontinuityToTick, p.LastDiscontinuityTimeDelta);
-    Tier0_Msg("Interpretation: within-tick origin changes show rendered root interpolation; frozen-time movement can occur even with unchanged rounded client time. This probe does not validate bones or camera, and post FRAME_RENDER_END is not a GPU presentation timestamp.\n");
+    Tier0_Msg("OF probe time origins: same-tick rewinds %s; raw engine rewinds %s; paused offset changes %s; rewind root moved %s; static %s; largest step %.6g units.\n",
+        std::to_string(p.SameTickRewinds).c_str(), std::to_string(p.EngineRewinds).c_str(),
+        std::to_string(p.PausedOffsetChanges).c_str(), std::to_string(p.RewindMoved).c_str(),
+        std::to_string(p.RewindStatic).c_str(), p.MaxRewindRootStep);
+    Tier0_Msg("OF probe frozen-time runs: %s; longest consecutive repeated pairs %u. Use 'mirv_fix playerInterpolation probe events' to show recent rewinds.\n",
+        std::to_string(p.FrozenRuns).c_str(), p.LongestFrozenRun);
+    Tier0_Msg("Interpretation: frozen/rewound time and repeated roots warrant testing against captured frames; this does not establish actual on-screen model visibility, animation or POV behavior.\n");
+}
+
+
+static void MirvFix_PrintOfInterpolationProbeEvents()
+{
+    const auto &p = g_OfInterpolationProbe;
+    const int count = static_cast<int>((std::min)(p.RewoundTime, 16ull));
+    Tier0_Msg("OF probe: %d most recent backward-HLAE-time events, total %s.\n",
+        count, std::to_string(p.RewoundTime).c_str());
+    for (int i = count; i > 0; --i)
+    {
+        const auto &e = p.RewindEvents[(p.RewoundTime - i) % 16];
+        Tier0_Msg("  ticks %d->%d frame %d->%d HLAE dt %.9g engine dt %.9g paused dt %.9g root step %.6g fraction %.6g->%.6g\n",
+            e.FromTick, e.ToTick, e.FromFrame, e.ToFrame, e.MirvDt, e.EngineDt, e.PausedDt,
+            e.RootStep, e.OldFraction, e.NewFraction);
+    }
 }
 
 // End TF2 demo interpolation controls.
@@ -6952,6 +7023,11 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			        MirvFix_PrintOfInterpolationProbe();
 			        return;
 			    }
+			    if (argc == 4 && !_stricmp(args->ArgV(3), "events"))
+			    {
+			        MirvFix_PrintOfInterpolationProbeEvents();
+			        return;
+			    }
 			    if (argc == 4 && !_stricmp(args->ArgV(3), "off"))
 			    {
 			        g_OfInterpolationProbe = {};
@@ -6973,7 +7049,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			            return;
 			        }
 			    }
-			    Tier0_Warning("Usage: mirv_fix playerInterpolation probe <playerIndex|status|off> (OF offline demos only).\n");
+			    Tier0_Warning("Usage: mirv_fix playerInterpolation probe <playerIndex|status|events|off> (OF offline demos only).\n");
 			    return;
 			}
 			if (argc == 3 && !_stricmp(args->ArgV(2), "status"))
@@ -7004,7 +7080,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				MirvFix_PrintPlayerInterpolationStatus();
 				return;
 			}
-			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status|probe <playerIndex|status|off>\nUses native Source interpolation for "
+			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status|probe <playerIndex|status|events|off>\nUses native Source interpolation for "
 					  "uneven player movement; 0.1 seconds is a starting point. Adds presentation delay; "
 					  "cannot reconstruct missing snapshots.\nCurrent: %s, requested cl_interp %.3f seconds. "
 					  "Automatically restores settings when the demo ends.\n",
