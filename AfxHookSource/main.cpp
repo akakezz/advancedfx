@@ -2288,6 +2288,9 @@ void* new_Client_CreateInterface(const char *pName, int *pReturnCode)
 #ifndef _WIN64
 					if (g_OpenFortressLegacyMode && 0 == strcmp(g_Info_VClient, CLIENT_DLL_INTERFACE_VERSION_017))
 					{
+						// Keep the VClient017 pointer for an explicit, session-only observer
+						// proxy experiment. Nothing is hooked until mirv_fix povDeathcam 1.
+						MirvFix_InitializeTf2Client(iface);
 						// Verified against the matching 32-bit Open Fortress CHLClient vtable.
 						AfxDetourPtr((PVOID*) & (vtable[35]), new_CVClient_FrameStageNotify_OpenFortress,
 							(PVOID*)&old_CVClient_FrameStageNotify_OpenFortress);

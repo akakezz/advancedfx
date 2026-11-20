@@ -8273,7 +8273,14 @@ void Draw()
 				                   "selecting the freeze-cam sound mixer. Enable before death.");
 				}
 				else
-					ImGui::TextDisabled("OF: native interpolation experiment. Deathcam, recorder sound and player repair hooks remain disabled.");
+				{
+					ImGui::TextDisabled("OF: experimental native interpolation and opt-in POV deathcam. Recorder sound and player repair remain unsupported.");
+					bool deathcam = MirvFix_GetPovDeathcam();
+					if (ImGui::Checkbox("Suppress POV deathcam (OF experimental)", &deathcam))
+						if (!MirvFix_SetPovDeathcam(deathcam))
+							g_DocumentStatus = "OF deathcam suppression unavailable: VClient017 observer property/proxy not verified.";
+					ImGui::TextDisabled("Session-only; disabled on startup. Enable before the death event, then seek back to retest.");
+				}
 				bool active = g_DemoSmooth;
 				if (ImGui::Checkbox("Smooth player movement", &active))
 				{
