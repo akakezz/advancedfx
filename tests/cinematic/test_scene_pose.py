@@ -32,6 +32,12 @@ preamble = r'''
 bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&,std::string&,void* = nullptr);
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr,bool ofColor080 = false);
 void Mirv_Tf2_SceneRenderFrame();
+// The production adapter's status function returns this public value type.
+// Keep the stand-alone extracted fixture aligned with MirvCalcs.h.
+struct MirvTf2SceneRenderDiagnostics {
+ unsigned Outstanding=0, Peak=0;
+ unsigned long long Submitted=0, CallbacksInvoked=0, CompletionSignaled=0, Retired=0;
+};
 #include <thread>
 #include <filesystem>
 #include <fstream>
