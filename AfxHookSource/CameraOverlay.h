@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <shared/RecordingProfileInfo.h>
 namespace advancedfx { class ICommandArgs; }
 namespace AfxHookSource
 {
@@ -76,6 +77,10 @@ bool CaptureHotkey(unsigned int key);
 std::vector<std::string> GetProfiles();
 std::string CurrentProfile();
 bool SetProfile(const char *name);
+bool GetProfileInfo(const char *name, advancedfx::RecordingProfileInfo &out);
+bool DuplicateProfile(const char *source, const char *name);
+bool ApplyProfileEdits(const advancedfx::RecordingProfileInfo &info);
+bool RemoveProfile(const char *name);
 } // namespace Recording
 
 } // namespace CameraOverlay
