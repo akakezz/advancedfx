@@ -1,0 +1,26 @@
+name: Scene Cache Queue Lifetime
+on:
+  pull_request:
+    paths:
+      - 'AfxHookSource/MirvCalcs.cpp'
+      - 'AfxHookSource/MaterialSystemHooks.cpp'
+      - 'tests/cinematic/test_scene_render_queue.py'
+      - '.github/workflows/test-scene-render-queue.yml'
+  push:
+    branches: [experiment/open-fortress-legacy-2026-11]
+    paths:
+      - 'AfxHookSource/MirvCalcs.cpp'
+      - 'AfxHookSource/MaterialSystemHooks.cpp'
+      - 'tests/cinematic/test_scene_render_queue.py'
+      - '.github/workflows/test-scene-render-queue.yml'
+  workflow_dispatch:
+
+jobs:
+  queue-lifetime:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run source-extracted queue lifetime tests
+        run: python3 tests/cinematic/test_scene_render_queue.py
+      - name: Run AddressSanitizer and UndefinedBehaviorSanitizer
+        run: python3 tests/cinematic/test_scene_render_queue.py --sanitize
