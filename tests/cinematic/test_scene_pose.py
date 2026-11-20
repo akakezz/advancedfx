@@ -22,7 +22,7 @@ preamble = r'''
 #include "shared/AfxMath.h"
 #include "AfxHookSource/MaterialSystemHooks.h"
 bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&,std::string&,void* = nullptr);
-bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr);
+bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr, bool = false);
 void Mirv_Tf2_SceneRenderFrame();
 #include <thread>
 #include <filesystem>
@@ -37,6 +37,7 @@ void Mirv_Tf2_SceneRenderFrame();
 #include <cstdlib>
 #define _WIN64 1
 #define MIRV_TF2_MAX_BONES 128
+bool g_OpenFortressLegacyMode=false;
 constexpr int MIRV_TF2_ENTITY_PLAYER=0,MIRV_TF2_ENTITY_WEAPON=2,MIRV_TF2_ENTITY_COSMETIC=3,MIRV_TF2_ENTITY_RAGDOLL=5,MIRV_TF2_ENTITY_BUILDING=7,MIRV_TF2_ENTITY_PROP=8;
 #define SOURCESDK_BONE_USED_BY_ANYTHING 0x0007ff00
 namespace SOURCESDK {
@@ -64,7 +65,8 @@ struct Fixture {
  SOURCESDK::matrix3x4_t Observed[128]{},Allocated[128]{},Drawn[128]{};
  void *StudioSlots[49]{},*CacheSlots[42]{},*NetworkSlots[9]{};
  Object Studio{StudioSlots},Cache{CacheSlots},Network{NetworkSlots};
- std::array<float,3> DrawColor{};bool MaterialInterface=true;void*MaterialSlots[43]{},*MaterialSystemSlots[71]{};Object MaterialSystem{MaterialSystemSlots};
+ std::array<float,3> DrawColor{},StudioTint{1.f,1.f,1.f};int TintCalls=0;
+ bool MaterialInterface=true;void*MaterialSlots[43]{},*MaterialSystemSlots[71]{};Object MaterialSystem{MaterialSystemSlots};
  struct Material: Object {int Refs=0;std::string Color;std::array<float,3> Modulation{1,1,1},Tint{1,1,1};};Material Materials[10];int MaterialCount=0;
 
  void Put(int offset,int value){std::memcpy(Header+offset,&value,4);}
@@ -107,6 +109,7 @@ void ConsumeRenderQueue(bool drain=true,bool discard=false){std::thread worker([
 fixtures = r'''
 namespace {
 void SetOverride(void*,void*material,int type){assert(std::this_thread::get_id()==fixture.EngineThread);fixture.Override=material;fixture.OverrideType=type;}
+void SetStudioTint(void*,const float *color){assert(std::this_thread::get_id()==fixture.EngineThread);assert(color);for(int i=0;i<3;++i)fixture.StudioTint[i]=color[i];++fixture.TintCalls;}
 void MaterialInc(void*p){++static_cast<Fixture::Material*>(p)->Refs;}
 void MaterialDec(void*p){assert(std::this_thread::get_id()==fixture.EngineThread);auto&m=*static_cast<Fixture::Material*>(p);assert(m.Refs>0);--m.Refs;}
 bool MaterialError(void*){return false;}
@@ -145,7 +148,7 @@ void Draw(void*,void*results,const SceneStudioInfo&info,SOURCESDK::matrix3x4_t*b
  // Match Source's studio draw: ColorModulate replaces $color, even on
  // an override material, before the shader multiplies it by $color2.
  if(fixture.Override){auto&m=*static_cast<Fixture::Material*>(fixture.Override);m.Modulation={1,1,1};for(int i=0;i<3;++i)fixture.DrawColor[i]=m.Modulation[i]*m.Tint[i];}
- else fixture.DrawColor={1,1,1};
+ else fixture.DrawColor=fixture.StudioTint;
  assert(bones==fixture.Allocated&&fixture.Unlocks>0&&origin.x==20);++fixture.DrawCalls;std::memcpy(fixture.Drawn,bones,sizeof(fixture.Drawn[0])*fixture.Count);
 }
 template<class T>void Slot(void**table,int i,T function){table[i]=reinterpret_cast<void*>(function);}
@@ -165,7 +168,7 @@ struct BrushFileSystemFixture : SceneBaseFileSystem
 };
 int main(){
  Slot(fixture.MaterialSystemSlots,70,CreateMaterial);Slot(fixture.MaterialSlots,12,MaterialInc);Slot(fixture.MaterialSlots,13,MaterialDec);Slot(fixture.MaterialSlots,42,MaterialError);Slot(fixture.StudioSlots,33,SetOverride);
- Slot(fixture.NetworkSlots,8,Dormant);Slot(fixture.StudioSlots,47,Override);Slot(fixture.StudioSlots,22,Allocate);Slot(fixture.StudioSlots,23,Unlock);Slot(fixture.StudioSlots,29,Draw);
+ Slot(fixture.NetworkSlots,8,Dormant);Slot(fixture.StudioSlots,47,Override);Slot(fixture.StudioSlots,22,Allocate);Slot(fixture.StudioSlots,23,Unlock);Slot(fixture.StudioSlots,27,SetStudioTint);Slot(fixture.StudioSlots,29,Draw);
  Slot(fixture.CacheSlots,6,Find);Slot(fixture.CacheSlots,8,Release);Slot(fixture.CacheSlots,40,Header);Slot(fixture.CacheSlots,41,UnlockHeader);Slot(fixture.CacheSlots,11,Hardware);Slot(fixture.CacheSlots,20,Error);Slot(fixture.CacheSlots,25,Begin);Slot(fixture.CacheSlots,26,End);
  fixture.InitHeader();for(int i=0;i<2;++i){for(int a=0;a<3;++a){fixture.Observed[i][a][a]=2;fixture.Observed[i][a][3]=fixture.Origin[a];}fixture.Observed[i][0][3]+=10+i;}
  BrushFileSystemFixture vertexFs;auto&vertexFixture=vertexFs.Data;fixture.FileSystem=&vertexFs;
@@ -206,7 +209,25 @@ int main(){
  // Different categories own different immutable materials; the Source override is restored.
  entity.Category=1;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(1);assert(fixture.MaterialCount==2&&!fixture.Override&&fixture.Materials[1].Refs==2&&fixture.Materials[0].Color!=fixture.Materials[1].Color);
  Mirv_Tf2_ReleaseSceneMaterials();assert(fixture.Materials[0].Refs==0&&fixture.Materials[1].Refs==1);ConsumeRenderQueue();assert(fixture.Materials[1].Refs==0);
- fixture.MaterialInterface=false;assert(Mirv_Tf2_DrawScenePose(entity,status)&&!fixture.Override);ConsumeRenderQueue();fixture.MaterialInterface=true;
+ fixture.MaterialInterface=false;
+ assert(Mirv_Tf2_DrawScenePose(entity,status)&&!fixture.Override); // Safe default stays uncolored.
+ for(float channel:fixture.DrawColor)assert(channel==1.f);
+ ConsumeRenderQueue();
+ g_OpenFortressLegacyMode=true;
+ int beforeTint=fixture.TintCalls;
+ entity.Category=0;
+ assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true)&&!fixture.Override);
+ expectColor(0);assert(fixture.TintCalls==beforeTint+2);
+ for(float channel:fixture.StudioTint)assert(channel==1.f); // Restore neutral after submission.
+ ConsumeRenderQueue();
+ beforeTint=fixture.TintCalls;
+ entity.Category=1;
+ assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true)&&!fixture.Override);
+ expectColor(1);assert(fixture.TintCalls==beforeTint+2);
+ for(float channel:fixture.StudioTint)assert(channel==1.f);
+ ConsumeRenderQueue();
+ g_OpenFortressLegacyMode=false;
+ fixture.MaterialInterface=true;
  // A slow or discarded render queue retains ownership without unbounded growth.
  for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
  assert(!Mirv_Tf2_DrawScenePose(entity,status));unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);assert(pending==SceneMaxOutstanding&&peak==SceneMaxOutstanding);
