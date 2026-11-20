@@ -1,4 +1,4 @@
-# TF2 camera overlay — Paper port
+# HLAE cinematic camera overlay — Paper port
 
 This feature is based on Paper's overlay and the original HLAE base commit
 `3906a61e` (upstream HLAE 2.192.10, `8abc2719`). It uses ordinary `mirv_campath` keys and the classic path renderer.
@@ -1309,13 +1309,13 @@ translation and **R** rotation when a text field is not active. Local/world mode
 and Ctrl snapping are available. **C** toggles free-camera control. Camera Control
 also provides FOV, roll and keyboard speed sliders.
 
-The **Observing** tab is a player list with a text filter. Click a player name to
-select and spectate them in an STV demo. The command uses the player's explicit
-`#userid`, which is different from their entity slot. Selecting a player clears
-path preview, free-camera and attachment overrides, disables automatic directing,
-and switches to TF2's in-eye spectator camera. There are no buttons inside the
-player rows. Native spectator targeting follows living players; POV demos cannot
-switch their recorded spectator target, and the panel reports that restriction.
+The **Observing** tab is a player list with a text filter. Clicking a player
+only changes the selected row; it does not create an HLAE camera, detach an
+existing one, or switch the spectator view. In STV demos, the explicit
+**Spectate selected (STV)** action targets the player's `#userid` and switches
+to TF2's in-eye spectator mode. POV demos cannot change their recorded native
+spectator target. A separate POV spectator view override (without a persistent
+camera rig) is not yet implemented.
 
 The selected player still exposes named bones and forward/left/up offsets below
 the list. Choose a **Bone** (or **Entity origin**) and use **Attach selected** for
@@ -1329,9 +1329,58 @@ block the trace. The panel reports hits, misses and unavailable engine hooks.
 This uses TF2's `EngineTraceClient003`; the original console command
 `mirv_traceentity` is CS:GO-specific in this HLAE base.
 
+### Cached camera availability and missing targets
+
+**The currently active camera is evaluated only against the sampled scene at
+the current preview time.** An attached camera becomes unavailable when its
+recorded target or required bone data is absent and becomes available again
+when scrubbing back to a timestamp containing usable target data. Do not
+substitute a pose from an earlier or later scene frame to report the current
+camera as available.
+
+The Scene Cache records time-stamped entities by stable identity; it only
+interpolates across adjacent frames with a matching identity and within the
+configured gap and travel limits. Player filters, off-screen/first-person
+visibility, missing captured bone matrices, and recording gaps can make a
+camera unavailable in cached preview even if it worked in live playback.
+For bone-attached cameras, capture player model poses as needed. Aiming
+cameras may also have independent, recorded camera samples.
+
+**Transition test revision:** The outgoing-camera fade fallback is
+reapplied in the transition evaluators only. When an outgoing camera disappears,
+live evaluation can hold its last pose while the configured fade advances.
+Cached preview can re-evaluate the outgoing camera using earlier recorded
+entity frames with the current editable camera settings. This affects only
+the outgoing blend contribution, not camera availability or Scene Cache data.
+If no outgoing pose can be recovered, the incoming source continues directly.
+
+**Capture note:** Avoid fast-forwarding with scene-cache recording enabled:
+discontinuous capture intervals can leave missing preview coverage. Stop
+recording, seek, clear the history, then begin recording at the desired start
+point. This is a workaround, not an automatic seek-handling fix.
+
 ## Recording, files and settings
 
-The Recording tab uses TF2 screen recording through `mirv_streams`. Choose a
+The Recording tab now reads the live HLAE recording settings registry, including
+user-created profiles, and shows the current screen profile even when configured
+from the console. Encoder presets are no longer hard-coded in the UI. FPS remains
+an editable text field with no preset buttons.
+
+Start/Stop and the configurable keyboard recording hotkey use the same
+recording routine. Click the hotkey field, press a key (optionally with
+Ctrl/Shift/Alt), use Escape to cancel or Backspace to clear. F8 stays reserved
+for opening the overlay; unsupported system shortcuts are not captured.
+The hotkey is disabled by default; it works when the overlay is closed,
+but is ignored while entering text or using the game console.
+Options include automatically resuming the demo on start, pausing on stop,
+closing the overlay on start, and stopping the recording when opening the overlay.
+These options and the hotkey persist in the overlay's ImGui settings.
+
+TF2 x64 multi-stream separation (world, HUD, viewmodels, players and depth)
+is **not implemented** in this change. The legacy HLAE render-view stream
+classes are behind 32-bit build guards and need a validated TF2 x64 hook port.
+
+The Recording tab uses Source 1 screen recording through `mirv_streams`. Choose a
 record directory, FPS and screen profile. TGA, HLAE's built-in FFmpeg profiles,
 ProRes and x264/x265 profiles are available. Start Recording closes the overlay;
 reopen it with F8 to stop. Recording uses the chosen screen profile directly.
@@ -2145,9 +2194,8 @@ Attached cameras retain their target and mode; unavailable targets reject edits
 without changing their saved pose. **Manage cameras** in the Campath tab opens it.
 Selecting a row leaves the current view alone unless camera preview is already
 active; in that case it switches the viewed camera. Removal asks for confirmation
-and remains pinned to the chosen ID even if selection changes. Camera edits have their own bounded undo/redo history. The Undo/Redo buttons
-and Ctrl+Z / Ctrl+Shift+Z operate on cameras while the Cameras tab or camera
-preview navigation is active; otherwise they operate on campaths. Keyframe
+and remains pinned to the chosen ID even if selection changes. Camera and campath edits share chronological session undo/redo ordering (up to each domain's retained history limit). The Undo/Redo buttons
+and Ctrl+Z / Ctrl+Shift+Z undo the latest edit across cameras and campaths, regardless of panel or preview selection. Keyframe
 editing shortcuts remain disabled while managing cameras.
 
 **Show camera guides** optionally draws small camera icons independently of
