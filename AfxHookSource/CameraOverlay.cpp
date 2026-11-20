@@ -8071,7 +8071,12 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 				status = "Custom profile removed.";
 			}
 			else
+			{
+				// Removal can fail while another sampler still references this profile.
+				// Keep a failed delete from changing the next recording's encoder.
+				Recording::SetProfile(current.Name.c_str());
 				status = "Profile still referenced by another setting, or removal failed.";
+			}
 		}
 		if (recording) ImGui::EndDisabled();
 	}

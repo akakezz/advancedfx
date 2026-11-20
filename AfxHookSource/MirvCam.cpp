@@ -1250,7 +1250,7 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 			auto rig = FindRig(std::to_string(outgoing.Target));
 			if (rig != g_CameraRigs.end())
 			{
-				const bool cached = AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+				const bool cached = g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive();
 				recovered = cached
 					? RecoverCachedOutgoing(rig->second, current->Time, time, from, &outgoing)
 					: (from = rig->second.LastWorld, from.Valid());
@@ -2025,7 +2025,8 @@ std::uint64_t MirvCam_HistoryIndex(bool redo)
 	const auto &indices = redo ? g_CameraRedoIndices : g_CameraUndoIndices;
 	if (redo && g_CameraRedoGeneration != CinematicRedoGeneration())
 		return 0;
-	return indices.empty() ? 0 : indices.back();
+	const auto &states = redo ? g_CameraRedo : g_CameraUndo;
+	return states.empty() || indices.empty() ? 0 : indices.back();
 }
 bool MirvCam_HistoryUndo(bool redo)
 {
