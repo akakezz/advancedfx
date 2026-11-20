@@ -711,8 +711,10 @@ void UpdateGraphInputOwnership()
 		if (GetCapture() == g_hWnd)
 			ReleaseCapture();
 		m_PreviousDrawCursor = ImGui::GetIO().MouseDrawCursor;
-		ImGui::GetIO().MouseDrawCursor = true;
-		SetCursor(nullptr);
+		// Use the OS/hardware cursor rather than the frame-delayed ImGui cursor.
+		// The UI still renders at frame rate, but mouse movement is immediate.
+		ImGui::GetIO().MouseDrawCursor = false;
+		SetCursor(LoadCursor(nullptr, IDC_ARROW));
 		POINT client = m_GameCursorPos;
 		ScreenToClient(g_hWnd, &client);
 		ImGui::GetIO().MousePos = ImVec2(float(client.x), float(client.y));
@@ -778,8 +780,7 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 	// normal window events and frames, never by querying Source from this callback.
 	if (msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT && m_GraphInputOwned)
 	{
-		if (GetCursor() != nullptr)
-			SetCursor(nullptr);
+		SetCursor(LoadCursor(nullptr, IDC_ARROW));
 		return true;
 	}
 
@@ -806,10 +807,25 @@ bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam)
 			ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
 		return true;
 	}
+	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam < 256 &&
+		!(lParam & (1LL << 30)) && CameraOverlay::Recording::CaptureHotkey((unsigned int)wParam))
+	{
+		m_KeyDownEaten[wParam] = true;
+		NativeInput_EatKey(unsigned(wParam));
+		return true;
+	}
 	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam == VK_F8)
 	{
 		if (!(lParam & (1LL << 30)))
 			SetOverlayOpen(!CameraOverlay::IsOpen());
+		m_KeyDownEaten[wParam] = true;
+		NativeInput_EatKey(unsigned(wParam));
+		return true;
+	}
+	if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wParam < 256 &&
+		!(lParam & (1LL << 30)) &&
+		CameraOverlay::Recording::HandleHotkey((unsigned int)wParam))
+	{
 		m_KeyDownEaten[wParam] = true;
 		NativeInput_EatKey(unsigned(wParam));
 		return true;
