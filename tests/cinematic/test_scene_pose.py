@@ -18,7 +18,7 @@ adapter = calcs[calcs.index('// Selected-player scene-pose prototype.'):calcs.in
 guard_start = adapter.index('static bool SceneOfMaterial080SlotPlausible(void *system)')
 guard_end = adapter.index('// MaterialSystem082 uses', guard_start)
 adapter = (adapter[:guard_start]
-           + 'static bool SceneOfMaterial080SlotPlausible(void *system) { return system != nullptr; }\\n'
+           + 'static bool SceneOfMaterial080SlotPlausible(void *system) { return system != nullptr; }\n'
            + adapter[guard_end:])
 reader = calcs[calcs.index('static int Mirv_Tf2_ReadBoneNames('):calcs.index('int Mirv_Tf2_GetBoneNames(')]
 math = (root / 'deps/release/prop/AfxHookSource/SourceSdkShared.cpp').read_text()
