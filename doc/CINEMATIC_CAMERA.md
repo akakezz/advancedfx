@@ -1363,8 +1363,38 @@ point. This is a workaround, not an automatic seek-handling fix.
 
 The Recording tab now reads the live HLAE recording settings registry, including
 user-created profiles, and shows the current screen profile even when configured
-from the console. Encoder presets are no longer hard-coded in the UI. FPS remains
-an editable text field with no preset buttons.
+from the console. Encoder presets are no longer hard-coded in the UI. Capture FPS
+remains an editable text field with no preset buttons; it sets both
+`host_framerate` and HLAE's input FPS override, not a sampler's output FPS.
+
+### Recording profile editor (PR #1)
+
+Expand **Recording profile details / editor** after choosing a screen profile.
+Built-in `afx*` profiles are protected and read-only. Use **Duplicate as editable
+profile** with a unique name to copy a built-in sampler or FFmpeg preset into
+the same live settings registry. Custom sampler profiles expose **output FPS**,
+sampling method (rectangle/trapezoid), exposure, cross-frame strength, and the
+underlying output encoder/settings profile. Custom FFmpeg and FFmpegEx profiles
+expose their raw HLAE FFmpeg options. **Apply profile changes** explicitly
+commits a validated edit to the actual profile; **Revert unsaved edits**
+re-reads its last committed settings. Recording must be stopped to switch,
+edit, duplicate, or delete profiles.
+
+For example, Capture FPS **480** with a sampler configured for Output FPS **60**
+gives a nominal **8:1 capture-to-output frame ratio**. The sampler's exposure
+and strength determine temporal blending; the output encoder is independent
+of the input capture rate. A sampler may reference another profile for output,
+but indirect dependency cycles are rejected. A selected custom preset can
+be deleted once switched back to `afxDefault`, provided no other profiles
+still reference it.
+
+**Custom recording profiles are session-only**, matching the existing
+`mirv_streams settings add/edit` registry behavior. Save their creation/edit
+commands in a startup configuration such as `autoexec.cfg` to recreate them
+across launches. The overlay's recording hotkey and behavior preferences,
+unlike profile definitions, persist in its ImGui settings. The editor does
+not change the HLAE sampler implementation or force a Source game to render
+more frames than the engine can produce.
 
 Start/Stop and the configurable keyboard recording hotkey use the same
 recording routine. Click the hotkey field, press a key (optionally with
