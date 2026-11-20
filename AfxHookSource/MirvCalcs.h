@@ -511,6 +511,14 @@ void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued r
 // Engine-thread polling; worker callbacks never call MDL/material APIs.
 void Mirv_Tf2_SceneRenderFrame();
 void Mirv_Tf2_SceneRenderStatus(unsigned &outstanding, unsigned &peak);
+// Snapshot-only counters: submitted models are not necessarily visible draws.
+// A callback may run or be discarded; either path must signal retirement.
+struct MirvTf2SceneRenderDiagnostics
+{
+	unsigned Outstanding = 0, Peak = 0;
+	unsigned long long Submitted = 0, CallbacksInvoked = 0, CompletionSignaled = 0, Retired = 0;
+};
+MirvTf2SceneRenderDiagnostics Mirv_Tf2_SceneRenderDiagnostics();
 
 void Mirv_Tf2_DebugEntityLabel(int address);
 
