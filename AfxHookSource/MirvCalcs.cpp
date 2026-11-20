@@ -10774,6 +10774,69 @@ static bool SceneOfMaterial080SlotPlausible(void *system)
 	    nt.FileHeader.TimeDateStamp != 0x60d42f70 || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
 	    nt.OptionalHeader.SizeOfImage != 0x157000)
 		return false;
+	// The uploaded matching vstdlib.dll (2021-06-24) exports
+	// KeyValuesSystem as: mov eax, <static CKeyValuesSystem>; ret.
+	// Verify the actual loaded DLL, singleton, and the three vtable methods
+	// used by SceneMaterialKey (alloc/free/symbol table) before material creation.
+	HMODULE vstdlib = GetModuleHandleA("vstdlib.dll");
+	if (!vstdlib)
+		return false;
+	IMAGE_DOS_HEADER vdos{};
+	if (!read(vstdlib, &vdos, sizeof(vdos)) ||
+	    vdos.e_magic != IMAGE_DOS_SIGNATURE || vdos.e_lfanew < 0x40 || vdos.e_lfanew > 0x1000)
+		return false;
+	IMAGE_NT_HEADERS32 vnt{};
+	if (!read(reinterpret_cast<const unsigned char *>(vstdlib) + vdos.e_lfanew, &vnt, sizeof(vnt)) ||
+	    vnt.Signature != IMAGE_NT_SIGNATURE || vnt.FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
+	    vnt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+	    vnt.FileHeader.TimeDateStamp != 0x60d42f5b ||
+	    vnt.OptionalHeader.SizeOfImage != 0x9b000)
+		return false;
+	const auto vbase = reinterpret_cast<std::uintptr_t>(vstdlib);
+	const auto keyExport = reinterpret_cast<const unsigned char *>(
+	    GetProcAddress(vstdlib, "KeyValuesSystem"));
+	unsigned char exported[6]{};
+	std::uintptr_t keyObject = 0;
+	if (!keyExport || !read(keyExport, exported, sizeof(exported)) ||
+	    exported[0] != 0xb8 || exported[5] != 0xc3)
+		return false;
+	std::memcpy(&keyObject, exported + 1, sizeof(keyObject));
+	if (keyObject != vbase + 0x92b98)
+		return false;
+	void **keyVtable = nullptr;
+	if (!read(reinterpret_cast<const void *>(keyObject), &keyVtable, sizeof(keyVtable)) ||
+	    !keyVtable || reinterpret_cast<std::uintptr_t>(keyVtable) != vbase + 0x1f0ac)
+		return false;
+	constexpr std::uintptr_t keySlots[] = {0x7a40, 0x7d60, 0x7d90};
+	for (unsigned int i = 0; i < 3; ++i)
+	{
+		void *keyMethod = nullptr;
+		if (!read(keyVtable + (i + 1), &keyMethod, sizeof(keyMethod)) ||
+		    reinterpret_cast<std::uintptr_t>(keyMethod) != vbase + keySlots[i])
+			return false;
+	}
+	// The game and HLAE must use the same tier0 allocator. Do not call a
+	// mismatched engine allocator or construct KeyValues with one from HLAE.
+	HMODULE tier0 = GetModuleHandleA("tier0.dll");
+	if (!tier0)
+		return false;
+	IMAGE_DOS_HEADER tdos{};
+	if (!read(tier0, &tdos, sizeof(tdos)) ||
+	    tdos.e_magic != IMAGE_DOS_SIGNATURE || tdos.e_lfanew < 0x40 || tdos.e_lfanew > 0x1000)
+		return false;
+	IMAGE_NT_HEADERS32 tnt{};
+	if (!read(reinterpret_cast<const unsigned char *>(tier0) + tdos.e_lfanew, &tnt, sizeof(tnt)) ||
+	    tnt.Signature != IMAGE_NT_SIGNATURE || tnt.FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
+	    tnt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+	    tnt.FileHeader.TimeDateStamp != 0x60d3e2a2 || tnt.OptionalHeader.SizeOfImage != 0x50000)
+		return false;
+	const auto engineAllocatorExport = GetProcAddress(tier0, "g_pMemAlloc");
+	void *engineAllocator = nullptr;
+	if (!engineAllocatorExport ||
+	    !read(reinterpret_cast<const void *>(engineAllocatorExport), &engineAllocator,
+	          sizeof(engineAllocator)) ||
+	    !engineAllocator || engineAllocator != SOURCESDK::L4D2::g_pMemAlloc)
+		return false;
 	void **vtable = nullptr;
 	void *function = nullptr;
 	if (!read(system, &vtable, sizeof(vtable)) || !vtable ||
