@@ -5,6 +5,7 @@
 
 #include <string>
 #include <map>
+#include <vector>
 #include <algorithm>
 
 namespace advancedfx {
@@ -60,6 +61,8 @@ public:
 	}
 
 	static void Console(ICommandArgs * args);
+	// Live registry, including user-created settings.
+	static std::vector<std::string> GetNames();
 
 	CRecordingSettings(const char * name, bool bProtected)
 		: m_Name(name)
