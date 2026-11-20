@@ -601,7 +601,9 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 }
 void SceneCacheDrawModels()
 {
-	if (!g_SceneDrawModels.load() || !SceneCanDrawModels())
+	// OF replay is controlled independently from TF2's persisted model toggle.
+	if ((!g_OpenFortressLegacyMode && !g_SceneDrawModels.load()) ||
+	    !SceneCanDrawModels())
 		return;
 	if (g_OpenFortressLegacyMode)
 		g_SceneOfStudioEverUsed = true;

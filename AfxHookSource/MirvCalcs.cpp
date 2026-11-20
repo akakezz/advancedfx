@@ -11885,6 +11885,16 @@ bool Mirv_Of_SceneInterfacesSupported(bool draw)
         nt->OptionalHeader.SizeOfImage != 0x00a27000 ||
         !g_AppSystemFactory || !Mirv_Tf2_GetModelInfo())
         return false;
+    // Distinguish the exact tested code from a repacked client with matching
+    // timestamp/size. These prologues are independent of base relocations.
+    static const unsigned char entityStart[] = {
+        0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x53, 0x56, 0x57, 0x8b, 0xd9,
+        0xe8, 0x30, 0x8b, 0xfc, 0xff
+    };
+    static const unsigned char clientStart[] = {0x55, 0x8b, 0xec, 0x6a, 0xff};
+    if (std::memcmp(base + 0x0bff10, entityStart, sizeof(entityStart)) ||
+        std::memcmp(base + 0x1091a0, clientStart, sizeof(clientStart)))
+        return false;
     return !draw || (g_AppSystemFactory("VStudioRender025", nullptr) &&
                      g_AppSystemFactory("MDLCache004", nullptr) &&
                      MaterialSystem_CanExecuteOnRenderThread());
