@@ -237,3 +237,24 @@ Demo fixes: the non-detour `mirv_fix playerInterpolation` path is experimentally
 ### Optional OF POV deathcam experiment
 
 The OF VClient017 client pointer is now made available to the existing receive-property lookup, but no observer proxy detour installs automatically. The existing `mirv_fix povDeathcam 1` / `0` command or the OF-only experimental checkbox explicitly installs/activates the proxy if `DT_BasePlayer.m_iObserverMode` exists. A missing or invalid property is reported and rejected. The hook only substitutes deathcam/freezecam states for the local player during non-STV demo playback. **This has not been runtime-tested and may be incompatible with the exact OF receive-proxy ABI; keep disabled unless testing an expendable demo session.** OF preference reapplication does not auto-enable the hook and the OF UI does not persist it. TF2/TF2C behavior is unchanged; standard HL2MP cannot enable it. This does not port recorder sound muting, player repair, or other TF2-specific hooks.
+
+## OF overlay cursor, UI cursor and recording-folder crash triage (2026-11-20)
+
+User runtime testing confirmed the initial OF cinematic workspace and most PR #1 workflow features are functional. They reported a hidden/flickering hardware cursor while the overlay owns input, `mirv_input camera uiCursor` failing to yield to an open Source UI (such as `demoui`), and a crash after clicking **Open recordings folder**. Supplied Sentry ZIP contains four x86 access-violation minidumps: three fault in `tier0.dll`, one later fault in `AfxHookSource.dll` reading at address `0xE4`. These dumps do not include the matching PDB, so they are not enough to prove the recording button is the faulting call. The console log showed recording start and stop before one crash; it also showed that `cl_interp_ratio` is explicitly locked by OF while playing.
+
+The OF workspace now selects ImGui software cursor rendering while it owns input and suppresses the native pointer; TF2/TF2C retain the PR #1 OS cursor implementation. The `VGUI_Surface030` visibility probe now accepts explicit OF `SourceSdkVer_HL2MP` mode, so `mirv_input camera uiCursor 1` should suspend freecam input when the engine reports the cursor visible. Test with `mirv_input camera uiCursorStatus` when `demoui` is visible, allowing for the console itself to influence visibility.
+
+The recordings folder button now queues its action until after the ImGui frame and opens an existing folder through `CreateProcessW` with an explicit Windows Explorer executable instead of calling `ShellExecuteW` inside the widget callback. Missing/unavailable directories report an overlay message rather than attempting a launch. **This is a targeted hardening change, not a symbolicated crash root-cause confirmation.**
+
+The initial OF native interpolation attempt required the absent `cl_interp` cvar. The attempted `cl_interp_ratio / cl_updaterate` fallback is now **read-only diagnostics**: OF's own console rejects changing `cl_interp_ratio` while playing. `mirv_fix playerInterpolation status` may report the estimated ratio interval but `MirvFix_PlayerInterpolationAvailable()` refuses to enable this path during demo playback; the unsupported OF setting is disabled in the overlay. No claim is made that network cvars control actual OF POV demo entity smoothing. A later interpolation improvement likely requires validating an OF engine presentation/interpolation hook, not writing protected cvars.
+
+The OF POV deathcam suppression experiment was reported to work in-game, so no changes were made to its hook in this patch. All commits were made only to `experiment/open-fortress-legacy-2026-11`; other branches are untouched.
+
+### Suggested targeted runtime checks
+
+1. Load an OF demo and open `mirv_overlay 1`. Move the mouse over and outside UI panels, toggle with F8, and verify a stable visible pointer without a duplicate system cursor.
+2. `mirv_input camera`; `mirv_input camera uiCursor 1`; open `demoui` and move the cursor. Inspect `mirv_input camera uiCursorStatus` (preferably after closing the console again); observe whether freecam movement pauses when the VGUI cursor is visible. Turn off with `mirv_input camera uiCursor 0`.
+3. Set an existing recording directory in the Recording tab, stop any active recording, then click **Open recordings folder**. Verify Windows Explorer opens and the game remains stable; test a missing directory separately.
+4. Run `mirv_fix playerInterpolation status`. A ratio-only OF build should explicitly say read-only/unavailable during demo playback; do not assume effective smoothing solely from cvar values.
+
+Windows x86 compile and these in-game checks remain pending.
