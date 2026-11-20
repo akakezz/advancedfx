@@ -48,6 +48,8 @@ namespace AfxHookSource
 namespace CameraOverlay
 {
 static std::atomic_bool g_Open{false}, g_MouseLook{false};
+// Requests from ImGui are launched only after EndFrame/Render on the UI thread.
+static std::wstring g_RecordingFolderPending;
 static std::recursive_mutex g_SceneMutex;
 static advancedfx::SceneCache g_SceneCache;
 static bool g_SceneRecord = false, g_ScenePreview = false;
@@ -7957,6 +7959,45 @@ static void DrawCamerasTab()
 	ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
 	ImGui::EndTabItem();
 }
+// Do not launch ShellExecute/Explorer from inside an ImGui widget callback.
+// ShellExecute can synchronously invoke window hooks while ImGui is mid-frame.
+// CreateProcess with the absolute Windows Explorer path avoids that reentrancy.
+void ProcessExternalActions()
+{
+	if (g_RecordingFolderPending.empty())
+		return;
+	std::wstring folder;
+	folder.swap(g_RecordingFolderPending);
+	std::error_code error;
+	if (!std::filesystem::is_directory(std::filesystem::path(folder), error))
+	{
+		g_DocumentStatus = "Recording folder does not exist or cannot be opened. Choose an existing folder.";
+		return;
+	}
+	wchar_t windowsPath[MAX_PATH] = {};
+	const UINT length = GetWindowsDirectoryW(windowsPath, MAX_PATH);
+	if (!length || length >= MAX_PATH)
+	{
+		g_DocumentStatus = "Unable to locate Windows Explorer.";
+		return;
+	}
+	const std::wstring explorer = std::wstring(windowsPath) + L"\\explorer.exe";
+	const std::wstring command = L"\\\"" + explorer + L"\\\" \\\"" + folder + L"\\\"";
+	std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+	mutableCommand.push_back(L'\\0');
+	STARTUPINFOW startup = {};
+	startup.cb = sizeof(startup);
+	PROCESS_INFORMATION process = {};
+	if (!CreateProcessW(explorer.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE, 0,
+	                    nullptr, nullptr, &startup, &process))
+	{
+		g_DocumentStatus = "Unable to open Explorer (Windows error " + std::to_string(GetLastError()) + ").";
+		return;
+	}
+	CloseHandle(process.hThread);
+	CloseHandle(process.hProcess);
+}
+
 void Draw()
 {
 	CheckOverlayPreferences();
@@ -8546,7 +8587,9 @@ void Draw()
 					}
 				}
 				if (!wPath.empty())
-					ShellExecuteW(nullptr, L"open", wPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+					g_RecordingFolderPending = std::move(wPath);
+				else
+					g_DocumentStatus = "Choose a recording folder first.";
 			}
 
 			ImGui::Separator();

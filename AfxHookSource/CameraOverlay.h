@@ -23,6 +23,7 @@ enum class DemoFixPreference
 void RememberDemoFixPreference(DemoFixPreference setting, double value);
 void PreferencesFrame(); // Engine FRAME_START, including when the overlay is closed.
 void Draw();
+void ProcessExternalActions(); // After ImGui::Render, never from inside the widget callback.
 void SceneCacheFrame(bool capture = true); // Capture at TF2 FRAME_RENDER_END; false only updates preview.
 void SceneCacheDrawModels();
 std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines();

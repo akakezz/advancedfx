@@ -1259,6 +1259,7 @@ bool OnGameFrameRenderEnd()
 	ImGui::Render();
 
 	CacheRenderDrawData(ImGui::GetDrawData());
+	CameraOverlay::ProcessExternalActions();
 	g_LastOverlayFrame = GetTickCount();
 
 	return true;
