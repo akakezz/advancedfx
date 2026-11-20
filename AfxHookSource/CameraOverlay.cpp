@@ -763,7 +763,9 @@ void SceneCacheDrawModels()
 				g_SceneOfReplayAccepted.fetch_add(1, std::memory_order_relaxed);
 			else
 				g_SceneOfReplayRejected.fetch_add(1, std::memory_order_relaxed);
-			if (!submitted)
+			// A single missing model/invalid asset must not prevent later
+			// categories from drawing. Only stop when the engine queue is full.
+			if (!submitted && status == "Cached model render queue is behind; submission deferred.")
 				break;
 		}
 		if (epoch == g_SceneDrawEpoch.load())
