@@ -7989,6 +7989,12 @@ void ProcessExternalActions()
 	command.push_back(L' ');
 	command.push_back(L'"');
 	command.append(folder);
+	// CommandLineToArgvW requires trailing backslashes to be doubled
+	// before a closing quote (for example a selected drive root).
+	size_t trailingSlashes = 0;
+	while (trailingSlashes < folder.size() && folder[folder.size() - trailingSlashes - 1] == wchar_t(92))
+		++trailingSlashes;
+	command.append(trailingSlashes, wchar_t(92));
 	command.push_back(L'"');
 	std::vector<wchar_t> mutableCommand(command.begin(), command.end());
 	mutableCommand.push_back(0);
