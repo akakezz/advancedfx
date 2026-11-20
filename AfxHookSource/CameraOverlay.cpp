@@ -72,6 +72,7 @@ static bool g_SceneBuildings = false, g_SceneProps = false;
 static bool g_SceneOfExtended = false, g_SceneOfPoses = false;
 static bool g_SceneOfReplay = false, g_SceneOfSkeleton = false;
 static std::atomic_int g_SceneOfReplayBatch{1}; // Diagnostic-only, session-local; one studio submission is the safe default.
+static std::atomic_bool g_SceneOfReplayColor{false}; // OF-only opt-in fallback; never persisted.
 // Counters only; diagnostics never look through cached model pointers.
 static std::atomic<unsigned long long> g_SceneOfReplayDraws{0}, g_SceneOfReplayAttempts{0},
     g_SceneOfReplayAccepted{0}, g_SceneOfReplayRejected{0};
@@ -768,7 +769,8 @@ void SceneCacheDrawModels()
 				          outstanding, peak);
 			}
 			g_SceneOfReplayAttempts.fetch_add(1, std::memory_order_relaxed);
-			const bool submitted = Mirv_Tf2_DrawScenePose(entity, status, owner);
+			const bool submitted = Mirv_Tf2_DrawScenePose(entity, status, owner,
+			                                              g_SceneOfReplayColor.load(std::memory_order_relaxed));
 			if (submitted)
 				g_SceneOfReplayAccepted.fetch_add(1, std::memory_order_relaxed);
 			else
@@ -1508,6 +1510,13 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		++g_SceneDrawEpoch;
 		ok = true;
 	}
+	else if (g_OpenFortressLegacyMode && !_stricmp(op, "ofReplayColor") && integer(value) &&
+	         (value == 0 || value == 1))
+	{
+		g_SceneOfReplayColor.store(value != 0);
+		++g_SceneDrawEpoch;
+		ok = true;
+	}
 	else if (g_OpenFortressLegacyMode && integer(value) && (value == 0 || value == 1) &&
 	         (!_stricmp(op, "ofExtended") || !_stricmp(op, "ofPoses") ||
 	          !_stricmp(op, "ofReplay") || !_stricmp(op, "ofSkeleton")))
@@ -1832,6 +1841,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "  OF only: mirv_cache ofExtended|ofPoses|ofReplay|ofSkeleton <0|1>.\n"
 		    "  OF only: mirv_cache ofReplayBatch <1..8> (diagnostic submissions/draw, default 1).\n"
+		    "  OF only: mirv_cache ofReplayColor <0|1> (experimental studio tint, default 0).\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
 	}
@@ -1854,9 +1864,10 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 
 	if (g_OpenFortressLegacyMode)
 	{
-		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d, replay batch %d.\n",
+		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d, replay batch %d, color tint %d.\n",
 		                    int(g_SceneOfExtended), int(g_SceneOfPoses),
-		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton), g_SceneOfReplayBatch.load());
+		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton), g_SceneOfReplayBatch.load(),
+		                    int(g_SceneOfReplayColor.load()));
 		for (auto stage : {MirvOfSceneStage::Entities, MirvOfSceneStage::Poses, MirvOfSceneStage::Replay})
 		{
 			const char *name = stage == MirvOfSceneStage::Entities ? "entity capture" :
@@ -6278,7 +6289,13 @@ static void DrawSceneCacheMenu(int playhead)
 				g_SceneOfReplayBatch.store(replayBatch);
 				++g_SceneDrawEpoch;
 			}
-			ImGui::TextDisabled("OF studio replay is opt-in and session-only. Batch defaults to 1 for safer testing.");
+			bool replayColor = g_SceneOfReplayColor.load();
+			if (ImGui::Checkbox("OF category tint for studio wireframes (experimental)", &replayColor))
+			{
+				g_SceneOfReplayColor.store(replayColor);
+				++g_SceneDrawEpoch;
+			}
+			ImGui::TextDisabled("OF replay options are session-only; color tint is off by default.");
 		}
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
 		if (g_SceneDrawing.Bounds && ImGui::TreeNode("Bounding box filters"))
