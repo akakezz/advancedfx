@@ -10320,7 +10320,23 @@ std::string CurrentProfile()
 }
 bool SetProfile(const char *name)
 {
-	return g_AfxStreams.SetRecordScreenSettings(name);
+	return !IsActive() && g_AfxStreams.SetRecordScreenSettings(name);
+}
+bool GetProfileInfo(const char *name, advancedfx::RecordingProfileInfo &out)
+{
+	return advancedfx::CRecordingSettings::Describe(name, out);
+}
+bool DuplicateProfile(const char *source, const char *name)
+{
+	return !IsActive() && advancedfx::CRecordingSettings::DuplicateEditable(source, name);
+}
+bool ApplyProfileEdits(const advancedfx::RecordingProfileInfo &info)
+{
+	return !IsActive() && advancedfx::CRecordingSettings::ApplyEdits(info);
+}
+bool RemoveProfile(const char *name)
+{
+	return !IsActive() && advancedfx::CRecordingSettings::RemoveEditable(name);
 }
 } // namespace Recording
 } // namespace CameraOverlay

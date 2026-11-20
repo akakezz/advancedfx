@@ -3,6 +3,8 @@
 #include "StringTools.h"
 
 #include <set>
+#include <cmath>
+#include <cstring>
 
 namespace advancedfx {
 
@@ -19,6 +21,50 @@ std::vector<std::string> CRecordingSettings::GetNames()
 		if (setting.second.Settings)
 			result.emplace_back(setting.second.Settings->GetName());
 	return result;
+}
+
+bool CRecordingSettings::Describe(const char *name, RecordingProfileInfo &out)
+{
+	auto *setting = name ? GetByName(name) : nullptr;
+	if (!setting) return false;
+	out = {};
+	out.Name = setting->GetName();
+	out.Protected = setting->GetProtected();
+	setting->DescribeFields(out);
+	return true;
+}
+
+bool CRecordingSettings::DuplicateEditable(const char *source, const char *newName)
+{
+	if (!source || !newName || !*newName || std::strlen(newName) > 63 ||
+		!_strnicmp(newName, "afx", 3))
+		return false;
+	for (const unsigned char *p = reinterpret_cast<const unsigned char *>(newName); *p; ++p)
+		if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+			  (*p >= '0' && *p <= '9') || *p == '_' || *p == '-'))
+			return false;
+	if (GetByName(newName)) return false;
+	auto *original = GetByName(source);
+	auto *copy = original ? original->CloneEditable(newName) : nullptr;
+	if (!copy) return false;
+	m_Shared.m_NamedSettings.emplace(copy->GetName(), copy);
+	return true;
+}
+
+bool CRecordingSettings::ApplyEdits(const RecordingProfileInfo &info)
+{
+	auto *setting = GetByName(info.Name.c_str());
+	return setting && !setting->GetProtected() && setting->ApplyFields(info);
+}
+
+bool CRecordingSettings::RemoveEditable(const char *name)
+{
+	if (!name) return false;
+	auto it = m_Shared.m_NamedSettings.find(CNamedSettingKey(name));
+	if (it == m_Shared.m_NamedSettings.end() || !it->second.Settings ||
+		it->second.Settings->GetProtected())
+		return false;
+	return m_Shared.DeleteIfUnrefrenced(it);
 }
 
 CRecordingSettings::CShared::CShared()
@@ -318,6 +364,15 @@ advancedfx::COutVideoStreamCreator * CClassicRecordingSettings::CreateOutVideoSt
 
 // CFfmpegRecordingSettings ////////////////////////////////////////////////
 
+bool CFfmpegRecordingSettings::ApplyFields(const RecordingProfileInfo &info)
+{
+	if (m_Protected || info.Type != RecordingProfileInfo::Kind::Ffmpeg ||
+		info.FfmpegOptions.empty() || info.FfmpegOptions.size() > 4095)
+		return false;
+	m_FfmpegOptions = info.FfmpegOptions;
+	return true;
+}
+
 void CFfmpegRecordingSettings::Console_Edit(ICommandArgs * args)
 {
 	int argC = args->ArgC();
@@ -422,6 +477,15 @@ advancedfx::COutVideoStreamCreator* CFfmpegRecordingSettings::CreateOutVideoStre
 
 
 // CFfmpegRecordingSettings ////////////////////////////////////////////////
+
+bool CFfmpegExRecordingSettings::ApplyFields(const RecordingProfileInfo &info)
+{
+	if (m_Protected || info.Type != RecordingProfileInfo::Kind::FfmpegEx ||
+		info.FfmpegOptions.empty() || info.FfmpegOptions.size() > 4095)
+		return false;
+	m_FfmpegOptions = info.FfmpegOptions;
+	return true;
+}
 
 void CFfmpegExRecordingSettings::Console_Edit(ICommandArgs * args)
 {
@@ -696,6 +760,28 @@ advancedfx::COutVideoStreamCreator* CSamplingRecordingSettings::CreateOutVideoSt
 	}
 
 	return nullptr;
+}
+
+bool CSamplingRecordingSettings::ApplyFields(const RecordingProfileInfo &info)
+{
+	if (m_Protected || info.Type != RecordingProfileInfo::Kind::Sampler ||
+		!std::isfinite(info.OutputFps) || info.OutputFps <= 0 || info.OutputFps > 10000 ||
+		!std::isfinite(info.Exposure) || info.Exposure < 0 || info.Exposure > 1 ||
+		!std::isfinite(info.Strength) || info.Strength < 0 || info.Strength > 1 ||
+		(info.Method != 0 && info.Method != 1))
+		return false;
+	auto *output = CRecordingSettings::GetByName(info.OutputSettings.c_str());
+	if (!output || output->InheritsFrom(this))
+		return false; // Reject self and indirect nested sampler cycles.
+	output->AddRef();
+	auto *previous = m_OutputSettings;
+	m_OutputSettings = output;
+	m_OutFps = info.OutputFps;
+	m_Method = info.Method == 0 ? EasySamplerSettings::ESM_Rectangle : EasySamplerSettings::ESM_Trapezoid;
+	m_Exposure = info.Exposure;
+	m_FrameStrength = info.Strength;
+	if (previous) previous->Release();
+	return true;
 }
 
 void CSamplingRecordingSettings::Console_Edit(ICommandArgs * args)

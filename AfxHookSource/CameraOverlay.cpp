@@ -8011,6 +8011,147 @@ void ProcessExternalActions()
 	CloseHandle(process.hProcess);
 }
 
+// The profile editor reads the *same* live registry as mirv_streams. Draft
+// changes are applied explicitly, never on each ImGui frame or during a take.
+static void DrawRecordingProfileEditor(const std::string &selected)
+{
+	advancedfx::RecordingProfileInfo current;
+	if (!Recording::GetProfileInfo(selected.c_str(), current))
+	{
+		ImGui::TextDisabled("Profile not found in the recording settings registry.");
+		return;
+	}
+	static std::string editingName, status;
+	static advancedfx::RecordingProfileInfo draft;
+	static char copyName[64] = {};
+	static char ffmpegOptions[4096] = {};
+	if (editingName != current.Name)
+	{
+		editingName = current.Name;
+		draft = current;
+		copyName[0] = 0;
+		std::snprintf(ffmpegOptions, sizeof(ffmpegOptions), "%s", draft.FfmpegOptions.c_str());
+		status.clear();
+	}
+	if (!ImGui::CollapsingHeader("Recording profile details / editor", ImGuiTreeNodeFlags_DefaultOpen))
+		return;
+
+	const bool recording = Recording::IsActive();
+	const bool editable = !current.Protected && !recording;
+	const bool supported = current.Type != advancedfx::RecordingProfileInfo::Kind::Other;
+	ImGui::Text("Profile: %s", current.Name.c_str());
+	ImGui::SameLine();
+	ImGui::TextDisabled(current.Protected ? "(built-in, read-only)" : "(custom)");
+	if (recording)
+		ImGui::TextDisabled("Stop the current recording before changing any profile.");
+	if (current.Type == advancedfx::RecordingProfileInfo::Kind::Sampler)
+	{
+		ImGui::TextUnformatted("Sampler: captures at the input FPS and blends to its own output FPS.");
+		if (!editable) ImGui::BeginDisabled();
+		ImGui::SetNextItemWidth(120);
+		ImGui::InputFloat("Sampler output FPS", &draft.OutputFps, 0, 0, "%.3f");
+		ImGui::Combo("Sampling method", &draft.Method, "Rectangle\0Trapezoid\0");
+		ImGui::SetNextItemWidth(120);
+		ImGui::InputDouble("Exposure (shutter fraction)", &draft.Exposure, 0, 0, "%.3f");
+		ImGui::SliderFloat("Cross-frame strength", &draft.Strength, 0.0f, 1.0f, "%.3f");
+		if (ImGui::BeginCombo("Sampler output settings", draft.OutputSettings.c_str()))
+		{
+			for (const auto &name : Recording::GetProfiles())
+			{
+				if (name == current.Name) continue;
+				if (ImGui::Selectable(name.c_str(), name == draft.OutputSettings))
+					draft.OutputSettings = name;
+			}
+			ImGui::EndCombo();
+		}
+		if (!editable) ImGui::EndDisabled();
+		const double capture = std::strtod(g_RecordFps, nullptr);
+		if (std::isfinite(capture) && capture > 0 && std::isfinite(draft.OutputFps) && draft.OutputFps > 0)
+		{
+			ImGui::Text("Capture: %.3g FPS  ->  Output: %.3g FPS  (%.3g:1)",
+				capture, double(draft.OutputFps), capture / draft.OutputFps);
+			if (capture <= draft.OutputFps)
+				ImGui::TextDisabled("Capture FPS should exceed output FPS for temporal supersampling.");
+		}
+		ImGui::TextDisabled("Input FPS is set above; this sampler's output FPS is independent.");
+	}
+	else if (current.Type == advancedfx::RecordingProfileInfo::Kind::Ffmpeg ||
+			 current.Type == advancedfx::RecordingProfileInfo::Kind::FfmpegEx)
+	{
+		ImGui::TextUnformatted(current.Type == advancedfx::RecordingProfileInfo::Kind::FfmpegEx ?
+			"Extended FFmpeg output options" : "FFmpeg output options");
+		if (!editable) ImGui::BeginDisabled();
+		ImGui::InputTextMultiline("##record_ffmpeg_options", ffmpegOptions, sizeof(ffmpegOptions),
+			ImVec2(-1.0f, ImGui::GetTextLineHeight() * 4));
+		if (!editable) ImGui::EndDisabled();
+		draft.FfmpegOptions = ffmpegOptions;
+		ImGui::TextDisabled("Use HLAE's {QUOTE} / {AFX_STREAM_PATH} variables; applies to future takes.");
+	}
+	else
+		ImGui::TextDisabled("This profile type is not editable here. Use mirv_streams settings edit.");
+
+	if (supported && !current.Protected)
+	{
+		if (!editable) ImGui::BeginDisabled();
+		if (ImGui::Button("Apply profile changes"))
+		{
+			status = Recording::ApplyProfileEdits(draft)
+				? "Profile updated in the live HLAE settings registry."
+				: "Profile edit rejected: check values, downstream profile and dependency cycles.";
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Revert unsaved edits"))
+		{
+			draft = current;
+			std::snprintf(ffmpegOptions, sizeof(ffmpegOptions), "%s", current.FfmpegOptions.c_str());
+			status = "Restored the latest saved-in-session profile values.";
+		}
+		if (!editable) ImGui::EndDisabled();
+	}
+
+	if (supported)
+	{
+		ImGui::Separator();
+		ImGui::TextDisabled("Built-in profiles cannot be modified. Duplicate one to make an editable copy.");
+		ImGui::SetNextItemWidth(220);
+		ImGui::InputText("New profile name", copyName, sizeof(copyName));
+		if (recording) ImGui::BeginDisabled();
+		if (ImGui::Button("Duplicate as editable profile"))
+		{
+			if (Recording::DuplicateProfile(current.Name.c_str(), copyName) &&
+				Recording::SetProfile(copyName))
+			{
+				editingName.clear(); // Read new profile from registry next frame.
+				status = "Editable profile created; settings are session-only until recreated on startup.";
+			}
+			else
+				status = "Could not duplicate. Use a unique name (letters, digits, _ or -; not beginning with afx).";
+		}
+		if (recording) ImGui::EndDisabled();
+	}
+	if (!current.Protected)
+	{
+		ImGui::SameLine();
+		if (recording) ImGui::BeginDisabled();
+		if (ImGui::Button("Delete custom profile"))
+		{
+			// The active screen profile holds a registry reference; release it
+			// before trying to delete. Other dependent presets may still block removal.
+			if (Recording::SetProfile("afxDefault") && Recording::RemoveProfile(current.Name.c_str()))
+			{
+				editingName.clear();
+				status = "Custom profile removed.";
+			}
+			else
+				status = "Profile still referenced by another setting, or removal failed.";
+		}
+		if (recording) ImGui::EndDisabled();
+	}
+	if (!status.empty())
+		ImGui::TextWrapped("%s", status.c_str());
+	ImGui::TextDisabled("Custom profiles exist only in this session; recreate them in autoexec.cfg to persist.");
+}
+
 void Draw()
 {
 	CheckOverlayPreferences();
@@ -8613,7 +8754,7 @@ void Draw()
 
 			ImGui::Separator();
 			ImGui::SetNextItemWidth(110);
-			if (ImGui::InputText("Record FPS", g_RecordFps, sizeof(g_RecordFps),
+			if (ImGui::InputText("Capture FPS (input)", g_RecordFps, sizeof(g_RecordFps),
 				ImGuiInputTextFlags_CharsDecimal))
 				ImGui::MarkIniSettingsDirty();
 			const auto keyLabel = g_RecordCapturingHotkey
@@ -8671,6 +8812,7 @@ void Draw()
 					ImGui::EndCombo();
 				}
 				ImGui::TextDisabled("Includes built-in and custom mirv_streams settings. The menu always reads the active profile.");
+				DrawRecordingProfileEditor(Recording::CurrentProfile());
 
 				ImGui::Separator();
 				if (ImGui::Button("Start Recording") && !Recording::IsActive())

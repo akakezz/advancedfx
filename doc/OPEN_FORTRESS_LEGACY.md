@@ -258,3 +258,19 @@ The OF POV deathcam suppression experiment was reported to work in-game, so no c
 4. Run `mirv_fix playerInterpolation status`. A ratio-only OF build should explicitly say read-only/unavailable during demo playback; do not assume effective smoothing solely from cvar values.
 
 Windows x86 compile and these in-game checks remain pending.
+
+## Live recording-profile editor port (2026-11-20)
+
+Based on PR #1 through `e5c756e71`, the existing shared Open Fortress Recording tab now supports the live HLAE sampler/FFmpeg profile editor, without merging or closing PR #1. Protected built-ins are read-only; duplicate to a uniquely named editable profile, adjust sampler output FPS, rectangle/trapezoid method, exposure, cross-frame strength, downstream output profile or FFmpeg/FFmpegEx options, then Apply or Revert. Switching, duplication, editing and deletion are blocked while recording; sampler dependency cycles are rejected. Capture FPS controls input; sampler Output FPS is independent (e.g. 480 to 60 FPS). Custom profile definitions remain session-only; recreate via startup commands in `autoexec.cfg`. Shared recording-settings and headless test-harness code is identical to PR #1; the UI insertion was adapted to preserve Open Fortress's own overlay fixes. **Source-integrated, not yet Windows x86 compiled or in-game validated.**
+
+### Latest user runtime observations (2026-11-20)
+
+- Open Fortress software cursor now stays visible without flicker, with some render-frame latency. Preserve the working ownership model for now.
+- `mirv_input camera uiCursor 1` works with engine UI.
+- **Open recordings folder** no longer crashes in the latest tested build.
+- `mirv_fix playerInterpolation status` reports `cl_interp` absent, `cl_interp_ratio=1`, `cl_updaterate=60`, and a ratio-only 0.0166667 second estimate. OF blocks ratio cvar changes during playback. The estimate is **not** measured rendered delay; do not force protected cvars or claim a smoothing improvement.
+- Open Fortress attached-rig follow jitter and full Scene Cache model/pose replay remain deferred. Do not change the shared smoothing algorithm or enable unverified model/engine hooks as part of this port.
+
+### Suggested x86 validation for the new profile editor
+
+Rebuild Open Fortress x86, open Recording, duplicate a built-in sampler to a custom name, select input 480 FPS and sampler output 60 FPS, adjust exposure/strength, Apply, record a short take and inspect output. Test Revert, FFmpeg options, invalid/cyclic downstream profiles, and blocking edits while recording. Confirm the stable cursor, `uiCursor` and folder behavior did not regress; keep the PR experimental until in-game validation.
