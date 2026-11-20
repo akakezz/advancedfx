@@ -1808,12 +1808,15 @@ void PreferencesFrame()
 	if (now - g_DemoFixAttempt < std::chrono::seconds(1))
 		return;
 	g_DemoFixAttempt = now;
-	MirvFix_ArmRecorderSoundMute(g_DemoMute);
-	if (g_DemoDeathcam && !MirvFix_GetPovDeathcam())
-		MirvFix_SetPovDeathcam(true);
+	if (!g_OpenFortressLegacyMode)
+	{
+		MirvFix_ArmRecorderSoundMute(g_DemoMute);
+		if (g_DemoDeathcam && !MirvFix_GetPovDeathcam())
+			MirvFix_SetPovDeathcam(true);
+	}
 	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || g_VEngineClient->IsDrawingLoadingImage())
 		return;
-	if (g_DemoMute && !g_VEngineClient->IsHLTV() && !MirvFix_GetRecorderSoundMute())
+	if (!g_OpenFortressLegacyMode && g_DemoMute && !g_VEngineClient->IsHLTV() && !MirvFix_GetRecorderSoundMute())
 		MirvFix_SetRecorderSoundMute(true);
 	if (g_DemoSmooth && MirvFix_PlayerInterpolationAvailable() &&
 	    std::abs(MirvFix_GetPlayerInterpolation() - g_DemoInterpolation) > 1e-6)
@@ -8241,8 +8244,12 @@ void Draw()
 				ImGui::TextWrapped("TF2/TF2C only; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
 			}
 
-			if (!g_OpenFortressLegacyMode && ImGui::CollapsingHeader("Demo fixes"))
+			if (ImGui::CollapsingHeader("Demo fixes"))
 			{
+				// OF initially exposes only the native cvar-based interpolation fix.
+				// The TF2 client proxy and recorder-sound paths remain out of scope.
+				if (!g_OpenFortressLegacyMode)
+				{
 				bool muteRecorder = g_DemoMute;
 				if (ImGui::Checkbox("Mute recorder sounds", &muteRecorder))
 				{
@@ -8264,6 +8271,9 @@ void Draw()
 					ImGui::TextDisabled("Saved; waiting for the TF2/TF2C client hooks.");
 				ImGui::TextWrapped("Prevents POV death/freeze camera effects from freezing the HLAE view or "
 				                   "selecting the freeze-cam sound mixer. Enable before death.");
+				}
+				else
+					ImGui::TextDisabled("OF: native interpolation experiment. Deathcam, recorder sound and player repair hooks remain disabled.");
 				bool active = g_DemoSmooth;
 				if (ImGui::Checkbox("Smooth player movement", &active))
 				{
@@ -8290,7 +8300,7 @@ void Draw()
 					ImGui::TextDisabled("Saved; waiting for compatible demo playback.");
 				if (ImGui::Button("Interpolation status") && g_VEngineClient)
 					g_VEngineClient->ClientCmd_Unrestricted("mirv_fix playerInterpolation status");
-				ImGui::TextWrapped("Adds presentation delay using TF2 interpolation; cannot reconstruct "
+				ImGui::TextWrapped("Adds presentation delay using the game's native interpolation; cannot reconstruct "
 				                   "missing snapshots. Native settings restore when playback ends; the saved "
 				                   "preference applies to the next demo.");
 			}
