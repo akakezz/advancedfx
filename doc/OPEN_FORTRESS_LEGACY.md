@@ -274,3 +274,7 @@ Based on PR #1 through `e5c756e71`, the existing shared Open Fortress Recording 
 ### Suggested x86 validation for the new profile editor
 
 Rebuild Open Fortress x86, open Recording, duplicate a built-in sampler to a custom name, select input 480 FPS and sampler output 60 FPS, adjust exposure/strength, Apply, record a short take and inspect output. Test Revert, FFmpeg options, invalid/cyclic downstream profiles, and blocking edits while recording. Confirm the stable cursor, `uiCursor` and folder behavior did not regress; keep the PR experimental until in-game validation.
+
+## Scene Cache capture safety gate (2026-11-20)
+
+The OF workspace intentionally hides Scene Cache recording/model replay, but the shared `mirv_cache record 1` console command previously could still arm the TF2-oriented `Mirv_Tf2_CollectSceneEntities` and `Mirv_Tf2_CaptureScenePose` route. That enumerator uses client-networkable and model/renderable virtual calls not yet verified against OF. Now the console explicitly rejects enabling OF Scene Cache capture; the completed-frame observer independently prevents OF capture even if an internal flag were set. OF also skips TF2-specific Scene Cache render-resource retirement. TF2/TF2C remain unchanged, and the existing non-capturing cached-view logic is preserved. This is source-inspected only, not x86-built. Do not interpret this as implemented OF Scene Cache; its ABI validation/port is still outstanding.

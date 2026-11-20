@@ -288,7 +288,10 @@ void SceneCacheFrame(bool capture)
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	if (capture)
 	{
-		Mirv_Tf2_SceneRenderFrame();
+		// OF studio-model lifetime and render ABI are not validated yet.
+		// Keep the TF2 renderer's maintenance path entirely off in OF.
+		if (!g_OpenFortressLegacyMode)
+			Mirv_Tf2_SceneRenderFrame();
 		const auto epoch = g_SceneLifecycleEpoch.load();
 		if (g_SceneReadyEpoch != epoch)
 		{
@@ -319,7 +322,7 @@ void SceneCacheFrame(bool capture)
 	}
 	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
 	{
-		if (capture)
+		if (capture && !g_OpenFortressLegacyMode)
 			Mirv_Tf2_ReleaseSceneMaterials();
 		if (g_ScenePreview)
 			++g_SceneDrawEpoch;
@@ -329,7 +332,8 @@ void SceneCacheFrame(bool capture)
 		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 		return;
 	}
-	if (capture && g_SceneDeviceReady.load() && g_SceneRecord && !g_VEngineClient->IsSkippingDemo() &&
+	if (capture && !g_OpenFortressLegacyMode && g_SceneDeviceReady.load() && g_SceneRecord &&
+	    !g_VEngineClient->IsSkippingDemo() &&
 	    GetCurrentDemoTick(tick) && GetCurrentDemoTime(time) && SceneCaptureTick(tick))
 	{
 		const auto captureStart = std::chrono::steady_clock::now();
@@ -1213,6 +1217,12 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	bool ok = false;
 	if (!_stricmp(op, "record") && integer(value) && (value == 0 || value == 1))
 	{
+		if (g_OpenFortressLegacyMode && value)
+		{
+			g_SceneRecord = false;
+			advancedfx::Warning("Open Fortress Scene Cache capture is not yet validated. Use the TF2/TF2C capture path only.\n");
+			return;
+		}
 		g_SceneRecord = value != 0;
 		ok = true;
 	}
