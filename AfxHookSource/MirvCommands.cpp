@@ -2226,10 +2226,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		if (down && !g_CampathPreviewUndoHeld && !CampathPreview_IsRepeatKey(lParam))
 		{
 			g_CampathPreviewUndoHeld = true;
-			if (MirvCam_RigPreviewActive() && (MirvCam_RigNavigation() || MirvCam_SequencePreviewActive()))
-				MirvCam_HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
-			else
-				AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+			AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
 			// Undo may leave preview and release its held keys; keep this chord owned until key-up.
 			g_CampathPreviewUndoHeld = true;
 		}
@@ -4897,7 +4894,9 @@ namespace
 {
 bool Tf2InterpolationValues(float values[3], bool write)
 {
-	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
+	// OF shares the supported native Source ICvar interface, not CS:GO's encoded wrapper.
+	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified &&
+		!(g_SourceSdkVer == SourceSdkVer_HL2MP && g_OpenFortressLegacyMode))
 		return false;
 	auto access = [&](auto *iface)
 	{
@@ -6731,7 +6730,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				char *end = nullptr;
 				double seconds = std::strtod(args->ArgV(2), &end);
 				if (end == args->ArgV(2) || *end || !MirvFix_SetPlayerInterpolation(seconds))
-					Tier0_Warning("Interpolation edit rejected. Requires a TF2 demo, writable interpolation "
+					Tier0_Warning("Interpolation edit rejected. Requires a compatible demo, writable interpolation "
 					              "cvars and 0.001..1 seconds. Existing settings retained.\n");
 				else
 					AfxHookSource::CameraOverlay::RememberDemoFixPreference(
@@ -6739,7 +6738,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				MirvFix_PrintPlayerInterpolationStatus();
 				return;
 			}
-			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status\nUses TF2 interpolation for "
+			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status\nUses native Source interpolation for "
 					  "uneven player movement; 0.1 seconds is a starting point. Adds presentation delay; "
 					  "cannot reconstruct missing snapshots.\nCurrent: %s, requested cl_interp %.3f seconds. "
 					  "Automatically restores settings when the demo ends.\n",
