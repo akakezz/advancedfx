@@ -494,6 +494,11 @@ struct MirvTf2SceneEntity
 };
 // One tools-list traversal per observed tick, with serial-aware transient identities.
 // Known Open Fortress PE32 extended scene capture, default-off by caller.
+// Per-feature diagnostics distinguish the verified entity collector from
+// optional modelinfo (pose) and studio-render (replay) interfaces.
+enum class MirvOfSceneStage { Entities, Poses, Replay };
+const char *Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage stage);
+bool Mirv_Of_ScenePosesSupported();
 bool Mirv_Of_SceneInterfacesSupported(bool draw);
 void Mirv_Of_CollectSceneEntities(bool players, bool projectiles, bool weapons,
                                   bool cosmetics, bool ragdolls, bool gibs,

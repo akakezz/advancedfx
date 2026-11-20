@@ -382,7 +382,7 @@ void SceneCacheFrame(bool capture)
 					if (player && !ScenePlayerMatches(row.Snapshot.Identity, row.Index))
 						continue;
 					// Bound per-frame studio work; categories can include many props.
-					if (g_SceneOfPoses && poses + failed < 128)
+					if (g_SceneOfPoses && Mirv_Of_ScenePosesSupported() && poses + failed < 128)
 					{
 						std::string status;
 						if (Mirv_Tf2_CaptureScenePose(row.Index, row.Snapshot, status, row.ObservedObject))
@@ -1343,7 +1343,14 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		bool *setting = !_stricmp(op, "ofExtended") ? &g_SceneOfExtended :
 		                !_stricmp(op, "ofPoses") ? &g_SceneOfPoses :
 		                !_stricmp(op, "ofReplay") ? &g_SceneOfReplay : &g_SceneOfSkeleton;
-		if (!value || Mirv_Of_SceneInterfacesSupported(!_stricmp(op, "ofReplay")))
+		const MirvOfSceneStage stage = !_stricmp(op, "ofReplay")
+		    ? MirvOfSceneStage::Replay : !_stricmp(op, "ofPoses")
+		    ? MirvOfSceneStage::Poses : MirvOfSceneStage::Entities;
+		// Skeleton drawing consumes immutable cached data; no engine interface
+		// is required merely to enable/disable the skeleton visibility toggle.
+		const char *issue = !_stricmp(op, "ofSkeleton") || !value
+		    ? nullptr : Mirv_Of_SceneCompatibilityIssue(stage);
+		if (!issue)
 		{
 			*setting = value != 0;
 			if (value && (!_stricmp(op, "ofPoses") || !_stricmp(op, "ofReplay")))
@@ -1353,7 +1360,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			ok = true;
 		}
 		else
-			advancedfx::Warning("OF advanced Scene Cache unavailable: requires the verified 2024 x86 client/interfaces.\n");
+			advancedfx::Warning("OF advanced Scene Cache %s unavailable: %s\n", op, issue);
 	}
 	else if (!_stricmp(op, "range"))
 	{
@@ -1673,11 +1680,19 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	}
 
 	if (g_OpenFortressLegacyMode)
-		advancedfx::Message("OF Scene Cache: extended %d, studio poses %d, studio replay %d, skeleton %d; "
-		                    "OF 2024 x86 capture compatible %d; replay interfaces compatible %d.\n",
-		                    int(g_SceneOfExtended), int(g_SceneOfPoses), int(g_SceneOfReplay),
-		                    int(g_SceneOfSkeleton), int(Mirv_Of_SceneInterfacesSupported(false)),
-		                    int(Mirv_Of_SceneInterfacesSupported(true)));
+	{
+		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d.\n",
+		                    int(g_SceneOfExtended), int(g_SceneOfPoses),
+		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton));
+		for (auto stage : {MirvOfSceneStage::Entities, MirvOfSceneStage::Poses, MirvOfSceneStage::Replay})
+		{
+			const char *name = stage == MirvOfSceneStage::Entities ? "entity capture" :
+			                   stage == MirvOfSceneStage::Poses ? "studio poses" : "model replay";
+			const char *issue = Mirv_Of_SceneCompatibilityIssue(stage);
+			advancedfx::Message("OF Scene Cache compatibility: %s: %s.\n",
+			                    name, issue ? issue : "ready");
+		}
+	}
 	advancedfx::Message("Scene pose: players %d; filter %s (%s selected); captured %s, unavailable %s; "
 	                    "models %d; projectiles %d; weapons %d; cosmetics %d; ragdolls %d; gibs %d; "
 	                    "buildings %d; props %d; animation %s. %s\n",
@@ -5899,16 +5914,16 @@ static void DrawSceneCacheMenu(int playhead)
 			{
 				if (!extended || Mirv_Of_SceneInterfacesSupported(false))
 					g_SceneOfExtended = extended;
-				else g_DocumentStatus = "Requires verified OF 2024 x86 client and model info interface.";
+				else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Entities);
 			}
 			if (g_SceneOfExtended)
 			{
 				bool poses = g_SceneOfPoses;
 				if (ImGui::Checkbox("Capture OF studio poses / animated bones (experimental)", &poses))
 				{
-					if (!poses || Mirv_Of_SceneInterfacesSupported(false))
+					if (!poses || Mirv_Of_ScenePosesSupported())
 						g_SceneOfPoses = poses;
-					else g_DocumentStatus = "OF studio pose capture is unavailable for this client.";
+					else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Poses);
 				}
 				ImGui::TextDisabled("Per observed tick: up to 128 pose attempts; rest remain bounds-only.");
 			}
@@ -6059,7 +6074,7 @@ static void DrawSceneCacheMenu(int playhead)
 					if (replay) g_SceneOfExtended = true;
 					++g_SceneDrawEpoch;
 				}
-				else g_DocumentStatus = "VStudioRender025 / MDLCache004 or render queue unavailable.";
+				else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Replay);
 			}
 			ImGui::TextDisabled("OF studio replay is opt-in and session-only. Default stays bounds-only.");
 		}

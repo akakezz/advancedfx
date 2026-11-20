@@ -11865,52 +11865,113 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 }
 
 // OF Scene Cache, version-checked and read-only. Studio calls are opt-in.
-bool Mirv_Of_SceneInterfacesSupported(bool draw)
+// An OF interpolation detour changes the function *entry* bytes after
+// installation, including when its override is disabled. Therefore only
+// inspect untouched CALL sites, not these function prologues. These two
+// relocation-independent call instructions were verified in the exact
+// user-uploaded OF PE32 client, and both remain intact with Detours active.
+const char *Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage stage)
 {
 #ifndef _WIN64
-    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP)
-        return false;
+    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP ||
+        sizeof(void *) != 4)
+        return "Requires explicit 32-bit Open Fortress legacy mode.";
     HMODULE module = GetModuleHandleA("client.dll");
-    if (!module) return false;
+    if (!module)
+        return "client.dll is not loaded.";
     const auto *base = reinterpret_cast<const unsigned char *>(module);
     const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 0x1000)
-        return false;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 ||
+        dos->e_lfanew > 0x1000)
+        return "client.dll has an invalid DOS header.";
     const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS32 *>(base + dos->e_lfanew);
-    // Exact OF PE32 build already tested by the interpolation hook.
     if (nt->Signature != IMAGE_NT_SIGNATURE ||
         nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
         nt->FileHeader.TimeDateStamp != 0x66b4fe85 ||
         nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
-        nt->OptionalHeader.SizeOfImage != 0x00a27000 ||
-        !g_AppSystemFactory || !Mirv_Tf2_GetModelInfo())
-        return false;
-    // Distinguish the exact tested code from a repacked client with matching
-    // timestamp/size. These prologues are independent of base relocations.
-    static const unsigned char entityStart[] = {
-        0x55, 0x8b, 0xec, 0x83, 0xec, 0x08, 0x53, 0x56, 0x57, 0x8b, 0xd9,
-        0xe8, 0x30, 0x8b, 0xfc, 0xff
+        nt->OptionalHeader.SizeOfImage != 0x00a27000)
+        return "Unsupported OF client.dll PE32 version (expected 2024-08-08 image).";
+    static const unsigned char entityCallsClient[] = {0xe8,0x22,0x92,0x04,0x00};
+    static const unsigned char updaterCallsClient[] = {0xe8,0xf4,0xb9,0x04,0x00};
+    const auto match = [&](unsigned rva, const unsigned char *expected, size_t size) {
+        return rva <= nt->OptionalHeader.SizeOfImage &&
+            size <= nt->OptionalHeader.SizeOfImage - rva &&
+            std::memcmp(base + rva, expected, size) == 0;
     };
-    static const unsigned char clientStart[] = {0x55, 0x8b, 0xec, 0x6a, 0xff};
-    if (std::memcmp(base + 0x0bff10, entityStart, sizeof(entityStart)) ||
-        std::memcmp(base + 0x1091a0, clientStart, sizeof(clientStart)))
-        return false;
-    return !draw || (g_AppSystemFactory("VStudioRender025", nullptr) &&
-                     g_AppSystemFactory("MDLCache004", nullptr) &&
-                     MaterialSystem_CanExecuteOnRenderThread());
+    if (!match(0x0bff79, entityCallsClient, sizeof(entityCallsClient)) ||
+        !match(0x0bd7a7, updaterCallsClient, sizeof(updaterCallsClient)))
+        return "OF x86 interpolation CALL-site signatures differ (unsupported client version).";
+    auto *tools = CClientToolsTf2::Instance();
+    if (!tools || !tools->GetClientTools())
+        return "VCLIENTTOOLS001 entity enumeration interface is unavailable.";
+    // Extended entity bounds can work without modelinfo: class names alone
+    // may classify an entity. Only studio pose operations require it.
+    if (stage == MirvOfSceneStage::Entities)
+        return nullptr;
+    if (!g_AppSystemFactory)
+        return "The Source app-system interface factory is unavailable.";
+    if (!Mirv_Tf2_GetModelInfo())
+        return "VModelInfoClient006 is unavailable; bounds-only capture remains supported.";
+    if (stage == MirvOfSceneStage::Poses)
+        return nullptr;
+    if (!g_AppSystemFactory("VStudioRender025", nullptr))
+        return "VStudioRender025 is unavailable; full cached model replay is disabled.";
+    if (!g_AppSystemFactory("MDLCache004", nullptr))
+        return "MDLCache004 is unavailable; full cached model replay is disabled.";
+    // Render-queue availability varies with the frame/thread. The existing
+    // submission path still checks MaterialSystem_CanExecuteOnRenderThread()
+    // immediately before drawing rather than rejecting the UI command.
+    return nullptr;
 #else
-    (void)draw;
-    return false;
+    (void)stage;
+    return "OF extended Scene Cache requires the 32-bit HLAE hook.";
 #endif
+}
+bool Mirv_Of_SceneInterfacesSupported(bool draw)
+{
+    return nullptr == Mirv_Of_SceneCompatibilityIssue(
+        draw ? MirvOfSceneStage::Replay : MirvOfSceneStage::Entities);
+}
+bool Mirv_Of_ScenePosesSupported()
+{
+    return nullptr == Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Poses);
 }
 static bool OfSceneCopyString(const char *pointer, char *out, size_t capacity)
 {
     if (!pointer || !out || capacity < 2) return false;
-    SIZE_T copied = 0;
-    if (!ReadProcessMemory(GetCurrentProcess(), pointer, out, capacity - 1, &copied) ||
-        copied != capacity - 1) return false;
+    // Reading the full 95/259 bytes can cross an inaccessible page when the
+    // actual class/model name is short. Copy up to the first NUL in chunks,
+    // with a single-byte fallback for strings near a page boundary.
+    size_t pos = 0;
+    while (pos + 1 < capacity)
+    {
+        char block[32]{};
+        const size_t count = (std::min)(sizeof(block), capacity - 1 - pos);
+        SIZE_T copied = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), pointer + pos, block, count, &copied) &&
+            copied == count)
+        {
+            for (size_t i = 0; i < count; ++i)
+            {
+                out[pos++] = block[i];
+                if (!block[i])
+                    return true;
+            }
+        }
+        else
+        {
+            char ch = 0;
+            copied = 0;
+            if (!ReadProcessMemory(GetCurrentProcess(), pointer + pos, &ch, 1, &copied) ||
+                copied != 1)
+                return false;
+            out[pos++] = ch;
+            if (!ch)
+                return true;
+        }
+    }
     out[capacity - 1] = 0;
-    return std::memchr(out, 0, capacity - 1) != nullptr;
+    return false; // Reject unterminated engine strings.
 }
 static std::string OfSceneLower(const char *value)
 {
