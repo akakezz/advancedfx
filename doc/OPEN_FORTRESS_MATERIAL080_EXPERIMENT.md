@@ -59,15 +59,19 @@ The existing `tests/cinematic/test_scene_pose.py` now exercises actual
 material-creation code against a fake `080` factory, including opt-in
 default-off behavior, two category tints, override restoration, and
 release of 080 material references. A Linux fixture cannot run Windows
-`VirtualQuery` against the game's PE32 module, so ONLY that probe is
-stubbed out in the test build. A branch-specific GitHub Actions workflow
-has been added; **do not treat it as passed without completed job logs**.
+`VirtualQuery` against the game's PE32 module, so the host-specific
+ABI probe is stubbed in that test build and validated independently using
+`tests/cinematic/verify_of_material080_binaries.py` on the three uploaded
+DLLs. The branch-specific GitHub Actions workflow also contains the existing
+Windows staging-build procedure; **do not treat CI as passed without
+completed job logs**.
 
-**Do not enable the experimental switch in a game yet.** First obtain and
-inspect the actual `MaterialSystem.dll` used by the user's Open Fortress
-process (and preferably `tier0.dll`). An offline ABI probe should verify
-slot 70, module identity, old KeyValues layout, and `IMaterial` methods
-before the first real 080 `CreateMaterial` call.
+**Binary prerequisite complete:** The actual `MaterialSystem.dll`, `tier0.dll`,
+and `vstdlib.dll` from the user's Source SDK Base 2013 Multiplayer
+installation have now been inspected offline. The matching DLL identities,
+KeyValues virtual methods, and material creation/refcount methods are
+verified below. Windows compilation, actual in-game behavior, and shader
+results remain unverified. Keep the known-good PR #2 DLL as fallback.
 
 If those checks pass, build Win32 Release from this *experimental*
 branch, use a short offline demo with cached replay, and compare
@@ -84,7 +88,7 @@ Additional factory evidence: in this exact DLL, the `VMaterialSystem080` interfa
 
 Resolved real MSVC RTTI `.?AVCMaterialSystem@@` through CompleteObjectLocator to **primary vtable RVA `0xb7b54`**. Entry `70` points to `CreateMaterial` candidate **RVA `0x45b00`**. Disassembly begins with `55 8B EC 56 57 FF 75 0C 8B F9 68` and ends in `C2 08 00` (`ret 8`), confirming the two-parameter thiscall ABI. Resolved RTTI `.?AVCMaterial@@` to **primary vtable RVA `0xb67f0`**: `IMaterial` slot 12 points to `0x3a2e0` (`lock xadd` increment of `this+0x1c`), slot 13 to `0x391e0` (`lock xadd` decrement), and slot 42 to `0x3aa40` (comparison with the global error-material pointer). These match the functions used by the scene cache.
 
-Also verified that uploaded **tier0.dll exports `g_pMemAlloc`**; the exact MaterialSystem DLL imports that symbol from tier0. **Correction to initial interpretation:** `KeyValuesSystem` is imported by MaterialSystem from **vstdlib.dll**, NOT from tier0. The game's actual `vstdlib.dll` was not uploaded, so we have not directly validated its binary interface. Import resolution and the source-level SDK 2013 KeyValues field layout remain the basis of our proposed adapter.
+Also verified that uploaded **tier0.dll exports `g_pMemAlloc`**; the exact MaterialSystem DLL imports that symbol from tier0. **Correction to initial interpretation:** `KeyValuesSystem` is imported by MaterialSystem from **vstdlib.dll**, NOT from tier0. That observation preceded the subsequent `vstdlib.dll` upload and analysis, documented below. The now-supplied binary confirms the required KeyValuesSystem virtual methods; the source-level 32-byte KeyValues field layout is consistent, but runtime material ownership still needs testing.
 
 **Stronger runtime fail-closed gate committed:** The opt-in OF/080 path now checks the loaded `materialsystem.dll` PE32 timestamp, machine type, `SizeOfImage`, primary vtable RVA, slot-70 function RVA, executable memory protection, and function prologue bytes. A different binary remains on the current cyan wireframe fallback; no unknown slot gets called accidentally. These checks materially reduce mistaken-vtable risk but do **not** prove shader tint results, KeyValues ownership, or a crash-free in-game material creation.
 
