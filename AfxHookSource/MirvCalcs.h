@@ -482,7 +482,7 @@ void Mirv_Tf2_SceneBoneLines(const advancedfx::SceneCache::Entity &entity,
                             const advancedfx::SceneCache::Entity *owner,
                             std::vector<advancedfx::SceneCache::Line> &lines);
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
- const advancedfx::SceneCache::Entity *owner = nullptr);
+ const advancedfx::SceneCache::Entity *owner = nullptr, bool ofColor080 = false);
 
 struct MirvTf2SceneEntity
 {
