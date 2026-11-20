@@ -5532,6 +5532,14 @@ static void SceneCategoryFilters(std::array<bool, advancedfx::SceneCache::Catego
 }
 static void DrawSceneCacheMenu(int playhead)
 {
+	// The unified workspace is available in OF, but studio-pose capture and
+	// cached model replay have not been validated against this client/engine ABI.
+	// Keep this one module read-only until its capture dependencies are tested.
+	if (g_OpenFortressLegacyMode)
+	{
+		ImGui::TextDisabled("Scene Cache capture and replay require Open Fortress compatibility validation.");
+		return;
+	}
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	ImGui::Text("%s | %zu frames | %.2f MiB", g_SceneRecord ? "Recording / armed" : "Stopped",
 	            g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0);
