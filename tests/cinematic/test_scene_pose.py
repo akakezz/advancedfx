@@ -5,6 +5,7 @@ import argparse, os, subprocess, tempfile
 parser = argparse.ArgumentParser()
 parser.add_argument('--build-dir', type=Path, default=Path(tempfile.gettempdir()) / 'hlae-scene-pose-tests')
 parser.add_argument('--sanitize', action='store_true')
+parser.add_argument('--material-only', action='store_true', help='Only run studio pose/material fixture; skip unrelated Windows-only entity, camera, and campath fixtures')
 parser.add_argument('--windows-abi-compiler', type=Path, help='Optional Zig compiler for real MSVC ABI probes')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[2]
@@ -306,6 +307,10 @@ result = subprocess.run([str(out/'scene_pose_native')], capture_output=True, tex
 print(result.stdout + result.stderr)
 if result.returncode:
     raise SystemExit(result.returncode)
+# The OF/080 experiment exercises the real studio adapter; unrelated entity
+# enumeration needs Windows-only interfaces that this Linux fixture does not mock.
+if args.material_only:
+    raise SystemExit(0)
 # Exercise the real entity enumeration and its reused classifier separately.
 collector = calcs[calcs.index('// Scene entity enumeration shares'):calcs.index('// End scene entity enumeration.')]
 classifier = calcs[calcs.index('static int Mirv_Tf2_LabelCategory('):calcs.index('static bool Mirv_Tf2_LabelDebris(')]
