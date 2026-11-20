@@ -4892,6 +4892,10 @@ void MirvFix_RecorderSoundUpdate()
 // WrpConVarRef currently wraps only CS:GO's encoded ConVar representation.
 namespace
 {
+// OF may ship cl_interp_ratio without cl_interp. This is an estimated
+// ratio/updaterate delay, not proof that demo entities use that delay.
+bool g_OfInterpolationRatioOnly = false;
+float g_OfInterpolationUpdateRate = 0;
 bool Tf2InterpolationValues(float values[3], bool write)
 {
 	// OF shares the supported native Source ICvar interface, not CS:GO's encoded wrapper.
@@ -4903,10 +4907,44 @@ bool Tf2InterpolationValues(float values[3], bool write)
 		if (!iface)
 			return false;
 		const char *names[] = {"cl_interpolate", "cl_interp", "cl_interp_ratio"};
-		decltype(iface->FindVar(names[0])) vars[3];
-		for (int i = 0; i < 3; ++i)
-			if (!(vars[i] = iface->FindVar(names[i])))
+		decltype(iface->FindVar(names[0])) vars[3] = {
+			iface->FindVar(names[0]), iface->FindVar(names[1]), iface->FindVar(names[2])};
+		const bool of = g_SourceSdkVer == SourceSdkVer_HL2MP && g_OpenFortressLegacyMode;
+		if (of && !vars[1])
+		{
+			// Source SDK 2013 normally computes a minimum interpolation interval
+			// from cl_interp_ratio / cl_updaterate. OF may omit cl_interp itself.
+			// Keep that assumption isolated to OF and verify every cvar write.
+			auto *updateRate = iface->FindVar("cl_updaterate");
+			if (!vars[2] || !updateRate)
 				return false;
+			const float rate = updateRate->GetFloat();
+			if (!std::isfinite(rate) || rate < 1 || rate > 1000)
+				return false;
+			g_OfInterpolationRatioOnly = true;
+			g_OfInterpolationUpdateRate = rate;
+			if (write)
+			{
+				const double requestedRatio = double(values[1]) * rate;
+				if (!std::isfinite(requestedRatio) || requestedRatio < 0 || requestedRatio > 1000)
+					return false;
+				if (vars[0])
+					vars[0]->SetValue(values[0]);
+				vars[2]->SetValue(float(requestedRatio));
+				values[2] = float(requestedRatio); // Verify the actual ratio, not TF2's default of 2.
+			}
+			else
+			{
+				values[0] = vars[0] ? vars[0]->GetFloat() : 1.0f;
+				values[2] = vars[2]->GetFloat();
+				values[1] = values[2] / rate; // Approximate, not a sampled visual latency.
+			}
+			return std::isfinite(values[0]) && std::isfinite(values[1]) && std::isfinite(values[2]);
+		}
+		if (!vars[0] || !vars[1] || !vars[2])
+			return false;
+		if (of)
+			g_OfInterpolationRatioOnly = false;
 		for (int i = 0; i < 3; ++i)
 		{
 			if (write)
@@ -5025,13 +5063,19 @@ static void MirvFix_PrintPlayerInterpolationStatus()
 	          : playing ? (g_VEngineClient->IsHLTV() ? "STV/HLTV" : "POV/other demo")
 	                    : "no demo");
 	if (g_Tf2InterpolationActive)
-		Tier0_Msg("Requested cl_interp: %.6g seconds; native settings: %s.\n", g_Tf2InterpolationApplied[1],
+		Tier0_Msg("Requested interpolation: %.6g seconds; native settings: %s.\n", g_Tf2InterpolationApplied[1],
 		          available ? (matches ? "match" : "overridden") : "unavailable");
 	if (available)
-		Tier0_Msg("Native cl_interpolate=%.6g, cl_interp=%.6g, cl_interp_ratio=%.6g.\n", values[0], values[1],
-		          values[2]);
+	{
+		if (g_OpenFortressLegacyMode && g_OfInterpolationRatioOnly)
+			Tier0_Msg("OF ratio-only mode: cl_interp absent; cl_interp_ratio=%.6g / cl_updaterate=%.6g => estimated %.6g s.\n",
+			          values[2], g_OfInterpolationUpdateRate, values[1]);
+		else
+			Tier0_Msg("Native cl_interpolate=%.6g, cl_interp=%.6g, cl_interp_ratio=%.6g.\n", values[0], values[1],
+			          values[2]);
+	}
 	else
-		Tier0_Msg("Native interpolation variables are unavailable.\n");
+		Tier0_Msg("Native interpolation variables unavailable. OF requires cl_interp_ratio and cl_updaterate for the ratio-only fallback.\n");
 	Tier0_Msg(
 	    "These are engine cvar values, not a measurement of rendered delay. POV prediction and "
 	    "per-entity interpolation rules can differ; compare the same movement with default settings.\n");
