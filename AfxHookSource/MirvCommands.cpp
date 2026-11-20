@@ -5509,6 +5509,28 @@ void OfEnginePrint()
     Tier0_Msg("Usage (inside offline OF demo): mirv_fix playerInterpolation ofEngine 0.10 [all] | default | status. Experimental; all also extends predictable/locally created entity intervals. Does not invent snapshots.\n");
 }
 } // namespace
+// Expose the existing validated demo-only engine hook to the overlay. These
+// wrappers do not persist preferences or bypass the hook's runtime guards.
+bool MirvFix_OfEngineSet(double seconds, bool allEntityIntervals)
+{
+    return OfEngineSet(seconds, allEntityIntervals);
+}
+void MirvFix_OfEngineDisable()
+{
+    OfEngineDisable();
+}
+bool MirvFix_OfEngineEnabled()
+{
+    return g_OfEngineEnabled.load(std::memory_order_relaxed);
+}
+double MirvFix_OfEngineSeconds()
+{
+    return g_OfEngineSeconds.load(std::memory_order_relaxed);
+}
+bool MirvFix_OfEngineAllEntities()
+{
+    return g_OfEngineIncludePredictable.load(std::memory_order_relaxed);
+}
 static void OfEngineInterpolationFrame()
 {
     if (!g_OfEngineEnabled.load(std::memory_order_relaxed))
@@ -7222,6 +7244,10 @@ CON_COMMAND(mirv_fix, "Various fixes")
                 if (argc == 4 && !_stricmp(args->ArgV(3), "default"))
                 {
                     OfEngineDisable();
+                    // Explicit console default must also turn off any saved
+                    // overlay preference, or PreferencesFrame would re-arm it.
+                    if (g_OpenFortressLegacyMode && g_SourceSdkVer == SourceSdkVer_HL2MP)
+                        AfxHookSource::CameraOverlay::RememberOfEngineFixPreference(false, -1, false);
                     OfEnginePrint();
                     return;
                 }
@@ -7233,8 +7259,11 @@ CON_COMMAND(mirv_fix, "Various fixes")
                     const bool all = argc == 5 && !_stricmp(args->ArgV(4), "all");
                     if (!errno && end != args->ArgV(3) && !*end &&
                         (argc == 4 || all) && OfEngineSet(seconds, all))
-                        Tier0_Msg("OF direct interpolation override armed at %.6g s (mode %s). Compare footage with 'default'.\n",
+                    {
+                        AfxHookSource::CameraOverlay::RememberOfEngineFixPreference(true, seconds, all);
+                        Tier0_Msg("OF direct interpolation override armed at %.6g s (mode %s). Preference saved for future OF demos.\n",
                             seconds, all ? "all" : "networked");
+                    }
                     else
                         Tier0_Warning("OF direct interpolation override rejected. Requires a compatible OF 2024-08-08 x86 client, a playing offline demo and 0.016..0.25 seconds. Check status.\n");
                     OfEnginePrint();

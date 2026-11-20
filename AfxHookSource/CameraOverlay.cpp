@@ -1735,6 +1735,10 @@ static double g_ExportFps = 120;
 static bool g_OverlayPreferencesReady = false;
 static bool g_DemoMute = false, g_DemoDeathcam = false, g_DemoSmooth = false;
 static double g_DemoInterpolation = .1;
+// OF engine interpolation bypass: independently remembered from the TF2/TF2C
+// cvar-based player interpolation fix. No detour is installed on startup.
+static bool g_DemoOfEngine = false, g_DemoOfEngineAll = false;
+static double g_DemoOfEngineSeconds = .1;
 static auto g_DemoFixAttempt = std::chrono::steady_clock::time_point{};
 static std::pair<std::uint64_t, size_t> g_OverlayPreferenceStamp{};
 static double g_SavedTrailSeconds = 2;
@@ -1745,7 +1749,8 @@ static std::pair<std::uint64_t, size_t> OverlayPreferenceStamp()
 	for (bool value : {g_ScenePlayerModels, g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics,
 	                   g_SceneRagdolls, g_SceneGibs, g_SceneBuildings, g_SceneProps, g_SceneSmoothAnimation,
 	                   g_SceneDrawModels.load(), g_ShowSequencer, g_ShowCameraControl, g_ShowCurveEditor,
-	                   g_ShowGizmo, g_PreviewHudEnabled, g_ShowCameraGuides, g_CameraFrustums, g_DemoMute, g_DemoDeathcam, g_DemoSmooth})
+	                   g_ShowGizmo, g_PreviewHudEnabled, g_ShowCameraGuides, g_CameraFrustums, g_DemoMute, g_DemoDeathcam, g_DemoSmooth,
+	                   g_DemoOfEngine, g_DemoOfEngineAll})
 	{
 		if (value)
 			bits |= 1ull << bit;
@@ -1809,6 +1814,19 @@ void RememberDemoFixPreference(DemoFixPreference setting, double value)
 	if (ImGui::GetCurrentContext())
 		ImGui::MarkIniSettingsDirty();
 }
+void RememberOfEngineFixPreference(bool enabled, double seconds, bool allEntityIntervals)
+{
+	g_DemoOfEngine = enabled;
+	// A console "default" preserves the user's last delay/mode selection.
+	if (std::isfinite(seconds) && seconds >= .016 && seconds <= .25)
+	{
+		g_DemoOfEngineSeconds = seconds;
+		g_DemoOfEngineAll = allEntityIntervals;
+	}
+	g_DemoFixAttempt = {};
+	if (ImGui::GetCurrentContext())
+		ImGui::MarkIniSettingsDirty();
+}
 void PreferencesFrame()
 {
 	if (g_RecordTogglePending.exchange(false))
@@ -1830,6 +1848,17 @@ void PreferencesFrame()
 		return;
 	if (!g_OpenFortressLegacyMode && g_DemoMute && !g_VEngineClient->IsHLTV() && !MirvFix_GetRecorderSoundMute())
 		MirvFix_SetRecorderSoundMute(true);
+#ifndef _WIN64
+	// The preference survives the previous demo, but each engine override
+	// automatically shuts off when a demo ends. Re-apply only to a playing OF
+	// demo, from FRAME_START even when the overlay UI is closed.
+	if (g_OpenFortressLegacyMode && g_DemoOfEngine &&
+	    !g_VEngineClient->IsSkippingDemo() &&
+	    (!MirvFix_OfEngineEnabled() ||
+	     std::abs(MirvFix_OfEngineSeconds() - g_DemoOfEngineSeconds) > 1e-5 ||
+	     MirvFix_OfEngineAllEntities() != g_DemoOfEngineAll))
+		MirvFix_OfEngineSet(g_DemoOfEngineSeconds, g_DemoOfEngineAll);
+#endif
 	if (g_DemoSmooth && MirvFix_PlayerInterpolationAvailable() &&
 	    std::abs(MirvFix_GetPlayerInterpolation() - g_DemoInterpolation) > 1e-6)
 		MirvFix_SetPlayerInterpolation(g_DemoInterpolation);
@@ -1956,6 +1985,10 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		option = &g_DemoDeathcam;
 	if (key == "FixSmoothMovement")
 		option = &g_DemoSmooth;
+	if (key == "FixOfEngineEnabled")
+		option = &g_DemoOfEngine;
+	if (key == "FixOfEngineAll")
+		option = &g_DemoOfEngineAll;
 	if (option)
 	{
 		if (val == "0" || val == "1")
@@ -1983,6 +2016,14 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		const double seconds = std::strtod(val.c_str(), &end);
 		if (end != val.c_str() && !*end && std::isfinite(seconds) && seconds >= .001 && seconds <= 1)
 			g_DemoInterpolation = seconds;
+		return;
+	}
+	if (key == "FixOfEngineSeconds")
+	{
+		char *end = nullptr;
+		const double seconds = std::strtod(val.c_str(), &end);
+		if (end != val.c_str() && !*end && std::isfinite(seconds) && seconds >= .016 && seconds <= .25)
+			g_DemoOfEngineSeconds = seconds;
 		return;
 	}
 	if (key == "CampathDir")
@@ -2096,6 +2137,8 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("FixRecorderMute=%d\n", int(g_DemoMute));
 	out_buf->appendf("FixDeathcam=%d\n", int(g_DemoDeathcam));
 	out_buf->appendf("FixSmoothMovement=%d\n", int(g_DemoSmooth));
+	out_buf->appendf("FixOfEngineEnabled=%d\nFixOfEngineAll=%d\nFixOfEngineSeconds=%.6f\n",
+	                 int(g_DemoOfEngine), int(g_DemoOfEngineAll), g_DemoOfEngineSeconds);
 	out_buf->appendf("CacheBudgetMiB=%zu\nFixInterpolationSeconds=%.6f\n\n", g_SceneCache.Limit() / 1048576,
 	                 g_DemoInterpolation);
 }
@@ -8486,41 +8529,77 @@ void Draw()
 							g_DocumentStatus = "OF deathcam suppression unavailable: VClient017 observer property/proxy not verified.";
 					ImGui::TextDisabled("Session-only; disabled on startup. Enable before the death event, then seek back to retest.");
 				}
-				const bool ofInterpolationAvailable = !g_OpenFortressLegacyMode || MirvFix_PlayerInterpolationAvailable();
-				if (g_OpenFortressLegacyMode && !ofInterpolationAvailable)
-					ImGui::TextDisabled("OF native interpolation unavailable here: cl_interp may be missing and the game locks cl_interp_ratio during playback.");
-				if (g_OpenFortressLegacyMode && !ofInterpolationAvailable)
-					ImGui::BeginDisabled();
-				bool active = g_DemoSmooth;
-				if (ImGui::Checkbox("Smooth player movement", &active))
+				if (!g_OpenFortressLegacyMode)
 				{
-					RememberDemoFixPreference(DemoFixPreference::PlayerInterpolation,
-					                          active ? g_DemoInterpolation : -1);
-					MirvFix_SetPlayerInterpolation(active ? g_DemoInterpolation : -1);
-				}
-				double interpolation = g_DemoInterpolation;
-				if (ImGui::InputDouble("Player interpolation (seconds)", &interpolation, 0, 0, "%.3f"))
-				{
-					if (std::isfinite(interpolation) && interpolation >= .001 && interpolation <= 1)
+					bool active = g_DemoSmooth;
+					if (ImGui::Checkbox("Smooth player movement", &active))
 					{
-						g_DemoInterpolation = interpolation;
-						g_DemoFixAttempt = {};
-						ImGui::MarkIniSettingsDirty();
-						if (g_DemoSmooth)
-							MirvFix_SetPlayerInterpolation(interpolation);
+						RememberDemoFixPreference(DemoFixPreference::PlayerInterpolation,
+						                          active ? g_DemoInterpolation : -1);
+						MirvFix_SetPlayerInterpolation(active ? g_DemoInterpolation : -1);
 					}
-					else
-						g_DocumentStatus =
-						    "Use 0.001..1 seconds; existing interpolation preference retained.";
+					double interpolation = g_DemoInterpolation;
+					if (ImGui::InputDouble("Player interpolation (seconds)", &interpolation, 0, 0, "%.3f"))
+					{
+						if (std::isfinite(interpolation) && interpolation >= .001 && interpolation <= 1)
+						{
+							g_DemoInterpolation = interpolation;
+							g_DemoFixAttempt = {};
+							ImGui::MarkIniSettingsDirty();
+							if (g_DemoSmooth)
+								MirvFix_SetPlayerInterpolation(interpolation);
+						}
+						else
+							g_DocumentStatus = "Use 0.001..1 seconds; existing interpolation preference retained.";
+					}
+					if (g_DemoSmooth && MirvFix_GetPlayerInterpolation() < 0)
+						ImGui::TextDisabled("Saved; waiting for compatible demo playback.");
+					if (ImGui::Button("Interpolation status") && g_VEngineClient)
+						g_VEngineClient->ClientCmd_Unrestricted("mirv_fix playerInterpolation status");
+					ImGui::TextWrapped("Adds presentation delay using the game's native interpolation when supported; "
+					                   "not a frame-blending or player pose repair feature. Restore native settings on demo exit.");
 				}
-				if (g_DemoSmooth && MirvFix_GetPlayerInterpolation() < 0)
-					ImGui::TextDisabled("Saved; waiting for compatible demo playback.");
-				if (ImGui::Button("Interpolation status") && g_VEngineClient)
-					g_VEngineClient->ClientCmd_Unrestricted("mirv_fix playerInterpolation status");
-				ImGui::TextWrapped("Adds presentation delay using the game's native interpolation when supported; "
-				                   "not a frame-blending or player pose repair feature. Restore native settings on demo exit.");
-				if (g_OpenFortressLegacyMode && !ofInterpolationAvailable)
-					ImGui::EndDisabled();
+#ifndef _WIN64
+				else
+				{
+					bool active = g_DemoOfEngine;
+					if (ImGui::Checkbox("Smooth player movement (OF engine override)", &active))
+					{
+						RememberOfEngineFixPreference(active, g_DemoOfEngineSeconds, g_DemoOfEngineAll);
+						if (active)
+							MirvFix_OfEngineSet(g_DemoOfEngineSeconds, g_DemoOfEngineAll);
+						else
+							MirvFix_OfEngineDisable();
+					}
+					double seconds = g_DemoOfEngineSeconds;
+					if (ImGui::InputDouble("OF interpolation delay (seconds)", &seconds, 0, 0, "%.3f"))
+					{
+						if (std::isfinite(seconds) && seconds >= .016 && seconds <= .25)
+						{
+							RememberOfEngineFixPreference(g_DemoOfEngine, seconds, g_DemoOfEngineAll);
+							if (g_DemoOfEngine)
+								MirvFix_OfEngineSet(seconds, g_DemoOfEngineAll);
+						}
+						else
+							g_DocumentStatus = "OF engine interpolation delay must be 0.016..0.25 seconds.";
+					}
+					bool all = g_DemoOfEngineAll;
+					if (ImGui::Checkbox("Extend all entity intervals (experimental)", &all))
+					{
+						RememberOfEngineFixPreference(g_DemoOfEngine, g_DemoOfEngineSeconds, all);
+						if (g_DemoOfEngine)
+							MirvFix_OfEngineSet(g_DemoOfEngineSeconds, all);
+					}
+					if (g_DemoOfEngine && !MirvFix_OfEngineEnabled())
+						ImGui::TextDisabled("Saved; waiting for compatible OF demo and supported x86 client.");
+					if (ImGui::Button("OF engine interpolation status") && g_VEngineClient)
+						g_VEngineClient->ClientCmd_Unrestricted("mirv_fix playerInterpolation ofEngine status");
+					ImGui::TextWrapped("Bypasses the OF demo interpolation cvar lock without changing cvars. "
+					                   "The selected delay and mode are saved across sessions and re-applied "
+					                   "to compatible offline demos. The engine hook automatically disables at demo end. "
+					                   "No guarantee of improved captured smoothness.");
+				}
+#endif
 			}
 
 			auto &path = g_Hook_VClient_RenderView.m_CamPath;

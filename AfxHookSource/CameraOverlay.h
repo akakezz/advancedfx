@@ -22,6 +22,9 @@ enum class DemoFixPreference
 	PlayerInterpolation
 };
 void RememberDemoFixPreference(DemoFixPreference setting, double value);
+// Saved OF engine-override preference. An enabled setting is applied only when
+// a compatible OF demo is playing, never while disconnected or in multiplayer.
+void RememberOfEngineFixPreference(bool enabled, double seconds, bool allEntityIntervals);
 void PreferencesFrame(); // Engine FRAME_START, including when the overlay is closed.
 void Draw();
 void ProcessExternalActions(); // After ImGui::Render, never from inside the widget callback.
