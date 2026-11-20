@@ -328,3 +328,29 @@ These results establish intermittent static/repeated *player-root* samples and n
 **Next read-only diagnostic patch:** log the last 16 rewind events in a bounded ring (not each frame to console), capturing demo tick, engine framecount, HLAE time delta, raw `gpGlobals->curtime` delta, HLAE paused-offset delta, root displacement and interpolation fraction changes. The existing probe status adds raw engine rewind/offset change counts, player-root moved/static at rewind and frozen-run counts and longest streak. `mirv_fix playerInterpolation probe events` dumps the recent events. This isolates an engine clock rewind versus an HLAE offset change and whether a root snap coincides. Frame tracing is gated to explicit Open Fortress demo mode; no new branches, cvar writes, model hooks or demo manipulation.
 
 **x86 test:** rebuild, arm `mirv_fix playerInterpolation probe 5`, play 5–10 seconds or longer of continuous movement at host_framerate 480, run `mirv_fix playerInterpolation probe status` and `mirv_fix playerInterpolation probe events`, then `probe off`. Read-only x86 source change awaits build and runtime verification; don't assume it fixes visual smoothness.
+
+## First opt-in native OF demo smoothing experiment — pre-demo ratio (2026-11-20)
+
+The most recent 480 FPS OF probe on player 5 returned **20,456** readable samples. Of 15,948 advancing-time same-tick comparisons, **12,988 moved** and 2,960 were static. There were also 1,934 unchanged-time/static-root pairs, and **two frozen runs**, the longest spanning 1,459 pairs (~3.04 seconds at an actually sustained 480 FPS). Such a long stationary run may be death, idling, culling or gameplay and is *not* proof that the global engine clock stopped. Maximum same-tick root step was 16.625 Source units and maximum tick-boundary step 1,534.18 (compatible with teleport/respawn but unconfirmed).
+
+The **93 raw engine time rewinds** had no backward or skipped demo ticks, no HLAE paused offset changes, and zero same-tick rewinds. Event samples show transitions like demo tick 2666→2667 with `gpGlobals->curtime` step −0.0129089355 seconds and engine interpolation fraction 0.924696→0.0635848. **This is compatible with the normal cyclic tick/interpolation phase, not evidence of a broken game clock.** The event ring is a diagnostic, not something to fix by forcing monotonic `curtime`.
+
+The user requests a real change rather than additional probing. The first practical OF-only opt-in experiment therefore targets the native interpolation setting, **but sets it only while at the disconnected game menu**: the game's `cl_interp_ratio` is intentionally locked during playback. The new console command:
+```text
+mirv_fix playerInterpolation ofRatio 2
+mirv_fix playerInterpolation ofRatio status
+# start the demo, perform a normal high-FPS capture and visually compare
+# stop the demo; HLAE attempts to restore the prior ratio after disconnect
+mirv_fix playerInterpolation ofRatio status
+mirv_fix playerInterpolation ofRatio default
+```
+
+
+- Supports integer ratios **1 through 8**, rejects writes while playing, loading, connected or in-game. No TF2, TF2C, other HL2MP, player or multiplayer change; OF explicit opt-in only.
+- Saves the prior ratio on first successful write; readbacks must match requested value, otherwise reject and attempt rollback. Subsequent ratio edits preserve the original when still owned by HLAE.
+- Marks the ratio as used upon observing offline demo playback; after demo end and disconnect, attempts to restore only if the value remains HLAE-owned. Does not force protected writes during playback or after user/game changed the ratio.
+- \`status\` reports actual cvar, updaterate, nominal delay, ownership and readiness. Example at 60 updates/s: ratio 1 ≈ 16.7 ms; ratio 2 ≈ 33.3 ms; ratio 3 ≈ 50.0 ms. These are **nominal estimates**, not proven changes to effective render interpolation.
+- **Important:** the engine may reset/clamp a ratio at demo launch; the readback during playback will show if the requested value persisted. Even persistence does not prove better captured motion. This is an experimental native setting override, **not** a binary-level interpolation hook or guaranteed smoothing fix. It cannot reconstruct missing demo snapshots or fix unrelated bone/POV animation.
+- Run A/B comparisons of the **same uninterrupted moving scene at 480 FPS**, default ratio 1 versus explicitly prepared ratio 2. Focus on actual output footage, not more probe logs.
+
+Code source-only; Windows x86 compilation and in-game validation are not yet performed. No new branches or modifications to PR #1. If OF does not accept the pre-demo ratio or the footage does not improve, do not blindly patch `client.dll`; first verify the exact OF x86 interpolation function/ABI in the supplied binary before any true engine detour.
