@@ -365,3 +365,32 @@ The user rebuilt and tested the experimental native pre-demo `cl_interp_ratio` s
 **Strict hook safety requirements:** Determine the correct compiled OF x86 client entity interpolation function/ABI for the *user's installed build*; do not assume Source SDK method offsets or compile-date signatures. Prefer a narrowly scoped opt-in change that works only in explicit Open Fortress mode while playing an offline demo, enables original-call fallback, restores on unload, and leaves multiplayer and other game branches untouched. Then perform matched 480-FPS video A/B (both root position and bones) before porting. Avoid further non-actionable clock/probe experiments unless a specific hook needs verification.
 
 **Binary access limitation:** The project previously included OF's 32-bit `client.dll`, but the presently available project-file record does not provide authorized raw-byte materialization. A separate `/client.dll` is x64 and **not** the OF binary. Without the exact x86 client module or reliable code disassembly, it is unsafe to commit a guessed detour/vtable index. The user may need to attach the exact OF 32-bit client module again to enable binary-level engineering.
+
+
+## Verified OF x86 compiled interpolation bypass experiment (2026-11-20)
+
+The user has rejected the prior `cl_interp_ratio` automation, correctly noting it does not bypass OF's demo playback lock and gave little/no visual benefit. The user re-uploaded **the actual OF client.dll (PE32 i386)**; its file SHA-256 is `8ba1210f5d721084fdc0c225cee3c40e1812dba996de69d1e5d93028bf869ea1`, PE timestamp `0x66b4fe85` (2024-08-08 17:21:09 UTC), image size `0x00A27000`. It is **not** the previously documented 2021-06-24 release.
+
+Offline disassembly and direct CALL cross-reference inspection establish:
+- RVA `0x1091A0` = **GetClientInterpAmount()**-like client interpolation routine, returning native float via x87. It is called at RVA `0x0BFF79` inside the per-entity calculation and at `0x0BD7A7` in the engine's interpolation-value change handling.
+- RVA `0x0BFF10` = **C_BaseEntity::GetInterpolationAmount(int flags)**-like method: its assembly matches Source SDK 2013's predictable/client-created short-circuit and differing networked/local demo interpolation branches. Direct callers at `0x0BC63F`, `0x0BD882`, `0x0C1BD7`, `0x0C1C5D`.
+- Its callers set the actual per-variable interpolation interval through virtual interpolator methods, instead of exposing a ConVar entry. Source SDK comparison: https://github.com/ValveSoftware/source-sdk-2013/blob/master/src/game/client/c_baseentity.cpp
+- Strict runtime gating checks PE machine, timestamp, image size and fixed, relocation-independent code signatures including two x86 CALL-site references; incompatible OF builds fail closed **before any patch**. The precise file SHA is informative, not enforced at runtime.
+
+**New opt-in source patch:** hook both compiled routines with Microsoft Detours (default off). The client interpolation detour returns a requested 0.016–0.25-second time **only if greater than the native value**, preserving longer native history; the second detour optionally extends entity-local/predicted short intervals in `all` mode. This changes return values at the compiled interpolation decision point without editing `cl_interp_ratio` or other cvars. The client interpolation hook should also drive the normal interpolation-history update comparison when an override is switched on/off. Verify through footage and the method-call status counters; it is an experiment, not yet proven smoothness.
+
+```text
+# Load offline OF demo first. Same build/date only.
+mirv_fix playerInterpolation ofEngine 0.10
+mirv_fix playerInterpolation ofEngine status
+# capture an identical moving-player segment at host_framerate 480
+mirv_fix playerInterpolation ofEngine default
+
+# If normal networked mode doesn't improve things, replay the same segment:
+mirv_fix playerInterpolation ofEngine 0.10 all
+mirv_fix playerInterpolation ofEngine status
+mirv_fix playerInterpolation ofEngine default
+```
+
+
+**Safety:** only explicit OF legacy mode (not TF2/TF2C or ordinary HL2MP), only active offline demo, refuse loading/skipping, and auto-disable bypass when playback ends; `default` returns native results immediately. Installed trampolines remain dormant for the session, but HLAE passes through the original routines outside demos. No new branch. **Not Windows x86 compiled or in-game tested**; binary function semantics were reverse-checked from supplied DLL, but actual image-hooking stability and history recomputation must be validated on Windows. If call counts stay zero, if disabling fails to restore original movement, or if artifacts appear, do not promote this as a successful fix.

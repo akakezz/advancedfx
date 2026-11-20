@@ -5018,8 +5018,14 @@ bool MirvFix_SetPlayerInterpolation(double seconds)
 	g_Tf2InterpolationActive = true;
 	return true;
 }
+#ifndef _WIN64
+static void OfEngineInterpolationFrame(); // Deactivate bypass after leaving demo.
+#endif
 void MirvFix_Update()
 {
+#ifndef _WIN64
+    OfEngineInterpolationFrame();
+#endif
 	// FRAME_START also runs when there is no rendered world. Release audio
 	// ownership here; query/mute after network updates at FRAME_RENDER_START.
 	if (g_Tf2RecorderSoundMute && (!g_VEngineClient || !g_VEngineClient->IsDrawingLoadingImage()) &&
@@ -5325,6 +5331,200 @@ static void MirvFix_PrintOfInterpolationProbeEvents()
             e.RootStep, e.OldFraction, e.NewFraction);
     }
 }
+
+
+// Verified against the user-supplied OF PE32 client.dll dated 2024-08-08:
+// sha256 8ba1210f5d721084fdc0c225cee3c40e1812dba996de69d1e5d93028bf869ea1.
+// Source SDK-like C_BaseEntity::GetInterpolationAmount(int flags) is at RVA BFF10.
+// Its call to GetClientInterpAmount() at RVA 1091A0, plus calls from the global
+// interpolation-change loop, are independently checked by CALL byte signatures.
+// Never use these RVAs in other games/builds. All override paths require an
+// actively playing offline demo; setting default restores original call results.
+#ifndef _WIN64
+namespace
+{
+using OfGetClientInterp_t = float (__cdecl *)(void);
+using OfGetEntityInterp_t = float (__thiscall *)(void *, int);
+
+OfGetClientInterp_t g_OfNativeGetClientInterp = nullptr;
+OfGetEntityInterp_t g_OfNativeGetEntityInterp = nullptr;
+bool g_OfEngineHookInstalled = false;
+bool g_OfEngineSawDemo = false;
+std::atomic<bool> g_OfEngineEnabled{false};
+std::atomic<bool> g_OfEngineIncludePredictable{false};
+std::atomic<float> g_OfEngineSeconds{0};
+std::atomic<unsigned long long> g_OfClientCalls{0}, g_OfEntityCalls{0};
+std::atomic<unsigned long long> g_OfEntityExtended{0};
+const char *g_OfEngineInstallStatus = "Not installed; opt in from an OF demo.";
+
+bool OfEngineDemoOnly()
+{
+    return g_OpenFortressLegacyMode && g_SourceSdkVer == SourceSdkVer_HL2MP &&
+        g_OfEngineEnabled.load(std::memory_order_relaxed) &&
+        g_VEngineClient && g_VEngineClient->IsPlayingDemo() &&
+        !g_VEngineClient->IsDrawingLoadingImage() &&
+        !g_VEngineClient->IsSkippingDemo();
+}
+float __cdecl OfGetClientInterpOverride()
+{
+    const float native = g_OfNativeGetClientInterp();
+    if (!OfEngineDemoOnly())
+        return native;
+    ++g_OfClientCalls;
+    const float seconds = g_OfEngineSeconds.load(std::memory_order_relaxed);
+    // Keep the engine's longer interpolation when appropriate. A finite
+    // bounded delay provides actual extra history without cvar mutation.
+    return std::isfinite(native) ? (std::max)(native, seconds) : native;
+}
+float __fastcall OfGetEntityInterpOverride(void *entity, void *, int flags)
+{
+    const float native = g_OfNativeGetEntityInterp(entity, flags);
+    if (!OfEngineDemoOnly())
+        return native;
+    ++g_OfEntityCalls;
+    if (!g_OfEngineIncludePredictable.load(std::memory_order_relaxed))
+        return native;
+    const float seconds = g_OfEngineSeconds.load(std::memory_order_relaxed);
+    if (std::isfinite(native) && native < seconds)
+    {
+        ++g_OfEntityExtended;
+        return seconds;
+    }
+    return native;
+}
+bool OfEngineBinaryMatches(HMODULE module)
+{
+    if (!module || sizeof(void *) != 4)
+        return false;
+    const auto *base = reinterpret_cast<const unsigned char *>(module);
+    const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 ||
+        dos->e_lfanew > 0x1000)
+        return false;
+    const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS32 *>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
+        nt->FileHeader.TimeDateStamp != 0x66b4fe85 ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+        nt->OptionalHeader.SizeOfImage != 0x00a27000)
+        return false;
+    const auto match = [&](unsigned rva, const unsigned char *expected, size_t size) -> bool
+    {
+        return rva < nt->OptionalHeader.SizeOfImage &&
+            size <= nt->OptionalHeader.SizeOfImage - rva &&
+            !std::memcmp(base + rva, expected, size);
+    };
+    // No addresses in these patterns are subject to base relocation.
+    const unsigned char getClientStart[] = {0x55,0x8b,0xec,0x6a,0xff};
+    const unsigned char getEntityStart[] = {
+        0x55,0x8b,0xec,0x83,0xec,0x08,0x53,0x56,0x57,0x8b,0xd9,
+        0xe8,0x30,0x8b,0xfc,0xff};
+    const unsigned char entityCallsClient[] = {0xe8,0x22,0x92,0x04,0x00};
+    const unsigned char updaterCallsClient[] = {0xe8,0xf4,0xb9,0x04,0x00};
+    return match(0x1091a0, getClientStart, sizeof(getClientStart)) &&
+        match(0x0bff10, getEntityStart, sizeof(getEntityStart)) &&
+        match(0x0bff79, entityCallsClient, sizeof(entityCallsClient)) &&
+        match(0x0bd7a7, updaterCallsClient, sizeof(updaterCallsClient));
+}
+bool OfEngineInstall()
+{
+    if (g_OfEngineHookInstalled) return true;
+    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP)
+    {
+        g_OfEngineInstallStatus = "Requires explicit 32-bit Open Fortress mode.";
+        return false;
+    }
+    HMODULE module = GetModuleHandleA("client.dll");
+    if (!OfEngineBinaryMatches(module))
+    {
+        g_OfEngineInstallStatus = "Unsupported client.dll: OF 2024-08-08 PE32 timestamp, image size or function signatures differ.";
+        return false;
+    }
+    const auto *base = reinterpret_cast<unsigned char *>(module);
+    g_OfNativeGetClientInterp = reinterpret_cast<OfGetClientInterp_t>(base + 0x1091a0);
+    g_OfNativeGetEntityInterp = reinterpret_cast<OfGetEntityInterp_t>(base + 0x0bff10);
+    LONG error = DetourTransactionBegin();
+    if (error == NO_ERROR)
+    {
+        error = DetourUpdateThread(GetCurrentThread());
+        if (error == NO_ERROR)
+            error = DetourAttach(reinterpret_cast<PVOID *>(&g_OfNativeGetClientInterp),
+                reinterpret_cast<PVOID>(OfGetClientInterpOverride));
+        if (error == NO_ERROR)
+            error = DetourAttach(reinterpret_cast<PVOID *>(&g_OfNativeGetEntityInterp),
+                reinterpret_cast<PVOID>(OfGetEntityInterpOverride));
+        if (error == NO_ERROR)
+            error = DetourTransactionCommit();
+        else DetourTransactionAbort();
+    }
+    if (error != NO_ERROR)
+    {
+        g_OfNativeGetClientInterp = nullptr;
+        g_OfNativeGetEntityInterp = nullptr;
+        g_OfEngineInstallStatus = "Detours installation failed; native behavior unchanged.";
+        Tier0_Warning("OF entity interpolation hook installation failed (Detours error %ld).\n",
+            static_cast<long>(error));
+        return false;
+    }
+    g_OfEngineHookInstalled = true;
+    g_OfEngineInstallStatus = "Installed for exact matching OF x86 build; native passthrough unless enabled in a demo.";
+    return true;
+}
+void OfEngineDisable()
+{
+    // Disable first: existing detours now call through with native values.
+    g_OfEngineEnabled.store(false, std::memory_order_relaxed);
+    g_OfEngineSeconds.store(0, std::memory_order_relaxed);
+    g_OfEngineIncludePredictable.store(false, std::memory_order_relaxed);
+    g_OfEngineSawDemo = false;
+}
+bool OfEngineSet(double seconds, bool includePredictable)
+{
+    if (!std::isfinite(seconds) || seconds < 0.016 || seconds > 0.25 ||
+        !g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP ||
+        !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+        g_VEngineClient->IsDrawingLoadingImage() ||
+        g_VEngineClient->IsSkippingDemo() || !OfEngineInstall())
+        return false;
+    g_OfClientCalls.store(0, std::memory_order_relaxed);
+    g_OfEntityCalls.store(0, std::memory_order_relaxed);
+    g_OfEntityExtended.store(0, std::memory_order_relaxed);
+    g_OfEngineSeconds.store(static_cast<float>(seconds), std::memory_order_relaxed);
+    g_OfEngineIncludePredictable.store(includePredictable, std::memory_order_relaxed);
+    g_OfEngineSawDemo = true;
+    g_OfEngineEnabled.store(true, std::memory_order_relaxed);
+    return true;
+}
+void OfEnginePrint()
+{
+    const bool active = g_OfEngineEnabled.load(std::memory_order_relaxed);
+    Tier0_Msg("OF direct entity interpolation override: %s; mode %s; requested %.6g s; hook %s.\n",
+        active ? "enabled" : "default/pass-through",
+        g_OfEngineIncludePredictable.load(std::memory_order_relaxed)
+            ? "all entity intervals" : "client/networked interval only",
+        g_OfEngineSeconds.load(std::memory_order_relaxed), g_OfEngineInstallStatus);
+    Tier0_Msg("OF engine override calls since enable: client interpolation %s, entity interpolation %s, entity extended %s. Native cl_interp_ratio remains unchanged.\n",
+        std::to_string(g_OfClientCalls.load(std::memory_order_relaxed)).c_str(),
+        std::to_string(g_OfEntityCalls.load(std::memory_order_relaxed)).c_str(),
+        std::to_string(g_OfEntityExtended.load(std::memory_order_relaxed)).c_str());
+    Tier0_Msg("Usage (inside offline OF demo): mirv_fix playerInterpolation ofEngine 0.10 [all] | default | status. Experimental; all also extends predictable/locally created entity intervals. Does not invent snapshots.\n");
+}
+} // namespace
+static void OfEngineInterpolationFrame()
+{
+    if (!g_OfEngineEnabled.load(std::memory_order_relaxed))
+        return;
+    if (g_VEngineClient && g_VEngineClient->IsPlayingDemo())
+    {
+        g_OfEngineSawDemo = true;
+        return;
+    }
+    // Backward seeking can temporarily drop IsPlayingDemo while loading.
+    if (g_VEngineClient && g_VEngineClient->IsDrawingLoadingImage())
+        return;
+    if (g_OfEngineSawDemo)
+        OfEngineDisable();
+}
+#endif // !_WIN64
 
 // End TF2 demo interpolation controls.
 
@@ -7010,6 +7210,41 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		if (!_stricmp(cmd1, "playerInterpolation"))
 		{
 
+#ifndef _WIN64
+            // Actual compiled OF client interpolation bypass, not cvar editing.
+            if (argc >= 3 && !_stricmp(args->ArgV(2), "ofEngine"))
+            {
+                if (argc == 4 && !_stricmp(args->ArgV(3), "status"))
+                {
+                    OfEnginePrint();
+                    return;
+                }
+                if (argc == 4 && !_stricmp(args->ArgV(3), "default"))
+                {
+                    OfEngineDisable();
+                    OfEnginePrint();
+                    return;
+                }
+                if (argc == 4 || argc == 5)
+                {
+                    char *end = nullptr;
+                    errno = 0;
+                    const double seconds = std::strtod(args->ArgV(3), &end);
+                    const bool all = argc == 5 && !_stricmp(args->ArgV(4), "all");
+                    if (!errno && end != args->ArgV(3) && !*end &&
+                        (argc == 4 || all) && OfEngineSet(seconds, all))
+                        Tier0_Msg("OF direct interpolation override armed at %.6g s (mode %s). Compare footage with 'default'.\n",
+                            seconds, all ? "all" : "networked");
+                    else
+                        Tier0_Warning("OF direct interpolation override rejected. Requires a compatible OF 2024-08-08 x86 client, a playing offline demo and 0.016..0.25 seconds. Check status.\n");
+                    OfEnginePrint();
+                    return;
+                }
+                OfEnginePrint();
+                return;
+            }
+#endif
+
 			// OF motion probe, which never edits protected cvars or changes interpolation.
 			if (argc >= 3 && !_stricmp(args->ArgV(2), "probe"))
 			{
@@ -7080,7 +7315,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				MirvFix_PrintPlayerInterpolationStatus();
 				return;
 			}
-			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status|probe <playerIndex|status|events|off>\nUses native Source interpolation for "
+			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status|probe <playerIndex|status|events|off>|ofEngine <0.016..0.25 [all]|default|status>\nUses native Source interpolation for "
 					  "uneven player movement; 0.1 seconds is a starting point. Adds presentation delay; "
 					  "cannot reconstruct missing snapshots.\nCurrent: %s, requested cl_interp %.3f seconds. "
 					  "Automatically restores settings when the demo ends.\n",
