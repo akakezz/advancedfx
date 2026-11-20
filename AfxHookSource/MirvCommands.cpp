@@ -4951,176 +4951,6 @@ bool Tf2InterpolationValues(float values[3], bool write)
 		return access(SOURCESDK::L4D2::g_pCVar);
 	return access(SOURCESDK::CSS::g_pCVar);
 }
-
-// Initial actual OF smoothing experiment: set a *native* interp ratio only in
-// the disconnected menu before playing an offline demo. OF explicitly locks
-// this cvar during demo playback. We never bypass that lock or touch live play.
-// Preserve an original value, verify every write, and undo after demo exit.
-struct OfPreDemoInterpolationRatio
-{
-    bool Armed = false;
-    bool SawDemo = false;
-    bool WarnedMismatch = false;
-    bool WarnedRestore = false;
-    float Original = 0;
-    float Applied = 0;
-};
-OfPreDemoInterpolationRatio g_OfPreDemoRatio;
-
-bool OfRatioSupported()
-{
-    return g_OpenFortressLegacyMode && g_SourceSdkVer == SourceSdkVer_HL2MP;
-}
-bool OfRatioCanWrite()
-{
-    // "Not playing a demo" alone is NOT enough: an online player might be
-    // connected to an active server. Require the disconnected game menu.
-    return OfRatioSupported() && g_VEngineClient &&
-        !g_VEngineClient->IsPlayingDemo() &&
-        !g_VEngineClient->IsInGame() &&
-        !g_VEngineClient->IsConnected() &&
-        !g_VEngineClient->IsDrawingLoadingImage();
-}
-bool OfRatioAccess(bool write, float input, float &ratio, float &updateRate)
-{
-    if (!OfRatioSupported() || (write && !OfRatioCanWrite()))
-        return false;
-    auto access = [&](auto *iface) -> bool
-    {
-        if (!iface) return false;
-        auto *ratioVar = iface->FindVar("cl_interp_ratio");
-        auto *rateVar = iface->FindVar("cl_updaterate");
-        if (!ratioVar || !rateVar) return false;
-        const float rate = rateVar->GetFloat();
-        if (!std::isfinite(rate) || rate < 1 || rate > 1000) return false;
-        if (write)
-        {
-            // Allow restoring a previously present game value outside our
-            // experimental public 1..8 input range.
-            if (!std::isfinite(input) || input < 0 || input > 64) return false;
-            ratioVar->SetValue(input);
-        }
-        ratio = ratioVar->GetFloat();
-        updateRate = rate;
-        return std::isfinite(ratio);
-    };
-    // Match the same native cvar providers as the existing read-only OF
-    // interpolation diagnostic rather than relying on CS:GO's encoded wrapper.
-    if (SOURCESDK::L4D2::g_pCVar) return access(SOURCESDK::L4D2::g_pCVar);
-    return access(SOURCESDK::CSS::g_pCVar);
-}
-bool OfRatioEqual(float a, float b)
-{
-    return std::isfinite(a) && std::isfinite(b) && std::abs(a - b) < 1e-4f;
-}
-bool OfRatioDefault()
-{
-    if (!OfRatioSupported() || !OfRatioCanWrite())
-        return false;
-    if (!g_OfPreDemoRatio.Armed)
-        return true;
-    float current = 0, rate = 0;
-    if (!OfRatioAccess(false, 0, current, rate))
-        return false;
-    // A user/game change takes precedence over HLAE's original state.
-    if (!OfRatioEqual(current, g_OfPreDemoRatio.Applied))
-    {
-        g_OfPreDemoRatio = {};
-        return true;
-    }
-    const float original = g_OfPreDemoRatio.Original;
-    if (!OfRatioAccess(true, original, current, rate) || !OfRatioEqual(current, original))
-        return false;
-    g_OfPreDemoRatio = {};
-    return true;
-}
-bool OfRatioSet(int ratio)
-{
-    if (!OfRatioCanWrite() || ratio < 1 || ratio > 8)
-        return false;
-    float current = 0, rate = 0;
-    if (!OfRatioAccess(false, 0, current, rate))
-        return false;
-    // Setting a second ratio retains the true user baseline only while the
-    // previous HLAE setting still owns the current cvar value.
-    const float original = g_OfPreDemoRatio.Armed &&
-        OfRatioEqual(current, g_OfPreDemoRatio.Applied)
-        ? g_OfPreDemoRatio.Original : current;
-    const float target = static_cast<float>(ratio);
-    float applied = current;
-    if (!OfRatioAccess(true, target, applied, rate) || !OfRatioEqual(applied, target))
-    {
-        // If OF clamps or rejects the value, leave a changed cvar untouched
-        // only when restoring it also failed. Never report an applied fix.
-        if (!OfRatioEqual(applied, current))
-        {
-            float restored = 0, restoredRate = 0;
-            if (!OfRatioAccess(true, current, restored, restoredRate) ||
-                !OfRatioEqual(restored, current))
-                Tier0_Warning("OF pre-demo interpolation ratio: failed to restore cvar after a rejected value; inspect cl_interp_ratio manually.\n");
-        }
-        return false;
-    }
-    g_OfPreDemoRatio = {};
-    g_OfPreDemoRatio.Armed = true;
-    g_OfPreDemoRatio.Original = original;
-    g_OfPreDemoRatio.Applied = target;
-    return true;
-}
-void OfRatioFrame()
-{
-    if (!OfRatioSupported() || !g_OfPreDemoRatio.Armed || !g_VEngineClient)
-        return;
-    if (g_VEngineClient->IsPlayingDemo())
-    {
-        g_OfPreDemoRatio.SawDemo = true;
-        if (!g_OfPreDemoRatio.WarnedMismatch)
-        {
-            float current = 0, rate = 0;
-            if (OfRatioAccess(false, 0, current, rate) &&
-                !OfRatioEqual(current, g_OfPreDemoRatio.Applied))
-            {
-                Tier0_Warning("OF pre-demo interpolation ratio did not persist at demo playback (expected %.6g, found %.6g). No forced changes in demo.\n",
-                    g_OfPreDemoRatio.Applied, current);
-                g_OfPreDemoRatio.WarnedMismatch = true;
-            }
-        }
-        return;
-    }
-    // A demo can temporarily report !IsPlayingDemo while seeking/loading.
-    // Never reset its ratio until a demo has played and we are disconnected.
-    if (g_OfPreDemoRatio.SawDemo && OfRatioCanWrite())
-    {
-        if (!OfRatioDefault() && !g_OfPreDemoRatio.WarnedRestore)
-        {
-            Tier0_Warning("OF pre-demo interpolation ratio was not restored; run 'mirv_fix playerInterpolation ofRatio default' from disconnected menu.\n");
-            g_OfPreDemoRatio.WarnedRestore = true; // Don't spam every FRAME_START.
-        }
-    }
-}
-void OfRatioPrintStatus()
-{
-    if (!OfRatioSupported())
-    {
-        Tier0_Msg("OF pre-demo interpolation ratio is unavailable outside explicit Open Fortress legacy mode.\n");
-        return;
-    }
-    float current = 0, rate = 0;
-    const bool readable = OfRatioAccess(false, 0, current, rate);
-    Tier0_Msg("OF pre-demo interpolation ratio: %s; previous %.6g; requested %.6g; demo observed %d; menu writable %d.\n",
-        g_OfPreDemoRatio.Armed ? "armed (native cvar)" : "default",
-        g_OfPreDemoRatio.Original, g_OfPreDemoRatio.Applied,
-        g_OfPreDemoRatio.SawDemo ? 1 : 0, OfRatioCanWrite() ? 1 : 0);
-    if (readable)
-        Tier0_Msg("Native cl_interp_ratio=%.6g / cl_updaterate=%.6g gives nominal %.6g seconds; readback %s.\n",
-            current, rate, current / rate,
-            !g_OfPreDemoRatio.Armed ? "unmanaged" :
-                OfRatioEqual(current, g_OfPreDemoRatio.Applied) ? "matches requested" : "differs from requested");
-    else
-        Tier0_Msg("Native cl_interp_ratio/cl_updaterate readback unavailable.\n");
-    Tier0_Msg("Use only while disconnected: mirv_fix playerInterpolation ofRatio 2|3|4 (range 1..8), then play an offline demo. 'default' restores in menu. OF may clamp the ratio; this is a native setting experiment, not a proven player smoothing fix.\n");
-}
-
 bool g_Tf2InterpolationActive = false;
 float g_Tf2InterpolationOriginal[3] = {}, g_Tf2InterpolationApplied[3] = {};
 bool InterpolationMatches(float a, float b)
@@ -5190,7 +5020,6 @@ bool MirvFix_SetPlayerInterpolation(double seconds)
 }
 void MirvFix_Update()
 {
-	OfRatioFrame();
 	// FRAME_START also runs when there is no rendered world. Release audio
 	// ownership here; query/mute after network updates at FRAME_RENDER_START.
 	if (g_Tf2RecorderSoundMute && (!g_VEngineClient || !g_VEngineClient->IsDrawingLoadingImage()) &&
@@ -5236,7 +5065,7 @@ static void MirvFix_PrintPlayerInterpolationStatus()
 		{
 			Tier0_Msg("OF read-only ratio diagnostic: cl_interp absent; cl_interp_ratio=%.6g / cl_updaterate=%.6g => estimated %.6g s.\n",
 			          values[2], g_OfInterpolationUpdateRate, values[1]);
-			Tier0_Msg("OF blocks ratio changes while playing. Use the separate experimental 'mirv_fix playerInterpolation ofRatio' command *before* starting a demo, from disconnected menu. No cvar writes occur while playing.\n");
+			Tier0_Msg("OF blocks ratio changes while playing. HLAE playerInterpolation cannot enable demo smoothing through these cvars.\n");
 		}
 		else
 			Tier0_Msg("Native cl_interpolate=%.6g, cl_interp=%.6g, cl_interp_ratio=%.6g.\n", values[0], values[1],
@@ -7180,39 +7009,6 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		// TF2 interpolation command.
 		if (!_stricmp(cmd1, "playerInterpolation"))
 		{
-		// OF pre-demo native ratio test. Never write to engine cvars during demo
-		// playback, during a load/seek, or while connected to a server.
-		if (argc >= 3 && !_stricmp(args->ArgV(2), "ofRatio"))
-		{
-			if (argc == 4 && !_stricmp(args->ArgV(3), "status"))
-			{
-				OfRatioPrintStatus();
-				return;
-			}
-			if (argc == 4 && !_stricmp(args->ArgV(3), "default"))
-			{
-				if (!OfRatioDefault())
-					Tier0_Warning("OF ratio restore rejected. Stop playback and disconnect to the menu first.\n");
-				OfRatioPrintStatus();
-				return;
-			}
-			if (argc == 4)
-			{
-				char *end = nullptr;
-				errno = 0;
-				const long ratio = std::strtol(args->ArgV(3), &end, 10);
-				if (!errno && end != args->ArgV(3) && !*end && ratio >= 1 && ratio <= 8 &&
-					OfRatioSet(static_cast<int>(ratio)))
-					Tier0_Msg("OF experimental pre-demo ratio %ld applied. Start offline demo now; compare equivalent scene with the default ratio.\n", ratio);
-				else
-					Tier0_Warning("OF pre-demo ratio rejected (range 1..8). Disconnect to the game menu first; check if the game clamps/locks the cvar.\n");
-				OfRatioPrintStatus();
-				return;
-			}
-			OfRatioPrintStatus();
-			return;
-		}
-
 
 			// OF motion probe, which never edits protected cvars or changes interpolation.
 			if (argc >= 3 && !_stricmp(args->ArgV(2), "probe"))
@@ -7284,7 +7080,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 				MirvFix_PrintPlayerInterpolationStatus();
 				return;
 			}
-			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status|probe <playerIndex|status|events|off>|ofRatio <1..8|status|default>\nUses native Source interpolation for "
+			Tier0_Msg("mirv_fix playerInterpolation <0.001..1 seconds>|default|status|probe <playerIndex|status|events|off>\nUses native Source interpolation for "
 					  "uneven player movement; 0.1 seconds is a starting point. Adds presentation delay; "
 					  "cannot reconstruct missing snapshots.\nCurrent: %s, requested cl_interp %.3f seconds. "
 					  "Automatically restores settings when the demo ends.\n",
