@@ -72,6 +72,7 @@ static bool g_SceneBuildings = false, g_SceneProps = false;
 static bool g_SceneOfExtended = false, g_SceneOfPoses = false;
 static bool g_SceneOfReplay = false, g_SceneOfSkeleton = false;
 static std::atomic_int g_SceneOfReplayBatch{1}; // Diagnostic-only, session-local; one studio submission is the safe default.
+static std::atomic_int g_SceneOfReplayStart{0}; // Diagnostic-only index into eligible cached models.
 static bool g_SceneOfStudioEverUsed = false;
 static std::string g_ScenePoseStatus = "Pose capture disabled.";
 static std::shared_ptr<const std::string> g_SceneModelStatus;
@@ -643,11 +644,17 @@ void SceneCacheDrawModels()
 			tracedFrames = 0;
 		}
 		const bool trace = tracedFrames++ < 12;
+		const auto log = [](const std::string &message) { Tier0_Msg("%s\n", message.c_str()); };
+		const auto address = [](const void *pointer) {
+			char buffer[32];
+			std::snprintf(buffer, sizeof(buffer), "%p", pointer);
+			return std::string(buffer);
+		};
 		const auto &entities = view->Entities;
 		if (trace)
-			Tier0_Msg("[OF replay] preflight epoch=%llu frame=%p count=%u data=%p\n",
-			          epoch, static_cast<const void *>(view.get()), unsigned(entities.size()),
-			          static_cast<const void *>(entities.data()));
+			log("[OF replay] preflight epoch=" + std::to_string(epoch) +
+			    " frame=" + address(view.get()) + " count=" + std::to_string(entities.size()) +
+			    " data=" + address(entities.data()));
 		if (entities.size() > 4096 ||
 		    (!entities.empty() && reinterpret_cast<std::uintptr_t>(entities.data()) % alignof(Entity)))
 		{
@@ -714,8 +721,8 @@ void SceneCacheDrawModels()
 				candidates.push_back({i, entity, {}, false}); // Own shared pointers before engine submission.
 		}
 		if (trace)
-			Tier0_Msg("[OF replay] preflight complete: studio=%u brush=%u invalid=%u\n",
-			          unsigned(candidates.size()), unsigned(brush), unsigned(invalid));
+			log("[OF replay] preflight complete: studio=" + std::to_string(candidates.size()) +
+			    " brush=" + std::to_string(brush) + " invalid=" + std::to_string(invalid));
 		if (candidates.empty())
 		{
 			SceneModelStatus(brush ? "Cached brush meshes use the shared line renderer."
@@ -741,30 +748,55 @@ void SceneCacheDrawModels()
 				candidate.HasOwner = true;
 			}
 		}
-		const size_t batch = (std::min)(size_t(g_SceneOfReplayBatch.load()), candidates.size());
+		const size_t start = size_t(g_SceneOfReplayStart.load());
+		if (start >= candidates.size())
+		{
+			if (trace)
+				log("[OF replay] candidate start=" + std::to_string(start) +
+				    " exceeds eligible count=" + std::to_string(candidates.size()));
+			SceneModelStatus("OF replay: selected candidate start exceeds eligible cached models.");
+			return;
+		}
+		const size_t batch = (std::min)(size_t(g_SceneOfReplayBatch.load()), candidates.size() - start);
+		if (trace)
+			log("[OF replay] window start=" + std::to_string(start) +
+			    " batch=" + std::to_string(batch) +
+			    " eligible=" + std::to_string(candidates.size()));
 		std::string status;
 		for (size_t n = 0; n < batch; ++n)
 		{
 			if (!g_SceneDrawModels.load() || !SceneCanDrawModels() || epoch != g_SceneDrawEpoch.load())
 				return;
-			const auto &selected = candidates[n];
+			const auto &selected = candidates[start + n];
 			const auto &entity = selected.Snapshot;
 			const Entity *owner = selected.HasOwner ? &selected.OwnerSnapshot : nullptr;
 			if (trace)
 			{
 				unsigned outstanding = 0, peak = 0;
 				Mirv_Tf2_SceneRenderStatus(outstanding, peak);
-				Tier0_Msg("[OF replay] submit %u/%u index=%u id=%s pose=%p model=%p queued=%u peak=%u\n",
-				          unsigned(n + 1), unsigned(batch), unsigned(selected.Index),
-				          std::to_string(entity.Identity).c_str(),
-				          static_cast<const void *>(entity.ModelPose.get()),
-				          static_cast<const void *>(entity.ModelPose->ModelInfo.get()),
-				          outstanding, peak);
+				log("[OF replay] submit " + std::to_string(n + 1) + "/" + std::to_string(batch) +
+				    " candidate=" + std::to_string(start + n) +
+				    " entity-index=" + std::to_string(selected.Index) +
+				    " identity=" + std::to_string(entity.Identity) +
+				    " category=" + std::to_string(entity.Category) +
+				    " model=" + entity.ModelPose->ModelInfo->Name +
+				    " origin=(" + std::to_string(entity.Origin[0]) + "," +
+				                  std::to_string(entity.Origin[1]) + "," +
+				                  std::to_string(entity.Origin[2]) + ")" +
+				    " pose=" + address(entity.ModelPose.get()) +
+				    " queued=" + std::to_string(outstanding) +
+				    " peak=" + std::to_string(peak));
 			}
 			const bool submitted = Mirv_Tf2_DrawScenePose(entity, status, owner);
 			if (trace)
-				Tier0_Msg("[OF replay] returned %u/%u submitted=%d status=%s\n",
-				          unsigned(n + 1), unsigned(batch), int(submitted), status.c_str());
+			{
+				unsigned outstanding = 0, peak = 0;
+				Mirv_Tf2_SceneRenderStatus(outstanding, peak);
+				log("[OF replay] returned " + std::to_string(n + 1) + "/" +
+				    std::to_string(batch) + " submitted=" + (submitted ? "1" : "0") +
+				    " queued=" + std::to_string(outstanding) +
+				    " peak=" + std::to_string(peak) + " status=" + status);
+			}
 			if (!submitted)
 				break;
 		}
@@ -1490,6 +1522,13 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		g_SceneRecord = value != 0;
 		ok = true;
 	}
+	else if (g_OpenFortressLegacyMode && !_stricmp(op, "ofReplayStart") && integer(value) &&
+	         value >= 0 && value <= 127)
+	{
+		g_SceneOfReplayStart.store(value);
+		++g_SceneDrawEpoch;
+		ok = true;
+	}
 	else if (g_OpenFortressLegacyMode && !_stricmp(op, "ofReplayBatch") && integer(value) &&
 	         value >= 1 && value <= 8)
 	{
@@ -1821,6 +1860,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "  OF only: mirv_cache ofExtended|ofPoses|ofReplay|ofSkeleton <0|1>.\n"
 		    "  OF only: mirv_cache ofReplayBatch <1..8> (diagnostic submissions/draw, default 1).\n"
+		    "  OF only: mirv_cache ofReplayStart <0..127> (first eligible candidate, default 0).\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
 	}
@@ -1843,9 +1883,10 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 
 	if (g_OpenFortressLegacyMode)
 	{
-		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d, replay batch %d.\n",
+		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d, replay batch %d, candidate start %d.\n",
 		                    int(g_SceneOfExtended), int(g_SceneOfPoses),
-		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton), g_SceneOfReplayBatch.load());
+		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton), g_SceneOfReplayBatch.load(),
+		                    g_SceneOfReplayStart.load());
 		for (auto stage : {MirvOfSceneStage::Entities, MirvOfSceneStage::Poses, MirvOfSceneStage::Replay})
 		{
 			const char *name = stage == MirvOfSceneStage::Entities ? "entity capture" :
@@ -6244,7 +6285,13 @@ static void DrawSceneCacheMenu(int playhead)
 				g_SceneOfReplayBatch.store(replayBatch);
 				++g_SceneDrawEpoch;
 			}
-			ImGui::TextDisabled("OF studio replay is opt-in and session-only. Batch defaults to 1 for safer testing.");
+			int replayStart = g_SceneOfReplayStart.load();
+			if (ImGui::SliderInt("OF replay candidate start (diagnostic)", &replayStart, 0, 127))
+			{
+				g_SceneOfReplayStart.store(replayStart);
+				++g_SceneDrawEpoch;
+			}
+			ImGui::TextDisabled("OF studio replay is opt-in and session-only. Batch defaults to 1, start to 0.");
 		}
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
 		if (g_SceneDrawing.Bounds && ImGui::TreeNode("Bounding box filters"))
