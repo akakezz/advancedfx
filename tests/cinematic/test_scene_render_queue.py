@@ -26,7 +26,7 @@ def extract(content, begin, end):
 calcs = (root / 'AfxHookSource/MirvCalcs.cpp').read_text(encoding='utf-8-sig')
 hooks = (root / 'AfxHookSource/MaterialSystemHooks.cpp').read_text(encoding='utf-8-sig')
 retirement = extract(calcs, '// The render queue only signals completion.', '// Convert once per observed pose')
-frame = extract(calcs, 'void Mirv_Tf2_SceneRenderFrame()', 'void Mirv_Tf2_SceneRenderStatus(')
+frame = extract(calcs, 'void Mirv_Tf2_SceneRenderFrame()', 'void Mirv_Tf2_ReleaseSceneMaterials()')
 queue = extract(hooks, 'class IMaterialSystemRefCounted', 'bool Hook_MaterialSystem_GetRenderCallQueue(')
 
 preamble = r'''
@@ -42,6 +42,10 @@ preamble = r'''
 #include <iostream>
 #include <utility>
 
+struct MirvTf2SceneRenderDiagnostics {
+  unsigned Outstanding = 0, Peak = 0;
+  unsigned long long Submitted = 0, CallbacksInvoked = 0, CompletionSignaled = 0, Retired = 0;
+};
 class CMaterialSystemFunctor {
 public:
   virtual ~CMaterialSystemFunctor() = default;
@@ -133,8 +137,9 @@ int main() {
   assert(queued.empty() && g_SceneOutstanding.load()==2);
   Mirv_Tf2_SceneRenderFrame();
   assert(g_SceneOutstanding.load()==0 && cache.Releases==2 && cache.Unlocks==2 && material.Releases==2);
-  assert(g_SceneSubmitted.load()==2 && g_SceneCallbacksInvoked.load()==2 &&
-         g_SceneCompletionSignaled.load()==2 && g_SceneRetired.load()==2);
+  auto telemetry = Mirv_Tf2_SceneRenderDiagnostics();
+  assert(telemetry.Outstanding==0 && telemetry.Submitted==2 && telemetry.CallbacksInvoked==2 &&
+         telemetry.CompletionSignaled==2 && telemetry.Retired==2);
 
   // Source may discard a queued callback without invoking operator().
   // Its destructor must still signal completion exactly once.
