@@ -7010,40 +7010,18 @@ static void DrawCameraClipsPanel()
 	if (!mapping)
 		ImGui::TextDisabled("Demo tick mapping is unavailable.");
 }
-static void DrawSharedCollisionOptions()
+static void DrawSharedCollisionOptions(MirvCameraCollisionSettings *value=nullptr,
+ const std::function<bool(const MirvCameraCollisionSettings&)> &commit={})
 {
-	auto collision = MirvCameraCollisionGet();
-	if (ImGui::Checkbox("Ignore local player", &collision.IgnoreLocal))
-		Afx_ExecClientCmd(collision.IgnoreLocal ? "mirv_cam collision ignoreLocal 1"
-												: "mirv_cam collision ignoreLocal 0");
-	if (ImGui::Checkbox("Collide with other players", &collision.Players))
-		Afx_ExecClientCmd(collision.Players ? "mirv_cam collision players 1"
-											: "mirv_cam collision players 0");
-	if (ImGui::Checkbox("Slide along obstacles", &collision.Slide))
-		Afx_ExecClientCmd(collision.Slide ? "mirv_cam collision response slide"
-										  : "mirv_cam collision response stop");
-	if (ImGui::InputDouble("Camera clearance (units)", &collision.Radius, 0, 0, "%.2f",
-						   ImGuiInputTextFlags_EnterReturnsTrue))
-	{
-		char command[128];
-		std::snprintf(command, sizeof(command), "mirv_cam collision radius %.9g", collision.Radius);
-		Afx_ExecClientCmd(command);
-	}
-	if (ImGui::InputDouble("Collision return half-life (s)", &collision.ReturnHalfLife, 0, 0, "%.3f",
-						   ImGuiInputTextFlags_EnterReturnsTrue))
-	{
-		char command[128];
-		std::snprintf(command, sizeof(command), "mirv_cam collision returnHalfLife %.9g",
-					  collision.ReturnHalfLife);
-		Afx_ExecClientCmd(command);
-	}
-	if (ImGui::InputDouble("Maximum return speed (units/s)", &collision.ReturnSpeed, 0, 0, "%.1f",
-						   ImGuiInputTextFlags_EnterReturnsTrue))
-	{
-		char command[128];
-		std::snprintf(command, sizeof(command), "mirv_cam collision returnSpeed %.9g", collision.ReturnSpeed);
-		Afx_ExecClientCmd(command);
-	}
+ auto collision=value?*value:MirvCameraCollisionGet();bool dirty=false;
+ dirty|=ImGui::Checkbox("Ignore local player",&collision.IgnoreLocal);
+ dirty|=ImGui::Checkbox("Collide with other players",&collision.Players);
+ dirty|=ImGui::Checkbox("Slide along obstacles",&collision.Slide);
+ dirty|=ImGui::InputDouble("Camera clearance (units)",&collision.Radius,0,0,"%.2f",ImGuiInputTextFlags_EnterReturnsTrue);
+ dirty|=ImGui::InputDouble("Collision return half-life (s)",&collision.ReturnHalfLife,0,0,"%.3f",ImGuiInputTextFlags_EnterReturnsTrue);
+ dirty|=ImGui::InputDouble("Maximum return speed (units/s)",&collision.ReturnSpeed,0,0,"%.1f",ImGuiInputTextFlags_EnterReturnsTrue);
+ if(dirty){if(commit)commit(collision);else MirvCameraCollisionSet(collision);}
+ if(value)*value=collision;
 }
 static std::string CameraModifierLabel(const MirvCameraModifier &modifier,
 									   const std::vector<MirvCameraModifier> &definitions)
@@ -7900,59 +7878,38 @@ static void DrawCamerasTab()
 	}
 	if (found == cameras.end())
 		DrawCameraModifierLibrary();
-	if (ImGui::CollapsingHeader("Attached camera collision"))
-	{
-		auto collision = MirvCameraCollisionGet();
-
-		DrawSharedCollisionOptions();
-		if (ImGui::InputDouble("Minimum subject distance (units)", &collision.SubjectClearance, 0, 0, "%.2f",
-							   ImGuiInputTextFlags_EnterReturnsTrue))
-		{
-			char cmd[128];
-			std::snprintf(cmd, sizeof(cmd), "mirv_cam collision subjectClearance %.9g",
-						  collision.SubjectClearance);
-			Afx_ExecClientCmd(cmd);
-		}
-		if (ImGui::InputDouble("Attached near-plane depth (0 disables)", &collision.NearPlane, 0, 0, "%.2f",
-							   ImGuiInputTextFlags_EnterReturnsTrue))
-		{
-			char cmd[128];
-			std::snprintf(cmd, sizeof(cmd), "mirv_cam collision nearPlane %.9g", collision.NearPlane);
-			Afx_ExecClientCmd(cmd);
-		}
-		if (ImGui::Checkbox("Draw collision diagnostics", &collision.Debug))
-			Afx_ExecClientCmd(collision.Debug ? "mirv_cam collision debug 1" : "mirv_cam collision debug 0");
-		ImGui::TextDisabled(
-			"Subject distance is from the physical attachment point; 0 uses engine collision only.");
-
-		if (found != cameras.end() && found->CollisionDebug)
-			ImGui::TextWrapped("Collision: %s%s",
-							   found->CollisionBlocked ? "no subject-sized gap" : "clear camera hull",
-							   found->CollisionAnchorEmbedded ? "; anchor hull overlaps geometry" : "");
-		if (ImGui::Checkbox("Enable attached collision", &collision.Attached))
-			Afx_ExecClientCmd(collision.Attached ? "mirv_cam collision attached 1"
-												 : "mirv_cam collision attached 0");
-		if (ImGui::InputDouble("Attached collision soft zone (units)", &collision.AttachedSoftDistance, 0, 0,
-							   "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-		{
-			char command[128];
-			std::snprintf(command, sizeof(command), "mirv_cam collision attachedSoftDistance %.9g",
-						  collision.AttachedSoftDistance);
-			Afx_ExecClientCmd(command);
-		}
-		auto follow = collision;
-		if (ImGui::InputDouble("Blocked recovery cut delay (s)", &follow.FollowRecoveryDelay, 0, 0, "%.2f",
-							   ImGuiInputTextFlags_EnterReturnsTrue))
-		{
-			char command[128];
-			std::snprintf(command, sizeof(command), "mirv_cam attach follow recoveryDelay %.9g",
-						  follow.FollowRecoveryDelay);
-			Afx_ExecClientCmd(command);
-		}
-		ImGui::TextWrapped("Applies to attached cameras during live playback. Cached preview uses recorded "
-						   "motion without live collision traces. Clearance and obstacle settings are shared "
-						   "with freecam and campath collision.");
-	}
+ if(ImGui::CollapsingHeader("Attached camera collision")){
+  bool overrideCollision=found!=cameras.end() && found->CollisionOverride.has_value();
+  if(found!=cameras.end() && ImGui::Checkbox("Use per-camera collision override",&overrideCollision)){
+   const auto defaults=MirvCameraCollisionGet();
+   editSelected([&](auto id){return MirvCam_EditCollision(id,overrideCollision?std::optional<MirvCameraCollisionSettings>(defaults):std::nullopt);});
+  }
+  auto collision=overrideCollision && found!=cameras.end()?found->CollisionOverride.value_or(MirvCameraCollisionGet()):MirvCameraCollisionGet();
+  const auto initialCollision=collision;
+  auto commit=[&](const MirvCameraCollisionSettings &value){
+   const bool ok=overrideCollision?editSelected([&](auto id){
+    auto target=std::find_if(cameras.begin(),cameras.end(),[&](const auto &c){return c.Id==id;});
+    if(target==cameras.end())return false;
+    auto next=target->CollisionOverride.value_or(MirvCameraCollisionGet());
+    auto patch=[&](auto field){if(initialCollision.*field!=value.*field)next.*field=value.*field;};
+    patch(&MirvCameraCollisionSettings::Attached);patch(&MirvCameraCollisionSettings::Players);patch(&MirvCameraCollisionSettings::Slide);patch(&MirvCameraCollisionSettings::IgnoreLocal);patch(&MirvCameraCollisionSettings::Debug);patch(&MirvCameraCollisionSettings::Radius);patch(&MirvCameraCollisionSettings::ReturnHalfLife);patch(&MirvCameraCollisionSettings::ReturnSpeed);patch(&MirvCameraCollisionSettings::AttachedSoftDistance);patch(&MirvCameraCollisionSettings::SubjectClearance);patch(&MirvCameraCollisionSettings::NearPlane);patch(&MirvCameraCollisionSettings::FollowRecoveryDelay);
+    return MirvCam_EditCollision(id,next);
+   }):MirvCameraCollisionSet(value);
+   if(!ok)g_DocumentStatus="Invalid collision settings.";return ok;
+  };
+  ImGui::TextDisabled(overrideCollision?"Editing selected camera overrides.":"Editing global collision defaults.");
+  DrawSharedCollisionOptions(&collision,commit);
+  bool dirty=false;
+  dirty|=ImGui::InputDouble("Minimum subject distance (units)",&collision.SubjectClearance,0,0,"%.2f",ImGuiInputTextFlags_EnterReturnsTrue);
+  dirty|=ImGui::InputDouble("Attached near-plane depth (0 disables)",&collision.NearPlane,0,0,"%.2f",ImGuiInputTextFlags_EnterReturnsTrue);
+  dirty|=ImGui::Checkbox("Draw collision diagnostics",&collision.Debug);
+  dirty|=ImGui::Checkbox("Enable attached collision",&collision.Attached);
+  dirty|=ImGui::InputDouble("Attached collision soft zone (units)",&collision.AttachedSoftDistance,0,0,"%.1f",ImGuiInputTextFlags_EnterReturnsTrue);
+  dirty|=ImGui::InputDouble("Blocked recovery cut delay (s)",&collision.FollowRecoveryDelay,0,0,"%.2f",ImGuiInputTextFlags_EnterReturnsTrue);
+  if(dirty)commit(collision);
+  if(found!=cameras.end() && found->CollisionDebug)ImGui::TextWrapped("Collision: %s%s",found->CollisionBlocked?"no subject-sized gap":"clear camera hull",found->CollisionAnchorEmbedded?"; anchor hull overlaps geometry":"");
+  ImGui::TextWrapped("Cameras inherit global settings unless overridden. Overrides belong to selected cameras; freecam/campath remain global. Cached preview never traces the live world.");
+ }
 	if (ImGui::CollapsingHeader("Display"))
 	{
 		ImGui::Checkbox("Show camera guides", &g_ShowCameraGuides);

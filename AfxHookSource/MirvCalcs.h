@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <shared/CameraCollisionSettings.h>
 
 #include "SourceInterfaces.h"
 
@@ -315,18 +316,6 @@ struct MirvTf2BoneName_t
 int Mirv_Tf2_GetBoneNames(int entityIndex, MirvTf2BoneName_t * outNames);
 
 // Optional TF2 camera collision.
-struct MirvCameraCollisionSettings
-{
-	bool Free = false, Campath = false, Attached = false, Players = true, Slide = true, IgnoreLocal = true;
-	double SubjectClearance = 0, NearPlane = 0; // Attached anchor distance and optional frustum protection.
-	bool Debug = false;
-	double Radius = 6, ReturnHalfLife = .2, ReturnSpeed = 300, FollowHalfLife = 0, FollowMaxDistance = 128;
-	double BoneHalfLife = 0, FollowTeleportDistance = 1024, AttachedSoftDistance = 24;
-	double OrbitHalfLife = .15, OrbitSpeed = 360, FollowRecoveryDelay = 1;
-	bool PreserveFraming = false, AimOwnsAngles = false;
-	double FramingMargin = .1, FrameFov = 90, FrameAspect = 16.0 / 9;
-	double BonePositionInfluence = 1, BoneRotationInfluence = 1, BonePositionLimit = 0, BoneRotationLimit = 0;
-};
 struct MirvCameraAttachedState
 {
 	static constexpr double MaxContinuousGap = 10; // Shared follow/aim scene-time reset threshold.
@@ -334,6 +323,7 @@ struct MirvCameraAttachedState
 	bool CollisionActive = false, AnchorEmbedded = false, SubjectBlocked = false, HasContact = false;
 	double CollisionRadius = 0, CollisionAnchor[3] = {}, CollisionDesired[3] = {}, Contact[3] = {},
 		   ContactNormal[3] = {};
+ double FramingFocus[3] = {};
 	double LastAllowed = 0;
 	const void *Identity = nullptr;
 	void *Entity = nullptr;
@@ -357,10 +347,13 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &state, const MirvCamera
 								const double *entityOrigin = nullptr, float *angles = nullptr,
 								const double *rootAngles = nullptr, const double *targetAngles = nullptr,
 								const advancedfx::CameraPose *boneReference = nullptr);
+bool MirvCameraCollisionConstrain(const MirvCameraCollisionSettings &settings,void *entity,const double from[3],double position[3],const double *pivot=nullptr);
 MirvCameraCollisionSettings MirvCameraCollisionGet();
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);
 void MirvCameraCollisionReset();
-void MirvCameraAttachedReset();
+// Binding changes reset legacy state only; explicit user resets include saved rigs.
+void MirvCameraAttachedReset(bool resetSavedCameras=false);
+unsigned long long MirvCameraAttachedGeneration();
 // Recover the authored pose if this is the current corrected view; retain history on success.
 bool MirvCameraAttachedCapturePose(const void *identity, double origin[3], double angles[3]);
 bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,

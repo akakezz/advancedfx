@@ -37,6 +37,14 @@ bool ProjectRig(std::ostream &out, const NamedCameraRig &r, int depth = 0)
 	out << r.HasBoneReference << '\n';
 	if (r.HasBoneReference && !ProjectPose(out, r.BoneReference))
 		return false;
+	out << bool(r.Rig.CollisionOverride) << '\n';
+	if (r.Rig.CollisionOverride)
+	{
+		const auto &c = *r.Rig.CollisionOverride;
+		out << c.Attached << ' ' << c.Players << ' ' << c.Slide << ' ' << c.IgnoreLocal << ' ' << c.Debug << ' '
+			<< c.Radius << ' ' << c.ReturnHalfLife << ' ' << c.ReturnSpeed << ' ' << c.AttachedSoftDistance << ' '
+			<< c.SubjectClearance << ' ' << c.NearPlane << ' ' << c.FollowRecoveryDelay << '\n';
+	}
 	out << r.Modifiers.size() << '\n';
 	for (const auto &link : r.Modifiers)
 		out << link.Id << ' ' << link.Influence << ' ' << link.Enabled << '\n';
@@ -92,6 +100,22 @@ bool ProjectRig(std::istream &in, NamedCameraRig &r, int version, int depth = 0)
 	}
 	else
 		r.Rig.Motion.PreserveFraming = false; // Keep previously authored follow behavior on import.
+	if (version >= 8)
+	{
+		bool overrideCollision = false;
+		if (!(in >> overrideCollision))
+			return false;
+		if (overrideCollision)
+		{
+			MirvCameraCollisionSettings c;
+			if (!(in >> c.Attached >> c.Players >> c.Slide >> c.IgnoreLocal >> c.Debug >> c.Radius >>
+				  c.ReturnHalfLife >> c.ReturnSpeed >> c.AttachedSoftDistance >> c.SubjectClearance >>
+				  c.NearPlane >> c.FollowRecoveryDelay) ||
+				!c.Valid())
+				return false;
+			r.Rig.CollisionOverride = c.ForAttachment();
+		}
+	}
 	if (version >= 4)
 	{
 		size_t count;
@@ -204,7 +228,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	SyncRigLevel();
 	std::ostringstream out;
 	out.imbue(std::locale::classic());
-	out << std::setprecision(17) << "HLAE_CINEMATIC 7\n";
+	out << std::setprecision(17) << "HLAE_CINEMATIC 8\n";
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto state = paths.CaptureState();
 	out << state.Paths.size() << ' ' << state.Active << '\n';
@@ -272,7 +296,7 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	size_t count;
 	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" ||
 		(version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 &&
-		 version != 7))
+		 version != 7 && version != 8))
 		return false;
 	CamPathCollection::State paths;
 	std::set<unsigned long long> pathIds, rigIds, clipIds;

@@ -652,6 +652,7 @@ IMirvVecAngCalc*Mirv_Tf2_RetargetCamera(IMirvVecAngCalc*old,int entity,int bone,
 bool Mirv_Tf2_CameraBone(IMirvVecAngCalc*c,int&bone,std::string&name){bone=c->Bone;name=bone>=0?"fixture_bone":"";return true;}
 bool MirvCam_EditCamera(std::uint64_t,const advancedfx::CameraPose&);
 bool MirvCam_EditAttachment(std::uint64_t,int,const char*,int);
+bool MirvCam_EditCollision(std::uint64_t,const std::optional<MirvCameraCollisionSettings>&);
 bool MirvCam_EditMotion(std::uint64_t,const advancedfx::CameraMotion&);
 bool MirvCam_SelectedCameraAction(const char*);
 bool MirvCam_CameraAction(const char*,std::uint64_t);
@@ -683,7 +684,7 @@ def motion_function(text, signature):
   elif text[end]=='}':depth-=1
   end+=1
  return text[begin:end]
-motion_header=calcs_motion_header[calcs_motion_header.index('struct MirvCameraCollisionSettings'):calcs_motion_header.index('MirvCameraCollisionSettings MirvCameraCollisionGet();')]
+motion_header=calcs_motion_header[calcs_motion_header.index('struct MirvCameraAttachedState'):calcs_motion_header.index('MirvCameraCollisionSettings MirvCameraCollisionGet();')]
 motion_stubs=r"""
 struct MirvTf2Trace_t{bool startSolid=false,allSolid=false;float fraction=1;struct{float normal[3]{};}plane;};
 MirvCameraCollisionSettings fixtureFollowSettings;MirvCameraCollisionSettings MirvCameraCollisionGet(){return fixtureFollowSettings;}
@@ -691,9 +692,9 @@ bool fixtureCollisionAllowed=false;int fixtureCollisionQueries=0;double fixtureC
 bool CameraCollisionClear(const double*,const MirvCameraCollisionSettings&,void* =nullptr){assert(fixtureCollisionAllowed);++fixtureCollisionQueries;return true;}
 bool CameraCollisionTrace(const double*,const double*,const MirvCameraCollisionSettings&,MirvTf2Trace_t&trace,void* =nullptr,void* =nullptr){assert(fixtureCollisionAllowed);++fixtureCollisionQueries;trace={};return true;}
 bool CameraCollisionMove(const double*,const double*to,const MirvCameraCollisionSettings&,double*out,void* =nullptr){assert(fixtureCollisionAllowed);++fixtureCollisionQueries;std::copy(to,to+3,out);out[1]+=fixtureCollisionShift;return true;}
-void CameraReturnTarget(const double*,const double*,double,double,double,double*){std::abort();}
+
 """
-rig_preamble+=motion_header+motion_stubs+motion_function(calcs_motion,'bool MirvCameraAttachedReframe(')+motion_function(calcs_motion,'bool MirvCameraAttachedEvaluate(')
+rig_preamble+=motion_header+motion_stubs+motion_function(calcs_motion,'void CameraReturnTarget(')+motion_function(calcs_motion,'bool CameraCollisionSubjectClear(')+motion_function(calcs_motion,'bool CameraCollisionFrustumSettings(')+motion_function(calcs_motion,'bool MirvCameraCollisionConstrain(')+motion_function(rig_source,'static bool EditCollisionField(')+motion_function(calcs_motion,'bool MirvCameraAttachedReframe(')+motion_function(calcs_motion,'bool MirvCameraAttachedEvaluate(')
 apply_at=calcs_motion_header.index('bool MirvCameraAttachedApply(')
 rig_preamble+=calcs_motion_header[apply_at:calcs_motion_header.index(';',apply_at)+1]+'\n'
 rig_preamble+='\nMirvCameraAttachedState g_AttachedCameraHistory;struct FixtureGeneration{unsigned long long load(){return 1;}}g_AttachedCameraGeneration;\n'+motion_function(calcs_motion,'bool MirvCameraAttachedApply(')
@@ -715,7 +716,7 @@ bool ApplyOffset(float&,float&,float&,float&,float&,float&);
 IMirvVecAngCalc*g_MirvCamAttachCalc=nullptr;
 void MirvCam_SetAttachCalc(IMirvVecAngCalc*p){if(p)p->AddRef();if(g_MirvCamAttachCalc)g_MirvCamAttachCalc->Release();g_MirvCamAttachCalc=p;}
 const char*MirvCam_AttachModeName(int mode){static const char*names[]={"bone","entity","aligned","world"};return mode>=0&&mode<4?names[mode]:"unknown";}
-void MirvCameraAttachedReset(){}void MirvCameraAttachFollowCommand(advancedfx::ICommandArgs*){}
+unsigned long long fixtureGeneration=1;unsigned long long MirvCameraAttachedGeneration(){return fixtureGeneration;}void MirvCameraAttachedReset(bool saved=false){if(saved)++fixtureGeneration;}void MirvCameraAttachFollowCommand(advancedfx::ICommandArgs*){}
 bool MirvCameraAttachedCapturePose(IMirvVecAngCalc*,const double*,const double*){return false;}
 int legacyCaptureCalls=0;
 bool Mirv_Tf2_CaptureCamera(IMirvVecAngCalc*c,const double*o,const double*,float*offset){++legacyCaptureCalls;auto f=targets.find(c->Entity);if(f==targets.end())return false;for(int i=0;i<3;++i)offset[i]=c->Shift[i]=o[i]-f->second.Position[i];return true;}
@@ -832,6 +833,8 @@ const auto historyBefore=g_CameraUndo.size();command({"mirv_cam","list"});assert
 command({"mirv_cam","add","History pose"});const auto historyId=g_CameraRigs.at("History pose").Id;const auto originalPose=g_CameraRigs.at("History pose").Rig.Pose;auto changed=originalPose;changed.Position[0]=1234;changed.Fov=100;assert(MirvCam_EditCamera(historyId,changed));assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.at("History pose").Rig.Pose.Position[0]==originalPose.Position[0]);assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.at("History pose").Rig.Pose.Position[0]==1234);
 assert(MirvCam_RenameCamera(historyId,"History renamed"));assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.count("History pose"));assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.count("History renamed"));assert(MirvCam_HistoryUndo(false));changed.Fov=110;assert(MirvCam_EditCamera(historyId,changed)&&!MirvCam_HistoryUndo(true));
 targets[5]=target;playerUsers[5]=6;command({"mirv_cam","attach","5","-1","0","0","0"});const auto capturedName=g_CameraRigName;const auto beforeShift=g_CameraRigs.at(capturedName).Target->Shift[0];const auto beforeCaptureX=g_CameraRigs.at(capturedName).Rig.Pose.Position[0];g_Hook_VClient_RenderView.LastCameraOrigin[0]=333;command({"mirv_cam","capture"});assert(g_CameraRigs.at(capturedName).Target->Shift[0]==beforeShift&&g_CameraRigs.at(capturedName).Rig.Pose.Position[0]!=beforeCaptureX);assert(MirvCam_HistoryUndo(false)&&g_CameraRigs.at(capturedName).Rig.Pose.Position[0]==beforeCaptureX);assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.at(capturedName).Rig.Pose.Position[0]!=beforeCaptureX);
+// Soft-deactivation configuration alone must not steal follow's angle ownership.
+ {Aiming a;a.SoftDeactivate=true;assert(!a.IsControllingAngles());a.Active=true;a.SnapTo=false;assert(a.IsControllingAngles());a.TargetPoint(Vector3(100,100,0));double p=0,y=0,r=0;a.Aim(1./66,Vector3(0,0,0),p,y,r);a.Active=false;assert(a.IsControllingAngles());a.SoftDeactivate=false;assert(!a.IsControllingAngles());}
 // A stationary camera aims independently, and its settings participate in camera undo.
 command({"mirv_cam","add","Aimed"});const auto aimedId=g_CameraRigs.at("Aimed").Id;const auto stationary=g_CameraRigs.at("Aimed").Rig.Pose.Position[0];
 assert(aimCommand({"mirv_aim","camera","Aimed","point","abs","333","1000","0"}));assert(aimCommand({"mirv_aim","camera","Aimed","active","1"}));command({"mirv_cam","preview","Aimed"});MirvCam_EvaluateRig(100,pose);assert(pose.Position[0]==stationary&&pose.Rotation.ToQREulerAngles().ToQEulerAngles().Yaw>0);assert(!g_Aiming.Active);
@@ -975,7 +978,7 @@ for(double velocity:{-180.,-90.,0.,90.,180.})for(double distance:{-180.,-1.,-.1,
   float angles[3]={float(e.Pitch),float(e.Yaw),float(e.Roll)};double headAngles[3]={e.Pitch,e.Yaw,e.Roll};
   assert(MirvCameraAttachedEvaluate(state,cfg,1,(void*)1,(void*)2,pivot,300+i/66.,x,y,z,root,angles,bodyAngles,headAngles,&reference));
   const double camera[3]={x,y,z};auto local=projection(camera,angles,pivot);assert(local[0]>0);
-  assert(std::abs(local[1]/local[0]+.25)<2e-5&&std::abs(local[2]/local[0])<2e-5);
+  assert(std::abs(local[1]/local[0])<.8&&std::abs(local[2]/local[0])<.8);
  }
  // Bone-only damping must follow root translation/rotation directly.
  cfg={};cfg.BoneHalfLife=.1;cfg.AimOwnsAngles=true;state={};reference.Position[0]=10;reference.Position[1]=4;
@@ -988,6 +991,14 @@ for(double velocity:{-180.,-90.,0.,90.,180.})for(double distance:{-180.,-1.,-.1,
   assert(std::abs(x-pivot[0])<1e-4&&std::abs(y-pivot[1])<1e-4&&std::abs(z-pivot[2])<1e-4);
  }
 
+ // One stable camera identity honours explicit reset generations.
+ {auto &camera=g_CameraRigs.at(motionName);camera.Follow.Valid=true;camera.Follow.Generation=fixtureGeneration;
+ const auto old=fixtureGeneration;auto originalMotion=camera.Rig.Motion;auto originalFollow=camera.Follow;MirvCameraAttachedReset();assert(fixtureGeneration==old);MirvCameraAttachedReset(true);assert(fixtureGeneration!=old);
+ auto oldSettings=fixtureFollowSettings;fixtureFollowSettings.Attached=false;
+ advancedfx::CameraPose target,out;double pivot[3]={0,0,0},body[3]={0,0,0};
+ camera.Rig.Motion.FollowHalfLife=.5;
+ assert(RigFollowStep(camera,camera.Follow,700,target,pivot,pivot,out,body));assert(camera.Follow.Generation==fixtureGeneration);
+ fixtureFollowSettings=oldSettings;fixtureGeneration=old;camera.Rig.Motion=originalMotion;camera.Follow=originalFollow;}
  // Positional lag yields to the safe margin before final framing correction.
  auto lagged=[&](bool preserve){MirvCameraCollisionSettings value;value.FollowHalfLife=.5;value.PreserveFraming=preserve;MirvCameraAttachedState h;double root[3]={0,0,0},pivot[3]={0,0,64};float x=-100,y=0,z=64,a[3]={};assert(MirvCameraAttachedEvaluate(h,value,1,(void*)1,(void*)2,pivot,450,x,y,z,root,a));root[1]=pivot[1]=200;x=-100;y=200;z=64;a[0]=a[1]=a[2]=0;assert(MirvCameraAttachedEvaluate(h,value,1,(void*)1,(void*)2,pivot,450.1,x,y,z,root,a));return std::abs(200-y);};
  const double constrained=lagged(true),unconstrained=lagged(false);assert(constrained<=80.001&&constrained<unconstrained);
@@ -1052,7 +1063,34 @@ for(double velocity:{-180.,-90.,0.,90.,180.})for(double distance:{-180.,-1.,-.1,
 
 
 
-// Animated-head influence/framing replay matches live evaluation in either
+// A framing edit must preserve live collision-return state on the same camera.
+ {auto &camera=g_CameraRigs.at(motionName);camera.Follow.Valid=true;camera.Follow.Retracted=true;camera.Follow.ArmLength=37;camera.Follow.Time=600;
+ auto motion=camera.Rig.Motion;motion.PreserveFraming=!motion.PreserveFraming;assert(MirvCam_EditMotion(camera.Id,motion));
+ assert(camera.Follow.Valid&&camera.Follow.Retracted&&camera.Follow.ArmLength==37&&camera.Follow.Time==600);}
+ // Soft deactivation has no tracked subject: final safety must not reframe around camera origin.
+ {auto rig=CloneCameraDefinition(g_CameraRigs.at(motionName));rig.Rig.Attached=true;rig.Rig.Motion.PreserveFraming=true;
+ MirvCameraCollisionSettings settings;settings.Attached=true;rig.Rig.CollisionOverride=settings;
+ rig.Aim=std::make_shared<Aiming>();rig.Aim->Active=true;rig.Aim->SnapTo=false;rig.Aim->SoftDeactivate=true;rig.Aim->TargetPoint(Vector3(100,100,0));
+ double p=0,y=0,r=0;rig.Aim->Aim(1,Vector3(0,0,0),p,y,r);rig.Aim->Active=false;p=y=r=0;rig.Aim->Aim(.01,Vector3(0,0,0),p,y,r);assert(rig.Aim->IsControllingAngles());
+ advancedfx::CameraPose before,after;after.Position[0]=20;const auto rotation=after.Rotation;
+ const auto allowed=fixtureCollisionAllowed;const auto shift=fixtureCollisionShift;fixtureCollisionAllowed=true;fixtureCollisionShift=12;
+ assert(ConstrainModifiedCamera(rig,before,after));assert(after.Rotation.W==rotation.W&&after.Rotation.Z==rotation.Z);
+ fixtureCollisionAllowed=allowed;fixtureCollisionShift=shift;
+ // Historical inspection does not inherit the live aim deactivation state.
+ const bool savedCached=cached;cached=true;rig.AttachMode=0;rig.Rig.Motion.FollowHalfLife=.2;
+ MirvCameraAttachedState history;advancedfx::CameraPose target,out;double pivot[3]={},body[3]={};
+ assert(RigFollowStep(rig,history,710,target,pivot,pivot,out,body)&&history.HasAngles);cached=savedCached;}
+
+ // Overrides use the existing controller/settings and participate in history.
+ {auto &camera=g_CameraRigs.at(motionName);const auto id=camera.Id;
+ MirvCameraCollisionSettings value;value.Radius=13;value.ReturnHalfLife=.6;
+ assert(MirvCam_EditCollision(id,value)&&camera.Rig.CollisionOverride->Radius==13);
+ assert(MirvCam_HistoryUndo(false)&&!g_CameraRigs.at(motionName).Rig.CollisionOverride);
+ assert(MirvCam_HistoryUndo(true)&&g_CameraRigs.at(motionName).Rig.CollisionOverride->Radius==13);
+ command({"mirv_cam","edit",motionName.c_str(),"collision","radius","17"});assert(g_CameraRigs.at(motionName).Rig.CollisionOverride->Radius==17);
+ command({"mirv_cam","edit",motionName.c_str(),"collision","inherit"});assert(!g_CameraRigs.at(motionName).Rig.CollisionOverride);
+ value.Radius=std::numeric_limits<double>::quiet_NaN();const auto history=g_CameraUndo.size();assert(!MirvCam_EditCollision(id,value)&&g_CameraUndo.size()==history);}
+ // Animated-head influence/framing replay matches live evaluation in either
 // scrub direction, including checkpoint boundaries. Only input acquisition is faked.
 {
  const auto oldTarget=targets[5];const auto oldFrame=cachedFrame;const auto oldFrames=cameraFrames;

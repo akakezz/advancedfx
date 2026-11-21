@@ -5942,7 +5942,7 @@ namespace
 {
 std::mutex g_CameraCollisionMutex;
 MirvCameraCollisionSettings g_CameraCollisionSettings;
-std::atomic<unsigned long long> g_CameraCollisionGeneration{0}, g_AttachedCameraGeneration{0};
+std::atomic<unsigned long long> g_CameraCollisionGeneration{0}, g_AttachedCameraGeneration{0}, g_SavedCameraResetGeneration{0};
 struct CameraCollisionHistory
 {
 	bool Valid = false, Free = false, Recovering = false;
@@ -6151,6 +6151,60 @@ void CameraReturnTarget(const double from[3], const double desired[3], double dt
 }
 } // namespace
 
+bool CameraCollisionSubjectClear(const double point[3], const MirvCameraCollisionSettings &settings,
+								 void *entity, const double pivot[3])
+{
+	MirvTf2Trace_t subject;
+	double distance2 = 0;
+	for (int a = 0; a < 3; ++a)
+		distance2 += std::pow(point[a] - pivot[a], 2);
+	return distance2 + 1e-6 >= settings.SubjectClearance * settings.SubjectClearance &&
+		   CameraCollisionClear(point, settings, entity) &&
+		   CameraCollisionTrace(point, point, settings, subject, nullptr, entity) && !subject.startSolid &&
+		   !subject.allSolid;
+}
+bool CameraCollisionFrustumSettings(const MirvCameraCollisionSettings &inputSettings,
+									MirvCameraCollisionSettings &settings)
+{
+	settings = inputSettings;
+	if (settings.Attached && settings.NearPlane > 0)
+	{
+		const double aspect = (std::max)(.1, settings.FrameAspect);
+		const double tangent = std::tan(std::clamp(settings.FrameFov, 1.0, 179.0) * .008726646259971648);
+		// Source can specify FOV at 4:3; include that wider interpretation as
+		// well as horizontal FOV. A bounding sphere covers arbitrary camera roll.
+		const double horizontal = tangent * (std::max)(1.0, aspect / (4.0 / 3));
+		const double vertical = horizontal / aspect;
+		const double radius =
+			settings.NearPlane * std::sqrt(1 + horizontal * horizontal + vertical * vertical);
+		if (!std::isfinite(radius) || radius > 32768)
+		{
+			return false;
+		}
+		settings.Radius = (std::max)(settings.Radius, radius);
+	}
+
+	return true;
+}
+bool MirvCameraCollisionConstrain(const MirvCameraCollisionSettings &settings, void *entity,
+								  const double from[3], double position[3], const double *pivot)
+{
+	MirvCameraCollisionSettings effective;
+	if (!CameraCollisionFrustumSettings(settings, effective))
+		return false;
+	double corrected[3];
+	if (!CameraCollisionMove(from, position, effective, corrected, entity) ||
+		!CameraCollisionClear(corrected, effective, entity))
+		return false;
+	if (pivot && !CameraCollisionSubjectClear(corrected, effective, entity, pivot))
+	{
+		if (!CameraCollisionSubjectClear(from, effective, entity, pivot))
+			return false;
+		std::copy(from, from + 3, corrected);
+	}
+	std::copy(corrected, corrected + 3, position);
+	return true;
+}
 MirvCameraCollisionSettings MirvCameraCollisionGet()
 {
 	std::lock_guard<std::mutex> lock(g_CameraCollisionMutex);
@@ -6158,30 +6212,15 @@ MirvCameraCollisionSettings MirvCameraCollisionGet()
 }
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings)
 {
-	if (!std::isfinite(settings.SubjectClearance) || settings.SubjectClearance < 0 ||
-		settings.SubjectClearance > 256 || !std::isfinite(settings.NearPlane) || settings.NearPlane < 0 ||
-		settings.NearPlane > 32 || !std::isfinite(settings.Radius) || settings.Radius < 1 ||
-		settings.Radius > 64 || !std::isfinite(settings.ReturnHalfLife) || settings.ReturnHalfLife < 0 ||
-		settings.ReturnHalfLife > 10 || !std::isfinite(settings.ReturnSpeed) || settings.ReturnSpeed < 0 ||
-		settings.ReturnSpeed > 1e6 || !std::isfinite(settings.FollowHalfLife) ||
-		settings.FollowHalfLife < 0 || settings.FollowHalfLife > 10 ||
-		!std::isfinite(settings.FollowMaxDistance) || settings.FollowMaxDistance < 1 ||
-		settings.FollowMaxDistance > 10000 || !std::isfinite(settings.BoneHalfLife) ||
-		settings.BoneHalfLife < 0 || settings.BoneHalfLife > 10 ||
-		!std::isfinite(settings.FollowTeleportDistance) || settings.FollowTeleportDistance < 0 ||
-		settings.FollowTeleportDistance > 1e6 || !std::isfinite(settings.OrbitHalfLife) ||
-		settings.OrbitHalfLife < 0 || settings.OrbitHalfLife > 10 || !std::isfinite(settings.OrbitSpeed) ||
-		settings.OrbitSpeed < 0 || settings.OrbitSpeed > 1e6 ||
-		!std::isfinite(settings.FollowRecoveryDelay) || settings.FollowRecoveryDelay < 0 ||
-		settings.FollowRecoveryDelay > 60 || !std::isfinite(settings.AttachedSoftDistance) ||
-		settings.AttachedSoftDistance < 0 || settings.AttachedSoftDistance > 256 ||
-		((settings.Free || settings.Campath || settings.Attached) && !CameraCollisionTraceInterface()) ||
-		((settings.FollowHalfLife > 0 || settings.BoneHalfLife > 0) && g_SourceSdkVer != SourceSdkVer_TF2 &&
-		 g_SourceSdkVer != SourceSdkVer_TF2Classified))
-		return false;
+	if (!settings.Valid() ||
+        ((settings.Free || settings.Campath || settings.Attached) && !CameraCollisionTraceInterface()) ||
+        ((settings.FollowHalfLife > 0 || settings.BoneHalfLife > 0) && g_SourceSdkVer != SourceSdkVer_TF2 &&
+         g_SourceSdkVer != SourceSdkVer_TF2Classified))
+        return false;
 	{
 		std::lock_guard<std::mutex> lock(g_CameraCollisionMutex);
-		g_CameraCollisionSettings = settings;
+		if(g_CameraCollisionSettings==settings)return true;
+        g_CameraCollisionSettings = settings;
 	}
 	return true;
 }
@@ -6189,6 +6228,7 @@ void MirvCameraCollisionReset()
 {
 	++g_CameraCollisionGeneration;
 	++g_AttachedCameraGeneration;
+ ++g_SavedCameraResetGeneration;
 }
 
 bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,
@@ -6261,9 +6301,11 @@ bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long l
 	std::copy(corrected, corrected + 3, history.Position);
 	return true;
 }
-void MirvCameraAttachedReset()
+unsigned long long MirvCameraAttachedGeneration(){return g_SavedCameraResetGeneration.load();}
+void MirvCameraAttachedReset(bool resetSavedCameras)
 {
 	++g_AttachedCameraGeneration;
+ if(resetSavedCameras)++g_SavedCameraResetGeneration;
 }
 namespace
 {
@@ -6360,24 +6402,8 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 {
 	// A cube around the optical centre enclosing the requested near-plane
 	// corners also protects them while sliding and recovering. Zero is legacy radius-only.
-	auto settings = inputSettings;
-	if (settings.Attached && settings.NearPlane > 0)
-	{
-		const double aspect = (std::max)(.1, settings.FrameAspect);
-		const double tangent = std::tan(std::clamp(settings.FrameFov, 1.0, 179.0) * .008726646259971648);
-		// Source can specify FOV at 4:3; include that wider interpretation as
-		// well as horizontal FOV. A bounding sphere covers arbitrary camera roll.
-		const double horizontal = tangent * (std::max)(1.0, aspect / (4.0 / 3));
-		const double vertical = horizontal / aspect;
-		const double radius =
-			settings.NearPlane * std::sqrt(1 + horizontal * horizontal + vertical * vertical);
-		if (!std::isfinite(radius) || radius > 32768)
-		{
-			history.Valid = false;
-			return false;
-		}
-		settings.Radius = (std::max)(settings.Radius, radius);
-	}
+ MirvCameraCollisionSettings settings;
+ if(!CameraCollisionFrustumSettings(inputSettings,settings)){history.Valid=false;return false;}
 
 	if (!identity || !entity ||
 		(!settings.Attached && settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 &&
@@ -6629,7 +6655,17 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 		for (int a = 0; a < 3; ++a)
 			candidate[a] += (bounded - along) * offset[a] / offsetLength;
 	}
-	if (settings.PreserveFraming && angles && rawLength > 1e-3)
+ // Preserve composition in the filtered boom frame, rather than rotating back to
+ // the raw bone every frame and cancelling orbit damping.
+ if(settings.PreserveFraming && !settings.AimOwnsAngles && angles && following && rawLength>1e-3){
+  const auto rawFrame=directionFrame(rawOffset,history.OrbitYaw);
+  const auto authored=Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({angles[0],angles[1],angles[2]}));
+  const auto view=(history.Orbit*rawFrame.Conjugate()*authored).Normalized();
+  const auto reference=shotContinuous && history.HasAngles ? QEulerAngles(history.DisplayAngles[0],history.DisplayAngles[1],history.DisplayAngles[2]) : QEulerAngles(angles[0],angles[1],angles[2]);
+  const auto e=NearestEquivalentEuler(view.ToQREulerAngles().ToQEulerAngles(),reference);
+  angles[0]=float(e.Pitch);angles[1]=float(e.Yaw);angles[2]=float(e.Roll);
+ }
+	if (settings.PreserveFraming && !settings.AimOwnsAngles && angles && rawLength > 1e-3)
 	{
 		double f[3], r[3], u[3];
 		MakeVectors(angles[2], angles[0], angles[1], f, r, u);
@@ -6805,17 +6841,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 			candidate[a] = anchor[a] + direction[a] * allowed;
 		// Test the final hull against the subject even if other player collisions
 		// are disabled. Find its exit along the boom, not an arbitrary axis jump.
-		auto clear = [&](const double point[3])
-		{
-			MirvTf2Trace_t subject;
-			double distance2 = 0;
-			for (int a = 0; a < 3; ++a)
-				distance2 += std::pow(point[a] - pivot[a], 2);
-			return distance2 + 1e-6 >= settings.SubjectClearance * settings.SubjectClearance &&
-				   CameraCollisionClear(point, settings, entity) &&
-				   CameraCollisionTrace(point, point, settings, subject, nullptr, entity) &&
-				   !subject.startSolid && !subject.allSolid;
-		};
+		auto clear=[&](const double point[3]){return CameraCollisionSubjectClear(point,settings,entity,pivot);};
 		MirvTf2Trace_t overlap;
 		const bool insideSubject =
 			CameraCollisionTrace(candidate, candidate, settings, overlap, nullptr, entity) &&
@@ -6977,9 +7003,9 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 		for (int a = 0; a < 3; ++a)
 		{
 			direction[a] = f[a] * local[0] + r[a] * local[1] + u[a] * local[2];
-			reference[a] = pivot[a] - direction[a];
+			reference[a] = focus[a] - direction[a];
 		}
-		MirvCameraAttachedReframe(reference, candidate, pivot, angles);
+		MirvCameraAttachedReframe(reference, candidate, focus, angles);
 		history.View =
 			Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({angles[0], angles[1], angles[2]}));
 		std::copy(angles, angles + 3, history.DisplayAngles);
@@ -7055,6 +7081,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 	double error2 = 0;
 	for (int a = 0; a < 3; ++a)
 		error2 += (candidate[a] - followed[a]) * (candidate[a] - followed[a]);
+ std::copy(focus,focus+3,history.FramingFocus);
 	history.Retracted = settings.Attached && error2 > 1e-6;
 	history.Valid = true;
 	history.Identity = identity;

@@ -24,6 +24,7 @@ public:
 		   const Vector3 *targetOverride = nullptr);
 
   const Vector3 &GetLastTargetOrigin() const { return LastTargetOrigin; }
+  bool IsControllingAngles() const {return Active || (SoftDeactivate && m_Deactivating);}
 
   void TargetPoint(Vector3 origin);
   void TargetPointFromLast(Vector3 offset);

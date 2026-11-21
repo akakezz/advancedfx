@@ -1,5 +1,7 @@
 #pragma once
 #include "AfxMath.h"
+#include "CameraCollisionSettings.h"
+#include <optional>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -113,6 +115,7 @@ struct CameraRig
 {
 	CameraPose Pose;
 	CameraMotion Motion;
+ std::optional<MirvCameraCollisionSettings> CollisionOverride;
 	bool Attached = false;
 	bool InheritRotation = true;
 	bool Evaluate(const CameraPose *target, CameraPose &out, double time = 0,
@@ -202,6 +205,7 @@ struct CameraInfo
 	std::string Name;
 	CameraPose Pose, BasePose;
 	CameraMotion Motion;
+ std::optional<MirvCameraCollisionSettings> CollisionOverride;
 	bool Attached = false, Available = true, Selected = false, Viewed = false;
 	bool CollisionDebug = false, CollisionBlocked = false, CollisionAnchorEmbedded = false,
 		 CollisionContact = false;

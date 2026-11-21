@@ -3184,3 +3184,19 @@ The existing blocked-follow recovery delay can intentionally cut to a verified
 clear shot after a closed-door obstruction; set it to zero for strict collision.
 Historical world collision remains deferred: cached scrubbing never traces
 against the unrelated live positions of doors or entities.
+
+### Camera interaction and collision overrides
+
+Global collision settings remain the defaults. In Cameras → Attached camera collision,
+**Use per-camera collision override** lets selected cameras use their own clearance,
+return, subject-distance and recovery settings. Disable it to inherit the globals.
+Overrides participate in undo/redo and project format 8; older projects still load.
+Freecam/campath collision remains global.
+
+`mirv_cam edit <index/name> collision <field> <value>` edits an override; `collision
+inherit` clears it and `collision status` reports effective settings and controller
+state. Motion edits retain live return damping. Preserve framing now respects the
+filtered subject/orbit frame and explicit aiming ownership; it does not lock every
+raw bone sample to the same pixel. Camera and clip modifier outputs receive a final
+shared collision safety check. See [camera interaction audit](CAMERA_INTERACTION_AUDIT.md)
+for findings, test cases and live retest guidance.
