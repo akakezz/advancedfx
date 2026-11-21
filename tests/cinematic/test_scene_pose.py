@@ -687,6 +687,8 @@ def motion_function(text, signature):
 motion_header=calcs_motion_header[calcs_motion_header.index('struct MirvCameraAttachedState'):calcs_motion_header.index('MirvCameraCollisionSettings MirvCameraCollisionGet();')]
 motion_stubs=r"""
 struct MirvTf2Trace_t{bool startSolid=false,allSolid=false;float fraction=1;struct{float normal[3]{};}plane;};
+bool fixtureDemoClockAvailable=false;double fixtureDemoClock=0;int fixtureDemoClockReads=0;
+bool GetCurrentDemoTime(double&time){++fixtureDemoClockReads;time=fixtureDemoClock;return fixtureDemoClockAvailable;}
 MirvCameraCollisionSettings fixtureFollowSettings;MirvCameraCollisionSettings MirvCameraCollisionGet(){return fixtureFollowSettings;}
 bool fixtureCollisionAllowed=false;int fixtureCollisionQueries=0;double fixtureCollisionShift=0;
 bool CameraCollisionClear(const double*,const MirvCameraCollisionSettings&,void* =nullptr){assert(fixtureCollisionAllowed);++fixtureCollisionQueries;return true;}
@@ -694,7 +696,7 @@ bool CameraCollisionTrace(const double*,const double*,const MirvCameraCollisionS
 bool CameraCollisionMove(const double*,const double*to,const MirvCameraCollisionSettings&,double*out,void* =nullptr){assert(fixtureCollisionAllowed);++fixtureCollisionQueries;std::copy(to,to+3,out);out[1]+=fixtureCollisionShift;return true;}
 
 """
-rig_preamble+=motion_header+motion_stubs+motion_function(calcs_motion,'void CameraReturnTarget(')+motion_function(calcs_motion,'bool CameraCollisionSubjectClear(')+motion_function(calcs_motion,'bool CameraCollisionFrustumSettings(')+motion_function(calcs_motion,'bool MirvCameraCollisionConstrain(')+motion_function(rig_source,'static bool EditCollisionField(')+motion_function(calcs_motion,'bool MirvCameraAttachedReframe(')+motion_function(calcs_motion,'bool MirvCameraAttachedEvaluate(')
+rig_preamble+=motion_header+motion_stubs+motion_function(calcs_motion,'double MirvCameraAttachedSampleTime(')+motion_function(calcs_motion,'void CameraReturnTarget(')+motion_function(calcs_motion,'bool CameraCollisionSubjectClear(')+motion_function(calcs_motion,'bool CameraCollisionFrustumSettings(')+motion_function(calcs_motion,'bool MirvCameraCollisionConstrain(')+motion_function(rig_source,'static bool EditCollisionField(')+motion_function(calcs_motion,'bool MirvCameraAttachedReframe(')+motion_function(calcs_motion,'bool MirvCameraAttachedEvaluate(')
 apply_at=calcs_motion_header.index('bool MirvCameraAttachedApply(')
 rig_preamble+=calcs_motion_header[apply_at:calcs_motion_header.index(';',apply_at)+1]+'\n'
 rig_preamble+='\nMirvCameraAttachedState g_AttachedCameraHistory;struct FixtureGeneration{unsigned long long load(){return 1;}}g_AttachedCameraGeneration;\n'+motion_function(calcs_motion,'bool MirvCameraAttachedApply(')
@@ -1171,6 +1173,32 @@ for(int entity:{5,2050})for(int mode=0;mode<4;++mode){
  assert(MirvCam_EvaluateRig(1000.1,pose)&&!g_RigUnavailable);const auto yaw=pose.Rotation.ToQREulerAngles().ToQEulerAngles().Yaw;
  assert(camera.Follow.Valid&&camera.Follow.FollowPosition[0]==20&&yaw>0&&yaw<90);
  assert(MirvCam_CameraAction("remove",id));targets[5]=oldTarget;playerUsers[5]=oldUser;fixtureFollowSettings=oldConfig;}
+
+// Live saved and legacy cameras share the existing demo clock, not corrected POV curtime.
+{const auto oldTarget=targets[5];const auto oldUser=playerUsers[5];const auto oldConfig=fixtureFollowSettings;
+ targets[5]={};playerUsers[5]=6;fixtureFollowSettings={};cached=false;rigInput.Enabled=false;MirvCam_EnableSequence(false);
+ command({"mirv_cam","attach","5","-1","0","0","0"});const auto name=g_CameraRigName;auto &camera=g_CameraRigs.at(name);const auto id=camera.Id;
+ camera.AttachMode=1;camera.Target->Mode=1;camera.Rig.Pose={};camera.Rig.Pose.Position[0]=-100;
+ auto settings=camera.Rig.Motion;settings.FollowHalfLife=.5;settings.BoneHalfLife=settings.RotationHalfLife=0;assert(MirvCam_EditMotion(id,settings));
+ command({"mirv_cam","preview",name.c_str()});fixtureDemoClockAvailable=true;
+ assert(aimCommand({"mirv_aim","camera",name.c_str(),"entityIndex","5"})&&aimCommand({"mirv_aim","camera",name.c_str(),"active","1"}));
+ fixtureFollowSettings=RigFollowSettings(settings);fixtureFollowSettings.AimOwnsAngles=true;g_AttachedCameraHistory={};
+ for(int i=0;i<240;++i){fixtureDemoClock=10+i*.33/120;const double raw=1000+fixtureDemoClock+(i%10==0?.04:0.);
+  targets[5].Position[0]=10*fixtureDemoClock;assert(MirvCam_EvaluateRig(raw,pose,i,.01));
+  assert(camera.Follow.Time==fixtureDemoClock&&camera.AimTime==fixtureDemoClock);
+  double pivot[3]={targets[5].Position[0],0,0};float x=float(pivot[0]-100),y=0,z=0,a[3]={};
+  assert(MirvCameraAttachedApply((void*)1,(void*)2,pivot,raw,x,y,z,pivot,a));assert(std::abs(pose.Position[0]-x)<1e-4);
+ }
+ assert(camera.Follow.TimeRewinds==0&&camera.Follow.InputTimeRewinds>10);
+ assert(g_AttachedCameraHistory.TimeRewinds==0&&g_AttachedCameraHistory.InputTimeRewinds>10);
+ const double paused=camera.Follow.FollowPosition[0];assert(MirvCam_EvaluateRig(2000,pose,241,.01));assert(camera.Follow.FollowPosition[0]==paused);
+ fixtureDemoClock-=.1;assert(MirvCam_EvaluateRig(2000.1,pose,242,.01));assert(camera.Follow.TimeRewinds==1);
+ // Cached replay must not resolve or consume live demo time.
+ cached=true;const int reads=fixtureDemoClockReads;MirvCameraAttachedState replay;advancedfx::CameraPose target,result;
+ double pivot[3]={},angles[3]={};assert(RigFollowStep(camera,replay,1500,target,pivot,pivot,result,angles));
+ assert(replay.Time==1500&&fixtureDemoClockReads==reads);cached=false;
+ fixtureDemoClockAvailable=false;assert(MirvCam_CameraAction("remove",id));targets[5]=oldTarget;playerUsers[5]=oldUser;fixtureFollowSettings=oldConfig;
+}
 assert(legacyCaptureCalls==0);
 advancedfx::CameraPose blendFrom,blendTo,blended;blendFrom.Position[0]=10;blendTo.Position[0]=110;blendFrom.Fov=60;blendTo.Fov=120;
 blendFrom.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,179,0}));blendTo.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,-179,0}));

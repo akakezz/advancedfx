@@ -331,6 +331,9 @@ collision_header=collision_header[collision_header.index('// Optional TF2 camera
 collision_source=(root/'AfxHookSource/MirvCalcs.cpp').read_text()
 collision_abi=collision_source[collision_source.index('struct alignas(16) MirvTf2Ray_t'):collision_source.index('bool Mirv_Tf2_TraceEntity(')]
 collision_core=collision_source[collision_source.index('// Optional camera collision implementation.'):collision_source.index('// End optional camera collision implementation.')]
+# Low-level traces explicitly supply sample times; emulate an unavailable native demo clock.
+collision_core=collision_core.replace('GetCurrentDemoTime', 'CollisionDemoTime')
+collision_core='bool CollisionDemoTime(double&){return false;}\n'+collision_core
 collision_command=(root/'AfxHookSource/MirvCam.cpp').read_text()
 collision_command=collision_command[collision_command.index('// Camera collision console command.'):collision_command.index('// End camera collision console command.')]
 collision_stub=r"""

@@ -17,6 +17,10 @@ code=r'''
 #include <iostream>
 using namespace Afx::Math;
 '''+structs+r'''
+
+struct Engine {bool Playing=true;bool IsPlayingDemo(){return Playing;}} engine,*g_VEngineClient=&engine;
+bool demoClockAvailable=true;double demoClock=0;
+bool GetCurrentDemoTime(double&time){time=demoClock;return demoClockAvailable;}
 struct MirvTf2Trace_t {bool startSolid=false,allSolid=false;float fraction=1;struct {float normal[3]{};}plane;};
 double wall=-1e8;int returns=0;
 bool CameraCollisionClear(const double*p,const MirvCameraCollisionSettings&s,void*=nullptr);
@@ -30,7 +34,7 @@ bool CameraCollisionTrace(const double*from,const double*to,const MirvCameraColl
 }
 bool CameraCollisionMove(const double*,const double*to,const MirvCameraCollisionSettings&s,double*out,void*=nullptr);
 bool CameraCollisionMove(const double*,const double*to,const MirvCameraCollisionSettings&s,double*out,void*){std::copy(to,to+3,out);out[0]=std::max(out[0],wall+s.Radius+.001);return true;}
-'''+f('bool CameraCollisionSubjectClear(')+f('bool CameraCollisionFrustumSettings(')+f('bool MirvCameraCollisionConstrain(')+f('void CameraReturnTarget(')+f('bool MirvCameraAttachedReframe(')+f('bool MirvCameraAttachedEvaluate(')+r'''
+'''+f('double MirvCameraAttachedSampleTime(')+f('bool CameraCollisionSubjectClear(')+f('bool CameraCollisionFrustumSettings(')+f('bool MirvCameraCollisionConstrain(')+f('void CameraReturnTarget(')+f('bool MirvCameraAttachedReframe(')+f('bool MirvCameraAttachedEvaluate(')+r'''
 int main(){
  // Bone filtering must not be undone by a raw-pivot aiming correction.
  for(double follow:{0.,.5}){MirvCameraAttachedState state;MirvCameraCollisionSettings cfg;cfg.FollowHalfLife=follow;cfg.PreserveFraming=true;cfg.BoneHalfLife=.1;wall=-1e8;
@@ -114,6 +118,30 @@ int main(){
  {MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;c.PreserveFraming=true;c.FollowMaxDistance=20;c.FollowTeleportDistance=0;
  for(int i=0;i<600;++i){double root[3]={0,100*std::sin(i*.04),0},pivot[3]={0,root[1],64};float x=-100,y=float(root[1]),z=64,a[3]={};
   assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,i/60.,x,y,z,root,a));assert(std::abs(y-root[1])<20.001);}}
+
+ // POV client simulation time corrections must not reset live follow. The
+ // existing demo clock continues forward, including fractional slow-motion ticks.
+ for(double speed:{.33,1.,2.}){
+  MirvCameraAttachedState stable,raw;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;c.FollowMaxDistance=1e6;c.FollowTeleportDistance=0;
+  for(int i=0;i<1200;++i){demoClock=i*speed/120.;const double client=300+demoClock+(i%10==0?.04:0.);
+   double root[3]={10*demoClock,0,0},pivot[3]={root[0],0,64};float x=float(root[0]-100),y=0,z=64,a[3]={};
+   const double sample=MirvCameraAttachedSampleTime(client);
+   assert(MirvCameraAttachedEvaluate(stable,c,1,(void*)1,(void*)2,pivot,sample,x,y,z,root,a,nullptr,nullptr,nullptr,&client));
+   if(i>0)assert(x<float(root[0]-100)); // Maintain lag instead of jumping to target on each rewind.
+   x=float(root[0]-100);y=0;z=64;std::fill(a,a+3,0.f);
+   assert(MirvCameraAttachedEvaluate(raw,c,1,(void*)1,(void*)2,pivot,client,x,y,z,root,a));
+  }
+  assert(stable.TimeRewinds==0 && stable.InputTimeRewinds>100 && raw.TimeRewinds>100);
+  // Pausing leaves the demo clock fixed even if client time changes.
+  const double paused=stable.FollowPosition[0];const double root[3]={10*demoClock,0,0},pivot[3]={root[0],0,64};float x=float(root[0]-100),y=0,z=64,a[3]={};
+  assert(MirvCameraAttachedEvaluate(stable,c,1,(void*)1,(void*)2,pivot,MirvCameraAttachedSampleTime(0),x,y,z,root,a));assert(stable.FollowPosition[0]==paused);
+  // A genuine backward demo seek is not clamped away.
+  demoClock-=1;x=float(root[0]-100);std::fill(a,a+3,0.f);
+  assert(MirvCameraAttachedEvaluate(stable,c,1,(void*)1,(void*)2,pivot,MirvCameraAttachedSampleTime(500),x,y,z,root,a));assert(stable.TimeRewinds==1 && stable.FollowPosition[0]==root[0]);
+ }
+ // Missing demo timing and non-demo playback retain the supplied clock.
+ demoClockAvailable=false;assert(MirvCameraAttachedSampleTime(123)==123);demoClockAvailable=true;
+ engine.Playing=false;assert(MirvCameraAttachedSampleTime(456)==456);engine.Playing=true;
  // Timing diagnostics observe repeated/rewound POV clocks without changing policy.
  {MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;double root[3]={},pivot[3]={0,0,64};
  auto sample=[&](double t){float x=float(root[0]-100),y=0,z=64,a[3]={};assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,t,x,y,z,root,a));};

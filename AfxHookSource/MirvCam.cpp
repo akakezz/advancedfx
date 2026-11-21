@@ -956,9 +956,10 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 		if (!Mirv_Tf2_GetAttachAnchor(rig.Target.get(), livePivot, entity, liveRoot))
 			return false;
 	}
-	if (!MirvCameraAttachedEvaluate(state, settings, MirvCameraAttachedGeneration(), token, entity, pivot, time, x, y, z, root,
+	const double sampleTime = inspecting ? time : MirvCameraAttachedSampleTime(time);
+	if (!MirvCameraAttachedEvaluate(state, settings, MirvCameraAttachedGeneration(), token, entity, pivot, sampleTime, x, y, z, root,
 									rig.AttachMode == MIRV_TF2_BONEMODE_WORLD ? nullptr : angles, rootAngles,
-									targetAngles, &rig.BoneReference))
+									targetAngles, &rig.BoneReference, &time))
 		return false;
 	pose.Position[0] = x;
 	pose.Position[1] = y;
@@ -1387,7 +1388,7 @@ bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 		overrideTarget = &target;
 	}
 	auto angles = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
-	const double time = g_CameraEvaluationTime;
+	const double time = inspecting ? g_CameraEvaluationTime : MirvCameraAttachedSampleTime(g_CameraEvaluationTime);
 	if (!inspecting && !camera.AimDirty && camera.AimCached == cached && camera.AimTime == time &&
 		(g_CameraEvaluationFrame < 0 || camera.AimFrame == g_CameraEvaluationFrame))
 	{
@@ -1797,10 +1798,10 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 			camera.Rig.Attached &&
 			(camera.Rig.Motion.FollowHalfLife > 0 || camera.Rig.Motion.BoneHalfLife > 0 || camera.Rig.Motion.RotationHalfLife > 0) &&
 			!g_InspectingSequence && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
-			(!camera.Follow.Valid || camera.Follow.Time != clientTime);
+			(!camera.Follow.Valid || camera.Follow.Time != MirvCameraAttachedSampleTime(clientTime));
 		if (warmFollow ||
 			(camera.Aim && (camera.Aim->Active || camera.Aim->SoftDeactivate) &&
-			 (camera.AimDirty || camera.AimTime != clientTime || (frame >= 0 && camera.AimFrame != frame))))
+			 (camera.AimDirty || camera.AimTime != MirvCameraAttachedSampleTime(clientTime) || (frame >= 0 && camera.AimFrame != frame))))
 		{
 			advancedfx::CameraPose background;
 			EvaluateNamedRig(camera, background);
@@ -2705,7 +2706,8 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
           const auto &c=camera->second;const auto value=c.Rig.CollisionOverride.value_or(MirvCameraCollisionGet());const auto &h=c.Follow;
           Tier0_Msg("Camera %s: %s collision; enabled %d; radius %.2f; return half-life %.3f, speed %.1f.\n",camera->first.c_str(),c.Rig.CollisionOverride?"override":"global",value.Attached,value.Radius,value.ReturnHalfLife,value.ReturnSpeed);
           Tier0_Msg("Follow state valid %d; generation %llu/current %llu; time %.6f; arm %.3f, allowed %.3f; retracted %d, contracting %d; framing %d.\n",h.Valid,h.Generation,MirvCameraAttachedGeneration(),h.Time,h.ArmLength,h.LastAllowed,h.Retracted,h.Contracting,c.Rig.Motion.PreserveFraming);
-          Tier0_Msg("Follow timing: %llu samples; %llu time rewinds; %llu root changes at unchanged time; largest forward step %.6f s.\n",h.Samples,h.TimeRewinds,h.StalledRootChanges,h.MaxTimeStep);return true;
+          Tier0_Msg("Follow timing: %llu samples; %llu time rewinds; %llu root changes at unchanged time; largest forward step %.6f s.\n",h.Samples,h.TimeRewinds,h.StalledRootChanges,h.MaxTimeStep);
+          Tier0_Msg("Client input time rewinds: %llu (live follow uses the demo clock).\n",h.InputTimeRewinds);return true;
          }
          if(ok && args->ArgC()==5 && !_stricmp(args->ArgV(4),"inherit"))ok=MirvCam_EditCollision(camera->second.Id,std::nullopt);
          else if(ok && args->ArgC()==6){

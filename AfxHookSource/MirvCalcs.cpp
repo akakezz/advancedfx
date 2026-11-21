@@ -6315,6 +6315,16 @@ bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long l
 	std::copy(corrected, corrected + 3, history.Position);
 	return true;
 }
+extern bool GetCurrentDemoTime(double &outDemoTime);
+double MirvCameraAttachedSampleTime(double fallbackTime)
+{
+	double time;
+	// curtime is client simulation time and can be corrected during POV playback.
+	// Reuse the sequencer's demo clock, including its fractional tick. Do not
+	// clamp backwards time: actual backward seeks must still reset follow.
+	return g_VEngineClient && g_VEngineClient->IsPlayingDemo() &&
+		GetCurrentDemoTime(time) && std::isfinite(time) ? time : fallbackTime;
+}
 unsigned long long MirvCameraAttachedGeneration(){return g_SavedCameraResetGeneration.load();}
 void MirvCameraAttachedReset(bool resetSavedCameras)
 {
@@ -6412,7 +6422,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 								unsigned long long generation, const void *identity, void *entity,
 								const double pivot[3], double sceneTime, float &x, float &y, float &z,
 								const double *entityOrigin, float *angles, const double *rootAngles,
-								const double *targetAngles, const advancedfx::CameraPose *boneReference)
+								const double *targetAngles, const advancedfx::CameraPose *boneReference, const double *inputTime)
 {
 	// A cube around the optical centre enclosing the requested near-plane
 	// corners also protects them while sliding and recovering. Zero is legacy radius-only.
@@ -6449,6 +6459,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 	if (history.Valid && history.Identity == identity && history.Entity == entity && history.Generation == generation)
 	{
 		const double step = sceneTime - history.Time;
+		if ((inputTime ? *inputTime : sceneTime) < history.InputTime) ++history.InputTimeRewinds;
 		if (step < 0) ++history.TimeRewinds;
 		if (step == 0 && rootJump2 > 1e-6) ++history.StalledRootChanges;
 		history.MaxTimeStep = (std::max)(history.MaxTimeStep, step);
@@ -7140,6 +7151,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 	history.Entity = entity;
 	history.Generation = generation;
 	history.Time = sceneTime;
+	history.InputTime = inputTime ? *inputTime : sceneTime;
 	std::copy(candidate, candidate + 3, history.Position);
 	std::copy(root, root + 3, history.Root);
 	history.FollowHalfLife = settings.FollowHalfLife;
@@ -7163,7 +7175,8 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 	settings.FrameFov = fov;
 	settings.FrameAspect = aspect;
 	return MirvCameraAttachedEvaluate(g_AttachedCameraHistory, settings, g_AttachedCameraGeneration.load(),
-									  identity, entity, pivot, sceneTime, x, y, z, entityOrigin, angles);
+									  identity, entity, pivot, MirvCameraAttachedSampleTime(sceneTime), x, y, z, entityOrigin,
+									  angles, nullptr, nullptr, nullptr, &sceneTime);
 }
 
 // End optional camera collision implementation.

@@ -332,6 +332,8 @@ struct MirvCameraAttachedState
 	unsigned long long Generation = 0;
 	// Read-only diagnostics; never used to drive the controller or serialized.
 	unsigned long long Samples = 0, TimeRewinds = 0, StalledRootChanges = 0;
+	unsigned long long InputTimeRewinds = 0;
+	double InputTime = 0;
 	double MaxTimeStep = 0;
 	double Time = 0, ArmLength = 0, Position[3] = {}, FollowPosition[3] = {};
 	double Desired[3] = {}, AuthoredAngles[3] = {}, DisplayAngles[3] = {};
@@ -344,14 +346,17 @@ struct MirvCameraAttachedState
 	double OrbitLength = 0, OrbitYaw = 0, BlockedTime = 0;
 	bool CompositionValid = false;
 };
+// Live state uses the existing demo clock; cached/inspection callers keep their own time.
+double MirvCameraAttachedSampleTime(double fallbackTime);
 // One implementation for legacy attachment and saved-camera evaluation.
 // Callers own the state and settings; cached callers disable live collision tracing.
+// Optional inputTime records the original client clock for diagnostics only.
 bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &state, const MirvCameraCollisionSettings &settings,
 								unsigned long long generation, const void *identity, void *entity,
 								const double pivot[3], double sceneTime, float &x, float &y, float &z,
 								const double *entityOrigin = nullptr, float *angles = nullptr,
 								const double *rootAngles = nullptr, const double *targetAngles = nullptr,
-								const advancedfx::CameraPose *boneReference = nullptr);
+								const advancedfx::CameraPose *boneReference = nullptr, const double *inputTime = nullptr);
 bool MirvCameraCollisionConstrain(const MirvCameraCollisionSettings &settings,void *entity,const double from[3],double position[3],const double *pivot=nullptr);
 MirvCameraCollisionSettings MirvCameraCollisionGet();
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);

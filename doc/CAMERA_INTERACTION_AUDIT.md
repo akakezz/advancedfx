@@ -167,3 +167,33 @@ independent. The existing lag bounds are applied again after the correction,
 preventing delayed feedback from exceeding an explicit limit on direction changes.
 The frame margin is a soft recovery goal; physical clearance and explicit safety
 bounds still take priority.
+
+## POV client-clock corrections
+
+The follow-only retest reported 113 backwards time steps during uninterrupted
+forward playback (39,388 controller samples). Previously, live follow used
+client simulation `curtime`; each backwards step failed the continuity check
+and reseeded the position, bone and orbit filters at the raw target. The
+0.374-second largest forward step was below the existing ten-second continuity
+window; backwards steps are the relevant reset trigger in this report.
+
+Live attachment now resolves sample time through the existing
+`GetCurrentDemoTime` helper used by the sequencer: demo playback tick plus its
+fractional interpolation tick. The same resolver serves saved-camera follow,
+legacy attachment and live camera aim. Authoring/clip times are not changed.
+Cached/baked evaluation continues using its explicitly supplied scene times,
+without reading the live demo clock. No second spring, synthetic time accumulator
+or backwards-time clamp is introduced. Actual backwards demo seeks still reach
+the existing reset path. Unsupported/missing demo timing retains the supplied
+time as a fallback.
+
+`mirv_cam edit 0 collision status` distinguishes effective sample-clock rewinds
+from client input-time rewinds. During forward POV playback, client rewinds may
+still be reported while effective follow-clock rewinds should stay at zero.
+Backward seeking intentionally increases the effective rewind count.
+
+Regression coverage injects recurring client-time corrections while demo time
+advances at 0.33x, 1x and 2x, checks retained lag, paused evaluation and real
+backwards seeks, and compares saved/legacy follow entry points with aiming
+enabled. Cached stepping must not query the live clock. A live TF2 POV retest is
+still needed to confirm the remaining visible jitter is eliminated.
