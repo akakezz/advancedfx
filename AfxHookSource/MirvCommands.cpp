@@ -7762,6 +7762,7 @@ void MirvSpectate_ReleaseView()
 
 CON_COMMAND(mirv_pov, "Native player spectating in TF2 POV demos.")
 {
+ if (args->ArgC() == 2 && !_stricmp(args->ArgV(1), "debug")) { Tier0_Msg("%s\n", MirvPovSpectate_Debug()); return; }
  if (args->ArgC() == 3 && !_stricmp(args->ArgV(1), "mode")) {
   const char *mode = args->ArgV(2);
   if (!_stricmp(mode, "first") || !_stricmp(mode, "third")) {

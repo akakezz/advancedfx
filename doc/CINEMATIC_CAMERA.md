@@ -3000,12 +3000,19 @@ alpha for these three outputs; World, Depth and normal screen recording keep
 their existing format. **Isolated pass background**
 offers Green, Blue and Black; custom RGB is available using
 `mirv_streams record pass background <red 0..255> <green 0..255> <blue 0..255>`.
-Transparency reuses HLAE's existing black/white matte transform: two renders of
-one demo frame recover coverage, and its opt-in straight-color conversion removes
+Transparency reuses HLAE's existing black/white matte transform. The world is
+rendered once per isolated pass; only selected models or HUD paint are replayed
+into a second color target, sharing scene depth and preserving the viewport and
+viewmodel depth range. The two samples recover coverage, and the opt-in
+straight-color conversion removes
 coverage from the black render without selecting/removing a key color. This keeps
 opaque greens and partially covered edges in the output. Capture failures retain
 pair boundaries, so one failed sample cannot shift later frames. The mode adds
-an extra render for each isolated pass and does not advance the demo.
+extra selected-object draws, a second readback, and matte processing; it does not
+advance the demo or render the full scene a second time. Transform workers sleep
+until shared tasks finish instead of busy-waiting. Capture surfaces use the
+existing bounded readback pool; creation references are released when ownership
+passes to the wrapper, avoiding a per-take COM surface leak.
 
 Select an alpha-capable recording profile, such as `afxFfmpegProresAlpha` (ProRes
 4444 MOV), before recording; ordinary H.264/H.265 profiles can discard alpha.
@@ -3063,9 +3070,13 @@ the shared render classification excludes the observed player's own world mesh
 and attached gear, so enabling the recorder's body does not put the target's
 head or world weapon in front of the camera. Chase view retains the target model.
 
-While observing another player, TF2's existing `tf_taunt_first_person` option is
-temporarily enabled so the recorder's taunts cannot switch the camera. Its previous
-value is restored on exit; taunt conditions and animations are not cleared. Native
+While observing another player, native input third-person offsets are cleared
+before view calculation. The existing `tf_taunt_first_person` and
+`cl_first_person_uses_world_model` options are enabled, `r_drawviewmodel` and
+`cl_demoviewoverride` disabled, and the final native chase orientation is kept at
+the target's interpolated angles. These guards prevent recorder camera/viewmodel
+state from overwriting remote spectating. The previous
+values are restored on exit; taunt conditions and animations are not cleared. Native
 view setup also uses the target's available recoil, FOV and eye-offset inputs;
 those temporary substitutions on the recorder are restored immediately after
 view calculation, before simulation, tools processing and scene-cache capture.
@@ -3079,3 +3090,7 @@ A POV demo only contains entities and local-player data recorded by its author.
 Spectating cannot reconstruct missing players, remote viewmodel animation, or HUD
 information that the demo did not record. STV continues to use its native spectator
 command separately.
+
+Spectating diagnostics: `mirv_pov debug` prints native angle-query count, the
+last native/target orientation and active camera guards. If the view still drifts,
+include this output along with first/third-person mode and the demo tick.

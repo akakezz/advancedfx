@@ -8716,7 +8716,7 @@ void Draw()
      }
      bool alpha = Recording::PassAlpha();
      if (ImGui::Checkbox("Transparent isolated passes", &alpha)) Recording::SetPassAlpha(alpha);
-     if (alpha) ImGui::TextWrapped("Alpha uses two same-frame renders. Choose an alpha-capable profile below, such as afxFfmpegProresAlpha; other codecs may discard transparency.");
+     if (alpha) ImGui::TextWrapped("Alpha replays isolated draws into a second target; the world renders once. Choose an alpha-capable profile below, such as afxFfmpegProresAlpha; other codecs may discard transparency.");
      if (alpha) ImGui::BeginDisabled();
      const unsigned background = Recording::PassBackground() & 0xffffffu;
      const char *backgroundNames[] = {"Green", "Blue", "Black"};

@@ -3544,6 +3544,7 @@ public:
  bool SetTf2PassEnabled(Tf2RenderPass pass, bool enabled);
  bool Tf2PassRecording(Tf2RenderPass pass) const;
  bool DrawingThread_BindTf2PassTarget();
+ bool DrawingThread_Tf2White(bool white);
  void DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass);
  void EngineThread_PassBegin(Tf2RenderPass pass, int matteSample = -1);
  void EngineThread_PassEnd(Tf2RenderPass pass, float zNear = 1, float zFar = 32768);
@@ -3871,6 +3872,9 @@ private:
  std::atomic<bool> m_Tf2PassAlpha{false};
  std::atomic<bool> m_Tf2PassEnabled[unsigned(Tf2RenderPass::Count)] = {};
  CCaptureNode *m_Tf2PassNodes[unsigned(Tf2RenderPass::Count)] = {};
+ bool m_Tf2PassMatte[unsigned(Tf2RenderPass::Count)] = {};
+ IDirect3DSurface9 *m_Tf2WhiteSurface = nullptr;
+ bool m_Tf2WhiteBound = false;
  bool m_Tf2PassActive[unsigned(Tf2RenderPass::Count)] = {};
  bool m_Tf2PassPixelsValid[unsigned(Tf2RenderPass::Count)] = {};
  D3DVIEWPORT9 m_Tf2PassPreviousViewport[unsigned(Tf2RenderPass::Count)] = {};

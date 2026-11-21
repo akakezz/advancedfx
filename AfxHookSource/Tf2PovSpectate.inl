@@ -4,6 +4,7 @@
 #include <cmath>
 #include <vector>
 #include <map>
+#include <cstdio>
 namespace {
 struct PovObserverFields { int Mode = -1, Target = -1, Pitch = -1, Yaw = -1;
  int Fov = -1, FovStart = -1, DefaultFov = -1, Punch[3] = {-1,-1,-1}, ViewOffset[3] = {-1,-1,-1}; };
@@ -80,33 +81,40 @@ bool PovReadLook(void *target, SOURCESDK::QAngle &angles, const PovObserverField
 // Reuse the registered cvar interfaces (WrpConVarRef is CS:GO-only).
 // TF2's own taunt-first-person option blocks recorder taunts from switching cameras
 // without clearing taunt conditions, cancelling gestures, or changing player animation.
-bool PovTauntFirstPerson(float &value, bool write)
+bool PovCameraCvar(const char *name, float &value, bool write)
 {
  auto access = [&](auto *iface) {
   if (!iface) return false;
-  auto var = iface->FindVar("tf_taunt_first_person");
+  auto var = iface->FindVar(name);
   if (!var) return false;
-  if (write) var->SetValue(value); else value=var->GetFloat();
+  if (write) var->SetValue(value); else value = var->GetFloat();
   return true;
  };
  if (SOURCESDK::L4D2::g_pCVar) return access(SOURCESDK::L4D2::g_pCVar);
  return access(SOURCESDK::CSS::g_pCVar);
 }
-bool g_PovTauntGuard = false;
-float g_PovTauntPreference = 0;
+struct PovCameraGuard { const char *Name; float Desired, Previous = 0; bool Active = false; };
+PovCameraGuard g_PovCameraGuards[] = {
+ {"tf_taunt_first_person", 1}, {"cl_first_person_uses_world_model", 1},
+ {"r_drawviewmodel", 0}, {"cl_demoviewoverride", 0}
+};
 void PovGuardRecorderCamera(bool enabled)
 {
- if (!enabled) {
-  if (g_PovTauntGuard) PovTauntFirstPerson(g_PovTauntPreference, true);
-  g_PovTauntGuard=false;
-  return;
+ for (auto &guard : g_PovCameraGuards) {
+  if (!enabled) {
+   if (guard.Active) PovCameraCvar(guard.Name, guard.Previous, true);
+   guard.Active = false;
+   continue;
+  }
+  float current = 0;
+  if (!PovCameraCvar(guard.Name, current, false)) continue;
+  if (!guard.Active || current != guard.Desired) guard.Previous = current;
+  float desired = guard.Desired;
+  guard.Active = PovCameraCvar(guard.Name, desired, true);
  }
- float current=0;
- if (!PovTauntFirstPerson(current,false)) return;
- if (!g_PovTauntGuard || current!=1) g_PovTauntPreference=current;
- float firstPerson=1;
- g_PovTauntGuard=PovTauntFirstPerson(firstPerson,true);
 }
+unsigned g_PovAngleQueries = 0, g_PovLastQueries = 0;
+SOURCESDK::QAngle g_PovLastNative{}, g_PovLastTarget{};
 int g_PovSpectateUser = 0;
 std::atomic<bool> g_PovThirdPerson{false};
 std::atomic<const char *> g_PovSpectateStatus = "Native POV spectating is off.";
@@ -114,6 +122,7 @@ struct PovObserverScope {
  void *Object = nullptr;
  int Index = -1, ModeOffset = -1, TargetOffset = -1, Mode = 0;
  unsigned Handle = 0xffffffffu, Target = 0xffffffffu, AppliedTarget = 0xffffffffu;
+ bool CalculatingView = true;
  PovObserverFields LookFields;
  std::vector<std::pair<int,unsigned>> CameraFields;
 } g_PovObserverScope;
@@ -210,6 +219,10 @@ void MirvPovSpectate_FrameBegin()
   g_PovSpectateStatus = "Third-person view needs the engine angle hook and recorded target eye angles.";
   return;
  }
+ // Demo commands and taunts can re-enable the recorder's native input camera.
+ // Native observer chase still runs; this disables only the additional input offset.
+ g_VEngineClient->ExecuteClientCmd("firstperson");
+ g_PovAngleQueries = 0;
  const unsigned targetHandle = Mirv_Tf2_EntityHandle(target);
  if (targetHandle == 0xffffffffu) return;
  auto bytes = static_cast<unsigned char *>(local);
@@ -273,12 +286,13 @@ void __fastcall PovGetViewAngles(void *self,
 #endif
  angles);
  const auto &scope = g_PovObserverScope;
- if (!scope.Object || !g_PovThirdPerson.load() || !PovSpectatePlayback()) return;
+ if (!scope.Object || !scope.CalculatingView || !g_PovThirdPerson.load() || !PovSpectatePlayback()) return;
  auto target = Mirv_Tf2_DiagnosticEntity(MirvPovSpectate_Player());
  if (!target || Mirv_Tf2_EntityHandle(target) != scope.AppliedTarget) return;
  SOURCESDK::QAngle look{};
  if (PovReadLook(target, look, &scope.LookFields)) {
   angles = look;
+  ++g_PovAngleQueries;
   g_PovSpectateStatus = "Native third-person chase; following the target's recorded look direction.";
  }
 }
@@ -319,4 +333,24 @@ int MirvPovSpectate_HiddenPlayer()
 }
 
 // Tools' SetupEngineView runs after native CalcView and ClientMode::OverrideView.
-void MirvPovSpectate_ViewDone() { PovRestoreCameraFields(g_PovObserverScope); }
+void MirvPovSpectate_ViewDone(SOURCESDK::QAngle *angles) {
+ if (angles && g_PovThirdPerson.load() && MirvPovSpectate_DrawRecorderWorldModel()) {
+  auto target = Mirv_Tf2_DiagnosticEntity(MirvPovSpectate_Player());
+  SOURCESDK::QAngle look{};
+  if (PovReadLook(target, look, &g_PovObserverScope.LookFields)) {
+   g_PovLastNative = *angles; g_PovLastTarget = look; g_PovLastQueries = g_PovAngleQueries;
+   *angles = look; // Keep ClientMode/demo recorder overrides out of the final orientation.
+  }
+ }
+ g_PovObserverScope.CalculatingView = false;
+ PovRestoreCameraFields(g_PovObserverScope);
+}
+const char *MirvPovSpectate_Debug() {
+ static char result[512]; unsigned guards = 0;
+ for (unsigned i = 0; i < 4; ++i) if (g_PovCameraGuards[i].Active) guards |= 1u << i;
+ std::snprintf(result, sizeof(result), "POV target %i; third %i; chase angle queries %u; native angles %.3f %.3f %.3f; target %.3f %.3f %.3f; native guards 0x%x (taunt/body/viewmodel/demo).",
+  MirvPovSpectate_Player(), int(g_PovThirdPerson.load()), g_PovLastQueries,
+  g_PovLastNative.x, g_PovLastNative.y, g_PovLastNative.z,
+  g_PovLastTarget.x, g_PovLastTarget.y, g_PovLastTarget.z, guards);
+ return result;
+}

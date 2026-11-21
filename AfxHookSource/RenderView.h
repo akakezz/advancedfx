@@ -208,6 +208,7 @@ bool MirvPovSpectate_SetMode(bool thirdPerson);
 bool MirvPovSpectate_ThirdPerson();
 void MirvPovSpectate_InstallEngine(void *engine);
 void MirvSpectate_ReleaseView();
-void MirvPovSpectate_ViewDone();
+void MirvPovSpectate_ViewDone(SOURCESDK::QAngle *angles = nullptr);
+const char *MirvPovSpectate_Debug();
 bool MirvPovSpectate_DrawRecorderWorldModel();
 int MirvPovSpectate_HiddenPlayer();

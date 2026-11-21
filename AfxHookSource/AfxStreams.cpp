@@ -10127,6 +10127,8 @@ void CAfxStreams::ShutDown2(void)
 }
 
 void CAfxStreams::DrawingThread_DeviceLost() {
+ DrawingThread_Tf2White(false);
+ if (m_Tf2WhiteSurface) { m_Tf2WhiteSurface->Release(); m_Tf2WhiteSurface = nullptr; }
 	if (m_IntZTextureSurface) {
 		m_IntZTextureSurface->Release();
 		m_IntZTextureSurface = nullptr;
@@ -10388,6 +10390,28 @@ bool CAfxStreams::DrawingThread_BindTf2PassTarget() {
  return SUCCEEDED(device->SetDepthStencilSurface(nullptr)) &&
   SUCCEEDED(device->SetRenderTarget(0, color)) && SUCCEEDED(device->SetDepthStencilSurface(depth));
 }
+bool CAfxStreams::DrawingThread_Tf2White(bool white) {
+ if (white == m_Tf2WhiteBound) return true;
+ auto device = AfxGetDirect3DDevice9(); D3DVIEWPORT9 viewport{};
+ const bool haveViewport = device && SUCCEEDED(device->GetViewport(&viewport));
+ if (white && !haveViewport) return false;
+ if (white) {
+  // Shadow/reflection model draws must not be replayed into the main matte.
+  IDirect3DSurface9 *actual = nullptr;
+  if (FAILED(device->GetRenderTarget(0, &actual))) return false;
+  const bool main = actual == AfxGetRenderTargetSurface();
+  if (actual) actual->Release();
+  if (!main) return false;
+ }
+ if (white) {
+  if (!m_Tf2WhiteSurface) return false;
+  AfxD3d9PushRenderTargetEx(m_Tf2WhiteSurface);
+ } else AfxD3d9PopRenderTarget(false);
+ m_Tf2WhiteBound = white;
+ const bool bound = DrawingThread_BindTf2PassTarget();
+ // Preserve viewmodel depth range across render-target switches.
+ return haveViewport && SUCCEEDED(device->SetViewport(&viewport)) && bound;
+}
 void CAfxStreams::DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass) {
  auto &color = m_Tf2PassPreviousColor[unsigned(pass)];
  auto &depth = m_Tf2PassPreviousDepth[unsigned(pass)];
@@ -10404,7 +10428,9 @@ void CAfxStreams::DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass) {
 }
 void CAfxStreams::CPassCaptureFunctor::operator()() {
  auto &node = g_AfxStreams.m_Tf2PassNodes[unsigned(Pass)];
+ const bool matte = g_AfxStreams.m_Tf2PassMatte[unsigned(Pass)];
  if (Op == Create) {
+  g_AfxStreams.m_Tf2PassMatte[unsigned(Pass)] = Matte;
   if (!node) { node = new CCaptureNode(new CCaptureInputRenderTarget(), new CDrawingRecordScreenOutput(Creator, Matte)); node->AddRef(); }
   return;
  }
@@ -10432,9 +10458,17 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
    g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] = SUCCEEDED(result);
    if (FAILED(result)) Tier0_Warning("TF2 %s pass clear failed: 0x%08x.\n", Tf2RenderPassName(Pass), unsigned(result));
   } else Tier0_Warning("TF2 %s pass could not bind its color/depth targets.\n", Tf2RenderPassName(Pass));
+  if (matte && g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) {
+   if (!g_AfxStreams.m_Tf2WhiteSurface)
+    g_AfxStreams.m_Tf2WhiteSurface = AfxCreateCompatibleRenderTarget(AfxGetRenderTargetSurface(), true);
+   const bool white = g_AfxStreams.DrawingThread_Tf2White(true);
+   const bool cleared = white && SUCCEEDED(device->Clear(0, nullptr, D3DCLEAR_TARGET, 0xffffffffu, 1, 0));
+   const bool restored = g_AfxStreams.DrawingThread_Tf2White(false);
+   g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] &= cleared && restored;
+  }
   return;
  }
- if (!g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) { if (node) node->GpuCaptureSkipped(); return; }
+ if (!g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) { if (node) { node->GpuCaptureSkipped(); if (matte) node->GpuCaptureSkipped(); } return; }
  g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
  const bool capture = g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] && g_AfxStreams.DrawingThread_BindTf2PassTarget();
  if (capture && Pass == Tf2RenderPass::Depth) {
@@ -10445,7 +10479,13 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
    AfxDrawDepth(AfxDrawDepthEncode_Gray, AfxDrawDepthMode_PyramidalLogE, false, 0, 4096,
      viewport.X, viewport.Y, viewport.Width, viewport.Height, Near, Far, nullptr);
  }
- if (node) { if (capture) node->GpuCapture(); else node->GpuCaptureSkipped(); }
+ if (node) {
+  if (capture) node->GpuCapture(); else node->GpuCaptureSkipped();
+  if (matte) {
+   if (capture && g_AfxStreams.DrawingThread_Tf2White(true)) node->GpuCapture(); else node->GpuCaptureSkipped();
+   g_AfxStreams.DrawingThread_Tf2White(false);
+  }
+ }
  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetIntZTextureSurface();
  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetRenderTargetNoMsaa(false);
  else g_AfxStreams.DrawingThread_UnsetRenderTarget(false);

@@ -47,6 +47,8 @@ public:
   case 2: AfxD3D9OverrideBegin_D3DRS_COLORWRITEENABLE(0); break;
   case 3: AfxD3D9OverrideEnd_D3DRS_COLORWRITEENABLE(); AfxD3D9PopOverrideState(); break;
   case 4: g_AfxStreams.DrawingThread_BindTf2PassTarget(); AfxD3D9OverrideBegin_D3DRS_COLORWRITEENABLE(15); break;
+  case 5: AfxD3D9OverrideBegin_D3DRS_COLORWRITEENABLE(g_AfxStreams.DrawingThread_Tf2White(true) ? 15 : 0); AfxD3D9OverrideBegin_D3DRS_ZWRITEENABLE(false); break;
+  case 6: AfxD3D9OverrideEnd_D3DRS_ZWRITEENABLE(); g_AfxStreams.DrawingThread_Tf2White(false); AfxD3D9OverrideBegin_D3DRS_COLORWRITEENABLE(0); break;
   }
  }
 };
@@ -74,7 +76,15 @@ void __fastcall Tf2PassDrawModel(void *self,
  edx,
 #endif
  state, info, bones);
- if (isolate) Tf2PassColor(2);
+ if (isolate && g_AfxStreams.Tf2PassAlpha()) {
+  Tf2PassColor(5);
+  g_Tf2OriginalModel(self,
+#ifndef _WIN64
+ edx,
+#endif
+ state, info, bones);
+  Tf2PassColor(6);
+ } else if (isolate) Tf2PassColor(2);
 }
 void __fastcall Tf2PassRenderFrame(void *self,
 #ifndef _WIN64
@@ -132,14 +142,12 @@ void __fastcall Tf2PassRenderFrame(void *self,
    if (!g_AfxStreams.Tf2PassRecording(pass)) continue;
    g_Tf2ActivePass = pass;
    const bool matte = g_AfxStreams.Tf2PassAlpha() && Tf2RenderPassIsolated(pass);
-   for (int sample = 0; sample < (matte ? 2 : 1); ++sample) {
-    g_AfxStreams.EngineThread_PassBegin(pass, matte ? sample : -1);
-    if (pass != Tf2RenderPass::World) Tf2PassColor(0);
-    // Retain the capture target matte; world depth occludes isolated models.
-    render(2, (pass == Tf2RenderPass::Hud ? 2 : pass == Tf2RenderPass::Viewmodel ? 1 : 0) | 4);
-    if (pass != Tf2RenderPass::World) Tf2PassColor(3);
-    g_AfxStreams.EngineThread_PassEnd(pass, projection.Near, projection.Far);
-   }
+   g_AfxStreams.EngineThread_PassBegin(pass, matte ? 0 : -1);
+   if (pass != Tf2RenderPass::World) Tf2PassColor(0);
+   // Retain the capture target matte; world depth occludes isolated models.
+   render(2, (pass == Tf2RenderPass::Hud ? 2 : pass == Tf2RenderPass::Viewmodel ? 1 : 0) | 4);
+   if (pass != Tf2RenderPass::World) Tf2PassColor(3);
+   g_AfxStreams.EngineThread_PassEnd(pass, projection.Near, projection.Far);
    g_Tf2ActivePass = Tf2RenderPass::Count;
   }
   g_Tf2RenderGroups.clear();
@@ -177,7 +185,15 @@ void __fastcall Tf2PassPaint(void *self,
  edx,
 #endif
  mode);
- if (hud) Tf2PassColor(2);
+ if (hud && g_AfxStreams.Tf2PassAlpha()) {
+  Tf2PassColor(5);
+  g_Tf2OriginalPaint(self,
+#ifndef _WIN64
+ edx,
+#endif
+ mode);
+  Tf2PassColor(6);
+ } else if (hud) Tf2PassColor(2);
 }
 }
 void Tf2RenderPassInstallRenderView(void *render)

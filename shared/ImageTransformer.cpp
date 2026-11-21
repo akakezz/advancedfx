@@ -18,6 +18,9 @@ namespace ImageTransformer {
 		return result;
 	}
 
+    std::mutex g_TransformCompletionMutex;
+    std::condition_variable g_TransformCompletionCv;
+
 	class CTranformTask
 		: public advancedfx::CThreadPool::CTask
 	{
@@ -29,7 +32,8 @@ namespace ImageTransformer {
 		}
 
 		virtual ~CTranformTask() {
-			task_counter--;
+            std::lock_guard<std::mutex> lock(g_TransformCompletionMutex);
+            if (--task_counter == 0) g_TransformCompletionCv.notify_all();
 		}
 
 	protected:
@@ -731,6 +735,7 @@ namespace ImageTransformer {
 IImageBufferThreadSafe* Transform(class CThreadPool * threadPool, CGrowingBufferPoolThreadSafe * imageBufferPool, class ITransform* transform) {
     if (IImageBufferThreadSafe* pOutBuffer = transform->CreateOutput(imageBufferPool)) {
         size_t outTaskSize = transform->GetTaskSize();
+        if (!outTaskSize) { pOutBuffer->Release(); return nullptr; }
         size_t thread_count = std::min(threadPool->GetThreadCount() + 1, outTaskSize);
         size_t lines_per_task = outTaskSize / thread_count;
         size_t lines_per_task_remainder = outTaskSize % thread_count;
@@ -754,7 +759,10 @@ IImageBufferThreadSafe* Transform(class CThreadPool * threadPool, CGrowingBuffer
             lastTask->Execute();
             delete lastTask;
         }
-        while (0 < task_counter) {}
+        {
+            std::unique_lock<std::mutex> lock(g_TransformCompletionMutex);
+            g_TransformCompletionCv.wait(lock, [&] { return task_counter == 0; });
+        }
 
         return pOutBuffer;
     }

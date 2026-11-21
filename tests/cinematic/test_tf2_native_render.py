@@ -21,9 +21,10 @@ bool AfxDetourPtr(PVOID*slot,PVOID replacement,PVOID*original){*original=*slot;*
 '''+structs+r'''
 constexpr int SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2;int g_SourceSdkVer=1;
 namespace SOURCESDK {struct QAngle{float x=0,y=0,z=0;};}
-struct Engine{SOURCESDK::QAngle Angles{3,12,0};void GetViewAngles(SOURCESDK::QAngle&a){a=Angles;}void SetViewAngles(const SOURCESDK::QAngle&a){Angles=a;}bool Demo=true,Hltv=false;int Local=1;bool IsPlayingDemo(){return Demo;}bool IsHLTV(){return Hltv;}int GetLocalPlayer(){return Local;}}engine,*g_VEngineClient=&engine;
+struct Engine{SOURCESDK::QAngle Angles{3,12,0};void GetViewAngles(SOURCESDK::QAngle&a){a=Angles;}void SetViewAngles(const SOURCESDK::QAngle&a){Angles=a;}bool Demo=true,Hltv=false;int Local=1,FirstPersonRequests=0;void ExecuteClientCmd(const char*c){assert(std::string(c)=="firstperson");++FirstPersonRequests;}bool IsPlayingDemo(){return Demo;}bool IsHLTV(){return Hltv;}int GetLocalPlayer(){return Local;}}engine,*g_VEngineClient=&engine;
 struct TauntVar {float Value=0;float GetFloat(){return Value;}void SetValue(float v){Value=v;}}tauntVar;
-struct Vars{TauntVar*FindVar(const char*name){return !std::strcmp(name,"tf_taunt_first_person")?&tauntVar:nullptr;}}vars;
+TauntVar bodyVar,viewmodelVar,demoVar;
+struct Vars{TauntVar*FindVar(const char*name){if(!std::strcmp(name,"tf_taunt_first_person"))return &tauntVar;if(!std::strcmp(name,"cl_first_person_uses_world_model"))return &bodyVar;if(!std::strcmp(name,"r_drawviewmodel"))return &viewmodelVar;if(!std::strcmp(name,"cl_demoviewoverride"))return &demoVar;return nullptr;}}vars;
 namespace SOURCESDK{namespace L4D2{Vars*g_pCVar=nullptr;}namespace CSS{Vars*g_pCVar=&vars;}}
 struct Entity {void **Vtable;void **Network;unsigned Serial;int Mode;unsigned Target;float Pitch=0,Yaw=0;int Fov=0,FovStart=0,DefaultFov=90;float Punch[3]={},ViewOffset[3]={0,0,64};bool Taunting=true;};
 Entity local{},target{};std::map<int,Entity*>entities{{1,&local},{2,&target}};
@@ -38,6 +39,7 @@ void ClientEngineView(void*,SOURCESDK::QAngle&a){a=engine.Angles;a.y+=90;}
 void *GetClass(void*){return &cls;}bool dormant=false;bool Dormant(void*){return dormant;}
 #include "AfxHookSource/Tf2PovSpectate.inl"
 int main(){
+ viewmodelVar.Value=demoVar.Value=1;
  void *engineTable[19]={};engineTable[18]=reinterpret_cast<void*>(EngineView);void **rawEngine=engineTable;MirvPovSpectate_InstallEngine(&rawEngine);
  void *clientTable[19]={};clientTable[18]=reinterpret_cast<void*>(ClientEngineView);void **clientEngine=clientTable;
  MirvPovSpectate_InstallEngine(&clientEngine);MirvPovSpectate_InstallEngine(&clientEngine); // Duplicate/aliased factory results must not recurse.
@@ -50,7 +52,7 @@ int main(){
  assert(MirvPovSpectate_SetPlayer(2));assert(local.Mode==0&&local.Target==88&&tauntVar.Value==1&&local.Taunting);
  assert(!MirvPovSpectate_DrawRecorderWorldModel());
  MirvPovSpectate_FrameBegin();assert(local.Mode==4&&local.Target==5678&&MirvPovSpectate_DrawRecorderWorldModel()&&MirvPovSpectate_HiddenPlayer()==2);
- MirvPovSpectate_ViewDone();assert(MirvPovSpectate_DrawRecorderWorldModel()); // Visibility stays scoped through drawing.
+ MirvPovSpectate_ViewDone(nullptr);assert(MirvPovSpectate_DrawRecorderWorldModel()); // Visibility stays scoped through drawing.
  MirvPovSpectate_FrameEnd();assert(local.Mode==0&&local.Target==88&&!MirvPovSpectate_DrawRecorderWorldModel()&&clientAngles().y==102);
  // Native chase must use interpolated TARGET angles, not the recorder's angles.
  props[2].Name="m_angEyeAngles[0]";props[2].Type=1;props[2].Offset=offsetof(Entity,Pitch);
@@ -66,9 +68,9 @@ int main(){
  MirvPovSpectate_FrameBegin();assert(local.Mode==5&&engine.Angles.y==12&&MirvPovSpectate_HiddenPlayer()==0);assert(local.Fov==0&&local.FovStart==90&&local.DefaultFov==90&&local.Punch[0]==0&&local.ViewOffset[2]==72&&local.Taunting&&tauntVar.Value==1);
  target.Pitch=11;target.Yaw=71;auto observed=nativeAngles();assert(observed.x==11&&observed.y==71&&engine.Angles.x==3&&engine.Angles.y==12);
  assert(clientAngles().y==71);engine.Angles.y=-179;assert(clientAngles().y==71);engine.Angles.y=179;assert(clientAngles().y==71);engine.Angles.y=12;
- MirvPovSpectate_ViewDone();assert(local.Mode==5&&local.Fov==20&&local.FovStart==10&&local.DefaultFov==75&&local.Punch[0]==3&&local.ViewOffset[2]==24);
+ SOURCESDK::QAngle finalView{0,12,0};MirvPovSpectate_ViewDone(&finalView);assert(finalView.y==71&&nativeAngles().y==12&&clientAngles().y==102&&bodyVar.Value==1&&viewmodelVar.Value==0&&demoVar.Value==0&&engine.FirstPersonRequests>0);assert(local.Mode==5&&local.Fov==20&&local.FovStart==10&&local.DefaultFov==75&&local.Punch[0]==3&&local.ViewOffset[2]==24);
  MirvPovSpectate_FrameEnd();assert(local.Mode==0&&local.Target==88&&engine.Angles.x==3&&engine.Angles.y==12);
- MirvPovSpectate_FrameBegin();assert(nativeAngles().y==71);assert(MirvPovSpectate_SetPlayer(0));assert(engine.Angles.y==12&&local.Mode==0&&tauntVar.Value==0&&local.Taunting);
+ MirvPovSpectate_FrameBegin();assert(nativeAngles().y==71);assert(MirvPovSpectate_SetPlayer(0));assert(engine.Angles.y==12&&local.Mode==0&&tauntVar.Value==0&&local.Taunting&&bodyVar.Value==0&&viewmodelVar.Value==1&&demoVar.Value==1);
  assert(MirvPovSpectate_SetMode(true)&&MirvPovSpectate_SetPlayer(2));table.Count=2;MirvPovSpectate_FrameBegin();assert(local.Mode==0&&nativeAngles().y==12);
  assert(MirvPovSpectate_SetMode(false));table.Count=4;
  // Every frame saves current recorder data, rather than restoring a stale initial snapshot.
@@ -102,6 +104,7 @@ std::vector<int> colorStack;int mask=15;
 void AfxD3D9PushOverrideState(bool){colorStack.push_back(mask);}
 void AfxD3D9OverrideBegin_D3DRS_COLORWRITEENABLE(int value){mask=value;}
 void AfxD3D9OverrideEnd_D3DRS_COLORWRITEENABLE(){mask=15;}
+void AfxD3D9OverrideBegin_D3DRS_ZWRITEENABLE(bool){}void AfxD3D9OverrideEnd_D3DRS_ZWRITEENABLE(){}
 void AfxD3D9PopOverrideState(){mask=colorStack.back();colorStack.pop_back();}
 bool queued=false;std::vector<std::function<void()>> gpuQueue;
 void OnGpu(std::function<void()> f){if(queued)gpuQueue.push_back(std::move(f));else f();}
@@ -112,7 +115,7 @@ struct View{Globals*GetGlobals(){return &globals;}}g_Hook_VClient_RenderView;
 struct Streams {
  bool Recording=true,Alpha=false;bool Tf2PassAlpha(){return Alpha;}std::vector<int>Samples;bool Enabled[5]={true,true,true,true,true};
  std::vector<Tf2RenderPass> Begins,Ends;
- bool DrawingThread_BindTf2PassTarget(){return true;}
+ bool DrawingThread_Tf2White(bool){return true;}bool DrawingThread_BindTf2PassTarget(){return true;}
  bool Tf2PassRecording(Tf2RenderPass p){return Recording&&Enabled[unsigned(p)];}
  void EngineThread_PassBegin(Tf2RenderPass p,int sample){Samples.push_back(sample);Begins.push_back(p);}
  void EngineThread_PassEnd(Tf2RenderPass p,float near,float far){assert(near==3&&far==28000);Ends.push_back(p);}
@@ -155,8 +158,8 @@ int main(){
  assert((visible[Tf2RenderPass::Count]==std::vector<const void*>{&vm,&prop}));assert(g_Tf2RenderGroups.empty());
  hiddenPlayer=0;
  globals.Count++;g_AfxStreams.Recording=true;g_AfxStreams.Alpha=true;g_AfxStreams.Samples.clear();int calls=renderCalls;
- Tf2PassRenderFrame(&client,rect);FlushGpu();assert(renderCalls==calls+8);
- assert((g_AfxStreams.Samples==std::vector<int>{-1,0,1,0,1,0,1,-1}));assert(mask==15&&colorStack.empty());
+ Tf2PassRenderFrame(&client,rect);FlushGpu();assert(renderCalls==calls+5);
+ assert((g_AfxStreams.Samples==std::vector<int>{-1,0,0,0,-1}));assert(mask==15&&colorStack.empty());
  std::cout<<"TF2 normal-frame pass dispatch, isolation and state restoration checks passed\n";
 }
 '''
@@ -200,6 +203,12 @@ int main(){
   output->Release();
  }
  assert(advancedfx::Created==10&&advancedfx::Destroyed==10&&advancedfx::Frames==38&&advancedfx::AlphaFrames==6);
+ for(int take=0;take<6;++take){
+  auto creator=new advancedfx::COutVideoStreamCreator;creator->AddRef();auto output=new CAfxStreams::CDrawingRecordScreenOutput(creator,true);output->AddRef();creator->Release();
+  for(int i=0;i<1440;++i){auto c=new IAfxD3D9CaptureBuffer;c->Sample=i;output->OnCapture(c);c->Release();}
+  output->Release();
+ }
+ assert(advancedfx::Created==16&&advancedfx::Destroyed==16&&advancedfx::Frames==4358&&advancedfx::AlphaFrames==4326);
  std::cout<<"Shared recording worker drains frames and releases creator once across repeated takes\n";
 }
 '''
@@ -219,13 +228,14 @@ capture=r'''
 #include <cassert>
 #include <iostream>
 #include <cstdint>
+#include <vector>
 #include <cmath>
 #include "AfxHookSource/Tf2RenderPass.h"
 using DWORD=unsigned;constexpr unsigned D3DCLEAR_TARGET=1,D3DCLEAR_ZBUFFER=2;
 #define SUCCEEDED(x) ((x)>=0)
 #define FAILED(x) ((x)<0)
-struct D3DVIEWPORT9{unsigned X=0,Y=0,Width=1280,Height=720;};
-struct Surface{unsigned Samples;int Refs=0;unsigned Pixels=0;void AddRef(){++Refs;}void Release(){assert(Refs>0);--Refs;}};Surface original{4},msaa{4},single{0},intz{0},other{8};
+struct D3DVIEWPORT9{unsigned X=0,Y=0,Width=1280,Height=720;float MinZ=0,MaxZ=1;};
+struct Surface{unsigned Samples;int Refs=0;unsigned Pixels=0;void AddRef(){++Refs;}void Release(){assert(Refs>0);--Refs;}};Surface original{4},msaa{4},single{0},intz{0},other{8},white{4};
 using IDirect3DSurface9=Surface;
 Surface *color=&original,*depth=&original,*trackedColor=&original,*trackedDepth=&original;
 Surface*AfxGetRenderTargetSurface(){return trackedColor;}Surface*AfxGetDepthStencilSurface(){return trackedDepth;}unsigned clears=0,lastClear=0,draws=0,captures=0;
@@ -236,10 +246,14 @@ struct Device{
  int SetViewport(const D3DVIEWPORT9*in){Viewport=*in;return 0;}
  int GetRenderTarget(unsigned,Surface**out){*out=color;if(color)color->AddRef();return color?0:-1;}
  int GetDepthStencilSurface(Surface**out){*out=depth;if(depth)depth->AddRef();return depth?0:-1;}
- int SetRenderTarget(unsigned,Surface*in){color=in;Viewport.Width=1280;Viewport.Height=720;return 0;}
+ int SetRenderTarget(unsigned,Surface*in){color=in;Viewport.Width=1280;Viewport.Height=720;Viewport.MinZ=0;Viewport.MaxZ=1;return 0;}
  int SetDepthStencilSurface(Surface*in){depth=in;return 0;}
 }device;
 Device*AfxGetDirect3DDevice9(){return &device;}
+std::vector<Surface*>targetStack;
+void AfxD3d9PushRenderTargetEx(Surface*s){targetStack.push_back(trackedColor);trackedColor=s;}
+void AfxD3d9PopRenderTarget(bool){trackedColor=targetStack.back();targetStack.pop_back();}
+Surface*AfxCreateCompatibleRenderTarget(Surface*s,bool){white.Samples=s->Samples;white.Refs=1;return &white;}
 '''+shader_conversion+r'''
 constexpr int AfxDrawDepthEncode_Gray=0,AfxDrawDepthMode_PyramidalLogE=4;
 void AfxDrawDepth(int,int mode,bool,float outNear,float outFar,unsigned,unsigned,unsigned,unsigned,float zNear,float zFar,void*){
@@ -266,7 +280,8 @@ struct CCaptureNode{
 struct CAfxStreams{
  CCaptureNode*m_Tf2PassNodes[5]={};bool m_Tf2PassActive[5]={},m_Tf2PassPixelsValid[5]={};bool Allocate=true;
  Surface *m_Tf2PassPreviousColor[5]={},*m_Tf2PassPreviousDepth[5]={};D3DVIEWPORT9 m_Tf2PassPreviousViewport[5]={};
- bool DrawingThread_BindTf2PassTarget();void DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass);
+ bool m_Tf2PassMatte[5]={};Surface*m_Tf2WhiteSurface=nullptr;bool m_Tf2WhiteBound=false;
+ bool DrawingThread_Tf2White(bool);bool DrawingThread_BindTf2PassTarget();void DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass);
  unsigned Tf2PassBackground(){return 0xff00ff00u;}
  Surface*DrawingThread_GetOrCreateRenderTargetSurfaceNoMssaa(){return Allocate?&single:nullptr;}
  Surface*DrawingThread_GetOrCreateRenderTargetSurface(){return Allocate?&msaa:nullptr;}
@@ -296,7 +311,14 @@ int main(){
  CAfxStreams::CPassCaptureFunctor begin(pass,CAfxStreams::CPassCaptureFunctor::Begin,nullptr,0xff0000ffu);begin();assert(lastClear==0xff0000ffu);++color->Pixels;
  CAfxStreams::CPassCaptureFunctor end(pass,CAfxStreams::CPassCaptureFunctor::End,nullptr,0,3,28000);end();CAfxStreams::CPassCaptureFunctor destroy(pass,CAfxStreams::CPassCaptureFunctor::Destroy);destroy();
  }
- g_AfxStreams.Allocate=false;CAfxStreams::CPassCaptureFunctor begin(Tf2RenderPass::World,CAfxStreams::CPassCaptureFunctor::Begin);begin();CAfxStreams::CPassCaptureFunctor end(Tf2RenderPass::World,CAfxStreams::CPassCaptureFunctor::End);end();assert(color==&original&&depth==&original&&captures==31);
+ {
+  auto pass=Tf2RenderPass::Players;CAfxStreams::CPassCaptureFunctor create(pass,CAfxStreams::CPassCaptureFunctor::Create,&creator,0,1,32768,true);create();
+  CAfxStreams::CPassCaptureFunctor begin(pass,CAfxStreams::CPassCaptureFunctor::Begin,nullptr,0xff000000u);begin();assert(color==&msaa&&white.Samples==msaa.Samples);++color->Pixels;
+  color=&other;assert(!g_AfxStreams.DrawingThread_Tf2White(true)&&targetStack.empty());color=&msaa;device.Viewport.MaxZ=0.1f;assert(g_AfxStreams.DrawingThread_Tf2White(true));assert(color==&white&&device.Viewport.MaxZ==0.1f);++color->Pixels;g_AfxStreams.DrawingThread_Tf2White(false);
+  CAfxStreams::CPassCaptureFunctor end(pass,CAfxStreams::CPassCaptureFunctor::End);end();assert(captures==33&&color==&original&&!g_AfxStreams.m_Tf2WhiteBound&&targetStack.empty());
+  CAfxStreams::CPassCaptureFunctor destroy(pass,CAfxStreams::CPassCaptureFunctor::Destroy);destroy();g_AfxStreams.m_Tf2WhiteSurface->Release();g_AfxStreams.m_Tf2WhiteSurface=nullptr;
+ }
+ g_AfxStreams.Allocate=false;CAfxStreams::CPassCaptureFunctor begin(Tf2RenderPass::World,CAfxStreams::CPassCaptureFunctor::Begin);begin();CAfxStreams::CPassCaptureFunctor end(Tf2RenderPass::World,CAfxStreams::CPassCaptureFunctor::End);end();assert(color==&original&&depth==&original&&captures==33);
  std::cout<<"Actual capture functor keeps MSAA color/depth compatible and chroma mattes green\n";
 }
 '''

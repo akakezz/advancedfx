@@ -2555,6 +2555,7 @@ private:
 					&pOffscreenSurface, NULL
 				))) {
 					pResult = new CImageBufferWrapper(this, pOffscreenSurface);
+					pOffscreenSurface->Release(); // Wrapper owns its own reference.
 					static_cast<CRefCountedThreadSafe *>(pResult)->AddRef(); // for ourselves
 				} else {
 					lock.lock();
