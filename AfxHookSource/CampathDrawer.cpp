@@ -471,6 +471,28 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 		const double aspect = m_ScreenHeight > 0 ? double(m_ScreenWidth) / m_ScreenHeight : 4.0 / 3.0;
 		for (const auto &camera : MirvCam_Cameras(true))
 		{
+			if (camera.CollisionDebug)
+			{
+				for (const auto &line : advancedfx::CameraCollisionGuideLines(camera))
+					CameraLines.push_back({Vector3(line.A[0], line.A[1], line.A[2]),
+										   Vector3(line.B[0], line.B[1], line.B[2]),
+										   camera.CollisionBlocked ? D3DCOLOR_RGBA(255, 90, 70, 255)
+																   : D3DCOLOR_RGBA(70, 230, 180, 255)});
+				CamPathValue marker;
+				marker.X = camera.CollisionDesired[0];
+				marker.Y = camera.CollisionDesired[1];
+				marker.Z = camera.CollisionDesired[2];
+				label(marker, 1.5f, "Requested", 10);
+				marker.X = camera.CollisionPosition[0];
+				marker.Y = camera.CollisionPosition[1];
+				marker.Z = camera.CollisionPosition[2];
+				label(marker, 1.5f,
+					  !camera.Available				   ? "Collision unavailable"
+					  : camera.CollisionBlocked		   ? "No subject clearance"
+					  : camera.CollisionAnchorEmbedded ? "Corrected (embedded anchor)"
+													   : "Corrected",
+					  10);
+			}
 			if (camera.Viewed)
 				continue;
 			CamPathValue anchor;
@@ -483,8 +505,8 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 												 : D3DCOLOR_RGBA(210, 120, 255, 230);
 			for (const auto &line : advancedfx::CameraGuideLines(camera.Pose, aspect,
 																 AfxHookSource::CameraOverlay::CameraFrustumsEnabled()))
-				CameraLines.push_back(
-					{Vector3(line.A[0], line.A[1], line.A[2]), Vector3(line.B[0], line.B[1], line.B[2]), color});
+				CameraLines.push_back({Vector3(line.A[0], line.A[1], line.A[2]),
+									   Vector3(line.B[0], line.B[1], line.B[2]), color});
 		}
 	}
 	if (sceneOnly)

@@ -685,7 +685,7 @@ def motion_function(text, signature):
  return text[begin:end]
 motion_header=calcs_motion_header[calcs_motion_header.index('struct MirvCameraCollisionSettings'):calcs_motion_header.index('MirvCameraCollisionSettings MirvCameraCollisionGet();')]
 motion_stubs=r"""
-struct MirvTf2Trace_t{bool startSolid=false,allSolid=false;float fraction=1;};
+struct MirvTf2Trace_t{bool startSolid=false,allSolid=false;float fraction=1;struct{float normal[3]{};}plane;};
 MirvCameraCollisionSettings fixtureFollowSettings;MirvCameraCollisionSettings MirvCameraCollisionGet(){return fixtureFollowSettings;}
 bool fixtureCollisionAllowed=false;int fixtureCollisionQueries=0;double fixtureCollisionShift=0;
 bool CameraCollisionClear(const double*,const MirvCameraCollisionSettings&,void* =nullptr){assert(fixtureCollisionAllowed);++fixtureCollisionQueries;return true;}
@@ -694,6 +694,8 @@ bool CameraCollisionMove(const double*,const double*to,const MirvCameraCollision
 void CameraReturnTarget(const double*,const double*,double,double,double,double*){std::abort();}
 """
 rig_preamble+=motion_header+motion_stubs+motion_function(calcs_motion,'bool MirvCameraAttachedReframe(')+motion_function(calcs_motion,'bool MirvCameraAttachedEvaluate(')
+apply_at=calcs_motion_header.index('bool MirvCameraAttachedApply(')
+rig_preamble+=calcs_motion_header[apply_at:calcs_motion_header.index(';',apply_at)+1]+'\n'
 rig_preamble+='\nMirvCameraAttachedState g_AttachedCameraHistory;struct FixtureGeneration{unsigned long long load(){return 1;}}g_AttachedCameraGeneration;\n'+motion_function(calcs_motion,'bool MirvCameraAttachedApply(')
 
 # Run the actual legacy attachment command body too, not a second imitation of its grammar.

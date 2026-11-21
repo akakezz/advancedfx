@@ -7905,6 +7905,30 @@ static void DrawCamerasTab()
 		auto collision = MirvCameraCollisionGet();
 
 		DrawSharedCollisionOptions();
+		if (ImGui::InputDouble("Minimum subject distance (units)", &collision.SubjectClearance, 0, 0, "%.2f",
+							   ImGuiInputTextFlags_EnterReturnsTrue))
+		{
+			char cmd[128];
+			std::snprintf(cmd, sizeof(cmd), "mirv_cam collision subjectClearance %.9g",
+						  collision.SubjectClearance);
+			Afx_ExecClientCmd(cmd);
+		}
+		if (ImGui::InputDouble("Attached near-plane depth (0 disables)", &collision.NearPlane, 0, 0, "%.2f",
+							   ImGuiInputTextFlags_EnterReturnsTrue))
+		{
+			char cmd[128];
+			std::snprintf(cmd, sizeof(cmd), "mirv_cam collision nearPlane %.9g", collision.NearPlane);
+			Afx_ExecClientCmd(cmd);
+		}
+		if (ImGui::Checkbox("Draw collision diagnostics", &collision.Debug))
+			Afx_ExecClientCmd(collision.Debug ? "mirv_cam collision debug 1" : "mirv_cam collision debug 0");
+		ImGui::TextDisabled(
+			"Subject distance is from the physical attachment point; 0 uses engine collision only.");
+
+		if (found != cameras.end() && found->CollisionDebug)
+			ImGui::TextWrapped("Collision: %s%s",
+							   found->CollisionBlocked ? "no subject-sized gap" : "clear camera hull",
+							   found->CollisionAnchorEmbedded ? "; anchor hull overlaps geometry" : "");
 		if (ImGui::Checkbox("Enable attached collision", &collision.Attached))
 			Afx_ExecClientCmd(collision.Attached ? "mirv_cam collision attached 1"
 												 : "mirv_cam collision attached 0");
