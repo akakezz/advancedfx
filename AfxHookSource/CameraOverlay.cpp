@@ -2,6 +2,7 @@
 // MIT license; see shared/overlay/PORTING.md for provenance and scope.
 #include "MirvCam.h"
 #include "CameraOverlay.h"
+#include "Tf2RenderPass.h"
 #include "CampathDrawer.h"
 #include "Gui.h"
 #include "MirvCalcs.h"
@@ -3420,8 +3421,16 @@ static void DrawObserving()
 			}
 		}
 		else if (g_VEngineClient && g_VEngineClient->IsPlayingDemo())
-			ImGui::TextWrapped("POV demo: native player spectating is unavailable. Selecting players does not change the view. "
-				"Use Attach selected only when you explicitly want an HLAE camera attachment.");
+  {
+   if (ImGui::Button("Spectate selected (POV)")) {
+    char cmd[192];
+    std::snprintf(cmd, sizeof(cmd), "mirv_pov %d", selectedEntity);
+    Afx_ExecClientCmd(cmd);
+   }
+   ImGui::SameLine();
+   if (ImGui::Button("Return to recorded POV")) Afx_ExecClientCmd("mirv_pov off");
+   ImGui::TextWrapped("%s", MirvPovSpectate_Status());
+  }
 		ImGui::Separator();
 		ImGui::Text("Selected entity: %d", selectedEntity);
 		ImGui::InputFloat3("Forward / left / up", offset);
@@ -8703,7 +8712,19 @@ void Draw()
 					Afx_ExecClientCmd("engine_no_focus_sleep 0; snd_mute_losefocus 0");
 				}
 
-				// Record screen settings
+				// Separate TF2 passes share the existing capture clock and profile registry.
+    if (ImGui::CollapsingHeader("Separate recording passes")) {
+     const bool editable = Recording::SeparatePassSupported() && !Recording::IsActive();
+     if (!editable) ImGui::BeginDisabled();
+     for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) {
+      bool enabled = Recording::PassEnabled(i);
+      if (ImGui::Checkbox(Tf2RenderPassName(Tf2RenderPass(i)), &enabled)) Recording::SetPassEnabled(i, enabled);
+     }
+     if (!editable) ImGui::EndDisabled();
+     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use a black background; depth is inverse grayscale. Extra passes increase render cost.");
+     if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("TF2 render-pass hooks are unavailable.");
+    }
+    // Record screen settings
 				bool screenEnabled = Recording::ScreenEnabled();
 				if (ImGui::Checkbox("Record screen enabled", &screenEnabled))
 				{

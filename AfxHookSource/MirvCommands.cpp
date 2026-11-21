@@ -891,7 +891,13 @@ CON_COMMAND(mirv_streams, "Access to streams system.")
 					return;
 				}
 #endif //#ifndef _WIN64
-				else if (0 == _stricmp(cmd2, "screen"))
+				else if (0 == _stricmp(cmd2, "pass"))
+    {
+     CSubWrpCommandArgs subArgs(args, 3);
+     g_AfxStreams.Console_RecordPass(&subArgs);
+     return;
+    }
+    else if (0 == _stricmp(cmd2, "screen"))
 				{
 					CSubWrpCommandArgs subArgs(args, 3);
 
@@ -1054,6 +1060,7 @@ CON_COMMAND(mirv_streams, "Access to streams system.")
 			);
 #endif //#ifndef _WIN64
 			Tier0_Msg(
+				"mirv_streams record pass [...] - Enable separate TF2 world/player/viewmodel/HUD/depth outputs.\n"
 				"mirv_streams record screen [...] - Controls capturing the game content drawn to screen right before being presented.\n"
 				"mirv_streams record startMovieWav [...] - Controls WAV audio recording.\n"
 			);
@@ -1508,6 +1515,7 @@ void RememberNativeDemoFile(const void *args)
 		if (command.ArgC() >= 2)
 		{
 			MirvFix_PlayerRepairNewDemo(command.Arg(1));
+			MirvPovSpectate_SetPlayer(0);
 			MirvCam_NotifyDemoFile(command.Arg(1), g_VEngineClient ? g_VEngineClient->GetGameDirectory() : nullptr);
 #if AFX_ENABLE_GUI
 			AfxHookSource::CameraOverlay::NotifyDemoPlaybackFile(command.Arg(1));
@@ -5309,6 +5317,8 @@ bool MirvFix_SetPovDeathcam(bool enabled)
 }
 // End TF2 POV deathcam control.
 
+#include "Tf2PovSpectate.inl"
+
 // TF2 manual player repair. Observe original receive values before substituting
 // explicitly excluded samples; Source retains ownership of interpolation/bones.
 namespace
@@ -7738,6 +7748,31 @@ CON_COMMAND(mirv_spec_player_key, "Spectate player by spectatorslot index") {
 }
 
 #endif //#ifndef _WIN64
+
+CON_COMMAND(mirv_pov, "Native in-eye player spectating in TF2 POV demos.")
+{
+ if (args->ArgC() == 2) {
+  const char *value = args->ArgV(1);
+  char *end = nullptr;
+  const long index = std::strtol(value, &end, 10);
+  const bool off = !_stricmp(value, "off");
+  if ((off || (end && !*end && end != value && index > 0 && index <= 128)) &&
+      MirvPovSpectate_SetPlayer(off ? 0 : int(index))) {
+   {
+    MirvCam_EnableSequence(false);
+    MirvCam_EndRigPreview();
+    g_MirvCam.Source_set(nullptr);
+    for (size_t i = 0; i < g_Hook_VClient_RenderView.m_CamPaths.GetCount(); ++i)
+     g_Hook_VClient_RenderView.m_CamPaths.GetPath(i)->Enabled_set(false);
+    if (auto input = g_Hook_VClient_RenderView.m_MirvInput) input->SetCameraControlMode(false);
+    g_Aiming.Active = false;
+   }
+   return;
+  }
+ }
+ Tier0_Msg("mirv_pov <entityIndex> - Spectate a recorded player using native in-eye observation.\n"
+           "mirv_pov off - Return to the recorded player's view.\n%s\n", MirvPovSpectate_Status());
+}
 
 CON_COMMAND(mirv_overlay, "Cinematic workspace (supported games only).")
 {

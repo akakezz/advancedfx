@@ -272,7 +272,7 @@ public:
 		g_Engine_ClientEngineTools->LevelInitPreEntityAllTools();
 	}
 	virtual void LevelInitPostEntityAllTools() { g_Engine_ClientEngineTools->LevelInitPostEntityAllTools(); }
-	virtual void LevelShutdownPreEntityAllTools() { g_Engine_ClientEngineTools->LevelShutdownPreEntityAllTools(); }
+	virtual void LevelShutdownPreEntityAllTools() { MirvPovSpectate_SetPlayer(0); g_Engine_ClientEngineTools->LevelShutdownPreEntityAllTools(); }
 	virtual void LevelShutdownPostEntityAllTools() { g_Engine_ClientEngineTools->LevelShutdownPostEntityAllTools(); }
 	virtual void PreRenderAllTools()
 	{
@@ -371,6 +371,7 @@ public:
 	virtual void VGui_PreRenderAllTools( int paintMode )
 	{
 		//Tier0_Msg("ClientEngineTools::VGui_PreRenderAllTools\n");
+		Tf2RenderPassHud(true);
 		g_Engine_ClientEngineTools->VGui_PreRenderAllTools(paintMode);
 	}
 	
@@ -378,6 +379,7 @@ public:
 	{
 		//Tier0_Msg("ClientEngineTools::VGui_PostRenderAllTools\n");
 		g_Engine_ClientEngineTools->VGui_PostRenderAllTools(paintMode);
+		Tf2RenderPassHud(false);
 	}
 
 	virtual bool IsThirdPersonCamera() { return g_Engine_ClientEngineTools->IsThirdPersonCamera(); }
@@ -420,6 +422,8 @@ void OnAfter_CMaterialSystem_SwappBuffers() {
 
 SOURCESDK::CreateInterfaceFn g_AppSystemFactory = 0;
 
+#include "Tf2RenderPass.inl"
+
 #ifndef _WIN64
 SOURCESDK::IMaterialSystem_csgo * g_MaterialSystem_csgo = 0;
 
@@ -452,6 +456,8 @@ void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals
 		void *iface , *iface2;
 
 		g_AppSystemFactory = appSystemFactory;
+  if (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified)
+   Tf2RenderPassInstallModel(appSystemFactory("VEngineModel016", nullptr));
 
 		// VEngineClient:
 
@@ -931,6 +937,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 	switch (curStage)
 	{
 	case SOURCESDK::TF2::FRAME_RENDER_START:
+		MirvPovSpectate_FrameBegin();
 		Shared_BeforeFrameRenderStart();
 		MirvFix_PlayerAngleTraceFrame(3);
 		break;
@@ -953,6 +960,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 		MirvFix_RecorderSoundUpdate();
 		break;
 	case SOURCESDK::TF2::FRAME_RENDER_END:
+		MirvPovSpectate_FrameEnd();
 		// Copy completed render poses only after the engine has drawn this frame.
 		// Capturing at RENDER_START could preempt Source's normal bone setup/interpolation.
 		AfxHookSource::CameraOverlay::SceneCacheFrame();
@@ -2226,6 +2234,7 @@ void* new_Client_CreateInterface(const char *pName, int *pReturnCode)
 				case SourceSdkVer_TF2Classified:
 				case SourceSdkVer_TF2:
 					MirvFix_InitializeTf2Client(!strcmp(g_Info_VClient, CLIENT_DLL_INTERFACE_VERSION_017) ? iface : nullptr);
+     if (!strcmp(g_Info_VClient, CLIENT_DLL_INTERFACE_VERSION_017)) Tf2RenderPassInstallClient(iface);
 					AfxDetourPtr((PVOID*) & (vtable[2]), new_CVClient_Shutdown, (PVOID*)&old_CVClient_Shutdown);
 					AfxDetourPtr((PVOID*) & (vtable[35]), new_CVClient_FrameStageNotify_TF2, (PVOID*)&old_CVClient_FrameStageNotify_TF2);
 					break;

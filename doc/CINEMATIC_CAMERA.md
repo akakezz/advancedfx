@@ -2966,3 +2966,57 @@ are at least one float clock step apart, rather than collapsing into the same
 representable playback time in stock HLAE. This does not replace testing a newly
 reported file: the earlier supplied XML matches stock 2.189.6 at every key and
 midpoint; the reported missing-motion case still needs its current XML to isolate.
+
+
+### Experimental TF2 separate recording passes
+
+The Recording tab's **Separate recording passes** section can enable world, players,
+viewmodel, HUD and depth outputs alongside normal screen recording. These use the
+existing `mirv_streams` capture nodes, recording clock and selected screen profile.
+Choose an FFmpeg profile for video files; image-sequence profiles still write images.
+Each enabled pass writes inside its own named subfolder of the same take.
+
+```text
+mirv_streams record pass world 1
+mirv_streams record pass players 1
+mirv_streams record pass viewmodel 1
+mirv_streams record pass hud 1
+mirv_streams record pass depth 1
+```
+
+Use `0` to disable an output. Configure passes before recording, then use the normal
+record start/stop controls. They initially share the screen recording profile,
+including any sampler output FPS. Extra passes render extra views at the same demo
+frame; they do not advance the demo for each output. Unsupported hooks or missing
+INTZ depth support reject recording rather than silently treating depth as color.
+
+The world pass omits players and their attached models. The players pass includes
+player-owned gear and retains world depth occlusion. Player, viewmodel and HUD
+outputs use a black background, without an alpha channel; world shadows are not
+separated. Depth is an inverse grayscale visualization (nearer values are brighter),
+not a linear or floating-point depth file. Use lossless encoding when preserving
+its values matters. Pass selections are session settings. This initial adapter still
+needs an in-game check for TF2/TF2C render effects and per-pass output synchronization.
+
+### Native POV-demo spectating
+
+Use **Observing → Spectate selected (POV)**, or:
+
+```text
+mirv_pov <player entity index>
+mirv_pov off
+```
+
+Selecting a player alone still changes no view. The explicit POV action stops HLAE
+camera playback/preview and releases the live view source without detaching or
+replacing saved camera definitions. It temporarily sets the recorder's native
+in-eye observer target during rendering, then restores the original observer values
+before scene capture and subsequent network updates. No camera rig is created.
+Returning to the recorded player, changing demos, or shutting down the level restores
+normal observation. Targets are tracked by user ID and validated entity handles, so
+a reused entity slot cannot silently select a different player.
+
+A POV demo only contains entities and local-player data recorded by its author.
+Spectating cannot reconstruct missing players, remote viewmodel animation, or HUD
+information that the demo did not record. STV continues to use its native spectator
+command separately.

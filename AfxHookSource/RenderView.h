@@ -196,3 +196,10 @@ void MirvFix_PlayerAngleTraceFrame(int stage);
 bool MirvFix_PlayerAngleTraceSave(const wchar_t *file);
 bool MirvFix_GetPovDeathcam();
 bool MirvFix_SetPovDeathcam(bool enabled);
+
+// Native observer state is scoped to rendering; no camera rig is created.
+bool MirvPovSpectate_SetPlayer(int index);
+int MirvPovSpectate_Player();
+const char *MirvPovSpectate_Status();
+void MirvPovSpectate_FrameBegin();
+void MirvPovSpectate_FrameEnd();

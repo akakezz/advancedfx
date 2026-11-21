@@ -1,4 +1,5 @@
 #pragma once
+#include "Tf2RenderPass.h"
 
 #define AFXSTREAMS_REFTRACKER 0
 
@@ -3533,7 +3534,13 @@ public:
 
 	void DrawingThread_UnsetIntZTextureSurface();
 
-	void EngineThread_QueueCapture();
+ bool Tf2PassEnabled(Tf2RenderPass pass) const;
+ bool SetTf2PassEnabled(Tf2RenderPass pass, bool enabled);
+ bool Tf2PassRecording(Tf2RenderPass pass) const;
+ void EngineThread_PassBegin(Tf2RenderPass pass);
+ void EngineThread_PassEnd(Tf2RenderPass pass);
+ void Console_RecordPass(IWrpCommandArgs *args);
+ void EngineThread_QueueCapture();
 
 	virtual bool GetStreamFolder(std::wstring& outFolder) const {
 		outFolder = g_AfxStreams.GetTakeDir();
@@ -3850,7 +3857,22 @@ private:
 		advancedfx::COutVideoStreamCreator* m_OutVideoStreamCreator;
 		advancedfx::StreamCaptureType m_CaptureType;
 	} * m_DrawingRecordScreen = nullptr;
-	class CCaptureNode* m_DrawingCaptureNode = nullptr;
+ class CCaptureNode* m_DrawingCaptureNode = nullptr;
+ std::atomic<bool> m_Tf2PassEnabled[unsigned(Tf2RenderPass::Count)] = {};
+ CCaptureNode *m_Tf2PassNodes[unsigned(Tf2RenderPass::Count)] = {};
+ bool m_Tf2PassActive[unsigned(Tf2RenderPass::Count)] = {};
+ class CPassCaptureFunctor : public CMaterialSystemFunctor {
+ public:
+  enum Operation { Create, Destroy, Begin, End };
+  CPassCaptureFunctor(Tf2RenderPass pass, Operation op, advancedfx::COutVideoStreamCreator *creator = nullptr)
+   : Pass(pass), Op(op), Creator(creator) { if (Creator) Creator->AddRef(); }
+  ~CPassCaptureFunctor() { if (Creator) Creator->Release(); }
+  void operator()() override;
+ private:
+  Tf2RenderPass Pass;
+  Operation Op;
+  advancedfx::COutVideoStreamCreator *Creator;
+ };
 
 	class CCreateScreenCaptureNodeFunctor : public CMaterialSystemFunctor {
 	public:

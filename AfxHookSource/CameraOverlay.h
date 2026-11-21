@@ -67,6 +67,9 @@ void PreviewSelectAll();
 bool PreviewAnchor();
 namespace Recording
 {
+bool SeparatePassSupported();
+bool PassEnabled(unsigned pass);
+bool SetPassEnabled(unsigned pass, bool enabled);
 const char *GetName();
 void SetName(const char *value);
 bool ScreenEnabled();

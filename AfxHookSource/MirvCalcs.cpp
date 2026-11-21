@@ -11823,3 +11823,45 @@ void Mirv_Tf2_DebugEntityLabel(int address)
 		}
 	Tier0_Msg("Label address %i is unavailable.\n", address);
 }
+
+// Per-render snapshot: no engine entity pointers survive the synchronous pass batch.
+void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups)
+{
+ groups.clear();
+ auto tools = CClientToolsTf2::Instance();
+ auto iface = tools ? tools->GetClientTools() : nullptr;
+ if (!iface) return;
+ struct Row { const void *Renderable; unsigned Handle, Parent, Group; };
+ std::vector<Row> rows;
+ std::map<unsigned, unsigned> handles;
+ size_t scanned = 0;
+ for (auto object = iface->FirstEntity(); object && scanned++ < 4096; object = iface->NextEntity(object)) {
+  auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
+  auto renderable = unknown->GetClientRenderable();
+  if (!renderable) continue;
+  const bool player = iface->IsPlayer(object);
+  unsigned group = Mirv_Tf2_ToolCategory(iface, object, iface->GetEntIndex(object), player, true) == -1 ? 2 : player ? 1 : 0;
+  unsigned parent = 0xffffffffu;
+  if (auto network = unknown->GetClientNetworkable())
+   Mirv_Tf2_SceneMoveParent(object, SceneInterfaceCall<const void *>(network, 2), parent);
+  if (parent == 0xffffffffu || parent == 0)
+   if (auto owner = iface->GetOwnerEntity(object)) parent = Mirv_Tf2_EntityHandle(owner);
+  const auto handle = Mirv_Tf2_EntityHandle(object);
+  rows.push_back({renderable, handle, parent, group});
+  if (handle != 0xffffffffu) handles[handle] = group;
+ }
+ // Wearables and carried weapons inherit their parent's pass; resolve nested gear.
+ for (int depth = 0; depth < 16; ++depth) {
+  bool changed = false;
+  for (auto &row : rows) if (!row.Group && row.Parent != 0xffffffffu) {
+   auto parent = handles.find(row.Parent);
+   if (parent != handles.end() && parent->second) {
+    row.Group = parent->second;
+    if (row.Handle != 0xffffffffu) handles[row.Handle] = row.Group;
+    changed = true;
+   }
+  }
+  if (!changed) break;
+ }
+ for (const auto &row : rows) groups[row.Renderable] = row.Group;
+}
