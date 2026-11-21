@@ -2555,6 +2555,7 @@ private:
 					&pOffscreenSurface, NULL
 				))) {
 					pResult = new CImageBufferWrapper(this, pOffscreenSurface);
+					pOffscreenSurface->Release(); // Wrapper owns its own reference.
 					static_cast<CRefCountedThreadSafe *>(pResult)->AddRef(); // for ourselves
 				} else {
 					lock.lock();
@@ -3865,6 +3866,7 @@ private:
 	class CAfxOverride
 	{
 	public:
+		std::map<D3DRENDERSTATETYPE,DWORD> m_PlayerHoldout;
 		bool m_Override_D3DRS_BLENDOP;
 		DWORD m_OverrideValue_D3DRS_BLENDOP;
 
@@ -3935,7 +3937,7 @@ private:
 		}
 
 		CAfxOverride(const CAfxOverride & x)
-			: m_Dev(x.m_Dev)
+			: m_Dev(x.m_Dev), m_PlayerHoldout(x.m_PlayerHoldout)
 			, m_Override_D3DRS_BLENDOP(x.m_Override_D3DRS_BLENDOP)
 			, m_OverrideValue_D3DRS_BLENDOP(x.m_OverrideValue_D3DRS_BLENDOP)
 			, m_Override_D3DRS_SRCBLEND(x.m_Override_D3DRS_SRCBLEND)
@@ -3990,6 +3992,8 @@ private:
 
 		void Redo(void)
 		{
+   for(const auto &s:m_PlayerHoldout) g_OldDirect3DDevice9->SetRenderState(s.first,
+    s.first==D3DRS_STENCILWRITEMASK && m_PlayerHoldout.at(D3DRS_STENCILREF)==0 && (!m_Dev.m_D3DRS_ZWRITEENABLE || !m_Dev.m_PlayerHoldoutZEnable) ? 0 : s.second);
 			if (m_Override_D3DRS_BLENDOP) g_OldDirect3DDevice9->SetRenderState(D3DRS_BLENDOP, m_OverrideValue_D3DRS_BLENDOP);
 			if (m_Override_D3DRS_SRCBLEND) g_OldDirect3DDevice9->SetRenderState(D3DRS_SRCBLEND, m_OverrideValue_D3DRS_SRCBLEND);
 			if (m_Override_D3DRS_DESTBLEND) g_OldDirect3DDevice9->SetRenderState(D3DRS_DESTBLEND, m_OverrideValue_D3DRS_DESTBLEND);
@@ -4022,6 +4026,7 @@ private:
 
 		void Undo(void)
 		{
+   for(const auto &s:m_PlayerHoldout) g_OldDirect3DDevice9->SetRenderState(s.first,m_Dev.m_NativeHoldoutStates[s.first]);
 			if (m_Override_D3DRS_BLENDOP) g_OldDirect3DDevice9->SetRenderState(D3DRS_BLENDOP, m_Dev.m_D3DRS_BLENDOP);
 			if (m_Override_D3DRS_SRCBLEND) g_OldDirect3DDevice9->SetRenderState(D3DRS_SRCBLEND, m_Dev.m_D3DRS_SRCBLEND);
 			if (m_Override_D3DRS_DESTBLEND) g_OldDirect3DDevice9->SetRenderState(D3DRS_DESTBLEND, m_Dev.m_D3DRS_DESTBLEND);
@@ -4052,6 +4057,9 @@ private:
 	};
 
 	std::stack<CAfxOverride> m_OverrideStack;
+ std::map<D3DRENDERSTATETYPE,DWORD> m_NativeHoldoutStates;
+ bool m_PlayerHoldoutEnabled = false;
+ DWORD m_PlayerHoldoutZEnable = TRUE;
 
 public:
 	NewDirect3DDevice9()
@@ -4059,6 +4067,35 @@ public:
 		m_OverrideStack.emplace(*this);
 	}
 
+ void SetPlayerHoldoutEnabled(bool enabled) { m_PlayerHoldoutEnabled=enabled; }
+ template<typename Draw> HRESULT DrawWithPlayerHoldout(Draw draw) {
+  // Brush entities, static batches and custom renderables can bypass DrawModelExecute.
+  // Tag their native depth-writing fragments too, but never shadow/reflection targets.
+  bool scope=false;
+  if(m_PlayerHoldoutEnabled && m_OverrideStack.top().m_PlayerHoldout.empty()) {
+   IDirect3DSurface9 *color=nullptr,*depth=nullptr;
+   const bool gotColor=SUCCEEDED(g_OldDirect3DDevice9->GetRenderTarget(0,&color));
+   const bool gotDepth=SUCCEEDED(g_OldDirect3DDevice9->GetDepthStencilSurface(&depth));
+   scope=gotColor && gotDepth && color==AfxGetRenderTargetSurface() && depth==AfxGetDepthStencilSurface();
+   if(color)color->Release();if(depth)depth->Release();
+   if(scope){AfxPushOverrideState(false);OverrideBegin_PlayerHoldout(false);}
+  }
+  const auto result=draw();
+  if(scope)AfxPopOverrideState();
+  return result;
+ }
+ void OverrideBegin_PlayerHoldout(bool selected) {
+  auto &o=m_OverrideStack.top();
+  const std::map<D3DRENDERSTATETYPE,DWORD> states={
+   {D3DRS_STENCILENABLE,TRUE},{D3DRS_STENCILFAIL,D3DSTENCILOP_KEEP},
+   {D3DRS_STENCILZFAIL,D3DSTENCILOP_KEEP},{D3DRS_STENCILPASS,D3DSTENCILOP_REPLACE},
+   {D3DRS_STENCILFUNC,D3DCMP_ALWAYS},{D3DRS_STENCILREF,selected?128u:0u},
+   {D3DRS_STENCILMASK,128},{D3DRS_STENCILWRITEMASK,128},{D3DRS_TWOSIDEDSTENCILMODE,FALSE}};
+  for(const auto &s:states){
+   if(!m_NativeHoldoutStates.count(s.first)){DWORD v=0;g_OldDirect3DDevice9->GetRenderState(s.first,&v);m_NativeHoldoutStates[s.first]=v;}
+  }
+  o.m_PlayerHoldout=states;o.Redo();
+ }
 	void OverrideBegin_D3DRS_BLENDOP(DWORD value)
 	{
 		CAfxOverride & curOverride = m_OverrideStack.top();
@@ -5303,6 +5340,14 @@ public:
     
     STDMETHOD(SetRenderState)(THIS_ D3DRENDERSTATETYPE State,DWORD Value)
 	{
+  auto &holdout=m_OverrideStack.top().m_PlayerHoldout;
+  if((State>=D3DRS_STENCILENABLE && State<=D3DRS_STENCILWRITEMASK) || State==D3DRS_TWOSIDEDSTENCILMODE){
+   m_NativeHoldoutStates[State]=Value;
+   if(holdout.count(State))return D3D_OK;
+  }
+  if(State==D3DRS_ZENABLE)m_PlayerHoldoutZEnable=Value;
+  if((State==D3DRS_ZWRITEENABLE || State==D3DRS_ZENABLE) && !holdout.empty() && holdout.at(D3DRS_STENCILREF)==0)
+   g_OldDirect3DDevice9->SetRenderState(D3DRS_STENCILWRITEMASK,((State==D3DRS_ZWRITEENABLE?Value:m_D3DRS_ZWRITEENABLE) && m_PlayerHoldoutZEnable)?128:0);
 		if(g_bD3D9DebugPrint)
 		{
 			Tier0_Msg("SetRenderState: ");
@@ -5613,10 +5658,10 @@ public:
     IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, GetSoftwareVertexProcessing);
     IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, SetNPatchMode);
     IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, GetNPatchMode);
-    IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, DrawPrimitive);
-    IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, DrawIndexedPrimitive);
-    IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, DrawPrimitiveUP);
-    IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, DrawIndexedPrimitiveUP);
+    STDMETHOD(DrawPrimitive)(THIS_ D3DPRIMITIVETYPE type, UINT start, UINT count) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawPrimitive(type,start,count);}); }
+    STDMETHOD(DrawIndexedPrimitive)(THIS_ D3DPRIMITIVETYPE type, INT base, UINT min, UINT vertices, UINT start, UINT count) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawIndexedPrimitive(type,base,min,vertices,start,count);}); }
+    STDMETHOD(DrawPrimitiveUP)(THIS_ D3DPRIMITIVETYPE type, UINT count, const void *vertices, UINT stride) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawPrimitiveUP(type,count,vertices,stride);}); }
+    STDMETHOD(DrawIndexedPrimitiveUP)(THIS_ D3DPRIMITIVETYPE type, UINT min, UINT vertices, UINT count, const void *indices, D3DFORMAT format, const void *data, UINT stride) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawIndexedPrimitiveUP(type,min,vertices,count,indices,format,data,stride);}); }
 	
 
 	IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, ProcessVertices);
@@ -6130,10 +6175,10 @@ IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, SetSoftwareVertexProcessing, NewDirect3D
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, GetSoftwareVertexProcessing, NewDirect3DDevice9, g_OldDirect3DDevice9);
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, SetNPatchMode, NewDirect3DDevice9, g_OldDirect3DDevice9);
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, GetNPatchMode, NewDirect3DDevice9, g_OldDirect3DDevice9);
-IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, DrawPrimitive, NewDirect3DDevice9, g_OldDirect3DDevice9);
-IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, DrawIndexedPrimitive, NewDirect3DDevice9, g_OldDirect3DDevice9);
-IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, DrawPrimitiveUP, NewDirect3DDevice9, g_OldDirect3DDevice9);
-IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, DrawIndexedPrimitiveUP, NewDirect3DDevice9, g_OldDirect3DDevice9);
+// DrawPrimitive is routed through the shared player holdout scope.
+// DrawIndexedPrimitive is routed through the shared player holdout scope.
+// DrawPrimitiveUP is routed through the shared player holdout scope.
+// DrawIndexedPrimitiveUP is routed through the shared player holdout scope.
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, ProcessVertices, NewDirect3DDevice9, g_OldDirect3DDevice9);
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, CreateVertexDeclaration, NewDirect3DDevice9, g_OldDirect3DDevice9);
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, SetVertexDeclaration, NewDirect3DDevice9, g_OldDirect3DDevice9);
@@ -6537,6 +6582,35 @@ void AfxD3D9PopOverrideState(void)
 	if (!g_OldDirect3DDevice9) return;
 
 	g_NewDirect3DDevice9.AfxPopOverrideState();
+}
+
+void AfxD3D9SetPlayerHoldoutEnabled(bool enabled) { g_NewDirect3DDevice9.SetPlayerHoldoutEnabled(enabled); }
+void AfxD3D9OverrideBegin_PlayerHoldout(bool selected) {
+ if(!g_OldDirect3DDevice9)return;
+ IDirect3DSurface9 *color=nullptr,*depth=nullptr;
+ const bool gotColor=SUCCEEDED(g_OldDirect3DDevice9->GetRenderTarget(0,&color));
+ const bool gotDepth=SUCCEEDED(g_OldDirect3DDevice9->GetDepthStencilSurface(&depth));
+ const bool main=gotColor && gotDepth && color==AfxGetRenderTargetSurface() && depth==AfxGetDepthStencilSurface();
+ if(color)color->Release();if(depth)depth->Release();
+ if(main)g_NewDirect3DDevice9.OverrideBegin_PlayerHoldout(selected);
+}
+bool AfxD3D9ClearPlayerHoldout(DWORD background) {
+ auto d=AfxGetDirect3DDevice9();D3DVIEWPORT9 v{};
+ if(!d || FAILED(d->GetViewport(&v)))return false;
+ struct Vertex{float x,y,z,w;DWORD color;};
+ const float l=float(v.X)-0.5f,t=float(v.Y)-0.5f,r=l+v.Width,b=t+v.Height;
+ const Vertex vertices[]={{l,t,0,1,background},{r,t,0,1,background},{l,b,0,1,background},{r,b,0,1,background}};
+ AfxD3D9BeginCleanState();
+ d->SetViewport(&v);d->SetRenderState(D3DRS_LIGHTING,FALSE);d->SetRenderState(D3DRS_FOGENABLE,FALSE);d->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS,TRUE);
+ d->SetVertexShader(nullptr);d->SetPixelShader(nullptr);d->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE);
+ d->SetTexture(0,nullptr);d->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1);d->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_DIFFUSE);
+ d->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1);d->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_DIFFUSE);d->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE);
+ d->SetRenderState(D3DRS_ZENABLE,FALSE);d->SetRenderState(D3DRS_ZWRITEENABLE,FALSE);d->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);d->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE);
+ d->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);d->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);d->SetRenderState(D3DRS_COLORWRITEENABLE,15);d->SetRenderState(D3DRS_SRGBWRITEENABLE,FALSE);
+ d->SetRenderState(D3DRS_STENCILENABLE,TRUE);d->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE,FALSE);d->SetRenderState(D3DRS_STENCILFUNC,D3DCMP_EQUAL);d->SetRenderState(D3DRS_STENCILREF,0);d->SetRenderState(D3DRS_STENCILMASK,128);d->SetRenderState(D3DRS_STENCILWRITEMASK,0);
+ d->SetRenderState(D3DRS_STENCILFAIL,D3DSTENCILOP_KEEP);d->SetRenderState(D3DRS_STENCILZFAIL,D3DSTENCILOP_KEEP);d->SetRenderState(D3DRS_STENCILPASS,D3DSTENCILOP_KEEP);
+ const bool ok=SUCCEEDED(d->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,vertices,sizeof(Vertex)));
+ AfxD3D9EndCleanState();return ok;
 }
 
 void AfxD3D9OverrideBegin_ModulationColorBlend(ID3d9HooksFloat4ParamOverride* overrideFn)

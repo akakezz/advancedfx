@@ -2,6 +2,9 @@
 #include <shared/SceneCache.h>
 #include <memory>
 #include <functional>
+#include <string>
+#include <vector>
+#include <shared/RecordingProfileInfo.h>
 namespace advancedfx { class ICommandArgs; }
 namespace AfxHookSource
 {
@@ -64,10 +67,27 @@ void PreviewSelectAll();
 bool PreviewAnchor();
 namespace Recording
 {
+bool PassAlpha();
+bool SetPassAlpha(bool value);
+unsigned PassBackground();
+bool SetPassBackground(unsigned color);
+bool SeparatePassSupported();
+bool PassEnabled(unsigned pass);
+bool SetPassEnabled(unsigned pass, bool enabled);
 const char *GetName();
 void SetName(const char *value);
 bool ScreenEnabled();
 bool IsActive();
+bool Toggle();
+bool HandleHotkey(unsigned int key);
+bool CaptureHotkey(unsigned int key);
+std::vector<std::string> GetProfiles();
+std::string CurrentProfile();
+bool SetProfile(const char *name);
+bool GetProfileInfo(const char *name, advancedfx::RecordingProfileInfo &out);
+bool DuplicateProfile(const char *source, const char *name);
+bool ApplyProfileEdits(const advancedfx::RecordingProfileInfo &info);
+bool RemoveProfile(const char *name);
 } // namespace Recording
 
 } // namespace CameraOverlay

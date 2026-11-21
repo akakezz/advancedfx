@@ -42,6 +42,10 @@ void AfxD3D9PushOverrideState(bool clean);
 
 /// <remarks>IDirect3D9Device only (i.e. CS:GO but not CSS).</remarks>
 void AfxD3D9PopOverrideState(void);
+// Scoped player-isolate visibility tags; used with the existing override stack.
+void AfxD3D9SetPlayerHoldoutEnabled(bool enabled);
+void AfxD3D9OverrideBegin_PlayerHoldout(bool selected);
+bool AfxD3D9ClearPlayerHoldout(DWORD background);
 
 /// <remarks>IDirect3D9Device only (i.e. CS:GO but not CSS).</remarks>
 void AfxD3D9OverrideBegin_ModulationColorBlend(ID3d9HooksFloat4ParamOverride* overrideFn);

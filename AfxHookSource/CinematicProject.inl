@@ -420,6 +420,9 @@ bool MirvCam_LoadProject(const wchar_t *file)
 		g_NextClipId = (std::max<unsigned long long>)(g_NextClipId, c.Id + 1);
 	g_CameraUndo.clear();
 	g_CameraRedo.clear();
+	g_CameraUndoIndices.clear();
+	g_CameraRedoIndices.clear();
+	g_CameraRedoGeneration = CinematicRedoGeneration();
 	g_CommandSystem.ClearTickMarkers();
 	for (auto m : checked.GetTickMarkers())
 	{

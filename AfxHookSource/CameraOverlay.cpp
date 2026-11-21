@@ -2,6 +2,7 @@
 // MIT license; see shared/overlay/PORTING.md for provenance and scope.
 #include "MirvCam.h"
 #include "CameraOverlay.h"
+#include "Tf2RenderPass.h"
 #include "CampathDrawer.h"
 #include "Gui.h"
 #include "MirvCalcs.h"
@@ -31,6 +32,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <shared/AfxConsole.h>
+#include <shared/RecordingLog.h>
 #include <shared/overlay/third_party/imgui_filebrowser/imfilebrowser.h>
 #include <shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.h>
 #include <shared/overlay/third_party/imguizmo/ImGuizmo.h>
@@ -710,6 +712,41 @@ static void DrawSceneCoverage()
 	ImGui::EndNeoTimeLine();
 }
 static bool g_Docking = true;
+// Recording options remain independent of the active overlay tab.
+static char g_RecordFps[64] = "60";
+static bool g_RecordAutoResume = true, g_RecordAutoPause = true;
+static bool g_RecordAutoClose = true, g_RecordAutoStopOnOpen = false;
+static unsigned int g_RecordHotkey = 0; // Disabled until explicitly chosen.
+static unsigned int g_RecordHotkeyMods = 0; // Shift=1, Ctrl=2, Alt=4
+static bool g_RecordCapturingHotkey = false;
+static bool RecordModifierKey(unsigned int key)
+{
+	return key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT ||
+		key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL ||
+		key == VK_MENU || key == VK_LMENU || key == VK_RMENU ||
+		key == VK_LWIN || key == VK_RWIN;
+}
+static unsigned int RecordModifiers()
+{
+	return (GetKeyState(VK_SHIFT) & 0x8000 ? 1u : 0u) |
+		(GetKeyState(VK_CONTROL) & 0x8000 ? 2u : 0u) |
+		(GetKeyState(VK_MENU) & 0x8000 ? 4u : 0u);
+}
+static std::string RecordHotkeyLabel()
+{
+	if (!g_RecordHotkey) return "Not bound";
+	std::string result;
+	if (g_RecordHotkeyMods & 2) result += "Ctrl+";
+	if (g_RecordHotkeyMods & 1) result += "Shift+";
+	if (g_RecordHotkeyMods & 4) result += "Alt+";
+	char name[80] = {};
+	const UINT scan = MapVirtualKeyA(g_RecordHotkey, MAPVK_VK_TO_VSC);
+	const LONG code = LONG(scan) << 16;
+	if (!scan || !GetKeyNameTextA(code, name, sizeof(name)))
+		std::snprintf(name, sizeof(name), "VK %u", g_RecordHotkey);
+	return result + name;
+}
+static std::atomic_bool g_RecordTogglePending{false};
 static bool g_CurveKeyDrag = false, g_CancelGesture = false;
 static std::unique_ptr<CamPathCollection::State> g_GestureStart;
 static unsigned long long g_GestureOwner = 0, g_GestureRevision = 0;
@@ -829,6 +866,8 @@ bool IsOpen()
 }
 void SetOpen(bool value)
 {
+	if (value && !g_Open && g_RecordAutoStopOnOpen && Recording::IsActive())
+		g_RecordTogglePending.store(true);
 	const bool wasOpen = g_Open.load();
 	if (!value)
 	{
@@ -883,7 +922,15 @@ void HistoryUndo(bool redo)
 	g_CurveKeyDrag = false;
 	g_GestureStart.reset();
 	g_CancelGesture = ImGui::GetCurrentContext() && ImGui::IsMouseDown(0);
-	g_Hook_VClient_RenderView.m_CamPaths.Undo(redo);
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	// Commit pending path gestures before comparing their edit index to camera edits.
+	paths.FinishEdit();
+	const auto pathIndex = paths.LastHistoryIndex(redo);
+	const auto cameraIndex = MirvCam_HistoryIndex(redo);
+	if (cameraIndex && (!pathIndex || (redo ? cameraIndex < pathIndex : cameraIndex > pathIndex)))
+		MirvCam_HistoryUndo(redo);
+	else if (pathIndex)
+		paths.Undo(redo);
 }
 static std::filesystem::path RecoveryDirectory()
 {
@@ -1035,6 +1082,80 @@ static inline void Afx_GotoDemoTick(int tick)
 {
 	MirvCampathPreview_SeekTick(tick);
 }
+
+namespace Recording
+{
+bool Toggle()
+{
+	if (!g_VEngineClient)
+		return false;
+	if (IsActive())
+	{
+		std::string command = "mirv_streams record end; host_framerate 0";
+		if (g_RecordAutoPause)
+			command += "; demo_pause";
+		g_VEngineClient->ClientCmd_Unrestricted(command.c_str());
+	}
+	else
+	{
+		const double fps = std::strtod(g_RecordFps, nullptr);
+		const double rate = std::isfinite(fps) && fps >= 1 && fps <= 10000 ? fps : 60.0;
+		char command[256];
+		std::snprintf(command, sizeof(command),
+			"host_framerate %.7g; mirv_streams record fps %.7g; mirv_streams record start%s",
+			rate, rate, g_RecordAutoResume ? "; demo_resume" : "");
+		g_VEngineClient->ClientCmd_Unrestricted(command);
+		if (g_RecordAutoClose)
+			AfxHookSource::Gui::SetOverlayOpen(false);
+	}
+	return true;
+}
+bool CaptureHotkey(unsigned int key)
+{
+	if (!g_RecordCapturingHotkey)
+		return false;
+	if (key == VK_ESCAPE)
+	{
+		g_RecordCapturingHotkey = false;
+		return true;
+	}
+	if (key == VK_BACK)
+	{
+		g_RecordHotkey = 0;
+		g_RecordHotkeyMods = 0;
+		g_RecordCapturingHotkey = false;
+		if (ImGui::GetCurrentContext()) ImGui::MarkIniSettingsDirty();
+		return true;
+	}
+	// Do not consume the operating system's window-management chords.
+	if ((GetKeyState(VK_MENU) & 0x8000) &&
+		(key == VK_TAB || key == VK_F4 || key == VK_ESCAPE))
+		return false;
+	if (key == VK_LWIN || key == VK_RWIN)
+		return false;
+	if (RecordModifierKey(key))
+		return true;
+	// F8 owns the overlay toggle, and Windows keys/system shortcuts are not
+	// suitable single-key recording binds. Other keyboard keys are accepted.
+	if (key == VK_F8 || key == VK_SNAPSHOT || key == VK_CANCEL)
+		return true;
+	g_RecordHotkey = key;
+	g_RecordHotkeyMods = RecordModifiers();
+	g_RecordCapturingHotkey = false;
+	if (ImGui::GetCurrentContext()) ImGui::MarkIniSettingsDirty();
+	return true;
+}
+bool HandleHotkey(unsigned int key)
+{
+	if (g_RecordCapturingHotkey || !g_RecordHotkey || key != g_RecordHotkey ||
+		RecordModifiers() != g_RecordHotkeyMods || !g_VEngineClient ||
+		g_VEngineClient->Con_IsVisible() ||
+		(ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput))
+		return false;
+	g_RecordTogglePending.store(true);
+	return true;
+}
+} // namespace Recording
 
 static inline const char *AfxStreams_GetRecordNameUtf8()
 {
@@ -1676,6 +1797,8 @@ void RememberDemoFixPreference(DemoFixPreference setting, double value)
 }
 void PreferencesFrame()
 {
+	if (g_RecordTogglePending.exchange(false))
+		Recording::Toggle();
 	if (!g_OverlayPreferencesReady)
 		return;
 	CheckOverlayPreferences();
@@ -1887,6 +2010,23 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 	}
 	else if (key == "Docking")
 		g_Docking = atoi(val.c_str()) != 0;
+	else if (key == "RecordFps")
+	{
+		if (!val.empty() && val.size() < sizeof(g_RecordFps))
+			std::snprintf(g_RecordFps, sizeof(g_RecordFps), "%s", val.c_str());
+	}
+	else if (key == "RecordAutoResume") g_RecordAutoResume = atoi(val.c_str()) != 0;
+	else if (key == "RecordAutoPause") g_RecordAutoPause = atoi(val.c_str()) != 0;
+	else if (key == "RecordAutoClose") g_RecordAutoClose = atoi(val.c_str()) != 0;
+	else if (key == "RecordAutoStopOnOpen") g_RecordAutoStopOnOpen = atoi(val.c_str()) != 0;
+	else if (key == "RecordHotkeyMods")
+		g_RecordHotkeyMods = (unsigned int)atoi(val.c_str()) & 7u;
+	else if (key == "RecordHotkey")
+	{
+		int value = atoi(val.c_str());
+		if (value >= 0 && value <= 255 && value != VK_F8 && !RecordModifierKey((unsigned int)value))
+			g_RecordHotkey = (unsigned int)value;
+	}
 }
 static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler, ImGuiTextBuffer *out_buf)
 {
@@ -1902,7 +2042,11 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("SeekMode=%d\nSeekScale=%.6f\n", MirvCampathPreview_GetSeekMode(),
 					 MirvCampathPreview_GetSeekScale());
 	out_buf->appendf("Autosave=%d\nAutosaveSeconds=%.3f\n", g_Autosave ? 1 : 0, g_AutosaveSeconds);
-	out_buf->appendf("UiScale=%.3f\nFont=%d\nDocking=%d\n\n", g_UiScale, g_FontChoice, g_Docking ? 1 : 0);
+	out_buf->appendf("UiScale=%.3f\nFont=%d\nDocking=%d\n", g_UiScale, g_FontChoice, g_Docking ? 1 : 0);
+	out_buf->appendf("RecordFps=%s\nRecordAutoResume=%d\nRecordAutoPause=%d\n"
+		"RecordAutoClose=%d\nRecordAutoStopOnOpen=%d\nRecordHotkey=%u\nRecordHotkeyMods=%u\n\n",
+		g_RecordFps, (int)g_RecordAutoResume, (int)g_RecordAutoPause,
+		(int)g_RecordAutoClose, (int)g_RecordAutoStopOnOpen, g_RecordHotkey, g_RecordHotkeyMods);
 	out_buf->appendf("SequencerSourcesOpen=%d\nSequencerPathsOpen=%d\n", int(g_SequencerSourcesOpen),
 					 int(g_SequencerPathsOpen));
 	out_buf->appendf("SequencerTracks=%d %d %d %d %d %d %d\nSequencerPathMode=%d\n", g_SequencerTracks[0],
@@ -3182,11 +3326,23 @@ static void DrawInterpolationSettings(CamPath &path)
 			"remain smooth; broken or weighted handles use editable cubic on that channel.");
 }
 
+static bool ObservePlayer(int entity, int user)
+{
+ if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo()) return false;
+ char cmd[192];
+ if (g_VEngineClient->IsHLTV()) {
+  MirvSpectate_ReleaseView();
+  std::snprintf(cmd, sizeof(cmd), "spec_autodirector 0; spec_mode 4; spec_player \"#%d\"", user);
+ } else std::snprintf(cmd, sizeof(cmd), "mirv_pov %d", entity);
+ Afx_ExecClientCmd(cmd);
+ return true;
+}
+
 static void DrawObserving()
 {
 	if (!ImGui::BeginTabItem("Observing"))
 		return;
-	ImGui::TextUnformatted("Click a player to spectate in STV. Select a bone below for attachments.");
+	ImGui::TextUnformatted("Click a player to spectate. Bone selection and camera attachment remain available below.");
 	if (ImGui::Button("Detach"))
 		Afx_ExecClientCmd("mirv_cam attach clear");
 	ImGui::SameLine();
@@ -3253,19 +3409,7 @@ static void DrawObserving()
 					bone = -1;
 				selectedEntity = i;
 				selectedUser = user;
-				if (g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV())
-					traceStatus = "Native spectating requires an STV demo. This player remains selected for bone attachments.";
-				else if (user > 0)
-				{
-					MirvCampathPreview_SetActive(false);
-					g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
-					char cmd[192];
-					sprintf_s(cmd, "mirv_campath preview exit; mirv_cam attach clear; mirv_input end; spec_autodirector 0; spec_mode 4; spec_player \"#%d\"", user);
-					Afx_ExecClientCmd(cmd);
-					traceStatus = "Requested spectating " + std::string(name) + ".";
-				}
-				else
-					traceStatus = "Player has no current user ID; select them again after the demo has loaded.";
+				traceStatus = ObservePlayer(i, user) ? "Spectating " + std::string(name) + "." : "Selected " + std::string(name) + ".";
 			}
 			ImGui::PopID();
 		}
@@ -3273,6 +3417,15 @@ static void DrawObserving()
 	}
 	if (selectedEntity > 0)
 	{
+		ImGui::Separator();
+		const bool stv = g_VEngineClient && g_VEngineClient->IsPlayingDemo() && g_VEngineClient->IsHLTV();
+  if (!stv && g_VEngineClient && g_VEngineClient->IsPlayingDemo()) {
+   int view = MirvPovSpectate_ThirdPerson() ? 1 : 0;
+   const char *views[] = {"First person", "Third person"};
+   if (ImGui::Combo("POV view", &view, views, 2)) Afx_ExecClientCmd(view ? "mirv_pov mode third" : "mirv_pov mode first");
+   if (ImGui::Button("Return to recorded POV")) Afx_ExecClientCmd("mirv_pov off");
+   ImGui::TextWrapped("%s", MirvPovSpectate_Status());
+  }
 		ImGui::Separator();
 		ImGui::Text("Selected entity: %d", selectedEntity);
 		ImGui::InputFloat3("Forward / left / up", offset);
@@ -6410,13 +6563,6 @@ void SetCameraFrustums(bool enabled)
 }
 bool CameraGuidesEnabled() { return g_CameraGuidesPublished.load(); }
 bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
-static bool CameraHistoryOwnsUi()
-{
-	auto focused = ImGui::GetCurrentContext()->NavWindow;
-	return g_CamerasTabActive || MirvCam_RigNavigation() ||
-		   (g_ShowSequencer && g_CameraClipsEditing && focused && focused->RootWindow &&
-			std::strcmp(focused->RootWindow->Name, "HLAE Sequencer") == 0);
-}
 static std::string CameraClipSourceName(bool campath, std::uint64_t target)
 {
 	if (campath)
@@ -7821,6 +7967,180 @@ static void DrawCamerasTab()
 	ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
 	ImGui::EndTabItem();
 }
+// The profile editor reads the *same* live registry as mirv_streams. Draft
+// changes are applied explicitly, never on each ImGui frame or during a take.
+static void DrawRecordingLog()
+{
+ if (!ImGui::CollapsingHeader("FFmpeg log", ImGuiTreeNodeFlags_DefaultOpen)) return;
+ if (ImGui::SmallButton("Clear log")) advancedfx::RecordingLog::Get().Clear();
+ static uint64_t revision=0;
+ static std::vector<advancedfx::RecordingLog::Entry> entries;
+ const bool changed=advancedfx::RecordingLog::Get().Read(revision,entries);
+ if (ImGui::BeginChild("##ffmpeg_log",ImVec2(0,ImGui::GetTextLineHeightWithSpacing()*6),true,
+                       ImGuiWindowFlags_HorizontalScrollbar)) {
+  const bool atBottom=ImGui::GetScrollY()>=ImGui::GetScrollMaxY()-1;
+  if (entries.empty()) ImGui::TextDisabled("No FFmpeg messages.");
+  std::string source;
+  for (const auto &entry:entries) {
+   if (source!=entry.Source) {source=entry.Source;ImGui::TextDisabled("%s",source.c_str());}
+   ImGui::TextUnformatted(entry.Text.data(),entry.Text.data()+entry.Text.size());
+  }
+  if (changed && atBottom) ImGui::SetScrollHereY(1.0f);
+ }
+ ImGui::EndChild();
+}
+
+static void DrawRecordingProfileEditor(const std::string &selected)
+{
+	advancedfx::RecordingProfileInfo current;
+	if (!Recording::GetProfileInfo(selected.c_str(), current))
+	{
+		ImGui::TextDisabled("Profile not found in the recording settings registry.");
+		return;
+	}
+	static std::string editingName, status;
+	static advancedfx::RecordingProfileInfo draft;
+	static char copyName[64] = {};
+	static char ffmpegOptions[4096] = {}, ffmpegNoAlphaOptions[4096] = {};
+	if (editingName != current.Name)
+	{
+		editingName = current.Name;
+		draft = current;
+		copyName[0] = 0;
+		std::snprintf(ffmpegOptions, sizeof(ffmpegOptions), "%s", draft.FfmpegOptions.c_str());
+  std::snprintf(ffmpegNoAlphaOptions,sizeof(ffmpegNoAlphaOptions),"%s",draft.FfmpegOptionsNoAlpha.c_str());
+		status.clear();
+	}
+	if (!ImGui::CollapsingHeader("Recording profile details / editor", ImGuiTreeNodeFlags_DefaultOpen))
+		return;
+
+	const bool recording = Recording::IsActive();
+	const bool editable = !current.Protected && !recording;
+	const bool supported = current.Type == advancedfx::RecordingProfileInfo::Kind::Sampler || current.Type == advancedfx::RecordingProfileInfo::Kind::Ffmpeg || current.Type == advancedfx::RecordingProfileInfo::Kind::FfmpegEx;
+	ImGui::Text("Profile: %s", current.Name.c_str());
+	ImGui::SameLine();
+	ImGui::TextDisabled(current.Protected ? "(built-in, read-only)" : "(custom)");
+	if (recording)
+		ImGui::TextDisabled("Stop the current recording before changing any profile.");
+	if (current.Type == advancedfx::RecordingProfileInfo::Kind::Sampler)
+	{
+		ImGui::TextUnformatted("Sampler: captures at the input FPS and blends to its own output FPS.");
+		if (!editable) ImGui::BeginDisabled();
+		ImGui::SetNextItemWidth(120);
+		ImGui::InputFloat("Sampler output FPS", &draft.OutputFps, 0, 0, "%.3f");
+		ImGui::Combo("Sampling method", &draft.Method, "Rectangle\0Trapezoid\0");
+		ImGui::SetNextItemWidth(120);
+		ImGui::InputDouble("Exposure (shutter fraction)", &draft.Exposure, 0, 0, "%.3f");
+		ImGui::SliderFloat("Cross-frame strength", &draft.Strength, 0.0f, 1.0f, "%.3f");
+		if (ImGui::BeginCombo("Sampler output settings", draft.OutputSettings.c_str()))
+		{
+			for (const auto &name : Recording::GetProfiles())
+			{
+				if (name == current.Name) continue;
+				if (ImGui::Selectable(name.c_str(), name == draft.OutputSettings))
+					draft.OutputSettings = name;
+			}
+			ImGui::EndCombo();
+		}
+		if (!editable) ImGui::EndDisabled();
+		const double capture = std::strtod(g_RecordFps, nullptr);
+		if (std::isfinite(capture) && capture > 0 && std::isfinite(draft.OutputFps) && draft.OutputFps > 0)
+		{
+			ImGui::Text("Capture: %.3g FPS  ->  Output: %.3g FPS  (%.3g:1)",
+				capture, double(draft.OutputFps), capture / draft.OutputFps);
+			if (capture <= draft.OutputFps)
+				ImGui::TextDisabled("Capture FPS should exceed output FPS for temporal supersampling.");
+		}
+		ImGui::TextDisabled("Input FPS is set above; this sampler's output FPS is independent.");
+	}
+	else if (current.Type == advancedfx::RecordingProfileInfo::Kind::Ffmpeg ||
+			 current.Type == advancedfx::RecordingProfileInfo::Kind::FfmpegEx)
+	{
+		ImGui::TextUnformatted(current.Type == advancedfx::RecordingProfileInfo::Kind::FfmpegEx ?
+			"Extended FFmpeg output options" : "FFmpeg output options");
+		if (!editable) ImGui::BeginDisabled();
+		ImGui::InputTextMultiline("##record_ffmpeg_options", ffmpegOptions, sizeof(ffmpegOptions),
+			ImVec2(-1.0f, ImGui::GetTextLineHeight() * 4));
+  if(!draft.FfmpegOptionsNoAlpha.empty()){
+   ImGui::TextUnformatted("Color-only options (inputs without alpha)");
+   ImGui::InputTextMultiline("##record_ffmpeg_noalpha",ffmpegNoAlphaOptions,sizeof(ffmpegNoAlphaOptions),ImVec2(-1,ImGui::GetTextLineHeight()*3));
+   draft.FfmpegOptionsNoAlpha=ffmpegNoAlphaOptions;
+  }
+		if (!editable) ImGui::EndDisabled();
+		draft.FfmpegOptions = ffmpegOptions;
+		ImGui::TextDisabled("Use HLAE's {QUOTE} / {AFX_STREAM_PATH} variables; applies to future takes.");
+	}
+	else
+		ImGui::TextDisabled("This profile type is not editable here. Use mirv_streams settings edit.");
+
+	if (supported && !current.Protected)
+	{
+		if (!editable) ImGui::BeginDisabled();
+		if (ImGui::Button("Apply profile changes"))
+		{
+			status = Recording::ApplyProfileEdits(draft)
+				? "Profile updated in the live HLAE settings registry."
+				: "Profile edit rejected: check values, downstream profile and dependency cycles.";
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Revert unsaved edits"))
+		{
+			draft = current;
+			std::snprintf(ffmpegOptions, sizeof(ffmpegOptions), "%s", current.FfmpegOptions.c_str());
+   std::snprintf(ffmpegNoAlphaOptions,sizeof(ffmpegNoAlphaOptions),"%s",current.FfmpegOptionsNoAlpha.c_str());
+			status = "Restored the latest profile values.";
+		}
+		if (!editable) ImGui::EndDisabled();
+	}
+
+	if (supported)
+	{
+		ImGui::Separator();
+		ImGui::TextDisabled("Built-in profiles cannot be modified. Duplicate one to make an editable copy.");
+		ImGui::SetNextItemWidth(220);
+		ImGui::InputText("New profile name", copyName, sizeof(copyName));
+		if (recording) ImGui::BeginDisabled();
+		if (ImGui::Button("Duplicate as editable profile"))
+		{
+			if (Recording::DuplicateProfile(current.Name.c_str(), copyName) &&
+				Recording::SetProfile(copyName))
+			{
+				editingName.clear(); // Read new profile from registry next frame.
+				status = "Editable profile created; settings are session-only until recreated on startup.";
+			}
+			else
+				status = "Could not duplicate. Use a unique name (letters, digits, _ or -; not beginning with afx).";
+		}
+		if (recording) ImGui::EndDisabled();
+	}
+	if (!current.Protected)
+	{
+		ImGui::SameLine();
+		if (recording) ImGui::BeginDisabled();
+		if (ImGui::Button("Delete custom profile"))
+		{
+			// The active screen profile holds a registry reference; release it
+			// before trying to delete. Other dependent presets may still block removal.
+			if (Recording::SetProfile("afxDefault") && Recording::RemoveProfile(current.Name.c_str()))
+			{
+				editingName.clear();
+				status = "Custom profile removed.";
+			}
+			else
+			{
+				// Removal can fail while another sampler still references this profile.
+				// Keep a failed delete from changing the next recording's encoder.
+				Recording::SetProfile(current.Name.c_str());
+				status = "Profile still referenced by another setting, or removal failed.";
+			}
+		}
+		if (recording) ImGui::EndDisabled();
+	}
+	if (!status.empty())
+		ImGui::TextWrapped("%s", status.c_str());
+	ImGui::TextDisabled("Custom profiles exist only in this session; recreate them in autoexec.cfg to persist.");
+}
+
 void Draw()
 {
 	CheckOverlayPreferences();
@@ -7951,19 +8271,14 @@ void Draw()
 		}
 	}
 	if (ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Z, false))
-	{
-		if (CameraHistoryOwnsUi())
-			MirvCam_HistoryUndo(ImGui::GetIO().KeyShift);
-		else
-			HistoryUndo(ImGui::GetIO().KeyShift);
-	}
+		HistoryUndo(ImGui::GetIO().KeyShift);
 
 	if (g_Docking)
 		ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 	// Diagnostic watermark
 	ImGui::GetForegroundDrawList()->AddText(
 		ImVec2(8, 8), IM_COL32(255, 255, 255, 255),
-		"TF2 camera overlay | F8 closes | RMB outside panels moves camera", nullptr);
+		"HLAE Camera Overlay | F8 closes | RMB outside panels moves camera", nullptr);
 
 	if (!s_campathDialogsInit)
 	{
@@ -7977,22 +8292,14 @@ void Draw()
 	ImGuizmo::BeginFrame();
 	ImGui::SetNextWindowPos(ImVec2(20, 30), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSizeConstraints(ImVec2(540, 200), ImVec2(900, ImGui::GetIO().DisplaySize.y - 50));
-	ImGui::Begin("TF2 Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::Begin("HLAE Camera", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 	if (ImGui::Button("Undo"))
-	{
-		if (CameraHistoryOwnsUi())
-			MirvCam_HistoryUndo(false);
-		else
-			HistoryUndo(false);
-	}
+		HistoryUndo(false);
 	ImGui::SameLine();
 	if (ImGui::Button("Redo"))
-	{
-		if (CameraHistoryOwnsUi())
-			MirvCam_HistoryUndo(true);
-		else
-			HistoryUndo(true);
-	}
+		HistoryUndo(true);
+	ImGui::SameLine();
+	ImGui::TextDisabled("Session edit #%llu", static_cast<unsigned long long>(CinematicSessionEditIndex()));
 	if (ImGui::BeginTabBar("##hlae_tabs"))
 	{
 		// Campath tab
@@ -8335,6 +8642,7 @@ void Draw()
 		if (ImGui::BeginTabItem("Recording"))
 		{
 			ImGui::TextUnformatted(Recording::IsActive() ? "Recording is active" : "Recording is stopped");
+   DrawRecordingLog();
 			// Shared: record path chooser
 			static char s_recName[512] = {0};
 			static bool recInit = false;
@@ -8409,16 +8717,34 @@ void Draw()
 			}
 
 			ImGui::Separator();
-			// FPS input (interpreted differently depending on mode)
-			static char s_fpsText[64] = {0};
-			static bool fpsInit = false;
-			if (!fpsInit)
+			ImGui::SetNextItemWidth(110);
+			if (ImGui::InputText("Capture FPS (input)", g_RecordFps, sizeof(g_RecordFps),
+				ImGuiInputTextFlags_CharsDecimal))
+				ImGui::MarkIniSettingsDirty();
+			const auto keyLabel = g_RecordCapturingHotkey
+				? std::string("Press a key... (Esc cancel, Backspace clear)")
+				: RecordHotkeyLabel();
+			if (ImGui::Button(keyLabel.c_str()))
+				g_RecordCapturingHotkey = true;
+			ImGui::SameLine();
+			ImGui::TextDisabled("Record hotkey");
+			if (g_RecordHotkey && ImGui::SmallButton("Clear bind"))
 			{
-				strncpy_s(s_fpsText, "60", _TRUNCATE);
-				fpsInit = true;
+				g_RecordHotkey = g_RecordHotkeyMods = 0;
+				g_RecordCapturingHotkey = false;
+				ImGui::MarkIniSettingsDirty();
 			}
-			ImGui::SetNextItemWidth(ImGui::CalcTextSize("00000").x + st.FramePadding.x * 3.0f);
-			ImGui::InputText("Record FPS", s_fpsText, sizeof(s_fpsText));
+			if (ImGui::CollapsingHeader("Recording behavior", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				bool changed = false;
+				changed |= ImGui::Checkbox("Auto-resume demo on start", &g_RecordAutoResume);
+				changed |= ImGui::Checkbox("Auto-pause demo on stop", &g_RecordAutoPause);
+				changed |= ImGui::Checkbox("Close menu on start", &g_RecordAutoClose);
+				changed |= ImGui::Checkbox("Stop recording when opening menu", &g_RecordAutoStopOnOpen);
+				if (changed)
+					ImGui::MarkIniSettingsDirty();
+				ImGui::TextDisabled("Recording uses the screen stream and encoder settings already configured below.");
+			}
 
 			// Common HUD toggles
 			ImGui::Separator();
@@ -8434,106 +8760,56 @@ void Draw()
 					Afx_ExecClientCmd("engine_no_focus_sleep 0; snd_mute_losefocus 0");
 				}
 
-				// Record screen settings
+				// Separate TF2 passes share the existing capture clock and profile registry.
+    if (ImGui::CollapsingHeader("Separate recording passes")) {
+     const bool editable = Recording::SeparatePassSupported() && !Recording::IsActive();
+     if (!editable) ImGui::BeginDisabled();
+     for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) {
+      bool enabled = Recording::PassEnabled(i);
+      if (ImGui::Checkbox(Tf2RenderPassName(Tf2RenderPass(i)), &enabled)) Recording::SetPassEnabled(i, enabled);
+     }
+     bool alpha = Recording::PassAlpha();
+     if (ImGui::Checkbox("Transparent isolated passes", &alpha)) Recording::SetPassAlpha(alpha);
+     if (alpha) ImGui::TextWrapped("Alpha replays isolated draws into a second target; the world renders once. Choose an alpha-capable profile below, such as afxFfmpegProresAlpha; other codecs may discard transparency.");
+     if (alpha) ImGui::BeginDisabled();
+     const unsigned background = Recording::PassBackground() & 0xffffffu;
+     const char *backgroundNames[] = {"Green", "Blue", "Black"};
+     const unsigned backgroundColors[] = {0x00ff00u, 0x0000ffu, 0x000000u};
+     const char *preview = "Custom RGB";
+     for (int i = 0; i < 3; ++i) if (background == backgroundColors[i]) preview = backgroundNames[i];
+     if (ImGui::BeginCombo("Isolated pass background", preview)) {
+      for (int i = 0; i < 3; ++i) if (ImGui::Selectable(backgroundNames[i], background == backgroundColors[i])) Recording::SetPassBackground(backgroundColors[i]);
+      ImGui::EndCombo();
+     }
+     if (alpha) ImGui::EndDisabled();
+     if (!editable) ImGui::EndDisabled();
+     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use alpha when enabled, otherwise the selected chroma background; depth is logarithmic grayscale (0-4096 units). Extra passes increase render cost. Model isolates cannot fully reconstruct refractive cloak or interleaved particles; retain normal screen recording as a beauty reference.");
+     if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("TF2 render-pass hooks are unavailable.");
+    }
+    // Record screen settings
 				bool screenEnabled = Recording::ScreenEnabled();
 				if (ImGui::Checkbox("Record screen enabled", &screenEnabled))
 				{
 					Afx_ExecClientCmd(screenEnabled ? "mirv_streams record screen enabled 1"
 													: "mirv_streams record screen enabled 0");
 				}
-				ImGui::TextUnformatted("Record screen profile");
-				ImGui::SameLine();
-				static const char *s_screenProfile = "Select profile...";
-				if (ImGui::BeginCombo("##screen_profiles", s_screenProfile))
+				const auto currentProfile = Recording::CurrentProfile();
+				if (ImGui::BeginCombo("Record screen profile", currentProfile.c_str()))
 				{
-					if (ImGui::Selectable("TGA Sequence"))
-					{
-						s_screenProfile = "TGA Sequence";
-						Afx_ExecClientCmd(R"(mirv_streams record screen settings afxClassic)");
-					}
-					if (ImGui::Selectable("FFmpeg YUV420p"))
-					{
-						s_screenProfile = "FFMPEG YUV420p";
-						Afx_ExecClientCmd(R"(mirv_streams record screen settings afxFfmpegYuv420p)");
-					}
-					if (ImGui::Selectable("FFmpeg Lossless Best"))
-					{
-						s_screenProfile = "FFMPEG Lossless Best";
-						Afx_ExecClientCmd(R"(mirv_streams record screen settings afxFfmpegLosslessBest)");
-					}
-					if (ImGui::Selectable("ProRes 4444"))
-					{
-						s_screenProfile = "ProRes 4444";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperProRes4444 "-c:v prores_ks -profile:v 4 -pix_fmt yuva444p10le {QUOTE}{AFX_STREAM_PATH}\video.mov{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperProRes4444");
-					}
-					if (ImGui::Selectable("ProRes 422 HQ"))
-					{
-						s_screenProfile = "ProRes 422 HQ";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperProResHQ "-c:v prores_ks -profile:v 3 -pix_fmt yuv422p10le {QUOTE}{AFX_STREAM_PATH}\video.mov{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperProResHQ");
-					}
-					if (ImGui::Selectable("ProRes 422"))
-					{
-						s_screenProfile = "ProRes 422";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperProRes422 "-c:v prores_ks -profile:v 2 -pix_fmt yuv422p10le {QUOTE}{AFX_STREAM_PATH}\video.mov{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperProRes422");
-					}
-					if (ImGui::Selectable("x264 Lossless"))
-					{
-						s_screenProfile = "x264 Lossless";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX264Lossless "-c:v libx264 -preset ultrafast -qp 0 -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX264Lossless");
-					}
-					if (ImGui::Selectable("x264 HQ"))
-					{
-						s_screenProfile = "x264 HQ";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX264HQ "-c:v libx264 -preset slow -crf 16 -pix_fmt yuv420p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX264HQ");
-					}
-					if (ImGui::Selectable("x265 Lossless"))
-					{
-						s_screenProfile = "x265 Lossless";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX265Lossless "-c:v libx265 -preset ultrafast -x265-params lossless=1 -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX265Lossless");
-					}
-					if (ImGui::Selectable("x265 HQ"))
-					{
-						s_screenProfile = "x265 HQ";
-						Afx_ExecClientCmd(
-							R"(mirv_streams settings add ffmpeg afxPaperX265HQ "-c:v libx265 -preset medium -crf 18 -pix_fmt yuv420p {QUOTE}{AFX_STREAM_PATH}\video.mp4{QUOTE}")");
-						Afx_ExecClientCmd("mirv_streams record screen settings afxPaperX265HQ");
-					}
+					for (const auto &name : Recording::GetProfiles())
+						if (ImGui::Selectable(name.c_str(), name == currentProfile))
+							Recording::SetProfile(name.c_str());
 					ImGui::EndCombo();
 				}
+				ImGui::TextDisabled("Includes built-in and custom mirv_streams settings. The menu always reads the active profile.");
+				DrawRecordingProfileEditor(Recording::CurrentProfile());
 
 				ImGui::Separator();
-				if (ImGui::Button("Start Recording"))
-				{
-					// host_framerate X; mirv_streams record fps X; mirv_streams record screen enabled 1;
-					// mirv_streams record start
-					float fps = (float)atof(s_fpsText);
-					if (!std::isfinite(fps) || fps <= 0.0f || fps > 100000.0f)
-						fps = 60.0f;
-					char cmd[512];
-					sprintf_s(cmd,
-							  "host_framerate %.0f; mirv_streams record fps %.0f; mirv_streams record screen "
-							  "enabled 1; mirv_streams record start",
-							  fps, fps);
-					AfxHookSource::Gui::SetOverlayOpen(false);
-					Afx_ExecClientCmd(cmd);
-				}
+				if (ImGui::Button("Start Recording") && !Recording::IsActive())
+					Recording::Toggle();
 				ImGui::SameLine();
-				if (ImGui::Button("Stop"))
-				{
-					Afx_ExecClientCmd("mirv_streams record end; host_framerate 0");
-				}
+				if (ImGui::Button("Stop") && Recording::IsActive())
+					Recording::Toggle();
 			}
 
 			ImGui::EndTabItem();

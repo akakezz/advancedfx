@@ -1,4 +1,4 @@
-# TF2 camera overlay — Paper port
+# HLAE cinematic camera overlay — Paper port
 
 This feature is based on Paper's overlay and the original HLAE base commit
 `3906a61e` (upstream HLAE 2.192.10, `8abc2719`). It uses ordinary `mirv_campath` keys and the classic path renderer.
@@ -1309,13 +1309,13 @@ translation and **R** rotation when a text field is not active. Local/world mode
 and Ctrl snapping are available. **C** toggles free-camera control. Camera Control
 also provides FOV, roll and keyboard speed sliders.
 
-The **Observing** tab is a player list with a text filter. Click a player name to
-select and spectate them in an STV demo. The command uses the player's explicit
-`#userid`, which is different from their entity slot. Selecting a player clears
-path preview, free-camera and attachment overrides, disables automatic directing,
-and switches to TF2's in-eye spectator camera. There are no buttons inside the
-player rows. Native spectator targeting follows living players; POV demos cannot
-switch their recorded spectator target, and the panel reports that restriction.
+The **Observing** tab is a player list with a text filter. Clicking a player
+only changes the selected row; it does not create an HLAE camera, detach an
+existing one, or switch the spectator view. In STV demos, the explicit
+**Spectate selected (STV)** action targets the player's `#userid` and switches
+to TF2's in-eye spectator mode. POV demos cannot change their recorded native
+spectator target. A separate POV spectator view override (without a persistent
+camera rig) is not yet implemented.
 
 The selected player still exposes named bones and forward/left/up offsets below
 the list. Choose a **Bone** (or **Entity origin**) and use **Attach selected** for
@@ -1329,9 +1329,95 @@ block the trace. The panel reports hits, misses and unavailable engine hooks.
 This uses TF2's `EngineTraceClient003`; the original console command
 `mirv_traceentity` is CS:GO-specific in this HLAE base.
 
+### Cached camera availability and missing targets
+
+**The currently active camera is evaluated only against the sampled scene at
+the current preview time.** An attached camera becomes unavailable when its
+recorded target or required bone data is absent and becomes available again
+when scrubbing back to a timestamp containing usable target data. Do not
+substitute a pose from an earlier or later scene frame to report the current
+camera as available.
+
+The Scene Cache records time-stamped entities by stable identity; it only
+interpolates across adjacent frames with a matching identity and within the
+configured gap and travel limits. Player filters, off-screen/first-person
+visibility, missing captured bone matrices, and recording gaps can make a
+camera unavailable in cached preview even if it worked in live playback.
+For bone-attached cameras, capture player model poses as needed. Aiming
+cameras may also have independent, recorded camera samples.
+
+**Transition test revision:** The outgoing-camera fade fallback is
+reapplied in the transition evaluators only. When an outgoing camera disappears,
+live evaluation can hold its last pose while the configured fade advances.
+Cached preview can re-evaluate the outgoing camera using earlier recorded
+entity frames with the current editable camera settings. This affects only
+the outgoing blend contribution, not camera availability or Scene Cache data.
+If no outgoing pose can be recovered, the incoming source continues directly.
+
+**Capture note:** Avoid fast-forwarding with scene-cache recording enabled:
+discontinuous capture intervals can leave missing preview coverage. Stop
+recording, seek, clear the history, then begin recording at the desired start
+point. This is a workaround, not an automatic seek-handling fix.
+
 ## Recording, files and settings
 
-The Recording tab uses TF2 screen recording through `mirv_streams`. Choose a
+The Recording tab now reads the live HLAE recording settings registry, including
+user-created profiles, and shows the current screen profile even when configured
+from the console. Encoder presets are no longer hard-coded in the UI. Capture FPS
+remains an editable text field with no preset buttons; it sets both
+`host_framerate` and HLAE's input FPS override, not a sampler's output FPS.
+
+### Recording profile editor (PR #1)
+
+Expand **Recording profile details / editor** after choosing a screen profile.
+Built-in `afx*` profiles are protected and read-only. Use **Duplicate as editable
+profile** with a unique name to copy a built-in sampler or FFmpeg preset into
+the same live settings registry. Custom sampler profiles expose **output FPS**,
+sampling method (rectangle/trapezoid), exposure, cross-frame strength, and the
+underlying output encoder/settings profile. Custom FFmpeg and FFmpegEx profiles
+expose their raw HLAE FFmpeg options. **Apply profile changes** explicitly
+commits a validated edit to the actual profile; **Revert unsaved edits**
+re-reads its last committed settings. Recording must be stopped to switch,
+edit, duplicate, or delete profiles.
+
+Custom recording profiles, the `afxDefault` output route and the selected screen
+profile now restore across sessions from `%APPDATA%\HLAE\RecordingProfiles.txt`.
+Console and overlay edits save the same registry automatically. FFmpeg, FFmpegEx,
+sampler, multi-output and interleave dependencies are preserved. Invalid files are
+left intact and automatic overwriting is suppressed; move the file aside and restart
+to reset preferences. Pass selections remain session settings.
+
+For example, Capture FPS **480** with a sampler configured for Output FPS **60**
+gives a nominal **8:1 capture-to-output frame ratio**. The sampler's exposure
+and strength determine temporal blending; the output encoder is independent
+of the input capture rate. A sampler may reference another profile for output,
+but indirect dependency cycles are rejected. A selected custom preset can
+be deleted once switched back to `afxDefault`, provided no other profiles
+still reference it.
+
+**Custom recording profiles are session-only**, matching the existing
+`mirv_streams settings add/edit` registry behavior. Save their creation/edit
+commands in a startup configuration such as `autoexec.cfg` to recreate them
+across launches. The overlay's recording hotkey and behavior preferences,
+unlike profile definitions, persist in its ImGui settings. The editor does
+not change the HLAE sampler implementation or force a Source game to render
+more frames than the engine can produce.
+
+Start/Stop and the configurable keyboard recording hotkey use the same
+recording routine. Click the hotkey field, press a key (optionally with
+Ctrl/Shift/Alt), use Escape to cancel or Backspace to clear. F8 stays reserved
+for opening the overlay; unsupported system shortcuts are not captured.
+The hotkey is disabled by default; it works when the overlay is closed,
+but is ignored while entering text or using the game console.
+Options include automatically resuming the demo on start, pausing on stop,
+closing the overlay on start, and stopping the recording when opening the overlay.
+These options and the hotkey persist in the overlay's ImGui settings.
+
+TF2 x64 multi-stream separation (world, HUD, viewmodels, players and depth)
+is **not implemented** in this change. The legacy HLAE render-view stream
+classes are behind 32-bit build guards and need a validated TF2 x64 hook port.
+
+The Recording tab uses Source 1 screen recording through `mirv_streams`. Choose a
 record directory, FPS and screen profile. TGA, HLAE's built-in FFmpeg profiles,
 ProRes and x264/x265 profiles are available. Start Recording closes the overlay;
 reopen it with F8 to stop. Recording uses the chosen screen profile directly.
@@ -2145,9 +2231,8 @@ Attached cameras retain their target and mode; unavailable targets reject edits
 without changing their saved pose. **Manage cameras** in the Campath tab opens it.
 Selecting a row leaves the current view alone unless camera preview is already
 active; in that case it switches the viewed camera. Removal asks for confirmation
-and remains pinned to the chosen ID even if selection changes. Camera edits have their own bounded undo/redo history. The Undo/Redo buttons
-and Ctrl+Z / Ctrl+Shift+Z operate on cameras while the Cameras tab or camera
-preview navigation is active; otherwise they operate on campaths. Keyframe
+and remains pinned to the chosen ID even if selection changes. Camera and campath edits share chronological session undo/redo ordering (up to each domain's retained history limit). The Undo/Redo buttons
+and Ctrl+Z / Ctrl+Shift+Z undo the latest edit across cameras and campaths, regardless of panel or preview selection. Keyframe
 editing shortcuts remain disabled while managing cameras.
 
 **Show camera guides** optionally draws small camera icons independently of
@@ -2888,6 +2973,180 @@ are at least one float clock step apart, rather than collapsing into the same
 representable playback time in stock HLAE. This does not replace testing a newly
 reported file: the earlier supplied XML matches stock 2.189.6 at every key and
 midpoint; the reported missing-motion case still needs its current XML to isolate.
+
+
+### Experimental TF2 separate recording passes
+
+The Recording tab's **Separate recording passes** section can enable world, players,
+viewmodel, HUD and depth outputs alongside normal screen recording. These use the
+existing `mirv_streams` capture nodes, recording clock and selected screen profile.
+Choose an FFmpeg profile for video files; image-sequence profiles still write images.
+Each enabled pass writes inside its own named subfolder of the same take.
+
+```text
+mirv_streams record pass world 1
+mirv_streams record pass players 1
+mirv_streams record pass viewmodel 1
+mirv_streams record pass hud 1
+mirv_streams record pass depth 1
+```
+
+Use `0` to disable an output. Configure passes before recording, then use the normal
+record start/stop controls. They initially share the screen recording profile,
+including any sampler output FPS. Extra passes render extra views at the same demo
+frame; they do not advance the demo for each output. Unsupported hooks or missing
+INTZ depth support reject recording rather than silently treating depth as color.
+
+The world pass omits players, weapons, cosmetics, ragdolls and gibs. The players
+pass includes those models (including dropped/debris models and corpse-attached
+gear) and retains world depth occlusion. Viewmodels remain a separate pass;
+decals and ordinary props remain in the world pass. The render passes share the
+scene-cache class/model classification fallback. Player, viewmodel and HUD
+outputs default to chroma green. **Transparent isolated passes** enables embedded
+alpha for these three outputs; World, Depth and normal screen recording keep
+their existing format. **Isolated pass background**
+offers Green, Blue and Black; custom RGB is available using
+`mirv_streams record pass background <red 0..255> <green 0..255> <blue 0..255>`.
+Transparency reuses HLAE's existing black/white matte transform. The world is
+rendered once per isolated pass; only selected models or HUD paint are replayed
+into a second color target, sharing scene depth and preserving the viewport and
+viewmodel depth range. The two samples recover coverage, and the opt-in
+straight-color conversion removes
+coverage from the black render without selecting/removing a key color. This keeps
+opaque greens and partially covered edges in the output. Capture failures retain
+pair boundaries, so one failed sample cannot shift later frames. The mode adds
+extra selected-object draws, a second readback, and matte processing; it does not
+advance the demo or render the full scene a second time. Transform workers sleep
+until shared tasks finish instead of busy-waiting. Capture surfaces use the
+existing bounded readback pool; creation references are released when ownership
+passes to the wrapper, avoiding a per-take COM surface leak.
+
+Select an alpha-capable recording profile, such as `afxFfmpegProresAlpha` (ProRes
+4444 MOV), before recording; ordinary H.264/H.265 profiles can discard alpha.
+Console equivalent:
+
+```text
+mirv_streams record pass alpha 1
+mirv_streams record screen settings afxFfmpegProresAlpha
+```
+
+For NVIDIA hardware, `afxFfmpegNvencColorAlpha` uses H.264 NVENC to write
+`color.mp4` plus a synchronized grayscale `alpha.mp4` for each transparent isolate.
+Use the mask as a **luma matte** (white opaque, black transparent) for the straight
+color footage in your editor. Enable transparent isolated passes first:
+
+```text
+mirv_streams record pass alpha 1
+mirv_streams record screen settings afxFfmpegNvencColorAlpha
+```
+
+World, Depth and normal RGB screen recording write only `color.mp4`. This preset
+requires a GPU/driver supporting NVENC H.264 4:4:4 lossless encoding. Color uses
+NVENC; masks use single-threaded, lossless x264 ultrafast to avoid consuming a
+second GPU session for each isolate. All five passes plus screen recording now
+request six GPU sessions instead of nine. Older drivers can expose a lower limit;
+update the driver or enable fewer outputs if session allocation still fails.
+It accelerates color encoding, while matte rendering/readbacks
+still have their existing cost. The split graph and frame/mask integrity have been
+tested with a CPU encoder substitute; hardware performance needs in-game testing.
+Duplicating this preset preserves its separate RGB-only options in the editor.
+Existing custom copies retain their own options and must be edited or copied again
+to pick up this change. The built-in name uses the new settings after restarting.
+
+The Recording tab contains a scrollable **FFmpeg log** with a **Clear log**
+button. It shows each output's expanded command, encoder stderr and exit code,
+labelled with the output path so simultaneous pass failures can be distinguished.
+New messages follow the bottom while you are already there; scrolling up preserves
+your position. The shared log is bounded to 256 KiB / 2,048 chunks and is session-only.
+No FFmpeg log files are written to the recording folders. Console diagnostics remain
+available, and failed encoder exits direct you to the overlay.
+`OpenEncodeSessionEx failed: incompatible client key (21)` with multiple outputs
+indicates an NVENC session-allocation failure; the subsequent AFX image-write
+errors are a consequence of the encoder exiting.
+
+`alpha 0` restores chroma backgrounds. The option cannot change during a take.
+Matte reconstruction assumes ordinary alpha compositing; additive/refractive
+materials and screen effects still need an in-game check.
+
+World shadows are not separated. Color passes preserve the game's MSAA sample count;
+only depth extraction uses a matched non-MSAA color/INTZ pair. The capture callback
+explicitly binds the capture surface even if Source left an intermediate target
+bound, and restores the previous color/depth surfaces and viewport afterward.
+Depth uses the existing logarithmic axial-distance shader over 0–4096 world units
+(near is dark; far is light), with the rendered frame's actual projection planes.
+It is not a floating-point depth file. The HUD color mask brackets native in-game
+`IVRenderView::VGui_Paint`, including its offscreen capture binding, rather than
+the tools-only paint callbacks. Use lossless encoding when preserving
+its values matters. Pass selections are session settings. This initial adapter still
+needs an in-game check for TF2/TF2C render effects and per-pass output synchronization.
+
+### Native POV-demo spectating
+
+Click a player name in **Observing** to spectate immediately, or use:
+
+```text
+mirv_pov <player entity index>
+mirv_pov off
+mirv_pov mode first
+mirv_pov mode third
+```
+
+The click/console action stops HLAE
+camera playback/preview and releases the live view source without detaching or
+replacing saved camera definitions. It temporarily sets the recorder's native
+observer mode and target during rendering, then restores the original observer values
+before scene capture and subsequent network updates. No camera rig is created. **POV view** selects native first-person or third-person
+chase. For another player, chase reads their interpolated eye angles at the native
+engine angle query, rather than using the recorder's look direction. The adapter
+covers distinct `VEngineClient013/014/015` interfaces: TF2's client requests `014`,
+while HLAE can select `015`; hooking only HLAE's interface leaves the native chase
+query unchanged. Aliased interface vtables are hooked once. The recorder's
+engine angles are never overwritten. The recorded player's own third-person view
+uses Source's existing `thirdperson` behavior. Native chase positioning and collision
+remain handled by Source. While a remote observer scope is active, Source's tools
+third-person-camera visibility flag displays the recorder's world model and hides
+the recorder's first-person viewmodels; it does not move the spectator camera.
+The flag is released when the observer scope ends. In first-person observation,
+the shared render classification excludes the observed player's own world mesh
+and attached gear, so enabling the recorder's body does not put the target's
+head or world weapon in front of the camera. Chase view retains the target model.
+
+While observing another player, native input third-person offsets are cleared
+before view calculation. The existing `tf_taunt_first_person` and
+`cl_first_person_uses_world_model` options are enabled, `r_drawviewmodel` and
+`cl_demoviewoverride` disabled, while native chase position and orientation are preserved as a pair.
+An angle-only final override is not applied. These guards prevent recorder camera/viewmodel
+state from overwriting remote spectating. The previous
+values are restored on exit; taunt conditions and animations are not cleared. Native
+view setup also uses the target's available recoil, FOV and eye-offset inputs;
+those temporary substitutions on the recorder are restored immediately after
+view calculation, before simulation, tools processing and scene-cache capture.
+Unrecorded recoil is neutral, and missing eye-height data uses the standard fallback.
+
+Returning to the recorded player, changing demos, or shutting down the level restores
+normal observation. Targets are tracked by user ID and validated entity handles, so
+a reused entity slot cannot silently select a different player.
+
+A POV demo only contains entities and local-player data recorded by its author.
+Spectating cannot reconstruct missing players, remote viewmodel animation, or HUD
+information that the demo did not record. STV continues to use its native spectator
+command separately.
+
+Spectating diagnostics: `mirv_pov debug` prints native angle-query count, the
+last native/target orientation and active camera guards. If the view still drifts,
+include this output along with first/third-person mode and the demo tick.
+
+### Compositing scope and depth diagnostics
+
+These outputs are object isolates. Excluded models retain native depth writes,
+but refractive cloak shaders and interleaved/additive particles still need a
+depth-aware effects workflow for accurate reconstruction. Keep normal screen
+recording as the beauty reference. See [TF2 pass compositing](TF2_PASS_COMPOSITING.md)
+for the proposed capture contract and current unsupported cases.
+
+After recording finishes, `mirv_streams record pass stats` reports GPU attempts,
+complete captured frames and failures per output. Compare these along with media
+frame counts/FPS before attributing depth stutter to capture or the codec.
 
 ### Attached collision reliability and diagnostics
 

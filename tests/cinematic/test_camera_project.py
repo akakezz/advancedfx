@@ -38,7 +38,7 @@ CommandSystem g_CommandSystem(nullptr,nullptr,nullptr);
 bool Mirv_Tf2_SaveCamera(std::ostream&out,IMirvVecAngCalc*c){out<<"fixture-calc "<<c->Entity;for(double v:c->Shift)out<<' '<<v;out<<'\\n';return bool(out);}
 IMirvVecAngCalc*Mirv_Tf2_LoadCamera(std::istream&in){std::string tag;if(!(in>>tag))return nullptr;int e=-1;double shift[3]{};if(tag=="fixture-calc"){if(!(in>>e>>shift[0]>>shift[1]>>shift[2]))return nullptr;}else{int mode;std::string name;bool calibrated,captured;double v;try{std::stoi(tag);}catch(...){return nullptr;}if(!(in>>mode>>std::quoted(name)>>calibrated>>captured))return nullptr;for(int i=0;i<9;++i)if(!(in>>v))return nullptr;for(double &x:shift)if(!(in>>x))return nullptr;}auto c=new IMirvVecAngCalc(e);for(int i=0;i<3;++i)c->Shift[i]=shift[i];return c;}
 
-namespace AfxHookSource{namespace CameraOverlay{void FlushRecovery(){}void ResetProjectRecovery(){}bool SampleCameraScene(double,advancedfx::SceneCache::Frame&f){if(!cachedFrame)return false;f=*cachedFrame;return true;}}}
+namespace AfxHookSource{namespace CameraOverlay{void FlushRecovery(){}void ResetProjectRecovery(){}bool SampleCameraScene(double time,advancedfx::SceneCache::Frame&f){for(const auto &sample:cameraFrames)if(std::abs(sample.ClientTime-time)<1e-6){f=sample;return true;}if(!cachedFrame)return false;f=*cachedFrame;return true;}}}
 #include "AfxHookSource/CinematicProject.inl"
 int main(){
  const auto file=(std::filesystem::temp_directory_path()/"hlae-project-roundtrip.hlae").wstring();
@@ -100,6 +100,32 @@ int main(){
  std::ifstream savedInput(std::filesystem::path(file),std::ios::binary);std::string originalBytes((std::istreambuf_iterator<char>(savedInput)),{});savedInput.close();
  auto custom=new IMirvVecAngCalc(5);g_CameraRigs.at(name).Aim->Source_set(custom);assert(!MirvCam_SaveProject(file.c_str()));std::ifstream unchanged(std::filesystem::path(file),std::ios::binary);std::string unchangedBytes((std::istreambuf_iterator<char>(unchanged)),{});assert(unchangedBytes==originalBytes);unchanged.close();assert(MirvCam_LoadProject(file.c_str()));
  const auto countBefore=g_CameraRigs.size();for(size_t cut:{size_t(0),originalBytes.size()/2,originalBytes.size()-5}){std::ofstream truncated(std::filesystem::path(file),std::ios::binary|std::ios::trunc);truncated.write(originalBytes.data(),cut);truncated.close();assert(!MirvCam_LoadProject(file.c_str())&&g_CameraRigs.size()==countBefore&&path.GetSize()==2);}
+
+ // Restore the valid fixture after malformed-file checks.
+ {std::ofstream restored(std::filesystem::path(file),std::ios::binary|std::ios::trunc);restored.write(originalBytes.data(),originalBytes.size());}
+ // Project replacement must clear both snapshots and chronological dispatch metadata.
+ assert(MirvCam_LoadProject(file.c_str()));
+ assert(g_CameraUndo.empty()&&g_CameraRedo.empty()&&g_CameraUndoIndices.empty()&&g_CameraRedoIndices.empty());
+ assert(MirvCam_HistoryIndex(false)==0&&MirvCam_HistoryIndex(true)==0);
+ auto fresh=g_CameraRigs.at(name).Rig.Pose;fresh.Fov+=1;assert(MirvCam_EditCamera(g_CameraRigs.at(name).Id,fresh));
+ const auto freshEdit=MirvCam_HistoryIndex(false);assert(freshEdit&&MirvCam_HistoryUndo(false));assert(MirvCam_HistoryIndex(true)==freshEdit);
+ assert(MirvCam_LoadProject(file.c_str())&&MirvCam_HistoryIndex(false)==0&&MirvCam_HistoryIndex(true)==0);
+ // A disappearing outgoing target uses the same historical fallback during baking,
+ // regardless of cached-preview state or the last live camera pose.
+ MirvCam_ClearClips();cached=false;cachedFrame.reset();cameraFrames.clear();
+ targets[5]=target;command({"mirv_cam","attach","5","-1","0","0","0"});
+ auto &outgoing=g_CameraRigs.at(g_CameraRigName);const auto outgoingId=outgoing.Id;
+ g_Hook_VClient_RenderView.LastCameraOrigin[0]=200;command({"mirv_cam","add","Fallback incoming"});
+ advancedfx::CameraClip outgoingClip;outgoingClip.Target=outgoingId;outgoingClip.Time=0;assert(MirvCam_EditClip(outgoingClip));
+ advancedfx::CameraClip incomingClip;incomingClip.Target=g_CameraRigs.at("Fallback incoming").Id;incomingClip.Time=1;incomingClip.Blend=1;assert(MirvCam_EditClip(incomingClip));
+ advancedfx::SceneCache::Frame historical;historical.ClientTime=.95;advancedfx::SceneCache::Entity historicalTarget;historicalTarget.Identity=outgoing.CacheIdentity;historicalTarget.Origin[0]=100;historical.Entities.push_back(historicalTarget);cameraFrames.push_back(historical);++cameraFramesRevision;
+ cachedFrame=std::make_shared<const advancedfx::SceneCache::Frame>();targets.clear();outgoing.LastWorld.Position[0]=999;
+ g_BakingCamera=true;g_BakeFrame=cachedFrame;g_CameraEvaluationTime=1.5;
+ advancedfx::CameraPose expectedOff,expectedOn;assert(EvaluateSequence(1.5,expectedOff));cached=true;assert(EvaluateSequence(1.5,expectedOn));
+ assert(std::abs(expectedOff.Position[0]-150)<1e-6&&std::abs(expectedOn.Position[0]-150)<1e-6);
+ g_BakingCamera=false;g_BakeFrame.reset();
+ for(bool preview:{false,true}){cached=preview;assert(MirvCam_Bake(bake.c_str(),"sequence",1.5,1.6,.05));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(1.5).X-150)<1e-6);}
+ cached=false;
  std::filesystem::remove(std::filesystem::path(file));std::filesystem::remove(std::filesystem::path(bake));std::cout<<"Project persistence and classic bake checks passed\\n";
 }
 '''

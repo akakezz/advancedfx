@@ -891,7 +891,13 @@ CON_COMMAND(mirv_streams, "Access to streams system.")
 					return;
 				}
 #endif //#ifndef _WIN64
-				else if (0 == _stricmp(cmd2, "screen"))
+				else if (0 == _stricmp(cmd2, "pass"))
+    {
+     CSubWrpCommandArgs subArgs(args, 3);
+     g_AfxStreams.Console_RecordPass(&subArgs);
+     return;
+    }
+    else if (0 == _stricmp(cmd2, "screen"))
 				{
 					CSubWrpCommandArgs subArgs(args, 3);
 
@@ -1054,6 +1060,7 @@ CON_COMMAND(mirv_streams, "Access to streams system.")
 			);
 #endif //#ifndef _WIN64
 			Tier0_Msg(
+				"mirv_streams record pass [...] - Enable separate TF2 world/player/viewmodel/HUD/depth outputs.\n"
 				"mirv_streams record screen [...] - Controls capturing the game content drawn to screen right before being presented.\n"
 				"mirv_streams record startMovieWav [...] - Controls WAV audio recording.\n"
 			);
@@ -1508,6 +1515,7 @@ void RememberNativeDemoFile(const void *args)
 		if (command.ArgC() >= 2)
 		{
 			MirvFix_PlayerRepairNewDemo(command.Arg(1));
+			MirvPovSpectate_SetPlayer(0);
 			MirvCam_NotifyDemoFile(command.Arg(1), g_VEngineClient ? g_VEngineClient->GetGameDirectory() : nullptr);
 #if AFX_ENABLE_GUI
 			AfxHookSource::CameraOverlay::NotifyDemoPlaybackFile(command.Arg(1));
@@ -2214,10 +2222,7 @@ bool MirvCampathPreview_KeyEvent(UINT message, WPARAM key, LPARAM lParam)
 		if (down && !g_CampathPreviewUndoHeld && !CampathPreview_IsRepeatKey(lParam))
 		{
 			g_CampathPreviewUndoHeld = true;
-			if (MirvCam_RigPreviewActive() && (MirvCam_RigNavigation() || MirvCam_SequencePreviewActive()))
-				MirvCam_HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
-			else
-				AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+			AfxHookSource::CameraOverlay::HistoryUndo((GetKeyState(VK_SHIFT) & 0x8000) != 0);
 			// Undo may leave preview and release its held keys; keep this chord owned until key-up.
 			g_CampathPreviewUndoHeld = true;
 		}
@@ -5312,6 +5317,8 @@ bool MirvFix_SetPovDeathcam(bool enabled)
 }
 // End TF2 POV deathcam control.
 
+#include "Tf2PovSpectate.inl"
+
 // TF2 manual player repair. Observe original receive values before substituting
 // explicitly excluded samples; Source retains ownership of interpolation/bones.
 namespace
@@ -7742,19 +7749,58 @@ CON_COMMAND(mirv_spec_player_key, "Spectate player by spectatorslot index") {
 
 #endif //#ifndef _WIN64
 
-CON_COMMAND(mirv_overlay, "TF2 camera workspace (F8).")
+void MirvSpectate_ReleaseView()
+{
+	MirvCam_EnableSequence(false);
+	MirvCam_EndRigPreview();
+	g_MirvCam.Source_set(nullptr);
+	for (size_t i = 0; i < g_Hook_VClient_RenderView.m_CamPaths.GetCount(); ++i)
+		g_Hook_VClient_RenderView.m_CamPaths.GetPath(i)->Enabled_set(false);
+	if (auto input = g_Hook_VClient_RenderView.m_MirvInput) input->SetCameraControlMode(false);
+	g_Aiming.Active = false;
+}
+
+CON_COMMAND(mirv_pov, "Native player spectating in TF2 POV demos.")
+{
+ if (args->ArgC() == 2 && !_stricmp(args->ArgV(1), "debug")) { Tier0_Msg("%s\n", MirvPovSpectate_Debug()); return; }
+ if (args->ArgC() == 3 && !_stricmp(args->ArgV(1), "mode")) {
+  const char *mode = args->ArgV(2);
+  if (!_stricmp(mode, "first") || !_stricmp(mode, "third")) {
+   MirvPovSpectate_SetMode(!_stricmp(mode, "third"));
+   if (g_VEngineClient) g_VEngineClient->ExecuteClientCmd(MirvPovSpectate_ThirdPerson() && !MirvPovSpectate_Player() ? "thirdperson" : "firstperson");
+   return;
+  }
+ }
+ if (args->ArgC() == 2) {
+  const char *value = args->ArgV(1);
+  char *end = nullptr;
+  const long index = std::strtol(value, &end, 10);
+  const bool off = !_stricmp(value, "off");
+  if ((off || (end && !*end && end != value && index > 0 && index <= 128)) &&
+      MirvPovSpectate_SetPlayer(off ? 0 : int(index))) {
+   MirvSpectate_ReleaseView();
+   g_VEngineClient->ExecuteClientCmd(MirvPovSpectate_ThirdPerson() && !MirvPovSpectate_Player() ? "thirdperson" : "firstperson");
+   return;
+  }
+ }
+ Tier0_Msg("mirv_pov <entityIndex> - Spectate a recorded player using the selected native observer mode.\n"
+           "mirv_pov off - Return to the recorded player's view.\n"
+           "mirv_pov mode first|third - Native in-eye or target-aligned chase view.\n%s\n", MirvPovSpectate_Status());
+}
+
+CON_COMMAND(mirv_overlay, "Cinematic workspace (supported games only).")
 {
 	if (args->ArgC() == 2 && (!_stricmp(args->ArgV(1), "0") || !_stricmp(args->ArgV(1), "1")))
 	{
 		if (!AfxHookSource::Gui::SetOverlayOpen(atoi(args->ArgV(1)) != 0))
-			Tier0_Warning("TF2 overlay is unavailable.\n");
+			Tier0_Warning("Cinematic overlay unavailable (unsupported game or GUI not initialized).\n");
 		return;
 	}
 	if (args->ArgC() == 1)
 	{
 		if (!AfxHookSource::Gui::SetOverlayOpen(!AfxHookSource::CameraOverlay::IsOpen()))
-			Tier0_Warning("TF2 overlay is unavailable.\n");
+			Tier0_Warning("Cinematic overlay unavailable (unsupported game or GUI not initialized).\n");
 		return;
 	}
-	Tier0_Msg("mirv_overlay [0|1] - Toggle or set the TF2 camera overlay.\n");
+	Tier0_Msg("mirv_overlay [0|1] - Toggle or set the cinematic workspace.\n");
 }

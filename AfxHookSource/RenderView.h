@@ -196,3 +196,19 @@ void MirvFix_PlayerAngleTraceFrame(int stage);
 bool MirvFix_PlayerAngleTraceSave(const wchar_t *file);
 bool MirvFix_GetPovDeathcam();
 bool MirvFix_SetPovDeathcam(bool enabled);
+
+// Native observer state is scoped to rendering; no camera rig is created.
+bool MirvPovSpectate_SetPlayer(int index);
+int MirvPovSpectate_Player();
+const char *MirvPovSpectate_Status();
+void MirvPovSpectate_FrameBegin();
+void MirvPovSpectate_FrameEnd();
+
+bool MirvPovSpectate_SetMode(bool thirdPerson);
+bool MirvPovSpectate_ThirdPerson();
+void MirvPovSpectate_InstallEngine(void *engine);
+void MirvSpectate_ReleaseView();
+void MirvPovSpectate_ViewDone(SOURCESDK::QAngle *angles = nullptr);
+const char *MirvPovSpectate_Debug();
+bool MirvPovSpectate_DrawRecorderWorldModel();
+int MirvPovSpectate_HiddenPlayer();

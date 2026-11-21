@@ -2,9 +2,11 @@
 
 #include "AfxConsole.h"
 #include "OutVideoStreamCreators.h"
+#include "RecordingProfileInfo.h"
 
 #include <string>
 #include <map>
+#include <vector>
 #include <algorithm>
 
 namespace advancedfx {
@@ -60,6 +62,17 @@ public:
 	}
 
 	static void Console(ICommandArgs * args);
+	// Live registry, including user-created settings.
+	static std::vector<std::string> GetNames();
+	static bool Describe(const char *name, RecordingProfileInfo &out);
+	static bool DuplicateEditable(const char *source, const char *newName);
+	static bool ApplyEdits(const RecordingProfileInfo &info);
+	static bool RemoveEditable(const char *name);
+ static bool ConfigurePersistence(const wchar_t *file);
+ static void SavePersistent();
+ static std::string PreferredProfile();
+ static void SetPreferredProfile(const char *name);
+ static std::string ProfileSnapshot();
 
 	CRecordingSettings(const char * name, bool bProtected)
 		: m_Name(name)
@@ -78,6 +91,9 @@ public:
 	}
 
 	virtual void Console_Edit(ICommandArgs * args) = 0;
+	virtual void DescribeFields(RecordingProfileInfo &out) const {}
+	virtual CRecordingSettings *CloneEditable(const char *name) const { return nullptr; }
+	virtual bool ApplyFields(const RecordingProfileInfo &info) { return false; }
 
 	virtual class advancedfx::COutVideoStreamCreator* CreateOutVideoStreamCreator(const IRecordStreamSettings & streams, const IRecordStreamSettings& stream, float fps, const char * pathSuffix) = 0;
 
@@ -180,6 +196,11 @@ public:
 		if (m_DefaultSettings) m_DefaultSettings->AddRef();
 	}
 
+ void DescribeFields(RecordingProfileInfo &out) const override {out.OutputSettings=m_DefaultSettings?m_DefaultSettings->GetName():"afxClassic";}
+ bool SetOutputSettings(CRecordingSettings *settings){
+  if(!settings || settings->InheritsFrom(this))return false;
+  settings->AddRef();if(m_DefaultSettings)m_DefaultSettings->Release();m_DefaultSettings=settings;return true;
+ }
 	virtual void Console_Edit(ICommandArgs * args) override;
 
 	virtual class advancedfx::COutVideoStreamCreator* CreateOutVideoStreamCreator(const IRecordStreamSettings & streams, const IRecordStreamSettings& stream, float fps, const char * pathSuffix) override
@@ -220,6 +241,15 @@ public:
 	{
 	}
 
+ void DescribeFields(RecordingProfileInfo &out) const override {
+  out.Type=RecordingProfileInfo::Kind::Multi;for(auto s:m_Settings)if(s)out.Outputs.emplace_back(s->GetName());
+ }
+ bool ApplyFields(const RecordingProfileInfo &info) override {
+  if(m_Protected || info.Type!=RecordingProfileInfo::Kind::Multi)return false;
+  std::list<CRecordingSettings *> next;
+  for(const auto &name:info.Outputs){auto s=GetByName(name.c_str());if(!s||s->InheritsFrom(this))return false;next.push_back(s);}
+  for(auto s:next)s->AddRef();for(auto s:m_Settings)if(s)s->Release();m_Settings=std::move(next);return true;
+ }
 	virtual void Console_Edit(ICommandArgs * args) override;
 
 	virtual class advancedfx::COutVideoStreamCreator* CreateOutVideoStreamCreator(const IRecordStreamSettings & streams, const IRecordStreamSettings& stream, float fps, const char * pathSuffix) override
@@ -320,19 +350,31 @@ public:
 class CFfmpegRecordingSettings : public CRecordingSettings
 {
 public:
-	CFfmpegRecordingSettings(const char * name, bool bProtected, const char * szFfmpegOptions)
+	CFfmpegRecordingSettings(const char * name, bool bProtected, const char * szFfmpegOptions, const char * noAlphaOptions = "")
 		: CRecordingSettings(name, bProtected)
-		, m_FfmpegOptions(szFfmpegOptions)
+		, m_FfmpegOptions(szFfmpegOptions), m_NoAlphaOptions(noAlphaOptions)
 	{
 
 	}
 
 	virtual void Console_Edit(ICommandArgs * args) override;
+	void DescribeFields(RecordingProfileInfo &out) const override
+	{
+		out.Type = RecordingProfileInfo::Kind::Ffmpeg;
+		out.FfmpegOptions = m_FfmpegOptions;
+  out.FfmpegOptionsNoAlpha = m_NoAlphaOptions;
+	}
+	CRecordingSettings *CloneEditable(const char *name) const override
+	{
+		return new CFfmpegRecordingSettings(name, false, m_FfmpegOptions.c_str(), m_NoAlphaOptions.c_str());
+	}
+	bool ApplyFields(const RecordingProfileInfo &info) override;
 
 	virtual class advancedfx::COutVideoStreamCreator* CreateOutVideoStreamCreator(const IRecordStreamSettings & streams, const IRecordStreamSettings& stream, float fps, const char * pathSuffix) override;
 
 private:
 	std::string m_FfmpegOptions;
+ std::string m_NoAlphaOptions;
 };
 
 class CFfmpegExRecordingSettings : public CRecordingSettings
@@ -346,6 +388,16 @@ public:
 	}
 
 	virtual void Console_Edit(ICommandArgs * args) override;
+	void DescribeFields(RecordingProfileInfo &out) const override
+	{
+		out.Type = RecordingProfileInfo::Kind::FfmpegEx;
+		out.FfmpegOptions = m_FfmpegOptions;
+	}
+	CRecordingSettings *CloneEditable(const char *name) const override
+	{
+		return new CFfmpegExRecordingSettings(name, false, m_FfmpegOptions.c_str());
+	}
+	bool ApplyFields(const RecordingProfileInfo &info) override;
 
 	virtual class advancedfx::COutVideoStreamCreator* CreateOutVideoStreamCreator(const IRecordStreamSettings & streams, const IRecordStreamSettings& stream, float fps, const char * pathSuffix) override;
 
@@ -368,6 +420,21 @@ public:
 	}
 
 	virtual void Console_Edit(ICommandArgs * args) override;
+	void DescribeFields(RecordingProfileInfo &out) const override
+	{
+		out.Type = RecordingProfileInfo::Kind::Sampler;
+		out.OutputSettings = m_OutputSettings ? m_OutputSettings->GetName() : "";
+		out.OutputFps = m_OutFps;
+		out.Method = m_Method == EasySamplerSettings::ESM_Rectangle ? 0 : 1;
+		out.Exposure = m_Exposure;
+		out.Strength = m_FrameStrength;
+	}
+	CRecordingSettings *CloneEditable(const char *name) const override
+	{
+		return new CSamplingRecordingSettings(name, false, m_OutputSettings, m_Method,
+			m_OutFps, m_Exposure, m_FrameStrength);
+	}
+	bool ApplyFields(const RecordingProfileInfo &info) override;
 
 	virtual class advancedfx::COutVideoStreamCreator* CreateOutVideoStreamCreator(const IRecordStreamSettings & streams, const IRecordStreamSettings& stream, float fps, const char * pathSuffix) override;
 
@@ -404,6 +471,7 @@ class CInterleaveInputRecordingSettings: public CRecordingSettings
 public:
 	CInterleaveInputRecordingSettings(const char * name, bool bProtected, CInterleaveRecordingSettings * pMainInterleaveInput, int index);
 
+ void DescribeFields(RecordingProfileInfo &out) const override;
 	virtual void Console_Edit(ICommandArgs * args) override;
 
 	virtual class advancedfx::COutVideoStreamCreator* CreateOutVideoStreamCreator(const IRecordStreamSettings & streams, const IRecordStreamSettings& stream, float fps, const char * pathSuffix) override;
@@ -429,6 +497,7 @@ public:
 		if(m_OutputSettings) m_OutputSettings->AddRef();
 	}
 
+ void DescribeFields(RecordingProfileInfo &out) const override {out.Type=RecordingProfileInfo::Kind::Interleave;out.OutputSettings=m_OutputSettings?m_OutputSettings->GetName():"afxDefault";out.InputCount=int(m_InputCount);}
 	virtual void Console_Edit(ICommandArgs * args) override;
 
 	virtual class advancedfx::COutVideoStreamCreator* CreateOutVideoStreamCreator(const IRecordStreamSettings & streams, const IRecordStreamSettings& stream, float fps, const char * pathSuffix) override

@@ -7838,6 +7838,25 @@ static int Mirv_Tf2_ToolCategory(SOURCESDK::TF2::IClientTools *iface,
 		iface->DetachFromEntity(entity);
 	return category;
 }
+// Shared fallback for generic physics/dynamic entities in cache and render passes.
+static int Mirv_Tf2_ModelCategory(CMirvTf2ClientRenderable *renderable, bool props)
+{
+ auto info = Mirv_Tf2_GetModelInfo();
+ const void *model = renderable->GetModel();
+ const char *name = info && model ? info->GetModelName(model) : nullptr;
+ if (!name) return MIRV_TF2_ENTITY_OTHER;
+ char path[260]; size_t i = 0;
+ for (; name[i] && i + 1 < sizeof(path); ++i)
+  path[i] = name[i] == '\\' ? '/' : char(tolower(static_cast<unsigned char>(name[i])));
+ path[i] = 0;
+ if (strstr(path, "/gibs/")) return MIRV_TF2_ENTITY_GIB;
+ if (strstr(path, "/weapons/")) return MIRV_TF2_ENTITY_WEAPON;
+ if (strstr(path, "/player/items/") || strstr(path, "/bots/items/")) return MIRV_TF2_ENTITY_COSMETIC;
+ if (strstr(path, "/buildables/")) return MIRV_TF2_ENTITY_BUILDING;
+ if (props && (info->GetModelType(model) == 1 || info->GetModelType(model) == 3)) return MIRV_TF2_ENTITY_PROP;
+ return MIRV_TF2_ENTITY_OTHER;
+}
+
 static bool Mirv_Tf2_LabelDebris(CMirvTf2ClientUnknown *object)
 {
 	const auto networkable = object->GetClientNetworkable();
@@ -11751,32 +11770,9 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 				continue;
 			if ((gibs || weapons || cosmetics || buildings || props) && category == MIRV_TF2_ENTITY_OTHER)
 			{
-				// Generic dynamic/physics classes need a model-based category fallback.
-				auto info = Mirv_Tf2_GetModelInfo();
-				const void *model = renderable->GetModel();
-				const char *modelName = info && model ? info->GetModelName(model) : nullptr;
-				if (modelName)
-				{
-					char path[260];
-					size_t i = 0;
-					for (; modelName[i] && i + 1 < sizeof(path); ++i)
-						path[i] = modelName[i] == '\\'
-						              ? '/'
-						              : char(tolower(static_cast<unsigned char>(modelName[i])));
-					path[i] = 0;
-					if (strstr(path, "/gibs/"))
-						category = MIRV_TF2_ENTITY_GIB;
-					else if (strstr(path, "/weapons/"))
-						category = MIRV_TF2_ENTITY_WEAPON;
-					else if (strstr(path, "/player/items/") || strstr(path, "/bots/items/"))
-						category = MIRV_TF2_ENTITY_COSMETIC;
-					else if (strstr(path, "/buildables/"))
-						category = MIRV_TF2_ENTITY_BUILDING;
-					else if (props && (info->GetModelType(model) == 1 || info->GetModelType(model) == 3))
-						category = MIRV_TF2_ENTITY_PROP; // Brush or studio model; no sprites/particles/world.
-					looseModel = !networked &&
-					             (category == MIRV_TF2_ENTITY_WEAPON || category == MIRV_TF2_ENTITY_COSMETIC);
-				}
+				category = Mirv_Tf2_ModelCategory(renderable, props);
+				looseModel = !networked &&
+				             (category == MIRV_TF2_ENTITY_WEAPON || category == MIRV_TF2_ENTITY_COSMETIC);
 			}
 			if (!networked && category != MIRV_TF2_ENTITY_RAGDOLL && category != MIRV_TF2_ENTITY_GIB &&
 			    category != MIRV_TF2_ENTITY_WEAPON && category != MIRV_TF2_ENTITY_COSMETIC &&
@@ -11959,4 +11955,57 @@ void Mirv_Tf2_DebugEntityLabel(int address)
 			return;
 		}
 	Tier0_Msg("Label address %i is unavailable.\n", address);
+}
+
+// Per-render snapshot: no engine entity pointers survive the synchronous pass batch.
+void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenPlayer)
+{
+ groups.clear();
+ auto tools = CClientToolsTf2::Instance();
+ auto iface = tools ? tools->GetClientTools() : nullptr;
+ if (!iface) return;
+ struct Row { const void *Renderable; unsigned Handle, Parent, Group; };
+ std::vector<Row> rows;
+ std::map<unsigned, unsigned> handles;
+ size_t scanned = 0;
+ for (auto object = iface->FirstEntity(); object && scanned++ < 4096; object = iface->NextEntity(object)) {
+  auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
+  auto renderable = unknown->GetClientRenderable();
+  if (!renderable) continue;
+  const bool player = iface->IsPlayer(object);
+  int category = Mirv_Tf2_ToolCategory(iface, object, iface->GetEntIndex(object), player, true);
+  if (category == MIRV_TF2_ENTITY_OTHER) category = Mirv_Tf2_ModelCategory(renderable, false);
+  // Match existing gib labels: debris is a fallback, never override a cosmetic.
+  if (category == MIRV_TF2_ENTITY_OTHER && Mirv_Tf2_LabelDebris(unknown)) category = MIRV_TF2_ENTITY_GIB;
+  unsigned group = category == -1 ? 2 :
+   (category == MIRV_TF2_ENTITY_PLAYER || category == MIRV_TF2_ENTITY_WEAPON ||
+    category == MIRV_TF2_ENTITY_COSMETIC || category == MIRV_TF2_ENTITY_RAGDOLL ||
+    category == MIRV_TF2_ENTITY_GIB) ? 1 : 0;
+  if (hiddenPlayer > 0 && iface->GetEntIndex(object) == hiddenPlayer) group |= 4;
+  unsigned parent = 0xffffffffu;
+  if (auto network = unknown->GetClientNetworkable())
+   Mirv_Tf2_SceneMoveParent(object, SceneInterfaceCall<const void *>(network, 2), parent);
+  if (parent == 0xffffffffu || parent == 0)
+   if (auto owner = iface->GetOwnerEntity(object)) parent = Mirv_Tf2_EntityHandle(owner);
+  const auto handle = Mirv_Tf2_EntityHandle(object);
+  rows.push_back({renderable, handle, parent, group});
+  if (handle != 0xffffffffu) handles[handle] = group;
+ }
+ // Wearables and carried weapons inherit their parent's pass; resolve nested gear.
+ for (int depth = 0; depth < 16; ++depth) {
+  bool changed = false;
+  for (auto &row : rows) if (row.Parent != 0xffffffffu) {
+   auto parent = handles.find(row.Parent);
+   if (parent != handles.end()) {
+    unsigned inherited = row.Group | (parent->second & 4);
+    if (!(inherited & 3)) inherited |= parent->second & 3;
+    if (inherited == row.Group) continue;
+    row.Group = inherited;
+    if (row.Handle != 0xffffffffu) handles[row.Handle] = row.Group;
+    changed = true;
+   }
+  }
+  if (!changed) break;
+ }
+ for (const auto &row : rows) groups[row.Renderable] = row.Group;
 }

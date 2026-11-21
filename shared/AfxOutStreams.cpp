@@ -2,6 +2,7 @@
 
 #include "AfxOutStreams.h"
 #include "AfxConsole.h"
+#include "RecordingLog.h"
 
 #include "RawOutput.h"
 #include "OpenExrOutput.h"
@@ -271,6 +272,12 @@ COutFFMPEGVideoStreamImpl::COutFFMPEGVideoStreamImpl(const CImageFormat& imageFo
 
 		ReplaceAllW(myFFMPEGOptions, replacements);
 
+  // All encoder entry points publish to the same bounded overlay diagnostics.
+  WideStringToUTF8String(myPath.c_str(),m_EncoderLogSource);
+  std::string commandUtf8;
+  if(WideStringToUTF8String(myFFMPEGOptions.c_str(),commandUtf8)){
+   commandUtf8="Command: "+commandUtf8+"\r\n";WriteEncoderLog(commandUtf8.data(),DWORD(commandUtf8.size()));
+  }
 		std::wstring commandLine(myFFMPEGOptions.append(L"\0"));
 
 		STARTUPINFOW startupInfo;
@@ -427,6 +434,10 @@ COutFFMPEGVideoStreamImpl::COutFFMPEGVideoStreamImpl(const CImageFormat& imageFo
 	else m_Okay = FALSE;
 }
 
+void COutFFMPEGVideoStreamImpl::WriteEncoderLog(const char *data, DWORD bytes) {
+ RecordingLog::Get().Append(m_EncoderLogSource,data,bytes);
+}
+
 void COutFFMPEGVideoStreamImpl::Close()
 {
 	if (INVALID_HANDLE_VALUE != m_hChildStd_IN_Wr)
@@ -445,6 +456,15 @@ void COutFFMPEGVideoStreamImpl::Close()
 			advancedfx::Warning("AFXERROR: COutFFMPEGVideoStream::Close.\n");
 		}
 
+  if(waitCode==WAIT_OBJECT_0){
+   HandleOutAndErr(0); // Drain diagnostics emitted just before process exit.
+   DWORD exitCode=0;
+   if(GetExitCodeProcess(m_ProcessInfo.hProcess,&exitCode)){
+    const std::string result="\r\nFFmpeg exit code: "+std::to_string(exitCode)+"\r\n";
+    WriteEncoderLog(result.data(),DWORD(result.size()));
+    if(exitCode)advancedfx::Warning("FFmpeg failed (exit %lu) for %s; see Recording > FFmpeg log.\n",exitCode,m_EncoderLogSource.c_str());
+   }
+  }
 		CloseHandle(m_ProcessInfo.hProcess);
 		CloseHandle(m_ProcessInfo.hThread);
 
@@ -596,6 +616,7 @@ bool COutFFMPEGVideoStreamImpl::HandleOutAndErr(DWORD processWaitTimeOut)
 			if (ReadFile(m_hChildStd_ERR_Rd, chBuf, min(bytesAvail, 250), &dwBytesRead, NULL))
 			{
 				chBuf[dwBytesRead] = 0;
+    WriteEncoderLog(chBuf,dwBytesRead);
 				advancedfx::Warning("%s", chBuf);
 				bytesAvail -= dwBytesRead;
 			}

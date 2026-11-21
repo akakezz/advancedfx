@@ -137,6 +137,9 @@ target_sources(AfxHookSource PRIVATE
     AfxShaders.cpp
     AfxShaders.h
     AfxStreams.cpp
+    Tf2RenderPass.h
+    Tf2RenderPass.inl
+    Tf2PovSpectate.inl
     AfxStreams.h
     CampathDrawer.cpp
     CampathDrawer.h
