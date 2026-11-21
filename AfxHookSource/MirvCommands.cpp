@@ -7749,8 +7749,27 @@ CON_COMMAND(mirv_spec_player_key, "Spectate player by spectatorslot index") {
 
 #endif //#ifndef _WIN64
 
-CON_COMMAND(mirv_pov, "Native in-eye player spectating in TF2 POV demos.")
+void MirvSpectate_ReleaseView()
 {
+	MirvCam_EnableSequence(false);
+	MirvCam_EndRigPreview();
+	g_MirvCam.Source_set(nullptr);
+	for (size_t i = 0; i < g_Hook_VClient_RenderView.m_CamPaths.GetCount(); ++i)
+		g_Hook_VClient_RenderView.m_CamPaths.GetPath(i)->Enabled_set(false);
+	if (auto input = g_Hook_VClient_RenderView.m_MirvInput) input->SetCameraControlMode(false);
+	g_Aiming.Active = false;
+}
+
+CON_COMMAND(mirv_pov, "Native player spectating in TF2 POV demos.")
+{
+ if (args->ArgC() == 3 && !_stricmp(args->ArgV(1), "mode")) {
+  const char *mode = args->ArgV(2);
+  if (!_stricmp(mode, "first") || !_stricmp(mode, "third")) {
+   MirvPovSpectate_SetMode(!_stricmp(mode, "third"));
+   if (g_VEngineClient) g_VEngineClient->ExecuteClientCmd(MirvPovSpectate_ThirdPerson() && !MirvPovSpectate_Player() ? "thirdperson" : "firstperson");
+   return;
+  }
+ }
  if (args->ArgC() == 2) {
   const char *value = args->ArgV(1);
   char *end = nullptr;
@@ -7758,20 +7777,14 @@ CON_COMMAND(mirv_pov, "Native in-eye player spectating in TF2 POV demos.")
   const bool off = !_stricmp(value, "off");
   if ((off || (end && !*end && end != value && index > 0 && index <= 128)) &&
       MirvPovSpectate_SetPlayer(off ? 0 : int(index))) {
-   {
-    MirvCam_EnableSequence(false);
-    MirvCam_EndRigPreview();
-    g_MirvCam.Source_set(nullptr);
-    for (size_t i = 0; i < g_Hook_VClient_RenderView.m_CamPaths.GetCount(); ++i)
-     g_Hook_VClient_RenderView.m_CamPaths.GetPath(i)->Enabled_set(false);
-    if (auto input = g_Hook_VClient_RenderView.m_MirvInput) input->SetCameraControlMode(false);
-    g_Aiming.Active = false;
-   }
+   MirvSpectate_ReleaseView();
+   g_VEngineClient->ExecuteClientCmd(MirvPovSpectate_ThirdPerson() && !MirvPovSpectate_Player() ? "thirdperson" : "firstperson");
    return;
   }
  }
- Tier0_Msg("mirv_pov <entityIndex> - Spectate a recorded player using native in-eye observation.\n"
-           "mirv_pov off - Return to the recorded player's view.\n%s\n", MirvPovSpectate_Status());
+ Tier0_Msg("mirv_pov <entityIndex> - Spectate a recorded player using the selected native observer mode.\n"
+           "mirv_pov off - Return to the recorded player's view.\n"
+           "mirv_pov mode first|third - Native in-eye or target-aligned chase view.\n%s\n", MirvPovSpectate_Status());
 }
 
 CON_COMMAND(mirv_overlay, "Cinematic workspace (supported games only).")

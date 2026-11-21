@@ -348,6 +348,7 @@ public:
 
 		//Tier0_Msg("ClientEngineTools::SetupEngineView\n");
 		if (g_Engine_ClientEngineTools->SetupEngineView(origin, angles, fov)) bRet = true;
+		MirvPovSpectate_ViewDone();
 
 		g_Hook_VClient_RenderView.OnViewOverride(
 			origin.x, origin.y, origin.z,
@@ -517,6 +518,7 @@ void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals
 			break;
 		}
 		if (nullptr == iface) ErrorBox("Could not get a supported VEngineClient interface.");
+  else if (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified) MirvPovSpectate_InstallEngine(iface);
 
 		// VEngineCvar:
 

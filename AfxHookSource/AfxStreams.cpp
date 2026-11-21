@@ -10376,10 +10376,33 @@ bool CAfxStreams::Tf2PassRecording(Tf2RenderPass pass) const {
  return m_Recording && Tf2PassEnabled(pass) && g_VEngineClient && !g_VEngineClient->Con_IsVisible();
 }
 void CAfxStreams::EngineThread_PassBegin(Tf2RenderPass pass) {
- MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::Begin));
+ MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::Begin, nullptr, Tf2PassBackground()));
 }
 void CAfxStreams::EngineThread_PassEnd(Tf2RenderPass pass) {
  MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::End));
+}
+// Material-system bookkeeping can finish a view with another target bound.
+// Keep HLAE's replacement mapping, but bind and restore the actual D3D pair too.
+bool CAfxStreams::DrawingThread_BindTf2PassTarget() {
+ auto device = AfxGetDirect3DDevice9();
+ auto color = AfxGetRenderTargetSurface(), depth = AfxGetDepthStencilSurface();
+ if (!device || !color || !depth) return false;
+ return SUCCEEDED(device->SetDepthStencilSurface(nullptr)) &&
+  SUCCEEDED(device->SetRenderTarget(0, color)) && SUCCEEDED(device->SetDepthStencilSurface(depth));
+}
+void CAfxStreams::DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass) {
+ auto &color = m_Tf2PassPreviousColor[unsigned(pass)];
+ auto &depth = m_Tf2PassPreviousDepth[unsigned(pass)];
+ if (!color && !depth) return;
+ if (auto device = AfxGetDirect3DDevice9()) {
+  device->SetDepthStencilSurface(nullptr);
+  if (color) device->SetRenderTarget(0, color);
+  device->SetDepthStencilSurface(depth);
+  const auto &viewport = m_Tf2PassPreviousViewport[unsigned(pass)];
+  if (viewport.Width && viewport.Height) device->SetViewport(&viewport);
+ }
+ if (color) { color->Release(); color = nullptr; }
+ if (depth) { depth->Release(); depth = nullptr; }
 }
 void CAfxStreams::CPassCaptureFunctor::operator()() {
  auto &node = g_AfxStreams.m_Tf2PassNodes[unsigned(Pass)];
@@ -10387,33 +10410,67 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
   if (!node) { node = new CCaptureNode(new CCaptureInputRenderTarget(), new CDrawingRecordScreenOutput(Creator)); node->AddRef(); }
   return;
  }
- if (Op == Destroy) { if (node) { node->GpuRelease(); node->Release(); node = nullptr; } return; }
+ if (Op == Destroy) { g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass); if (node) { node->GpuRelease(); node->Release(); node = nullptr; } return; }
  if (Op == Begin) {
   g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
-  if (!node || !g_AfxStreams.DrawingThread_GetOrCreateRenderTargetSurfaceNoMssaa() ||
+  g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] = false;
+  if (!node || !(Pass == Tf2RenderPass::Depth ? g_AfxStreams.DrawingThread_GetOrCreateRenderTargetSurfaceNoMssaa() : g_AfxStreams.DrawingThread_GetOrCreateRenderTargetSurface()) ||
       (Pass == Tf2RenderPass::Depth && !g_AfxStreams.DrawingThread_GetOrCreateIntZTextureSurface())) {
    Tier0_Warning("Could not allocate TF2 pass capture target; skipping frame.\n");
    return;
   }
+  auto device = AfxGetDirect3DDevice9();
+  if (!device || FAILED(device->GetRenderTarget(0, &g_AfxStreams.m_Tf2PassPreviousColor[unsigned(Pass)]))) return;
+  device->GetDepthStencilSurface(&g_AfxStreams.m_Tf2PassPreviousDepth[unsigned(Pass)]);
+  device->GetViewport(&g_AfxStreams.m_Tf2PassPreviousViewport[unsigned(Pass)]);
+  device->SetDepthStencilSurface(nullptr);
   g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = true;
-  g_AfxStreams.DrawingThread_SetRenderTargetNoMsaa();
+  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_SetRenderTargetNoMsaa();
+  else g_AfxStreams.DrawingThread_SetRenderTarget();
   if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_SetIntZTextureSurface();
-  if (auto device = AfxGetDirect3DDevice9()) device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0, 1, 0);
+  if (g_AfxStreams.DrawingThread_BindTf2PassTarget()) {
+   const auto result = device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
+    Pass == Tf2RenderPass::Players || Pass == Tf2RenderPass::Viewmodel || Pass == Tf2RenderPass::Hud ? Background : 0, 1, 0);
+   g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] = SUCCEEDED(result);
+   if (FAILED(result)) Tier0_Warning("TF2 %s pass clear failed: 0x%08x.\n", Tf2RenderPassName(Pass), unsigned(result));
+  } else Tier0_Warning("TF2 %s pass could not bind its color/depth targets.\n", Tf2RenderPassName(Pass));
   return;
  }
  if (!g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) return;
  g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
- if (Pass == Tf2RenderPass::Depth) {
+ const bool capture = g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] && g_AfxStreams.DrawingThread_BindTf2PassTarget();
+ if (capture && Pass == Tf2RenderPass::Depth) {
   D3DVIEWPORT9 viewport{};
   if (auto device = AfxGetDirect3DDevice9()) if (SUCCEEDED(device->GetViewport(&viewport)))
    AfxDrawDepth(AfxDrawDepthEncode_Gray, AfxDrawDepthMode_Inverse, false, 0, 1,
      viewport.X, viewport.Y, viewport.Width, viewport.Height, 1, 32768, nullptr);
  }
- if (node) node->GpuCapture();
+ if (capture && node) node->GpuCapture();
  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetIntZTextureSurface();
- g_AfxStreams.DrawingThread_UnsetRenderTargetNoMsaa(false);
+ if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetRenderTargetNoMsaa(false);
+ else g_AfxStreams.DrawingThread_UnsetRenderTarget(false);
+ g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass);
 }
 void CAfxStreams::Console_RecordPass(IWrpCommandArgs *args) {
+ if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "background")) {
+  unsigned color = 0; bool valid = false;
+  if (args->ArgC() == 3) {
+   if (!_stricmp(args->ArgV(2), "green")) { color = 0x00ff00; valid = true; }
+   else if (!_stricmp(args->ArgV(2), "blue")) { color = 0x0000ff; valid = true; }
+   else if (!_stricmp(args->ArgV(2), "black")) { valid = true; }
+  } else if (args->ArgC() == 5) {
+   valid = true;
+   for (int i = 2; i < 5; ++i) {
+    char *end = nullptr; const char *value = args->ArgV(i); const long channel = std::strtol(value, &end, 10);
+    if (!end || end == value || *end || channel < 0 || channel > 255) { valid = false; break; }
+    color = (color << 8) | unsigned(channel);
+   }
+  }
+  if (!valid || !SetTf2PassBackground(color)) Tier0_Warning("Stop recording before setting a valid pass background.\n");
+  Tier0_Msg("mirv_streams record pass background <green|blue|black> - Chroma background for isolated outputs.\n"
+    "mirv_streams record pass background <red 0..255> <green 0..255> <blue 0..255> - Custom chroma color.\n");
+  return;
+ }
  if (args->ArgC() == 3) for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
   if (!_stricmp(args->ArgV(1), Tf2RenderPassName(Tf2RenderPass(i))) &&
       (!std::strcmp(args->ArgV(2), "0") || !std::strcmp(args->ArgV(2), "1"))) {
@@ -10427,6 +10484,12 @@ void CAfxStreams::Console_RecordPass(IWrpCommandArgs *args) {
 }
 
 namespace AfxHookSource { namespace CameraOverlay { namespace Recording {
+unsigned PassBackground() { return g_AfxStreams.Tf2PassBackground(); }
+bool SetPassBackground(unsigned color) {
+ if (IsActive() || !g_VEngineClient) return false;
+ const auto command = std::string("mirv_streams record pass background ") + std::to_string((color >> 16) & 255) + " " + std::to_string((color >> 8) & 255) + " " + std::to_string(color & 255);
+ g_VEngineClient->ClientCmd_Unrestricted(command.c_str()); return true;
+}
 bool SeparatePassSupported() { return Tf2RenderPassSupported(); }
 bool PassEnabled(unsigned pass) { return g_AfxStreams.Tf2PassEnabled(Tf2RenderPass(pass)); }
 bool SetPassEnabled(unsigned pass, bool enabled) {

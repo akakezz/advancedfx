@@ -3534,9 +3534,13 @@ public:
 
 	void DrawingThread_UnsetIntZTextureSurface();
 
+ unsigned Tf2PassBackground() const { return m_Tf2PassBackground.load(); }
+ bool SetTf2PassBackground(unsigned color) { if (m_Recording) return false; m_Tf2PassBackground = 0xff000000u | color; return true; }
  bool Tf2PassEnabled(Tf2RenderPass pass) const;
  bool SetTf2PassEnabled(Tf2RenderPass pass, bool enabled);
  bool Tf2PassRecording(Tf2RenderPass pass) const;
+ bool DrawingThread_BindTf2PassTarget();
+ void DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass);
  void EngineThread_PassBegin(Tf2RenderPass pass);
  void EngineThread_PassEnd(Tf2RenderPass pass);
  void Console_RecordPass(IWrpCommandArgs *args);
@@ -3858,20 +3862,25 @@ private:
 		advancedfx::StreamCaptureType m_CaptureType;
 	} * m_DrawingRecordScreen = nullptr;
  class CCaptureNode* m_DrawingCaptureNode = nullptr;
+ std::atomic<unsigned> m_Tf2PassBackground{0xff00ff00u}; // Chroma green; isolated passes only.
  std::atomic<bool> m_Tf2PassEnabled[unsigned(Tf2RenderPass::Count)] = {};
  CCaptureNode *m_Tf2PassNodes[unsigned(Tf2RenderPass::Count)] = {};
  bool m_Tf2PassActive[unsigned(Tf2RenderPass::Count)] = {};
+ bool m_Tf2PassPixelsValid[unsigned(Tf2RenderPass::Count)] = {};
+ D3DVIEWPORT9 m_Tf2PassPreviousViewport[unsigned(Tf2RenderPass::Count)] = {};
+ IDirect3DSurface9 *m_Tf2PassPreviousColor[unsigned(Tf2RenderPass::Count)] = {}, *m_Tf2PassPreviousDepth[unsigned(Tf2RenderPass::Count)] = {};
  class CPassCaptureFunctor : public CMaterialSystemFunctor {
  public:
   enum Operation { Create, Destroy, Begin, End };
-  CPassCaptureFunctor(Tf2RenderPass pass, Operation op, advancedfx::COutVideoStreamCreator *creator = nullptr)
-   : Pass(pass), Op(op), Creator(creator) { if (Creator) Creator->AddRef(); }
+  CPassCaptureFunctor(Tf2RenderPass pass, Operation op, advancedfx::COutVideoStreamCreator *creator = nullptr, unsigned background = 0xff00ff00u)
+   : Pass(pass), Op(op), Creator(creator), Background(background) { if (Creator) Creator->AddRef(); }
   ~CPassCaptureFunctor() { if (Creator) Creator->Release(); }
   void operator()() override;
  private:
   Tf2RenderPass Pass;
   Operation Op;
   advancedfx::COutVideoStreamCreator *Creator;
+  unsigned Background; // Snapshot when queued; later menu edits cannot change pending frames.
  };
 
 	class CCreateScreenCaptureNodeFunctor : public CMaterialSystemFunctor {

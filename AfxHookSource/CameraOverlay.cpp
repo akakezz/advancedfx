@@ -3325,11 +3325,23 @@ static void DrawInterpolationSettings(CamPath &path)
 			"remain smooth; broken or weighted handles use editable cubic on that channel.");
 }
 
+static bool ObservePlayer(int entity, int user)
+{
+ if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo()) return false;
+ char cmd[192];
+ if (g_VEngineClient->IsHLTV()) {
+  MirvSpectate_ReleaseView();
+  std::snprintf(cmd, sizeof(cmd), "spec_autodirector 0; spec_mode 4; spec_player \"#%d\"", user);
+ } else std::snprintf(cmd, sizeof(cmd), "mirv_pov %d", entity);
+ Afx_ExecClientCmd(cmd);
+ return true;
+}
+
 static void DrawObserving()
 {
 	if (!ImGui::BeginTabItem("Observing"))
 		return;
-	ImGui::TextUnformatted("Select a player to inspect. Spectating and camera attachment are separate actions.");
+	ImGui::TextUnformatted("Click a player to spectate. Bone selection and camera attachment remain available below.");
 	if (ImGui::Button("Detach"))
 		Afx_ExecClientCmd("mirv_cam attach clear");
 	ImGui::SameLine();
@@ -3396,7 +3408,7 @@ static void DrawObserving()
 					bone = -1;
 				selectedEntity = i;
 				selectedUser = user;
-				traceStatus = "Selected " + std::string(name) + ". Camera and spectator view unchanged.";
+				traceStatus = ObservePlayer(i, user) ? "Spectating " + std::string(name) + "." : "Selected " + std::string(name) + ".";
 			}
 			ImGui::PopID();
 		}
@@ -3406,28 +3418,10 @@ static void DrawObserving()
 	{
 		ImGui::Separator();
 		const bool stv = g_VEngineClient && g_VEngineClient->IsPlayingDemo() && g_VEngineClient->IsHLTV();
-		if (stv && selectedUser > 0)
-		{
-			if (ImGui::Button("Spectate selected (STV)"))
-			{
-				MirvCampathPreview_SetActive(false);
-				g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
-				char cmd[192];
-				std::snprintf(cmd, sizeof(cmd),
-					"mirv_campath preview exit; mirv_cam attach clear; mirv_input end; spec_autodirector 0; spec_mode 4; spec_player \"#%d\"",
-					selectedUser);
-				Afx_ExecClientCmd(cmd);
-				traceStatus = "Requested STV spectating for the selected player.";
-			}
-		}
-		else if (g_VEngineClient && g_VEngineClient->IsPlayingDemo())
-  {
-   if (ImGui::Button("Spectate selected (POV)")) {
-    char cmd[192];
-    std::snprintf(cmd, sizeof(cmd), "mirv_pov %d", selectedEntity);
-    Afx_ExecClientCmd(cmd);
-   }
-   ImGui::SameLine();
+  if (!stv && g_VEngineClient && g_VEngineClient->IsPlayingDemo()) {
+   int view = MirvPovSpectate_ThirdPerson() ? 1 : 0;
+   const char *views[] = {"First person", "Third person (follow look)"};
+   if (ImGui::Combo("POV view", &view, views, 2)) Afx_ExecClientCmd(view ? "mirv_pov mode third" : "mirv_pov mode first");
    if (ImGui::Button("Return to recorded POV")) Afx_ExecClientCmd("mirv_pov off");
    ImGui::TextWrapped("%s", MirvPovSpectate_Status());
   }
@@ -8720,8 +8714,17 @@ void Draw()
       bool enabled = Recording::PassEnabled(i);
       if (ImGui::Checkbox(Tf2RenderPassName(Tf2RenderPass(i)), &enabled)) Recording::SetPassEnabled(i, enabled);
      }
+     const unsigned background = Recording::PassBackground() & 0xffffffu;
+     const char *backgroundNames[] = {"Green", "Blue", "Black"};
+     const unsigned backgroundColors[] = {0x00ff00u, 0x0000ffu, 0x000000u};
+     const char *preview = "Custom RGB";
+     for (int i = 0; i < 3; ++i) if (background == backgroundColors[i]) preview = backgroundNames[i];
+     if (ImGui::BeginCombo("Isolated pass background", preview)) {
+      for (int i = 0; i < 3; ++i) if (ImGui::Selectable(backgroundNames[i], background == backgroundColors[i])) Recording::SetPassBackground(backgroundColors[i]);
+      ImGui::EndCombo();
+     }
      if (!editable) ImGui::EndDisabled();
-     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use a black background; depth is inverse grayscale. Extra passes increase render cost.");
+     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use the selected chroma background; depth is inverse grayscale. Extra passes increase render cost.");
      if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("TF2 render-pass hooks are unavailable.");
     }
     // Record screen settings

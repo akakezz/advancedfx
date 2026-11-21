@@ -2992,26 +2992,48 @@ INTZ depth support reject recording rather than silently treating depth as color
 
 The world pass omits players and their attached models. The players pass includes
 player-owned gear and retains world depth occlusion. Player, viewmodel and HUD
-outputs use a black background, without an alpha channel; world shadows are not
-separated. Depth is an inverse grayscale visualization (nearer values are brighter),
+outputs default to chroma green, without an alpha channel. **Isolated pass background**
+offers Green, Blue and Black; custom RGB is available using
+`mirv_streams record pass background <red 0..255> <green 0..255> <blue 0..255>`.
+World shadows are not separated. Color passes preserve the game's MSAA sample count;
+only depth extraction uses a matched non-MSAA color/INTZ pair. The capture callback
+explicitly binds the capture surface even if Source left an intermediate target
+bound, and restores the previous color/depth surfaces and viewport afterward.
+Depth is an inverse grayscale visualization (nearer values are brighter),
 not a linear or floating-point depth file. Use lossless encoding when preserving
 its values matters. Pass selections are session settings. This initial adapter still
 needs an in-game check for TF2/TF2C render effects and per-pass output synchronization.
 
 ### Native POV-demo spectating
 
-Use **Observing → Spectate selected (POV)**, or:
+Click a player name in **Observing** to spectate immediately, or use:
 
 ```text
 mirv_pov <player entity index>
 mirv_pov off
+mirv_pov mode first
+mirv_pov mode third
 ```
 
-Selecting a player alone still changes no view. The explicit POV action stops HLAE
+The click/console action stops HLAE
 camera playback/preview and releases the live view source without detaching or
 replacing saved camera definitions. It temporarily sets the recorder's native
-in-eye observer target during rendering, then restores the original observer values
-before scene capture and subsequent network updates. No camera rig is created.
+observer mode and target during rendering, then restores the original observer values
+before scene capture and subsequent network updates. No camera rig is created. **POV view** selects native first-person or third-person
+chase. For another player, chase reads their interpolated eye angles at the native
+engine angle query, rather than using the recorder's look direction. The recorder's
+engine angles are never overwritten. The recorded player's own third-person view
+uses Source's existing `thirdperson` behavior. Native chase positioning and collision
+remain handled by Source.
+
+While observing another player, TF2's existing `tf_taunt_first_person` option is
+temporarily enabled so the recorder's taunts cannot switch the camera. Its previous
+value is restored on exit; taunt conditions and animations are not cleared. Native
+view setup also uses the target's available recoil, FOV and eye-offset inputs;
+those temporary substitutions on the recorder are restored immediately after
+view calculation, before simulation, tools processing and scene-cache capture.
+Unrecorded recoil is neutral, and missing eye-height data uses the standard fallback.
+
 Returning to the recorded player, changing demos, or shutting down the level restores
 normal observation. Targets are tracked by user ID and validated entity handles, so
 a reused entity slot cannot silently select a different player.
