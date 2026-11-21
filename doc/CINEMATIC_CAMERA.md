@@ -3053,9 +3053,13 @@ Duplicating this preset preserves its separate RGB-only options in the editor.
 Existing custom copies retain their own options and must be edited or copied again
 to pick up this change. The built-in name uses the new settings after restarting.
 
-Each FFmpeg output folder now contains `ffmpeg.log`, including the expanded
-command, encoder stderr and exit code. Nonzero exits point to that output's log
-in the console, so failures across simultaneous passes can be distinguished.
+The Recording tab contains a scrollable **FFmpeg log** with a **Clear log**
+button. It shows each output's expanded command, encoder stderr and exit code,
+labelled with the output path so simultaneous pass failures can be distinguished.
+New messages follow the bottom while you are already there; scrolling up preserves
+your position. The shared log is bounded to 256 KiB / 2,048 chunks and is session-only.
+No FFmpeg log files are written to the recording folders. Console diagnostics remain
+available, and failed encoder exits direct you to the overlay.
 `OpenEncodeSessionEx failed: incompatible client key (21)` with multiple outputs
 indicates an NVENC session-allocation failure; the subsequent AFX image-write
 errors are a consequence of the encoder exiting.

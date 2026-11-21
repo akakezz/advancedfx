@@ -2,6 +2,7 @@
 
 #include "AfxOutStreams.h"
 #include "AfxConsole.h"
+#include "RecordingLog.h"
 
 #include "RawOutput.h"
 #include "OpenExrOutput.h"
@@ -271,10 +272,8 @@ COutFFMPEGVideoStreamImpl::COutFFMPEGVideoStreamImpl(const CImageFormat& imageFo
 
 		ReplaceAllW(myFFMPEGOptions, replacements);
 
-  // Preserve per-output diagnostics: concurrent FFmpeg stderr otherwise interleaves.
-  const std::wstring logPath=myPath+L"\\ffmpeg.log";
-  WideStringToUTF8String(logPath.c_str(),m_EncoderLogPath);
-  m_EncoderLog=CreateFileW(logPath.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+  // All encoder entry points publish to the same bounded overlay diagnostics.
+  WideStringToUTF8String(myPath.c_str(),m_EncoderLogSource);
   std::string commandUtf8;
   if(WideStringToUTF8String(myFFMPEGOptions.c_str(),commandUtf8)){
    commandUtf8="Command: "+commandUtf8+"\r\n";WriteEncoderLog(commandUtf8.data(),DWORD(commandUtf8.size()));
@@ -436,7 +435,7 @@ COutFFMPEGVideoStreamImpl::COutFFMPEGVideoStreamImpl(const CImageFormat& imageFo
 }
 
 void COutFFMPEGVideoStreamImpl::WriteEncoderLog(const char *data, DWORD bytes) {
- if(m_EncoderLog!=INVALID_HANDLE_VALUE){DWORD written=0;WriteFile(m_EncoderLog,data,bytes,&written,nullptr);}
+ RecordingLog::Get().Append(m_EncoderLogSource,data,bytes);
 }
 
 void COutFFMPEGVideoStreamImpl::Close()
@@ -463,7 +462,7 @@ void COutFFMPEGVideoStreamImpl::Close()
    if(GetExitCodeProcess(m_ProcessInfo.hProcess,&exitCode)){
     const std::string result="\r\nFFmpeg exit code: "+std::to_string(exitCode)+"\r\n";
     WriteEncoderLog(result.data(),DWORD(result.size()));
-    if(exitCode)advancedfx::Warning("FFmpeg failed (exit %lu); see %s\n",exitCode,m_EncoderLogPath.c_str());
+    if(exitCode)advancedfx::Warning("FFmpeg failed (exit %lu) for %s; see Recording > FFmpeg log.\n",exitCode,m_EncoderLogSource.c_str());
    }
   }
 		CloseHandle(m_ProcessInfo.hProcess);
@@ -471,8 +470,6 @@ void COutFFMPEGVideoStreamImpl::Close()
 
 		m_Okay = FALSE;
 	}
-
- if(m_EncoderLog!=INVALID_HANDLE_VALUE){CloseHandle(m_EncoderLog);m_EncoderLog=INVALID_HANDLE_VALUE;}
 
 	if (INVALID_HANDLE_VALUE != m_hChildStd_IN_Rd)
 	{

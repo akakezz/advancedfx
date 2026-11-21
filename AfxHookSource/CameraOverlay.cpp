@@ -32,6 +32,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <shared/AfxConsole.h>
+#include <shared/RecordingLog.h>
 #include <shared/overlay/third_party/imgui_filebrowser/imfilebrowser.h>
 #include <shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.h>
 #include <shared/overlay/third_party/imguizmo/ImGuizmo.h>
@@ -7944,6 +7945,27 @@ static void DrawCamerasTab()
 }
 // The profile editor reads the *same* live registry as mirv_streams. Draft
 // changes are applied explicitly, never on each ImGui frame or during a take.
+static void DrawRecordingLog()
+{
+ if (!ImGui::CollapsingHeader("FFmpeg log", ImGuiTreeNodeFlags_DefaultOpen)) return;
+ if (ImGui::SmallButton("Clear log")) advancedfx::RecordingLog::Get().Clear();
+ static uint64_t revision=0;
+ static std::vector<advancedfx::RecordingLog::Entry> entries;
+ const bool changed=advancedfx::RecordingLog::Get().Read(revision,entries);
+ if (ImGui::BeginChild("##ffmpeg_log",ImVec2(0,ImGui::GetTextLineHeightWithSpacing()*6),true,
+                       ImGuiWindowFlags_HorizontalScrollbar)) {
+  const bool atBottom=ImGui::GetScrollY()>=ImGui::GetScrollMaxY()-1;
+  if (entries.empty()) ImGui::TextDisabled("No FFmpeg messages.");
+  std::string source;
+  for (const auto &entry:entries) {
+   if (source!=entry.Source) {source=entry.Source;ImGui::TextDisabled("%s",source.c_str());}
+   ImGui::TextUnformatted(entry.Text.data(),entry.Text.data()+entry.Text.size());
+  }
+  if (changed && atBottom) ImGui::SetScrollHereY(1.0f);
+ }
+ ImGui::EndChild();
+}
+
 static void DrawRecordingProfileEditor(const std::string &selected)
 {
 	advancedfx::RecordingProfileInfo current;
@@ -8596,6 +8618,7 @@ void Draw()
 		if (ImGui::BeginTabItem("Recording"))
 		{
 			ImGui::TextUnformatted(Recording::IsActive() ? "Recording is active" : "Recording is stopped");
+   DrawRecordingLog();
 			// Shared: record path chooser
 			static char s_recName[512] = {0};
 			static bool recInit = false;
