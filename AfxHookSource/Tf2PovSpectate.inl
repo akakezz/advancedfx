@@ -114,7 +114,7 @@ void PovGuardRecorderCamera(bool enabled)
  }
 }
 unsigned g_PovAngleQueries = 0, g_PovLastQueries = 0;
-SOURCESDK::QAngle g_PovLastNative{}, g_PovLastTarget{};
+SOURCESDK::QAngle g_PovLastNative(0, 0, 0), g_PovLastTarget(0, 0, 0);
 int g_PovSpectateUser = 0;
 std::atomic<bool> g_PovThirdPerson{false};
 std::atomic<const char *> g_PovSpectateStatus = "Native POV spectating is off.";
@@ -213,7 +213,7 @@ void MirvPovSpectate_FrameBegin()
   g_PovSpectateStatus = "Waiting for the selected player's recorded entity.";
   return;
  }
- SOURCESDK::QAngle look{};
+ SOURCESDK::QAngle look(0, 0, 0);
  const auto lookFields = g_PovThirdPerson.load() ? PovEntityFields(target) : PovObserverFields{};
  if (g_PovThirdPerson.load() && (g_PovOriginalAngles.empty() || !PovReadLook(target, look, &lookFields))) {
   g_PovSpectateStatus = "Third-person view needs the engine angle hook and recorded target eye angles.";
@@ -267,7 +267,7 @@ bool PovReadLook(void *target, SOURCESDK::QAngle &angles, const PovObserverField
  if (!PovTargetAvailable(target)) return false;
  const auto fields = known ? *known : PovEntityFields(target);
  if (fields.Pitch < 0 || fields.Yaw < 0) return false;
- angles = {};
+ angles = SOURCESDK::QAngle(0, 0, 0);
  std::memcpy(&angles.x, static_cast<const unsigned char *>(target) + fields.Pitch, sizeof(float));
  std::memcpy(&angles.y, static_cast<const unsigned char *>(target) + fields.Yaw, sizeof(float));
  return std::isfinite(angles.x) && std::isfinite(angles.y);
@@ -279,7 +279,7 @@ void __fastcall PovGetViewAngles(void *self,
  SOURCESDK::QAngle &angles)
 {
  const auto original = g_PovOriginalAngles.find(*static_cast<void ***>(self));
- if (original == g_PovOriginalAngles.end()) { angles = {}; return; }
+ if (original == g_PovOriginalAngles.end()) { angles = SOURCESDK::QAngle(0, 0, 0); return; }
  original->second(self,
 #ifndef _WIN64
  edx,
@@ -289,7 +289,7 @@ void __fastcall PovGetViewAngles(void *self,
  if (!scope.Object || !scope.CalculatingView || !g_PovThirdPerson.load() || !PovSpectatePlayback()) return;
  auto target = Mirv_Tf2_DiagnosticEntity(MirvPovSpectate_Player());
  if (!target || Mirv_Tf2_EntityHandle(target) != scope.AppliedTarget) return;
- SOURCESDK::QAngle look{};
+ SOURCESDK::QAngle look(0, 0, 0);
  if (PovReadLook(target, look, &scope.LookFields)) {
   angles = look;
   ++g_PovAngleQueries;
@@ -309,9 +309,9 @@ void MirvPovSpectate_InstallEngine(void *engine)
  if (!engine) return;
  auto table = *static_cast<void ***>(engine);
  if (g_PovOriginalAngles.count(table)) return; // Versions can alias one vtable.
- // TF2's client requests 014; HLAE may use 015. All share GetViewAngles at 18.
+ // TF2's client requests 014; HLAE may use 015. All share GetViewAngles at 19 (slot 18 is IsStreaming).
  auto &original = g_PovOriginalAngles[table];
- if (!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[18]), reinterpret_cast<PVOID>(PovGetViewAngles), reinterpret_cast<PVOID *>(&original)))
+ if (!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[19]), reinterpret_cast<PVOID>(PovGetViewAngles), reinterpret_cast<PVOID *>(&original)))
   g_PovOriginalAngles.erase(table);
 }
 
@@ -336,7 +336,7 @@ int MirvPovSpectate_HiddenPlayer()
 void MirvPovSpectate_ViewDone(SOURCESDK::QAngle *angles) {
  if (angles && g_PovThirdPerson.load() && MirvPovSpectate_DrawRecorderWorldModel()) {
   auto target = Mirv_Tf2_DiagnosticEntity(MirvPovSpectate_Player());
-  SOURCESDK::QAngle look{};
+  SOURCESDK::QAngle look(0, 0, 0);
   if (PovReadLook(target, look, &g_PovObserverScope.LookFields)) {
    g_PovLastNative = *angles; g_PovLastTarget = look; g_PovLastQueries = g_PovAngleQueries;
    // Native chase calculates origin and angles together, including collision.

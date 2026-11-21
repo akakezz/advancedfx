@@ -1380,6 +1380,13 @@ commits a validated edit to the actual profile; **Revert unsaved edits**
 re-reads its last committed settings. Recording must be stopped to switch,
 edit, duplicate, or delete profiles.
 
+Custom recording profiles, the `afxDefault` output route and the selected screen
+profile now restore across sessions from `%APPDATA%\HLAE\RecordingProfiles.txt`.
+Console and overlay edits save the same registry automatically. FFmpeg, FFmpegEx,
+sampler, multi-output and interleave dependencies are preserved. Invalid files are
+left intact and automatic overwriting is suppressed; move the file aside and restart
+to reset preferences. Pass selections remain session settings.
+
 For example, Capture FPS **480** with a sampler configured for Output FPS **60**
 gives a nominal **8:1 capture-to-output frame ratio**. The sampler's exposure
 and strength determine temporal blending; the output encoder is independent
@@ -3022,6 +3029,24 @@ Console equivalent:
 mirv_streams record pass alpha 1
 mirv_streams record screen settings afxFfmpegProresAlpha
 ```
+
+For NVIDIA hardware, `afxFfmpegNvencColorAlpha` uses H.264 NVENC to write
+`color.mp4` plus a synchronized grayscale `alpha.mp4` for each transparent isolate.
+Use the mask as a **luma matte** (white opaque, black transparent) for the straight
+color footage in your editor. Enable transparent isolated passes first:
+
+```text
+mirv_streams record pass alpha 1
+mirv_streams record screen settings afxFfmpegNvencColorAlpha
+```
+
+World, Depth and normal RGB screen recording write only `color.mp4`. This preset
+requires a GPU/driver supporting NVENC H.264 4:4:4 lossless encoding. Each alpha
+isolate uses two encoder sessions; enable fewer outputs if the GPU's concurrent
+session limit is reached. It accelerates encoding, while matte rendering/readbacks
+still have their existing cost. The split graph and frame/mask integrity have been
+tested with a CPU encoder substitute; hardware performance needs in-game testing.
+Duplicating this preset preserves its separate RGB-only options in the editor.
 
 `alpha 0` restores chroma backgrounds. The option cannot change during a take.
 Matte reconstruction assumes ordinary alpha compositing; additive/refractive

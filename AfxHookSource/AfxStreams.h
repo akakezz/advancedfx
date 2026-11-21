@@ -3547,6 +3547,7 @@ public:
  bool Tf2PassRecording(Tf2RenderPass pass) const;
  bool DrawingThread_BindTf2PassTarget();
  bool DrawingThread_Tf2White(bool white);
+ void EngineThread_PassCapture(Tf2RenderPass pass);
  void DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass);
  void EngineThread_PassBegin(Tf2RenderPass pass, int matteSample = -1);
  void EngineThread_PassEnd(Tf2RenderPass pass, float zNear = 1, float zFar = 32768);
@@ -3880,13 +3881,16 @@ private:
  std::atomic<unsigned long long> m_Tf2PassFailed[unsigned(Tf2RenderPass::Count)] = {};
  IDirect3DSurface9 *m_Tf2WhiteSurface = nullptr;
  bool m_Tf2WhiteBound = false;
+ IDirect3DSurface9 *m_Tf2PlayerDepth = nullptr;
+ bool m_Tf2PassCapturedEarly[unsigned(Tf2RenderPass::Count)] = {};
+ unsigned m_Tf2PassMatteColor[unsigned(Tf2RenderPass::Count)] = {};
  bool m_Tf2PassActive[unsigned(Tf2RenderPass::Count)] = {};
  bool m_Tf2PassPixelsValid[unsigned(Tf2RenderPass::Count)] = {};
  D3DVIEWPORT9 m_Tf2PassPreviousViewport[unsigned(Tf2RenderPass::Count)] = {};
  IDirect3DSurface9 *m_Tf2PassPreviousColor[unsigned(Tf2RenderPass::Count)] = {}, *m_Tf2PassPreviousDepth[unsigned(Tf2RenderPass::Count)] = {};
  class CPassCaptureFunctor : public CMaterialSystemFunctor {
  public:
-  enum Operation { Create, Destroy, Begin, End };
+  enum Operation { Create, Destroy, Begin, End, Capture };
   CPassCaptureFunctor(Tf2RenderPass pass, Operation op, advancedfx::COutVideoStreamCreator *creator = nullptr, unsigned background = 0xff00ff00u, float zNear = 1, float zFar = 32768, bool matte = false)
    : Pass(pass), Op(op), Creator(creator), Background(background), Near(zNear), Far(zFar), Matte(matte) { if (Creator) Creator->AddRef(); }
   ~CPassCaptureFunctor() { if (Creator) Creator->Release(); }

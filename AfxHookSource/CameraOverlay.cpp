@@ -7955,13 +7955,14 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 	static std::string editingName, status;
 	static advancedfx::RecordingProfileInfo draft;
 	static char copyName[64] = {};
-	static char ffmpegOptions[4096] = {};
+	static char ffmpegOptions[4096] = {}, ffmpegNoAlphaOptions[4096] = {};
 	if (editingName != current.Name)
 	{
 		editingName = current.Name;
 		draft = current;
 		copyName[0] = 0;
 		std::snprintf(ffmpegOptions, sizeof(ffmpegOptions), "%s", draft.FfmpegOptions.c_str());
+  std::snprintf(ffmpegNoAlphaOptions,sizeof(ffmpegNoAlphaOptions),"%s",draft.FfmpegOptionsNoAlpha.c_str());
 		status.clear();
 	}
 	if (!ImGui::CollapsingHeader("Recording profile details / editor", ImGuiTreeNodeFlags_DefaultOpen))
@@ -7969,7 +7970,7 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 
 	const bool recording = Recording::IsActive();
 	const bool editable = !current.Protected && !recording;
-	const bool supported = current.Type != advancedfx::RecordingProfileInfo::Kind::Other;
+	const bool supported = current.Type == advancedfx::RecordingProfileInfo::Kind::Sampler || current.Type == advancedfx::RecordingProfileInfo::Kind::Ffmpeg || current.Type == advancedfx::RecordingProfileInfo::Kind::FfmpegEx;
 	ImGui::Text("Profile: %s", current.Name.c_str());
 	ImGui::SameLine();
 	ImGui::TextDisabled(current.Protected ? "(built-in, read-only)" : "(custom)");
@@ -8014,6 +8015,11 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 		if (!editable) ImGui::BeginDisabled();
 		ImGui::InputTextMultiline("##record_ffmpeg_options", ffmpegOptions, sizeof(ffmpegOptions),
 			ImVec2(-1.0f, ImGui::GetTextLineHeight() * 4));
+  if(!draft.FfmpegOptionsNoAlpha.empty()){
+   ImGui::TextUnformatted("Color-only options (inputs without alpha)");
+   ImGui::InputTextMultiline("##record_ffmpeg_noalpha",ffmpegNoAlphaOptions,sizeof(ffmpegNoAlphaOptions),ImVec2(-1,ImGui::GetTextLineHeight()*3));
+   draft.FfmpegOptionsNoAlpha=ffmpegNoAlphaOptions;
+  }
 		if (!editable) ImGui::EndDisabled();
 		draft.FfmpegOptions = ffmpegOptions;
 		ImGui::TextDisabled("Use HLAE's {QUOTE} / {AFX_STREAM_PATH} variables; applies to future takes.");
@@ -8035,7 +8041,8 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 		{
 			draft = current;
 			std::snprintf(ffmpegOptions, sizeof(ffmpegOptions), "%s", current.FfmpegOptions.c_str());
-			status = "Restored the latest saved-in-session profile values.";
+   std::snprintf(ffmpegNoAlphaOptions,sizeof(ffmpegNoAlphaOptions),"%s",current.FfmpegOptionsNoAlpha.c_str());
+			status = "Restored the latest profile values.";
 		}
 		if (!editable) ImGui::EndDisabled();
 	}

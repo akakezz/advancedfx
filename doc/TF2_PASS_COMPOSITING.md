@@ -12,13 +12,23 @@ enabled when checking reconstruction.
   Players could no longer hide a cosmetic behind it. World also retains player
   depth for native particle occlusion. Material depth-writing rules remain native;
   translucent surfaces are not forced into opaque depth occluders. This restores
-  missing depth submissions, not a complete opaque depth prepass: ordering of late
-  occluders still needs in-game validation as part of the larger effects work.
+  missing depth submissions. Players now also uses a matching D24S8 target and
+  visible-fragment stencil tags: selected models mark coverage, while later opaque
+  excluded models clear it only where their fragments pass native depth testing.
+  At `IVRenderView::SceneEnd`, untagged pixels are restored to the black/white or
+  chroma background before readback. This removes stale player color left behind
+  late props, without making non-depth-writing glass an opaque occluder. The pass
+  is captured before combined-image postprocessing. Real TF2/MSAA validation is
+  still required, including native stencil-dependent effects and water.
 - Third person uses Source's native chase position and orientation as one pose.
   A final angle-only override has been removed: changing orientation after native
   placement/collision can point the camera away from its target pivot. The default
   remains a camera behind the target that turns with them, not a new camera rig.
   Independent spectator orbit is a possible later control, not part of this fix.
+  The TF2 angle hook now uses engine slot 19 (`GetViewAngles`); slot 18 was
+  `IsStreaming`, explaining zero chase queries in the supplied diagnostic.
+  Angle initialization explicitly sets all three components because the SDK's
+  default `QAngle` constructor leaves them uninitialized.
 - `mirv_streams record pass stats` reports attempted/captured/failed GPU frame
   readbacks. It counts a complete black/white pair as one captured alpha frame.
   Counters reset per take. They do not count frames produced inside an encoder or
@@ -92,3 +102,5 @@ readback problem; equal counters alone do not rule out later CPU/encoding failur
 Compare the files' frame counts/FPS/duration in an editor or media inspector, then
 step matching frame numbers. If those match while real-time playback stutters,
 check decoder/playback performance rather than altering capture timing blindly.
+The reported take had 508 successful readbacks in all five passes, with zero
+failures. Playback with another encoder was smooth; no depth-clock change was made.

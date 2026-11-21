@@ -7,18 +7,21 @@ using Tf2ModelFn = void (*)(void *, const void *, const void *, void *);
 using Tf2FrameFn = void (*)(void *, void *);
 using Tf2ViewFn = bool (*)(void *, void *);
 using Tf2PaintFn = void (*)(void *, int);
+using Tf2SceneEndFn = void (*)(void *);
 #else
 using Tf2RenderFn = void (__fastcall *)(void *, void *, const void *, int, int);
 using Tf2ModelFn = void (__fastcall *)(void *, void *, const void *, const void *, void *);
 using Tf2FrameFn = void (__fastcall *)(void *, void *, void *);
 using Tf2ViewFn = bool (__fastcall *)(void *, void *, void *);
 using Tf2PaintFn = void (__fastcall *)(void *, void *, int);
+using Tf2SceneEndFn = void (__fastcall *)(void *, void *);
 #endif
 Tf2RenderFn g_Tf2OriginalRender = nullptr;
 Tf2ModelFn g_Tf2OriginalModel = nullptr;
 Tf2FrameFn g_Tf2OriginalFrame = nullptr;
 Tf2ViewFn g_Tf2PlayerView = nullptr;
 Tf2PaintFn g_Tf2OriginalPaint = nullptr;
+Tf2SceneEndFn g_Tf2OriginalSceneEnd = nullptr;
 // Public SDK 2013 CViewSetup prefix, identical on x86/x64 (no pointers).
 struct Tf2ViewProjectionPrefix {
  int Viewport[9];
@@ -49,6 +52,9 @@ public:
   case 4: g_AfxStreams.DrawingThread_BindTf2PassTarget(); AfxD3D9OverrideBegin_D3DRS_COLORWRITEENABLE(15); break;
   case 5: AfxD3D9OverrideBegin_D3DRS_COLORWRITEENABLE(g_AfxStreams.DrawingThread_Tf2White(true) ? 15 : 0); AfxD3D9OverrideBegin_D3DRS_ZWRITEENABLE(false); break;
   case 6: AfxD3D9OverrideEnd_D3DRS_ZWRITEENABLE(); g_AfxStreams.DrawingThread_Tf2White(false); AfxD3D9OverrideBegin_D3DRS_COLORWRITEENABLE(0); break;
+  case 7: AfxD3D9PushOverrideState(false);AfxD3D9OverrideBegin_PlayerHoldout(true);break;
+  case 8: AfxD3D9PushOverrideState(false);AfxD3D9OverrideBegin_PlayerHoldout(false);break;
+  case 9: AfxD3D9PopOverrideState();break;
   }
  }
 };
@@ -69,6 +75,8 @@ void __fastcall Tf2PassDrawModel(void *self,
   draw = g_Tf2ActivePass == Tf2RenderPass::World ? !(group & 3) :
    g_Tf2ActivePass == Tf2RenderPass::Players ? bool(group & 1) : bool(group & 2);
  }
+ const bool holdout=g_Tf2ActivePass==Tf2RenderPass::Players;
+ if(holdout)Tf2PassColor(draw?7:8);
  // Excluded geometry still contributes native depth/stencil occlusion.
  // Skipping its draw entirely makes props fail to occlude player cosmetics.
  if (!draw) Tf2PassColor(g_Tf2ActivePass == Tf2RenderPass::World ? 0 : 2);
@@ -80,6 +88,7 @@ void __fastcall Tf2PassDrawModel(void *self,
  state, info, bones);
  if (!draw) {
   if (g_Tf2ActivePass == Tf2RenderPass::World) Tf2PassColor(3);
+  if(holdout)Tf2PassColor(9);
   return;
  }
  if (isolate && g_AfxStreams.Tf2PassAlpha()) {
@@ -91,6 +100,7 @@ void __fastcall Tf2PassDrawModel(void *self,
  state, info, bones);
   Tf2PassColor(6);
  } else if (isolate) Tf2PassColor(2);
+ if(holdout)Tf2PassColor(9);
 }
 void __fastcall Tf2PassRenderFrame(void *self,
 #ifndef _WIN64
@@ -161,7 +171,7 @@ void __fastcall Tf2PassRenderFrame(void *self,
  // Offscreen pass targets are popped before normal screen recording/presentation.
 }
 }
-bool Tf2RenderPassSupported() { return g_Tf2OriginalFrame && g_Tf2OriginalRender && g_Tf2OriginalModel && g_Tf2PlayerView && g_Tf2OriginalPaint; }
+bool Tf2RenderPassSupported() { return g_Tf2OriginalFrame && g_Tf2OriginalRender && g_Tf2OriginalModel && g_Tf2PlayerView && g_Tf2OriginalPaint && g_Tf2OriginalSceneEnd; }
 void Tf2RenderPassInstallClient(void *client)
 {
  if (!client || g_Tf2OriginalRender) return;
@@ -202,10 +212,25 @@ void __fastcall Tf2PassPaint(void *self,
  } else if (hud) Tf2PassColor(2);
 }
 }
+namespace {
+void __fastcall Tf2PassSceneEnd(void *self
+#ifndef _WIN64
+ ,void *edx
+#endif
+){
+ g_Tf2OriginalSceneEnd(self
+#ifndef _WIN64
+ ,edx
+#endif
+ );
+ if(g_Tf2ActivePass==Tf2RenderPass::Players)g_AfxStreams.EngineThread_PassCapture(g_Tf2ActivePass);
+}
+}
 void Tf2RenderPassInstallRenderView(void *render)
 {
  if (!render || g_Tf2OriginalPaint) return;
  auto table = *static_cast<void ***>(render);
+ AfxDetourPtr(reinterpret_cast<PVOID *>(&table[9]),reinterpret_cast<PVOID>(Tf2PassSceneEnd),reinterpret_cast<PVOID *>(&g_Tf2OriginalSceneEnd));
  // Public Source SDK IVRenderView::VGui_Paint, VEngineRenderView014 entry 36.
  AfxDetourPtr(reinterpret_cast<PVOID *>(&table[36]), reinterpret_cast<PVOID>(Tf2PassPaint), reinterpret_cast<PVOID *>(&g_Tf2OriginalPaint));
 }

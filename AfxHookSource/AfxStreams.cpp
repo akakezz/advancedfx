@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "hlaeFolder.h"
 
 #include "AfxStreams.h"
 
@@ -7457,9 +7458,7 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 
 				if (advancedfx::CRecordingSettings* settings = advancedfx::CRecordingSettings::GetByName(arg2))
 				{
-					settings->AddRef();
-					m_RecordScreen->Settings->Release();
-					m_RecordScreen->Settings = settings;
+					SetRecordScreenSettings(settings->GetName());
 				}
 				else
 				{
@@ -10049,6 +10048,12 @@ void CAfxStreams::BlockPresent(IAfxMatRenderContextOrg * ctx, bool value)
 
 void CAfxStreams::AfxStreamsInitGlobal() {
 	m_RecordScreen = new CRecordScreen(false, advancedfx::CRecordingSettings::GetDefault());
+ const auto folder=GetHlaeRoamingAppDataFolderW();
+ if(folder && *folder){
+  const std::wstring preferences=std::wstring(folder)+L"RecordingProfiles.txt";
+  advancedfx::CRecordingSettings::ConfigurePersistence(preferences.c_str());
+  SetRecordScreenSettings(advancedfx::CRecordingSettings::PreferredProfile().c_str());
+ }
 }
 
 void CAfxStreams::AfxStreamsInit(void)
@@ -10129,6 +10134,7 @@ void CAfxStreams::ShutDown2(void)
 void CAfxStreams::DrawingThread_DeviceLost() {
  DrawingThread_Tf2White(false);
  if (m_Tf2WhiteSurface) { m_Tf2WhiteSurface->Release(); m_Tf2WhiteSurface = nullptr; }
+ if(m_Tf2PlayerDepth){m_Tf2PlayerDepth->Release();m_Tf2PlayerDepth=nullptr;}
 	if (m_IntZTextureSurface) {
 		m_IntZTextureSurface->Release();
 		m_IntZTextureSurface = nullptr;
@@ -10304,6 +10310,7 @@ bool CAfxStreams::SetRecordScreenSettings(const char *name)
 	settings->AddRef();
 	m_RecordScreen->Settings->Release();
 	m_RecordScreen->Settings = settings;
+ advancedfx::CRecordingSettings::SetPreferredProfile(name);
 	return true;
 }
 
@@ -10378,6 +10385,10 @@ void CAfxStreams::EngineThread_PassBegin(Tf2RenderPass pass, int matteSample) {
  const unsigned background = matteSample == 0 ? 0xff000000u : matteSample == 1 ? 0xffffffffu : Tf2PassBackground();
  MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::Begin, nullptr, background));
 }
+void CAfxStreams::EngineThread_PassCapture(Tf2RenderPass pass){
+ if(pass!=Tf2RenderPass::Players)return;
+ MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass,CPassCaptureFunctor::Capture));
+}
 void CAfxStreams::EngineThread_PassEnd(Tf2RenderPass pass, float zNear, float zFar) {
  MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::End, nullptr, 0, zNear, zFar));
 }
@@ -10440,6 +10451,8 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
  if (Op == Destroy) { g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass); if (node) { node->GpuRelease(); node->Release(); node = nullptr; } return; }
  if (Op == Begin) {
   g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
+  g_AfxStreams.m_Tf2PassCapturedEarly[unsigned(Pass)] = false;
+  g_AfxStreams.m_Tf2PassMatteColor[unsigned(Pass)] = Background;
   g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] = false;
   if (!node || !(Pass == Tf2RenderPass::Depth ? g_AfxStreams.DrawingThread_GetOrCreateRenderTargetSurfaceNoMssaa() : g_AfxStreams.DrawingThread_GetOrCreateRenderTargetSurface()) ||
       (Pass == Tf2RenderPass::Depth && !g_AfxStreams.DrawingThread_GetOrCreateIntZTextureSurface())) {
@@ -10450,13 +10463,20 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
   if (!device || FAILED(device->GetRenderTarget(0, &g_AfxStreams.m_Tf2PassPreviousColor[unsigned(Pass)]))) return;
   device->GetDepthStencilSurface(&g_AfxStreams.m_Tf2PassPreviousDepth[unsigned(Pass)]);
   device->GetViewport(&g_AfxStreams.m_Tf2PassPreviousViewport[unsigned(Pass)]);
+  if(Pass==Tf2RenderPass::Players && !g_AfxStreams.m_Tf2PlayerDepth){
+   D3DSURFACE_DESC desc{};
+   if(FAILED(AfxGetRenderTargetSurface()->GetDesc(&desc)) || FAILED(device->CreateDepthStencilSurface(desc.Width,desc.Height,D3DFMT_D24S8,desc.MultiSampleType,desc.MultiSampleQuality,FALSE,&g_AfxStreams.m_Tf2PlayerDepth,nullptr))){
+    g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass);Tier0_Warning("Could not allocate player holdout depth/stencil target.\n");return;
+   }
+  }
   device->SetDepthStencilSurface(nullptr);
   g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = true;
   if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_SetRenderTargetNoMsaa();
   else g_AfxStreams.DrawingThread_SetRenderTarget();
   if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_SetIntZTextureSurface();
+  if(Pass==Tf2RenderPass::Players) AfxD3d9PushDepthStencilEx(g_AfxStreams.m_Tf2PlayerDepth);
   if (g_AfxStreams.DrawingThread_BindTf2PassTarget()) {
-   const auto result = device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
+   const auto result = device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | (Pass==Tf2RenderPass::Players?D3DCLEAR_STENCIL:0),
     Pass == Tf2RenderPass::Players || Pass == Tf2RenderPass::Viewmodel || Pass == Tf2RenderPass::Hud ? Background : 0, 1, 0);
    g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] = SUCCEEDED(result);
    if (FAILED(result)) Tier0_Warning("TF2 %s pass clear failed: 0x%08x.\n", Tf2RenderPassName(Pass), unsigned(result));
@@ -10471,10 +10491,19 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
   }
   return;
  }
+ if(g_AfxStreams.m_Tf2PassCapturedEarly[unsigned(Pass)]){
+  if(Op==Capture)return;
+  if(g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]){
+   if(Pass==Tf2RenderPass::Players)AfxD3d9PopDepthStencil();
+   g_AfxStreams.DrawingThread_UnsetRenderTarget(false);
+  }
+  g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass);
+  g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]=false;return;
+ }
  ++g_AfxStreams.m_Tf2PassAttempts[unsigned(Pass)];
- if (!g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) { ++g_AfxStreams.m_Tf2PassFailed[unsigned(Pass)]; if (node) { node->GpuCaptureSkipped(); if (matte) node->GpuCaptureSkipped(); } return; }
- g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
- const bool capture = g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] && g_AfxStreams.DrawingThread_BindTf2PassTarget();
+ if (!g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) { if(Op==Capture)g_AfxStreams.m_Tf2PassCapturedEarly[unsigned(Pass)]=true; ++g_AfxStreams.m_Tf2PassFailed[unsigned(Pass)]; if (node) { node->GpuCaptureSkipped(); if (matte) node->GpuCaptureSkipped(); } return; }
+ if(Op!=Capture)g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
+ bool capture = g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] && g_AfxStreams.DrawingThread_BindTf2PassTarget();
  if (capture && Pass == Tf2RenderPass::Depth) {
   D3DVIEWPORT9 viewport{};
   if (auto device = AfxGetDirect3DDevice9()) if (SUCCEEDED(device->GetViewport(&viewport)))
@@ -10483,18 +10512,22 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
    AfxDrawDepth(AfxDrawDepthEncode_Gray, AfxDrawDepthMode_PyramidalLogE, false, 0, 4096,
      viewport.X, viewport.Y, viewport.Width, viewport.Height, Near, Far, nullptr);
  }
+ if(capture && Pass==Tf2RenderPass::Players)capture=AfxD3D9ClearPlayerHoldout(g_AfxStreams.m_Tf2PassMatteColor[unsigned(Pass)]);
  bool captured = false;
  if (node) {
   if (capture) captured = node->GpuCapture(); else node->GpuCaptureSkipped();
   if (matte) {
    if (capture && g_AfxStreams.DrawingThread_Tf2White(true)) {
-    const bool whiteCaptured = node->GpuCapture(); captured &= whiteCaptured;
+    const bool holdout=Pass!=Tf2RenderPass::Players || AfxD3D9ClearPlayerHoldout(0xffffffffu);
+    const bool whiteCaptured=holdout?node->GpuCapture():(node->GpuCaptureSkipped(),false);captured &= whiteCaptured;
    } else { node->GpuCaptureSkipped(); captured = false; }
    g_AfxStreams.DrawingThread_Tf2White(false);
   }
  }
  if (captured) ++g_AfxStreams.m_Tf2PassCaptured[unsigned(Pass)];
  else ++g_AfxStreams.m_Tf2PassFailed[unsigned(Pass)];
+ if(Op==Capture){g_AfxStreams.m_Tf2PassCapturedEarly[unsigned(Pass)]=true;return;}
+ if(Pass==Tf2RenderPass::Players)AfxD3d9PopDepthStencil();
  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetIntZTextureSurface();
  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetRenderTargetNoMsaa(false);
  else g_AfxStreams.DrawingThread_UnsetRenderTarget(false);
