@@ -10431,6 +10431,9 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
  const bool matte = g_AfxStreams.m_Tf2PassMatte[unsigned(Pass)];
  if (Op == Create) {
   g_AfxStreams.m_Tf2PassMatte[unsigned(Pass)] = Matte;
+  g_AfxStreams.m_Tf2PassAttempts[unsigned(Pass)] = 0;
+  g_AfxStreams.m_Tf2PassCaptured[unsigned(Pass)] = 0;
+  g_AfxStreams.m_Tf2PassFailed[unsigned(Pass)] = 0;
   if (!node) { node = new CCaptureNode(new CCaptureInputRenderTarget(), new CDrawingRecordScreenOutput(Creator, Matte)); node->AddRef(); }
   return;
  }
@@ -10468,7 +10471,8 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
   }
   return;
  }
- if (!g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) { if (node) { node->GpuCaptureSkipped(); if (matte) node->GpuCaptureSkipped(); } return; }
+ ++g_AfxStreams.m_Tf2PassAttempts[unsigned(Pass)];
+ if (!g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) { ++g_AfxStreams.m_Tf2PassFailed[unsigned(Pass)]; if (node) { node->GpuCaptureSkipped(); if (matte) node->GpuCaptureSkipped(); } return; }
  g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
  const bool capture = g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] && g_AfxStreams.DrawingThread_BindTf2PassTarget();
  if (capture && Pass == Tf2RenderPass::Depth) {
@@ -10479,19 +10483,30 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
    AfxDrawDepth(AfxDrawDepthEncode_Gray, AfxDrawDepthMode_PyramidalLogE, false, 0, 4096,
      viewport.X, viewport.Y, viewport.Width, viewport.Height, Near, Far, nullptr);
  }
+ bool captured = false;
  if (node) {
-  if (capture) node->GpuCapture(); else node->GpuCaptureSkipped();
+  if (capture) captured = node->GpuCapture(); else node->GpuCaptureSkipped();
   if (matte) {
-   if (capture && g_AfxStreams.DrawingThread_Tf2White(true)) node->GpuCapture(); else node->GpuCaptureSkipped();
+   if (capture && g_AfxStreams.DrawingThread_Tf2White(true)) {
+    const bool whiteCaptured = node->GpuCapture(); captured &= whiteCaptured;
+   } else { node->GpuCaptureSkipped(); captured = false; }
    g_AfxStreams.DrawingThread_Tf2White(false);
   }
  }
+ if (captured) ++g_AfxStreams.m_Tf2PassCaptured[unsigned(Pass)];
+ else ++g_AfxStreams.m_Tf2PassFailed[unsigned(Pass)];
  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetIntZTextureSurface();
  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetRenderTargetNoMsaa(false);
  else g_AfxStreams.DrawingThread_UnsetRenderTarget(false);
  g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass);
 }
 void CAfxStreams::Console_RecordPass(IWrpCommandArgs *args) {
+ if (args->ArgC() == 2 && !_stricmp(args->ArgV(1), "stats")) {
+  for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
+   Tier0_Msg("%s: attempted %llu, captured %llu, failed %llu frames (GPU readbacks, before encoding).\n", Tf2RenderPassName(Tf2RenderPass(i)),
+    m_Tf2PassAttempts[i].load(), m_Tf2PassCaptured[i].load(), m_Tf2PassFailed[i].load());
+  return;
+ }
  if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "alpha")) {
   if (args->ArgC() == 3 && (!std::strcmp(args->ArgV(2), "0") || !std::strcmp(args->ArgV(2), "1"))) {
    if (!SetTf2PassAlpha(!std::strcmp(args->ArgV(2), "1"))) Tier0_Warning("Stop recording before changing pass alpha.\n");
@@ -10525,7 +10540,8 @@ void CAfxStreams::Console_RecordPass(IWrpCommandArgs *args) {
     Tier0_Warning("Stop recording first; TF2 separate-pass hooks must be available.\n");
    return;
   }
- Tier0_Msg("mirv_streams record pass <world|players|viewmodel|hud|depth> 0|1 - Separate output using the screen profile.\n");
+ Tier0_Msg("mirv_streams record pass <world|players|viewmodel|hud|depth> 0|1 - Separate output using the screen profile.\n"
+  "mirv_streams record pass stats - Show GPU frame readback counts for the current/last take.\n");
  for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
   Tier0_Msg("%s: %i\n", Tf2RenderPassName(Tf2RenderPass(i)), int(Tf2PassEnabled(Tf2RenderPass(i))));
 }

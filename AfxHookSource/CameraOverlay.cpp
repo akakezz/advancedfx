@@ -3420,7 +3420,7 @@ static void DrawObserving()
 		const bool stv = g_VEngineClient && g_VEngineClient->IsPlayingDemo() && g_VEngineClient->IsHLTV();
   if (!stv && g_VEngineClient && g_VEngineClient->IsPlayingDemo()) {
    int view = MirvPovSpectate_ThirdPerson() ? 1 : 0;
-   const char *views[] = {"First person", "Third person (follow look)"};
+   const char *views[] = {"First person", "Third person"};
    if (ImGui::Combo("POV view", &view, views, 2)) Afx_ExecClientCmd(view ? "mirv_pov mode third" : "mirv_pov mode first");
    if (ImGui::Button("Return to recorded POV")) Afx_ExecClientCmd("mirv_pov off");
    ImGui::TextWrapped("%s", MirvPovSpectate_Status());
@@ -8729,7 +8729,7 @@ void Draw()
      }
      if (alpha) ImGui::EndDisabled();
      if (!editable) ImGui::EndDisabled();
-     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use alpha when enabled, otherwise the selected chroma background; depth is logarithmic grayscale (0-4096 units). Extra passes increase render cost.");
+     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use alpha when enabled, otherwise the selected chroma background; depth is logarithmic grayscale (0-4096 units). Extra passes increase render cost. Model isolates cannot fully reconstruct refractive cloak or interleaved particles; retain normal screen recording as a beauty reference.");
      if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("TF2 render-pass hooks are unavailable.");
     }
     // Record screen settings

@@ -339,7 +339,10 @@ void MirvPovSpectate_ViewDone(SOURCESDK::QAngle *angles) {
   SOURCESDK::QAngle look{};
   if (PovReadLook(target, look, &g_PovObserverScope.LookFields)) {
    g_PovLastNative = *angles; g_PovLastTarget = look; g_PovLastQueries = g_PovAngleQueries;
-   *angles = look; // Keep ClientMode/demo recorder overrides out of the final orientation.
+   // Native chase calculates origin and angles together, including collision.
+   // An angle-only correction here can point away from its native target pivot.
+   if (!g_PovAngleQueries)
+    g_PovSpectateStatus = "Native chase did not query target angles; use mirv_pov debug to diagnose the view.";
   }
  }
  g_PovObserverScope.CalculatingView = false;

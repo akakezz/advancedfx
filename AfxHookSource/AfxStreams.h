@@ -143,7 +143,7 @@ public:
 		output->AddRef();
 	}
 
-    void GpuCapture() {
+    bool GpuCapture() {
 		if(nullptr == m_D3d9Capture) {
 			m_D3d9Capture = m_Input->GpuCreateCapture();
 			if(m_D3d9Capture)
@@ -154,10 +154,12 @@ public:
 			if(auto captureBuffer = m_D3d9Capture->Capture()) {
 				m_Output->OnCapture(captureBuffer);
 				captureBuffer->Release();
+                return true;
 			} else {
 				m_Output->OnCapture(nullptr);
 			}
 		} else m_Output->OnCapture(nullptr);
+        return false;
 	}
 
     void GpuCaptureSkipped() { m_Output->OnCapture(nullptr); }
@@ -3873,6 +3875,9 @@ private:
  std::atomic<bool> m_Tf2PassEnabled[unsigned(Tf2RenderPass::Count)] = {};
  CCaptureNode *m_Tf2PassNodes[unsigned(Tf2RenderPass::Count)] = {};
  bool m_Tf2PassMatte[unsigned(Tf2RenderPass::Count)] = {};
+ std::atomic<unsigned long long> m_Tf2PassAttempts[unsigned(Tf2RenderPass::Count)] = {};
+ std::atomic<unsigned long long> m_Tf2PassCaptured[unsigned(Tf2RenderPass::Count)] = {};
+ std::atomic<unsigned long long> m_Tf2PassFailed[unsigned(Tf2RenderPass::Count)] = {};
  IDirect3DSurface9 *m_Tf2WhiteSurface = nullptr;
  bool m_Tf2WhiteBound = false;
  bool m_Tf2PassActive[unsigned(Tf2RenderPass::Count)] = {};

@@ -69,13 +69,19 @@ void __fastcall Tf2PassDrawModel(void *self,
   draw = g_Tf2ActivePass == Tf2RenderPass::World ? !(group & 3) :
    g_Tf2ActivePass == Tf2RenderPass::Players ? bool(group & 1) : bool(group & 2);
  }
- if (!draw) return;
- if (isolate) Tf2PassColor(1);
+ // Excluded geometry still contributes native depth/stencil occlusion.
+ // Skipping its draw entirely makes props fail to occlude player cosmetics.
+ if (!draw) Tf2PassColor(g_Tf2ActivePass == Tf2RenderPass::World ? 0 : 2);
+ else if (isolate) Tf2PassColor(1);
  g_Tf2OriginalModel(self,
 #ifndef _WIN64
  edx,
 #endif
  state, info, bones);
+ if (!draw) {
+  if (g_Tf2ActivePass == Tf2RenderPass::World) Tf2PassColor(3);
+  return;
+ }
  if (isolate && g_AfxStreams.Tf2PassAlpha()) {
   Tf2PassColor(5);
   g_Tf2OriginalModel(self,

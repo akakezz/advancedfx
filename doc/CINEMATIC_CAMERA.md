@@ -3073,8 +3073,8 @@ head or world weapon in front of the camera. Chase view retains the target model
 While observing another player, native input third-person offsets are cleared
 before view calculation. The existing `tf_taunt_first_person` and
 `cl_first_person_uses_world_model` options are enabled, `r_drawviewmodel` and
-`cl_demoviewoverride` disabled, and the final native chase orientation is kept at
-the target's interpolated angles. These guards prevent recorder camera/viewmodel
+`cl_demoviewoverride` disabled, while native chase position and orientation are preserved as a pair.
+An angle-only final override is not applied. These guards prevent recorder camera/viewmodel
 state from overwriting remote spectating. The previous
 values are restored on exit; taunt conditions and animations are not cleared. Native
 view setup also uses the target's available recoil, FOV and eye-offset inputs;
@@ -3094,3 +3094,15 @@ command separately.
 Spectating diagnostics: `mirv_pov debug` prints native angle-query count, the
 last native/target orientation and active camera guards. If the view still drifts,
 include this output along with first/third-person mode and the demo tick.
+
+### Compositing scope and depth diagnostics
+
+These outputs are object isolates. Excluded models retain native depth writes,
+but refractive cloak shaders and interleaved/additive particles still need a
+depth-aware effects workflow for accurate reconstruction. Keep normal screen
+recording as the beauty reference. See [TF2 pass compositing](TF2_PASS_COMPOSITING.md)
+for the proposed capture contract and current unsupported cases.
+
+After recording finishes, `mirv_streams record pass stats` reports GPU attempts,
+complete captured frames and failures per output. Compare these along with media
+frame counts/FPS before attributing depth stutter to capture or the codec.
