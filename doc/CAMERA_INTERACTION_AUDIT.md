@@ -113,3 +113,57 @@ and orbit 0.15. Existing authored zero values are not silently changed.
 Regression fixtures cover rate caps at slowed playback cadence, both framing
 modes, rotation-only saved-camera evaluation and alternating bone roll. These
 are controller tests, not proof that all live-demo jitter has been eliminated.
+
+## POV pose-space and framing follow-up
+
+A live retest found the previous channel fixes did not change the supplied POV
+jitter, including with bone/orbit smoothing enabled. It affects attachments to
+both the recorder and other players. STV's separate intermittent snaps correlate
+with preserve-framing. The earlier smoothing recommendation is not a diagnosis.
+
+The live attachment sampler previously combined `IClientTools::GetAbsOrigin`
+with `SetupBones` positions and render-facing angles. It now uses finite
+`GetRenderOrigin` values for both root-only attachment and the root of a bone
+attachment, matching the existing scene-cache render-space convention. Absolute
+origin remains the fallback when a valid render origin is unavailable. This
+prevents differences between predicted/absolute and rendered roots from entering
+the bone-offset channel. Capture and ordinary attachment share this sampler.
+
+The preserve-framing cone previously compared the damped camera against a rigid
+pose at the raw root/bone. In a 60 Hz test with follow half-life 0.5, a 200-unit
+lateral update moved the camera 121.11 units on the next frame; with framing off
+it moved 1.48 units. The cone still checks the real entity root, with filtered bone/orbit inputs,
+but its correction now goes through the existing critically damped follow spring.
+The same framing-on test moves 1.66 units on the next frame, then returns the
+subject toward the frame smoothly. Collision safety,
+explicit lag bounds and teleport resets remain active. Framing no longer demands
+an instantaneous correction to every raw snapshot.
+
+Production-sampler tests vary absolute and rendered roots independently across
+tick boundaries, for root-only and bone attachment, including finite-data
+fallbacks. Controller tests cover abrupt lateral snapshots, repeated paused
+evaluation, both framing modes and continued recovery at 30/60/120 FPS. A moving
+subject also returns inside a narrow frame. Live POV/STV playback still needs retesting.
+
+For further live diagnosis, `mirv_cam edit 0 collision status` now also reports
+sample count, backward time steps, root changes at unchanged time, and the largest
+forward time step, even when collision is disabled. These counters observe the
+existing controller without changing its clock or reset behavior. Play a short
+problematic section and collect this output if jitter remains; backward seeking
+intentionally contributes to the rewind count. Counters are transient and are
+not stored in cinematic projects.
+
+The render-root change makes the sampler consistent with Valve's
+`C_BaseAnimating::SetupBones`, which builds its parent transform from
+`GetRenderAngles` and `GetRenderOrigin`. Standard players can already have the
+same absolute and rendered origin; this change alone does not prove the cause
+of the persistent POV-only reproduction. Timing diagnostics are included so a
+live retest can distinguish pose differences from discontinuous sampling time.
+
+Framing recovery reuses the existing `SpringStep` implementation and motion
+half-life (root follow first, otherwise bone/orbit damping). Its transient offset
+and velocity belong to each controller state, keeping live and cached replay
+independent. The existing lag bounds are applied again after the correction,
+preventing delayed feedback from exceeding an explicit limit on direction changes.
+The frame margin is a soft recovery goal; physical clearance and explicit safety
+bounds still take priority.

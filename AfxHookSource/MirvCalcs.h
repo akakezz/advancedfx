@@ -324,10 +324,15 @@ struct MirvCameraAttachedState
 	double CollisionRadius = 0, CollisionAnchor[3] = {}, CollisionDesired[3] = {}, Contact[3] = {},
 		   ContactNormal[3] = {};
  double FramingFocus[3] = {};
+	double FramingOffset[3] = {}, FramingVelocity[3] = {};
+	bool FramingActive = false;
 	double LastAllowed = 0;
 	const void *Identity = nullptr;
 	void *Entity = nullptr;
 	unsigned long long Generation = 0;
+	// Read-only diagnostics; never used to drive the controller or serialized.
+	unsigned long long Samples = 0, TimeRewinds = 0, StalledRootChanges = 0;
+	double MaxTimeStep = 0;
 	double Time = 0, ArmLength = 0, Position[3] = {}, FollowPosition[3] = {};
 	double Desired[3] = {}, AuthoredAngles[3] = {}, DisplayAngles[3] = {};
 	bool HasAngles = false;

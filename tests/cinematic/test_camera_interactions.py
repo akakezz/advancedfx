@@ -68,6 +68,57 @@ int main(){
   assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,.1,x,y,z,root,a));
   assert(h.FollowPosition[0]==20 && a[1]>0 && a[1]<90);
  }
+
+ // Framing must not cancel root damping by snapping to a new raw snapshot.
+ // At 60 Hz a 200-unit lateral snapshot used to move the camera 121 units
+ // in one frame with preserve-framing, versus 1.48 units without it.
+ for(bool preserve:{false,true}){
+  MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;c.PreserveFraming=preserve;c.FollowMaxDistance=1e6;c.FollowTeleportDistance=0;
+  double root[3]={},pivot[3]={0,0,64};float x=-100,y=0,z=64,a[3]={};
+  assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,0,x,y,z,root,a));
+  root[1]=pivot[1]=200;x=-100;y=200;z=64;std::fill(a,a+3,0.f);
+  assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,1./60,x,y,z,root,a));
+  assert(std::abs(y)<5 && std::abs(a[1])<1);
+  // Paused/repeated sampling must not ratchet a framing correction forward.
+  const float previous=y;x=-100;y=200;z=64;std::fill(a,a+3,0.f);
+  assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,1./60,x,y,z,root,a));assert(std::abs(y-previous)<.0001);
+ }
+
+
+ // Preserve-framing recovers a displaced real subject over time. It is not
+ // merely disabled or restricted to an already-filtered imaginary target.
+ for(int fps:{30,60,120}){
+  MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;c.PreserveFraming=true;c.FollowMaxDistance=1e6;c.FollowTeleportDistance=0;
+  double root[3]={},pivot[3]={0,0,64};float x=-100,y=0,z=64,a[3]={};
+  assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,0,x,y,z,root,a));
+  root[1]=pivot[1]=200;double previous=0,maxCorrection=0;
+  for(int i=1;i<=fps*8;++i){x=-100;y=200;z=64;std::fill(a,a+3,0.f);
+   assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,double(i)/fps,x,y,z,root,a));
+   assert(std::abs(y-previous)<900./fps);previous=y;maxCorrection=std::max(maxCorrection,std::abs(h.FramingOffset[1]));
+  }
+  assert(maxCorrection>1 && std::abs(200-y)<.1 && std::abs(h.FramingOffset[1])<.1);
+ }
+
+ // A subject moving continuously must also return inside a narrow frame;
+ // damping only an imaginary/filtered subject would leave it outside forever.
+ for(int fps:{30,120}){
+  MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;c.PreserveFraming=true;c.FrameFov=30;c.FollowMaxDistance=1e6;
+  float y=0;for(int i=0;i<=fps*8;++i){double root[3]={0,250.*i/fps,0},pivot[3]={0,root[1],64};float x=-100,z=64,a[3]={};y=float(root[1]);
+   assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,double(i)/fps,x,y,z,root,a));
+  }
+  const double lag=2000-y,limit=100*std::tan(15*3.141592653589793/180)*.8;
+  assert(lag>=0 && lag<limit+.1 && h.FramingOffset[1]>10);
+ }
+
+ // Delayed framing feedback must not bypass an explicit lag limit on reversals.
+ {MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;c.PreserveFraming=true;c.FollowMaxDistance=20;c.FollowTeleportDistance=0;
+ for(int i=0;i<600;++i){double root[3]={0,100*std::sin(i*.04),0},pivot[3]={0,root[1],64};float x=-100,y=float(root[1]),z=64,a[3]={};
+  assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,i/60.,x,y,z,root,a));assert(std::abs(y-root[1])<20.001);}}
+ // Timing diagnostics observe repeated/rewound POV clocks without changing policy.
+ {MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;double root[3]={},pivot[3]={0,0,64};
+ auto sample=[&](double t){float x=float(root[0]-100),y=0,z=64,a[3]={};assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,t,x,y,z,root,a));};
+ sample(1);root[0]=pivot[0]=1;sample(1);sample(.99);sample(1.01);
+ assert(h.Samples==4&&h.StalledRootChanges==1&&h.TimeRewinds==1&&std::abs(h.MaxTimeStep-.02)<1e-9);}
  // An explicit aim owner must not get positional corrections from a raw bone-view cone.
  {auto sample=[](bool preserve){MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;c.PreserveFraming=preserve;c.AimOwnsAngles=true;float y=0;
  for(int i=0;i<2;++i){double root[3]={0,i?200.:0.,0},pivot[3]={0,root[1],64};float x=-100,z=64,a[3]={};y=float(root[1]);assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,i*.1,x,y,z,root,a));}return y;};

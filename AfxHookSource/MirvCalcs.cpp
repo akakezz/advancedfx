@@ -2720,13 +2720,27 @@ private:
 			if (!CalcEntity(iface, absOrigin, absAngles))
 				return false;
 
-			m_AnchorRoot[0] = absOrigin.x;
-			m_AnchorRoot[1] = absOrigin.y;
-			m_AnchorRoot[2] = absOrigin.z;
 			m_AnchorEntity = ent;
 			// EntitySearchResult is a C_BaseEntity pointer, IClientUnknown is its first base.
 			CMirvTf2ClientUnknown * unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
 			CMirvTf2ClientRenderable * renderable = unknown ? unknown->GetClientRenderable() : 0;
+
+			// SetupBones is in render space. A predicted/absolute root can differ
+			// during POV playback; mixing it with rendered bones turns that difference
+			// into a false bone offset which bypasses root-follow damping.
+			if (renderable)
+			{
+				const auto origin = static_cast<const float *>(renderable->GetRenderOrigin());
+				if (origin && std::isfinite(origin[0]) && std::isfinite(origin[1]) && std::isfinite(origin[2]))
+				{
+					absOrigin.x = origin[0];
+					absOrigin.y = origin[1];
+					absOrigin.z = origin[2];
+				}
+			}
+			m_AnchorRoot[0] = absOrigin.x;
+			m_AnchorRoot[1] = absOrigin.y;
+			m_AnchorRoot[2] = absOrigin.z;
 
 			if (!BindModel(ent, renderable ? renderable->GetModel() : nullptr))
 				return false;
@@ -6431,6 +6445,14 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 		}
 		rootJump2 += (root[a] - history.Root[a]) * (root[a] - history.Root[a]);
 	}
+	++history.Samples;
+	if (history.Valid && history.Identity == identity && history.Entity == entity && history.Generation == generation)
+	{
+		const double step = sceneTime - history.Time;
+		if (step < 0) ++history.TimeRewinds;
+		if (step == 0 && rootJump2 > 1e-6) ++history.StalledRootChanges;
+		history.MaxTimeStep = (std::max)(history.MaxTimeStep, step);
+	}
 	const bool continuous = history.Valid && history.Identity == identity && history.Entity == entity &&
 							history.Generation == generation && sceneTime >= history.Time &&
 							sceneTime - history.Time <= MirvCameraAttachedState::MaxContinuousGap &&
@@ -6563,8 +6585,6 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 	}
 	double boneWorld[3];
 	rotate(rootRotation, history.BonePosition, boneWorld);
-	double boneGoalWorld[3];
-	rotate(rootRotation, boneGoal, boneGoalWorld);
 	// A lagged world position must not let the subject walk through its own camera.
 	// Limit the steady lag estimated from the filtered velocity. Clamping the
 	// raw root-to-camera difference feeds snapshot jitter straight back into
@@ -6641,26 +6661,30 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 	}
 	for (int a = 0; a < 3; ++a)
 		candidate[a] = history.FollowPosition[a] + boneWorld[a] + offset[a] + lag[a] - rawLag[a];
-	// The explicit user limit remains a hard bound, including sudden corrections.
-	double actualLag2 = 0;
-	for (int a = 0; a < 3; ++a)
-		actualLag2 += std::pow(candidate[a] - anchor[a] - offset[a], 2);
-	if (actualLag2 > settings.FollowMaxDistance * settings.FollowMaxDistance)
-		for (int a = 0; a < 3; ++a)
-			candidate[a] =
-				anchor[a] + offset[a] +
-				(candidate[a] - anchor[a] - offset[a]) * settings.FollowMaxDistance / std::sqrt(actualLag2);
-	// The smooth estimate can briefly lag further during acceleration. Keep a
-	// hard safety envelope as a fallback, rather than using it for every frame.
-	if (offsetLength > 1e-3)
+	auto constrainFollowLag = [&]()
 	{
-		double along = 0;
+		// The explicit user limit remains a hard bound, including sudden corrections.
+		double actualLag2 = 0;
 		for (int a = 0; a < 3; ++a)
-			along += (candidate[a] - anchor[a] - offset[a]) * offset[a] / offsetLength;
-		const double bounded = (std::max)(-.5 * offsetLength, (std::min)(.5 * offsetLength, along));
-		for (int a = 0; a < 3; ++a)
-			candidate[a] += (bounded - along) * offset[a] / offsetLength;
-	}
+			actualLag2 += std::pow(candidate[a] - anchor[a] - offset[a], 2);
+		if (actualLag2 > settings.FollowMaxDistance * settings.FollowMaxDistance)
+			for (int a = 0; a < 3; ++a)
+				candidate[a] =
+					anchor[a] + offset[a] +
+					(candidate[a] - anchor[a] - offset[a]) * settings.FollowMaxDistance / std::sqrt(actualLag2);
+		// The smooth estimate can briefly lag further during acceleration. Keep a
+		// hard safety envelope as a fallback, rather than using it for every frame.
+		if (offsetLength > 1e-3)
+		{
+			double along = 0;
+			for (int a = 0; a < 3; ++a)
+				along += (candidate[a] - anchor[a] - offset[a]) * offset[a] / offsetLength;
+			const double bounded = (std::max)(-.5 * offsetLength, (std::min)(.5 * offsetLength, along));
+			for (int a = 0; a < 3; ++a)
+				candidate[a] += (bounded - along) * offset[a] / offsetLength;
+		}
+	};
+	constrainFollowLag();
  // Preserve composition in the filtered boom frame, rather than rotating back to
  // the raw bone every frame and cancelling orbit damping.
  if(settings.PreserveFraming && !settings.AimOwnsAngles && angles && orbitFiltering && rawLength>1e-3){
@@ -6671,7 +6695,9 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
   const auto e=NearestEquivalentEuler(view.ToQREulerAngles().ToQEulerAngles(),reference);
   angles[0]=float(e.Pitch);angles[1]=float(e.Yaw);angles[2]=float(shotContinuous && history.HasAngles?rollStep(history.DisplayAngles[2],e.Roll):e.Roll);
  }
-	if (settings.PreserveFraming && !settings.AimOwnsAngles && angles && rawLength > 1e-3)
+	double framingGoal[3] = {};
+	const bool framing = settings.PreserveFraming && !settings.AimOwnsAngles && angles && rawLength > 1e-3;
+	if (framing)
 	{
 		double f[3], r[3], u[3];
 		MakeVectors(angles[2], angles[0], angles[1], f, r, u);
@@ -6681,9 +6707,13 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 		double rigid[3], path[3], ray[3], projection[3] = {}, motion[3] = {};
 		for (int a = 0; a < 3; ++a)
 		{
-			rigid[a] = root[a] + boneGoalWorld[a] + rawOffset[a];
+			// Keep the real root as the framing goal, while retaining bone/orbit
+			// filtering. The correction below uses the existing follow spring;
+			// a raw snapshot must not directly replace the damped camera pose.
+			const double subject = root[a] + boneWorld[a];
+			rigid[a] = subject + offset[a];
 			path[a] = candidate[a] - rigid[a];
-			ray[a] = pivot[a] - rigid[a];
+			ray[a] = subject - rigid[a];
 			projection[0] += ray[a] * f[a];
 			projection[1] += ray[a] * r[a];
 			projection[2] += ray[a] * u[a];
@@ -6711,9 +6741,26 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 		{
 			const double weight = allowed * std::tanh(1 / allowed);
 			for (int a = 0; a < 3; ++a)
-				candidate[a] = rigid[a] + path[a] * weight;
+				framingGoal[a] = rigid[a] + path[a] * weight - candidate[a];
 		}
 	}
+	const double framingHalfLife = settings.FollowHalfLife > 1e-6 ? settings.FollowHalfLife
+		: settings.BoneHalfLife > 1e-6 ? settings.BoneHalfLife
+		: orbitFiltering ? settings.OrbitHalfLife : 0;
+	for (int a = 0; a < 3; ++a)
+	{
+		if (!shotContinuous || !history.FramingActive || !framing)
+			history.FramingOffset[a] = history.FramingVelocity[a] = 0;
+		if (framing && framingHalfLife > 1e-6)
+			Afx::Math::SpringStep(history.FramingOffset[a], history.FramingVelocity[a], framingGoal[a], dt,
+				1.67834699001666 / (6.283185307179586 * framingHalfLife), 1);
+		else if (framing)
+			history.FramingOffset[a] = framingGoal[a];
+		candidate[a] += history.FramingOffset[a];
+	}
+	history.FramingActive = framing;
+	// A delayed correction may outlive a direction change; retain the same explicit safety bounds.
+	if (framing) constrainFollowLag();
 	double focus[3];
 	for (int a = 0; a < 3; ++a)
 		focus[a] = candidate[a] - offset[a];

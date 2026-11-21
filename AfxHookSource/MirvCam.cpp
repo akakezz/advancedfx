@@ -2704,7 +2704,8 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
          if(ok && args->ArgC()==5 && !_stricmp(args->ArgV(4),"status")){
           const auto &c=camera->second;const auto value=c.Rig.CollisionOverride.value_or(MirvCameraCollisionGet());const auto &h=c.Follow;
           Tier0_Msg("Camera %s: %s collision; enabled %d; radius %.2f; return half-life %.3f, speed %.1f.\n",camera->first.c_str(),c.Rig.CollisionOverride?"override":"global",value.Attached,value.Radius,value.ReturnHalfLife,value.ReturnSpeed);
-          Tier0_Msg("Follow state valid %d; generation %llu/current %llu; time %.6f; arm %.3f, allowed %.3f; retracted %d, contracting %d; framing %d.\n",h.Valid,h.Generation,MirvCameraAttachedGeneration(),h.Time,h.ArmLength,h.LastAllowed,h.Retracted,h.Contracting,c.Rig.Motion.PreserveFraming);return true;
+          Tier0_Msg("Follow state valid %d; generation %llu/current %llu; time %.6f; arm %.3f, allowed %.3f; retracted %d, contracting %d; framing %d.\n",h.Valid,h.Generation,MirvCameraAttachedGeneration(),h.Time,h.ArmLength,h.LastAllowed,h.Retracted,h.Contracting,c.Rig.Motion.PreserveFraming);
+          Tier0_Msg("Follow timing: %llu samples; %llu time rewinds; %llu root changes at unchanged time; largest forward step %.6f s.\n",h.Samples,h.TimeRewinds,h.StalledRootChanges,h.MaxTimeStep);return true;
          }
          if(ok && args->ArgC()==5 && !_stricmp(args->ArgV(4),"inherit"))ok=MirvCam_EditCollision(camera->second.Id,std::nullopt);
          else if(ok && args->ArgC()==6){

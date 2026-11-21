@@ -999,9 +999,9 @@ for(double velocity:{-180.,-90.,0.,90.,180.})for(double distance:{-180.,-1.,-.1,
  camera.Rig.Motion.FollowHalfLife=.5;
  assert(RigFollowStep(camera,camera.Follow,700,target,pivot,pivot,out,body));assert(camera.Follow.Generation==fixtureGeneration);
  fixtureFollowSettings=oldSettings;fixtureGeneration=old;camera.Rig.Motion=originalMotion;camera.Follow=originalFollow;}
- // Positional lag yields to the safe margin before final framing correction.
+ // Framing starts returning the subject toward the safe margin without an immediate snap.
  auto lagged=[&](bool preserve){MirvCameraCollisionSettings value;value.FollowHalfLife=.5;value.PreserveFraming=preserve;MirvCameraAttachedState h;double root[3]={0,0,0},pivot[3]={0,0,64};float x=-100,y=0,z=64,a[3]={};assert(MirvCameraAttachedEvaluate(h,value,1,(void*)1,(void*)2,pivot,450,x,y,z,root,a));root[1]=pivot[1]=200;x=-100;y=200;z=64;a[0]=a[1]=a[2]=0;assert(MirvCameraAttachedEvaluate(h,value,1,(void*)1,(void*)2,pivot,450.1,x,y,z,root,a));return std::abs(200-y);};
- const double constrained=lagged(true),unconstrained=lagged(false);assert(constrained<=80.001&&constrained<unconstrained);
+ const double constrained=lagged(true),unconstrained=lagged(false);assert(constrained>80 && constrained<unconstrained); // Correction begins smoothly; no immediate safe-margin snap.
  // Collision may move the final camera; framing must be solved afterwards.
  cfg={};cfg.Attached=true;cfg.PreserveFraming=true;state={};fixtureCollisionAllowed=true;fixtureCollisionShift=0;
  for(int i=0;i<2;++i){double root[3]={0,0,0},pivot[3]={0,0,64};float x=-100,y=-25,z=64,angles[3]={};fixtureCollisionShift=i?12:0;assert(MirvCameraAttachedEvaluate(state,cfg,1,(void*)1,(void*)2,pivot,460+i*.1,x,y,z,root,angles));double camera[3]={x,y,z};auto local=projection(camera,angles,pivot);assert(std::abs(local[1]/local[0]+.25)<2e-5);}
