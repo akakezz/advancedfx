@@ -160,9 +160,10 @@ namespace ImageTransformer {
 	class CTransformMatte
 		: public ITransform {
 	public:
-		CTransformMatte(IImageBufferThreadSafe* bufferEntBlack, IImageBufferThreadSafe* bufferEntWhite)
+		CTransformMatte(IImageBufferThreadSafe* bufferEntBlack, IImageBufferThreadSafe* bufferEntWhite, bool straightColor)
 			: m_BufferEntBlack(bufferEntBlack)
 			, m_BufferEntWhite(bufferEntWhite)
+			, m_StraightColor(straightColor)
 		{
 		}
 
@@ -209,13 +210,13 @@ namespace ImageTransformer {
 			return new CMyTransformTask(task_counter,
 				m_pInDataEntBlack + taskIndex * m_InFormatEntBlack.Pitch, m_InFormatEntBlack.Pitch, m_InFormatEntBlack.GetPixelStride(),
 				m_pInDataEntWhite + taskIndex * m_InFormatEntWhite.Pitch, m_InFormatEntWhite.Pitch, m_InFormatEntWhite.GetPixelStride(),
-				m_pOutData + taskIndex * m_OutFormat.Pitch, m_OutFormat.Width, taskSize);
+				m_pOutData + taskIndex * m_OutFormat.Pitch, m_OutFormat.Width, taskSize, m_StraightColor);
 		}
 
 	private:
 		class CMyTransformTask : public CTranformTask {
 		public:
-			CMyTransformTask(std::atomic_int& task_counter, const unsigned char* pDataEntBlack, size_t pitchEntBlack, size_t pixelPichtEntBlack, const unsigned char* pDataEntWhite, size_t pitchEntWhite, size_t pixelPichtEntWhite, unsigned char* pOutData, size_t width, size_t height)
+			CMyTransformTask(std::atomic_int& task_counter, const unsigned char* pDataEntBlack, size_t pitchEntBlack, size_t pixelPichtEntBlack, const unsigned char* pDataEntWhite, size_t pitchEntWhite, size_t pixelPichtEntWhite, unsigned char* pOutData, size_t width, size_t height, bool straightColor)
 				: CTranformTask(task_counter)
 				, pDataEntBlack(pDataEntBlack)
 				, pitchEntBlack(pitchEntBlack)
@@ -226,6 +227,7 @@ namespace ImageTransformer {
 				, pOutData(pOutData)
 				, width(width)
 				, height(height)
+				, straightColor(straightColor)
 			{
 			}
 
@@ -255,6 +257,12 @@ namespace ImageTransformer {
 						pOut[1] = (unsigned char)(((int)entBlack_g + (int)entWhite_g) / 2);
 						pOut[2] = (unsigned char)(((int)entBlack_r + (int)entWhite_r) / 2);
 						pOut[3] = (unsigned char)std::min(std::max((255l - (int)entWhite_b + (int)entBlack_b + 255l - (int)entWhite_g + (int)entBlack_g + 255l - (int)entWhite_r + (int)entBlack_r) / 3l, 0l), 255l);
+                        if (straightColor) {
+                            // Black contains premultiplied color; remove coverage, not a key color.
+                            const unsigned alpha = pOut[3];
+                            for (int channel = 0; channel < 3; ++channel)
+                                pOut[channel] = alpha ? (unsigned char)(std::min)(255u, (unsigned(pInEntBlack[channel]) * 255u + alpha / 2u) / alpha) : 0;
+                        }
 
 					}
 				}
@@ -270,10 +278,12 @@ namespace ImageTransformer {
 			unsigned char* pOutData;
 			size_t width;
 			size_t height;
+			bool straightColor;
 		};
 
 		IImageBufferThreadSafe* m_BufferEntBlack;
 		IImageBufferThreadSafe* m_BufferEntWhite;
+		bool m_StraightColor;
 		advancedfx::CImageFormat m_InFormatEntBlack;
 		advancedfx::CImageFormat m_InFormatEntWhite;
 		const unsigned char* m_pInDataEntBlack;
@@ -797,8 +807,8 @@ IImageBufferThreadSafe* Depth24(class CThreadPool * threadPool, CGrowingBufferPo
     return Transform(threadPool, imageBufferPool, &transform);
 }
 
-IImageBufferThreadSafe* Matte(class CThreadPool * threadPool, CGrowingBufferPoolThreadSafe * imageBufferPool, IImageBufferThreadSafe* bufferEntBlack, IImageBufferThreadSafe* bufferEntWhite) {
-    CTransformMatte transform(bufferEntBlack, bufferEntWhite);
+IImageBufferThreadSafe* Matte(class CThreadPool * threadPool, CGrowingBufferPoolThreadSafe * imageBufferPool, IImageBufferThreadSafe* bufferEntBlack, IImageBufferThreadSafe* bufferEntWhite, bool straightColor) {
+    CTransformMatte transform(bufferEntBlack, bufferEntWhite, straightColor);
     return Transform(threadPool, imageBufferPool, &transform);
 }
 

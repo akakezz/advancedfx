@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cmath>
 #include <vector>
+#include <map>
 namespace {
 struct PovObserverFields { int Mode = -1, Target = -1, Pitch = -1, Yaw = -1;
  int Fov = -1, FovStart = -1, DefaultFov = -1, Punch[3] = {-1,-1,-1}, ViewOffset[3] = {-1,-1,-1}; };
@@ -74,7 +75,7 @@ using PovGetViewAnglesFn = void (*)(void *, SOURCESDK::QAngle &);
 #else
 using PovGetViewAnglesFn = void (__fastcall *)(void *, void *, SOURCESDK::QAngle &);
 #endif
-PovGetViewAnglesFn g_PovOriginalAngles = nullptr;
+std::map<void **, PovGetViewAnglesFn> g_PovOriginalAngles;
 bool PovReadLook(void *target, SOURCESDK::QAngle &angles, const PovObserverFields *known = nullptr);
 // Reuse the registered cvar interfaces (WrpConVarRef is CS:GO-only).
 // TF2's own taunt-first-person option blocks recorder taunts from switching cameras
@@ -205,7 +206,7 @@ void MirvPovSpectate_FrameBegin()
  }
  SOURCESDK::QAngle look{};
  const auto lookFields = g_PovThirdPerson.load() ? PovEntityFields(target) : PovObserverFields{};
- if (g_PovThirdPerson.load() && (!g_PovOriginalAngles || !PovReadLook(target, look, &lookFields))) {
+ if (g_PovThirdPerson.load() && (g_PovOriginalAngles.empty() || !PovReadLook(target, look, &lookFields))) {
   g_PovSpectateStatus = "Third-person view needs the engine angle hook and recorded target eye angles.";
   return;
  }
@@ -264,7 +265,9 @@ void __fastcall PovGetViewAngles(void *self,
 #endif
  SOURCESDK::QAngle &angles)
 {
- g_PovOriginalAngles(self,
+ const auto original = g_PovOriginalAngles.find(*static_cast<void ***>(self));
+ if (original == g_PovOriginalAngles.end()) { angles = {}; return; }
+ original->second(self,
 #ifndef _WIN64
  edx,
 #endif
@@ -289,10 +292,13 @@ bool MirvPovSpectate_SetMode(bool thirdPerson)
 }
 void MirvPovSpectate_InstallEngine(void *engine)
 {
- if (!engine || g_PovOriginalAngles) return;
+ if (!engine) return;
  auto table = *static_cast<void ***>(engine);
- // IVEngineClient013/015::GetViewAngles, public Source SDK vtable entry 18.
- AfxDetourPtr(reinterpret_cast<PVOID *>(&table[18]), reinterpret_cast<PVOID>(PovGetViewAngles), reinterpret_cast<PVOID *>(&g_PovOriginalAngles));
+ if (g_PovOriginalAngles.count(table)) return; // Versions can alias one vtable.
+ // TF2's client requests 014; HLAE may use 015. All share GetViewAngles at 18.
+ auto &original = g_PovOriginalAngles[table];
+ if (!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[18]), reinterpret_cast<PVOID>(PovGetViewAngles), reinterpret_cast<PVOID *>(&original)))
+  g_PovOriginalAngles.erase(table);
 }
 
 // Source's local-player visibility and viewmodel selection already consult this

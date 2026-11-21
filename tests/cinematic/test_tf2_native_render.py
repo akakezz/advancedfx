@@ -34,10 +34,14 @@ int Mirv_Tf2_FindCameraTarget(std::uint64_t user,const std::string&){return user
 Tf2FixRecvProp props[9];Tf2FixRecvTable table{};Tf2FixClientClass cls{};
 void *Network(void *e){return &static_cast<Entity*>(e)->Network;}
 void EngineView(void*,SOURCESDK::QAngle&a){a=engine.Angles;}
+void ClientEngineView(void*,SOURCESDK::QAngle&a){a=engine.Angles;a.y+=90;}
 void *GetClass(void*){return &cls;}bool dormant=false;bool Dormant(void*){return dormant;}
 #include "AfxHookSource/Tf2PovSpectate.inl"
 int main(){
  void *engineTable[19]={};engineTable[18]=reinterpret_cast<void*>(EngineView);void **rawEngine=engineTable;MirvPovSpectate_InstallEngine(&rawEngine);
+ void *clientTable[19]={};clientTable[18]=reinterpret_cast<void*>(ClientEngineView);void **clientEngine=clientTable;
+ MirvPovSpectate_InstallEngine(&clientEngine);MirvPovSpectate_InstallEngine(&clientEngine); // Duplicate/aliased factory results must not recurse.
+ auto clientAngles=[&]{SOURCESDK::QAngle a;reinterpret_cast<void(*)(void*,SOURCESDK::QAngle&)>(clientTable[18])(&clientEngine,a);return a;};
  auto nativeAngles=[&]{SOURCESDK::QAngle a;reinterpret_cast<void(*)(void*,SOURCESDK::QAngle&)>(engineTable[18])(&rawEngine,a);return a;};
  void *unknownTable[5]={};unknownTable[4]=reinterpret_cast<void*>(Network);void *networkTable[9]={};networkTable[2]=reinterpret_cast<void*>(GetClass);networkTable[8]=reinterpret_cast<void*>(Dormant);
  local={unknownTable,networkTable,1234,0,88};target={unknownTable,networkTable,5678,0,99};
@@ -47,7 +51,7 @@ int main(){
  assert(!MirvPovSpectate_DrawRecorderWorldModel());
  MirvPovSpectate_FrameBegin();assert(local.Mode==4&&local.Target==5678&&MirvPovSpectate_DrawRecorderWorldModel()&&MirvPovSpectate_HiddenPlayer()==2);
  MirvPovSpectate_ViewDone();assert(MirvPovSpectate_DrawRecorderWorldModel()); // Visibility stays scoped through drawing.
- MirvPovSpectate_FrameEnd();assert(local.Mode==0&&local.Target==88&&!MirvPovSpectate_DrawRecorderWorldModel());
+ MirvPovSpectate_FrameEnd();assert(local.Mode==0&&local.Target==88&&!MirvPovSpectate_DrawRecorderWorldModel()&&clientAngles().y==102);
  // Native chase must use interpolated TARGET angles, not the recorder's angles.
  props[2].Name="m_angEyeAngles[0]";props[2].Type=1;props[2].Offset=offsetof(Entity,Pitch);
  props[3].Name="m_angEyeAngles[1]";props[3].Type=1;props[3].Offset=offsetof(Entity,Yaw);table.Count=9;
@@ -61,6 +65,7 @@ int main(){
  assert(MirvPovSpectate_SetMode(true));target.Pitch=10;target.Yaw=70;
  MirvPovSpectate_FrameBegin();assert(local.Mode==5&&engine.Angles.y==12&&MirvPovSpectate_HiddenPlayer()==0);assert(local.Fov==0&&local.FovStart==90&&local.DefaultFov==90&&local.Punch[0]==0&&local.ViewOffset[2]==72&&local.Taunting&&tauntVar.Value==1);
  target.Pitch=11;target.Yaw=71;auto observed=nativeAngles();assert(observed.x==11&&observed.y==71&&engine.Angles.x==3&&engine.Angles.y==12);
+ assert(clientAngles().y==71);engine.Angles.y=-179;assert(clientAngles().y==71);engine.Angles.y=179;assert(clientAngles().y==71);engine.Angles.y=12;
  MirvPovSpectate_ViewDone();assert(local.Mode==5&&local.Fov==20&&local.FovStart==10&&local.DefaultFov==75&&local.Punch[0]==3&&local.ViewOffset[2]==24);
  MirvPovSpectate_FrameEnd();assert(local.Mode==0&&local.Target==88&&engine.Angles.x==3&&engine.Angles.y==12);
  MirvPovSpectate_FrameBegin();assert(nativeAngles().y==71);assert(MirvPovSpectate_SetPlayer(0));assert(engine.Angles.y==12&&local.Mode==0&&tauntVar.Value==0&&local.Taunting);
@@ -105,11 +110,11 @@ bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor*f){OnGpu([f]{(*
 struct Globals{int Count=1;int framecount_get(){return Count;}}globals;
 struct View{Globals*GetGlobals(){return &globals;}}g_Hook_VClient_RenderView;
 struct Streams {
- bool Recording=true;bool Enabled[5]={true,true,true,true,true};
+ bool Recording=true,Alpha=false;bool Tf2PassAlpha(){return Alpha;}std::vector<int>Samples;bool Enabled[5]={true,true,true,true,true};
  std::vector<Tf2RenderPass> Begins,Ends;
  bool DrawingThread_BindTf2PassTarget(){return true;}
  bool Tf2PassRecording(Tf2RenderPass p){return Recording&&Enabled[unsigned(p)];}
- void EngineThread_PassBegin(Tf2RenderPass p){Begins.push_back(p);}
+ void EngineThread_PassBegin(Tf2RenderPass p,int sample){Samples.push_back(sample);Begins.push_back(p);}
  void EngineThread_PassEnd(Tf2RenderPass p,float near,float far){assert(near==3&&far==28000);Ends.push_back(p);}
 }g_AfxStreams;
 int player,gear,vm,prop;
@@ -149,6 +154,9 @@ int main(){
  hiddenPlayer=2;visible.clear();Tf2PassRenderFrame(&client,rect);FlushGpu();
  assert((visible[Tf2RenderPass::Count]==std::vector<const void*>{&vm,&prop}));assert(g_Tf2RenderGroups.empty());
  hiddenPlayer=0;
+ globals.Count++;g_AfxStreams.Recording=true;g_AfxStreams.Alpha=true;g_AfxStreams.Samples.clear();int calls=renderCalls;
+ Tf2PassRenderFrame(&client,rect);FlushGpu();assert(renderCalls==calls+8);
+ assert((g_AfxStreams.Samples==std::vector<int>{-1,0,1,0,1,0,1,-1}));assert(mask==15&&colorStack.empty());
  std::cout<<"TF2 normal-frame pass dispatch, isolation and state restoration checks passed\n";
 }
 '''
@@ -164,14 +172,14 @@ writer=r'''
 #include <iostream>
 namespace advancedfx {
 class CRefCountedThreadSafe {std::atomic<int> Refs{0};public:void AddRef(){++Refs;}void Release(){if(!--Refs)delete this;}protected:virtual ~CRefCountedThreadSafe()=default;};
-struct Format{};
-struct IImageBufferThreadSafe {Format F;std::atomic<int> Refs{1};void AddRef(){++Refs;}void Release(){if(!--Refs)delete this;}Format*GetImageBufferFormat(){return &F;}};
-std::atomic<int> Created{0},Frames{0},Destroyed{0};
+struct Format{bool Alpha=false;};
+struct IImageBufferThreadSafe {int Sample=0;Format F;std::atomic<int> Refs{1};void AddRef(){++Refs;}void Release(){if(!--Refs)delete this;}Format*GetImageBufferFormat(){return &F;}};
+std::atomic<int> Created{0},Frames{0},Destroyed{0},AlphaFrames{0};
 template<bool>struct TIOutVideoStream {void Release(){delete this;}bool SupplyImageBuffer(void*,IImageBufferThreadSafe*){++Frames;return true;}};
 class COutVideoStreamCreator:public CRefCountedThreadSafe {public:COutVideoStreamCreator(){++Created;}~COutVideoStreamCreator(){++Destroyed;}TIOutVideoStream<true>*CreateOutVideoStream(const Format&){return new TIOutVideoStream<true>;}};
-namespace ImageTransformer {IImageBufferThreadSafe*StripAlpha(void*,void*,IImageBufferThreadSafe*b){b->AddRef();return b;}}
+namespace ImageTransformer {IImageBufferThreadSafe*Matte(void*,void*,IImageBufferThreadSafe*b,IImageBufferThreadSafe*w,bool straight){assert(straight&&b->Sample%2==0&&w->Sample==b->Sample+1);auto out=new IImageBufferThreadSafe;out->F.Alpha=true;++AlphaFrames;return out;}IImageBufferThreadSafe*StripAlpha(void*,void*,IImageBufferThreadSafe*b){b->AddRef();return b;}}
 }
-struct IAfxD3D9CaptureBuffer {std::atomic<int>Refs{1};advancedfx::IImageBufferThreadSafe*LockCpu(){return new advancedfx::IImageBufferThreadSafe;}void AddRef(){++Refs;}void Release(){if(!--Refs)delete this;}};
+struct IAfxD3D9CaptureBuffer {int Sample=0;std::atomic<int>Refs{1};advancedfx::IImageBufferThreadSafe*LockCpu(){if(Sample<0)return nullptr;auto b=new advancedfx::IImageBufferThreadSafe;b->Sample=Sample;return b;}void AddRef(){++Refs;}void Release(){if(!--Refs)delete this;}};
 struct ICaptureOutput {virtual void AddRef()=0;virtual void Release()=0;virtual void OnCapture(IAfxD3D9CaptureBuffer*)=0;};
 void*g_pThreadPool=nullptr;int g_ImageBufferPoolThreadSafe=0;void Tier0_Warning(const char*,...){}
 class CAfxStreams {public:
@@ -184,6 +192,14 @@ int main(){
   output->Release(); // Joins and drains worker; its one creator reference is released exactly once.
  }
  assert(advancedfx::Created==8&&advancedfx::Destroyed==8&&advancedfx::Frames==32);
+ for(bool failed:{false,true}){
+  auto creator=new advancedfx::COutVideoStreamCreator;creator->AddRef();auto output=new CAfxStreams::CDrawingRecordScreenOutput(creator,true);output->AddRef();creator->Release();
+  auto sample=[&](int id){if(id==-2){output->OnCapture(nullptr);return;}auto c=new IAfxD3D9CaptureBuffer;c->Sample=id;output->OnCapture(c);c->Release();};
+  if(!failed)for(int i=0;i<8;++i)sample(i);
+  else {sample(-2);sample(1);sample(2);sample(-2);sample(4);sample(5);sample(6);sample(-1);sample(8);sample(9);sample(10);}
+  output->Release();
+ }
+ assert(advancedfx::Created==10&&advancedfx::Destroyed==10&&advancedfx::Frames==38&&advancedfx::AlphaFrames==6);
  std::cout<<"Shared recording worker drains frames and releases creator once across repeated takes\n";
 }
 '''
@@ -240,12 +256,12 @@ void Tier0_Warning(const char*,...){}
 struct CMaterialSystemFunctor{virtual ~CMaterialSystemFunctor(){};virtual void operator()()=0;};
 namespace advancedfx {struct COutVideoStreamCreator {int Refs=1;void AddRef(){++Refs;}void Release(){--Refs;}};}
 struct CCaptureInputRenderTarget{};
-struct CDrawingRecordScreenOutput{CDrawingRecordScreenOutput(advancedfx::COutVideoStreamCreator*){}};
+struct CDrawingRecordScreenOutput{CDrawingRecordScreenOutput(advancedfx::COutVideoStreamCreator*,bool){}};
 struct CCaptureNode{
  CCaptureInputRenderTarget *Input;CDrawingRecordScreenOutput *Output;
  CCaptureNode(CCaptureInputRenderTarget*i,CDrawingRecordScreenOutput*o):Input(i),Output(o){}
  void AddRef(){}void Release(){delete Input;delete Output;delete this;}void GpuRelease(){}
- void GpuCapture(){assert(color==trackedColor&&color->Samples==depth->Samples&&color->Pixels>0);++captures;}
+ void GpuCaptureSkipped(){}void GpuCapture(){assert(color==trackedColor&&color->Samples==depth->Samples&&color->Pixels>0);++captures;}
 };
 struct CAfxStreams{
  CCaptureNode*m_Tf2PassNodes[5]={};bool m_Tf2PassActive[5]={},m_Tf2PassPixelsValid[5]={};bool Allocate=true;

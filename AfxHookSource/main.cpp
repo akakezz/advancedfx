@@ -519,7 +519,11 @@ void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals
 			break;
 		}
 		if (nullptr == iface) ErrorBox("Could not get a supported VEngineClient interface.");
-  else if (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified) MirvPovSpectate_InstallEngine(iface);
+  else if (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified) {
+   MirvPovSpectate_InstallEngine(iface);
+   for (const char *version : {"VEngineClient013", "VEngineClient014", "VEngineClient015"})
+    MirvPovSpectate_InstallEngine(appSystemFactory(version, nullptr));
+  }
 
 		// VEngineCvar:
 

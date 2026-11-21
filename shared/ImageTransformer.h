@@ -17,7 +17,7 @@ namespace ImageTransformer {
 
 	IImageBufferThreadSafe* Depth24(class CThreadPool * threadPool, CGrowingBufferPoolThreadSafe * imageBufferPool, IImageBufferThreadSafe* buffer, float depthScale, float depthOfs);
 
-	IImageBufferThreadSafe* Matte(class CThreadPool * threadPool, CGrowingBufferPoolThreadSafe * imageBufferPool, IImageBufferThreadSafe* bufferEntBlack, IImageBufferThreadSafe* bufferEntWhite);
+	IImageBufferThreadSafe* Matte(class CThreadPool * threadPool, CGrowingBufferPoolThreadSafe * imageBufferPool, IImageBufferThreadSafe* bufferEntBlack, IImageBufferThreadSafe* bufferEntWhite, bool straightColor = false);
 
 	IImageBufferThreadSafe* AColorBRedAsAlpha(class CThreadPool * threadPool, CGrowingBufferPoolThreadSafe * imageBufferPool, IImageBufferThreadSafe* aColor, IImageBufferThreadSafe* bRedAsAlpha);
 

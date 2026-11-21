@@ -67,6 +67,8 @@ void PreviewSelectAll();
 bool PreviewAnchor();
 namespace Recording
 {
+bool PassAlpha();
+bool SetPassAlpha(bool value);
 unsigned PassBackground();
 bool SetPassBackground(unsigned color);
 bool SeparatePassSupported();

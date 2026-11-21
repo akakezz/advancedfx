@@ -131,12 +131,15 @@ void __fastcall Tf2PassRenderFrame(void *self,
    const auto pass = Tf2RenderPass(i);
    if (!g_AfxStreams.Tf2PassRecording(pass)) continue;
    g_Tf2ActivePass = pass;
-   g_AfxStreams.EngineThread_PassBegin(pass);
-   if (pass != Tf2RenderPass::World) Tf2PassColor(0);
-   // Retain the capture target matte; world depth occludes isolated models.
-   render(2, (pass == Tf2RenderPass::Hud ? 2 : pass == Tf2RenderPass::Viewmodel ? 1 : 0) | 4);
-   if (pass != Tf2RenderPass::World) Tf2PassColor(3);
-   g_AfxStreams.EngineThread_PassEnd(pass, projection.Near, projection.Far);
+   const bool matte = g_AfxStreams.Tf2PassAlpha() && Tf2RenderPassIsolated(pass);
+   for (int sample = 0; sample < (matte ? 2 : 1); ++sample) {
+    g_AfxStreams.EngineThread_PassBegin(pass, matte ? sample : -1);
+    if (pass != Tf2RenderPass::World) Tf2PassColor(0);
+    // Retain the capture target matte; world depth occludes isolated models.
+    render(2, (pass == Tf2RenderPass::Hud ? 2 : pass == Tf2RenderPass::Viewmodel ? 1 : 0) | 4);
+    if (pass != Tf2RenderPass::World) Tf2PassColor(3);
+    g_AfxStreams.EngineThread_PassEnd(pass, projection.Near, projection.Far);
+   }
    g_Tf2ActivePass = Tf2RenderPass::Count;
   }
   g_Tf2RenderGroups.clear();

@@ -8714,6 +8714,10 @@ void Draw()
       bool enabled = Recording::PassEnabled(i);
       if (ImGui::Checkbox(Tf2RenderPassName(Tf2RenderPass(i)), &enabled)) Recording::SetPassEnabled(i, enabled);
      }
+     bool alpha = Recording::PassAlpha();
+     if (ImGui::Checkbox("Transparent isolated passes", &alpha)) Recording::SetPassAlpha(alpha);
+     if (alpha) ImGui::TextWrapped("Alpha uses two same-frame renders. Choose an alpha-capable profile below, such as afxFfmpegProresAlpha; other codecs may discard transparency.");
+     if (alpha) ImGui::BeginDisabled();
      const unsigned background = Recording::PassBackground() & 0xffffffu;
      const char *backgroundNames[] = {"Green", "Blue", "Black"};
      const unsigned backgroundColors[] = {0x00ff00u, 0x0000ffu, 0x000000u};
@@ -8723,8 +8727,9 @@ void Draw()
       for (int i = 0; i < 3; ++i) if (ImGui::Selectable(backgroundNames[i], background == backgroundColors[i])) Recording::SetPassBackground(backgroundColors[i]);
       ImGui::EndCombo();
      }
+     if (alpha) ImGui::EndDisabled();
      if (!editable) ImGui::EndDisabled();
-     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use the selected chroma background; depth is logarithmic grayscale (0-4096 units). Extra passes increase render cost.");
+     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use alpha when enabled, otherwise the selected chroma background; depth is logarithmic grayscale (0-4096 units). Extra passes increase render cost.");
      if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("TF2 render-pass hooks are unavailable.");
     }
     // Record screen settings

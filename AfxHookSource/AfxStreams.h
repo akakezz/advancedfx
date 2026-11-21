@@ -157,8 +157,10 @@ public:
 			} else {
 				m_Output->OnCapture(nullptr);
 			}
-		}
+		} else m_Output->OnCapture(nullptr);
 	}
+
+    void GpuCaptureSkipped() { m_Output->OnCapture(nullptr); }
 
 	void CpuQueueGpuRelease() {
 		s_GpuReleaseQueue.Add(this);
@@ -3534,6 +3536,8 @@ public:
 
 	void DrawingThread_UnsetIntZTextureSurface();
 
+ bool Tf2PassAlpha() const { return m_Tf2PassAlpha.load(); }
+ bool SetTf2PassAlpha(bool value) { if (m_Recording) return false; m_Tf2PassAlpha = value; return true; }
  unsigned Tf2PassBackground() const { return m_Tf2PassBackground.load(); }
  bool SetTf2PassBackground(unsigned color) { if (m_Recording) return false; m_Tf2PassBackground = 0xff000000u | color; return true; }
  bool Tf2PassEnabled(Tf2RenderPass pass) const;
@@ -3541,7 +3545,7 @@ public:
  bool Tf2PassRecording(Tf2RenderPass pass) const;
  bool DrawingThread_BindTf2PassTarget();
  void DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass);
- void EngineThread_PassBegin(Tf2RenderPass pass);
+ void EngineThread_PassBegin(Tf2RenderPass pass, int matteSample = -1);
  void EngineThread_PassEnd(Tf2RenderPass pass, float zNear = 1, float zFar = 32768);
  void Console_RecordPass(IWrpCommandArgs *args);
  void EngineThread_QueueCapture();
@@ -3794,8 +3798,8 @@ private:
 		: public advancedfx::CRefCountedThreadSafe
 		, public ICaptureOutput {
 	public:
-		CDrawingRecordScreenOutput(advancedfx::COutVideoStreamCreator* outVideoStreamCreator)
-			: m_OutVideoStreamCreator(outVideoStreamCreator)
+		CDrawingRecordScreenOutput(advancedfx::COutVideoStreamCreator* outVideoStreamCreator, bool matte = false)
+			: m_OutVideoStreamCreator(outVideoStreamCreator), m_Matte(matte)
 		{
 			outVideoStreamCreator->AddRef();
 			m_ProcessingThread = std::thread(&CDrawingRecordScreenOutput::ProcessingThreadFunc, this);
@@ -3835,6 +3839,7 @@ private:
 		bool m_Shutdown = false;
 		advancedfx::COutVideoStreamCreator* m_OutVideoStreamCreator;
 		advancedfx::TIOutVideoStream<true>* m_OutVideoStream = nullptr;
+        bool m_Matte;
 
 		void ProcessingThreadFunc();
 
@@ -3863,6 +3868,7 @@ private:
 	} * m_DrawingRecordScreen = nullptr;
  class CCaptureNode* m_DrawingCaptureNode = nullptr;
  std::atomic<unsigned> m_Tf2PassBackground{0xff00ff00u}; // Chroma green; isolated passes only.
+ std::atomic<bool> m_Tf2PassAlpha{false};
  std::atomic<bool> m_Tf2PassEnabled[unsigned(Tf2RenderPass::Count)] = {};
  CCaptureNode *m_Tf2PassNodes[unsigned(Tf2RenderPass::Count)] = {};
  bool m_Tf2PassActive[unsigned(Tf2RenderPass::Count)] = {};
@@ -3872,8 +3878,8 @@ private:
  class CPassCaptureFunctor : public CMaterialSystemFunctor {
  public:
   enum Operation { Create, Destroy, Begin, End };
-  CPassCaptureFunctor(Tf2RenderPass pass, Operation op, advancedfx::COutVideoStreamCreator *creator = nullptr, unsigned background = 0xff00ff00u, float zNear = 1, float zFar = 32768)
-   : Pass(pass), Op(op), Creator(creator), Background(background), Near(zNear), Far(zFar) { if (Creator) Creator->AddRef(); }
+  CPassCaptureFunctor(Tf2RenderPass pass, Operation op, advancedfx::COutVideoStreamCreator *creator = nullptr, unsigned background = 0xff00ff00u, float zNear = 1, float zFar = 32768, bool matte = false)
+   : Pass(pass), Op(op), Creator(creator), Background(background), Near(zNear), Far(zFar), Matte(matte) { if (Creator) Creator->AddRef(); }
   ~CPassCaptureFunctor() { if (Creator) Creator->Release(); }
   void operator()() override;
  private:
@@ -3882,6 +3888,7 @@ private:
   advancedfx::COutVideoStreamCreator *Creator;
   unsigned Background; // Snapshot when queued; later menu edits cannot change pending frames.
   float Near, Far; // Projection of the rendered frame, not a later queued view.
+  bool Matte;
  };
 
 	class CCreateScreenCaptureNodeFunctor : public CMaterialSystemFunctor {

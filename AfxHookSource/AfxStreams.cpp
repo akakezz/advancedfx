@@ -6957,7 +6957,7 @@ void CAfxStreams::Console_Record_Start2()
    }
    auto creator = m_RecordScreen->Settings->CreateOutVideoStreamCreator(*this, *this, GetStartHostFrameRate(), suffix.c_str());
    if (creator) {
-    MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(Tf2RenderPass(i), CPassCaptureFunctor::Create, creator));
+    MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(Tf2RenderPass(i), CPassCaptureFunctor::Create, creator, 0, 1, 32768, Tf2PassAlpha() && Tf2RenderPassIsolated(Tf2RenderPass(i))));
     creator->Release();
    } else Tier0_Warning("Could not create %s output.\n", Tf2RenderPassName(Tf2RenderPass(i)));
   }
@@ -10248,47 +10248,44 @@ void CAfxStreams::DrawingThread_Capture() {
 }
 
 void CAfxStreams::CDrawingRecordScreenOutput::ProcessingThreadFunc() {
-	std::unique_lock<std::mutex> lock(m_ProcessingThreadMutex);
-	while (!m_Shutdown || !m_Captures.empty()) {
-		if (!m_Captures.empty()) {
-			auto * capture = m_Captures.front();
-			m_Captures.pop_front();
-			
-			lock.unlock();
-
-			if (capture) {
-				if(auto buffer = capture->LockCpu()) {
-					capture->Release();
-					advancedfx::IImageBufferThreadSafe* outBuffer = advancedfx::ImageTransformer::StripAlpha(g_pThreadPool,&g_ImageBufferPoolThreadSafe,buffer);
-					buffer->Release();
-					if (outBuffer) {
-						if (m_OutVideoStream == nullptr) {
-							m_OutVideoStream = m_OutVideoStreamCreator->CreateOutVideoStream(*outBuffer->GetImageBufferFormat());
-							if (nullptr == m_OutVideoStream)
-							{
-								Tier0_Warning("AFXERROR: Failed to create image stream for screen recording.\n");
-							}
-						}
-						if (nullptr != m_OutVideoStream && !m_OutVideoStream->SupplyImageBuffer(this, outBuffer))
-						{
-							Tier0_Warning("AFXERROR: Failed writing image for screen recording.\n");
-						}
-						outBuffer->Release();
-					}
-					else {
-						Tier0_Warning("AFXERROR: Could not get transform buffer for screen recording.\n");
-					}
-				} else {
-					capture->Release();
-				}
-			}
-			
-			lock.lock();
-		} else {
-			m_ProcessingThreadCv.wait(lock);
-		}
-	}
-	if (m_OutVideoStream) m_OutVideoStream->Release();
+ advancedfx::IImageBufferThreadSafe *black = nullptr;
+ bool expectWhite = false;
+ std::unique_lock<std::mutex> lock(m_ProcessingThreadMutex);
+ while (!m_Shutdown || !m_Captures.empty()) {
+  if (m_Captures.empty()) { m_ProcessingThreadCv.wait(lock); continue; }
+  auto capture = m_Captures.front(); m_Captures.pop_front();
+  lock.unlock();
+  auto buffer = capture ? capture->LockCpu() : nullptr;
+  if (capture) capture->Release();
+  advancedfx::IImageBufferThreadSafe *outBuffer = nullptr;
+  bool complete = true;
+  if (m_Matte) {
+   if (!expectWhite) {
+    black = buffer; buffer = nullptr; expectWhite = true; complete = false;
+   } else {
+    if (black && buffer)
+     outBuffer = advancedfx::ImageTransformer::Matte(g_pThreadPool, &g_ImageBufferPoolThreadSafe, black, buffer, true);
+    if (black) black->Release();
+    black = nullptr; expectWhite = false;
+   }
+  } else if (buffer) {
+   outBuffer = advancedfx::ImageTransformer::StripAlpha(g_pThreadPool, &g_ImageBufferPoolThreadSafe, buffer);
+  }
+  if (buffer) buffer->Release();
+  if (outBuffer) {
+   if (!m_OutVideoStream) {
+    m_OutVideoStream = m_OutVideoStreamCreator->CreateOutVideoStream(*outBuffer->GetImageBufferFormat());
+    if (!m_OutVideoStream) Tier0_Warning("AFXERROR: Failed to create image stream for screen recording.\n");
+   }
+   if (m_OutVideoStream && !m_OutVideoStream->SupplyImageBuffer(this, outBuffer))
+    Tier0_Warning("AFXERROR: Failed writing image for screen recording.\n");
+   outBuffer->Release();
+  } else if (complete) Tier0_Warning("AFXERROR: Missing capture or failed transform; skipping recording frame.\n");
+  lock.lock();
+ }
+ if (black) black->Release();
+ if (expectWhite) Tier0_Warning("AFXERROR: Incomplete alpha capture pair at recording end.\n");
+ if (m_OutVideoStream) m_OutVideoStream->Release();
 }
 
 const char *CAfxStreams::GetRecordScreenSettingsName() const
@@ -10375,8 +10372,9 @@ bool CAfxStreams::SetTf2PassEnabled(Tf2RenderPass pass, bool enabled) {
 bool CAfxStreams::Tf2PassRecording(Tf2RenderPass pass) const {
  return m_Recording && Tf2PassEnabled(pass) && g_VEngineClient && !g_VEngineClient->Con_IsVisible();
 }
-void CAfxStreams::EngineThread_PassBegin(Tf2RenderPass pass) {
- MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::Begin, nullptr, Tf2PassBackground()));
+void CAfxStreams::EngineThread_PassBegin(Tf2RenderPass pass, int matteSample) {
+ const unsigned background = matteSample == 0 ? 0xff000000u : matteSample == 1 ? 0xffffffffu : Tf2PassBackground();
+ MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::Begin, nullptr, background));
 }
 void CAfxStreams::EngineThread_PassEnd(Tf2RenderPass pass, float zNear, float zFar) {
  MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::End, nullptr, 0, zNear, zFar));
@@ -10407,7 +10405,7 @@ void CAfxStreams::DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass) {
 void CAfxStreams::CPassCaptureFunctor::operator()() {
  auto &node = g_AfxStreams.m_Tf2PassNodes[unsigned(Pass)];
  if (Op == Create) {
-  if (!node) { node = new CCaptureNode(new CCaptureInputRenderTarget(), new CDrawingRecordScreenOutput(Creator)); node->AddRef(); }
+  if (!node) { node = new CCaptureNode(new CCaptureInputRenderTarget(), new CDrawingRecordScreenOutput(Creator, Matte)); node->AddRef(); }
   return;
  }
  if (Op == Destroy) { g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass); if (node) { node->GpuRelease(); node->Release(); node = nullptr; } return; }
@@ -10436,7 +10434,7 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
   } else Tier0_Warning("TF2 %s pass could not bind its color/depth targets.\n", Tf2RenderPassName(Pass));
   return;
  }
- if (!g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) return;
+ if (!g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) { if (node) node->GpuCaptureSkipped(); return; }
  g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
  const bool capture = g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] && g_AfxStreams.DrawingThread_BindTf2PassTarget();
  if (capture && Pass == Tf2RenderPass::Depth) {
@@ -10447,13 +10445,20 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
    AfxDrawDepth(AfxDrawDepthEncode_Gray, AfxDrawDepthMode_PyramidalLogE, false, 0, 4096,
      viewport.X, viewport.Y, viewport.Width, viewport.Height, Near, Far, nullptr);
  }
- if (capture && node) node->GpuCapture();
+ if (node) { if (capture) node->GpuCapture(); else node->GpuCaptureSkipped(); }
  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetIntZTextureSurface();
  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetRenderTargetNoMsaa(false);
  else g_AfxStreams.DrawingThread_UnsetRenderTarget(false);
  g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass);
 }
 void CAfxStreams::Console_RecordPass(IWrpCommandArgs *args) {
+ if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "alpha")) {
+  if (args->ArgC() == 3 && (!std::strcmp(args->ArgV(2), "0") || !std::strcmp(args->ArgV(2), "1"))) {
+   if (!SetTf2PassAlpha(!std::strcmp(args->ArgV(2), "1"))) Tier0_Warning("Stop recording before changing pass alpha.\n");
+  }
+  Tier0_Msg("mirv_streams record pass alpha 0|1 - Black/white matte capture for isolated passes (currently %i). Use an alpha-capable output profile, e.g. afxFfmpegProresAlpha.\n", int(Tf2PassAlpha()));
+  return;
+ }
  if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "background")) {
   unsigned color = 0; bool valid = false;
   if (args->ArgC() == 3) {
@@ -10486,6 +10491,11 @@ void CAfxStreams::Console_RecordPass(IWrpCommandArgs *args) {
 }
 
 namespace AfxHookSource { namespace CameraOverlay { namespace Recording {
+bool PassAlpha() { return g_AfxStreams.Tf2PassAlpha(); }
+bool SetPassAlpha(bool value) {
+ if (IsActive() || !g_VEngineClient) return false;
+ g_VEngineClient->ClientCmd_Unrestricted(value ? "mirv_streams record pass alpha 1" : "mirv_streams record pass alpha 0"); return true;
+}
 unsigned PassBackground() { return g_AfxStreams.Tf2PassBackground(); }
 bool SetPassBackground(unsigned color) {
  if (IsActive() || !g_VEngineClient) return false;

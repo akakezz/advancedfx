@@ -6,6 +6,9 @@ inline const char *Tf2RenderPassName(Tf2RenderPass pass) {
  static const char *names[] = {"world", "players", "viewmodel", "hud", "depth"};
  return unsigned(pass) < unsigned(Tf2RenderPass::Count) ? names[unsigned(pass)] : "invalid";
 }
+inline bool Tf2RenderPassIsolated(Tf2RenderPass pass) {
+ return pass == Tf2RenderPass::Players || pass == Tf2RenderPass::Viewmodel || pass == Tf2RenderPass::Hud;
+}
 bool Tf2RenderPassSupported();
 void Tf2RenderPassInstallClient(void *client);
 void Tf2RenderPassInstallModel(void *model);

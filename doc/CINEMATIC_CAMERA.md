@@ -2995,9 +2995,31 @@ pass includes those models (including dropped/debris models and corpse-attached
 gear) and retains world depth occlusion. Viewmodels remain a separate pass;
 decals and ordinary props remain in the world pass. The render passes share the
 scene-cache class/model classification fallback. Player, viewmodel and HUD
-outputs default to chroma green, without an alpha channel. **Isolated pass background**
+outputs default to chroma green. **Transparent isolated passes** enables embedded
+alpha for these three outputs; World, Depth and normal screen recording keep
+their existing format. **Isolated pass background**
 offers Green, Blue and Black; custom RGB is available using
 `mirv_streams record pass background <red 0..255> <green 0..255> <blue 0..255>`.
+Transparency reuses HLAE's existing black/white matte transform: two renders of
+one demo frame recover coverage, and its opt-in straight-color conversion removes
+coverage from the black render without selecting/removing a key color. This keeps
+opaque greens and partially covered edges in the output. Capture failures retain
+pair boundaries, so one failed sample cannot shift later frames. The mode adds
+an extra render for each isolated pass and does not advance the demo.
+
+Select an alpha-capable recording profile, such as `afxFfmpegProresAlpha` (ProRes
+4444 MOV), before recording; ordinary H.264/H.265 profiles can discard alpha.
+Console equivalent:
+
+```text
+mirv_streams record pass alpha 1
+mirv_streams record screen settings afxFfmpegProresAlpha
+```
+
+`alpha 0` restores chroma backgrounds. The option cannot change during a take.
+Matte reconstruction assumes ordinary alpha compositing; additive/refractive
+materials and screen effects still need an in-game check.
+
 World shadows are not separated. Color passes preserve the game's MSAA sample count;
 only depth extraction uses a matched non-MSAA color/INTZ pair. The capture callback
 explicitly binds the capture surface even if Source left an intermediate target
@@ -3027,7 +3049,10 @@ replacing saved camera definitions. It temporarily sets the recorder's native
 observer mode and target during rendering, then restores the original observer values
 before scene capture and subsequent network updates. No camera rig is created. **POV view** selects native first-person or third-person
 chase. For another player, chase reads their interpolated eye angles at the native
-engine angle query, rather than using the recorder's look direction. The recorder's
+engine angle query, rather than using the recorder's look direction. The adapter
+covers distinct `VEngineClient013/014/015` interfaces: TF2's client requests `014`,
+while HLAE can select `015`; hooking only HLAE's interface leaves the native chase
+query unchanged. Aliased interface vtables are hooked once. The recorder's
 engine angles are never overwritten. The recorded player's own third-person view
 uses Source's existing `thirdperson` behavior. Native chase positioning and collision
 remain handled by Source. While a remote observer scope is active, Source's tools
