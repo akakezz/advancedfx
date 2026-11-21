@@ -12,6 +12,7 @@ struct MirvCameraCollisionSettings
 	double BoneHalfLife = 0, FollowTeleportDistance = 1024, AttachedSoftDistance = 24;
 	double OrbitHalfLife = .15, OrbitSpeed = 360, FollowRecoveryDelay = 1;
 	bool PreserveFraming = false, AimOwnsAngles = false;
+    bool IndependentOrbit = false; // Derived from a saved rig's explicit rotation channel.
 	double FramingMargin = .1, FrameFov = 90, FrameAspect = 16.0 / 9;
 	double BonePositionInfluence = 1, BoneRotationInfluence = 1, BonePositionLimit = 0, BoneRotationLimit = 0;
 
@@ -60,14 +61,14 @@ struct MirvCameraCollisionSettings
 		return std::tie(Free, Campath, Attached, Players, Slide, IgnoreLocal, SubjectClearance, NearPlane,
 						Debug, Radius, ReturnHalfLife, ReturnSpeed, FollowHalfLife, FollowMaxDistance,
 						BoneHalfLife, FollowTeleportDistance, AttachedSoftDistance, OrbitHalfLife, OrbitSpeed,
-						FollowRecoveryDelay, PreserveFraming, AimOwnsAngles, FramingMargin, FrameFov,
+						FollowRecoveryDelay, PreserveFraming, AimOwnsAngles, IndependentOrbit, FramingMargin, FrameFov,
 						FrameAspect, BonePositionInfluence, BoneRotationInfluence, BonePositionLimit,
 						BoneRotationLimit) ==
 			   std::tie(v.Free, v.Campath, v.Attached, v.Players, v.Slide, v.IgnoreLocal, v.SubjectClearance,
 						v.NearPlane, v.Debug, v.Radius, v.ReturnHalfLife, v.ReturnSpeed, v.FollowHalfLife,
 						v.FollowMaxDistance, v.BoneHalfLife, v.FollowTeleportDistance, v.AttachedSoftDistance,
 						v.OrbitHalfLife, v.OrbitSpeed, v.FollowRecoveryDelay, v.PreserveFraming,
-						v.AimOwnsAngles, v.FramingMargin, v.FrameFov, v.FrameAspect, v.BonePositionInfluence,
+						v.AimOwnsAngles, v.IndependentOrbit, v.FramingMargin, v.FrameFov, v.FrameAspect, v.BonePositionInfluence,
 						v.BoneRotationInfluence, v.BonePositionLimit, v.BoneRotationLimit);
 	}
 	bool operator!=(const MirvCameraCollisionSettings &v) const

@@ -6903,7 +6903,12 @@ void CAfxStreams::Console_Record_Start()
 
 void CAfxStreams::Console_Record_Start2()
 {
- for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) if (m_Tf2PassEnabled[i] &&
+ if(m_Tf2SeparateConfigured && !m_Tf2FullReference){
+  bool any=false;for(const auto &enabled:m_Tf2PassEnabled)any|=enabled.load();
+  if(!any){Tier0_Warning("No recording outputs selected; enable Base/world, an isolate, depth, or full-scene reference.\n");return;}
+ }
+
+ for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) if (m_Tf2SeparateConfigured && m_Tf2PassEnabled[i] &&
      (!Tf2RenderPassSupported() || !MaterialSystem_CanExecuteOnRenderThread() ||
       (i == unsigned(Tf2RenderPass::Depth) && !AfxD3d9_DrawDepthSupported()))) {
   Tier0_Warning("TF2 separate passes require supported render hooks and material queue; depth requires INTZ support.\n");
@@ -6948,7 +6953,7 @@ void CAfxStreams::Console_Record_Start2()
 			}
 		}
 
-  for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) if (m_Tf2PassEnabled[i]) {
+  for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) if (m_Tf2SeparateConfigured && m_Tf2PassEnabled[i]) {
    const std::string suffix = std::string("\\") + Tf2RenderPassName(Tf2RenderPass(i));
    std::wstring folderSuffix, passFolder;
    if (!UTF8StringToWideString(suffix.c_str(), folderSuffix) ||
@@ -6962,12 +6967,12 @@ void CAfxStreams::Console_Record_Start2()
     creator->Release();
    } else Tier0_Warning("Could not create %s output.\n", Tf2RenderPassName(Tf2RenderPass(i)));
   }
-  if(m_RecordScreen->Enabled) {
+  if(GetRecordScreenEnabled()) {
    auto videoStreamCreator = m_RecordScreen->Settings->CreateOutVideoStreamCreator(
 				*this,
 				*this,
 				GetStartHostFrameRate(),
-				""
+				m_Tf2SeparateConfigured ? "\\reference" : ""
 			);
 			m_DrawingRecordScreen = new CDrawingRecordScreen(
 				videoStreamCreator, advancedfx::StreamCaptureType::Normal
@@ -7436,7 +7441,9 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 		char const* arg1 = args->ArgV(1);
 		if (0 == _stricmp(arg1, "enabled")) {
 			if (3 <= argC) {
+                if(m_Recording && m_Tf2SeparateConfigured){Tier0_Warning("Stop recording before changing reference output.\n");return;}
 				m_RecordScreen->Enabled = 0 != atoi(args->ArgV(2));
+                if(m_Tf2SeparateConfigured)m_Tf2FullReference=m_RecordScreen->Enabled;
 				if(m_RecordScreen->Enabled && !Hook_MaterialSystem()) {
 					advancedfx::Warning("AFXERROR: Your Source 1 game is not supported for mirv_streams record screen. Consider to file a feature request on GitHub (and provide materialsystem.dll of your game).\n");
 				}
@@ -7447,7 +7454,7 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 				"%s enabled 0|1 - Disable (0, default) or enable (1) game screen recording.\n"
 				"Current value: %i\n"
 				, arg0
-				, (m_RecordScreen->Enabled?1:0)
+				, (GetRecordScreenEnabled()?1:0)
 			);
 			return;
 		}
@@ -10243,7 +10250,7 @@ void CAfxStreams::DrawingThread_UnsetIntZTextureSurface() {
 }
 
 void CAfxStreams::EngineThread_QueueCapture() {
-	if(m_Recording && m_RecordScreen->Enabled) {
+	if(m_Recording && GetRecordScreenEnabled()) {
 		if(g_AfxStreams.IsRecording() && (g_VEngineClient && !g_VEngineClient->Con_IsVisible() || g_SourceSdkVer == SourceSdkVer_CSGO || SourceSdkVer_CSCO == g_SourceSdkVer)) {
 			MaterialSystem_ExecuteOnRenderThread(new CQueueCaptureFunctor());
 		}
@@ -10372,15 +10379,28 @@ bool RemoveProfile(const char *name)
 
 // TF2 uses the same render-target capture node and profile writers as record screen.
 bool CAfxStreams::Tf2PassEnabled(Tf2RenderPass pass) const {
- return unsigned(pass) < unsigned(Tf2RenderPass::Count) && m_Tf2PassEnabled[unsigned(pass)];
+ if(unsigned(pass)>=unsigned(Tf2RenderPass::Count))return false;
+ return pass==Tf2RenderPass::World && !m_Tf2SeparateConfigured ? true : m_Tf2PassEnabled[unsigned(pass)].load();
 }
 bool CAfxStreams::SetTf2PassEnabled(Tf2RenderPass pass, bool enabled) {
- if (m_Recording || unsigned(pass) >= unsigned(Tf2RenderPass::Count) ||
-     (enabled && (!Tf2RenderPassSupported() || !Hook_MaterialSystem()))) return false;
- m_Tf2PassEnabled[unsigned(pass)] = enabled; return true;
+ if(m_Recording || unsigned(pass)>=unsigned(Tf2RenderPass::Count) ||
+    (enabled && (!Tf2RenderPassSupported() || !Hook_MaterialSystem())))return false;
+ if(!enabled && !m_Tf2SeparateConfigured && (pass!=Tf2RenderPass::World || !Tf2RenderPassSupported()))return true;
+ if(!m_Tf2SeparateConfigured){m_Tf2SeparateConfigured=true;m_Tf2PassEnabled[unsigned(Tf2RenderPass::World)]=true;}
+ m_Tf2PassEnabled[unsigned(pass)]=enabled;return true;
+}
+bool CAfxStreams::SetTf2FullReference(bool enabled){
+ if(m_Recording)return false;
+ if(enabled && !SetTf2PassEnabled(Tf2RenderPass::World,Tf2PassEnabled(Tf2RenderPass::World)))return false;
+ m_Tf2FullReference=enabled;return true;
+}
+bool CAfxStreams::ResetTf2Outputs(){
+ if(m_Recording)return false;
+ for(auto &enabled:m_Tf2PassEnabled)enabled=false;
+ m_Tf2SeparateConfigured=false;m_Tf2FullReference=false;return true;
 }
 bool CAfxStreams::Tf2PassRecording(Tf2RenderPass pass) const {
- return m_Recording && Tf2PassEnabled(pass) && g_VEngineClient && !g_VEngineClient->Con_IsVisible();
+ return m_Recording && m_Tf2SeparateConfigured && Tf2PassEnabled(pass) && g_VEngineClient && !g_VEngineClient->Con_IsVisible();
 }
 void CAfxStreams::EngineThread_PassBegin(Tf2RenderPass pass, int matteSample) {
  const unsigned background = matteSample == 0 ? 0xff000000u : matteSample == 1 ? 0xffffffffu : Tf2PassBackground();
@@ -10479,7 +10499,13 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
   if(Pass==Tf2RenderPass::Players) AfxD3d9PushDepthStencilEx(g_AfxStreams.m_Tf2PlayerDepth);
   if(Pass==Tf2RenderPass::Players)AfxD3D9SetPlayerHoldoutEnabled(true);
   if (g_AfxStreams.DrawingThread_BindTf2PassTarget()) {
-   const auto result = device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | (Pass==Tf2RenderPass::Players?D3DCLEAR_STENCIL:0),
+   DWORD clearFlags=D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER;
+   if(Pass==Tf2RenderPass::Players)clearFlags|=D3DCLEAR_STENCIL;
+   if(Pass==Tf2RenderPass::World){
+    D3DSURFACE_DESC desc{};auto depth=AfxGetDepthStencilSurface();
+    if(depth && SUCCEEDED(depth->GetDesc(&desc)) && (desc.Format==D3DFMT_D24S8 || desc.Format==D3DFMT_D24FS8 || desc.Format==D3DFMT_D15S1))clearFlags|=D3DCLEAR_STENCIL;
+   }
+   const auto result = device->Clear(0, nullptr, clearFlags,
     Pass == Tf2RenderPass::Players || Pass == Tf2RenderPass::Viewmodel || Pass == Tf2RenderPass::Hud ? Background : 0, 1, 0);
    g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] = SUCCEEDED(result);
    if (FAILED(result)) Tier0_Warning("TF2 %s pass clear failed: 0x%08x.\n", Tf2RenderPassName(Pass), unsigned(result));
@@ -10539,6 +10565,14 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
  g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass);
 }
 void CAfxStreams::Console_RecordPass(IWrpCommandArgs *args) {
+ if(args->ArgC()==2 && !_stricmp(args->ArgV(1),"reset")){if(!ResetTf2Outputs())Tier0_Warning("Stop recording before resetting outputs.\n");return;}
+ if(args->ArgC()>=2 && !_stricmp(args->ArgV(1),"reference")){
+  if(args->ArgC()==3 && (!std::strcmp(args->ArgV(2),"0") || !std::strcmp(args->ArgV(2),"1"))){
+   if(!SetTf2FullReference(!std::strcmp(args->ArgV(2),"1")))Tier0_Warning("Stop recording first; supported TF2 pass hooks are required.\n");
+  }
+  Tier0_Msg("mirv_streams record pass reference 0|1 - Optional full scene reference (currently %d).\n",int(Tf2FullReference()));return;
+ }
+
  if (args->ArgC() == 2 && !_stricmp(args->ArgV(1), "stats")) {
   for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
    Tier0_Msg("%s: attempted %llu, captured %llu, failed %llu frames (GPU readbacks, before encoding).\n", Tf2RenderPassName(Tf2RenderPass(i)),
@@ -10572,13 +10606,15 @@ void CAfxStreams::Console_RecordPass(IWrpCommandArgs *args) {
   return;
  }
  if (args->ArgC() == 3) for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
-  if (!_stricmp(args->ArgV(1), Tf2RenderPassName(Tf2RenderPass(i))) &&
+  if ((!_stricmp(args->ArgV(1), Tf2RenderPassName(Tf2RenderPass(i))) || (i==0 && !_stricmp(args->ArgV(1),"world"))) &&
       (!std::strcmp(args->ArgV(2), "0") || !std::strcmp(args->ArgV(2), "1"))) {
    if (!SetTf2PassEnabled(Tf2RenderPass(i), !std::strcmp(args->ArgV(2), "1")))
     Tier0_Warning("Stop recording first; TF2 separate-pass hooks must be available.\n");
    return;
   }
- Tier0_Msg("mirv_streams record pass <world|players|viewmodel|hud|depth> 0|1 - Separate output using the screen profile.\n"
+ Tier0_Msg("mirv_streams record pass <base|players|viewmodel|hud|depth> 0|1 - Complementary outputs; world is an alias for base.\n"
+  "mirv_streams record pass reference 0|1 - Optional unchanged full-scene output.\n"
+  "mirv_streams record pass reset - Restore ordinary screen recording configuration.\n"
   "mirv_streams record pass stats - Show GPU frame readback counts for the current/last take.\n");
  for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
   Tier0_Msg("%s: %i\n", Tf2RenderPassName(Tf2RenderPass(i)), int(Tf2PassEnabled(Tf2RenderPass(i))));
@@ -10597,6 +10633,16 @@ bool SetPassBackground(unsigned color) {
  g_VEngineClient->ClientCmd_Unrestricted(command.c_str()); return true;
 }
 bool SeparatePassSupported() { return Tf2RenderPassSupported(); }
+bool SeparateConfigured(){return g_AfxStreams.Tf2SeparateConfigured();}
+bool FullReference(){return g_AfxStreams.Tf2FullReference();}
+bool SetFullReference(bool enabled){
+ if(IsActive() || !g_VEngineClient)return false;
+ g_VEngineClient->ClientCmd_Unrestricted(enabled?"mirv_streams record pass reference 1":"mirv_streams record pass reference 0");return true;
+}
+bool ResetSeparateOutputs(){
+ if(IsActive() || !g_VEngineClient)return false;
+ g_VEngineClient->ClientCmd_Unrestricted("mirv_streams record pass reset");return true;
+}
 bool PassEnabled(unsigned pass) { return g_AfxStreams.Tf2PassEnabled(Tf2RenderPass(pass)); }
 bool SetPassEnabled(unsigned pass, bool enabled) {
  if (pass >= unsigned(Tf2RenderPass::Count) || IsActive() || !g_VEngineClient) return false;

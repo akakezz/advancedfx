@@ -2977,19 +2977,29 @@ midpoint; the reported missing-motion case still needs its current XML to isolat
 
 ### Experimental TF2 separate recording passes
 
-The Recording tab's **Separate recording passes** section can enable world, players,
-viewmodel, HUD and depth outputs alongside normal screen recording. These use the
+The Recording tab's **Separate recording passes** section enables a complementary
+Base / world output plus selected Players, Viewmodel, HUD and Depth outputs.
+Selecting an isolate enables Base by default. Base contains the remaining scene;
+normal recording remains unchanged until separate outputs are configured.
+**Record full scene reference** optionally adds an untouched scene recording,
+disabled by default. Disable Base for isolate-only recording, or use
+**Reset separate outputs** to restore ordinary recording. These use the
 existing `mirv_streams` capture nodes, recording clock and selected screen profile.
 Choose an FFmpeg profile for video files; image-sequence profiles still write images.
 Each enabled pass writes inside its own named subfolder of the same take.
 
 ```text
-mirv_streams record pass world 1
+mirv_streams record pass base 1
 mirv_streams record pass players 1
 mirv_streams record pass viewmodel 1
 mirv_streams record pass hud 1
 mirv_streams record pass depth 1
 ```
+
+Use `mirv_streams record pass reference 0|1` for the optional reference, or
+`mirv_streams record pass reset` to restore ordinary recording. The legacy
+`world` name aliases `base`. Base files use the `base` subfolder; optional
+reference files use `reference`.
 
 Use `0` to disable an output. Configure passes before recording, then use the normal
 record start/stop controls. They initially share the screen recording profile,
@@ -2997,13 +3007,17 @@ including any sampler output FPS. Extra passes render extra views at the same de
 frame; they do not advance the demo for each output. Unsupported hooks or missing
 INTZ depth support reject recording rather than silently treating depth as color.
 
-The world pass omits players, weapons, cosmetics, ragdolls and gibs. The players
+Base omits players, weapons, cosmetics, ragdolls and gibs only when Players is
+selected. Likewise, it omits HUD or viewmodels only when their outputs are selected.
+Removed models submit no depth or stencil, so they cannot leave invisible
+silhouettes blocking particles or translucent map geometry. Depth is auxiliary
+and subtracts nothing. The players
 pass includes those models (including dropped/debris models and corpse-attached
 gear) and retains world depth occlusion. Viewmodels remain a separate pass;
 decals and ordinary props remain in the world pass. The render passes share the
 scene-cache class/model classification fallback. Player, viewmodel and HUD
 outputs default to chroma green. **Transparent isolated passes** enables embedded
-alpha for these three outputs; World, Depth and normal screen recording keep
+alpha for these three outputs; Base, Depth and full scene reference keep
 their existing format. **Isolated pass background**
 offers Green, Blue and Black; custom RGB is available using
 `mirv_streams record pass background <red 0..255> <green 0..255> <blue 0..255>`.
@@ -3040,11 +3054,11 @@ mirv_streams record pass alpha 1
 mirv_streams record screen settings afxFfmpegNvencColorAlpha
 ```
 
-World, Depth and normal RGB screen recording write only `color.mp4`. This preset
+Base, Depth and full scene reference write only `color.mp4`. This preset
 requires a GPU/driver supporting NVENC H.264 4:4:4 lossless encoding. Color uses
 NVENC; masks use single-threaded, lossless x264 ultrafast to avoid consuming a
-second GPU session for each isolate. All five passes plus screen recording now
-request six GPU sessions instead of nine. Older drivers can expose a lower limit;
+second GPU session for each isolate. All five passes request five GPU sessions;
+the optional full scene reference adds a sixth. Older drivers can expose a lower limit;
 update the driver or enable fewer outputs if session allocation still fails.
 It accelerates color encoding, while matte rendering/readbacks
 still have their existing cost. The split graph and frame/mask integrity have been

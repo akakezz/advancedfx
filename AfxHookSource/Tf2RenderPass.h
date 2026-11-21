@@ -3,7 +3,7 @@
 // The TF2 adapter feeds the existing CAfxStreams capture/output pipeline.
 enum class Tf2RenderPass { World, Players, Viewmodel, Hud, Depth, Count };
 inline const char *Tf2RenderPassName(Tf2RenderPass pass) {
- static const char *names[] = {"world", "players", "viewmodel", "hud", "depth"};
+ static const char *names[] = {"base", "players", "viewmodel", "hud", "depth"};
  return unsigned(pass) < unsigned(Tf2RenderPass::Count) ? names[unsigned(pass)] : "invalid";
 }
 inline bool Tf2RenderPassIsolated(Tf2RenderPass pass) {

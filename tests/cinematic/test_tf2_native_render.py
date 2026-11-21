@@ -132,20 +132,20 @@ int player,gear,vm,prop;
 int hiddenPlayer=0;int MirvPovSpectate_HiddenPlayer(){return hiddenPlayer;}
 void Mirv_Tf2_RenderGroups(std::map<const void*,unsigned>&groups,int hidden){groups={{&player,1u|(hidden?4u:0u)},{&gear,1u|(hidden?4u:0u)},{&vm,2},{&prop,0}};}
 #include "AfxHookSource/Tf2RenderPass.inl"
-std::map<Tf2RenderPass,std::vector<const void*>> visible,depthDraws;
+std::map<Tf2RenderPass,std::vector<const void*>> visible,depthDraws;std::map<Tf2RenderPass,int> hudByPass;
 int ordinaryFrames=0,renderCalls=0,hudWrites=0;
 void Model(void*,const void*,const void *p,void*){auto pointer=static_cast<const Tf2ModelInfoPrefix*>(p)->Renderable;auto pass=g_Tf2ActivePass;OnGpu([pointer,pass]{depthDraws[pass].push_back(pointer);if(mask)visible[pass].push_back(pointer);});}
 void Render(void *self,const void*,int clear,int draw){
  ++renderCalls;assert(clear==2);assert(draw&4);
  for(auto pointer:{&player,&gear,&vm,&prop}){Tf2ModelInfoPrefix info{};info.Renderable=pointer;Tf2PassDrawModel(self,nullptr,&info,nullptr);}
  Tf2PassSceneEnd(self);
- if(draw&2){OnGpu([]{assert(mask==0);});Tf2PassPaint(self,2);OnGpu([]{assert(mask==0);});}
+ if(draw&2){const bool base=g_Tf2ActivePass==Tf2RenderPass::World;OnGpu([base]{assert(mask==(base?15:0));});Tf2PassPaint(self,2);OnGpu([base]{assert(mask==(base?15:0));});}
 }
 void Frame(void*self,void*){++ordinaryFrames;assert(mask==15&&colorStack.empty());
- if(hiddenPlayer)for(auto pointer:{&player,&gear,&vm,&prop}){Tf2ModelInfoPrefix info{};info.Renderable=pointer;Tf2PassDrawModel(self,nullptr,&info,nullptr);}
+ for(auto pointer:{&player,&gear,&vm,&prop}){Tf2ModelInfoPrefix info{};info.Renderable=pointer;Tf2PassDrawModel(self,nullptr,&info,nullptr);}
 }
 void SceneEnd(void*){}
-void Paint(void*,int mode){assert(mode==2);OnGpu([]{assert(mask==15);++hudWrites;});}
+void Paint(void*,int mode){assert(mode==2);const auto pass=g_Tf2ActivePass;OnGpu([pass]{assert(mask==15);++hudWrites;++hudByPass[pass];});}
 bool PlayerView(void*,void *data){std::memset(data,0,200);auto&v=*static_cast<Tf2ViewProjectionPrefix*>(data);v.Near=3;v.Far=28000;return true;}
 int main(){
  void *clientSlots[60]={};clientSlots[26]=reinterpret_cast<void*>(Frame);clientSlots[27]=reinterpret_cast<void*>(Render);clientSlots[59]=reinterpret_cast<void*>(PlayerView);void **client=clientSlots;
@@ -157,7 +157,7 @@ int main(){
  assert(ordinaryFrames==1&&renderCalls==5&&hudWrites==1&&mask==15&&colorStack.empty());
  assert(g_AfxStreams.Begins.size()==5&&g_AfxStreams.Begins==g_AfxStreams.Ends);
  assert((visible[Tf2RenderPass::World]==std::vector<const void*>{&prop}));
- assert((depthDraws[Tf2RenderPass::World]==std::vector<const void*>{&player,&gear,&vm,&prop}));
+ assert((depthDraws[Tf2RenderPass::World]==std::vector<const void*>{&prop}));
  assert((depthDraws[Tf2RenderPass::Players]==std::vector<const void*>{&player,&gear,&vm,&prop}));
  assert((visible[Tf2RenderPass::Players]==std::vector<const void*>{&player,&gear}));
  assert((visible[Tf2RenderPass::Viewmodel]==std::vector<const void*>{&vm}));
@@ -166,12 +166,27 @@ int main(){
  globals.Count++;queued=true;visible.clear();Tf2PassRenderFrame(&client,rect);assert(!gpuQueue.empty());FlushGpu();assert(mask==15&&colorStack.empty()&&hudWrites==2);
  assert((visible[Tf2RenderPass::World]==std::vector<const void*>{&prop}));assert((visible[Tf2RenderPass::Players]==std::vector<const void*>{&player,&gear}));assert((visible[Tf2RenderPass::Viewmodel]==std::vector<const void*>{&vm}));
  globals.Count++;g_AfxStreams.Recording=false;Tf2PassRenderFrame(&client,rect);assert(ordinaryFrames==4&&renderCalls==10);
- hiddenPlayer=2;visible.clear();Tf2PassRenderFrame(&client,rect);FlushGpu();
+ hiddenPlayer=2;FlushGpu();visible.clear();Tf2PassRenderFrame(&client,rect);FlushGpu();
  assert((visible[Tf2RenderPass::Count]==std::vector<const void*>{&vm,&prop}));assert(g_Tf2RenderGroups.empty());
  hiddenPlayer=0;
  globals.Count++;g_AfxStreams.Recording=true;g_AfxStreams.Alpha=true;g_AfxStreams.Samples.clear();int calls=renderCalls;
  Tf2PassRenderFrame(&client,rect);FlushGpu();assert(renderCalls==calls+5);
  assert((g_AfxStreams.Samples==std::vector<int>{-1,0,0,0,-1}));assert(mask==15&&colorStack.empty());
+ // Every subset produces the complement in Base, including native HUD paint.
+ for(bool deferred:{false,true})for(unsigned selected=0;selected<16;++selected){
+  queued=deferred;g_AfxStreams.Alpha=false;g_AfxStreams.Enabled[0]=true;
+  for(unsigned i=1;i<5;++i)g_AfxStreams.Enabled[i]=bool(selected&(1<<(i-1)));
+  visible.clear();depthDraws.clear();hudByPass.clear();++globals.Count;
+  Tf2PassRenderFrame(&client,rect);FlushGpu();
+  std::vector<const void*> expected;
+  if(!(selected&1)){expected.push_back(&player);expected.push_back(&gear);}
+  if(!(selected&2))expected.push_back(&vm);expected.push_back(&prop);
+  assert(visible[Tf2RenderPass::World]==expected);
+  assert(depthDraws[Tf2RenderPass::World]==expected); // No invisible-player z silhouettes.
+  assert(hudByPass[Tf2RenderPass::World]==((selected&4)?0:1));
+  assert((visible[Tf2RenderPass::Count]==std::vector<const void*>{&player,&gear,&vm,&prop})); // Beauty unchanged.
+  assert(mask==15&&colorStack.empty());
+ }
  std::cout<<"TF2 normal-frame pass dispatch, isolation and state restoration checks passed\n";
 }
 '''
@@ -243,11 +258,11 @@ capture=r'''
 #include <vector>
 #include <cmath>
 #include "AfxHookSource/Tf2RenderPass.h"
-using DWORD=unsigned;constexpr unsigned D3DCLEAR_TARGET=1,D3DCLEAR_ZBUFFER=2,D3DCLEAR_STENCIL=4;constexpr unsigned D3DFMT_D24S8=75;constexpr bool FALSE=false;
+using DWORD=unsigned;constexpr unsigned D3DCLEAR_TARGET=1,D3DCLEAR_ZBUFFER=2,D3DCLEAR_STENCIL=4;constexpr unsigned D3DFMT_D24S8=75,D3DFMT_D24FS8=83,D3DFMT_D15S1=73;constexpr bool FALSE=false;
 #define SUCCEEDED(x) ((x)>=0)
 #define FAILED(x) ((x)<0)
 struct D3DVIEWPORT9{unsigned X=0,Y=0,Width=1280,Height=720;float MinZ=0,MaxZ=1;};
-struct D3DSURFACE_DESC{unsigned Width=1280,Height=720,MultiSampleType=0,MultiSampleQuality=0;};
+struct D3DSURFACE_DESC{unsigned Width=1280,Height=720,MultiSampleType=0,MultiSampleQuality=0,Format=D3DFMT_D24S8;};
 struct Surface{unsigned Samples;int GetDesc(D3DSURFACE_DESC*d){d->MultiSampleType=Samples;return 0;}int Refs=0;unsigned Pixels=0;void AddRef(){++Refs;}void Release(){assert(Refs>0);--Refs;}};Surface original{4},msaa{4},single{0},intz{0},other{8},white{4},playerDepth{4};
 using IDirect3DSurface9=Surface;
 Surface *color=&original,*depth=&original,*trackedColor=&original,*trackedDepth=&original;

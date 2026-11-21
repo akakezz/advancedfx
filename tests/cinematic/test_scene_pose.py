@@ -1160,6 +1160,17 @@ for(int entity:{5,2050})for(int mode=0;mode<4;++mode){
   const auto oldLocal=g_CameraRigs.at(g_CameraRigName).Rig.Pose;const auto undoCount=g_CameraUndo.size();const auto oldTarget=targets[entity];targets.erase(entity);captureEntry();assert(g_CameraRigs.at(g_CameraRigName).Rig.Pose.Position[0]==oldLocal.Position[0]&&g_CameraUndo.size()==undoCount);targets[entity]=oldTarget;command({"mirv_cam","attach","clear"});assert(!g_CameraRigs.at(g_CameraRigName).Rig.Attached&&!g_MirvCam.Source_get());
  }
 }
+// Saved-camera evaluation must not bypass an independent orbit channel.
+ {const auto oldTarget=targets[5];const auto oldUser=playerUsers[5];const auto oldConfig=fixtureFollowSettings;
+ targets[5]={};playerUsers[5]=6;fixtureFollowSettings={};cached=false;rigInput.Enabled=false;MirvCam_EnableSequence(false);
+ command({"mirv_cam","attach","5","-1","0","0","0"});const auto name=g_CameraRigName;auto &camera=g_CameraRigs.at(name);const auto id=camera.Id;
+ camera.AttachMode=1;camera.Target->Mode=1;camera.Rig.Pose={};camera.Rig.Pose.Position[0]=-100;
+ auto settings=camera.Rig.Motion;settings.FollowHalfLife=settings.BoneHalfLife=0;settings.RotationHalfLife=.2;assert(MirvCam_EditMotion(id,settings));
+ command({"mirv_cam","preview",name.c_str()});assert(MirvCam_EvaluateRig(1000,pose)&&!g_RigUnavailable);
+ targets[5].Position[0]=20;targets[5].Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,90,0}));
+ assert(MirvCam_EvaluateRig(1000.1,pose)&&!g_RigUnavailable);const auto yaw=pose.Rotation.ToQREulerAngles().ToQEulerAngles().Yaw;
+ assert(camera.Follow.Valid&&camera.Follow.FollowPosition[0]==20&&yaw>0&&yaw<90);
+ assert(MirvCam_CameraAction("remove",id));targets[5]=oldTarget;playerUsers[5]=oldUser;fixtureFollowSettings=oldConfig;}
 assert(legacyCaptureCalls==0);
 advancedfx::CameraPose blendFrom,blendTo,blended;blendFrom.Position[0]=10;blendTo.Position[0]=110;blendFrom.Fov=60;blendTo.Fov=120;
 blendFrom.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,179,0}));blendTo.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,-179,0}));

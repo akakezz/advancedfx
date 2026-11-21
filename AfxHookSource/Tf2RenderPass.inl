@@ -72,9 +72,11 @@ void __fastcall Tf2PassDrawModel(void *self,
  if (group & 4) return; // Native in-eye target/gear, including ordinary screen rendering.
  bool draw = true;
  if (g_Tf2ActivePass == Tf2RenderPass::World || isolate) {
-  draw = g_Tf2ActivePass == Tf2RenderPass::World ? !(group & 3) :
+  draw = g_Tf2ActivePass == Tf2RenderPass::World ? !((group & 1 && g_AfxStreams.Tf2PassRecording(Tf2RenderPass::Players)) || (group & 2 && g_AfxStreams.Tf2PassRecording(Tf2RenderPass::Viewmodel))) :
    g_Tf2ActivePass == Tf2RenderPass::Players ? bool(group & 1) : bool(group & 2);
  }
+ // Base reveals the background: excluded objects must write neither color nor depth.
+ if(g_Tf2ActivePass==Tf2RenderPass::World && !draw)return;
  const bool holdout=g_Tf2ActivePass==Tf2RenderPass::Players;
  if(holdout)Tf2PassColor(draw?7:8);
  // Excluded geometry still contributes native depth/stencil occlusion.
@@ -161,7 +163,12 @@ void __fastcall Tf2PassRenderFrame(void *self,
    g_AfxStreams.EngineThread_PassBegin(pass, matte ? 0 : -1);
    if (pass != Tf2RenderPass::World) Tf2PassColor(0);
    // Retain the capture target matte; world depth occludes isolated models.
-   render(2, (pass == Tf2RenderPass::Hud ? 2 : pass == Tf2RenderPass::Viewmodel ? 1 : 0) | 4);
+   int drawFlags=pass==Tf2RenderPass::Hud?2:pass==Tf2RenderPass::Viewmodel?1:0;
+   if(pass==Tf2RenderPass::World){
+    if(!g_AfxStreams.Tf2PassRecording(Tf2RenderPass::Viewmodel))drawFlags|=1;
+    if(!g_AfxStreams.Tf2PassRecording(Tf2RenderPass::Hud))drawFlags|=2;
+   }
+   render(2,drawFlags|4);
    if (pass != Tf2RenderPass::World) Tf2PassColor(3);
    g_AfxStreams.EngineThread_PassEnd(pass, projection.Near, projection.Far);
    g_Tf2ActivePass = Tf2RenderPass::Count;
@@ -193,6 +200,9 @@ void __fastcall Tf2PassPaint(void *self,
 #endif
  int mode)
 {
+ if(g_Tf2ActivePass==Tf2RenderPass::World && g_AfxStreams.Tf2PassRecording(Tf2RenderPass::Hud)){
+  mode &= ~(1<<1);if(!mode)return;
+ }
  // PAINT_INGAMEPANELS=(1<<1). Tools pre/post callbacks do not bracket game HUD paint.
  const bool hud = g_Tf2ActivePass == Tf2RenderPass::Hud && (mode & (1 << 1));
  if (hud) Tf2PassColor(4);

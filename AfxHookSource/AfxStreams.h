@@ -3492,7 +3492,7 @@ public:
 	bool SetRecordScreenSettings(const char *name);
 	bool GetRecordScreenEnabled() const
 	{
-		return m_RecordScreen && m_RecordScreen->Enabled;
+		return m_RecordScreen && (m_Tf2SeparateConfigured ? m_Tf2FullReference.load() : m_RecordScreen->Enabled);
 	}
 	bool IsRecording() {
 		return m_Recording;
@@ -3542,6 +3542,10 @@ public:
  bool SetTf2PassAlpha(bool value) { if (m_Recording) return false; m_Tf2PassAlpha = value; return true; }
  unsigned Tf2PassBackground() const { return m_Tf2PassBackground.load(); }
  bool SetTf2PassBackground(unsigned color) { if (m_Recording) return false; m_Tf2PassBackground = 0xff000000u | color; return true; }
+ bool Tf2SeparateConfigured() const {return m_Tf2SeparateConfigured.load();}
+ bool Tf2FullReference() const {return m_Tf2FullReference.load();}
+ bool SetTf2FullReference(bool enabled);
+ bool ResetTf2Outputs();
  bool Tf2PassEnabled(Tf2RenderPass pass) const;
  bool SetTf2PassEnabled(Tf2RenderPass pass, bool enabled);
  bool Tf2PassRecording(Tf2RenderPass pass) const;
@@ -3873,6 +3877,7 @@ private:
  class CCaptureNode* m_DrawingCaptureNode = nullptr;
  std::atomic<unsigned> m_Tf2PassBackground{0xff00ff00u}; // Chroma green; isolated passes only.
  std::atomic<bool> m_Tf2PassAlpha{false};
+ std::atomic<bool> m_Tf2SeparateConfigured{false}, m_Tf2FullReference{false};
  std::atomic<bool> m_Tf2PassEnabled[unsigned(Tf2RenderPass::Count)] = {};
  CCaptureNode *m_Tf2PassNodes[unsigned(Tf2RenderPass::Count)] = {};
  bool m_Tf2PassMatte[unsigned(Tf2RenderPass::Count)] = {};

@@ -43,6 +43,31 @@ int main(){
    assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,i/60.,x,y,z,root,a));if(i>120)peak=std::max(peak,std::abs(double(a[1])));}
   assert(peak<2);std::cout<<"Damped orbit framing peak yaw "<<peak<<" degrees\n";
  }
+ // Roll uses the same existing angular damping in either framing mode.
+ for(bool preserve:{false,true}){
+  MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.PreserveFraming=preserve;c.FollowHalfLife=.5;c.OrbitHalfLife=.15;double peak=0;
+  for(int i=0;i<240;++i){double root[3]={},pivot[3]={0,0,64};float x=-100,y=0,z=64,a[3]={0,0,i%2?10.f:-10.f};
+   assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,i/60.,x,y,z,root,a));if(i>120)peak=std::max(peak,std::abs(double(a[2])));}
+  assert(peak<1);
+ }
+ // Zero orbit half-life must still respect the enabled turn-rate cap.
+ for(bool preserve:{false,true}){
+  MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;c.OrbitHalfLife=0;c.OrbitSpeed=90;c.PreserveFraming=preserve;
+  double root[3]={},pivot[3]={0,0,64};float x=-100,y=0,z=64,a[3]={};
+  assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,0,x,y,z,root,a));
+  x=0;y=-100;z=64;a[1]=90;const double dt=.33/60;
+  assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,dt,x,y,z,root,a));assert(std::abs(a[1])<=90*dt+.001);
+ }
+ // Legacy defaults do not enable a rotation-only controller accidentally.
+ {MirvCameraAttachedState h;MirvCameraCollisionSettings c;double pivot[3]={};float x=-100,y=0,z=0,a[3]={};assert(!MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,0,x,y,z,pivot,a));}
+ // An explicitly independent rotation channel works without root-position lag.
+ {MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=0;c.IndependentOrbit=true;c.OrbitHalfLife=.2;c.OrbitSpeed=0;c.PreserveFraming=true;
+  double root[3]={},pivot[3]={0,0,64};float x=-100,y=0,z=64,a[3]={};
+  assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,0,x,y,z,root,a));
+  root[0]=pivot[0]=20;x=20;y=-100;z=64;a[1]=90;
+  assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,.1,x,y,z,root,a));
+  assert(h.FollowPosition[0]==20 && a[1]>0 && a[1]<90);
+ }
  // An explicit aim owner must not get positional corrections from a raw bone-view cone.
  {auto sample=[](bool preserve){MirvCameraAttachedState h;MirvCameraCollisionSettings c;c.FollowHalfLife=.5;c.PreserveFraming=preserve;c.AimOwnsAngles=true;float y=0;
  for(int i=0;i<2;++i){double root[3]={0,i?200.:0.,0},pivot[3]={0,root[1],64};float x=-100,z=64,a[3]={};y=float(root[1]);assert(MirvCameraAttachedEvaluate(h,c,1,(void*)1,(void*)2,pivot,i*.1,x,y,z,root,a));}return y;};

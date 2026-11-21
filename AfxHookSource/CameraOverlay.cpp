@@ -1098,6 +1098,7 @@ bool Toggle()
 	}
 	else
 	{
+		if(SeparatePassSupported() && !SeparateConfigured() && !ScreenEnabled())g_VEngineClient->ClientCmd_Unrestricted("mirv_streams record screen enabled 1");
 		const double fps = std::strtod(g_RecordFps, nullptr);
 		const double rate = std::isfinite(fps) && fps >= 1 && fps <= 10000 ? fps : 60.0;
 		char command[256];
@@ -7692,6 +7693,7 @@ static void DrawCamerasTab()
 			motionDirty |= ImGui::Checkbox("Preserve subject framing", &motion.PreserveFraming);
 			ImGui::EndDisabled();
 			motionDirty |= ImGui::InputDouble("Follow half-life (s)", &motion.FollowHalfLife, 0, 0, "%.3f");
+   if(ImGui::IsItemHovered())ImGui::SetTooltip("Smooths entity root translation. Bone and orbit half-lives control the other motion channels; zero keeps that channel rigid.");
 			motionDirty |=
 				ImGui::InputDouble("Follow bone half-life (s)", &motion.BoneHalfLife, 0, 0, "%.3f");
 			motionDirty |=
@@ -8723,8 +8725,11 @@ void Draw()
      if (!editable) ImGui::BeginDisabled();
      for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) {
       bool enabled = Recording::PassEnabled(i);
-      if (ImGui::Checkbox(Tf2RenderPassName(Tf2RenderPass(i)), &enabled)) Recording::SetPassEnabled(i, enabled);
+      if (ImGui::Checkbox(i==0?"Base / world":Tf2RenderPassName(Tf2RenderPass(i)), &enabled)) Recording::SetPassEnabled(i, enabled);
      }
+     bool reference=Recording::FullReference();
+     if(ImGui::Checkbox("Record full scene reference",&reference))Recording::SetFullReference(reference);
+     if(ImGui::SmallButton("Reset separate outputs"))Recording::ResetSeparateOutputs();
      bool alpha = Recording::PassAlpha();
      if (ImGui::Checkbox("Transparent isolated passes", &alpha)) Recording::SetPassAlpha(alpha);
      if (alpha) ImGui::TextWrapped("Alpha replays isolated draws into a second target; the world renders once. Choose an alpha-capable profile below, such as afxFfmpegProresAlpha; other codecs may discard transparency.");
@@ -8740,12 +8745,12 @@ void Draw()
      }
      if (alpha) ImGui::EndDisabled();
      if (!editable) ImGui::EndDisabled();
-     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use alpha when enabled, otherwise the selected chroma background; depth is logarithmic grayscale (0-4096 units). Extra passes increase render cost. Model isolates cannot fully reconstruct refractive cloak or interleaved particles; retain normal screen recording as a beauty reference.");
+     ImGui::TextWrapped("Base/world contains everything not separated into Players, Viewmodel or HUD. Depth is additional data. The optional full-scene reference preserves the original shot. Outputs share the profile below; isolates use alpha or the chosen chroma background. Refraction and interleaved effects still have compositing limits.");
      if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("TF2 render-pass hooks are unavailable.");
     }
     // Record screen settings
 				bool screenEnabled = Recording::ScreenEnabled();
-				if (ImGui::Checkbox("Record screen enabled", &screenEnabled))
+				if (!Recording::SeparatePassSupported() && ImGui::Checkbox("Record screen enabled", &screenEnabled))
 				{
 					Afx_ExecClientCmd(screenEnabled ? "mirv_streams record screen enabled 1"
 													: "mirv_streams record screen enabled 0");

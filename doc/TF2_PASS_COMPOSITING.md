@@ -2,15 +2,18 @@
 
 The current World/Players/Viewmodel/HUD outputs are object isolates. They are not
 an exact decomposition of every TF2 frame into interchangeable RGBA layers.
-Normal screen recording is the existing beauty/reference output and should remain
-enabled when checking reconstruction.
+The optional full-scene reference is useful when checking reconstruction. Base
+contains the scene with only selected isolates removed; it is enabled by default
+when separate outputs are configured. Ordinary recording remains unchanged until
+then. Depth is auxiliary.
 
 ## Defects addressed in the current update
 
-- Excluded model geometry keeps its native depth/stencil draws with color writes
-  disabled. Dropping the draw entirely removed occluders: a prop excluded from
-  Players could no longer hide a cosmetic behind it. World also retains player
-  depth for native particle occlusion. Material depth-writing rules remain native;
+- In foreground isolates, excluded model geometry keeps its native depth/stencil
+  draws with color writes disabled. Dropping the draw entirely removed occluders: a prop excluded from
+  Players could no longer hide a cosmetic behind it. Base instead drops separated model draws entirely, including depth/stencil.
+  This prevents invisible player silhouettes from blocking particles and
+  translucent map geometry, including TF2C spawn fences. Material depth-writing rules remain native;
   translucent surfaces are not forced into opaque depth occluders. This restores
   missing depth submissions. Players now also uses a matching D24S8 target and
   visible-fragment stencil tags: selected models mark coverage, while later opaque

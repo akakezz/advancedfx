@@ -906,6 +906,7 @@ MirvCameraCollisionSettings RigFollowSettings(const advancedfx::CameraMotion &mo
 	settings.BonePositionLimit = motion.BonePositionLimit;
 	settings.BoneRotationLimit = motion.BoneRotationLimit;
 	settings.OrbitHalfLife = motion.RotationHalfLife;
+ settings.IndependentOrbit=motion.RotationHalfLife>0;
 	settings.OrbitSpeed = motion.TurnRate;
 	settings.FollowMaxDistance = motion.MaxDistance > 0 ? motion.MaxDistance : 1e6;
 	settings.FollowTeleportDistance = motion.TeleportDistance;
@@ -939,7 +940,7 @@ bool RigFollowStep(NamedCameraRig &rig, MirvCameraAttachedState &state, double t
 			: 16.0 / 9;
 	if (!rig.HasBoneReference)
 		CaptureBoneReference(rig, target, pivot, root, rootAngles);
-	if (motion.FollowHalfLife == 0 && motion.BoneHalfLife == 0 && !boneControls && !settings.Attached)
+	if (motion.FollowHalfLife == 0 && motion.BoneHalfLife == 0 && motion.RotationHalfLife == 0 && !boneControls && !settings.Attached)
 		return true;
 	float x = float(pose.Position[0]), y = float(pose.Position[1]), z = float(pose.Position[2]);
 	const auto rotation = pose.Rotation.ToQREulerAngles().ToQEulerAngles();
@@ -973,7 +974,7 @@ bool EvaluateAttachedRig(NamedCameraRig &rig, double time, advancedfx::CameraPos
 	if (!CameraAttachmentTarget(rig, time, target, pivot, root, rootAngles))
 		return false;
 	const auto &settings = rig.Rig.Motion;
-	if (settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 && !settings.NeedsBoneControl() &&
+	if (settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 && settings.RotationHalfLife == 0 && !settings.NeedsBoneControl() &&
 		(!rig.Rig.CollisionOverride.value_or(MirvCameraCollisionGet()).Attached || g_BakingCamera ||
 		 AfxHookSource::CameraOverlay::SceneCachePreviewActive() || MirvCam_SequencePreviewActive()))
     {
@@ -1794,7 +1795,7 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 		auto &camera = entry.second;
 		const bool warmFollow =
 			camera.Rig.Attached &&
-			(camera.Rig.Motion.FollowHalfLife > 0 || camera.Rig.Motion.BoneHalfLife > 0) &&
+			(camera.Rig.Motion.FollowHalfLife > 0 || camera.Rig.Motion.BoneHalfLife > 0 || camera.Rig.Motion.RotationHalfLife > 0) &&
 			!g_InspectingSequence && !AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
 			(!camera.Follow.Valid || camera.Follow.Time != clientTime);
 		if (warmFollow ||

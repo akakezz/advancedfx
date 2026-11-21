@@ -94,3 +94,22 @@ then release the obstruction and compare return half-life/speed. Repeat with aim
 position/FOV modifiers and a second camera using different override settings. If a
 camera becomes stuck again, capture its `collision status` output before creating
 another camera, including whether the demo was paused or being scrubbed.
+
+## Follow-only jitter investigation
+
+The supplied slowed video uses follow half-life about 0.5, other controls at
+defaults, with aiming and collision disabled. Those systems cannot explain this
+reproduction. Follow half-life filters entity-root translation; zero bone and
+orbit half-lives intentionally leave those channels rigid. The video alone does
+not establish whether bone or orbit motion is the remaining source.
+
+The existing controller now honors the turn-rate cap even with zero orbit
+half-life while following, evaluates explicitly configured rotation-only smoothing,
+and filters roll consistently with preserve-framing. Legacy inactive defaults
+remain inactive. New applications of Soft follow also set orbit half-life 0.15.
+For a live comparison on the same camera, keep follow at 0.5 and try bone 0.08
+and orbit 0.15. Existing authored zero values are not silently changed.
+
+Regression fixtures cover rate caps at slowed playback cadence, both framing
+modes, rotation-only saved-camera evaluation and alternating bone roll. These
+are controller tests, not proof that all live-demo jitter has been eliminated.

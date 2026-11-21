@@ -6406,7 +6406,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
  if(!CameraCollisionFrustumSettings(inputSettings,settings)){history.Valid=false;return false;}
 
 	if (!identity || !entity ||
-		(!settings.Attached && settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 &&
+		(!settings.Attached && settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 && !(settings.IndependentOrbit && settings.OrbitHalfLife>0) &&
 		 settings.BonePositionInfluence == 1 && settings.BoneRotationInfluence == 1 &&
 		 settings.BonePositionLimit == 0 && settings.BoneRotationLimit == 0) ||
 		!std::isfinite(sceneTime))
@@ -6439,7 +6439,8 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 	const double dt = continuous ? sceneTime - history.Time : 0;
 	const bool following = settings.FollowHalfLife > 1e-6;
 	const bool shotContinuous = continuous && (history.FollowHalfLife > 1e-6) == following;
-	const double orbitAlpha = following && settings.OrbitHalfLife > 1e-6
+ const bool orbitFiltering=following || (settings.IndependentOrbit && settings.OrbitHalfLife>1e-6);
+	const double orbitAlpha = orbitFiltering && settings.OrbitHalfLife > 1e-6
 								  ? -std::expm1(-std::log(2.0) * dt / settings.OrbitHalfLife)
 								  : 1;
 	if (!shotContinuous)
@@ -6470,6 +6471,11 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 			to = -1.0 * to;
 		return from.Slerp(to, alpha).Normalized();
 	};
+ auto rollStep=[&](double from,double goal){
+  double change=std::remainder(goal-from,360.)*orbitAlpha;
+  if(orbitFiltering && settings.OrbitSpeed>0)change=std::clamp(change,-settings.OrbitSpeed*dt,settings.OrbitSpeed*dt);
+  return from+change;
+ };
 	auto rotate = [](const Quaternion &q, const double v[3], double out[3])
 	{
 		const auto r = q * Quaternion(0, v[0], v[1], v[2]) * q.Conjugate();
@@ -6581,7 +6587,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 		if (std::hypot(rawOffset[0], rawOffset[1]) > 1e-6)
 			history.OrbitYaw = std::atan2(rawOffset[1], rawOffset[0]) * 57.29577951308232;
 		auto target = directionFrame(rawOffset, history.OrbitYaw);
-		if (!shotContinuous || history.OrbitLength < 1e-6 || orbitAlpha == 1)
+		if (!shotContinuous || history.OrbitLength < 1e-6 || (orbitAlpha == 1 && (!orbitFiltering || settings.OrbitSpeed<=0)))
 			history.Orbit = target;
 		else
 		{
@@ -6657,13 +6663,13 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 	}
  // Preserve composition in the filtered boom frame, rather than rotating back to
  // the raw bone every frame and cancelling orbit damping.
- if(settings.PreserveFraming && !settings.AimOwnsAngles && angles && following && rawLength>1e-3){
+ if(settings.PreserveFraming && !settings.AimOwnsAngles && angles && orbitFiltering && rawLength>1e-3){
   const auto rawFrame=directionFrame(rawOffset,history.OrbitYaw);
   const auto authored=Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({angles[0],angles[1],angles[2]}));
   const auto view=(history.Orbit*rawFrame.Conjugate()*authored).Normalized();
   const auto reference=shotContinuous && history.HasAngles ? QEulerAngles(history.DisplayAngles[0],history.DisplayAngles[1],history.DisplayAngles[2]) : QEulerAngles(angles[0],angles[1],angles[2]);
   const auto e=NearestEquivalentEuler(view.ToQREulerAngles().ToQEulerAngles(),reference);
-  angles[0]=float(e.Pitch);angles[1]=float(e.Yaw);angles[2]=float(e.Roll);
+  angles[0]=float(e.Pitch);angles[1]=float(e.Yaw);angles[2]=float(shotContinuous && history.HasAngles?rollStep(history.DisplayAngles[2],e.Roll):e.Roll);
  }
 	if (settings.PreserveFraming && !settings.AimOwnsAngles && angles && rawLength > 1e-3)
 	{
@@ -7027,8 +7033,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 			const bool previous = shotContinuous && history.HasAngles && history.CompositionValid;
 			history.Composition = previous ? blend(history.Composition, target, orbitAlpha) : target;
 			const float roll =
-				previous ? float(history.DisplayAngles[2] +
-								 std::remainder(angles[2] - history.DisplayAngles[2], 360.0) * orbitAlpha)
+				previous ? float(rollStep(history.DisplayAngles[2],angles[2]))
 						 : angles[2];
 			if (previous)
 				std::copy(history.DisplayAngles, history.DisplayAngles + 3, angles);
@@ -7047,7 +7052,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 			if (distance2 > 1)
 				MirvCameraAttachedReframe(reference, candidate, targetPoint, angles);
 		}
-		else if (following && shotContinuous && history.HasAngles)
+		else if (orbitFiltering && shotContinuous && history.HasAngles)
 		{
 			// At zero boom length the target direction is undefined. Smooth the
 			// authored view directly instead of solving a coincident look-at.
@@ -7058,7 +7063,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
 			Vector3 axis;
 			const double angle = std::abs(history.View.GetAng(target, axis));
 			const double alpha =
-				orbitAlpha < 1 && settings.OrbitSpeed > 0 && angle > 1e-9
+				orbitFiltering && settings.OrbitSpeed > 0 && angle > 1e-9
 					? (std::min)(orbitAlpha, settings.OrbitSpeed / 57.29577951308232 * dt / angle)
 					: orbitAlpha;
 			const auto value = NearestEquivalentEuler(

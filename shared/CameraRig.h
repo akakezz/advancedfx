@@ -49,6 +49,7 @@ struct CameraMotion
 		else if (name == "soft-follow")
 		{
 			value.FollowHalfLife = .15;
+            value.RotationHalfLife = .15;
 			value.BoneHalfLife = .05;
 			value.BonePositionInfluence = .5;
 			value.BoneRotationInfluence = .5;
