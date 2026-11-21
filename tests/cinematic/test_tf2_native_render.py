@@ -267,6 +267,7 @@ Device*AfxGetDirect3DDevice9(){return &device;}
 std::vector<Surface*>targetStack,depthStack;
 void AfxD3d9PushDepthStencilEx(Surface*s){depthStack.push_back(trackedDepth);trackedDepth=s;}
 void AfxD3d9PopDepthStencil(){trackedDepth=depthStack.back();depthStack.pop_back();}
+void AfxD3D9SetPlayerHoldoutEnabled(bool){}
 bool AfxD3D9ClearPlayerHoldout(unsigned){return true;}
 void AfxD3d9PushRenderTargetEx(Surface*s){targetStack.push_back(trackedColor);trackedColor=s;}
 void AfxD3d9PopRenderTarget(bool){trackedColor=targetStack.back();targetStack.pop_back();}

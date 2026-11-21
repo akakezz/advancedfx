@@ -271,6 +271,14 @@ COutFFMPEGVideoStreamImpl::COutFFMPEGVideoStreamImpl(const CImageFormat& imageFo
 
 		ReplaceAllW(myFFMPEGOptions, replacements);
 
+  // Preserve per-output diagnostics: concurrent FFmpeg stderr otherwise interleaves.
+  const std::wstring logPath=myPath+L"\\ffmpeg.log";
+  WideStringToUTF8String(logPath.c_str(),m_EncoderLogPath);
+  m_EncoderLog=CreateFileW(logPath.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+  std::string commandUtf8;
+  if(WideStringToUTF8String(myFFMPEGOptions.c_str(),commandUtf8)){
+   commandUtf8="Command: "+commandUtf8+"\r\n";WriteEncoderLog(commandUtf8.data(),DWORD(commandUtf8.size()));
+  }
 		std::wstring commandLine(myFFMPEGOptions.append(L"\0"));
 
 		STARTUPINFOW startupInfo;
@@ -427,6 +435,10 @@ COutFFMPEGVideoStreamImpl::COutFFMPEGVideoStreamImpl(const CImageFormat& imageFo
 	else m_Okay = FALSE;
 }
 
+void COutFFMPEGVideoStreamImpl::WriteEncoderLog(const char *data, DWORD bytes) {
+ if(m_EncoderLog!=INVALID_HANDLE_VALUE){DWORD written=0;WriteFile(m_EncoderLog,data,bytes,&written,nullptr);}
+}
+
 void COutFFMPEGVideoStreamImpl::Close()
 {
 	if (INVALID_HANDLE_VALUE != m_hChildStd_IN_Wr)
@@ -445,11 +457,22 @@ void COutFFMPEGVideoStreamImpl::Close()
 			advancedfx::Warning("AFXERROR: COutFFMPEGVideoStream::Close.\n");
 		}
 
+  if(waitCode==WAIT_OBJECT_0){
+   HandleOutAndErr(0); // Drain diagnostics emitted just before process exit.
+   DWORD exitCode=0;
+   if(GetExitCodeProcess(m_ProcessInfo.hProcess,&exitCode)){
+    const std::string result="\r\nFFmpeg exit code: "+std::to_string(exitCode)+"\r\n";
+    WriteEncoderLog(result.data(),DWORD(result.size()));
+    if(exitCode)advancedfx::Warning("FFmpeg failed (exit %lu); see %s\n",exitCode,m_EncoderLogPath.c_str());
+   }
+  }
 		CloseHandle(m_ProcessInfo.hProcess);
 		CloseHandle(m_ProcessInfo.hThread);
 
 		m_Okay = FALSE;
 	}
+
+ if(m_EncoderLog!=INVALID_HANDLE_VALUE){CloseHandle(m_EncoderLog);m_EncoderLog=INVALID_HANDLE_VALUE;}
 
 	if (INVALID_HANDLE_VALUE != m_hChildStd_IN_Rd)
 	{
@@ -596,6 +619,7 @@ bool COutFFMPEGVideoStreamImpl::HandleOutAndErr(DWORD processWaitTimeOut)
 			if (ReadFile(m_hChildStd_ERR_Rd, chBuf, min(bytesAvail, 250), &dwBytesRead, NULL))
 			{
 				chBuf[dwBytesRead] = 0;
+    WriteEncoderLog(chBuf,dwBytesRead);
 				advancedfx::Warning("%s", chBuf);
 				bytesAvail -= dwBytesRead;
 			}

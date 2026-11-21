@@ -3041,12 +3041,24 @@ mirv_streams record screen settings afxFfmpegNvencColorAlpha
 ```
 
 World, Depth and normal RGB screen recording write only `color.mp4`. This preset
-requires a GPU/driver supporting NVENC H.264 4:4:4 lossless encoding. Each alpha
-isolate uses two encoder sessions; enable fewer outputs if the GPU's concurrent
-session limit is reached. It accelerates encoding, while matte rendering/readbacks
+requires a GPU/driver supporting NVENC H.264 4:4:4 lossless encoding. Color uses
+NVENC; masks use single-threaded, lossless x264 ultrafast to avoid consuming a
+second GPU session for each isolate. All five passes plus screen recording now
+request six GPU sessions instead of nine. Older drivers can expose a lower limit;
+update the driver or enable fewer outputs if session allocation still fails.
+It accelerates color encoding, while matte rendering/readbacks
 still have their existing cost. The split graph and frame/mask integrity have been
 tested with a CPU encoder substitute; hardware performance needs in-game testing.
 Duplicating this preset preserves its separate RGB-only options in the editor.
+Existing custom copies retain their own options and must be edited or copied again
+to pick up this change. The built-in name uses the new settings after restarting.
+
+Each FFmpeg output folder now contains `ffmpeg.log`, including the expanded
+command, encoder stderr and exit code. Nonzero exits point to that output's log
+in the console, so failures across simultaneous passes can be distinguished.
+`OpenEncodeSessionEx failed: incompatible client key (21)` with multiple outputs
+indicates an NVENC session-allocation failure; the subsequent AFX image-write
+errors are a consequence of the encoder exiting.
 
 `alpha 0` restores chroma backgrounds. The option cannot change during a take.
 Matte reconstruction assumes ordinary alpha compositing; additive/refractive

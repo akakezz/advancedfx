@@ -51,10 +51,16 @@ for token in options:
     else:
         groups[-1].append(json.loads(token))
 split, rgb = (''.join(group) for group in groups[-2:])
+# All five passes plus beauty: three alpha isolates + World/Depth/screen = six,
+# instead of nine NVENC sessions. The mask must remain explicitly lossless.
+assert split.count('-c:v h264_nvenc') == 1 and rgb.count('-c:v h264_nvenc') == 1
+assert '-c:v libx264 -preset ultrafast -qp 0 -threads 1' in split
+assert '-filter_complex_threads 1' in split
+assert 3 * split.count('-c:v h264_nvenc') + 3 * rgb.count('-c:v h264_nvenc') == 6
 def cpu_options(options, folder):
     options = options.replace('{QUOTE}', '"').replace('{AFX_STREAM_PATH}\\', str(folder) + '/')
     # Encoding is the only substitution: filters, pixel formats and maps are production values.
-    return shlex.split(options.replace('h264_nvenc -preset p4 -tune lossless -profile:v high444p', 'libx264 -preset ultrafast -qp 0 -profile:v high444'))
+    return shlex.split(options.replace('h264_nvenc -preset p4 -tune lossless -profile:v high444p', 'libx264 -preset ultrafast -qp 0 -threads 1 -profile:v high444'))
 frames, width, height = 6, 32, 16
 data = bytes(channel for t in range(frames) for y in range(height) for x in range(width)
              for channel in (30 + t, 90, 180, (0, 128, 255)[x % 3]))
@@ -63,7 +69,7 @@ for name, opts, fmt, pixels in [('split', split, 'bgra', data), ('rgb', rgb, 'bg
     folder.mkdir(exist_ok=True)
     for f in folder.glob('*.mp4'):
         f.unlink()
-    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-threads', '1', '-filter_complex_threads', '1',
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-threads', '1',
                     '-f', 'rawvideo', '-pixel_format', fmt, '-video_size', f'{width}x{height}',
                     '-framerate', '60', '-i', 'pipe:0', *cpu_options(opts, folder)], input=pixels, check=True)
     for f in folder.glob('*.mp4'):

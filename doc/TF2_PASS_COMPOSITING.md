@@ -20,6 +20,11 @@ enabled when checking reconstruction.
   late props, without making non-depth-writing glass an opaque occluder. The pass
   is captured before combined-image postprocessing. Real TF2/MSAA validation is
   still required, including native stencil-dependent effects and water.
+  The holdout now also covers all four native D3D primitive submission paths:
+  brush entities, static batches and custom geometry need not pass through
+  `DrawModelExecute`. Untagged scene draws clear coverage only where they write
+  native depth; selected-model scopes retain their tag. Shadow/reflection targets,
+  depth-disabled overlays and draws outside Players capture are excluded.
 - Third person uses Source's native chase position and orientation as one pose.
   A final angle-only override has been removed: changing orientation after native
   placement/collision can point the camera away from its target pivot. The default

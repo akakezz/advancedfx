@@ -3993,7 +3993,7 @@ private:
 		void Redo(void)
 		{
    for(const auto &s:m_PlayerHoldout) g_OldDirect3DDevice9->SetRenderState(s.first,
-    s.first==D3DRS_STENCILWRITEMASK && m_PlayerHoldout.at(D3DRS_STENCILREF)==0 && !m_Dev.m_D3DRS_ZWRITEENABLE ? 0 : s.second);
+    s.first==D3DRS_STENCILWRITEMASK && m_PlayerHoldout.at(D3DRS_STENCILREF)==0 && (!m_Dev.m_D3DRS_ZWRITEENABLE || !m_Dev.m_PlayerHoldoutZEnable) ? 0 : s.second);
 			if (m_Override_D3DRS_BLENDOP) g_OldDirect3DDevice9->SetRenderState(D3DRS_BLENDOP, m_OverrideValue_D3DRS_BLENDOP);
 			if (m_Override_D3DRS_SRCBLEND) g_OldDirect3DDevice9->SetRenderState(D3DRS_SRCBLEND, m_OverrideValue_D3DRS_SRCBLEND);
 			if (m_Override_D3DRS_DESTBLEND) g_OldDirect3DDevice9->SetRenderState(D3DRS_DESTBLEND, m_OverrideValue_D3DRS_DESTBLEND);
@@ -4058,6 +4058,8 @@ private:
 
 	std::stack<CAfxOverride> m_OverrideStack;
  std::map<D3DRENDERSTATETYPE,DWORD> m_NativeHoldoutStates;
+ bool m_PlayerHoldoutEnabled = false;
+ DWORD m_PlayerHoldoutZEnable = TRUE;
 
 public:
 	NewDirect3DDevice9()
@@ -4065,6 +4067,23 @@ public:
 		m_OverrideStack.emplace(*this);
 	}
 
+ void SetPlayerHoldoutEnabled(bool enabled) { m_PlayerHoldoutEnabled=enabled; }
+ template<typename Draw> HRESULT DrawWithPlayerHoldout(Draw draw) {
+  // Brush entities, static batches and custom renderables can bypass DrawModelExecute.
+  // Tag their native depth-writing fragments too, but never shadow/reflection targets.
+  bool scope=false;
+  if(m_PlayerHoldoutEnabled && m_OverrideStack.top().m_PlayerHoldout.empty()) {
+   IDirect3DSurface9 *color=nullptr,*depth=nullptr;
+   const bool gotColor=SUCCEEDED(g_OldDirect3DDevice9->GetRenderTarget(0,&color));
+   const bool gotDepth=SUCCEEDED(g_OldDirect3DDevice9->GetDepthStencilSurface(&depth));
+   scope=gotColor && gotDepth && color==AfxGetRenderTargetSurface() && depth==AfxGetDepthStencilSurface();
+   if(color)color->Release();if(depth)depth->Release();
+   if(scope){AfxPushOverrideState(false);OverrideBegin_PlayerHoldout(false);}
+  }
+  const auto result=draw();
+  if(scope)AfxPopOverrideState();
+  return result;
+ }
  void OverrideBegin_PlayerHoldout(bool selected) {
   auto &o=m_OverrideStack.top();
   const std::map<D3DRENDERSTATETYPE,DWORD> states={
@@ -5326,8 +5345,9 @@ public:
    m_NativeHoldoutStates[State]=Value;
    if(holdout.count(State))return D3D_OK;
   }
-  if(State==D3DRS_ZWRITEENABLE && !holdout.empty() && holdout.at(D3DRS_STENCILREF)==0)
-   g_OldDirect3DDevice9->SetRenderState(D3DRS_STENCILWRITEMASK,Value?128:0);
+  if(State==D3DRS_ZENABLE)m_PlayerHoldoutZEnable=Value;
+  if((State==D3DRS_ZWRITEENABLE || State==D3DRS_ZENABLE) && !holdout.empty() && holdout.at(D3DRS_STENCILREF)==0)
+   g_OldDirect3DDevice9->SetRenderState(D3DRS_STENCILWRITEMASK,((State==D3DRS_ZWRITEENABLE?Value:m_D3DRS_ZWRITEENABLE) && m_PlayerHoldoutZEnable)?128:0);
 		if(g_bD3D9DebugPrint)
 		{
 			Tier0_Msg("SetRenderState: ");
@@ -5638,10 +5658,10 @@ public:
     IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, GetSoftwareVertexProcessing);
     IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, SetNPatchMode);
     IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, GetNPatchMode);
-    IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, DrawPrimitive);
-    IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, DrawIndexedPrimitive);
-    IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, DrawPrimitiveUP);
-    IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, DrawIndexedPrimitiveUP);
+    STDMETHOD(DrawPrimitive)(THIS_ D3DPRIMITIVETYPE type, UINT start, UINT count) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawPrimitive(type,start,count);}); }
+    STDMETHOD(DrawIndexedPrimitive)(THIS_ D3DPRIMITIVETYPE type, INT base, UINT min, UINT vertices, UINT start, UINT count) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawIndexedPrimitive(type,base,min,vertices,start,count);}); }
+    STDMETHOD(DrawPrimitiveUP)(THIS_ D3DPRIMITIVETYPE type, UINT count, const void *vertices, UINT stride) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawPrimitiveUP(type,count,vertices,stride);}); }
+    STDMETHOD(DrawIndexedPrimitiveUP)(THIS_ D3DPRIMITIVETYPE type, UINT min, UINT vertices, UINT count, const void *indices, D3DFORMAT format, const void *data, UINT stride) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawIndexedPrimitiveUP(type,min,vertices,count,indices,format,data,stride);}); }
 	
 
 	IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, ProcessVertices);
@@ -6155,10 +6175,10 @@ IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, SetSoftwareVertexProcessing, NewDirect3D
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, GetSoftwareVertexProcessing, NewDirect3DDevice9, g_OldDirect3DDevice9);
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, SetNPatchMode, NewDirect3DDevice9, g_OldDirect3DDevice9);
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, GetNPatchMode, NewDirect3DDevice9, g_OldDirect3DDevice9);
-IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, DrawPrimitive, NewDirect3DDevice9, g_OldDirect3DDevice9);
-IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, DrawIndexedPrimitive, NewDirect3DDevice9, g_OldDirect3DDevice9);
-IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, DrawPrimitiveUP, NewDirect3DDevice9, g_OldDirect3DDevice9);
-IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, DrawIndexedPrimitiveUP, NewDirect3DDevice9, g_OldDirect3DDevice9);
+// DrawPrimitive is routed through the shared player holdout scope.
+// DrawIndexedPrimitive is routed through the shared player holdout scope.
+// DrawPrimitiveUP is routed through the shared player holdout scope.
+// DrawIndexedPrimitiveUP is routed through the shared player holdout scope.
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, ProcessVertices, NewDirect3DDevice9, g_OldDirect3DDevice9);
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, CreateVertexDeclaration, NewDirect3DDevice9, g_OldDirect3DDevice9);
 IFACE_PASSTHROUGH_DEF(IDirect3DDevice9, SetVertexDeclaration, NewDirect3DDevice9, g_OldDirect3DDevice9);
@@ -6564,6 +6584,7 @@ void AfxD3D9PopOverrideState(void)
 	g_NewDirect3DDevice9.AfxPopOverrideState();
 }
 
+void AfxD3D9SetPlayerHoldoutEnabled(bool enabled) { g_NewDirect3DDevice9.SetPlayerHoldoutEnabled(enabled); }
 void AfxD3D9OverrideBegin_PlayerHoldout(bool selected) {
  if(!g_OldDirect3DDevice9)return;
  IDirect3DSurface9 *color=nullptr,*depth=nullptr;

@@ -10132,6 +10132,7 @@ void CAfxStreams::ShutDown2(void)
 }
 
 void CAfxStreams::DrawingThread_DeviceLost() {
+ AfxD3D9SetPlayerHoldoutEnabled(false);
  DrawingThread_Tf2White(false);
  if (m_Tf2WhiteSurface) { m_Tf2WhiteSurface->Release(); m_Tf2WhiteSurface = nullptr; }
  if(m_Tf2PlayerDepth){m_Tf2PlayerDepth->Release();m_Tf2PlayerDepth=nullptr;}
@@ -10450,6 +10451,7 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
  }
  if (Op == Destroy) { g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass); if (node) { node->GpuRelease(); node->Release(); node = nullptr; } return; }
  if (Op == Begin) {
+  if(Pass==Tf2RenderPass::Players)AfxD3D9SetPlayerHoldoutEnabled(false);
   g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
   g_AfxStreams.m_Tf2PassCapturedEarly[unsigned(Pass)] = false;
   g_AfxStreams.m_Tf2PassMatteColor[unsigned(Pass)] = Background;
@@ -10475,6 +10477,7 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
   else g_AfxStreams.DrawingThread_SetRenderTarget();
   if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_SetIntZTextureSurface();
   if(Pass==Tf2RenderPass::Players) AfxD3d9PushDepthStencilEx(g_AfxStreams.m_Tf2PlayerDepth);
+  if(Pass==Tf2RenderPass::Players)AfxD3D9SetPlayerHoldoutEnabled(true);
   if (g_AfxStreams.DrawingThread_BindTf2PassTarget()) {
    const auto result = device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | (Pass==Tf2RenderPass::Players?D3DCLEAR_STENCIL:0),
     Pass == Tf2RenderPass::Players || Pass == Tf2RenderPass::Viewmodel || Pass == Tf2RenderPass::Hud ? Background : 0, 1, 0);
@@ -10491,6 +10494,8 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
   }
   return;
  }
+ // Stop automatic tagging before matte cleanup/postprocessing and all exit paths.
+ if(Pass==Tf2RenderPass::Players)AfxD3D9SetPlayerHoldoutEnabled(false);
  if(g_AfxStreams.m_Tf2PassCapturedEarly[unsigned(Pass)]){
   if(Op==Capture)return;
   if(g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]){

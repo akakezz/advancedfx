@@ -150,6 +150,9 @@ private:
 	bool m_TriedCreatePath = false;
 	bool m_SucceededCreatePath = false;
 	BOOL m_Okay = FALSE;
+ HANDLE m_EncoderLog = INVALID_HANDLE_VALUE;
+ std::string m_EncoderLogPath;
+ void WriteEncoderLog(const char *data, DWORD bytes);
 	HANDLE m_hChildStd_IN_Rd = NULL;
 	HANDLE m_hChildStd_IN_Wr = NULL;
 	HANDLE m_hChildStd_OUT_Rd = NULL;

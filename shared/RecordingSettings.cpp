@@ -223,10 +223,11 @@ CRecordingSettings::CShared::CShared()
 	}
 
 	{
+  // Keep one NVENC session per output; lossless masks are cheap to encode on CPU.
   CRecordingSettings *settings=new CFfmpegRecordingSettings("afxFfmpegNvencColorAlpha",true,
-   "-filter_complex {QUOTE}[0:v]format=rgba,setsar=1/1,split=2[c0][a0];[c0]format=yuv444p[c];[a0]alphaextract,format=yuv444p[a]{QUOTE} "
+   "-filter_complex_threads 1 -filter_complex {QUOTE}[0:v]format=rgba,setsar=1/1,split=2[c0][a0];[c0]format=yuv444p[c];[a0]alphaextract,format=yuv444p[a]{QUOTE} "
    "-map {QUOTE}[c]{QUOTE} -an -c:v h264_nvenc -preset p4 -tune lossless -profile:v high444p -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\\color.mp4{QUOTE} "
-   "-map {QUOTE}[a]{QUOTE} -an -c:v h264_nvenc -preset p4 -tune lossless -profile:v high444p -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\\alpha.mp4{QUOTE}",
+   "-map {QUOTE}[a]{QUOTE} -an -c:v libx264 -preset ultrafast -qp 0 -threads 1 -profile:v high444 -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\\alpha.mp4{QUOTE}",
    "-an -c:v h264_nvenc -preset p4 -tune lossless -profile:v high444p -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\\color.mp4{QUOTE}");
   m_NamedSettings.emplace(settings->GetName(),settings);
  }
