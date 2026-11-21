@@ -372,7 +372,6 @@ public:
 	virtual void VGui_PreRenderAllTools( int paintMode )
 	{
 		//Tier0_Msg("ClientEngineTools::VGui_PreRenderAllTools\n");
-		Tf2RenderPassHud(true);
 		g_Engine_ClientEngineTools->VGui_PreRenderAllTools(paintMode);
 	}
 	
@@ -380,10 +379,9 @@ public:
 	{
 		//Tier0_Msg("ClientEngineTools::VGui_PostRenderAllTools\n");
 		g_Engine_ClientEngineTools->VGui_PostRenderAllTools(paintMode);
-		Tf2RenderPassHud(false);
 	}
 
-	virtual bool IsThirdPersonCamera() { return g_Engine_ClientEngineTools->IsThirdPersonCamera(); }
+	virtual bool IsThirdPersonCamera() { return MirvPovSpectate_DrawRecorderWorldModel() || g_Engine_ClientEngineTools->IsThirdPersonCamera(); }
 
 	virtual bool InToolMode()
 	{
@@ -458,7 +456,10 @@ void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals
 
 		g_AppSystemFactory = appSystemFactory;
   if (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified)
+  {
    Tf2RenderPassInstallModel(appSystemFactory("VEngineModel016", nullptr));
+   Tf2RenderPassInstallRenderView(appSystemFactory("VEngineRenderView014", nullptr));
+  }
 
 		// VEngineClient:
 

@@ -209,3 +209,5 @@ bool MirvPovSpectate_ThirdPerson();
 void MirvPovSpectate_InstallEngine(void *engine);
 void MirvSpectate_ReleaseView();
 void MirvPovSpectate_ViewDone();
+bool MirvPovSpectate_DrawRecorderWorldModel();
+int MirvPovSpectate_HiddenPlayer();

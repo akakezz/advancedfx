@@ -2990,8 +2990,11 @@ including any sampler output FPS. Extra passes render extra views at the same de
 frame; they do not advance the demo for each output. Unsupported hooks or missing
 INTZ depth support reject recording rather than silently treating depth as color.
 
-The world pass omits players and their attached models. The players pass includes
-player-owned gear and retains world depth occlusion. Player, viewmodel and HUD
+The world pass omits players, weapons, cosmetics, ragdolls and gibs. The players
+pass includes those models (including dropped/debris models and corpse-attached
+gear) and retains world depth occlusion. Viewmodels remain a separate pass;
+decals and ordinary props remain in the world pass. The render passes share the
+scene-cache class/model classification fallback. Player, viewmodel and HUD
 outputs default to chroma green, without an alpha channel. **Isolated pass background**
 offers Green, Blue and Black; custom RGB is available using
 `mirv_streams record pass background <red 0..255> <green 0..255> <blue 0..255>`.
@@ -2999,8 +3002,11 @@ World shadows are not separated. Color passes preserve the game's MSAA sample co
 only depth extraction uses a matched non-MSAA color/INTZ pair. The capture callback
 explicitly binds the capture surface even if Source left an intermediate target
 bound, and restores the previous color/depth surfaces and viewport afterward.
-Depth is an inverse grayscale visualization (nearer values are brighter),
-not a linear or floating-point depth file. Use lossless encoding when preserving
+Depth uses the existing logarithmic axial-distance shader over 0–4096 world units
+(near is dark; far is light), with the rendered frame's actual projection planes.
+It is not a floating-point depth file. The HUD color mask brackets native in-game
+`IVRenderView::VGui_Paint`, including its offscreen capture binding, rather than
+the tools-only paint callbacks. Use lossless encoding when preserving
 its values matters. Pass selections are session settings. This initial adapter still
 needs an in-game check for TF2/TF2C render effects and per-pass output synchronization.
 
@@ -3024,7 +3030,13 @@ chase. For another player, chase reads their interpolated eye angles at the nati
 engine angle query, rather than using the recorder's look direction. The recorder's
 engine angles are never overwritten. The recorded player's own third-person view
 uses Source's existing `thirdperson` behavior. Native chase positioning and collision
-remain handled by Source.
+remain handled by Source. While a remote observer scope is active, Source's tools
+third-person-camera visibility flag displays the recorder's world model and hides
+the recorder's first-person viewmodels; it does not move the spectator camera.
+The flag is released when the observer scope ends. In first-person observation,
+the shared render classification excludes the observed player's own world mesh
+and attached gear, so enabling the recorder's body does not put the target's
+head or world weapon in front of the camera. Chase view retains the target model.
 
 While observing another player, TF2's existing `tf_taunt_first_person` option is
 temporarily enabled so the recorder's taunts cannot switch the camera. Its previous

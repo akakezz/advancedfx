@@ -44,8 +44,10 @@ int main(){
  props[0].Name="m_iObserverMode";props[0].Type=0;props[0].Offset=offsetof(Entity,Mode);
  props[1].Name="m_hObserverTarget";props[1].Type=0;props[1].Offset=offsetof(Entity,Target);table.Props=props;table.Count=2;cls.Table=&table;
  assert(MirvPovSpectate_SetPlayer(2));assert(local.Mode==0&&local.Target==88&&tauntVar.Value==1&&local.Taunting);
- MirvPovSpectate_FrameBegin();assert(local.Mode==4&&local.Target==5678);
- MirvPovSpectate_FrameEnd();assert(local.Mode==0&&local.Target==88);
+ assert(!MirvPovSpectate_DrawRecorderWorldModel());
+ MirvPovSpectate_FrameBegin();assert(local.Mode==4&&local.Target==5678&&MirvPovSpectate_DrawRecorderWorldModel()&&MirvPovSpectate_HiddenPlayer()==2);
+ MirvPovSpectate_ViewDone();assert(MirvPovSpectate_DrawRecorderWorldModel()); // Visibility stays scoped through drawing.
+ MirvPovSpectate_FrameEnd();assert(local.Mode==0&&local.Target==88&&!MirvPovSpectate_DrawRecorderWorldModel());
  // Native chase must use interpolated TARGET angles, not the recorder's angles.
  props[2].Name="m_angEyeAngles[0]";props[2].Type=1;props[2].Offset=offsetof(Entity,Pitch);
  props[3].Name="m_angEyeAngles[1]";props[3].Type=1;props[3].Offset=offsetof(Entity,Yaw);table.Count=9;
@@ -57,7 +59,7 @@ int main(){
  local.Fov=20;local.FovStart=10;local.DefaultFov=75;local.Punch[0]=3;local.ViewOffset[2]=24;
  target.DefaultFov=90;target.ViewOffset[2]=72;
  assert(MirvPovSpectate_SetMode(true));target.Pitch=10;target.Yaw=70;
- MirvPovSpectate_FrameBegin();assert(local.Mode==5&&engine.Angles.y==12);assert(local.Fov==0&&local.FovStart==90&&local.DefaultFov==90&&local.Punch[0]==0&&local.ViewOffset[2]==72&&local.Taunting&&tauntVar.Value==1);
+ MirvPovSpectate_FrameBegin();assert(local.Mode==5&&engine.Angles.y==12&&MirvPovSpectate_HiddenPlayer()==0);assert(local.Fov==0&&local.FovStart==90&&local.DefaultFov==90&&local.Punch[0]==0&&local.ViewOffset[2]==72&&local.Taunting&&tauntVar.Value==1);
  target.Pitch=11;target.Yaw=71;auto observed=nativeAngles();assert(observed.x==11&&observed.y==71&&engine.Angles.x==3&&engine.Angles.y==12);
  MirvPovSpectate_ViewDone();assert(local.Mode==5&&local.Fov==20&&local.FovStart==10&&local.DefaultFov==75&&local.Punch[0]==3&&local.ViewOffset[2]==24);
  MirvPovSpectate_FrameEnd();assert(local.Mode==0&&local.Target==88&&engine.Angles.x==3&&engine.Angles.y==12);
@@ -105,12 +107,14 @@ struct View{Globals*GetGlobals(){return &globals;}}g_Hook_VClient_RenderView;
 struct Streams {
  bool Recording=true;bool Enabled[5]={true,true,true,true,true};
  std::vector<Tf2RenderPass> Begins,Ends;
+ bool DrawingThread_BindTf2PassTarget(){return true;}
  bool Tf2PassRecording(Tf2RenderPass p){return Recording&&Enabled[unsigned(p)];}
  void EngineThread_PassBegin(Tf2RenderPass p){Begins.push_back(p);}
- void EngineThread_PassEnd(Tf2RenderPass p){Ends.push_back(p);}
+ void EngineThread_PassEnd(Tf2RenderPass p,float near,float far){assert(near==3&&far==28000);Ends.push_back(p);}
 }g_AfxStreams;
 int player,gear,vm,prop;
-void Mirv_Tf2_RenderGroups(std::map<const void*,unsigned>&groups){groups={{&player,1},{&gear,1},{&vm,2},{&prop,0}};}
+int hiddenPlayer=0;int MirvPovSpectate_HiddenPlayer(){return hiddenPlayer;}
+void Mirv_Tf2_RenderGroups(std::map<const void*,unsigned>&groups,int hidden){groups={{&player,1u|(hidden?4u:0u)},{&gear,1u|(hidden?4u:0u)},{&vm,2},{&prop,0}};}
 #include "AfxHookSource/Tf2RenderPass.inl"
 std::map<Tf2RenderPass,std::vector<const void*>> visible;
 int ordinaryFrames=0,renderCalls=0,hudWrites=0;
@@ -118,14 +122,18 @@ void Model(void*,const void*,const void *p,void*){auto pointer=static_cast<const
 void Render(void *self,const void*,int clear,int draw){
  ++renderCalls;assert(clear==2);assert(draw&4);
  for(auto pointer:{&player,&gear,&vm,&prop}){Tf2ModelInfoPrefix info{};info.Renderable=pointer;Tf2PassDrawModel(self,nullptr,&info,nullptr);}
- if(draw&2){OnGpu([]{assert(mask==0);});Tf2RenderPassHud(true);OnGpu([]{assert(mask==15);++hudWrites;});Tf2RenderPassHud(false);OnGpu([]{assert(mask==0);});}
+ if(draw&2){OnGpu([]{assert(mask==0);});Tf2PassPaint(self,2);OnGpu([]{assert(mask==0);});}
 }
-void Frame(void*,void*){++ordinaryFrames;assert(mask==15&&colorStack.empty());}
-bool PlayerView(void*,void *data){std::memset(data,0,200);return true;}
+void Frame(void*self,void*){++ordinaryFrames;assert(mask==15&&colorStack.empty());
+ if(hiddenPlayer)for(auto pointer:{&player,&gear,&vm,&prop}){Tf2ModelInfoPrefix info{};info.Renderable=pointer;Tf2PassDrawModel(self,nullptr,&info,nullptr);}
+}
+void Paint(void*,int mode){assert(mode==2);OnGpu([]{assert(mask==15);++hudWrites;});}
+bool PlayerView(void*,void *data){std::memset(data,0,200);auto&v=*static_cast<Tf2ViewProjectionPrefix*>(data);v.Near=3;v.Far=28000;return true;}
 int main(){
  void *clientSlots[60]={};clientSlots[26]=reinterpret_cast<void*>(Frame);clientSlots[27]=reinterpret_cast<void*>(Render);clientSlots[59]=reinterpret_cast<void*>(PlayerView);void **client=clientSlots;
  void *modelSlots[20]={};modelSlots[19]=reinterpret_cast<void*>(Model);void **model=modelSlots;
- int rect[4]={0,0,1280,720};Tf2RenderPassInstallClient(&client);assert(!Tf2RenderPassSupported());Tf2RenderPassInstallModel(&model);assert(Tf2RenderPassSupported());
+ int rect[4]={0,0,1280,720};Tf2RenderPassInstallClient(&client);assert(!Tf2RenderPassSupported());Tf2RenderPassInstallModel(&model);assert(!Tf2RenderPassSupported());
+ void *paintSlots[37]={};paintSlots[36]=reinterpret_cast<void*>(Paint);void **paint=paintSlots;Tf2RenderPassInstallRenderView(&paint);assert(Tf2RenderPassSupported());
  assert(clientSlots[27]==reinterpret_cast<void*>(Render)); // Normal-frame interception, not the tools-only entry.
  Tf2PassRenderFrame(&client,rect);FlushGpu();
  assert(ordinaryFrames==1&&renderCalls==5&&hudWrites==1&&mask==15&&colorStack.empty());
@@ -138,6 +146,9 @@ int main(){
  globals.Count++;queued=true;visible.clear();Tf2PassRenderFrame(&client,rect);assert(!gpuQueue.empty());FlushGpu();assert(mask==15&&colorStack.empty()&&hudWrites==2);
  assert((visible[Tf2RenderPass::World]==std::vector<const void*>{&prop}));assert((visible[Tf2RenderPass::Players]==std::vector<const void*>{&player,&gear}));assert((visible[Tf2RenderPass::Viewmodel]==std::vector<const void*>{&vm}));
  globals.Count++;g_AfxStreams.Recording=false;Tf2PassRenderFrame(&client,rect);assert(ordinaryFrames==4&&renderCalls==10);
+ hiddenPlayer=2;visible.clear();Tf2PassRenderFrame(&client,rect);FlushGpu();
+ assert((visible[Tf2RenderPass::Count]==std::vector<const void*>{&vm,&prop}));assert(g_Tf2RenderGroups.empty());
+ hiddenPlayer=0;
  std::cout<<"TF2 normal-frame pass dispatch, isolation and state restoration checks passed\n";
 }
 '''
@@ -184,10 +195,15 @@ while depth:
  end+=1
 capture_class=header[capture_at:end+1]
 capture_method=cpp[cpp.index('bool CAfxStreams::DrawingThread_BindTf2PassTarget()'):cpp.index('void CAfxStreams::Console_RecordPass(')]
+shader=(r/'shaders/afx_depth_ps20.fxc').read_text()
+axial_shader=shader.split('#elif 3 == AFXDEPTHMODE || 4 == AFXDEPTHMODE')[1].split('\n#endif\n\n\n#endif')[0]+'\n#endif\n'
+# Compile the production shader's scalar axial/log conversion with CPU texture samples.
+shader_conversion = '#define AFXDEPTHMODE 4\nfloat ConvertDepth(float depth,float g_Afx_zNear,float g_Afx_zFar,float g_Afx_OutNear,float g_Afx_OutFar){\n'+axial_shader+'\nreturn depth;}\n'
 capture=r'''
 #include <cassert>
 #include <iostream>
 #include <cstdint>
+#include <cmath>
 #include "AfxHookSource/Tf2RenderPass.h"
 using DWORD=unsigned;constexpr unsigned D3DCLEAR_TARGET=1,D3DCLEAR_ZBUFFER=2;
 #define SUCCEEDED(x) ((x)>=0)
@@ -208,8 +224,18 @@ struct Device{
  int SetDepthStencilSurface(Surface*in){depth=in;return 0;}
 }device;
 Device*AfxGetDirect3DDevice9(){return &device;}
-constexpr int AfxDrawDepthEncode_Gray=0,AfxDrawDepthMode_Inverse=0;
-void AfxDrawDepth(int,int,bool,float,float,unsigned,unsigned,unsigned,unsigned,float,float,void*){assert(color->Samples==0&&depth==&intz);}
+'''+shader_conversion+r'''
+constexpr int AfxDrawDepthEncode_Gray=0,AfxDrawDepthMode_PyramidalLogE=4;
+void AfxDrawDepth(int,int mode,bool,float outNear,float outFar,unsigned,unsigned,unsigned,unsigned,float zNear,float zFar,void*){
+ assert(color->Samples==0&&depth==&intz&&mode==4&&outNear==0&&outFar==4096&&zNear==3&&zFar==28000);
+ // The production shader's logarithmic branch must distinguish normal scene distances.
+ float previous=-1;
+ for(float distance:{3.0f,100.0f,1000.0f,4096.0f}){
+  float hardware=(zFar-zFar*zNear/distance)/(zFar-zNear);
+  float gray=ConvertDepth(hardware,zNear,zFar,outNear,outFar);
+  assert(std::isfinite(gray)&&gray>previous);previous=gray;
+ }
+}
 void Tier0_Warning(const char*,...){}
 struct CMaterialSystemFunctor{virtual ~CMaterialSystemFunctor(){};virtual void operator()()=0;};
 namespace advancedfx {struct COutVideoStreamCreator {int Refs=1;void AddRef(){++Refs;}void Release(){--Refs;}};}
@@ -243,7 +269,7 @@ int main(){
   CAfxStreams::CPassCaptureFunctor begin(pass,CAfxStreams::CPassCaptureFunctor::Begin);begin();
   assert(color==trackedColor&&color->Samples==depth->Samples);++draws;++color->Pixels; // D3D9 rejects incompatible geometry targets.
   if(pass==Tf2RenderPass::Players||pass==Tf2RenderPass::Viewmodel||pass==Tf2RenderPass::Hud)assert(lastClear==0xff00ff00u);else assert(lastClear==0);
-  CAfxStreams::CPassCaptureFunctor end(pass,CAfxStreams::CPassCaptureFunctor::End);end();assert(color==prior&&depth==prior&&device.Viewport.Width==640&&device.Viewport.Height==480);
+  CAfxStreams::CPassCaptureFunctor end(pass,CAfxStreams::CPassCaptureFunctor::End,nullptr,0,3,28000);end();assert(color==prior&&depth==prior&&device.Viewport.Width==640&&device.Viewport.Height==480);
   CAfxStreams::CPassCaptureFunctor destroy(pass,CAfxStreams::CPassCaptureFunctor::Destroy);destroy();
  }
  }
@@ -252,13 +278,72 @@ int main(){
  {
  auto pass=Tf2RenderPass::Players;CAfxStreams::CPassCaptureFunctor create(pass,CAfxStreams::CPassCaptureFunctor::Create,&creator);create();
  CAfxStreams::CPassCaptureFunctor begin(pass,CAfxStreams::CPassCaptureFunctor::Begin,nullptr,0xff0000ffu);begin();assert(lastClear==0xff0000ffu);++color->Pixels;
- CAfxStreams::CPassCaptureFunctor end(pass,CAfxStreams::CPassCaptureFunctor::End);end();CAfxStreams::CPassCaptureFunctor destroy(pass,CAfxStreams::CPassCaptureFunctor::Destroy);destroy();
+ CAfxStreams::CPassCaptureFunctor end(pass,CAfxStreams::CPassCaptureFunctor::End,nullptr,0,3,28000);end();CAfxStreams::CPassCaptureFunctor destroy(pass,CAfxStreams::CPassCaptureFunctor::Destroy);destroy();
  }
  g_AfxStreams.Allocate=false;CAfxStreams::CPassCaptureFunctor begin(Tf2RenderPass::World,CAfxStreams::CPassCaptureFunctor::Begin);begin();CAfxStreams::CPassCaptureFunctor end(Tf2RenderPass::World,CAfxStreams::CPassCaptureFunctor::End);end();assert(color==&original&&depth==&original&&captures==31);
  std::cout<<"Actual capture functor keeps MSAA color/depth compatible and chroma mattes green\n";
 }
 '''
-for name,source in [('pov',pov),('passes',render),('writer',writer),('capture',capture)]:
+calcs=(r/'AfxHookSource/MirvCalcs.cpp').read_text()
+model_category=calcs[calcs.index('static int Mirv_Tf2_ModelCategory('):calcs.index('static bool Mirv_Tf2_LabelDebris(')]
+label_category=calcs[calcs.index('static int Mirv_Tf2_LabelCategory('):calcs.index('// Share the tools-classname fallback')]
+group_method=calcs[calcs.index('void Mirv_Tf2_RenderGroups('):]
+enum_source=(r/'AfxHookSource/MirvCalcs.h').read_text();enum_source=enum_source[enum_source.index('enum MirvTf2EntityCategory_t'):enum_source.index('struct MirvTf2EntityLabel_t')].replace('advancedfx::SceneCache::CategoryCount','9')
+groups=r'''
+#include <map>
+#include <vector>
+#include <cstring>
+#include <cctype>
+#include <cassert>
+#include <iostream>
+'''+enum_source+r'''
+struct CMirvTf2ClientRenderable{const char *Path;const void*GetModel(){return this;}};
+struct Info {const char*GetModelName(const void*p){return static_cast<const CMirvTf2ClientRenderable*>(p)->Path;}int GetModelType(const void*){return 3;}}info;
+Info*Mirv_Tf2_GetModelInfo(){return &info;}
+struct CMirvTf2ClientUnknown{CMirvTf2ClientRenderable Renderable;const char*Name;unsigned Handle,Parent;bool Player=false,Debris=false;CMirvTf2ClientRenderable*GetClientRenderable(){return &Renderable;}void*GetClientNetworkable(){return this;}};
+std::vector<CMirvTf2ClientUnknown>objects;
+struct Iface {
+ void*FirstEntity(){return objects.empty()?nullptr:&objects[0];}
+ void*NextEntity(void*p){auto n=static_cast<CMirvTf2ClientUnknown*>(p)+1;return n==objects.data()+objects.size()?nullptr:n;}
+ bool IsPlayer(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Player;}
+ int GetEntIndex(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Handle;}
+ void*GetOwnerEntity(void*p){auto parent=static_cast<CMirvTf2ClientUnknown*>(p)->Parent;for(auto &o:objects)if(o.Handle==parent)return &o;return nullptr;}
+}iface;
+struct CClientToolsTf2{static CClientToolsTf2*Instance(){static CClientToolsTf2 t;return &t;}Iface*GetClientTools(){return &iface;}};
+unsigned Mirv_Tf2_EntityHandle(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Handle;}
+template<typename T>T SceneInterfaceCall(void*p,int){return static_cast<T>(p);}
+void Mirv_Tf2_SceneMoveParent(void*p,const void*,unsigned&out){out=static_cast<CMirvTf2ClientUnknown*>(p)->Parent;}
+'''+label_category+model_category+r'''
+int Mirv_Tf2_ToolCategory(Iface*,void*p,int,bool player,bool scene){return Mirv_Tf2_LabelCategory(static_cast<CMirvTf2ClientUnknown*>(p)->Name,player,scene);}
+bool Mirv_Tf2_LabelDebris(CMirvTf2ClientUnknown*p){return p->Debris;}
+'''+group_method+r'''
+int main(){
+ objects={
+  {{"models/player/demo.mdl"},"CTFPlayer",1,0,true},
+  {{"models/player/demo.mdl"},"CTFRagdoll",2,0},
+  {{"models/player/gibs/demogib006.mdl"},"CDynamicProp",3,0},
+  {{"models/unknown.mdl"},"CPhysicsProp",4,0,false,true},
+  {{"models/weapons/w_shotgun.mdl"},"CPhysicsProp",5,0},
+  {{"models/player/items/demo/hat.mdl"},"CPhysicsProp",6,0,false,true},
+  {{"models/generic.mdl"},"CTFWearable",7,0},
+  {{"models/v_weapon.mdl"},"CBaseViewModel",8,1},
+  {{"models/gear.mdl"},"CGeneric",9,8}, // generic child of a viewmodel stays separate
+  {{"models/decals.mdl"},"CDecal",10,0},
+  {{"models/props/crate.mdl"},"CPhysicsProp",11,0},
+  {{"models/generic.mdl"},"CGeneric",12,2}, // corpse-attached gear
+  {{"models/generic.mdl"},"CGeneric",13,14}, // nested gear resolves independently of list order
+  {{"models/generic.mdl"},"CGeneric",14,1}
+ };
+ std::map<const void*,unsigned>result;Mirv_Tf2_RenderGroups(result,0);assert(result.size()==objects.size());
+ for(unsigned i=0;i<objects.size();++i){unsigned expected=i==7||i==8?2:i==9||i==10?0:1;assert(result[&objects[i].Renderable]==expected);}
+ Mirv_Tf2_RenderGroups(result,2);assert(result[&objects[1].Renderable]==5&&result[&objects[11].Renderable]==5&&result[&objects[0].Renderable]==1);
+ Mirv_Tf2_RenderGroups(result,1);assert(result[&objects[0].Renderable]==5&&result[&objects[7].Renderable]==6&&result[&objects[8].Renderable]==6&&result[&objects[12].Renderable]==5);
+ // Shared fallback keeps cosmetics classified as cosmetics even when they are debris.
+ assert(Mirv_Tf2_ModelCategory(&objects[5].Renderable,false)==MIRV_TF2_ENTITY_COSMETIC);
+ std::cout<<"Player pass includes loose weapons/cosmetics/ragdolls/gibs; decals and props remain world; viewmodels stay separate\n";
+}
+'''
+for name,source in [('pov',pov),('passes',render),('writer',writer),('capture',capture),('groups',groups)]:
  file=o/(name+'.cpp');file.write_text(source);cmd=['g++','-std=c++17','-O1','-g','-pthread','-I'+str(r),str(file),'-o',str(o/name)]
  if a.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
  q=subprocess.run(cmd,capture_output=True,text=True)

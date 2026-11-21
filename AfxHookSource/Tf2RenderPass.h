@@ -9,6 +9,7 @@ inline const char *Tf2RenderPassName(Tf2RenderPass pass) {
 bool Tf2RenderPassSupported();
 void Tf2RenderPassInstallClient(void *client);
 void Tf2RenderPassInstallModel(void *model);
-void Tf2RenderPassHud(bool begin);
+void Tf2RenderPassInstallRenderView(void *render);
 // Engine-thread snapshot, reusing the entity tools list and category metadata.
-void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups);
+// Bits: player=1, viewmodel=2, hide in native in-eye observation=4.
+void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenPlayer = 0);

@@ -3542,7 +3542,7 @@ public:
  bool DrawingThread_BindTf2PassTarget();
  void DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass);
  void EngineThread_PassBegin(Tf2RenderPass pass);
- void EngineThread_PassEnd(Tf2RenderPass pass);
+ void EngineThread_PassEnd(Tf2RenderPass pass, float zNear = 1, float zFar = 32768);
  void Console_RecordPass(IWrpCommandArgs *args);
  void EngineThread_QueueCapture();
 
@@ -3872,8 +3872,8 @@ private:
  class CPassCaptureFunctor : public CMaterialSystemFunctor {
  public:
   enum Operation { Create, Destroy, Begin, End };
-  CPassCaptureFunctor(Tf2RenderPass pass, Operation op, advancedfx::COutVideoStreamCreator *creator = nullptr, unsigned background = 0xff00ff00u)
-   : Pass(pass), Op(op), Creator(creator), Background(background) { if (Creator) Creator->AddRef(); }
+  CPassCaptureFunctor(Tf2RenderPass pass, Operation op, advancedfx::COutVideoStreamCreator *creator = nullptr, unsigned background = 0xff00ff00u, float zNear = 1, float zFar = 32768)
+   : Pass(pass), Op(op), Creator(creator), Background(background), Near(zNear), Far(zFar) { if (Creator) Creator->AddRef(); }
   ~CPassCaptureFunctor() { if (Creator) Creator->Release(); }
   void operator()() override;
  private:
@@ -3881,6 +3881,7 @@ private:
   Operation Op;
   advancedfx::COutVideoStreamCreator *Creator;
   unsigned Background; // Snapshot when queued; later menu edits cannot change pending frames.
+  float Near, Far; // Projection of the rendered frame, not a later queued view.
  };
 
 	class CCreateScreenCaptureNodeFunctor : public CMaterialSystemFunctor {

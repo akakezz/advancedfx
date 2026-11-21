@@ -10378,8 +10378,8 @@ bool CAfxStreams::Tf2PassRecording(Tf2RenderPass pass) const {
 void CAfxStreams::EngineThread_PassBegin(Tf2RenderPass pass) {
  MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::Begin, nullptr, Tf2PassBackground()));
 }
-void CAfxStreams::EngineThread_PassEnd(Tf2RenderPass pass) {
- MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::End));
+void CAfxStreams::EngineThread_PassEnd(Tf2RenderPass pass, float zNear, float zFar) {
+ MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::End, nullptr, 0, zNear, zFar));
 }
 // Material-system bookkeeping can finish a view with another target bound.
 // Keep HLAE's replacement mapping, but bind and restore the actual D3D pair too.
@@ -10442,8 +10442,10 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
  if (capture && Pass == Tf2RenderPass::Depth) {
   D3DVIEWPORT9 viewport{};
   if (auto device = AfxGetDirect3DDevice9()) if (SUCCEEDED(device->GetViewport(&viewport)))
-   AfxDrawDepth(AfxDrawDepthEncode_Gray, AfxDrawDepthMode_Inverse, false, 0, 1,
-     viewport.X, viewport.Y, viewport.Width, viewport.Height, 1, 32768, nullptr);
+   // Inverse mode divides by output-near; the previous zero produced NaNs.
+   // Reuse HLAE's logarithmic axial-depth conversion for a visible grayscale range.
+   AfxDrawDepth(AfxDrawDepthEncode_Gray, AfxDrawDepthMode_PyramidalLogE, false, 0, 4096,
+     viewport.X, viewport.Y, viewport.Width, viewport.Height, Near, Far, nullptr);
  }
  if (capture && node) node->GpuCapture();
  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetIntZTextureSurface();

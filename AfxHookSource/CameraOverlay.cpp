@@ -8724,7 +8724,7 @@ void Draw()
       ImGui::EndCombo();
      }
      if (!editable) ImGui::EndDisabled();
-     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use the selected chroma background; depth is inverse grayscale. Extra passes increase render cost.");
+     ImGui::TextWrapped("Each enabled pass writes a separate subfolder using the profile below. Player/viewmodel/HUD passes use the selected chroma background; depth is logarithmic grayscale (0-4096 units). Extra passes increase render cost.");
      if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("TF2 render-pass hooks are unavailable.");
     }
     // Record screen settings

@@ -295,5 +295,22 @@ void MirvPovSpectate_InstallEngine(void *engine)
  AfxDetourPtr(reinterpret_cast<PVOID *>(&table[18]), reinterpret_cast<PVOID>(PovGetViewAngles), reinterpret_cast<PVOID *>(&g_PovOriginalAngles));
 }
 
+// Source's local-player visibility and viewmodel selection already consult this
+// tools-camera flag. Observer mode alone still treats the recorder as first person.
+bool MirvPovSpectate_DrawRecorderWorldModel()
+{
+ const auto &scope = g_PovObserverScope;
+ if (!scope.Object || !PovSpectatePlayback()) return false;
+ auto target = Mirv_Tf2_DiagnosticEntity(MirvPovSpectate_Player());
+ return target && Mirv_Tf2_EntityHandle(target) == scope.AppliedTarget;
+}
+
+// The shared visibility flag also makes the observed player's mesh eligible.
+// Retain native in-eye behavior by excluding their world mesh/gear at render time.
+int MirvPovSpectate_HiddenPlayer()
+{
+ return !g_PovThirdPerson.load() && MirvPovSpectate_DrawRecorderWorldModel() ? MirvPovSpectate_Player() : 0;
+}
+
 // Tools' SetupEngineView runs after native CalcView and ClientMode::OverrideView.
 void MirvPovSpectate_ViewDone() { PovRestoreCameraFields(g_PovObserverScope); }
