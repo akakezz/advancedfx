@@ -3214,3 +3214,9 @@ filtered subject/orbit frame and explicit aiming ownership; it does not lock eve
 raw bone sample to the same pixel. Camera and clip modifier outputs receive a final
 shared collision safety check. See [camera interaction audit](CAMERA_INTERACTION_AUDIT.md)
 for findings, test cases and live retest guidance.
+
+### Proposed POV visibility continuity fix
+
+See [TF2 POV visibility research](TF2_POV_VISIBILITY_RESEARCH.md) for the intended
+map/prop continuity behavior, dormant-entity retention options, source evidence,
+validation gates and proposed milestones. This is research, not an implemented fix.
