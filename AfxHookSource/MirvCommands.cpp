@@ -6587,6 +6587,24 @@ bool Tf2InstallPropOpacityHook()
 }
 } // namespace
 
+bool MirvFix_StaticPropFadeSupported()
+{
+	return g_SourceSdkVer == SourceSdkVer_TF2;
+}
+
+bool MirvFix_GetNoStaticPropFade()
+{
+	return g_Tf2NoPropFade.load();
+}
+
+bool MirvFix_SetNoStaticPropFade(bool enabled)
+{
+	if (enabled && (!MirvFix_StaticPropFadeSupported() || !Tf2InstallPropOpacityHook()))
+		return false;
+	g_Tf2NoPropFade.store(enabled);
+	return true;
+}
+
 CON_COMMAND(mirv_fix, "Various fixes")
 {
 	int argc = args->ArgC();
@@ -6596,22 +6614,22 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		char const * cmd1 = args->ArgV(1);
 		if (!_stricmp(cmd1, "noStaticPropFade"))
 		{
-			if (g_SourceSdkVer != SourceSdkVer_TF2)
+			if (!MirvFix_StaticPropFadeSupported())
 			{
 				Tier0_Warning("Static prop fade override requires TF2.\n");
 				return;
 			}
-			if (argc == 3 && !std::strcmp(args->ArgV(2), "1"))
+			if (argc == 3 && (!std::strcmp(args->ArgV(2), "1") || !std::strcmp(args->ArgV(2), "0")))
 			{
-				if (!Tf2InstallPropOpacityHook())
+				const bool enabled = args->ArgV(2)[0] == '1';
+				if (!MirvFix_SetNoStaticPropFade(enabled))
 				{
 					Tier0_Warning("StaticPropMgrClient004 opacity hook unavailable.\n");
 					return;
 				}
-				g_Tf2NoPropFade.store(true);
+				AfxHookSource::CameraOverlay::RememberDemoFixPreference(
+				    AfxHookSource::CameraOverlay::DemoFixPreference::NoStaticPropFade, enabled);
 			}
-			else if (argc == 3 && !std::strcmp(args->ArgV(2), "0"))
-				g_Tf2NoPropFade.store(false);
 			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
 			{
 				Tier0_Msg("Usage: mirv_fix noStaticPropFade 0|1|status\n");

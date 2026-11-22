@@ -195,6 +195,9 @@ size_t MirvFix_PlayerAngleTraceRows();
 void MirvFix_PlayerAngleTraceFrame(int stage);
 bool MirvFix_PlayerAngleTraceSave(const wchar_t *file);
 bool MirvFix_GetPovDeathcam();
+bool MirvFix_StaticPropFadeSupported();
+bool MirvFix_GetNoStaticPropFade();
+bool MirvFix_SetNoStaticPropFade(bool enabled);
 bool MirvFix_SetPovDeathcam(bool enabled);
 
 // Native observer state is scoped to rendering; no camera rig is created.

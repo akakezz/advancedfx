@@ -19,6 +19,7 @@ enum class DemoFixPreference
 {
 	RecorderMute,
 	Deathcam,
+	NoStaticPropFade,
 	PlayerInterpolation
 };
 void RememberDemoFixPreference(DemoFixPreference setting, double value);

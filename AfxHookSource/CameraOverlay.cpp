@@ -1720,6 +1720,7 @@ static double g_ExportFps = 120;
 // Preferences share the existing ImGui settings file. Demo identities and running
 // operations deliberately stay in memory; saved fixes are armed only for compatible demos.
 static bool g_OverlayPreferencesReady = false;
+static bool g_NoStaticPropFade = false;
 static bool g_DemoMute = false, g_DemoDeathcam = false, g_DemoSmooth = false;
 static double g_DemoInterpolation = .1;
 static auto g_DemoFixAttempt = std::chrono::steady_clock::time_point{};
@@ -1732,7 +1733,7 @@ static std::pair<std::uint64_t, size_t> OverlayPreferenceStamp()
 	for (bool value : {g_ScenePlayerModels, g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics,
 	                   g_SceneRagdolls, g_SceneGibs, g_SceneBuildings, g_SceneProps, g_SceneSmoothAnimation,
 	                   g_SceneDrawModels.load(), g_ShowSequencer, g_ShowCameraControl, g_ShowCurveEditor,
-	                   g_ShowGizmo, g_PreviewHudEnabled, g_ShowCameraGuides, g_CameraFrustums, g_DemoMute, g_DemoDeathcam, g_DemoSmooth})
+	                   g_ShowGizmo, g_PreviewHudEnabled, g_ShowCameraGuides, g_CameraFrustums, g_DemoMute, g_DemoDeathcam, g_NoStaticPropFade, g_DemoSmooth})
 	{
 		if (value)
 			bits |= 1ull << bit;
@@ -1784,6 +1785,8 @@ void RememberDemoFixPreference(DemoFixPreference setting, double value)
 		if (!g_DemoMute)
 			MirvFix_ArmRecorderSoundMute(false);
 	}
+	else if (setting == DemoFixPreference::NoStaticPropFade)
+		g_NoStaticPropFade = value != 0;
 	else if (setting == DemoFixPreference::Deathcam)
 		g_DemoDeathcam = value != 0;
 	else
@@ -1807,6 +1810,8 @@ void PreferencesFrame()
 	if (now - g_DemoFixAttempt < std::chrono::seconds(1))
 		return;
 	g_DemoFixAttempt = now;
+	if (MirvFix_StaticPropFadeSupported() && g_NoStaticPropFade != MirvFix_GetNoStaticPropFade())
+		MirvFix_SetNoStaticPropFade(g_NoStaticPropFade);
 	MirvFix_ArmRecorderSoundMute(g_DemoMute);
 	if (g_DemoDeathcam && !MirvFix_GetPovDeathcam())
 		MirvFix_SetPovDeathcam(true);
@@ -1936,6 +1941,8 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		option = &g_PreviewHudEnabled;
 	if (key == "FixRecorderMute")
 		option = &g_DemoMute;
+	if (key == "FixNoStaticPropFade")
+		option = &g_NoStaticPropFade;
 	if (key == "FixDeathcam")
 		option = &g_DemoDeathcam;
 	if (key == "FixSmoothMovement")
@@ -2078,6 +2085,7 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("PreviewHud=%d\n", int(g_PreviewHudEnabled));
 	out_buf->appendf("CameraGuides=%d\nCameraFrustums=%d\n",int(g_ShowCameraGuides),int(g_CameraFrustums));
 	out_buf->appendf("FixRecorderMute=%d\n", int(g_DemoMute));
+	out_buf->appendf("FixNoStaticPropFade=%d\n", int(g_NoStaticPropFade));
 	out_buf->appendf("FixDeathcam=%d\n", int(g_DemoDeathcam));
 	out_buf->appendf("FixSmoothMovement=%d\n", int(g_DemoSmooth));
 	out_buf->appendf("CacheBudgetMiB=%zu\nFixInterpolationSeconds=%.6f\n\n", g_SceneCache.Limit() / 1048576,
@@ -8406,6 +8414,17 @@ void Draw()
 					ImGui::TextDisabled("Saved; waiting for the TF2/TF2C client hooks.");
 				ImGui::TextWrapped("Prevents POV death/freeze camera effects from freezing the HLAE view or "
 				                   "selecting the freeze-cam sound mixer. Enable before death.");
+				if (MirvFix_StaticPropFadeSupported())
+				{
+					bool enabled = g_NoStaticPropFade;
+					if (ImGui::Checkbox("Disable static prop fading", &enabled))
+					{
+						RememberDemoFixPreference(DemoFixPreference::NoStaticPropFade, enabled);
+						MirvFix_SetNoStaticPropFade(enabled);
+					}
+					if (g_NoStaticPropFade && !MirvFix_GetNoStaticPropFade())
+						ImGui::TextDisabled("Waiting for the static prop renderer.");
+				}
 				bool active = g_DemoSmooth;
 				if (ImGui::Checkbox("Smooth player movement", &active))
 				{
