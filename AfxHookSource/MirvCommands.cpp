@@ -6558,11 +6558,16 @@ void __fastcall Tf2DemoComputePropOpacity(void *manager,
 	g_Tf2ComputePropOpacity(manager, origin, factor);
 }
 
+void *StaticPropOpacityManager()
+{
+	return g_AppSystemFactory ? g_AppSystemFactory("StaticPropMgrClient004", nullptr) : nullptr;
+}
+
 bool Tf2InstallPropOpacityHook()
 {
 	if (g_Tf2ComputePropOpacity)
 		return true;
-	auto manager = g_AppSystemFactory ? g_AppSystemFactory("StaticPropMgrClient004", nullptr) : nullptr;
+	auto manager = StaticPropOpacityManager();
 	if (!manager)
 		return false;
 	// IStaticPropMgr has five methods. ComputePropOpacity is the first client extension.
@@ -6589,7 +6594,7 @@ bool Tf2InstallPropOpacityHook()
 
 bool MirvFix_StaticPropFadeSupported()
 {
-	return g_SourceSdkVer == SourceSdkVer_TF2;
+	return g_Tf2ComputePropOpacity || StaticPropOpacityManager();
 }
 
 bool MirvFix_GetNoStaticPropFade()
@@ -6599,7 +6604,7 @@ bool MirvFix_GetNoStaticPropFade()
 
 bool MirvFix_SetNoStaticPropFade(bool enabled)
 {
-	if (enabled && (!MirvFix_StaticPropFadeSupported() || !Tf2InstallPropOpacityHook()))
+	if (enabled && !Tf2InstallPropOpacityHook())
 		return false;
 	g_Tf2NoPropFade.store(enabled);
 	return true;
@@ -6616,7 +6621,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		{
 			if (!MirvFix_StaticPropFadeSupported())
 			{
-				Tier0_Warning("Static prop fade override requires TF2.\n");
+				Tier0_Warning("Static prop fade override requires StaticPropMgrClient004.\n");
 				return;
 			}
 			if (argc == 3 && (!std::strcmp(args->ArgV(2), "1") || !std::strcmp(args->ArgV(2), "0")))
@@ -7165,7 +7170,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	);
 #endif // #ifndef _WIN64
 	Tier0_Msg("mirv_fix playerRepair [...] - Manual TF2 player sample reconstruction.\n"
-        "mirv_fix noStaticPropFade [...] - Disable static prop fading during TF2 demo playback.\n"
+        "mirv_fix noStaticPropFade [...] - Disable static prop fading during demo playback (StaticPropMgrClient004).\n"
         "mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
 			  "mirv_fix recorderSounds [...] - Mute/restore recorder sounds in TF2 POV demos.\n"
 			  "mirv_fix povDeathcam [...] - Suppress recorder death/freeze camera in TF2 POV demos.\n"
