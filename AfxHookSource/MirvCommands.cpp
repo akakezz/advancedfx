@@ -6537,6 +6537,56 @@ bool MirvFix_PlayerAngleTraceSave(const wchar_t *file)
 // End TF2 manual player repair.
 
 
+namespace {
+using Tf2ComputePropOpacity = void (__thiscall *)(void *, const float *, float);
+Tf2ComputePropOpacity g_Tf2ComputePropOpacity = nullptr;
+std::atomic<bool> g_Tf2NoPropFade{false};
+std::atomic<unsigned> g_Tf2NoPropFadeViews{0};
+
+void __fastcall Tf2DemoComputePropOpacity(void *manager,
+#ifndef _WIN64
+                                         void *,
+#endif
+                                         const float *origin, float factor)
+{
+	if (g_Tf2NoPropFade.load() && g_VEngineClient && g_VEngineClient->IsPlayingDemo())
+	{
+		// Source uses this sentinel for overview views to disable native prop fading.
+		factor = -1.0f;
+		++g_Tf2NoPropFadeViews;
+	}
+	g_Tf2ComputePropOpacity(manager, origin, factor);
+}
+
+bool Tf2InstallPropOpacityHook()
+{
+	if (g_Tf2ComputePropOpacity)
+		return true;
+	auto manager = g_AppSystemFactory ? g_AppSystemFactory("StaticPropMgrClient004", nullptr) : nullptr;
+	if (!manager)
+		return false;
+	// IStaticPropMgr has five methods. ComputePropOpacity is the first client extension.
+	g_Tf2ComputePropOpacity = reinterpret_cast<Tf2ComputePropOpacity>((*static_cast<void ***>(manager))[5]);
+	if (!g_Tf2ComputePropOpacity)
+		return false;
+	LONG error = DetourTransactionBegin();
+	if (error == NO_ERROR)
+	{
+		error = DetourUpdateThread(GetCurrentThread());
+		if (error == NO_ERROR)
+			error = DetourAttach(reinterpret_cast<PVOID *>(&g_Tf2ComputePropOpacity),
+			                     reinterpret_cast<PVOID>(Tf2DemoComputePropOpacity));
+		if (error == NO_ERROR)
+			error = DetourTransactionCommit();
+		else
+			DetourTransactionAbort();
+	}
+	if (error != NO_ERROR)
+		g_Tf2ComputePropOpacity = nullptr;
+	return error == NO_ERROR;
+}
+} // namespace
+
 CON_COMMAND(mirv_fix, "Various fixes")
 {
 	int argc = args->ArgC();
@@ -6544,6 +6594,33 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	if (2 <= argc)
 	{
 		char const * cmd1 = args->ArgV(1);
+		if (!_stricmp(cmd1, "noStaticPropFade"))
+		{
+			if (g_SourceSdkVer != SourceSdkVer_TF2)
+			{
+				Tier0_Warning("Static prop fade override requires TF2.\n");
+				return;
+			}
+			if (argc == 3 && !std::strcmp(args->ArgV(2), "1"))
+			{
+				if (!Tf2InstallPropOpacityHook())
+				{
+					Tier0_Warning("StaticPropMgrClient004 opacity hook unavailable.\n");
+					return;
+				}
+				g_Tf2NoPropFade.store(true);
+			}
+			else if (argc == 3 && !std::strcmp(args->ArgV(2), "0"))
+				g_Tf2NoPropFade.store(false);
+			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
+			{
+				Tier0_Msg("Usage: mirv_fix noStaticPropFade 0|1|status\n");
+				return;
+			}
+			Tier0_Msg("Static prop fade override: %s; demo views overridden: %u.\n",
+			          g_Tf2NoPropFade.load() ? "enabled" : "disabled", g_Tf2NoPropFadeViews.load());
+			return;
+		}
 		// TF2 recorder sound command.
 		if (!_stricmp(cmd1, "recorderSounds"))
 		{
@@ -7070,6 +7147,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	);
 #endif // #ifndef _WIN64
 	Tier0_Msg("mirv_fix playerRepair [...] - Manual TF2 player sample reconstruction.\n"
+        "mirv_fix noStaticPropFade [...] - Disable static prop fading during TF2 demo playback.\n"
         "mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
 			  "mirv_fix recorderSounds [...] - Mute/restore recorder sounds in TF2 POV demos.\n"
 			  "mirv_fix povDeathcam [...] - Suppress recorder death/freeze camera in TF2 POV demos.\n"

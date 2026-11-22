@@ -71,6 +71,41 @@ All links below are pinned to the revision above:
 - [Server portal state](https://github.com/ValveSoftware/source-sdk-2013/blob/3e957b70b167929f120360115d359d1ecb4c1699/src/game/server/func_areaportal.cpp)
 - [Public static-prop interface](https://github.com/ValveSoftware/source-sdk-2013/blob/3e957b70b167929f120360115d359d1ecb4c1699/src/public/engine/IStaticPropMgr.h)
 
+## Retail TF2 POV demo observations
+
+In a user-tested POV demo, `r_portalsopenall 1` restored the missing building
+interior, including the floor and stairs. From an elevated exterior viewpoint,
+`r_novis 1` restored distant terrain and buildings. The console reported a
+default of 0 for the portal control and displayed no default for the PVS control.
+Any temporary override should save each current value and restore it afterward.
+
+Neither toggle visibly restored the missing entities in this test. A control
+point label still appeared at the expected position. Compare its class and
+model while visible and missing using `mirv_listentities` and
+`mirv_drawentities debugLabel <label>`. A stationary label alone cannot
+establish fresh movement updates or identify which entity supplies the visible
+mesh. Prop distance fading and TF2C still need independent tests.
+
+A later test found that a sentry resolved through `mirv_drawentities debugLabel`
+when the recorder approached, but did not resolve earlier. Last-known-pose
+retention needs a prior observation. The distant moving Heavy was an opponent,
+so teammate glow transmission does not explain that example.
+
+To isolate distance fade, pause playback and repeat a short camera move with
+FOV and portal/PVS settings fixed. At a distance where the prop is visible,
+toggle `r_drawstaticprops 0` briefly and restore its previous value. If this
+removes the object, inspect the map's compiled static-prop fade distances and
+flags. Test detail foliage with `cl_detaildist` separately. Test client physics
+props with `r_propsmaxdist`. Neither distance control covers every prop class.
+
+On cp_foundry the user confirmed the mid roof disappears with static props
+disabled. The supplied v10 static-prop lump contains 1,839 placements. Entry
+1747 (zero-based), models/props_harbor/center_cap_building_harbor.mdl, is at
+(0, 0, 176). Its fade start and end are both 1930. Flags 0x101 include distance
+fading and omit screen-space fading (0x20). The adjacent barrel crates have
+zero fade distances. Use this shot to test an opt-in runtime override of authored
+static-prop distance fades and restoration of the original cutoff.
+
 ## Proposed approach
 
 ### 1. Establish why each disappearance happens
