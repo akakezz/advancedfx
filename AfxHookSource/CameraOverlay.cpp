@@ -483,6 +483,8 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 }
 void SceneCacheDrawModels()
 {
+	if (SceneCanDrawModels())
+		Mirv_Tf2_DrawHeldBuilding();
 	if (!g_SceneDrawModels.load() || !SceneCanDrawModels())
 		return;
 	std::shared_ptr<const advancedfx::SceneCache::Frame> view;

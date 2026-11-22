@@ -506,6 +506,8 @@ void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued r
 void Mirv_Tf2_SceneRenderFrame();
 void Mirv_Tf2_SceneRenderStatus(unsigned &outstanding, unsigned &peak);
 
+void Mirv_Tf2_HoldBuilding(int index);
+void Mirv_Tf2_DrawHeldBuilding();
 void Mirv_Tf2_DebugEntityLabel(int address);
 
 #include <iosfwd>
