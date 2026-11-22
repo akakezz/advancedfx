@@ -6612,23 +6612,6 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	if (2 <= argc)
 	{
 		char const * cmd1 = args->ArgV(1);
-		if (!_stricmp(cmd1, "holdBuilding"))
-		{
-			if (argc == 2 || (argc == 3 && !_stricmp(args->ArgV(2), "status")))
-				Mirv_Tf2_HoldBuilding(-1);
-			else if (argc == 3 && !_stricmp(args->ArgV(2), "off"))
-				Mirv_Tf2_HoldBuilding(0);
-			else
-			{
-				char *end = nullptr;
-				const long index = argc == 3 ? std::strtol(args->ArgV(2), &end, 10) : 0;
-				if (end && !*end && index > 0 && index < 2048)
-					Mirv_Tf2_HoldBuilding(static_cast<int>(index));
-				else
-					Tier0_Msg("mirv_fix holdBuilding <entity index>|off|status\n");
-			}
-			return;
-		}
 		if (!_stricmp(cmd1, "noStaticPropFade"))
 		{
 			if (!MirvFix_StaticPropFadeSupported())
@@ -7182,7 +7165,6 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	);
 #endif // #ifndef _WIN64
 	Tier0_Msg("mirv_fix playerRepair [...] - Manual TF2 player sample reconstruction.\n"
-        "mirv_fix holdBuilding [...] - Test retaining a dormant TF2 building during demo playback.\n"
         "mirv_fix noStaticPropFade [...] - Disable static prop fading during TF2 demo playback.\n"
         "mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
 			  "mirv_fix recorderSounds [...] - Mute/restore recorder sounds in TF2 POV demos.\n"
