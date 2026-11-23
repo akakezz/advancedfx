@@ -6681,7 +6681,7 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		{
 			g_SelectedCameraClip = clip.Id;
 			g_OpenCameraClips = true;
-			if (haveMouseTick)
+			if (haveMouseTick && !ImGui::GetIO().KeyShift)
 			{
 				moving = clip.Id;
 				originalMove = pendingMove = clip;
@@ -6701,9 +6701,13 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		if (end < visibleStart || begin > visibleEnd)
 			continue;
 		const std::string caption = CameraClipSourceName(clip.Campath, clip.Target) +
-			" transition | click/drag to move; drag right edge to resize";
+			" transition | Shift-drag to move; Shift-drag right edge to resize";
+		// Default drags go to the camera clip. Only Shift+drag turns the
+		// overlaid transition into an interactive target. Keeping the span
+		// visible but inert avoids the lower clip's mouse events being stolen.
+		const bool editEnvelope = ImGui::GetIO().KeyShift || movingEnvelope == clip.Id;
 		const bool chose = ImGui::NeoTimelineSpan(begin, end, IM_COL32(55, 168, 236, 115),
-			caption.c_str(), nullptr, false, clip.Id == g_SelectedCameraClip, -1, true);
+			caption.c_str(), nullptr, false, clip.Id == g_SelectedCameraClip, -1, true, editEnvelope);
 		if (chose)
 		{
 			moving = ~std::uint64_t(0); // The envelope takes precedence over the source block.
@@ -6909,9 +6913,9 @@ static void DrawCameraClipsPanel()
 	ImGui::TextWrapped(
 		"Enable the sequence to play these clips. Preview navigation is independent. You can use free camera "
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
-	ImGui::TextDisabled("Blue overlays show transitions on their source clips; drag or resize directly. Overlaps are allowed.");
+	ImGui::TextDisabled("Drag a camera clip normally. Hold Shift to move its blue transition, or Shift-drag the right edge to resize. Overlaps are allowed.");
 	ImGui::Checkbox("Show selected transition path in 3D (dashed orange)", &g_ShowTransitionGuide);
-	ImGui::TextDisabled("Visible during editing, hidden during recording. Live attached previews are approximate.");
+	ImGui::TextDisabled("Editor only; hidden during recording. Moving/aimed cameras need Scene Cache history for an accurate 3D guide.");
 	if (SceneCachePreviewActive())
 		ImGui::TextWrapped("Recorded tracking preserves observed aiming. Without camera samples, aiming is "
 						   "unsmoothed. Re-record after editing a camera. Targets must be "

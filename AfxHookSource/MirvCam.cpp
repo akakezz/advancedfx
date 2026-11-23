@@ -1491,7 +1491,24 @@ std::vector<advancedfx::CameraGuideLine> TransitionGuideLinesInternal(std::uint6
 	if (clip.Blend <= 0 || clip.Blend > 3600 || !clip.ValidTransition())
 		return lines;
 	const double start = clip.TransitionStart();
-	const bool cached = AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+	// A campath or fixed rig is deterministic at any time. Attached/aimed rigs
+	// are not: evaluating their entity transform from the current live frame
+	// while asking for a different sequencer timestamp draws a guide in the
+	// wrong place, especially after dragging clips/envelopes to new times.
+	// Use historical Scene Cache frames for *all* moving-source guides, even
+	// when cached preview is not selected. Without complete coverage, hide
+	// the guide instead of showing a misleading approximate trajectory.
+	bool movingSource = false;
+	for (size_t i = 0; i <= index; ++i)
+		if (!g_CameraClips[i].Campath)
+		{
+			auto rig = FindRig(std::to_string(g_CameraClips[i].Target));
+			if (rig == g_CameraRigs.end())
+				return lines;
+			movingSource |= rig->second.Rig.Attached || bool(rig->second.AimTarget) ||
+				(rig->second.Aim && (rig->second.Aim->Active || rig->second.Aim->SoftDeactivate));
+		}
+	const bool historical = movingSource || AfxHookSource::CameraOverlay::SceneCachePreviewActive();
 	// Avoid updating any live tracking, aiming or frozen-release history while
 	// building a visualization. A guide must never influence the shot itself.
 	auto oldRigs = g_CameraRigs;
@@ -1514,30 +1531,41 @@ std::vector<advancedfx::CameraGuideLine> TransitionGuideLinesInternal(std::uint6
 	g_CameraEvaluationFrame = -1;
 	constexpr int steps = 24;
 	std::array<advancedfx::CameraPose, steps + 1> samples{};
-	std::array<bool, steps + 1> valid{};
+	bool complete = true;
 	for (int i = 0; i <= steps; ++i)
 	{
 		const double time = start + clip.Blend * (double(i) / steps);
 		g_CameraEvaluationTime = time;
-		g_BakingCamera = cached;
-		if (cached)
+		g_BakingCamera = historical;
+		if (historical)
 		{
 			advancedfx::SceneCache::Frame frame;
 			if (!AfxHookSource::CameraOverlay::SampleCameraScene(time, frame))
-				continue;
+			{
+				complete = false;
+				break;
+			}
 			g_BakeFrame = std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame));
 		}
-		valid[i] = EvaluateSequenceComposite(time, index + 1, samples[i]) && samples[i].Valid();
-		if (!cached && valid[i])
+		// The incoming target and outgoing composite both need to exist;
+		// otherwise a stale base camera can masquerade as the trajectory.
+		advancedfx::CameraPose target;
+		if ((i == 0 && !EvaluateSequenceComposite(start, index, target)) ||
+			!EvaluateClipSource(clip, time, target) ||
+			!EvaluateSequenceComposite(time, index + 1, samples[i]) || !samples[i].Valid())
+		{
+			complete = false;
+			break;
+		}
+		if (!historical)
 		{
 			g_SequencePreviousPose = samples[i];
 			g_SequencePreviousTime = time;
 		}
 	}
+	if (complete)
 	for (int i = 1; i <= steps; i += 2)
 	{
-		if (!valid[i - 1] || !valid[i])
-			continue;
 		advancedfx::CameraGuideLine line;
 		for (int axis = 0; axis < 3; ++axis)
 		{

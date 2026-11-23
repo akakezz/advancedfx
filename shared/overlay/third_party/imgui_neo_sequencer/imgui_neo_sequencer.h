@@ -133,7 +133,7 @@ namespace ImGui {
     IMGUI_API bool NeoTimelineSpan(
         FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption = nullptr,
         bool *hovered = nullptr, bool block = false, bool selected = false, FrameIndexType blendEnd = -1,
-        bool groupHeader = false); // Header spans may follow a closed BeginNeoGroup.
+        bool groupHeader = false, bool interactive = true); // Inert spans draw without stealing clip clicks.
     IMGUI_API void NeoCancelSelection();
 
     IMGUI_API bool IsNeoKeyframeHovered();

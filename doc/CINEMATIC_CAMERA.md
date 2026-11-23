@@ -2499,16 +2499,23 @@ The next transition begins from the output of any earlier transitions (for
 example, an unfinished A/B composite can become the outgoing side of B/C).
 A fully completed later transition supersedes previous transitions. Blue
 transition overlays are drawn on the same Camera sources strip as the camera
-clips, not on separate rows. They can extend across later edit points, overlap
-other envelopes, and be moved or resized by dragging the span or its right edge.
+clips, not on separate rows. They can extend across later edit points and overlap other envelopes.
+**Normal drag moves the camera clip**; hold **Shift while dragging** a blue
+transition to move its timing independently, or Shift-drag its right edge to
+resize its duration. A visual overlay that is not being Shift-edited cannot
+capture the clip's ordinary mouse drag.
 
 With **Show selected transition path in 3D** enabled, the existing DX9
 camera-guide renderer shows only the selected transition as an amber dashed
 line (not a solid campath). This is editor-only and suppressed during HLAE
-recording. Scene Cache preview samples camera poses at their historical
-timestamps; without cached history a moving attached-camera guide is a
-current-scene approximation. The draw-only sampler restores live camera
-and aiming state and never changes the active transition.
+recording. Attached and aimed camera guides use historical Scene Cache samples
+at the transition's timestamps, regardless of whether cached preview is
+currently enabled. If historical coverage is absent or incomplete, no guide
+is drawn for those moving sources: a guess from the live entity position at
+another timestamp could place the guide far away from the shot. Fixed cameras
+and ordinary campaths can still be evaluated directly without a cache.
+The draw-only sampler restores live camera and aiming state and never changes
+the active transition.
 
 New clips authored in the UI enable **Freeze outgoing camera at transition
 start** by default. This releases the outgoing attached/aimed/path camera from
@@ -2663,9 +2670,10 @@ from a failed export which retained a previous file.
 Camera source clips draw as solid labelled blocks. A hatched region inside the
 leading edge indicates the blend into that source; the selected block has a gold
 outline. Clicking a source block or its translucent blue transition opens the same clip
-editor. Drag the blue region to move the envelope or its right edge to resize
-the duration; the edit point remains independent. Edit points, offsets and
-durations also remain editable numerically.
+editor. Drag normally to move the source clip; **Shift+drag** the blue region
+to move the envelope or **Shift+drag its right edge** to resize the duration.
+The edit point remains independent. Edit points, offsets and durations also
+remain editable numerically.
 
 A full-sequence bake requires coverage for every active tracked source, including
 its incoming blend. If a camera has neither a recorded camera sample nor its

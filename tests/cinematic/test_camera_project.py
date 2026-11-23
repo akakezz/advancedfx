@@ -170,6 +170,9 @@ int main(){
  g_Hook_VClient_RenderView.LastCameraOrigin[0]=200;command({"mirv_cam","add","Fallback incoming"});
  advancedfx::CameraClip outgoingClip;outgoingClip.Target=outgoingId;outgoingClip.Time=0;assert(MirvCam_EditClip(outgoingClip));
  advancedfx::CameraClip incomingClip;incomingClip.Target=g_CameraRigs.at("Fallback incoming").Id;incomingClip.Time=1;incomingClip.Blend=1;assert(MirvCam_EditClip(incomingClip));
+ // A tracked source without historical coverage must not be projected at
+ // an unrelated live entity position in a past/future transition guide.
+ assert(MirvCam_TransitionGuideLines(incomingClip.Id).empty());
  advancedfx::SceneCache::Frame historical;historical.ClientTime=.95;advancedfx::SceneCache::Entity historicalTarget;historicalTarget.Identity=outgoing.CacheIdentity;historicalTarget.Origin[0]=100;historical.Entities.push_back(historicalTarget);cameraFrames.push_back(historical);++cameraFramesRevision;
  cachedFrame=std::make_shared<const advancedfx::SceneCache::Frame>();targets.clear();outgoing.LastWorld.Position[0]=999;
  g_BakingCamera=true;g_BakeFrame=cachedFrame;g_CameraEvaluationTime=1.5;

@@ -1491,7 +1491,7 @@ namespace ImGui
     }
 
     bool NeoTimelineSpan(FrameIndexType begin, FrameIndexType end, ImU32 color, const char *caption,
-                         bool *hovered, bool block, bool selected, FrameIndexType blendEnd, bool groupHeader)
+                         bool *hovered, bool block, bool selected, FrameIndexType blendEnd, bool groupHeader, bool interactive)
     {
         IM_ASSERT(inSequencer);
         auto &context = sequencerData[currentSequencer];
@@ -1549,7 +1549,7 @@ namespace ImGui
         }
         // Timeline selection owns an active ID while a button is held. Span markers
         // must still receive hover/clicks in that same window.
-        const bool hover = IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+        const bool hover = interactive && IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
                            IsMouseHoveringRect(bounds.Min, bounds.Max);
         // Span markers are part of the existing timeline-row item. Claim its
         // ID so ImGui does not interpret a marker drag as moving the window.
