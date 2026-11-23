@@ -10,13 +10,15 @@ root=Path(__file__).resolve().parents[2];imgui=args.imgui_dir.resolve();out=args
 s=(root/'AfxHookSource/CameraOverlay.cpp').read_text();s=s[re.search(r'namespace AfxHookSource\s*\{\s*namespace CameraOverlay\s*\{',s).start():]
 native=(root/'AfxHookSource/MirvCommands.cpp').read_text()
 fix_api=native[native.index('// TF2 demo interpolation controls.'):native.index('// End TF2 demo interpolation controls.')]
+clock_api=native[native.index('// TF2 demo render-clock experiment.'):native.index('// End TF2 demo render-clock experiment.')]
 repair_api=native[native.index('// TF2 manual player repair.'):native.index('// End TF2 manual player repair.')]
 pov_api=native[native.index('// TF2 POV deathcam control.'):native.index('// End TF2 POV deathcam control.')]
 cache_at=native.index('CON_COMMAND(mirv_cache,');cache_body=native[native.index('{',cache_at):native.index('CON_COMMAND(mirv_campath,',cache_at)];cache_native_command='void TestNativeCacheCommand(advancedfx::ICommandArgs *args)'+cache_body+'\n'
 pov_command=native[native.index('// TF2 POV deathcam command.'):native.index('// End TF2 POV deathcam command.')]
 fix_command=native[native.index('// TF2 interpolation command.'):native.index('// End TF2 interpolation command.')]
+clock_command=native[native.index('// Experimental playback clock control:'):native.index('// TF2 interpolation command.')]
 repair_command=native[native.index('// TF2 player repair command.'):native.index('// End TF2 player repair command.')]
-fix_command='void callFix(std::initializer_list<const char*> words){struct Args{std::vector<const char*> V;int ArgC(){return (int)V.size();}const char*ArgV(int i){return V[i];}} data;data.V=words;auto *args=&data;int argc=args->ArgC();const char *cmd1=args->ArgV(1);'+repair_command+pov_command+fix_command+'}\n'
+fix_command='void callFix(std::initializer_list<const char*> words){struct Args{std::vector<const char*> V;int ArgC(){return (int)V.size();}const char*ArgV(int i){return V[i];}} data;data.V=words;auto *args=&data;int argc=args->ArgC();const char *cmd1=args->ArgV(1);'+repair_command+pov_command+clock_command+fix_command+'}\n'
 demo_time=native[native.index('bool GetCurrentDemoTime(double &outDemoTime)'):native.index('bool GetDemoTickFromClientTime(')].replace('GetCurrentDemoTime(', 'ActualGetCurrentDemoTime(',1)
 marker_observer=native[native.index('// Observe the native demo_gototick'):native.index('void MirvCampath_ObserveDemoSeeks')]
 main_source=(root/'AfxHookSource/main.cpp').read_text();clock_at=main_source.index('g_CommandSystem.UpdateTickMarkers');clock_start=main_source.rfind('\t\tif (g_VEngineClient)',0,clock_at);clock_end=main_source.index('g_CommandSystem.OnExecuteCommands();',clock_at)+len('g_CommandSystem.OnExecuteCommands();');marker_clock='void MarkerEngineFrame(){'+main_source[clock_start:clock_end]+'}\n'
@@ -31,6 +33,8 @@ preamble=r'''
 #include "shared/CameraModifier.h"
 #include "shared/RecordingLog.h"
 #include "shared/CameraRig.h"
+#include "shared/DemoRenderClockStabilizer.h"
+#include "AfxHookSource/DemoRenderClock.h"
 #include "shared/CommandSystem.h"
 #include "shared/DemoTimeline.h"
 #include <future>
@@ -108,7 +112,7 @@ template<size_t N>void strncpy_s(char(&b)[N],const char*s,size_t){snprintf(b,N,"
 bool UTF8StringToWideString(const char*s,std::wstring&w){try{w=std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.from_bytes(s);return true;}catch(...){return false;}}
 bool StringIBeginsWith(const char*a,const char*b){return strncasecmp(a,b,strlen(b))==0;}
 struct MirvInput{int MovementClears=0;void ClearMovementInput(){++MovementClears;}void ResetCameraSmoothing(){}int CollisionAdoptions=0;void AdoptCollisionPosition(float x,float y,float z){++CollisionAdoptions;Pose[0]=x;Pose[1]=y;Pose[2]=z;}bool Override(float,float&x,float&y,float&z,float&a,float&b,float&c,float&f){x=y=z=a=b=c=f=-999;return true;}bool Camera=false;float Pose[7]={};double Sens=1;bool GetCameraControlMode(){return Camera;}void SetCameraControlMode(bool b){Camera=b;}void SetTx(float x){Pose[0]=x;}void SetTy(float x){Pose[1]=x;}void SetTz(float x){Pose[2]=x;}void SetRx(float x){Pose[3]=x;}void SetRy(float x){Pose[4]=x;}void SetRz(float x){Pose[5]=x;}void SetFov(float x){Pose[6]=x;}double GetKeyboardSensitivty(){return Sens;}void SetKeyboardSensitivity(double x){Sens=x;}} input;
-struct WrpGlobals{double absoluteframetime_get(){return 1.0/60;}double frametime_get(){return 1.0/60;}int framecount_get(){return 1;}double curtime_get(){return 1;}double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
+struct WrpGlobals{float CurTime=1;void curtime_set(float v){CurTime=v;}void*GetRaw(){return this;}double absoluteframetime_get(){return 1.0/60;}double frametime_get(){return 1.0/60;}int framecount_get(){return 1;}double curtime_get(){return CurTime;}double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
 struct FakeView{CamPath m_CamPath;CamPathCollection m_CamPaths{m_CamPath};MirvInput*m_MirvInput=&input;int LastCameraSampleFrame=1;float GameCameraOrigin[3]={10,20,30},GameCameraAngles[3]={1,2,3};double LastCameraOrigin[3]={100,-100,50},LastCameraAngles[3]={0,135,0},LastCameraFov=130;int LastWidth=1600,LastHeight=1000;bool Menu=false,GlobalsAvailable=true,Installed=true;bool IsInstalled(){return Installed;}bool IsMenuActive(){return Menu;}bool IsSourceUiActive(){return Menu;}WrpGlobals*GetGlobals(){return GlobalsAvailable?&globals:nullptr;}}g_Hook_VClient_RenderView;
 struct CCampathDrawer{bool Names=true,Holds=true,Durations=true;bool GetDrawNames(){return Names;}bool GetDrawHolds(){return Holds;}bool GetDrawDurations(){return Durations;}void SetDrawNames(bool v){Names=v;}void SetDrawHolds(bool v){Holds=v;}void SetDrawDurations(bool v){Durations=v;}bool Draw=false;float Index=18;bool Draw_get(){return Draw;}void Draw_set(bool b){Draw=b;}float GetDrawKeyframeIndex(){return Index;}void SetDrawKeyframeIndex(float x){Index=x;}}g_CampathDrawer;
 struct Clock{double Time=10;double GetTime(){return Time;}int PreviewFrame=-1;int GetFrameCount(){return PreviewFrame>=0?PreviewFrame:int(Time*100);}}g_MirvTime;
@@ -1586,14 +1590,54 @@ void Run(){
 """
 test=test.replace('void frame(',mode_preamble+mode_constants+mode_math+mode_class+mode_offset+mode_tests+'\nvoid frame(',1)
 
-test=test.replace('int main(){try{',collision_tests+'\nint main(){try{CollisionTests();AttachedFollowTests();AttachmentModeTest::Run();',1)
+
+clock_tests=r'''
+void DemoClockABTests()
+{
+  auto previousTime=g_MirvTime.Time;
+  auto previousCurtime=globals.CurTime;
+  auto previousPlaying=engine.Playing;
+  engine.Playing=true;
+  g_MirvTime.Time=10.0;
+  globals.CurTime=100.0f;
+  check(MirvFix_SetDemoRenderClock(true),"TF2 test clock can enable");
+  MirvFix_DemoRenderClockBegin();
+  check(globals.CurTime==100.0f,"First render clock frame anchors without changing curtime");
+  g_MirvTime.Time=10.0+1.0/66;
+  globals.CurTime=100.0f;
+  MirvFix_DemoRenderClockBegin();
+  check(std::abs(globals.CurTime-(100.0+1.0/66))<.0002,
+        "Render clock corrects repeated engine time to monotonic demo progression");
+  MirvFix_DemoRenderClockEnd();
+  check(std::abs(globals.CurTime-100.0f)<1e-5,
+        "End of render restores the exact engine curtime");
+  g_MirvTime.Time=10.0+2.0/66;
+  globals.CurTime=100.0f;
+  MirvFix_DemoRenderClockBegin();
+  check(globals.CurTime>100.02f,"Subsequent render correction remains monotonic");
+  MirvFix_SetDemoRenderClock(false);
+  check(std::abs(globals.CurTime-100.0f)<1e-5 && !MirvFix_GetDemoRenderClock(),
+        "Disabling mid-render immediately restores engine time");
+  engine.Playing=false;
+  check(MirvFix_SetDemoRenderClock(true),"Can arm clock ahead of demo playback");
+  MirvFix_DemoRenderClockBegin();
+  check(std::abs(globals.CurTime-100.0f)<1e-5,
+        "No mutation outside demo playback");
+  MirvFix_SetDemoRenderClock(false);
+  g_MirvTime.Time=previousTime;
+  globals.CurTime=previousCurtime;
+  engine.Playing=previousPlaying;
+}
+'''
+
+test=test.replace('int main(){try{',clock_tests+collision_tests+'\nint main(){try{DemoClockABTests();CollisionTests();AttachedFollowTests();AttachmentModeTest::Run();',1)
 
 neo=(root/'shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.cpp').read_text()
 neo='struct ImVec2; extern void TestRecordNeoLabel(int,int,ImVec2); extern void TestRecordSpanTooltip(int);\n'+neo.replace('TextUnformatted(context.SpanCaption.c_str());','TestRecordSpanTooltip(context.SpanBegin); TextUnformatted(context.SpanCaption.c_str());').replace('snprintf(lbl, sizeof(lbl), "%d", labelIndex);','snprintf(lbl, sizeof(lbl), "%d", labelIndex); TestRecordNeoLabel(*frame,labelIndex,center);')
 neo+='\nnamespace ImGui{void TestSetNeoView(float zoom,int offset){for(auto &entry:sequencerData){entry.second.Zoom=zoom;entry.second.OffsetFrame=offset;}}}\n'
 neo += '\nnamespace ImGui{ImVec2 TestNeoPlayheadPoint(double tick){auto&c=sequencerData.at(currentSequencer);return getCurrentFrameBB(tick,c).GetCenter();}double TestNeoDisplayFrame(){return sequencerData.at(currentSequencer).DisplayFrame;}}\n'
 neo_file=out/'neo_labels_test.cpp';neo_file.write_text(neo)
-source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+marker_observer+marker_clock+demo_time+fix_api+pov_api+repair_api+fix_command+collision_code+s+cache_native_command+native+view+layout+test)
+source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+marker_observer+marker_clock+demo_time+fix_api+clock_api+pov_api+repair_api+fix_command+collision_code+s+cache_native_command+native+view+layout+test)
 cmd=['g++','-std=c++17','-O0','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),'-I'+str(imgui),'-I'+str(root/'shared/overlay/third_party/imgui_neo_sequencer'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp'),str(root/'shared/CommandSystem.cpp'),str(root/'shared/DemoTimeline.cpp'),str(root/'shared/PlayerRepair.cpp'),str(root/'shared/AfxConsole.cpp')]+[str(imgui/f) for f in ['imgui.cpp','imgui_draw.cpp','imgui_widgets.cpp','imgui_tables.cpp']]+[(str(neo_file) if f=='imgui_neo_sequencer.cpp' else str(root/'shared/overlay/third_party/imgui_neo_sequencer'/f)) for f in ['imgui_neo_sequencer.cpp','imgui_neo_internal.cpp']]+[str(root/'shared/overlay/third_party/imguizmo/ImGuizmo.cpp'),'-o',str(out/'overlay_test')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 p=subprocess.run(cmd,capture_output=True,text=True);(out/'build.log').write_text(p.stdout+p.stderr)

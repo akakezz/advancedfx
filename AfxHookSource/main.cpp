@@ -12,6 +12,7 @@
 #include "../shared/AfxCommandLine.h"
 #include "addresses.h"
 #include "RenderView.h"
+#include "DemoRenderClock.h"
 #include <SourceInterfaces.h>
 #include "WrpVEngineClient.h"
 #include "WrpConsole.h"
@@ -938,6 +939,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 {
 	if (curStage == SOURCESDK::TF2::FRAME_START)
 	{
+		MirvFix_DemoRenderClockEnd(); // Recover any interrupted frame.
 		MirvFix_Update();
 		AfxHookSource::CameraOverlay::PreferencesFrame();
 	}
@@ -947,6 +949,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 		MirvPovSpectate_FrameBegin();
 		Shared_BeforeFrameRenderStart();
 		MirvFix_PlayerAngleTraceFrame(3);
+		MirvFix_DemoRenderClockBegin(); // Before Source's rendering interpolation.
 		break;
 	}
 
@@ -967,6 +970,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 		MirvFix_RecorderSoundUpdate();
 		break;
 	case SOURCESDK::TF2::FRAME_RENDER_END:
+		MirvFix_DemoRenderClockEnd(); // Restore before HLAE's render-end diagnostic.
 		MirvPovSpectate_FrameEnd();
 		// Copy completed render poses only after the engine has drawn this frame.
 		// Capturing at RENDER_START could preempt Source's normal bone setup/interpolation.

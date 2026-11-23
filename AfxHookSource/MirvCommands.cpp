@@ -10,6 +10,8 @@ extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 
 #include "RenderView.h"
 #include "MirvTime.h"
+#include "DemoRenderClock.h"
+#include <shared/DemoRenderClockStabilizer.h>
 
 #include "WrpVEngineClient.h"
 #include "WrpConsole.h"
@@ -5023,6 +5025,137 @@ static void MirvFix_PrintPlayerInterpolationStatus()
 }
 // End TF2 demo interpolation controls.
 
+// TF2 demo render-clock experiment. Off by default, only during world rendering.
+// This intentionally does not change demo packets, networking, prediction or
+// the engine tick. Restore gpGlobals->curtime before subsequent frame stages.
+namespace
+{
+struct DemoRenderClockExperiment
+{
+	bool Enabled = false, Active = false;
+	WrpGlobals *Globals = nullptr;
+	float Original = 0, Applied = 0;
+	advancedfx::DemoRenderClockStabilizer Clock;
+	unsigned long long AppliedFrames = 0, SkippedFrames = 0, Resets = 0, UnsafeRestores = 0;
+	double LastDifference = 0, LastDemo = 0, LastRaw = 0, LastApplied = 0;
+} g_DemoRenderClock;
+}
+bool MirvFix_GetDemoRenderClock()
+{
+	return g_DemoRenderClock.Enabled;
+}
+void MirvFix_DemoRenderClockEnd()
+{
+	auto &s = g_DemoRenderClock;
+	if (!s.Active)
+		return;
+	// If Source has itself changed curtime during rendering, do not overwrite
+	// that new engine value with a stale before-render snapshot.
+	if (s.Globals && s.Globals == g_Hook_VClient_RenderView.GetGlobals() &&
+	    std::isfinite(s.Globals->curtime_get()) &&
+	    std::abs(double(s.Globals->curtime_get()) - s.Applied) <= 0.0005)
+		s.Globals->curtime_set(s.Original);
+	else
+		++s.UnsafeRestores;
+	s.Active = false;
+	s.Globals = nullptr;
+}
+void MirvFix_ResetDemoRenderClock()
+{
+	MirvFix_DemoRenderClockEnd();
+	g_DemoRenderClock.Clock.Reset();
+	++g_DemoRenderClock.Resets;
+}
+bool MirvFix_SetDemoRenderClock(bool enabled)
+{
+	if (enabled && g_SourceSdkVer != SourceSdkVer_TF2 &&
+	    g_SourceSdkVer != SourceSdkVer_TF2Classified)
+		return false;
+	MirvFix_ResetDemoRenderClock();
+	g_DemoRenderClock.Enabled = enabled;
+	g_DemoRenderClock.AppliedFrames = 0;
+	g_DemoRenderClock.SkippedFrames = 0;
+	g_DemoRenderClock.UnsafeRestores = 0;
+	return true;
+}
+void MirvFix_DemoRenderClockBegin()
+{
+	auto &s = g_DemoRenderClock;
+	if (!s.Enabled || s.Active)
+		return;
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+	    g_VEngineClient->IsDrawingLoadingImage() || g_VEngineClient->IsSkippingDemo() ||
+	    g_VEngineClient->IsPaused())
+	{
+		if (s.Clock.HasAnchor()) MirvFix_ResetDemoRenderClock();
+		return;
+	}
+	auto *globals = g_Hook_VClient_RenderView.GetGlobals();
+	if (!globals || !globals->GetRaw())
+	{
+		++s.SkippedFrames;
+		return;
+	}
+	double demoTime = 0;
+	const double rawTime = globals->curtime_get(), interval = globals->interval_per_tick_get();
+	if (!GetCurrentDemoTime(demoTime) || !std::isfinite(rawTime) ||
+	    !std::isfinite(interval) || interval <= 0)
+	{
+		if (s.Clock.HasAnchor()) MirvFix_ResetDemoRenderClock();
+		++s.SkippedFrames;
+		return;
+	}
+	double target = 0;
+	const bool previousAnchor = s.Clock.HasAnchor();
+	const bool apply = s.Clock.Evaluate(demoTime, rawTime, interval, target);
+	if (previousAnchor && !s.Clock.HasAnchor()) ++s.Resets;
+	s.LastDemo = demoTime;
+	s.LastRaw = rawTime;
+	s.LastApplied = apply ? target : rawTime;
+	s.LastDifference = s.LastApplied - rawTime;
+	if (!apply)
+	{
+		++s.SkippedFrames;
+		return;
+	}
+	if (std::abs(target - rawTime) > 2.5 * interval)
+	{
+		MirvFix_ResetDemoRenderClock();
+		++s.SkippedFrames;
+		return;
+	}
+	const float original = float(rawTime), proposed = float(target);
+	globals->curtime_set(proposed);
+	if (!std::isfinite(globals->curtime_get()) ||
+	    std::abs(double(globals->curtime_get()) - proposed) > 0.0005)
+	{
+		globals->curtime_set(original);
+		s.Enabled = false;
+		s.Clock.Reset();
+		++s.SkippedFrames;
+		Tier0_Warning("TF2 demo render clock disabled: curtime write was not verified.\n");
+		return;
+	}
+	s.Globals = globals;
+	s.Original = original;
+	s.Applied = proposed;
+	s.Active = true;
+	++s.AppliedFrames;
+}
+void MirvFix_PrintDemoRenderClockStatus()
+{
+	const auto &s = g_DemoRenderClock;
+	Tier0_Msg("Experimental TF2 demo render clock: %s; in render stage %d; anchor %d; "
+	          "applied frames %llu, skipped frames %llu, resets %llu, unmatched restores %llu.\n",
+	          s.Enabled ? "ON" : "OFF", int(s.Active), int(s.Clock.HasAnchor()),
+	          s.AppliedFrames, s.SkippedFrames, s.Resets, s.UnsafeRestores);
+	Tier0_Msg("Last demo time %.6f, engine time %.6f, proposed render time %.6f, shift %+.3f ms.\n",
+	          s.LastDemo, s.LastRaw, s.LastApplied, 1000 * s.LastDifference);
+	Tier0_Msg("Render-only A/B experiment, off by default: does not alter demo packets or network ticks. "
+	          "Disable with mirv_fix demoRenderClock 0. It may cause animation artifacts.\n");
+}
+// End TF2 demo render-clock experiment.
+
 // TF2 POV deathcam control. Public Source SDK receive-table layouts; resolve
 // the existing proxy from VClient017 metadata instead of scanning game code.
 namespace
@@ -6840,6 +6973,21 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			return;
 		}
 		// End TF2 player repair command.
+		// Experimental playback clock control: confined to TF2 render stages.
+		if (!_stricmp(cmd1, "demoRenderClock"))
+		{
+			if (argc == 3 && (!_stricmp(args->ArgV(2), "0") || !_stricmp(args->ArgV(2), "1")))
+			{
+				if (!MirvFix_SetDemoRenderClock(args->ArgV(2)[0] == '1'))
+					Tier0_Warning("Experimental demo render clock requires TF2 or TF2 Classified.\n");
+			}
+			else if (argc == 3 && !_stricmp(args->ArgV(2), "reset"))
+				MirvFix_ResetDemoRenderClock();
+			else if (argc != 2 && (argc != 3 || _stricmp(args->ArgV(2), "status")))
+				Tier0_Msg("mirv_fix demoRenderClock 0|1|reset|status\n");
+			MirvFix_PrintDemoRenderClockStatus();
+			return;
+		}
 		// TF2 interpolation command.
 		if (!_stricmp(cmd1, "playerInterpolation"))
 		{
@@ -7219,6 +7367,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	Tier0_Msg("mirv_fix playerRepair [...] - Manual TF2 player sample reconstruction.\n"
         "mirv_fix noStaticPropFade [...] - Disable static prop fading during demo playback (StaticPropMgrClient004).\n"
         "mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
+        "mirv_fix demoRenderClock 0|1|reset|status - EXPERIMENTAL, reversible TF2 render-clock A/B test.\n"
 			  "mirv_fix recorderSounds [...] - Mute/restore recorder sounds in TF2 POV demos.\n"
 			  "mirv_fix povDeathcam [...] - Suppress recorder death/freeze camera in TF2 POV demos.\n"
 			  "mirv_fix panoramaTiming [...]\n");

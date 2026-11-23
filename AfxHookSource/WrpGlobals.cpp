@@ -75,6 +75,11 @@ float WrpGlobalsOther::absoluteframetime_get(void)
 	return *(float *)((unsigned char *)m_pGlobals +AFXADDR_GET(other_gpGlobals_OFS_absoluteframetime));
 }
 
+void WrpGlobalsOther::curtime_set(float value)
+{
+	*(float *)((unsigned char *)m_pGlobals + AFXADDR_GET(other_gpGlobals_OFS_curtime)) = value;
+}
+
 float WrpGlobalsOther::curtime_get(void)
 {
 	return *(float *)((unsigned char *)m_pGlobals +AFXADDR_GET(other_gpGlobals_OFS_curtime));

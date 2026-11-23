@@ -8,6 +8,7 @@
 #include "MirvCalcs.h"
 #include "MirvCam.h"
 #include "MirvTime.h"
+#include "DemoRenderClock.h"
 #include "RenderView.h"
 #include "WrpVEngineClient.h"
 #include <cerrno>
@@ -8683,6 +8684,19 @@ void Draw()
 				ImGui::TextWrapped("Adds presentation delay using TF2 interpolation; cannot reconstruct "
 				                   "missing snapshots. Native settings restore when playback ends; the saved "
 				                   "preference applies to the next demo.");
+				ImGui::Separator();
+				bool clockExperiment = MirvFix_GetDemoRenderClock();
+				if (ImGui::Checkbox("Experimental: stabilize TF2 demo render clock", &clockExperiment) &&
+				    !MirvFix_SetDemoRenderClock(clockExperiment))
+					g_DocumentStatus = "Experimental render clock is supported only in TF2/TF2C.";
+				ImGui::SameLine();
+				if (ImGui::Button("Reset render-clock anchor"))
+					MirvFix_ResetDemoRenderClock();
+				if (ImGui::Button("Render clock status") && g_VEngineClient)
+					g_VEngineClient->ClientCmd_Unrestricted("mirv_fix demoRenderClock status");
+				ImGui::TextWrapped("OPT-IN A/B test; not a proven fix. Temporarily adjusts engine curtime "
+				                   "while rendering and restores it afterward. May alter animations or make "
+				                   "jitter worse. Disabled on startup; disable immediately if artifacts appear.");
 			}
 
 			auto &path = g_Hook_VClient_RenderView.m_CamPath;
