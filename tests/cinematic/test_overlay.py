@@ -53,6 +53,11 @@ bool MirvFix_GetRecorderSoundMute(){return false;}
 bool MirvFix_SetRecorderSoundMute(bool b){return !b;}
 const char*MirvFix_RecorderSoundStatus(){return "Unavailable in UI harness";}
 void MirvFix_RecorderSoundUpdate(){}
+// Existing static-prop fade controls need a fixture in the headless overlay test.
+bool testNoStaticPropFade=false;
+bool MirvFix_StaticPropFadeSupported(){return true;}
+bool MirvFix_GetNoStaticPropFade(){return testNoStaticPropFade;}
+bool MirvFix_SetNoStaticPropFade(bool b){testNoStaticPropFade=b;return true;}
 bool g_Tf2RecorderSoundMute=false;bool Tf2RecorderSoundPov(){return false;}
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
