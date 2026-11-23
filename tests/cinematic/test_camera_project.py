@@ -210,7 +210,7 @@ link_probe.write_text('''#include <shared/CameraRig.h>
 #include <vector>
 std::vector<advancedfx::CameraGuideLine> MirvCam_TransitionGuideLines(std::uint64_t);
 extern "C" bool VerifyTransitionGuideExternalLink() {
-    return &MirvCam_TransitionGuideLines != nullptr;
+    return MirvCam_TransitionGuideLines(~std::uint64_t(0)).empty();
 }
 ''')
 source=out/'project.cpp';source.write_text(s)
