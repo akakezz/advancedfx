@@ -86,6 +86,7 @@ extern CommandSystem g_CommandSystem;
 #include <cmath>
 #include <set>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <cstddef>
 
@@ -5363,6 +5364,9 @@ struct PlayerAngleTrace
 		unsigned long long Event = 0;
 		std::array<float, 11> Extra{};
 	};
+	// Wall-clock samples complement engine demo time without modifying playback.
+	bool WallClockStarted = false;
+	std::chrono::steady_clock::time_point WallStart{}, LastWallFrame{};
 	bool Active = false;
 	int Entity = -1, User = 0, First = 0, Last = 0, LastTick = -1;
 	const void *Object = nullptr;
@@ -6420,6 +6424,49 @@ void MirvFix_PlayerAngleTraceFrame(int stage)
 	AngleTraceAppend(tick, phase, AngleTraceNamedField("bone_hook_available"), boneCount > 0);
 	AngleTraceAppend(tick, phase, AngleTraceNamedField("bone_queue_dropped"),
 	                 double(Mirv_Tf2_DiagnosticBoneDropped() - t.DroppedStart));
+	if (stage == 2)
+	{
+		// Frame cadence is measured independently of the demo's simulated clock.
+		// Sample after normal rendering, so the final view belongs to this frame.
+		const auto now = std::chrono::steady_clock::now();
+		if (!t.WallClockStarted)
+		{
+			t.WallStart = t.LastWallFrame = now;
+			t.WallClockStarted = true;
+		}
+		const double elapsed = std::chrono::duration<double>(now - t.WallStart).count();
+		const double delta = std::chrono::duration<double>(now - t.LastWallFrame).count();
+		t.LastWallFrame = now;
+		AngleTraceAppend(tick, phase, AngleTraceNamedField("wall_elapsed_seconds"), elapsed);
+		AngleTraceAppend(tick, phase, AngleTraceNamedField("wall_frame_interval_seconds"), delta);
+		if (gl)
+		{
+			AngleTraceAppend(tick, phase, AngleTraceNamedField("engine_curtime"), gl->curtime_get());
+			AngleTraceAppend(tick, phase, AngleTraceNamedField("engine_frametime"), gl->frametime_get());
+			AngleTraceAppend(tick, phase, AngleTraceNamedField("engine_framecount"), gl->framecount_get());
+		}
+		double demoTime = 0;
+		if (GetCurrentDemoTime(demoTime))
+			AngleTraceAppend(tick, phase, AngleTraceNamedField("interpolated_demo_time"), demoTime);
+		const bool viewInThisFrame = gl && g_Hook_VClient_RenderView.LastCameraSampleFrame == gl->framecount_get();
+		AngleTraceAppend(tick, phase, AngleTraceNamedField("camera_view_current_frame"), viewInThisFrame ? 1 : 0);
+		if (viewInThisFrame)
+		{
+			const char *axes[] = {"x", "y", "z"};
+			const auto &view = g_Hook_VClient_RenderView;
+			for (int i = 0; i < 3; ++i)
+			{
+				AngleTraceAppend(tick, phase, AngleTraceNamedField(std::string("native_camera_origin_") + axes[i]),
+				                 view.GameCameraOrigin[i]);
+				AngleTraceAppend(tick, phase, AngleTraceNamedField(std::string("final_camera_origin_") + axes[i]),
+				                 view.LastCameraOrigin[i]);
+				AngleTraceAppend(tick, phase, AngleTraceNamedField(std::string("native_camera_angles_") + axes[i]),
+				                 view.GameCameraAngles[i]);
+				AngleTraceAppend(tick, phase, AngleTraceNamedField(std::string("final_camera_angles_") + axes[i]),
+				                 view.LastCameraAngles[i]);
+			}
+		}
+	}
 }
 bool MirvFix_PlayerAngleTraceSave(const wchar_t *file)
 {

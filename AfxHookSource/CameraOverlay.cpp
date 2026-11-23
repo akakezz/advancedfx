@@ -5306,7 +5306,7 @@ static void ComparePlayerRepair(bool repaired)
 }
 static void DrawPlayerAngleDiagnostic(int playhead)
 {
-	if (!ImGui::CollapsingHeader("Investigate angle snapping"))
+	if (!ImGui::CollapsingHeader("Investigate jitter / angle snapping"))
 		return;
 	static int first = 0, last = 0;
 	static std::string status;
@@ -5369,10 +5369,9 @@ static void DrawPlayerAngleDiagnostic(int playhead)
 	}
 	if (!status.empty())
 		ImGui::TextWrapped("%s", status.c_str());
-	ImGui::TextWrapped("Records receive angles, live poses, sequences/cycles, animation layers, movement/timing, "
-	                   "model metadata, and natural bone matrices. Coverage counts and status codes identify "
-	                   "unavailable or dropped data. Pose slots are normalized, not degrees. "
-	                   "No additional bone evaluation is requested.");
+	ImGui::TextWrapped("Records player network/render stages, bones, engine timing, wall-frame cadence, "
+	                   "and native vs final camera movement in the same CSV. Compare an identical demo interval "
+	                   "with and without visible jitter. No camera or entity state is modified.");
 }
 static void DrawPlayerRepairEditor(int playhead)
 {

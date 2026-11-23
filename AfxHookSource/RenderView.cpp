@@ -805,6 +805,7 @@ void Hook_VClient_RenderView::OnViewOverride(float &Tx, float &Ty, float &Tz, fl
 	LastCameraAngles[1] = Ry;
 	LastCameraAngles[2] = Rz;
 	LastCameraFov = Fov;
+	LastCameraSampleFrame = m_Globals ? m_Globals->framecount_get() : -1;
 
 	m_MirvInput->Supply_MouseFrameEnd();
 
