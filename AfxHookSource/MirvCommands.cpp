@@ -5974,6 +5974,19 @@ RepairDemoIdentity ReadRepairDemoIdentity(const char *name)
 	result.Ticks = int(integer(1060));
 	return result;
 }
+static void ValidatePlayingDemo(const RepairDemoIdentity &file)
+{
+	auto demo = g_VEngineClient->GetDemoInfoEx();
+	auto level = g_VEngineClient->GetLevelName();
+	if (!demo || !level || !*level)
+		throw std::runtime_error(
+		    "Wait for the playing demo's map to finish loading before choosing its file.");
+	if (!advancedfx::DemoTimeline::SameMap(level, file.Map) ||
+	    (file.Ticks > 0 && demo->GetDemoPlaybackTotalTicks() > 0 &&
+	     file.Ticks != demo->GetDemoPlaybackTotalTicks()))
+		throw std::runtime_error("The selected demo's map or tick count differs from the playing demo. "
+		                         "Choose the currently playing file.");
+}
 void BindRepairDemoIdentity(const RepairDemoIdentity &file)
 {
 	RepairFlush();
@@ -5987,7 +6000,7 @@ void BindRepairDemoIdentity(const RepairDemoIdentity &file)
 	                 "matching saved repair.";
 }
 } // namespace
-bool MirvFix_RecordedView(float *origin, float *angles)
+bool MirvFix_RecordedView(float *angles)
 {
 	if (g_RecordedViews.empty() || !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
 	    g_VEngineClient->IsHLTV() || MirvPovSpectate_Player() > 0) return false;
@@ -5996,9 +6009,35 @@ bool MirvFix_RecordedView(float *origin, float *angles)
 	std::array<float, 6> pose;
 	if (!demo || !globals || !advancedfx::SampleRecordedView(g_RecordedViews,
 	    double(demo->GetDemoPlaybackTick()) + globals->interpolation_amount_get(), pose)) return false;
-	std::copy_n(pose.begin(), 3, origin);
 	std::copy_n(pose.begin()+3, 3, angles);
 	return true;
+}
+bool MirvFix_RecordedViewAvailable()
+{
+	return g_SourceSdkVer == SourceSdkVer_TF2 && g_VEngineClient &&
+	       g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV();
+}
+bool MirvFix_RecordedViewEnabled()
+{
+	return !g_RecordedViews.empty();
+}
+bool MirvFix_SetRecordedView(bool enabled, const char *name)
+{
+	if (!enabled) { g_RecordedViews.clear(); return true; }
+	try {
+		if (!MirvFix_RecordedViewAvailable())
+			throw std::runtime_error("Requires a playing TF2 POV demo.");
+		const auto path = name ? std::string(name) : g_RecordedViewFile.string();
+		auto file = ReadRepairDemoIdentity(path.c_str());
+		ValidatePlayingDemo(file);
+		std::ifstream input(file.Path, std::ios::binary);
+		g_RecordedViews = advancedfx::ReadRecordedViews(input);
+		g_RecordedViewFile = file.Path;
+		return true;
+	} catch (const std::exception &e) {
+		Tier0_Warning("Recorded view: %s\n", e.what());
+		return false;
+	}
 }
 void MirvFix_PlayerRepairNewDemo(const char *name)
 {
@@ -6048,16 +6087,7 @@ bool MirvFix_PlayerRepairBindPlayingDemo(const char *name)
 	try
 	{
 		auto file = ReadRepairDemoIdentity(name);
-		auto demo = g_VEngineClient->GetDemoInfoEx();
-		auto level = g_VEngineClient->GetLevelName();
-		if (!demo || !level || !*level)
-			throw std::runtime_error(
-			    "Wait for the playing demo's map to finish loading before choosing its file.");
-		if (!advancedfx::DemoTimeline::SameMap(level, file.Map) ||
-		    (file.Ticks > 0 && demo->GetDemoPlaybackTotalTicks() > 0 &&
-		     file.Ticks != demo->GetDemoPlaybackTotalTicks()))
-			throw std::runtime_error("The selected demo's map or tick count differs from the playing demo. "
-			                         "Choose the currently playing file.");
+		ValidatePlayingDemo(file);
 		BindRepairDemoIdentity(file);
 		return true;
 	}
@@ -6642,26 +6672,12 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		if (!_stricmp(cmd1, "recordedView"))
 		{
 			if (argc == 3 && !std::strcmp(args->ArgV(2), "0"))
-				g_RecordedViews.clear();
-			else if (argc == 3 && !std::strcmp(args->ArgV(2), "1"))
-			{
-				if (g_SourceSdkVer != SourceSdkVer_TF2 || !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
-				    g_VEngineClient->IsHLTV() || g_RecordedViewFile.empty())
-				{
-					Tier0_Warning("Start a TF2 POV demo with playdemo first.\n");
-					return;
-				}
-				try {
-					std::ifstream input(g_RecordedViewFile, std::ios::binary);
-					g_RecordedViews = advancedfx::ReadRecordedViews(input);
-				} catch (const std::exception &e) {
-					g_RecordedViews.clear();
-					Tier0_Warning("Recorded view: %s\n", e.what());
-				}
-			}
+				MirvFix_SetRecordedView(false, nullptr);
+			else if ((argc == 3 || argc == 4) && !std::strcmp(args->ArgV(2), "1"))
+				MirvFix_SetRecordedView(true, argc == 4 ? args->ArgV(3) : nullptr);
 			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
 			{
-				Tier0_Msg("mirv_fix recordedView 0|1|status\n");
+				Tier0_Msg("mirv_fix recordedView 0|1 [demo.dem]|status\n");
 				return;
 			}
 			Tier0_Msg("Recorded POV camera: %zu sampled ticks.\n", g_RecordedViews.size());
@@ -7220,7 +7236,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	);
 #endif // #ifndef _WIN64
 	Tier0_Msg("mirv_fix playerRepair [...] - Manual TF2 player sample reconstruction.\n"
-        "mirv_fix recordedView [...] - Sample recorded TF2 POV position and angles during playback.\n"
+        "mirv_fix recordedView [...] - Sample recorded TF2 POV angles during playback.\n"
         "mirv_fix noStaticPropFade [...] - Disable static prop fading during demo playback (StaticPropMgrClient004).\n"
         "mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
 			  "mirv_fix recorderSounds [...] - Mute/restore recorder sounds in TF2 POV demos.\n"
