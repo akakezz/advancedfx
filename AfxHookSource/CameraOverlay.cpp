@@ -5057,18 +5057,16 @@ static void DrawSequencerSeekContext(bool keyframeContextOpened)
 		ImGui::EndPopup();
 	}
 }
-static bool g_PickRecordedViewFile = false;
-static void OpenDemoPicker(bool recordedView = false)
+static void OpenDemoPicker()
 {
-	g_PickRecordedViewFile = recordedView;
 	if (!g_DemoDialogInit)
 	{
+		g_DemoOpenDialog.SetTitle("Open demo");
 		g_DemoOpenDialog.SetTypeFilters({".dem"});
 		g_DemoDialogInit = true;
 	}
 	if (!g_OverlayPaths.demoDir.empty())
 		g_DemoOpenDialog.SetDirectory(g_OverlayPaths.demoDir);
-	g_DemoOpenDialog.SetTitle(recordedView ? "Choose currently playing POV demo" : "Open demo");
 	g_DemoOpenDialog.Open();
 }
 static void DrawDemoPicker()
@@ -5078,9 +5076,7 @@ static void DrawDemoPicker()
 		return;
 	const auto file = g_DemoOpenDialog.GetSelected();
 	const auto path = file.string();
-	if (g_PickRecordedViewFile)
-		MirvFix_SetRecordedView(true, path.c_str());
-	else if (path.find_first_of("\"\r\n") == std::string::npos)
+	if (path.find_first_of("\"\r\n") == std::string::npos)
 	{
 		Afx_ExecClientCmd(("playdemo \"" + path + "\"").c_str());
 		NotifyDemoPlaybackFile(path.c_str());
@@ -8397,10 +8393,6 @@ void Draw()
 
 			if (ImGui::CollapsingHeader("Demo fixes"))
 			{
-				bool recorded = MirvFix_RecordedViewEnabled();
-				if (MirvFix_RecordedViewAvailable() && ImGui::Checkbox("Use recorded POV angles (TF2)", &recorded) &&
-				    !MirvFix_SetRecordedView(recorded, nullptr) && recorded)
-					OpenDemoPicker(true);
 				bool muteRecorder = g_DemoMute;
 				if (ImGui::Checkbox("Mute recorder sounds", &muteRecorder))
 				{
