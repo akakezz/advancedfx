@@ -46,6 +46,7 @@ extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 #include <iterator>
 #include <limits>
 #include <locale>
+#include <shared/DemoRecordedView.h>
 #include <shared/DemoTimeline.h>
 #include <shared/PlayerRepair.h>
 #include <stdexcept>
@@ -5923,8 +5924,11 @@ unsigned long long MirvFix_PlayerRepairChanged()
 }
 namespace
 {
+std::filesystem::path g_RecordedViewFile;
+std::vector<advancedfx::RecordedViewSample> g_RecordedViews;
 struct RepairDemoIdentity
 {
+	std::filesystem::path Path;
 	std::string Key, Map;
 	int Ticks = 0;
 };
@@ -5960,6 +5964,7 @@ RepairDemoIdentity ReadRepairDemoIdentity(const char *name)
 		hash *= 1099511628211ull;
 	}
 	RepairDemoIdentity result;
+	result.Path = file;
 	result.Key =
 	    file.u8string() + "|" + std::to_string(std::filesystem::file_size(file)) + "|" + std::to_string(hash);
 	result.Map.assign(reinterpret_cast<char *>(header + 536), 260);
@@ -5982,6 +5987,19 @@ void BindRepairDemoIdentity(const RepairDemoIdentity &file)
 	                 "matching saved repair.";
 }
 } // namespace
+bool MirvFix_RecordedView(float *origin, float *angles)
+{
+	if (g_RecordedViews.empty() || !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+	    g_VEngineClient->IsHLTV() || MirvPovSpectate_Player() > 0) return false;
+	auto demo = g_VEngineClient->GetDemoInfoEx();
+	auto globals = g_Hook_VClient_RenderView.GetGlobals();
+	std::array<float, 6> pose;
+	if (!demo || !globals || !advancedfx::SampleRecordedView(g_RecordedViews,
+	    double(demo->GetDemoPlaybackTick()) + globals->interpolation_amount_get(), pose)) return false;
+	std::copy_n(pose.begin(), 3, origin);
+	std::copy_n(pose.begin()+3, 3, angles);
+	return true;
+}
 void MirvFix_PlayerRepairNewDemo(const char *name)
 {
 	// A backward comparison seek may restart this same demo through playdemo.
@@ -5998,6 +6016,8 @@ void MirvFix_PlayerRepairNewDemo(const char *name)
 			// Unknown or different files must disarm repairs below.
 		}
 	}
+	g_RecordedViews.clear();
+	g_RecordedViewFile.clear();
 	RepairFlush();
 	g_RepairCollect = false;
 	g_RepairEnabled = false;
@@ -6009,7 +6029,9 @@ void MirvFix_PlayerRepairNewDemo(const char *name)
 		return;
 	try
 	{
-		BindRepairDemoIdentity(ReadRepairDemoIdentity(name));
+		const auto file = ReadRepairDemoIdentity(name);
+		g_RecordedViewFile = file.Path;
+		BindRepairDemoIdentity(file);
 	}
 	catch (const std::exception &e)
 	{
@@ -6617,6 +6639,34 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	if (2 <= argc)
 	{
 		char const * cmd1 = args->ArgV(1);
+		if (!_stricmp(cmd1, "recordedView"))
+		{
+			if (argc == 3 && !std::strcmp(args->ArgV(2), "0"))
+				g_RecordedViews.clear();
+			else if (argc == 3 && !std::strcmp(args->ArgV(2), "1"))
+			{
+				if (g_SourceSdkVer != SourceSdkVer_TF2 || !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+				    g_VEngineClient->IsHLTV() || g_RecordedViewFile.empty())
+				{
+					Tier0_Warning("Start a TF2 POV demo with playdemo first.\n");
+					return;
+				}
+				try {
+					std::ifstream input(g_RecordedViewFile, std::ios::binary);
+					g_RecordedViews = advancedfx::ReadRecordedViews(input);
+				} catch (const std::exception &e) {
+					g_RecordedViews.clear();
+					Tier0_Warning("Recorded view: %s\n", e.what());
+				}
+			}
+			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
+			{
+				Tier0_Msg("mirv_fix recordedView 0|1|status\n");
+				return;
+			}
+			Tier0_Msg("Recorded POV camera: %zu sampled ticks.\n", g_RecordedViews.size());
+			return;
+		}
 		if (!_stricmp(cmd1, "noStaticPropFade"))
 		{
 			if (!MirvFix_StaticPropFadeSupported())
@@ -7170,6 +7220,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 	);
 #endif // #ifndef _WIN64
 	Tier0_Msg("mirv_fix playerRepair [...] - Manual TF2 player sample reconstruction.\n"
+        "mirv_fix recordedView [...] - Sample recorded TF2 POV position and angles during playback.\n"
         "mirv_fix noStaticPropFade [...] - Disable static prop fading during demo playback (StaticPropMgrClient004).\n"
         "mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
 			  "mirv_fix recorderSounds [...] - Mute/restore recorder sounds in TF2 POV demos.\n"

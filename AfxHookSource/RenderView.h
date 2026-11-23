@@ -174,6 +174,7 @@ void MirvFix_Update();
 void MirvFix_InitializeTf2Client(void *client);
 namespace advancedfx { class PlayerRepair; }
 advancedfx::PlayerRepair &MirvFix_PlayerRepairModel();
+bool MirvFix_RecordedView(float *origin, float *angles);
 void MirvFix_PlayerRepairNewDemo(const char *file);
 bool MirvFix_PlayerRepairBindPlayingDemo(const char *file);
 bool MirvFix_PlayerRepairBegin(int entity);

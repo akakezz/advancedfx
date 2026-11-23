@@ -348,6 +348,7 @@ public:
 
 		//Tier0_Msg("ClientEngineTools::SetupEngineView\n");
 		if (g_Engine_ClientEngineTools->SetupEngineView(origin, angles, fov)) bRet = true;
+		if (MirvFix_RecordedView(&origin.x, &angles.x)) bRet = true;
 		MirvPovSpectate_ViewDone(&angles);
 
 		g_Hook_VClient_RenderView.OnViewOverride(
