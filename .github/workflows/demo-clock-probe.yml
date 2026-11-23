@@ -1,0 +1,19 @@
+name: TF2 demo clock probe
+
+on:
+  push:
+    branches:
+      - feature/cinematic-campath
+    paths:
+      - 'tools/tf2_demo_serverclock_probe.py'
+      - 'tests/cinematic/test_tf2_demo_serverclock_probe.py'
+      - '.github/workflows/demo-clock-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  offline-format-and-timing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test parser, monotonic retiming and byte preservation
+        run: python3 tests/cinematic/test_tf2_demo_serverclock_probe.py
