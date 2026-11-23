@@ -509,6 +509,19 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 									   Vector3(line.B[0], line.B[1], line.B[2]), color});
 		}
 	}
+	// Selected cinematic transition: a thin dashed amber route distinguishes
+	// temporary camera blends from the solid classic campath trajectory.
+	// Captured as immutable line geometry on the engine thread, like other guides.
+	if (path == &g_Hook_VClient_RenderView.m_CamPath &&
+		!AfxHookSource::CameraOverlay::Recording::IsActive())
+	{
+		const auto id = AfxHookSource::CameraOverlay::TransitionGuideClip();
+		if (id != ~std::uint64_t(0))
+			for (const auto &line : MirvCam_TransitionGuideLines(id))
+				CameraLines.push_back({Vector3(line.A[0], line.A[1], line.A[2]),
+								   Vector3(line.B[0], line.B[1], line.B[2]),
+								   D3DCOLOR_RGBA(255, 176, 70, 235)});
+	}
 	if (sceneOnly)
 	{
 		m_InCampath = false;
@@ -633,7 +646,9 @@ void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
 
 	const auto scene = AfxHookSource::CameraOverlay::SceneCacheLines();
 	const bool sceneDrawing = scene && !scene->empty();
-	const bool cameraDrawing=AfxHookSource::CameraOverlay::CameraGuidesEnabled() && !AfxHookSource::CameraOverlay::Recording::IsActive() && MirvCam_CameraCount()>0;
+	const bool cameraDrawing = !AfxHookSource::CameraOverlay::Recording::IsActive() &&
+		((AfxHookSource::CameraOverlay::CameraGuidesEnabled() && MirvCam_CameraCount() > 0) ||
+		 AfxHookSource::CameraOverlay::TransitionGuideClip() != ~std::uint64_t(0));
 	if (!m_Draw && !sceneDrawing && !cameraDrawing)
 		return;
 

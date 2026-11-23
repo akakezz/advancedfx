@@ -2473,6 +2473,10 @@ and FOV independently; position can follow an authored cubic Bezier trajectory.
 The outgoing handle and incoming handle are **world-space XYZ offsets** from
 the straight-line control points at one-third and two-thirds distance between
 the evaluated endpoint poses. Zero handles reproduce the straight-line route.
+The trajectory editor uses a small interactive 2D canvas with two draggable
+control points and switchable **XY/XZ/YZ** projection planes. The graph edits
+the chosen two world-offset axes; switch planes for the remaining axis. An
+optional collapsed panel retains exact numeric XYZ values.
 Clip blending follows demo/cache time and is sampled by timestamp. Cached preview first uses observed tracking-camera samples recorded with the
 scene. Without matching camera samples, it evaluates built-in aiming without
 smoothing on a private settings copy, preserving live smoothing history. Custom aiming calculations
@@ -2493,9 +2497,18 @@ same chronological order as the clips' edit points.
 incoming/preceding pair, the mixer composes each active transition in order.
 The next transition begins from the output of any earlier transitions (for
 example, an unfinished A/B composite can become the outgoing side of B/C).
-A fully completed later transition supersedes previous transitions. Camera
-source blocks and transition envelopes have separate sequencer lanes; one
-envelope may extend across another clip's edit point.
+A fully completed later transition supersedes previous transitions. Blue
+transition overlays are drawn on the same Camera sources strip as the camera
+clips, not on separate rows. They can extend across later edit points, overlap
+other envelopes, and be moved or resized by dragging the span or its right edge.
+
+With **Show selected transition path in 3D** enabled, the existing DX9
+camera-guide renderer shows only the selected transition as an amber dashed
+line (not a solid campath). This is editor-only and suppressed during HLAE
+recording. Scene Cache preview samples camera poses at their historical
+timestamps; without cached history a moving attached-camera guide is a
+current-scene approximation. The draw-only sampler restores live camera
+and aiming state and never changes the active transition.
 
 New clips authored in the UI enable **Freeze outgoing camera at transition
 start** by default. This releases the outgoing attached/aimed/path camera from
@@ -2524,8 +2537,9 @@ exiting preview restores enabled sequence playback. Sequence clips are bound to
 their demo/session; clear them before authoring for a different demo. Cameras and
 clips can be saved in cinematic projects; ordinary campath files still contain paths only.
 
-Camera clips use start markers and faint continuation spans. Independent blue
-transition-envelope lanes show the actual offset start and end. For cached
+Camera clips use start markers and faint continuation spans. Translucent blue
+transition spans sit directly over the camera source clips, marking the
+actual offset start/end without introducing a lane per transition. For cached
 transitions, enable Cached preview and Enable camera sequence;
 there is no need to preview an individual camera or campath first.
 
@@ -2648,8 +2662,10 @@ from a failed export which retained a previous file.
 
 Camera source clips draw as solid labelled blocks. A hatched region inside the
 leading edge indicates the blend into that source; the selected block has a gold
-outline. Clicking a source block or its separate transition envelope opens the same clip
-editor. Edit points, offsets and durations remain editable numerically.
+outline. Clicking a source block or its translucent blue transition opens the same clip
+editor. Drag the blue region to move the envelope or its right edge to resize
+the duration; the edit point remains independent. Edit points, offsets and
+durations also remain editable numerically.
 
 A full-sequence bake requires coverage for every active tracked source, including
 its incoming blend. If a camera has neither a recorded camera sample nor its

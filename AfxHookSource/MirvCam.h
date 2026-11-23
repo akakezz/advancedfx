@@ -131,6 +131,8 @@ class Aiming;
 bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advancedfx::ICommandArgs *, Aiming &));
 
 std::vector<advancedfx::CameraClip> MirvCam_Clips();
+// Engine-thread visualization only: no changes to the active camera state.
+std::vector<advancedfx::CameraGuideLine> MirvCam_TransitionGuideLines(std::uint64_t clipId);
 bool MirvCam_EditClip(advancedfx::CameraClip &clip);
 bool MirvCam_RemoveClip(std::uint64_t id);
 bool MirvCam_EnableSequence(bool enabled);

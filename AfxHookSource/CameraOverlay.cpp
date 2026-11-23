@@ -1182,6 +1182,8 @@ static bool g_ShowGizmo = false;
 static bool g_PreviewHudEnabled = true;
 static bool g_CameraClipsEditing = false;
 static std::uint64_t g_SelectedCameraClip = ~std::uint64_t(0);
+static bool g_ShowTransitionGuide = true;
+static std::atomic<std::uint64_t> g_TransitionGuidePublished{~std::uint64_t(0)};
 static bool g_OpenCameraClips = false;
 static bool g_ShowCameraGuides = false, g_CameraFrustums = true, g_FocusCameras = false,
 			g_CamerasTabActive = false;
@@ -6573,6 +6575,7 @@ void SetCameraFrustums(bool enabled)
 }
 bool CameraGuidesEnabled() { return g_CameraGuidesPublished.load(); }
 bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
+std::uint64_t TransitionGuideClip() { return g_TransitionGuidePublished.load(); }
 static std::string CameraClipSourceName(bool campath, std::uint64_t target)
 {
 	if (campath)
@@ -6598,6 +6601,10 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 	static std::uint64_t moving = ~std::uint64_t(0);
 	static advancedfx::CameraClip originalMove, pendingMove;
 	static int moveMouse = 0;
+	// Envelope editing is independent of dragging the underlying source block.
+	static std::uint64_t movingEnvelope = ~std::uint64_t(0);
+	static advancedfx::CameraClip originalEnvelope, pendingEnvelope;
+	static int envelopeMouse = 0, envelopeEdge = 0;
 	int mouseTick = 0;
 	const bool haveMouseTick =
 		ImGui::GetNeoSequencerMouseFrame(&mouseTick, ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
@@ -6624,6 +6631,39 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 			moving = ~std::uint64_t(0);
 		}
 	}
+	if (movingEnvelope != ~std::uint64_t(0))
+	{
+		auto found = std::find_if(clips.begin(), clips.end(),
+			[&](const auto &c) { return c.Id == movingEnvelope; });
+		if (found == clips.end() || !(*found == originalEnvelope) ||
+			ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+			(!ImGui::IsMouseDown(0) && !ImGui::IsMouseReleased(0)))
+			movingEnvelope = ~std::uint64_t(0);
+		else if (haveMouseTick && ImGui::IsMouseDown(0))
+		{
+			double originalDemo = 0, shifted = 0;
+			if (CinematicClock(originalEnvelope.TransitionStart(), true, originalDemo, SceneCachePreviewActive()) &&
+				CinematicClock(originalDemo + (mouseTick - envelopeMouse) * SceneTickInterval(), false,
+					shifted, SceneCachePreviewActive()))
+			{
+				pendingEnvelope = originalEnvelope;
+				if (envelopeEdge == 1)
+					pendingEnvelope.Blend = (std::max)(0.0,
+						originalEnvelope.Blend + shifted - originalEnvelope.TransitionStart());
+				else
+					pendingEnvelope.TransitionOffset =
+						originalEnvelope.TransitionOffset + shifted - originalEnvelope.TransitionStart();
+				*found = pendingEnvelope;
+			}
+			ImGui::NeoCancelSelection();
+		}
+		else if (ImGui::IsMouseReleased(0))
+		{
+			if (!(pendingEnvelope == originalEnvelope) && !MirvCam_EditClip(pendingEnvelope))
+				g_DocumentStatus = "Transition edit rejected: envelope starts must remain in clip order.";
+			movingEnvelope = ~std::uint64_t(0);
+		}
+	}
 	for (size_t i = 0; i < clips.size(); ++i)
 	{
 		const auto &clip = clips[i];
@@ -6648,6 +6688,33 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 				moveMouse = mouseTick;
 				ImGui::NeoCancelSelection();
 			}
+		}
+	}
+	// Render all transition envelopes on the SAME camera-source row. The
+	// sequencer's groupHeader span mode supplies the parent row's exact Y,
+	// eliminating the former one-row-per-transition clutter.
+	for (size_t i = 1; i < clips.size(); ++i)
+	{
+		const auto &clip = clips[i];
+		const int begin = tick(clip.TransitionStart());
+		const int end = (std::max)(begin, tick(clip.TransitionStart() + clip.Blend));
+		if (end < visibleStart || begin > visibleEnd)
+			continue;
+		const std::string caption = CameraClipSourceName(clip.Campath, clip.Target) +
+			" transition | click/drag to move; drag right edge to resize";
+		const bool chose = ImGui::NeoTimelineSpan(begin, end, IM_COL32(55, 168, 236, 115),
+			caption.c_str(), nullptr, false, clip.Id == g_SelectedCameraClip, -1, true);
+		if (chose)
+		{
+			moving = ~std::uint64_t(0); // The envelope takes precedence over the source block.
+			movingEnvelope = clip.Id;
+			originalEnvelope = pendingEnvelope = clip;
+			envelopeMouse = mouseTick;
+			envelopeEdge = std::abs(mouseTick - end) <=
+				(std::max)(2, (visibleEnd - visibleStart) / 180) ? 1 : 0;
+			g_SelectedCameraClip = clip.Id;
+			g_OpenCameraClips = true;
+			ImGui::NeoCancelSelection();
 		}
 	}
 	if (!childrenOpen)
@@ -6746,41 +6813,105 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		}
 	}
 	ImGui::EndNeoGroup();
-	// Transition envelopes are independent of camera source blocks, so they may
-	// extend across subsequent edit points without claiming or blocking a clip.
-	static bool transitionsOpen = true;
-	const bool drawTransitions = ImGui::BeginNeoGroup("Transition envelopes", &transitionsOpen);
-	if (drawTransitions)
-	{
-		for (size_t i = 1; i < clips.size(); ++i)
-		{
-			const auto &clip = clips[i];
-			const double start = clip.TransitionStart();
-			const std::string name = CameraClipSourceName(clip.Campath, clip.Target) +
-				"##transition_envelope_" + std::to_string(clip.Id);
-			if (!ImGui::BeginNeoTimelineEx(name.c_str(), nullptr, ImGuiNeoTimelineFlags_None))
-				continue;
-			const int begin = tick(start);
-			const int end = (std::max)(begin + 1, tick(start + clip.Blend));
-			if (end >= visibleStart && begin <= visibleEnd &&
-				ImGui::NeoTimelineSpan(begin, end, IM_COL32(65, 155, 205, 210),
-					clip.Blend > 0 ? "Transition envelope" : "Cut",
-					nullptr, true, clip.Id == g_SelectedCameraClip))
-			{
-				g_SelectedCameraClip = clip.Id;
-				g_OpenCameraClips = true;
-			}
-			ImGui::EndNeoTimeLine();
-		}
-		ImGui::EndNeoGroup();
-	}
+
 }
+
+static void DrawTransitionTrajectoryGraph(std::array<double, 3> &handleOut,
+										  std::array<double, 3> &handleIn)
+{
+	// An uncomplicated projected handle editor. The origin/end and reference
+	// controls are fixed; handle movement edits actual world-space offset axes.
+	static int plane = 0;
+	static float halfRange = 64;
+	static std::uint64_t activeClip = ~std::uint64_t(0);
+	static int activeHandle = -1;
+	const char *planes[] = {"XY (top)", "XZ (side)", "YZ (side)"};
+	ImGui::Combo("Graph plane", &plane, planes, 3);
+	ImGui::SliderFloat("Graph scale (units)", &halfRange, 8, 2048, "%.0f");
+	ImGui::TextDisabled("Drag either control point. Switch planes to edit the third axis.");
+	const int axes[3][2] = {{0, 1}, {0, 2}, {1, 2}};
+	const int horizontal = axes[plane][0], vertical = axes[plane][1];
+	const float width = (std::max)(240.0f, ImGui::GetContentRegionAvail().x);
+	const ImVec2 size(width, 180);
+	ImGui::InvisibleButton("##transition_bezier_graph", size, ImGuiButtonFlags_MouseButtonLeft);
+	const ImVec2 origin = ImGui::GetItemRectMin(), end = ImGui::GetItemRectMax();
+	const ImVec2 a(origin.x + 24, end.y - 24), b(end.x - 24, origin.y + 24);
+	const float pixelsPerUnit = (std::min)(size.x, size.y) * 0.42f / halfRange;
+	auto baseline = [&](double t) {
+		return ImVec2(float(a.x + (b.x - a.x) * t), float(a.y + (b.y - a.y) * t));
+	};
+	auto move = [&](const std::array<double, 3> &handle, double t) {
+		auto p = baseline(t);
+		p.x += float(handle[horizontal]) * pixelsPerUnit;
+		p.y -= float(handle[vertical]) * pixelsPerUnit;
+		return p;
+	};
+	ImVec2 p1 = move(handleOut, 1.0 / 3.0), p2 = move(handleIn, 2.0 / 3.0);
+	const ImVec2 cursor = ImGui::GetIO().MousePos;
+	auto distanceSquared = [&](const ImVec2 &p) {
+		const float dx = p.x - cursor.x, dy = p.y - cursor.y;
+		return dx * dx + dy * dy;
+	};
+	if (activeClip != g_SelectedCameraClip || !ImGui::IsMouseDown(0))
+	{
+		activeHandle = -1;
+		activeClip = g_SelectedCameraClip;
+	}
+	if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(0))
+	{
+		const float d1 = distanceSquared(p1), d2 = distanceSquared(p2);
+		if ((std::min)(d1, d2) < 16 * 16)
+			activeHandle = d1 <= d2 ? 0 : 1;
+	}
+	if (activeHandle >= 0 && ImGui::IsMouseDown(0) && pixelsPerUnit > 0)
+	{
+		auto &handle = activeHandle == 0 ? handleOut : handleIn;
+		const auto delta = ImGui::GetIO().MouseDelta;
+		handle[horizontal] = std::clamp(handle[horizontal] + double(delta.x / pixelsPerUnit), -1e6, 1e6);
+		handle[vertical] = std::clamp(handle[vertical] - double(delta.y / pixelsPerUnit), -1e6, 1e6);
+		p1 = move(handleOut, 1.0 / 3.0);
+		p2 = move(handleIn, 2.0 / 3.0);
+	}
+	ImDrawList *draw = ImGui::GetWindowDrawList();
+	draw->AddRectFilled(origin, end, IM_COL32(23, 28, 38, 245), 5);
+	draw->PushClipRect(origin, end, true);
+	for (int n = 1; n < 4; ++n)
+	{
+		const float x = origin.x + size.x * n / 4, y = origin.y + size.y * n / 4;
+		draw->AddLine(ImVec2(x, origin.y), ImVec2(x, end.y), IM_COL32(100, 115, 135, 60));
+		draw->AddLine(ImVec2(origin.x, y), ImVec2(end.x, y), IM_COL32(100, 115, 135, 60));
+	}
+	draw->AddLine(a, b, IM_COL32(155, 155, 160, 100), 1.3f);
+	draw->AddLine(a, p1, IM_COL32(190, 165, 255, 160));
+	draw->AddLine(p2, b, IM_COL32(190, 165, 255, 160));
+	ImVec2 last = a;
+	for (int i = 1; i <= 64; ++i)
+	{
+		const double t = i / 64.0, u = 1 - t;
+		const ImVec2 point(
+			float(u*u*u*a.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*b.x),
+			float(u*u*u*a.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*b.y));
+		draw->AddLine(last, point, IM_COL32(130, 198, 255, 245), 2.5f);
+		last = point;
+	}
+	draw->AddCircleFilled(a, 4, IM_COL32(80, 215, 170, 255));
+	draw->AddCircleFilled(b, 4, IM_COL32(80, 215, 170, 255));
+	draw->AddCircleFilled(p1, 7, IM_COL32(210, 155, 255, 255));
+	draw->AddCircleFilled(p2, 7, IM_COL32(255, 189, 120, 255));
+	draw->AddCircle(p1, 10, IM_COL32(210, 155, 255, 190));
+	draw->AddCircle(p2, 10, IM_COL32(255, 189, 120, 190));
+	draw->PopClipRect();
+	ImGui::TextDisabled("Projected offset handles: %s. Dashed in-world preview shows the actual path.", planes[plane]);
+}
+
 static void DrawCameraClipsPanel()
 {
 	ImGui::TextWrapped(
 		"Enable the sequence to play these clips. Preview navigation is independent. You can use free camera "
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
-	ImGui::TextDisabled("Camera blocks mark edit points; separate transition envelopes can overlap them.");
+	ImGui::TextDisabled("Blue overlays show transitions on their source clips; drag or resize directly. Overlaps are allowed.");
+	ImGui::Checkbox("Show selected transition path in 3D (dashed orange)", &g_ShowTransitionGuide);
+	ImGui::TextDisabled("Visible during editing, hidden during recording. Live attached previews are approximate.");
 	if (SceneCachePreviewActive())
 		ImGui::TextWrapped("Recorded tracking preserves observed aiming. Without camera samples, aiming is "
 						   "unsmoothed. Re-record after editing a camera. Targets must be "
@@ -6894,19 +7025,23 @@ static void DrawCameraClipsPanel()
 	ImGui::Combo("FOV easing", &fovCurve, blendCurves, 3);
 	ImGui::Checkbox("Freeze outgoing camera at transition start", &freezeOutgoing);
 	ImGui::Checkbox("Curved transition trajectory (cubic Bezier)", &curvedPath);
-	if (curvedPath && ImGui::TreeNode("Transition trajectory handles (world units)"))
+	if (curvedPath)
 	{
-		const char *axis[] = {"X", "Y", "Z"};
-		for (int i = 0; i < 3; ++i)
-		{
-			ImGui::PushID(i);
-			ImGui::InputDouble((std::string("Outgoing handle ") + axis[i]).c_str(), &handleOut[i], 0, 0, "%.2f");
-			ImGui::InputDouble((std::string("Incoming handle ") + axis[i]).c_str(), &handleIn[i], 0, 0, "%.2f");
-			ImGui::PopID();
-		}
+		DrawTransitionTrajectoryGraph(handleOut, handleIn);
 		if (ImGui::Button("Reset trajectory handles"))
 			handleOut = handleIn = {{0, 0, 0}};
-		ImGui::TreePop();
+		if (ImGui::TreeNode("Precise XYZ handles (optional)"))
+		{
+			const char *axis[] = {"X", "Y", "Z"};
+			for (int i = 0; i < 3; ++i)
+			{
+				ImGui::PushID(i);
+				ImGui::InputDouble((std::string("Outgoing ") + axis[i]).c_str(), &handleOut[i], 0, 0, "%.2f");
+				ImGui::InputDouble((std::string("Incoming ") + axis[i]).c_str(), &handleIn[i], 0, 0, "%.2f");
+				ImGui::PopID();
+			}
+			ImGui::TreePop();
+		}
 	}
 	auto cameras = MirvCam_Cameras();
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
@@ -8202,6 +8337,7 @@ void Draw()
 {
 	CheckOverlayPreferences();
 	g_CameraGuidesPublished.store(g_ShowCameraGuides);
+	g_TransitionGuidePublished.store(g_ShowTransitionGuide ? g_SelectedCameraClip : ~std::uint64_t(0));
 	g_CameraFrustumsPublished.store(g_CameraFrustums);
 	DrawPreviewHud();
 	PollTimelineIndex();

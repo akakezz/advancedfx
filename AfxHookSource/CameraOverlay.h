@@ -62,6 +62,8 @@ void SetCameraGuides(bool enabled);
 void SetCameraFrustums(bool enabled);
 bool CameraGuidesEnabled();
 bool CameraFrustumsEnabled();
+// Thread-safe selected clip for optional in-world transition trajectory guides.
+std::uint64_t TransitionGuideClip();
 bool PreviewInsert();
 bool PreviewHold(bool clear);
 void PreviewSelectAll();

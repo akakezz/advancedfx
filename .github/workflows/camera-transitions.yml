@@ -7,6 +7,9 @@ on:
     paths:
       - 'AfxHookSource/MirvCam.cpp'
       - 'AfxHookSource/CameraOverlay.cpp'
+      - 'AfxHookSource/CameraOverlay.h'
+      - 'AfxHookSource/CampathDrawer.cpp'
+      - 'AfxHookSource/MirvCam.h'
       - 'AfxHookSource/CinematicProject.inl'
       - 'shared/CameraRig.h'
       - 'tests/cinematic/**'
@@ -22,3 +25,14 @@ jobs:
           submodules: recursive
       - name: Check project persistence, overlapping transitions, Bezier and frozen poses
         run: python3 tests/cinematic/test_camera_project.py --build-dir /tmp/hlae-camera-transition-tests
+
+  overlay-interaction:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Fetch pinned Dear ImGui used by the cinematic overlay
+        run: git clone --depth 1 --branch v1.89.9-docking https://github.com/ocornut/imgui.git /tmp/imgui-docking
+      - name: Compile and exercise headless sequencer/Bezier overlay
+        run: python3 tests/cinematic/test_overlay.py --imgui-dir /tmp/imgui-docking --build-dir /tmp/hlae-transition-overlay

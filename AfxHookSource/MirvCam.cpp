@@ -1469,6 +1469,96 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 	}
 	return true;
 }
+// Draw-only transition trajectory sampling. The scene cache supplies exact
+// historical entities; without cache, moving attachments are a current-scene
+// approximation. All evaluator state is restored before returning.
+std::vector<advancedfx::CameraGuideLine> MirvCam_TransitionGuideLines(std::uint64_t clipId)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	std::vector<advancedfx::CameraGuideLine> lines;
+	if (clipId == ~std::uint64_t(0) || g_BakingCamera || g_CameraClips.size() < 2)
+		return lines;
+	size_t index = g_CameraClips.size();
+	for (size_t i = 1; i < g_CameraClips.size(); ++i)
+		if (g_CameraClips[i].Id == clipId)
+		{
+			index = i;
+			break;
+		}
+	if (index == g_CameraClips.size())
+		return lines;
+	const auto &clip = g_CameraClips[index];
+	if (clip.Blend <= 0 || clip.Blend > 3600 || !clip.ValidTransition())
+		return lines;
+	const double start = clip.TransitionStart();
+	const bool cached = AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+	// Avoid updating any live tracking, aiming or frozen-release history while
+	// building a visualization. A guide must never influence the shot itself.
+	auto oldRigs = g_CameraRigs;
+	for (auto &entry : g_CameraRigs)
+		entry.second = CloneCameraDefinition(entry.second);
+	const auto oldFrozen = g_SequenceFrozenPoses;
+	const auto oldPose = g_SequencePreviousPose;
+	const double oldPreviousTime = g_SequencePreviousTime;
+	const bool oldInspecting = g_InspectingSequence, oldBaking = g_BakingCamera;
+	const auto oldFrame = g_BakeFrame;
+	const double oldTime = g_CameraEvaluationTime;
+	const int oldEvaluationFrame = g_CameraEvaluationFrame;
+	const auto oldFailure = g_CameraFailureReason;
+	// The first guide sample is the release boundary, so live frozen sources
+	// start from their own composite rather than the last viewport render.
+	g_SequenceFrozenPoses.clear();
+	g_SequencePreviousPose = {};
+	g_SequencePreviousTime = -std::numeric_limits<double>::infinity();
+	g_InspectingSequence = true;
+	g_CameraEvaluationFrame = -1;
+	constexpr int steps = 24;
+	std::array<advancedfx::CameraPose, steps + 1> samples{};
+	std::array<bool, steps + 1> valid{};
+	for (int i = 0; i <= steps; ++i)
+	{
+		const double time = start + clip.Blend * (double(i) / steps);
+		g_CameraEvaluationTime = time;
+		g_BakingCamera = cached;
+		if (cached)
+		{
+			advancedfx::SceneCache::Frame frame;
+			if (!AfxHookSource::CameraOverlay::SampleCameraScene(time, frame))
+				continue;
+			g_BakeFrame = std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame));
+		}
+		valid[i] = EvaluateSequenceComposite(time, index + 1, samples[i]) && samples[i].Valid();
+		if (!cached && valid[i])
+		{
+			g_SequencePreviousPose = samples[i];
+			g_SequencePreviousTime = time;
+		}
+	}
+	for (int i = 1; i <= steps; i += 2)
+	{
+		if (!valid[i - 1] || !valid[i])
+			continue;
+		advancedfx::CameraGuideLine line;
+		for (int axis = 0; axis < 3; ++axis)
+		{
+			line.A[axis] = samples[i - 1].Position[axis];
+			line.B[axis] = samples[i].Position[axis];
+		}
+		lines.push_back(line); // Alternating segments produce a dashed 3D guide.
+	}
+	g_CameraRigs = std::move(oldRigs);
+	g_SequenceFrozenPoses = oldFrozen;
+	g_SequencePreviousPose = oldPose;
+	g_SequencePreviousTime = oldPreviousTime;
+	g_InspectingSequence = oldInspecting;
+	g_BakingCamera = oldBaking;
+	g_BakeFrame = oldFrame;
+	g_CameraEvaluationTime = oldTime;
+	g_CameraEvaluationFrame = oldEvaluationFrame;
+	g_CameraFailureReason = oldFailure;
+	return lines;
+}
+
 bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 {
 	if (!camera.Aim)
