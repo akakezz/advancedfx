@@ -203,7 +203,7 @@ if args.stock_ref:
  s=s.replace(' // Full bake -> collection load', ' std::filesystem::copy_file(std::filesystem::path(bake), std::filesystem::path(STOCKFILE),std::filesystem::copy_options::overwrite_existing);\n // Full bake -> collection load'.replace('STOCKFILE','L'+json.dumps(str(out/'mixed-sequence.xml'))))
 # Keep this symbol check in a separate translation unit. A same-TU test
 # accidentally passed when the guide function had internal/anonymous linkage.
-s=s.replace('int main(){','extern "C" bool VerifyTransitionGuideExternalLink();\\nint main(){assert(VerifyTransitionGuideExternalLink());',1)
+s=s.replace('int main(){','extern "C" bool VerifyTransitionGuideExternalLink();\nint main(){assert(VerifyTransitionGuideExternalLink());',1)
 link_probe=out/'transition_guide_link_probe.cpp'
 link_probe.write_text('''#include <shared/CameraRig.h>
 #include <cstdint>
