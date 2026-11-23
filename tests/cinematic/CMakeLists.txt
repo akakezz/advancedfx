@@ -33,6 +33,7 @@ add_test(NAME scene_cache_core COMMAND scene_cache_tests)
 
 if(UNIX)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME camera_project_transitions COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_camera_project.py" --build-dir "${CMAKE_CURRENT_BINARY_DIR}/camera-project-transitions")
     add_test(NAME tf2_native_render COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_tf2_native_render.py" --sanitize --build-dir "${CMAKE_CURRENT_BINARY_DIR}/tf2-native-render")
     add_test(NAME recording_outputs COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_recording_outputs.py" --sanitize --build-dir "${CMAKE_CURRENT_BINARY_DIR}/recording-outputs")
     add_test(NAME tf2_attachment_sampling COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_tf2_attachment_sampling.py" --sanitize --build-dir "${CMAKE_CURRENT_BINARY_DIR}/tf2-attachment-sampling")

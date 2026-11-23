@@ -1,0 +1,24 @@
+name: Camera transition regressions
+
+on:
+  push:
+    branches:
+      - feature/cinematic-campath
+    paths:
+      - 'AfxHookSource/MirvCam.cpp'
+      - 'AfxHookSource/CameraOverlay.cpp'
+      - 'AfxHookSource/CinematicProject.inl'
+      - 'shared/CameraRig.h'
+      - 'tests/cinematic/**'
+      - '.github/workflows/camera-transitions.yml'
+  workflow_dispatch:
+
+jobs:
+  project-roundtrip-and-blends:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Check project persistence, overlapping transitions, Bezier and frozen poses
+        run: python3 tests/cinematic/test_camera_project.py --build-dir /tmp/hlae-camera-transition-tests

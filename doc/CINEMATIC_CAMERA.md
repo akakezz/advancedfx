@@ -2342,8 +2342,10 @@ a competing tracking system.
 The current legacy aim override executes before the saved-camera pose override,
 which replaces its angles. Integration therefore needs to evaluate the camera's
 position first, apply its aiming configuration, then pass the completed pose to
-the mixer. Outgoing and incoming cameras both continue evaluating during a blend.
-Their aim configuration and smoothing history must be isolated: evaluating an
+the mixer. A transition can release its outgoing pose at the boundary, while the incoming
+camera continues evaluating; legacy live-outgoing sequence clips remain
+supported. Each source's aim configuration and smoothing history remain
+isolated: evaluating an
 inactive camera must not advance the active camera's global aiming state. The
 existing `Aiming` object owns a reference-counted target and mutable smoothing
 history, so an implicit object copy is not a suitable configuration snapshot.
@@ -2366,10 +2368,14 @@ implemented below. Deterministic cached smoothing remains pending.
 
 `mirv_cam transition <ID/name|campath> <seconds>` starts a transition when the
 command is issued. Use `0` for an immediate cut. Transition progress follows
-live demo or cached preview time, so pausing pauses the blend. From an existing
-camera/campath source, both sources continue evaluating during the blend. From
-the free camera, or when replacing an unfinished transition, the outgoing pose
-is the currently displayed view.
+live demo or cached preview time, so pausing pauses the blend. Manual
+transitions now capture the displayed outgoing camera pose once at command time
+when that view is available, rather than allowing an attached/aimed source to
+continue rotating or snapping throughout the fade. The incoming camera or path
+continues evaluating. From the free camera or when interrupting an unfinished
+transition, the same displayed-pose release is used. If the displayed pose
+cannot be captured but the outgoing camera remains valid, the previous live
+outgoing evaluator remains as a fallback.
 
 `campath` captures the active path's stable ID at command time. It evaluates that
 path regardless of the normal playback-enabled flag or collection mute/solo
@@ -2461,21 +2467,53 @@ intervals. Click a clip to select it. Open the **Camera clips** tab beside Comma
 3. Press **Add camera clip**, or **Save changes** when editing an existing clip.
 4. Enable **Enable camera sequence**, then play or scrub the demo/cache.
 
-Zero blend makes a cut. A positive blend evaluates both the preceding and new
-source at the current time. Clip blending follows demo/cache time and is sampled
-by timestamp, so moving backward across a boundary selects the appropriate
-source and blend weight. Cached preview first uses observed tracking-camera samples recorded with the
+Zero blend makes a cut at the transition start, which may be offset from the edit
+point. A positive blend applies the selected timing curves to position, rotation
+and FOV independently; position can follow an authored cubic Bezier trajectory.
+The outgoing handle and incoming handle are **world-space XYZ offsets** from
+the straight-line control points at one-third and two-thirds distance between
+the evaluated endpoint poses. Zero handles reproduce the straight-line route.
+Clip blending follows demo/cache time and is sampled by timestamp. Cached preview first uses observed tracking-camera samples recorded with the
 scene. Without matching camera samples, it evaluates built-in aiming without
 smoothing on a private settings copy, preserving live smoothing history. Custom aiming calculations
 still require live playback. Cached attachments and aim targets require coverage.
 The first clip is already active before its start tick. Its camera/path is
-evaluated during pre-roll, and its own initial blend duration is ignored; later
-clips blend from their preceding source. No editor/freecam pose seeds the shot.
+evaluated during pre-roll, and its own initial blend duration is ignored; later clips blend from the previously composited result, which may include an
+unfinished earlier transition. No editor/freecam pose seeds the shot.
 
-Clips extend until the next clip, with the final clip continuing indefinitely.
-Each blend must finish before the next clip, and two clips cannot start at the
-same time. Retiming and source changes apply together through Save; rejected
-edits leave the existing clips intact. Clip edits use camera undo/redo. Removing
+Camera source blocks still begin at their editorial **Start tick**, and the last
+source continues indefinitely. The **transition offset** separately places an
+incoming envelope before (negative), on (zero), or after (positive) that edit
+point. Before/Center/After buttons set the offset to -duration,
+-half-duration or zero; exact offset seconds remain editable. Two camera edit
+points cannot coincide, and transition envelope start times must retain the
+same chronological order as the clips' edit points.
+
+**Overlapping envelopes are supported.** Rather than choosing a single
+incoming/preceding pair, the mixer composes each active transition in order.
+The next transition begins from the output of any earlier transitions (for
+example, an unfinished A/B composite can become the outgoing side of B/C).
+A fully completed later transition supersedes previous transitions. Camera
+source blocks and transition envelopes have separate sequencer lanes; one
+envelope may extend across another clip's edit point.
+
+New clips authored in the UI enable **Freeze outgoing camera at transition
+start** by default. This releases the outgoing attached/aimed/path camera from
+further influencing the blend; the incoming camera continues evaluating at
+each timestamp. Disable the freeze checkbox to keep both sides live. For
+live demos, freeze captures the last displayed composite at the first crossed
+boundary, or falls back to the evaluated outgoing pose when playback begins
+inside an envelope. For Scene Cache preview and classic baking, it samples the
+outgoing composite at the envelope's exact start timestamp. If that sample
+has no available camera/target, the valid incoming source takes over rather
+than resurrecting an unrelated historical pose. Cached preview therefore
+requires coverage of the transition boundary for a frozen release.
+
+Saved cinematic projects now use **HLAE_CINEMATIC 9** and preserve all transition
+timing, rotation/FOV curves, freeze state and Bezier handles. Versions 1-8
+remain loadable and retain their original live-outgoing/zero-offset semantics.
+Retiming and source changes apply together through Save; rejected edits
+leave the existing clips intact. Clip edits use camera undo/redo. Removing
 a referenced camera leaves its clips visibly addressable for correction and
 produces an unavailable source until restored or retargeted. Deleting the last
 clip or clearing the sequence stops sequence preview.
@@ -2486,8 +2524,9 @@ exiting preview restores enabled sequence playback. Sequence clips are bound to
 their demo/session; clear them before authoring for a different demo. Cameras and
 clips can be saved in cinematic projects; ordinary campath files still contain paths only.
 
-Camera clips use bright start markers, blue blend regions and faint continuation
-spans. For cached transitions, enable Cached preview and Enable camera sequence;
+Camera clips use start markers and faint continuation spans. Independent blue
+transition-envelope lanes show the actual offset start and end. For cached
+transitions, enable Cached preview and Enable camera sequence;
 there is no need to preview an individual camera or campath first.
 
 Sequence playback is enabled independently of preview. Entering preview while it
@@ -2569,8 +2608,8 @@ still control its evaluation clock.
 Clip creation does not require leaving freecam. Enter a **Start tick**, select the source and press **Add camera clip**.
 Select a timeline block to edit it with **Save changes**; **New clip** returns
 to creation mode without copying the playhead tick. Duplicate
-start times and blends crossing neighboring clips are rejected with an explanation
-inside the clip tab. New clips do not move the free camera.
+edit points or envelopes that start out of order are rejected inside the clip
+tab. Overlapping transition envelopes are allowed. New clips do not move the free camera.
 
 Dense classic bakes exposed an out-of-bounds write in trajectory polyline drawing:
 the helper writes four vertex slots while the caller reserved only two. The
@@ -2609,8 +2648,8 @@ from a failed export which retained a previous file.
 
 Camera source clips draw as solid labelled blocks. A hatched region inside the
 leading edge indicates the blend into that source; the selected block has a gold
-outline. Clicking anywhere in the block, including its blend, opens the same clip
-editor. Exact start tick and blend duration remain editable numerically.
+outline. Clicking a source block or its separate transition envelope opens the same clip
+editor. Edit points, offsets and durations remain editable numerically.
 
 A full-sequence bake requires coverage for every active tracked source, including
 its incoming blend. If a camera has neither a recorded camera sample nor its

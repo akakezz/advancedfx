@@ -85,6 +85,45 @@ int main(){
  CamPathValue pose(0,0,0,0,0,0,100);auto filtered=pose;assert(CamPath::ApplyPoseModifier(filtered,filter.Settings,1));CamPath native;native.PositionInterpMethod_set(CamPath::DI_LINEAR);native.RotationInterpMethod_set(CamPath::QI_SLINEAR);native.FovInterpMethod_set(CamPath::DI_LINEAR);native.Add(0,pose);native.Add(2,pose);assert(native.SetModifiers({filter.Settings}));assert(std::abs(native.Eval(1).Fov-filtered.Fov)<1e-6);
  assert(MirvCam_SaveProject(file.c_str()));assert(MirvCam_LoadProject(file.c_str()));assert(MirvCam_Modifiers().back().Settings.Type==type);assert(MirvCam_RemoveModifier(filter.Id));}
  assert(g_CameraClips[1].BlendCurve==2);
+ // Overlapping envelopes: A -> B remains active while B -> path and path -> B begin.
+ // Source-block edit points must not constrain transition duration.
+ {const auto oldB=g_CameraClips[1],oldPath=g_CameraClips[2],oldReturn=g_CameraClips[3];
+ auto b=oldB;b.Blend=1.3;b.BlendCurve=1;assert(MirvCam_EditClip(b));
+ auto p=oldPath;p.TransitionOffset=-.3;p.Blend=1.1;p.BlendCurve=1;p.RotationCurve=2;
+ p.FovCurve=1;p.CurvedPath=true;p.HandleOut={{12,4,0}};p.HandleIn={{-8,3,0}};
+ assert(MirvCam_EditClip(p));
+ auto q=oldReturn;q.TransitionOffset=-.2;q.Blend=.8;q.BlendCurve=1;
+ assert(MirvCam_EditClip(q));
+ assert(g_CameraClips[1].TransitionStart()==.5&&std::abs(g_CameraClips[2].TransitionStart()-.9)<1e-9);
+ assert(std::abs(g_CameraClips[3].TransitionStart()-1.6)<1e-9);
+ auto wrong=p;wrong.TransitionOffset=-1.0;assert(!MirvCam_EditClip(wrong));
+ wrong=p;wrong.HandleOut[0]=std::numeric_limits<double>::infinity();assert(!MirvCam_EditClip(wrong));
+ const double t=1.7;g_CameraEvaluationTime=t;
+ advancedfx::CameraPose expected,from,arrived,result;
+ assert(EvaluateClipSource(g_CameraClips[0],t,expected));
+ for(size_t i=1;i<g_CameraClips.size();++i)
+ {const auto &c=g_CameraClips[i];assert(EvaluateClipSource(c,t,arrived));from=expected;
+ assert(BlendCameraPoses(from,arrived,(t-c.TransitionStart())/c.Blend,result,c.BlendCurve,&c));expected=result;}
+ assert(EvaluateSequence(t,result));
+ assert(std::abs(result.Position[0]-expected.Position[0])<1e-7);
+ assert(std::abs(result.Position[1]-expected.Position[1])<1e-7);
+ assert(std::abs(result.Fov-expected.Fov)<1e-7);
+ // Scrubbing with an explicit cached scene must sample the frozen outgoing pose
+ // at the transition start, not borrow an arbitrary recently rendered pose.
+ auto frame=std::make_shared<advancedfx::SceneCache::Frame>();cachedFrame=frame;g_BakingCamera=true;
+ p.FreezeOutgoing=true;assert(MirvCam_EditClip(p));
+ g_CameraEvaluationTime=t;advancedfx::CameraPose cachedFirst,cachedAfter,cachedAgain;
+ assert(EvaluateSequence(t,cachedFirst));
+ g_CameraEvaluationTime=1.95;assert(EvaluateSequence(1.95,cachedAfter));
+ g_CameraEvaluationTime=t;assert(EvaluateSequence(t,cachedAgain));
+ assert(std::abs(cachedFirst.Position[0]-cachedAgain.Position[0])<1e-7);
+ g_BakingCamera=false;cachedFrame.reset();
+ assert(MirvCam_SaveProject(file.c_str()));assert(MirvCam_LoadProject(file.c_str()));
+ assert(g_CameraClips[2].FreezeOutgoing&&g_CameraClips[2].CurvedPath&&
+ std::abs(g_CameraClips[2].TransitionOffset+.3)<1e-9&&g_CameraClips[2].HandleOut[0]==12);
+ assert(MirvCam_EditClip(oldB));assert(MirvCam_EditClip(oldPath));assert(MirvCam_EditClip(oldReturn));
+ assert(MirvCam_SaveProject(file.c_str())); // Restore the original fixture for later tests.
+ }
  // Attached/aimed settings and identity survive save/load with unavailable live entities.
  advancedfx::CameraPose target;target.Position[0]=100;targets[5]=target;playerUsers[5]=6;
  command({"mirv_cam","attach","5","-1","0","0","0"});const auto attached=g_CameraRigName;const auto identity=g_CameraRigs.at(attached).CacheIdentity;advancedfx::CameraMotion savedMotion;savedMotion.FollowHalfLife=.2;savedMotion.RotationHalfLife=.1;savedMotion.BoneHalfLife=.075;savedMotion.TurnRate=135;savedMotion.OrbitSpeed=30;savedMotion.PreserveFraming=true;savedMotion.FramingMargin=.2;savedMotion.BonePositionInfluence=.4;savedMotion.BoneRotationInfluence=.3;savedMotion.BonePositionLimit=6;savedMotion.BoneRotationLimit=15;assert(MirvCam_EditMotion(g_CameraRigs.at(attached).Id,savedMotion));savedMotion=g_CameraRigs.at(attached).Rig.Motion;MirvCameraCollisionSettings savedCollision;savedCollision.Radius=3.5;savedCollision.ReturnHalfLife=.67;assert(MirvCam_EditCollision(g_CameraRigs.at(attached).Id,savedCollision));

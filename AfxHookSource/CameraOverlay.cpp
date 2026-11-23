@@ -6135,8 +6135,9 @@ static void DrawCinematicBakeControls(const std::string &source)
 	double sourceBegin = 0, sourceEnd = 0;
 	if (sequence && !clips.empty())
 	{
-		sourceBegin = clips.front().Time;
-		sourceEnd = clips.back().Time + clips.back().Blend;
+		sourceBegin = (std::min)(clips.front().Time, clips.size() > 1
+			? clips[1].TransitionStart() : clips.front().Time);
+		sourceEnd = (std::max)(clips.back().Time, clips.back().TransitionStart() + clips.back().Blend);
 		if (clips.back().Campath)
 		{
 			auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
@@ -6631,10 +6632,11 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		if (begin > visibleEnd || end < visibleStart)
 			continue;
 		std::string label = CameraClipSourceName(clip.Campath, clip.Target);
-		if(i && clip.Blend>0){char blend[64];snprintf(blend,sizeof(blend)," | Blend %.2f s",clip.Blend);label+=blend;}
+		if (i && clip.Blend > 0) { char blend[64]; snprintf(blend, sizeof(blend),
+			" | Transition %.2f s", clip.Blend); label += blend; }
 		const bool choose = ImGui::NeoTimelineSpan(
 			begin, end, IM_COL32(90, 65, 125, 230), label.c_str(), nullptr, true,
-			clip.Id == g_SelectedCameraClip, i && clip.Blend > 0 ? tick(clip.Time + clip.Blend) : -1, true);
+			clip.Id == g_SelectedCameraClip, -1, true);
 		if (choose)
 		{
 			g_SelectedCameraClip = clip.Id;
@@ -6744,13 +6746,41 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		}
 	}
 	ImGui::EndNeoGroup();
+	// Transition envelopes are independent of camera source blocks, so they may
+	// extend across subsequent edit points without claiming or blocking a clip.
+	static bool transitionsOpen = true;
+	const bool drawTransitions = ImGui::BeginNeoGroup("Transition envelopes", &transitionsOpen);
+	if (drawTransitions)
+	{
+		for (size_t i = 1; i < clips.size(); ++i)
+		{
+			const auto &clip = clips[i];
+			const double start = clip.TransitionStart();
+			const std::string name = CameraClipSourceName(clip.Campath, clip.Target) +
+				"##transition_envelope_" + std::to_string(clip.Id);
+			if (!ImGui::BeginNeoTimelineEx(name.c_str(), nullptr, ImGuiNeoTimelineFlags_None))
+				continue;
+			const int begin = tick(start);
+			const int end = (std::max)(begin + 1, tick(start + clip.Blend));
+			if (end >= visibleStart && begin <= visibleEnd &&
+				ImGui::NeoTimelineSpan(begin, end, IM_COL32(65, 155, 205, 210),
+					clip.Blend > 0 ? "Transition envelope" : "Cut",
+					nullptr, true, clip.Id == g_SelectedCameraClip))
+			{
+				g_SelectedCameraClip = clip.Id;
+				g_OpenCameraClips = true;
+			}
+			ImGui::EndNeoTimeLine();
+		}
+		ImGui::EndNeoGroup();
+	}
 }
 static void DrawCameraClipsPanel()
 {
 	ImGui::TextWrapped(
 		"Enable the sequence to play these clips. Preview navigation is independent. You can use free camera "
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
-	ImGui::TextDisabled("One block per source | Hatched leading section: blend into this source");
+	ImGui::TextDisabled("Camera blocks mark edit points; separate transition envelopes can overlap them.");
 	if (SceneCachePreviewActive())
 		ImGui::TextWrapped("Recorded tracking preserves observed aiming. Without camera samples, aiming is "
 						   "unsmoothed. Re-record after editing a camera. Targets must be "
@@ -6780,8 +6810,10 @@ static void DrawCameraClipsPanel()
 	auto clips = MirvCam_Clips();
 	static std::uint64_t loaded = ~std::uint64_t(0);
 	static int tick = 0;
-	static double blend = 0;
-	static int blendCurve = 0;
+	static double blend = 0, transitionOffset = 0;
+	static int blendCurve = 0, rotationCurve = 0, fovCurve = 0;
+	static bool freezeOutgoing = true, curvedPath = false;
+	static std::array<double, 3> handleOut{{0, 0, 0}}, handleIn{{0, 0, 0}};
 	static bool campath = true;
 	static std::uint64_t target =
 		g_Hook_VClient_RenderView.m_CamPaths.GetId(g_Hook_VClient_RenderView.m_CamPaths.GetActive());
@@ -6791,6 +6823,10 @@ static void DrawCameraClipsPanel()
 	if (found != clips.end() && mapping &&
 		(loaded != g_SelectedCameraClip || found->Time != loadedValue.Time ||
 		 found->Blend != loadedValue.Blend || found->BlendCurve != loadedValue.BlendCurve ||
+		 found->TransitionOffset != loadedValue.TransitionOffset ||
+		 found->RotationCurve != loadedValue.RotationCurve || found->FovCurve != loadedValue.FovCurve ||
+		 found->FreezeOutgoing != loadedValue.FreezeOutgoing || found->CurvedPath != loadedValue.CurvedPath ||
+		 found->HandleOut != loadedValue.HandleOut || found->HandleIn != loadedValue.HandleIn ||
 		 found->Target != loadedValue.Target || found->Campath != loadedValue.Campath))
 	{
 		loadedValue = *found;
@@ -6799,7 +6835,14 @@ static void DrawCameraClipsPanel()
 		CinematicClock(found->Time, true, clipDemo, SceneCachePreviewActive());
 		tick = (std::max)(0, int(llround(clipDemo / interval)));
 		blend = found->Blend;
+		transitionOffset = found->TransitionOffset;
 		blendCurve = found->BlendCurve;
+		rotationCurve = found->RotationCurve;
+		fovCurve = found->FovCurve;
+		freezeOutgoing = found->FreezeOutgoing;
+		curvedPath = found->CurvedPath;
+		handleOut = found->HandleOut;
+		handleIn = found->HandleIn;
 		campath = found->Campath;
 		target = found->Target;
 	}
@@ -6808,6 +6851,11 @@ static void DrawCameraClipsPanel()
 	if(editing && ImGui::Button("New clip"))
 	{
 		g_SelectedCameraClip=loaded=~std::uint64_t(0);
+		blend = transitionOffset = 0;
+		blendCurve = rotationCurve = fovCurve = 0;
+		freezeOutgoing = true;
+		curvedPath = false;
+		handleOut = handleIn = {{0, 0, 0}};
 		clipStatus="Choose a start tick and source, then add the new camera clip.";
 	}
 	if (ImGui::Button("New camera clip at playhead") && mapping)
@@ -6820,14 +6868,46 @@ static void DrawCameraClipsPanel()
 		{
 			tick = (std::max)(0, int(llround(playheadDemo / interval)));
 			g_SelectedCameraClip = loaded = ~std::uint64_t(0);
+			blend = transitionOffset = 0;
+			blendCurve = rotationCurve = fovCurve = 0;
+			freezeOutgoing = true;
+			curvedPath = false;
+			handleOut = handleIn = {{0, 0, 0}};
 			clipStatus = "Start tick set to playhead; choose a source and press Add camera clip.";
 		}
 	}
 	ImGui::InputInt("Start tick", &tick);
 	tick = (std::max)(0, tick);
-	ImGui::InputDouble("Blend into this source (s)", &blend, 0, 0, "%.3f");
+	ImGui::InputDouble("Transition duration (s)", &blend, 0, 0, "%.3f");
+	ImGui::InputDouble("Transition offset from edit point (s)", &transitionOffset, 0, 0, "%.3f");
+	if (ImGui::Button("Before edit")) transitionOffset = -blend;
+	ImGui::SameLine();
+	if (ImGui::Button("Center on edit")) transitionOffset = -blend * 0.5;
+	ImGui::SameLine();
+	if (ImGui::Button("After edit")) transitionOffset = 0;
+	if (std::isfinite(blend) && std::isfinite(transitionOffset))
+		ImGui::TextDisabled("Envelope: %.3f - %.3f s (client time)",
+			(tick * interval) + transitionOffset, (tick * interval) + transitionOffset + blend);
 	const char *blendCurves[] = {"Smooth", "Linear", "Smoother"};
-	ImGui::Combo("Blend interpolation", &blendCurve, blendCurves, 3);
+	ImGui::Combo("Position easing", &blendCurve, blendCurves, 3);
+	ImGui::Combo("Rotation easing", &rotationCurve, blendCurves, 3);
+	ImGui::Combo("FOV easing", &fovCurve, blendCurves, 3);
+	ImGui::Checkbox("Freeze outgoing camera at transition start", &freezeOutgoing);
+	ImGui::Checkbox("Curved transition trajectory (cubic Bezier)", &curvedPath);
+	if (curvedPath && ImGui::TreeNode("Transition trajectory handles (world units)"))
+	{
+		const char *axis[] = {"X", "Y", "Z"};
+		for (int i = 0; i < 3; ++i)
+		{
+			ImGui::PushID(i);
+			ImGui::InputDouble((std::string("Outgoing handle ") + axis[i]).c_str(), &handleOut[i], 0, 0, "%.2f");
+			ImGui::InputDouble((std::string("Incoming handle ") + axis[i]).c_str(), &handleIn[i], 0, 0, "%.2f");
+			ImGui::PopID();
+		}
+		if (ImGui::Button("Reset trajectory handles"))
+			handleOut = handleIn = {{0, 0, 0}};
+		ImGui::TreePop();
+	}
 	auto cameras = MirvCam_Cameras();
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	std::string selectedName = CameraClipSourceName(campath, target);
@@ -6864,7 +6944,14 @@ static void DrawCameraClipsPanel()
 		clip.Id = g_SelectedCameraClip;
 		CinematicClock(tick * interval, false, clip.Time, SceneCachePreviewActive());
 		clip.Blend = blend;
+		clip.TransitionOffset = transitionOffset;
 		clip.BlendCurve = blendCurve;
+		clip.RotationCurve = rotationCurve;
+		clip.FovCurve = fovCurve;
+		clip.FreezeOutgoing = freezeOutgoing;
+		clip.CurvedPath = curvedPath;
+		clip.HandleOut = handleOut;
+		clip.HandleIn = handleIn;
 		clip.Campath = campath;
 		clip.Target = target;
 		clipStatus.clear();
@@ -6874,9 +6961,10 @@ static void DrawCameraClipsPanel()
 				if (std::abs(other.Time - clip.Time) < 1e-9)
 					clipStatus = "Another clip starts at this tick. Select that clip to edit it, or choose a "
 								 "different tick.";
-				else if ((other.Time < clip.Time && other.Time + other.Blend > clip.Time + 1e-9) ||
-						 (other.Time > clip.Time && clip.Time + clip.Blend > other.Time + 1e-9))
-					clipStatus = "The blend overlaps a neighboring clip. Shorten the blend or move the clip.";
+				else if ((other.Time < clip.Time && other.TransitionStart() >= clip.TransitionStart() - 1e-9) ||
+						 (other.Time > clip.Time && other.TransitionStart() <= clip.TransitionStart() + 1e-9))
+					clipStatus = "Transition starts must follow the same order as camera edit points. "
+								 "Move the envelope offset or edit point.";
 			}
 		if (clipStatus.empty() && MirvCam_EditClip(clip))
 		{
@@ -7012,8 +7100,10 @@ static void DrawCameraClipsPanel()
 			"Ranges follow their clip. Drag a modifier edge or fade marker on its selected clip's lane.");
 	}
 	ImGui::TextWrapped(
-		"Clips start at demo ticks. Zero blend cuts; positive blend transitions from the previous source. "
-		"Blends must finish before the next clip. Save the cinematic project to keep clips, cameras and commands.");
+		"Camera edit points and transition envelopes are independent. Envelopes may overlap: a later "
+		"transition blends from the prior composite, and Freeze outgoing captures it at the boundary. "
+		"Envelope starts must retain edit-point order. The first clip provides pre-roll and has no incoming "
+		"transition. Save the cinematic project to preserve timing, handles and easing.");
 	if (!clipStatus.empty())
 		ImGui::TextWrapped("%s", clipStatus.c_str());
 	if (!mapping)

@@ -241,13 +241,44 @@ struct CameraClip
 {
 	std::uint64_t Id = ~std::uint64_t(0), Target = 0;
 	double Time = 0, Blend = 0;
-	int BlendCurve = 0; // 0 smoothstep, 1 linear, 2 smootherstep
+	// TransitionStart() may precede or follow the clip's editorial Time.
+	// Clips stay ordered by edit point; transition starts must also stay ordered.
+	double TransitionOffset = 0;
+	int BlendCurve = 0; // Position timing: 0 smoothstep, 1 linear, 2 smootherstep.
+	int RotationCurve = 0, FovCurve = 0;
+	// For historical projects, the default is the original live outgoing evaluation.
+	// Newly authored clips in the editor opt into a frozen outgoing pose.
+	bool FreezeOutgoing = false;
+	bool CurvedPath = false;
+	// World-space offsets from the straight-line cubic Bezier control points
+	// (at one-third and two-thirds of the endpoint displacement).
+	std::array<double, 3> HandleOut{{0, 0, 0}}, HandleIn{{0, 0, 0}};
 	bool Campath = false;
 	std::vector<CameraClipModifier> Modifiers;
+	double TransitionStart() const { return Time + TransitionOffset; }
+	bool ValidTransition() const
+	{
+		if (!std::isfinite(Time) || std::abs(Time) > 1e9 || !std::isfinite(Blend) ||
+			Blend < 0 || Blend > 3600 || !std::isfinite(TransitionOffset) ||
+			std::abs(TransitionOffset) > 3600 || BlendCurve < 0 || BlendCurve > 2 ||
+			RotationCurve < 0 || RotationCurve > 2 || FovCurve < 0 || FovCurve > 2)
+			return false;
+		for (double value : HandleOut)
+			if (!std::isfinite(value) || std::abs(value) > 1e6)
+				return false;
+		for (double value : HandleIn)
+			if (!std::isfinite(value) || std::abs(value) > 1e6)
+				return false;
+		return std::isfinite(TransitionStart());
+	}
 	bool operator==(const CameraClip &o) const
 	{
 		return Id == o.Id && Target == o.Target && Time == o.Time && Blend == o.Blend &&
-			   BlendCurve == o.BlendCurve && Campath == o.Campath && Modifiers == o.Modifiers;
+			   TransitionOffset == o.TransitionOffset && BlendCurve == o.BlendCurve &&
+			   RotationCurve == o.RotationCurve && FovCurve == o.FovCurve &&
+			   FreezeOutgoing == o.FreezeOutgoing && CurvedPath == o.CurvedPath &&
+			   HandleOut == o.HandleOut && HandleIn == o.HandleIn &&
+			   Campath == o.Campath && Modifiers == o.Modifiers;
 	}
 };
 struct CameraGuideLine

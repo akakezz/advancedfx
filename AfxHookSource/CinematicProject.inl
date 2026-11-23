@@ -228,7 +228,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	SyncRigLevel();
 	std::ostringstream out;
 	out.imbue(std::locale::classic());
-	out << std::setprecision(17) << "HLAE_CINEMATIC 8\n";
+	out << std::setprecision(17) << "HLAE_CINEMATIC 9\n";
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto state = paths.CaptureState();
 	out << state.Paths.size() << ' ' << state.Active << '\n';
@@ -255,7 +255,10 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	for (auto &c : g_CameraClips)
 	{
 		out << c.Id << ' ' << c.Target << ' ' << c.Time << ' ' << c.Blend << ' ' << c.Campath << ' '
-			<< c.BlendCurve << '\n';
+			<< c.BlendCurve << ' ' << c.TransitionOffset << ' ' << c.RotationCurve << ' ' << c.FovCurve
+			<< ' ' << c.FreezeOutgoing << ' ' << c.CurvedPath
+			<< ' ' << c.HandleOut[0] << ' ' << c.HandleOut[1] << ' ' << c.HandleOut[2]
+			<< ' ' << c.HandleIn[0] << ' ' << c.HandleIn[1] << ' ' << c.HandleIn[2] << '\n';
 		out << c.Modifiers.size() << '\n';
 		for (const auto &m : c.Modifiers)
 			out << m.Id << ' ' << m.Influence << ' ' << m.Enabled << ' ' << m.Begin << ' ' << m.End << ' '
@@ -296,7 +299,7 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	size_t count;
 	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" ||
 		(version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 &&
-		 version != 7 && version != 8))
+		 version != 7 && version != 8 && version != 9))
 		return false;
 	CamPathCollection::State paths;
 	std::set<unsigned long long> pathIds, rigIds, clipIds;
@@ -351,6 +354,14 @@ bool MirvCam_LoadProject(const wchar_t *file)
 			return false;
 		if (version >= 7 && (!(in >> c.BlendCurve) || c.BlendCurve < 0 || c.BlendCurve > 2))
 			return false;
+		// Before format 9 a single curve was applied to position, rotation and FOV.
+		if (version < 9)
+			c.RotationCurve = c.FovCurve = c.BlendCurve;
+		if (version >= 9 &&
+			(!(in >> c.TransitionOffset >> c.RotationCurve >> c.FovCurve >> c.FreezeOutgoing >>
+			   c.CurvedPath >> c.HandleOut[0] >> c.HandleOut[1] >> c.HandleOut[2] >>
+			   c.HandleIn[0] >> c.HandleIn[1] >> c.HandleIn[2]) || !c.ValidTransition()))
+			return false;
 		if (version >= 5)
 		{
 			size_t links;
@@ -367,7 +378,9 @@ bool MirvCam_LoadProject(const wchar_t *file)
 		}
 		// Missing references are retained, visibly unavailable, so removed sources can be corrected.
 		if (!clips.empty() &&
-			(c.Time - clips.back().Time < 1e-9 || clips.back().Time + clips.back().Blend > c.Time + 1e-9))
+			(c.Time - clips.back().Time < 1e-9 ||
+			 (version >= 9 ? c.TransitionStart() - clips.back().TransitionStart() < 1e-9
+			               : clips.back().Time + clips.back().Blend > c.Time + 1e-9)))
 			return false;
 		clips.push_back(c);
 	}
@@ -513,18 +526,21 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 		times.insert((std::min)(end, begin + i * step));
 	if (sequence)
 		for (auto &c : g_CameraClips)
-			if (c.Time >= begin && c.Time <= end)
 			{
-				times.insert(c.Time);
-				if (c.Blend == 0 && c.Time > begin)
+				const double start = c.TransitionStart(), finish = start + c.Blend;
+				if (start >= begin && start <= end)
 				{
-					const double previousClock =
-						double(std::nextafter(float(c.Time), -std::numeric_limits<float>::infinity()));
-					const double padding = (std::max)(1e-6, c.Time - previousClock);
-					times.insert((std::max)(begin, c.Time - padding));
+					times.insert(start);
+					if (c.Blend == 0 && start > begin)
+					{
+						const double previousClock =
+							double(std::nextafter(float(start), -std::numeric_limits<float>::infinity()));
+						const double padding = (std::max)(1e-6, start - previousClock);
+						times.insert((std::max)(begin, start - padding));
+					}
 				}
-				if (c.Time + c.Blend <= end)
-					times.insert(c.Time + c.Blend);
+				if (finish >= begin && finish <= end)
+					times.insert(finish);
 			}
 	// Preserve authored key/hold boundaries when routing path exports through
 	// the same sampler as camera sequences.

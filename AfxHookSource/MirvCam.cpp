@@ -1274,27 +1274,162 @@ bool RecoverCachedOutgoing(NamedCameraRig &rig, double start, double time,
 	return recovered;
 }
 // Shared by explicit transitions, sequencer clips, preview and sequence export.
+double CameraBlendEasing(double fraction, int curve)
+{
+	const double t = std::clamp(fraction, 0.0, 1.0);
+	return curve == 1 ? t : curve == 2 ? t * t * t * (t * (t * 6 - 15) + 10) : t * t * (3 - 2 * t);
+}
 bool BlendCameraPoses(const advancedfx::CameraPose &from, const advancedfx::CameraPose &to, double fraction,
-					  advancedfx::CameraPose &out, int curve = 0)
+					  advancedfx::CameraPose &out, int curve = 0,
+					  const advancedfx::CameraClip *clip = nullptr)
 {
 	if (!from.Valid() || !to.Valid() || !std::isfinite(fraction))
 		return false;
-	const double t = std::clamp(fraction, 0.0, 1.0), weight = curve == 1 ? t
-															  : curve == 2
-																  ? t * t * t * (t * (t * 6 - 15) + 10)
-																  : t * t * (3 - 2 * t);
+	const double t = std::clamp(fraction, 0.0, 1.0);
+	const double position = CameraBlendEasing(t, clip ? clip->BlendCurve : curve);
+	const double rotation = CameraBlendEasing(t, clip ? clip->RotationCurve : curve);
+	const double field = CameraBlendEasing(t, clip ? clip->FovCurve : curve);
 	auto result = to;
 	for (int i = 0; i < 3; ++i)
-		result.Position[i] = from.Position[i] + weight * (to.Position[i] - from.Position[i]);
+	{
+		const double a = from.Position[i], b = to.Position[i];
+		if (clip && clip->CurvedPath)
+		{
+			// Cubic Bezier with world-space offsets to the straight-line control points.
+			const double c1 = a + (b - a) / 3 + clip->HandleOut[i];
+			const double c2 = a + (b - a) * (2.0 / 3) + clip->HandleIn[i];
+			const double u = 1 - position;
+			result.Position[i] = u * u * u * a + 3 * u * u * position * c1 +
+								 3 * u * position * position * c2 + position * position * position * b;
+		}
+		else
+			result.Position[i] = a + position * (b - a);
+	}
 	auto a = from.Rotation.Normalized(), b = to.Rotation.Normalized();
 	if (a.W * b.W + a.X * b.X + a.Y * b.Y + a.Z * b.Z < 0)
 		b = Afx::Math::Quaternion(-b.W, -b.X, -b.Y, -b.Z);
-	result.Rotation = a.Slerp(b, weight).Normalized();
-	result.Fov = from.Fov + weight * (to.Fov - from.Fov);
+	result.Rotation = a.Slerp(b, rotation).Normalized();
+	result.Fov = from.Fov + field * (to.Fov - from.Fov);
 	if (!result.Valid())
 		return false;
 	out = result;
 	return true;
+}
+struct FrozenSequencePose
+{
+	double Start = 0;
+	advancedfx::CameraPose Pose;
+};
+std::map<std::uint64_t, FrozenSequencePose> g_SequenceFrozenPoses;
+advancedfx::CameraPose g_SequencePreviousPose;
+double g_SequencePreviousTime = -std::numeric_limits<double>::infinity();
+std::uint64_t g_SequenceFrozenRevision = ~std::uint64_t(0);
+std::string g_SequenceFrozenDemo;
+
+bool EvaluateSequenceComposite(double time, size_t limit, advancedfx::CameraPose &pose);
+bool SequenceOutgoingAtStart(size_t index, double start, advancedfx::CameraPose &out)
+{
+	advancedfx::SceneCache::Frame frame;
+	if (!AfxHookSource::CameraOverlay::SampleCameraScene(start, frame))
+		return false; // Never resurrect the subject from an unrelated historical frame.
+	const auto oldFrame = g_BakeFrame;
+	const bool oldBaking = g_BakingCamera;
+	const double oldTime = g_CameraEvaluationTime;
+	const std::string oldFailure = g_CameraFailureReason;
+	g_BakeFrame = std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame));
+	g_BakingCamera = true;
+	g_CameraEvaluationTime = start;
+	const bool valid = EvaluateSequenceComposite(start, index, out);
+	g_CameraEvaluationTime = oldTime;
+	g_BakingCamera = oldBaking;
+	g_BakeFrame = oldFrame;
+	g_CameraFailureReason = oldFailure;
+	return valid;
+}
+bool EvaluateSequenceComposite(double time, size_t limit, advancedfx::CameraPose &pose)
+{
+	if (!limit)
+		return false;
+	// Completed transitions replace the earlier composite entirely.
+	size_t base = 0;
+	for (size_t i = 1; i < limit; ++i)
+	{
+		const auto &clip = g_CameraClips[i];
+		if (time < clip.TransitionStart())
+			break;
+		if (clip.Blend <= 0 || time >= clip.TransitionStart() + clip.Blend)
+			base = i;
+	}
+	bool valid = EvaluateClipSource(g_CameraClips[base], time, pose);
+	for (size_t i = base + 1; i < limit; ++i)
+	{
+		const auto &clip = g_CameraClips[i];
+		const double start = clip.TransitionStart();
+		if (time < start)
+			break;
+		advancedfx::CameraPose incoming;
+		if (!EvaluateClipSource(clip, time, incoming))
+			continue;
+		if (clip.Blend <= 0 || time >= start + clip.Blend)
+		{
+			pose = incoming;
+			valid = true;
+			continue;
+		}
+		advancedfx::CameraPose outgoing = pose;
+		bool haveOutgoing = valid;
+		if (clip.FreezeOutgoing)
+		{
+			const bool cached = g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+			if (cached)
+				haveOutgoing = SequenceOutgoingAtStart(i, start, outgoing);
+			else
+			{
+				auto frozen = g_SequenceFrozenPoses.find(clip.Id);
+				if (frozen != g_SequenceFrozenPoses.end() && frozen->second.Start == start)
+				{
+					outgoing = frozen->second.Pose;
+					haveOutgoing = true;
+				}
+				else
+				{
+					// Live engine entities cannot be sampled in the past. Release
+					// the last actually displayed composite at the boundary.
+					if (g_SequencePreviousTime < start && g_SequencePreviousPose.Valid())
+					{
+						outgoing = g_SequencePreviousPose;
+						haveOutgoing = true;
+					}
+					if (haveOutgoing)
+						g_SequenceFrozenPoses[clip.Id] = {start, outgoing};
+				}
+			}
+		}
+		else if (!haveOutgoing && i > 0 && !g_CameraClips[i - 1].Campath)
+		{
+			// Old projects retain their previous live-outgoing fallback semantics.
+			const auto &previous = g_CameraClips[i - 1];
+			auto rig = FindRig(std::to_string(previous.Target));
+			if (rig != g_CameraRigs.end())
+			{
+				const bool cached = g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+				haveOutgoing = cached
+					? RecoverCachedOutgoing(rig->second, start, time, outgoing, &previous)
+					: (outgoing = rig->second.LastWorld, outgoing.Valid());
+				if (haveOutgoing && !cached)
+					haveOutgoing = ApplyClipModifiers(previous, time, outgoing);
+			}
+		}
+		if (haveOutgoing &&
+			BlendCameraPoses(outgoing, incoming, (time - start) / clip.Blend, pose, clip.BlendCurve, &clip))
+			valid = true;
+		else
+		{
+			pose = incoming; // Missing outgoing boundary pose: cut, never freeze stale entities.
+			valid = true;
+		}
+	}
+	return valid;
 }
 bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 {
@@ -1305,40 +1440,34 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 		g_CameraFailureReason = "The camera sequence belongs to another demo session.";
 		return false;
 	}
-	auto next = std::upper_bound(g_CameraClips.begin(), g_CameraClips.end(), time,
-								 [](double t, const advancedfx::CameraClip &c) { return t < c.Time; });
 	if (g_CameraClips.empty())
 		return false;
-	auto current = next == g_CameraClips.begin() ? g_CameraClips.begin() : std::prev(next);
-	if (!EvaluateClipSource(*current, time, pose))
-		return false;
-	if (!current->Campath)
-		g_SequenceCamera = current->Target;
-	// The first source is already active during pre-roll; it never blends from an editor view.
-	if (current == g_CameraClips.begin() || current->Blend <= 0 || time >= current->Time + current->Blend)
-		return true;
-	advancedfx::CameraPose from;
-	const auto &outgoing = *std::prev(current);
-	if (!EvaluateClipSource(outgoing, time, from))
+	const bool cached = g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+	if (!cached && (g_SequenceFrozenRevision != g_CameraCaptureRevision ||
+		g_SequenceFrozenDemo != g_CameraDemoKey || time + 1e-6 < g_SequencePreviousTime))
 	{
-		bool recovered = false;
-		if (!outgoing.Campath)
-		{
-			auto rig = FindRig(std::to_string(outgoing.Target));
-			if (rig != g_CameraRigs.end())
-			{
-				const bool cached = g_BakingCamera || AfxHookSource::CameraOverlay::SceneCachePreviewActive();
-				recovered = cached
-					? RecoverCachedOutgoing(rig->second, current->Time, time, from, &outgoing)
-					: (from = rig->second.LastWorld, from.Valid());
-				if (recovered && !cached) recovered = ApplyClipModifiers(outgoing, time, from);
-			}
-		}
-		if (!recovered)
-			return true; // No valid outgoing pose exists; do not stall the path.
-		g_CameraFailureReason.clear();
+		g_SequenceFrozenPoses.clear();
+		g_SequencePreviousPose = {};
+		g_SequencePreviousTime = -std::numeric_limits<double>::infinity();
+		g_SequenceFrozenRevision = g_CameraCaptureRevision;
+		g_SequenceFrozenDemo = g_CameraDemoKey;
 	}
-	return BlendCameraPoses(from, pose, (time - current->Time) / current->Blend, pose, current->BlendCurve);
+	if (!EvaluateSequenceComposite(time, g_CameraClips.size(), pose))
+		return false;
+	const advancedfx::CameraClip *displayed = &g_CameraClips.front();
+	for (size_t i = 1; i < g_CameraClips.size(); ++i)
+		if (time >= g_CameraClips[i].TransitionStart())
+			displayed = &g_CameraClips[i];
+		else
+			break;
+	if (!displayed->Campath)
+		g_SequenceCamera = displayed->Target;
+	if (!cached)
+	{
+		g_SequencePreviousTime = time;
+		g_SequencePreviousPose = pose;
+	}
+	return true;
 }
 bool EvaluateCameraAim(NamedCameraRig &camera, advancedfx::CameraPose &pose)
 {
@@ -1847,9 +1976,10 @@ bool MirvCam_EvaluateRig(double clientTime, advancedfx::CameraPose &pose, int fr
 		{
 			auto outgoing = g_CameraRigs.find(g_BlendFromCamera);
 			advancedfx::CameraPose from;
-			blendValid = g_BlendFromPlayback ? EvaluatePlaybackPose(clientTime, from, g_BlendPathId)
-											 : outgoing != g_CameraRigs.end() &&
-												   EvaluateIndividualCamera(outgoing->second, from);
+			blendValid = g_BlendFromView ? true
+						 : g_BlendFromPlayback ? EvaluatePlaybackPose(clientTime, from, g_BlendPathId)
+						 : outgoing != g_CameraRigs.end() &&
+						   EvaluateIndividualCamera(outgoing->second, from);
 			if (!g_BlendFromView && blendValid)
 				g_BlendViewPose = from; // Hold the latest outgoing pose when it disappears.
 			if (!blendValid && AfxHookSource::CameraOverlay::SceneCachePreviewActive() &&
@@ -1893,9 +2023,7 @@ bool MirvCam_EditClip(advancedfx::CameraClip &clip)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
-	if (clip.BlendCurve < 0 || clip.BlendCurve > 2 || !ValidClipModifiers(clip.Modifiers) ||
-		!std::isfinite(clip.Time) || std::abs(clip.Time) > 1e9 || !std::isfinite(clip.Blend) ||
-		clip.Blend < 0 || clip.Blend > 3600)
+	if (!clip.ValidTransition() || !ValidClipModifiers(clip.Modifiers))
 		return false;
 	if ((!g_SequenceDemo.empty() && g_SequenceDemo != g_CameraDemoKey) ||
 		(!g_CameraClips.empty() && g_SequenceDemo.empty() && g_SequenceLevel != g_LevelInitCount))
@@ -1935,7 +2063,7 @@ bool MirvCam_EditClip(advancedfx::CameraClip &clip)
 			  [](const auto &a, const auto &b) { return a.Time < b.Time; });
 	for (size_t i = 1; i < candidate.size(); ++i)
 		if (candidate[i].Time - candidate[i - 1].Time < 1e-9 ||
-			candidate[i - 1].Time + candidate[i - 1].Blend > candidate[i].Time + 1e-9)
+			candidate[i].TransitionStart() - candidate[i - 1].TransitionStart() < 1e-9)
 			return false;
 	CameraEditTransaction history;
 	if (g_CameraClips.empty())
@@ -2185,9 +2313,10 @@ bool MirvCam_SequencePreviewRange(double &begin, double &end)
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	if (g_CameraClips.empty())
 		return false;
-	begin = g_CameraClips.front().Time;
+	begin = (std::min)(g_CameraClips.front().Time, g_CameraClips.size() > 1
+		? g_CameraClips[1].TransitionStart() : g_CameraClips.front().Time);
 	const auto &last = g_CameraClips.back();
-	end = last.Time + (std::max)(last.Blend, 1.0);
+	end = (std::max)(last.Time, last.TransitionStart() + last.Blend) + 1.0;
 	if (last.Campath)
 	{
 		auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
@@ -2195,7 +2324,7 @@ bool MirvCam_SequencePreviewRange(double &begin, double &end)
 			if (paths.GetId(i) == last.Target)
 				if (auto path = paths.GetPath(i))
 					if (path->CanEval())
-						end = (std::max)(last.Time + last.Blend, path->GetOffset() + path->GetUpperBound());
+						end = (std::max)(last.TransitionStart() + last.Blend, path->GetOffset() + path->GetUpperBound());
 	}
 	end = (std::max)(end, begin + .001);
 	return true;
@@ -2303,14 +2432,20 @@ std::string MirvCam_PreviewLabel()
 		std::string label = "Sequence | ";
 		if (!g_CameraClips.empty())
 		{
-			auto next = std::upper_bound(g_CameraClips.begin(), g_CameraClips.end(), g_SequencePreviewTime,
-										 [](double time, const advancedfx::CameraClip &clip)
-										 { return time < clip.Time; });
-			auto current = next == g_CameraClips.begin() ? next : std::prev(next);
-			if (current != g_CameraClips.begin() && current->Blend > 0 &&
-				g_SequencePreviewTime < current->Time + current->Blend)
-				label += sourceName(*std::prev(current)) + " -> ";
-			label += sourceName(*current);
+			const auto *current = &g_CameraClips.front();
+			std::string active = sourceName(*current);
+			for (size_t i = 1; i < g_CameraClips.size(); ++i)
+			{
+				const auto &clip = g_CameraClips[i];
+				if (g_SequencePreviewTime < clip.TransitionStart())
+					break;
+				if (clip.Blend > 0 && g_SequencePreviewTime < clip.TransitionStart() + clip.Blend)
+					active += " -> " + sourceName(clip);
+				else
+					active = sourceName(clip);
+				current = &clip;
+			}
+			label += active;
 		}
 		for (auto &c : label)
 			if (c == '\n' || c == '\r')
@@ -2638,7 +2773,9 @@ bool MirvCam_CameraCommand(advancedfx::ICommandArgs *args)
 			g_BlendFromPlayback = outgoingSource == CameraSource::Playback;
 			g_BlendDuration = duration;
 			g_BlendPathId = outgoingPath;
-			g_BlendFromView = fromView;
+			// Manual transitions release the outgoing target at command time, rather
+			// than continuing to drive the rotation/position through the fade.
+			g_BlendFromView = fromView || currentView.Valid();
 			g_BlendViewPose = currentView;
 			g_BlendStart = commandTime;
 			g_BlendStarted = true;
