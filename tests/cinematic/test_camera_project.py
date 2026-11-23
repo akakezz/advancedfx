@@ -87,7 +87,7 @@ int main(){
  assert(g_CameraClips[1].BlendCurve==2);
  // Overlapping envelopes: A -> B remains active while B -> path and path -> B begin.
  // Source-block edit points must not constrain transition duration.
- {const auto oldB=g_CameraClips[1],oldPath=g_CameraClips[2],oldReturn=g_CameraClips[3];
+ {auto oldB=g_CameraClips[1],oldPath=g_CameraClips[2],oldReturn=g_CameraClips[3];
  auto b=oldB;b.Blend=1.3;b.BlendCurve=1;assert(MirvCam_EditClip(b));
  auto p=oldPath;p.TransitionOffset=-.3;p.Blend=1.1;p.BlendCurve=1;p.RotationCurve=2;
  p.FovCurve=1;p.CurvedPath=true;p.HandleOut={{12,4,0}};p.HandleIn={{-8,3,0}};
