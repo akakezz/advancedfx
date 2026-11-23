@@ -117,7 +117,19 @@ int main(){
  g_CameraEvaluationTime=1.95;assert(EvaluateSequence(1.95,cachedAfter));
  g_CameraEvaluationTime=t;assert(EvaluateSequence(t,cachedAgain));
  assert(std::abs(cachedFirst.Position[0]-cachedAgain.Position[0])<1e-7);
- g_BakingCamera=false;cachedFrame.reset();
+ g_BakingCamera=false;cachedFrame.reset();cached=false;
+ // In-world dashed guide must sample the selected transition without
+ // modifying live rigs, sequence history, or the current displayed pose.
+ const auto originalRigState=g_CameraRigs.at("B").LastWorld;
+ const auto originalPreviousTime=g_SequencePreviousTime;
+ const auto originalPreviousPose=g_SequencePreviousPose;
+ const auto dashes=MirvCam_TransitionGuideLines(p.Id);
+ assert(dashes.size()==12);
+ for(const auto &dash:dashes)for(int axis=0;axis<3;++axis)
+  assert(std::isfinite(dash.A[axis])&&std::isfinite(dash.B[axis]));
+ assert(g_SequencePreviousTime==originalPreviousTime);
+ assert(g_SequencePreviousPose.Position[0]==originalPreviousPose.Position[0]);
+ assert(g_CameraRigs.at("B").LastWorld.Position[0]==originalRigState.Position[0]);
  assert(MirvCam_SaveProject(file.c_str()));assert(MirvCam_LoadProject(file.c_str()));
  assert(g_CameraClips[2].FreezeOutgoing&&g_CameraClips[2].CurvedPath&&
  std::abs(g_CameraClips[2].TransitionOffset+.3)<1e-9&&g_CameraClips[2].HandleOut[0]==12);
