@@ -1472,7 +1472,7 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 // Draw-only transition trajectory sampling. The scene cache supplies exact
 // historical entities; without cache, moving attachments are a current-scene
 // approximation. All evaluator state is restored before returning.
-std::vector<advancedfx::CameraGuideLine> MirvCam_TransitionGuideLines(std::uint64_t clipId)
+std::vector<advancedfx::CameraGuideLine> TransitionGuideLinesInternal(std::uint64_t clipId)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	std::vector<advancedfx::CameraGuideLine> lines;
@@ -1955,6 +1955,12 @@ void ClearCameraAttachment(bool liveSource)
 	g_LegacyCameraName.clear();
 }
 } // namespace
+// Public linkage for the D3D9 campath renderer (a separate translation unit).
+// The implementation itself stays private to the camera evaluator.
+std::vector<advancedfx::CameraGuideLine> MirvCam_TransitionGuideLines(std::uint64_t clipId)
+{
+	return TransitionGuideLinesInternal(clipId);
+}
 void MirvCam_CaptureCameras(double time, int frame, double step,
 							std::vector<advancedfx::SceneCache::CameraSample> &samples)
 {
