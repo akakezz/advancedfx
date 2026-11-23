@@ -201,6 +201,18 @@ if args.baked:
  s=s.replace(' std::filesystem::remove(std::filesystem::path(file));',injected+' std::filesystem::remove(std::filesystem::path(file));',1)
 if args.stock_ref:
  s=s.replace(' // Full bake -> collection load', ' std::filesystem::copy_file(std::filesystem::path(bake), std::filesystem::path(STOCKFILE),std::filesystem::copy_options::overwrite_existing);\n // Full bake -> collection load'.replace('STOCKFILE','L'+json.dumps(str(out/'mixed-sequence.xml'))))
+# Keep this symbol check in a separate translation unit. A same-TU test
+# accidentally passed when the guide function had internal/anonymous linkage.
+s=s.replace('int main(){','extern "C" bool VerifyTransitionGuideExternalLink();\\nint main(){assert(VerifyTransitionGuideExternalLink());',1)
+link_probe=out/'transition_guide_link_probe.cpp'
+link_probe.write_text('''#include <shared/CameraRig.h>
+#include <cstdint>
+#include <vector>
+std::vector<advancedfx::CameraGuideLine> MirvCam_TransitionGuideLines(std::uint64_t);
+extern "C" bool VerifyTransitionGuideExternalLink() {
+    return &MirvCam_TransitionGuideLines != nullptr;
+}
+''')
 source=out/'project.cpp';source.write_text(s)
 cmd=['g++','-std=c++17','-O1','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp'),str(root/'shared/CommandSystem.cpp'),str(root/'shared/AfxConsole.cpp'),'-o',str(out/'project')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
@@ -214,7 +226,7 @@ for arg in cmd[cmd.index(str(source))+1:cmd.index('-o')]:
   r=subprocess.run(base+['-c',str(path),'-o',str(obj)],capture_output=True,text=True)
   if r.returncode:print(r.stderr[-8000:]);raise SystemExit(r.returncode)
  objects.append(str(obj))
-cmd=base+[str(source)]+objects+['-o',str(out/'project')]
+cmd=base+[str(source),str(link_probe)]+objects+['-o',str(out/'project')]
 r=subprocess.run(cmd,capture_output=True,text=True)
 if r.returncode:print(r.stderr[-8000:]);raise SystemExit(r.returncode)
 r=subprocess.run([str(out/'project')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'));print(r.stdout+r.stderr)
