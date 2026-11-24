@@ -1,5 +1,5 @@
 #pragma once
-// Preflight for explicitly enabled legacy Open Fortress experiments. Interface
+// Preflight for integrated legacy Open Fortress candidate adapters. Interface
 // names and executable addresses do not prove semantic ABI compatibility.
 #include <windows.h>
 #include <initializer_list>

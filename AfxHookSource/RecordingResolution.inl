@@ -54,7 +54,7 @@ HMONITOR OriginalMonitor = nullptr;
 bool Supported()
 {
     return g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified ||
-        (g_OpenFortressLegacyMode && g_OfNativeResolution);
+        (g_OpenFortressLegacyMode && g_OfNativeResolution && OfNativeInterfaces::KnownClient());
 }
 bool Recording()
 {
@@ -119,6 +119,8 @@ bool QueryModes(ModeList &list)
         (code.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
         !(code.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
         return RejectMode("IGameUIFuncs GetVideoModes entry is not executable engine code.");
+    if (g_OpenFortressLegacyMode && !OfNativeInterfaces::Slots(iface, "engine.dll", {3}))
+        return RejectMode("OF video-mode interface preflight failed.");
     list.Interface = iface;
     list.Get = reinterpret_cast<ModeList::Getter>(entry);
     list.Get(iface, &list.Data, &list.Count);
@@ -270,7 +272,7 @@ bool Apply(Size size, bool fit)
     if (!Supported() || !g_VEngineClient || Recording() || Pending ||
         g_VEngineClient->IsDrawingLoadingImage() || !Current.Windowed || !Current.Window)
     {
-        Message = "Requires supported windowed mode (OF: -afxOfNativeResolution), with recording stopped and no pending change.";
+        Message = "Requires a compatible windowed game, native adapters enabled, recording stopped and no pending change.";
         return false;
     }
     if (!Valid(size) || size.Width > Current.Limit.Width || size.Height > Current.Limit.Height)

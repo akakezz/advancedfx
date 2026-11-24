@@ -15,6 +15,8 @@ void SetOpen(bool value);
 bool IsMouseLook();
 void SetMouseLook(bool value);
 void Initialize();
+// Called once at game-mode detection, before any capture or UI actions.
+void SetOfSceneDefaults(bool integrated);
 enum class DemoFixPreference
 {
 	RecorderMute,

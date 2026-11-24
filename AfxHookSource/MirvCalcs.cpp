@@ -5927,7 +5927,7 @@ public:
 };
 
 // OF exposes EngineTraceClient003, but the exact binary ABI is not runtime-verified.
-// Check readable interface/vtable entries and executable ownership before opt-in use.
+// Check readable interface/vtable entries and executable ownership before use.
 static CMirvTf2EngineTrace *GetCameraTraceInterface()
 {
     if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified &&
@@ -12221,7 +12221,7 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 	SceneResolveAttachmentHosts(out);
 }
 
-// OF Scene Cache, version-checked and read-only. Studio calls are opt-in.
+// OF Scene Cache, version-checked and read-only. Studio calls require capture/replay.
 // An OF interpolation detour changes the function *entry* bytes after
 // installation, including when its override is disabled. Therefore only
 // inspect untouched CALL sites, not these function prologues. These two

@@ -1,3 +1,5 @@
+> Historical candidate notes: the consolidated build supersedes the individual launch switches. See [current integrated OF policy](OPEN_FORTRESS_FEATURE_PORT.md).
+
 # Open Fortress feature integration, second candidate
 
 Base: `21cb1408` (first integration), based on the confirmed OF branch

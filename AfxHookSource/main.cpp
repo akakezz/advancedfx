@@ -73,6 +73,7 @@
 #endif //#ifndef _WIN64
 
 #include "Gui.h"
+#include "CameraOverlay.h"
 #include <csgo/sdk_src/public/tier0/memalloc.h>
 #include <csgo/sdk_src/public/tier1/convar.h>
 #include <css/sdk_src/public/tier1/convar.h>
@@ -469,7 +470,7 @@ void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals
    void *view=appSystemFactory("VEngineRenderView014", nullptr);
    void *engine=g_OfNativePov ? appSystemFactory("VEngineClient014", nullptr) : nullptr;
    // Public SDK 2013 slots; this checks identity and address ownership, not
-   // the complete binary calling convention. OFF unless explicitly requested.
+   // the complete binary calling convention. Safe mode bypasses these hooks.
    if (OfNativeInterfaces::KnownClient() &&
        OfNativeInterfaces::Slots(client,"client.dll",{26,27,59}) &&
        OfNativeInterfaces::Slots(model,"engine.dll",{19}) &&
@@ -3002,11 +3003,12 @@ void CommonHooks()
 
 
 #ifndef _WIN64
-        g_OfNativeResolution = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativeResolution");
-        g_OfNativeCollision = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativeCollision");
-        g_OfNativePasses = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativePasses");
-        g_OfNativePov = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativePov");
-        g_OfNativeCommands = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativeCommands");
+        // One integrated OF build: individual adapters retain their own preflight.
+        const bool ofNative = g_OpenFortressLegacyMode && !g_CommandLine->FindParam(L"-afxOfSafeMode");
+        g_OfNativeResolution = g_OfNativeCollision = g_OfNativePasses =
+            g_OfNativePov = g_OfNativeCommands = ofNative;
+        if (g_OpenFortressLegacyMode)
+            AfxHookSource::CameraOverlay::SetOfSceneDefaults(ofNative);
 #endif
 		//ScriptEngine_StartUp();
 	}

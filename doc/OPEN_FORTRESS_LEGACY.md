@@ -1,3 +1,5 @@
+> Historical candidate notes: the consolidated build supersedes the individual launch switches. See [current integrated OF policy](OPEN_FORTRESS_FEATURE_PORT.md).
+
 # Open Fortress legacy compatibility — experimental
 
 This is an **opt-in compatibility experiment**. Campath drawing and HLAE recording were reported working in Open Fortress after the render-queue fix; other systems remain unverified.

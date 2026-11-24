@@ -70,10 +70,17 @@ static bool g_SceneSmoothAnimation = true;
 static bool g_SceneProjectiles = false, g_SceneWeapons = false, g_SceneCosmetics = false;
 static bool g_SceneRagdolls = false, g_SceneGibs = false;
 static bool g_SceneBuildings = false, g_SceneProps = false;
-// Preserve the previous safe, session-only opt-in defaults for engine-facing work.
+// Session-only compatibility controls; defaults are set after OF mode detection.
 static bool g_SceneOfExtended = false, g_SceneOfPoses = false;
 static bool g_SceneOfReplay = false, g_SceneOfSkeleton = false;
 static std::atomic_bool g_SceneOfColor080{false};
+void SetOfSceneDefaults(bool integrated)
+{
+    g_SceneOfExtended = g_SceneOfPoses = g_SceneOfReplay = integrated;
+    // Visibility preferences and the unverified material shader remain explicit.
+    g_SceneOfSkeleton = false;
+    g_SceneOfColor080.store(false);
+}
 // Counters only; diagnostics never look through cached model pointers.
 static std::atomic<unsigned long long> g_SceneOfReplayDraws{0}, g_SceneOfReplayAttempts{0},
     g_SceneOfReplayAccepted{0}, g_SceneOfReplayRejected{0};
@@ -3746,7 +3753,7 @@ static void DrawObserving()
 		int index = -1;
 		if (!Mirv_Tf2_TraceEntity(g_Hook_VClient_RenderView.LastCameraOrigin,
 								g_Hook_VClient_RenderView.LastCameraAngles, index))
-			traceStatus = g_OpenFortressLegacyMode ? "OF tracing unavailable (experimental -afxOfNativeCollision required)." : "TF2 tracing interface is unavailable.";
+			traceStatus = g_OpenFortressLegacyMode ? "OF tracing unavailable: compatibility check failed or safe mode is active." : "TF2 tracing interface is unavailable.";
 		else if (index < 0)
 			traceStatus = "No entity under the camera crosshair (world geometry blocks the trace).";
 		else
@@ -3823,7 +3830,7 @@ static void DrawObserving()
                 if (ImGui::Button("Return to recorded POV")) Afx_ExecClientCmd("mirv_pov off");
                 ImGui::TextWrapped("%s",MirvPovSpectate_Status());
             }
-            else ImGui::TextWrapped("POV demo: launch with -afxOfNativePov for experimental native spectating. Selecting players never changes the view.");
+            else ImGui::TextWrapped("POV demo: native spectating unavailable (compatibility check failed or safe mode). Selecting players does not change the view.");
         }
 		} else {
   if (!stv && g_VEngineClient && g_VEngineClient->IsPlayingDemo()) {
@@ -6091,7 +6098,7 @@ static void DrawSceneCacheMenu(int playhead)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	if (g_OpenFortressLegacyMode)
-		ImGui::TextWrapped("OF Scene Cache uses the shared category controls on the supported x86 client. "
+		ImGui::TextWrapped("OF Scene Cache uses shared category controls, with extended capture and replay enabled by default. "
 		                   "Unsupported interfaces fall back to player bounds; compatibility controls are below.");
 	ImGui::Text("%s | %zu frames | %.2f MiB", g_SceneRecord ? "Recording / armed" : "Stopped",
 	            g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0);
@@ -6756,7 +6763,7 @@ static void DrawSequencerDetails(int playhead)
 			g_CommandSystem.EnableTickMarkers(enabled);
 		ImGui::EndDisabled();
 		if (!MirvCampath_CommandSeekObserverReady())
-			ImGui::TextDisabled("Automatic commands require the native seek observer (OF experimental: -afxOfNativeCommands).");
+			ImGui::TextDisabled("Automatic commands require a compatible native seek observer.");
 		if (!g_CommandSystem.Enabled)
 			ImGui::TextDisabled("The global mirv_cmd scheduler is disabled.");
 		if (ImGui::Button("Add command at playhead"))
@@ -9567,7 +9574,7 @@ void Draw()
 				ImGui::EndDisabled();
 				if (state.Fit) ImGui::TextDisabled("Overlay: %s", state.NativePreview ? "native preview pixels" : "scaled backbuffer (fallback)");
 				if (!state.Supported || !state.Windowed)
-					ImGui::TextDisabled(g_OpenFortressLegacyMode ? "OF experimental: launch with -afxOfNativeResolution and use windowed mode." : "TF2 windowed mode required.");
+					ImGui::TextDisabled(g_OpenFortressLegacyMode ? "OF requires a compatible client, windowed mode and native adapters enabled." : "TF2 windowed mode required.");
 				if (!valid && state.MaxWidth > 0)
 					ImGui::TextDisabled("Requested size is outside the supported dimension or GPU limit.");
 				ImGui::TextWrapped("%s", state.Message.c_str());
@@ -9615,7 +9622,7 @@ void Draw()
      if (alpha) ImGui::EndDisabled();
      if (!editable) ImGui::EndDisabled();
      ImGui::TextWrapped("Base/world contains everything not separated into Players, Viewmodel or HUD. Depth is additional data. The optional full-scene reference preserves the original shot. Outputs share the profile below; isolates use alpha or the chosen chroma background. Refraction and interleaved effects still have compositing limits.");
-     if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("Native render-pass hooks are unavailable (OF experimental: -afxOfNativePasses).");
+     if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("Native render-pass hooks are unavailable or safe mode is active.");
     }
     // Record screen settings
 				bool screenEnabled = Recording::ScreenEnabled();
