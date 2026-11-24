@@ -3550,6 +3550,13 @@ public:
  bool SetTf2PassEnabled(Tf2RenderPass pass, bool enabled);
  bool Tf2PassRecording(Tf2RenderPass pass) const;
  bool DrawingThread_BindTf2PassTarget();
+ bool Tf2OffscreenSize(int &width, int &height) const;
+ bool DrawingThread_BeginTf2Offscreen(int width, int height);
+ void DrawingThread_ObserveTf2OffscreenDraw(unsigned primitives);
+ void DrawingThread_CaptureTf2Offscreen();
+ void DrawingThread_EndTf2Offscreen();
+ void DrawingThread_ReleaseTf2Offscreen();
+ void DrawingThread_SkipTf2Offscreen(const char *reason);
  bool DrawingThread_Tf2White(bool white);
  void EngineThread_PassCapture(Tf2RenderPass pass);
  void DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass);
@@ -3884,6 +3891,13 @@ private:
  std::atomic<unsigned long long> m_Tf2PassAttempts[unsigned(Tf2RenderPass::Count)] = {};
  std::atomic<unsigned long long> m_Tf2PassCaptured[unsigned(Tf2RenderPass::Count)] = {};
  std::atomic<unsigned long long> m_Tf2PassFailed[unsigned(Tf2RenderPass::Count)] = {};
+ std::atomic<int> m_Tf2OffscreenWidth{0}, m_Tf2OffscreenHeight{0};
+ IDirect3DSurface9 *m_Tf2OffscreenColor=nullptr, *m_Tf2OffscreenDepth=nullptr;
+ IDirect3DSurface9 *m_Tf2OffscreenPreviousColor=nullptr, *m_Tf2OffscreenPreviousDepth=nullptr;
+ D3DVIEWPORT9 m_Tf2OffscreenPreviousViewport{};
+ RECT m_Tf2OffscreenPreviousScissor{};
+ bool m_Tf2OffscreenActive=false, m_Tf2OffscreenCaptured=false;
+ unsigned m_Tf2OffscreenPrimitives=0;
  IDirect3DSurface9 *m_Tf2WhiteSurface = nullptr;
  bool m_Tf2WhiteBound = false;
  IDirect3DSurface9 *m_Tf2PlayerDepth = nullptr;

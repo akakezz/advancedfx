@@ -92,6 +92,10 @@ private:
     std::atomic_int m_RefCount = 0;
 };
 
+bool MaterialSystem_IsImmediate() {
+    return g_pMaterialSystem && g_Old_CMaterialSystem_GetRenderCallQueue &&
+        nullptr == g_Old_CMaterialSystem_GetRenderCallQueue(g_pMaterialSystem,0);
+}
 bool MaterialSystem_CanExecuteOnRenderThread() {
     if(g_pMaterialSystem && AFXADDR_GET(materialsystem_GetRenderCallQueue)) {
         const auto size = AFXADDR_GET(materialsystem_CFunctor_vtable_size);

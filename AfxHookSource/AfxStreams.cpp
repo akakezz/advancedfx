@@ -17,6 +17,8 @@
 #include "ClientTools.h"
 #include "d3d9Hooks.h"
 #include "RecordingResolution.h"
+#include <shared/Tf2OffscreenView.h>
+#include <cstdlib>
 #include "D3D9ImageBuffer.h"
 
 #ifndef _WIN64
@@ -6905,6 +6907,19 @@ void CAfxStreams::Console_Record_Start()
 void CAfxStreams::Console_Record_Start2()
 {
  if (!RecordingResolution::CanStart()) { Tier0_Warning("Custom recording resolution is not confirmed; apply or restore it first.\n"); return; }
+ int offW=0, offH=0;
+ if (Tf2OffscreenSize(offW,offH)) {
+  const auto state=RecordingResolution::GetState();
+  bool worldOnly=m_Tf2SeparateConfigured && m_Tf2PassEnabled[unsigned(Tf2RenderPass::World)] && !m_Tf2FullReference;
+  for (unsigned i=1;i<unsigned(Tf2RenderPass::Count);++i) worldOnly &= !m_Tf2PassEnabled[i];
+  if (!worldOnly || state.Managed || !Tf2RenderPassSupported() ||
+      !MaterialSystem_IsImmediate() ||
+      !advancedfx::Tf2Offscreen::CompatibleSize(state.RenderWidth,state.RenderHeight,offW,offH) ||
+      offW>state.MaxWidth || offH>state.MaxHeight) {
+   Tier0_Warning("Experimental offscreen recording requires original game mode, base/world only, same aspect ratio, larger valid dimensions, and immediate rendering (mat_queue_mode 0).\n");
+   return;
+  }
+ }
  if(m_Tf2SeparateConfigured && !m_Tf2FullReference){
   bool any=false;for(const auto &enabled:m_Tf2PassEnabled)any|=enabled.load();
   if(!any){Tier0_Warning("No recording outputs selected; enable Base/world, an isolate, depth, or full-scene reference.\n");return;}
@@ -10141,6 +10156,7 @@ void CAfxStreams::ShutDown2(void)
 }
 
 void CAfxStreams::DrawingThread_DeviceLost() {
+ DrawingThread_ReleaseTf2Offscreen();
  AfxD3D9SetPlayerHoldoutEnabled(false);
  DrawingThread_Tf2White(false);
  if (m_Tf2WhiteSurface) { m_Tf2WhiteSurface->Release(); m_Tf2WhiteSurface = nullptr; }
@@ -10460,6 +10476,121 @@ void CAfxStreams::DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass) {
  if (color) { color->Release(); color = nullptr; }
  if (depth) { depth->Release(); depth = nullptr; }
 }
+bool CAfxStreams::Tf2OffscreenSize(int &width,int &height) const {
+ width=m_Tf2OffscreenWidth.load(); height=m_Tf2OffscreenHeight.load();
+ return width>0 && height>0;
+}
+void CAfxStreams::DrawingThread_SkipTf2Offscreen(const char *reason) {
+ const unsigned i=unsigned(Tf2RenderPass::World);
+ ++m_Tf2PassAttempts[i];
+ if (++m_Tf2PassFailed[i]==1) Tier0_Warning("Offscreen base capture rejected: %s\n",reason);
+ if(auto node=m_Tf2PassNodes[i]) node->GpuCaptureSkipped();
+}
+bool CAfxStreams::DrawingThread_BeginTf2Offscreen(int width,int height) {
+ auto device=AfxGetDirect3DDevice9();
+ auto nativeColor=AfxGetRenderTargetSurface(),nativeDepth=AfxGetDepthStencilSurface();
+ D3DSURFACE_DESC cd{},dd{};
+ if(m_Tf2OffscreenActive || !device || !nativeColor || !nativeDepth ||
+    !m_Tf2PassNodes[unsigned(Tf2RenderPass::World)] ||
+    FAILED(nativeColor->GetDesc(&cd)) || FAILED(nativeDepth->GetDesc(&dd)) ||
+    !advancedfx::Tf2Offscreen::CompatibleSize(int(cd.Width),int(cd.Height),width,height))
+  return false;
+ if(!m_Tf2OffscreenColor || !m_Tf2OffscreenDepth) {
+  DrawingThread_ReleaseTf2Offscreen();
+  if(FAILED(device->CreateRenderTarget(width,height,cd.Format,D3DMULTISAMPLE_NONE,0,FALSE,&m_Tf2OffscreenColor,nullptr)) ||
+     FAILED(device->CreateDepthStencilSurface(width,height,dd.Format,D3DMULTISAMPLE_NONE,0,FALSE,&m_Tf2OffscreenDepth,nullptr))) {
+   DrawingThread_ReleaseTf2Offscreen();return false;
+  }
+ }
+ if(FAILED(device->GetRenderTarget(0,&m_Tf2OffscreenPreviousColor)) ||
+    FAILED(device->GetViewport(&m_Tf2OffscreenPreviousViewport)) ||
+    FAILED(device->GetScissorRect(&m_Tf2OffscreenPreviousScissor))) {
+  DrawingThread_ReleaseTf2Offscreen();return false;
+ }
+ const HRESULT depthResult=device->GetDepthStencilSurface(&m_Tf2OffscreenPreviousDepth);
+ if(FAILED(depthResult) && depthResult!=D3DERR_NOTFOUND) {
+  DrawingThread_ReleaseTf2Offscreen();return false;
+ }
+ for(DWORD slot=1;slot<4;++slot) {
+  IDirect3DSurface9 *extra=nullptr;
+  if(SUCCEEDED(device->GetRenderTarget(slot,&extra)) && extra) {
+   extra->Release();DrawingThread_ReleaseTf2Offscreen();return false;
+  }
+ }
+ if(FAILED(device->SetDepthStencilSurface(nullptr))) {
+  DrawingThread_ReleaseTf2Offscreen();return false;
+ }
+ AfxD3d9PushRenderTargetEx(m_Tf2OffscreenColor);
+ AfxD3d9PushDepthStencilEx(m_Tf2OffscreenDepth);
+ m_Tf2OffscreenActive=true;
+ m_Tf2OffscreenCaptured=false;
+ m_Tf2OffscreenPrimitives=0;
+ D3DVIEWPORT9 vp{0,0,DWORD(width),DWORD(height),0,1};
+ RECT rect{0,0,width,height};
+ const DWORD stencil=(dd.Format==D3DFMT_D24S8 || dd.Format==D3DFMT_D24FS8 || dd.Format==D3DFMT_D15S1)?D3DCLEAR_STENCIL:0;
+ if(AfxGetRenderTargetSurface()!=m_Tf2OffscreenColor || AfxGetDepthStencilSurface()!=m_Tf2OffscreenDepth ||
+    !DrawingThread_BindTf2PassTarget() || FAILED(device->SetViewport(&vp)) ||
+    FAILED(device->SetScissorRect(&rect)) ||
+    FAILED(device->Clear(0,nullptr,D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER|stencil,0,1,0))) {
+  m_Tf2OffscreenCaptured=true;
+  DrawingThread_EndTf2Offscreen();return false;
+ }
+ return true;
+}
+void CAfxStreams::DrawingThread_ObserveTf2OffscreenDraw(unsigned primitives) {
+ if(!m_Tf2OffscreenActive || m_Tf2OffscreenCaptured || m_Tf2OffscreenPrimitives>=32 || !primitives) return;
+ auto device=AfxGetDirect3DDevice9();
+ if(!device)return;
+ IDirect3DSurface9 *color=nullptr,*depth=nullptr;
+ D3DVIEWPORT9 vp{};
+ const bool exact=SUCCEEDED(device->GetRenderTarget(0,&color)) && color==m_Tf2OffscreenColor &&
+  SUCCEEDED(device->GetDepthStencilSurface(&depth)) && depth==m_Tf2OffscreenDepth &&
+  SUCCEEDED(device->GetViewport(&vp)) && vp.X==0 && vp.Y==0 &&
+  vp.Width==unsigned(m_Tf2OffscreenWidth.load()) && vp.Height==unsigned(m_Tf2OffscreenHeight.load());
+ if(color)color->Release();if(depth)depth->Release();
+ if(exact)m_Tf2OffscreenPrimitives+=primitives>32?32:primitives;
+}
+void CAfxStreams::DrawingThread_CaptureTf2Offscreen() {
+ if(!m_Tf2OffscreenActive || m_Tf2OffscreenCaptured)return;
+ m_Tf2OffscreenCaptured=true;
+ const unsigned i=unsigned(Tf2RenderPass::World);
+ D3DSURFACE_DESC desc{};
+ if(m_Tf2OffscreenPrimitives<32 || AfxGetRenderTargetSurface()!=m_Tf2OffscreenColor ||
+    FAILED(m_Tf2OffscreenColor->GetDesc(&desc)) ||
+    desc.Width!=unsigned(m_Tf2OffscreenWidth.load()) || desc.Height!=unsigned(m_Tf2OffscreenHeight.load())) {
+  DrawingThread_SkipTf2Offscreen("native full-size geometry draws or capture dimensions not verified");
+  return;
+ }
+ ++m_Tf2PassAttempts[i];
+ auto node=m_Tf2PassNodes[i];
+ if(node && node->GpuCapture()) {
+  if(++m_Tf2PassCaptured[i]==1)Tier0_Msg("Offscreen base: captured %ux%u after full-size geometry draws.\n",desc.Width,desc.Height);
+ } else ++m_Tf2PassFailed[i];
+}
+void CAfxStreams::DrawingThread_EndTf2Offscreen() {
+ if(!m_Tf2OffscreenActive)return;
+ if(!m_Tf2OffscreenCaptured)DrawingThread_SkipTf2Offscreen("SceneEnd was not reached");
+ m_Tf2OffscreenActive=false;
+ if(auto device=AfxGetDirect3DDevice9()) {
+  device->SetDepthStencilSurface(nullptr);
+  AfxD3d9PopDepthStencil();
+  AfxD3d9PopRenderTarget(false);
+  device->SetDepthStencilSurface(nullptr);
+  if(m_Tf2OffscreenPreviousColor)device->SetRenderTarget(0,m_Tf2OffscreenPreviousColor);
+  device->SetDepthStencilSurface(m_Tf2OffscreenPreviousDepth);
+  device->SetViewport(&m_Tf2OffscreenPreviousViewport);
+  device->SetScissorRect(&m_Tf2OffscreenPreviousScissor);
+ }
+ if(m_Tf2OffscreenPreviousColor){m_Tf2OffscreenPreviousColor->Release();m_Tf2OffscreenPreviousColor=nullptr;}
+ if(m_Tf2OffscreenPreviousDepth){m_Tf2OffscreenPreviousDepth->Release();m_Tf2OffscreenPreviousDepth=nullptr;}
+}
+void CAfxStreams::DrawingThread_ReleaseTf2Offscreen() {
+ DrawingThread_EndTf2Offscreen();
+ if(m_Tf2OffscreenPreviousColor){m_Tf2OffscreenPreviousColor->Release();m_Tf2OffscreenPreviousColor=nullptr;}
+ if(m_Tf2OffscreenPreviousDepth){m_Tf2OffscreenPreviousDepth->Release();m_Tf2OffscreenPreviousDepth=nullptr;}
+ if(m_Tf2OffscreenColor){m_Tf2OffscreenColor->Release();m_Tf2OffscreenColor=nullptr;}
+ if(m_Tf2OffscreenDepth){m_Tf2OffscreenDepth->Release();m_Tf2OffscreenDepth=nullptr;}
+}
 void CAfxStreams::CPassCaptureFunctor::operator()() {
  auto &node = g_AfxStreams.m_Tf2PassNodes[unsigned(Pass)];
  const bool matte = g_AfxStreams.m_Tf2PassMatte[unsigned(Pass)];
@@ -10471,7 +10602,7 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
   if (!node) { node = new CCaptureNode(new CCaptureInputRenderTarget(), new CDrawingRecordScreenOutput(Creator, Matte)); node->AddRef(); }
   return;
  }
- if (Op == Destroy) { g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass); if (node) { node->GpuRelease(); node->Release(); node = nullptr; } return; }
+ if (Op == Destroy) { g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass); if (node) { node->GpuRelease(); node->Release(); node = nullptr; } if(Pass==Tf2RenderPass::World)g_AfxStreams.DrawingThread_ReleaseTf2Offscreen(); return; }
  if (Op == Begin) {
   if(Pass==Tf2RenderPass::Players)AfxD3D9SetPlayerHoldoutEnabled(false);
   g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
@@ -10567,6 +10698,20 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
  g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass);
 }
 void CAfxStreams::Console_RecordPass(IWrpCommandArgs *args) {
+ if(args->ArgC()>=2 && !_stricmp(args->ArgV(1),"offscreen")){
+  if(args->ArgC()==3 && !_stricmp(args->ArgV(2),"off")){
+   if(m_Recording)Tier0_Warning("Stop recording first.\n");
+   else {m_Tf2OffscreenWidth=0;m_Tf2OffscreenHeight=0;}
+  } else if(args->ArgC()==4){
+   auto parse=[](const char *str,int &out){char *end=nullptr;long n=std::strtol(str,&end,10);if(end==str||*end||n<640||n>8192)return false;out=int(n);return true;};
+   int w=0,h=0;
+   if(m_Recording || !parse(args->ArgV(2),w) || !parse(args->ArgV(3),h))
+    Tier0_Warning("Stop recording; dimensions must be between 640 and 8192.\n");
+   else {m_Tf2OffscreenWidth=w;m_Tf2OffscreenHeight=h;}
+  }
+  Tier0_Msg("mirv_streams record pass offscreen <width> <height> | off (currently %dx%d; experimental world-only, immediate rendering).\n",m_Tf2OffscreenWidth.load(),m_Tf2OffscreenHeight.load());
+  return;
+ }
  if(args->ArgC()==2 && !_stricmp(args->ArgV(1),"reset")){if(!ResetTf2Outputs())Tier0_Warning("Stop recording before resetting outputs.\n");return;}
  if(args->ArgC()>=2 && !_stricmp(args->ArgV(1),"reference")){
   if(args->ArgC()==3 && (!std::strcmp(args->ArgV(2),"0") || !std::strcmp(args->ArgV(2),"1"))){
