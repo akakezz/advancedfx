@@ -9000,6 +9000,13 @@ void Draw()
 				ImGui::BeginDisabled(!state.Managed || Recording::IsActive());
 				if (ImGui::Button("Restore original resolution")) Afx_ExecClientCmd("mirv_resolution restore");
 				ImGui::EndDisabled();
+				ImGui::BeginDisabled(!editable || (!state.Managed && state.LastWidth<=0));
+				if (ImGui::Button(state.Managed ? "Switch to editing resolution" : "Resume last recording resolution"))
+					Afx_ExecClientCmd("mirv_resolution toggle");
+				ImGui::EndDisabled();
+				if (state.LastWidth>0)
+					ImGui::TextDisabled("Last recording resolution: %d x %d",state.LastWidth,state.LastHeight);
+				ImGui::TextWrapped("For native Source UI interaction, use the original editing resolution, then resume the recording resolution before capture.");
 				ImGui::BeginDisabled(!state.Managed || !state.Windowed || Recording::IsActive());
 				if (ImGui::Button("Refit preview")) Afx_ExecClientCmd("mirv_resolution refit");
 				ImGui::EndDisabled();

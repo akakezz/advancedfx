@@ -8,6 +8,7 @@ struct State
     int PreviewWidth = 0, PreviewHeight = 0, MaxWidth = 0, MaxHeight = 0;
     bool Supported = false, Windowed = false, Pending = false, Managed = false, Fit = false, Ready = false;
     bool NativePreview = false;
+    int LastWidth = 0, LastHeight = 0;
     std::string Message;
 };
 State GetState();
@@ -19,7 +20,4 @@ void Invalidate();
 void PublishPreviewPath(bool native);
 bool FitPresentation(void *window);
 bool SuppressSizeMessage(void *window);
-bool MapCursor(int &x, int &y, bool toRender, bool screen, void *window = nullptr);
-bool MapCursorClip(int &left, int &top, int &right, int &bottom);
-bool SourceUiOwnsPointer();
 }

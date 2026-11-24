@@ -1,7 +1,6 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
-#include <limits>
 #include <vector>
 namespace advancedfx::RenderResolution
 {
@@ -16,17 +15,6 @@ inline Size Fit(Size source, Size available)
     if (std::int64_t(available.Width)*source.Height <= std::int64_t(available.Height)*source.Width)
         return {available.Width, (std::max)(1, int(std::int64_t(source.Height)*available.Width/source.Width))};
     return {(std::max)(1, int(std::int64_t(source.Width)*available.Height/source.Height)), available.Height};
-}
-// Same origin in both spaces; keep signed coordinates for dragging and
-// map rectangle edges as well as points. Avoid intermediate overflow.
-inline int MapAxis(int value, int origin, int from, int to)
-{
-    if (from<=0 || to<=0 || from==to) return value;
-    const std::int64_t n=(std::int64_t(value)-origin)*to;
-    const std::int64_t scaled=(n>=0 ? n+from/2 : n-from/2)/from;
-    const std::int64_t result=std::int64_t(origin)+scaled;
-    return int((std::max)(std::int64_t((std::numeric_limits<int>::min)()),
-        (std::min)(std::int64_t((std::numeric_limits<int>::max)()),result)));
 }
 struct Mode { int Width, Height, Bits, Refresh; };
 static_assert(sizeof(Mode) == 16, "Source vmode_t layout");

@@ -2458,29 +2458,9 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	case WM_RBUTTONUP:
 	case WM_MOUSEMOVE:
 	case WM_MOUSEWHEEL:
-		if (!RecordingResolution::SourceUiOwnsPointer() &&
-			g_Hook_VClient_RenderView.m_MirvInput->Supply_MouseEvent(uMsg, wParam, lParam))
+		if (g_Hook_VClient_RenderView.m_MirvInput->Supply_MouseEvent(uMsg, wParam, lParam))
 			return 0;
 		break;	
-	}
-	// HLAE has already handled physical-coordinate messages.
-	switch (uMsg)
-	{
-	case WM_MOUSEMOVE:
-	case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
-	case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
-	case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
-	case WM_XBUTTONDOWN: case WM_XBUTTONUP: case WM_XBUTTONDBLCLK:
-	case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
-	{
-		int x=short(LOWORD(lParam)), y=short(HIWORD(lParam));
-		if (!(uMsg==WM_MOUSEMOVE && AfxHookSource::Gui::PreviewInputQueueInstalled()) &&
-			RecordingResolution::MapCursor(x,y,true,
-				uMsg==WM_MOUSEWHEEL || uMsg==WM_MOUSEHWHEEL,hwnd))
-			lParam=MAKELPARAM(x<-32768?-32768:x>32767?32767:x,
-				y<-32768?-32768:y>32767?32767:y);
-		break;
-	}
 	}
 	return CallWindowProcW(g_NextWindProc, hwnd, uMsg, wParam, lParam);
 }
@@ -2626,26 +2606,17 @@ LONG_PTR WINAPI new_SetWindowLongPtrW(
 
 #endif //#ifndef _WIN64
 
-static void MapSourceCursorPoint(LPPOINT point)
+BOOL WINAPI new_GetCursorPos(
+	__out LPPOINT lpPoint
+)
 {
-	if (!point) return;
-	int x=point->x,y=point->y;
-	if (RecordingResolution::MapCursor(x,y,true,true))
-	{ point->x=x; point->y=y; }
-}
-BOOL WINAPI new_GetCursorPos(LPPOINT point)
-{
-	BOOL result=GetCursorPos(point);
-	if (AfxHookSource::Gui::OnGetCursorPos(point))
-	{
-		MapSourceCursorPoint(point);
+	BOOL result = GetCursorPos(lpPoint);
+
+	if (AfxHookSource::Gui::OnGetCursorPos(lpPoint))
 		return TRUE;
-	}
-	if (result && point)
-	{
-		g_Hook_VClient_RenderView.m_MirvInput->Supply_GetCursorPos(point);
-		MapSourceCursorPoint(point);
-	}
+
+	g_Hook_VClient_RenderView.m_MirvInput->Supply_GetCursorPos(lpPoint);
+
 	return result;
 }
 
@@ -2654,7 +2625,6 @@ BOOL WINAPI new_SetCursorPos(
 	__in int Y
 )
 {
-	RecordingResolution::MapCursor(X,Y,false,true);
 	if (AfxHookSource::Gui::OnSetCursorPos(X, Y))
 		return TRUE;
 
@@ -2699,16 +2669,6 @@ BOOL WINAPI new_ReleaseCapture()
 
 BOOL WINAPI new_ClipCursor(const RECT *rect)
 {
-	RECT physical{};
-	if (rect)
-	{
-		int l=rect->left,t=rect->top,r=rect->right,b=rect->bottom;
-		if (RecordingResolution::MapCursorClip(l,t,r,b))
-		{
-			physical={l,t,r,b};
-			rect=&physical;
-		}
-	}
 	if (AfxHookSource::Gui::OnClipCursor(rect))
 		return TRUE;
 	return ClipCursor(rect);
@@ -2729,16 +2689,13 @@ BOOL WINAPI new_engine_GetCursorPos(LPPOINT point)
 	if (g_SourceSdkVer == SourceSdkVer_CSSV34)
 		return new_GetCursorPos(point);
 	BOOL result = GetCursorPos(point);
-	if (AfxHookSource::Gui::OnGetCursorPos(point)) result=TRUE;
-	if (result) MapSourceCursorPoint(point);
-	return result;
+	return AfxHookSource::Gui::OnGetCursorPos(point) ? TRUE : result;
 }
 
 BOOL WINAPI new_engine_SetCursorPos(int x, int y)
 {
 	if (g_SourceSdkVer == SourceSdkVer_CSSV34)
 		return new_SetCursorPos(x, y);
-	RecordingResolution::MapCursor(x,y,false,true);
 	return AfxHookSource::Gui::OnSetCursorPos(x, y) ? TRUE : SetCursorPos(x, y);
 }
 

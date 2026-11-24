@@ -75,29 +75,15 @@ The preview fit validates the actual outer window against the original monitor's
 
 When the overlay is visible, the fitted preview attempts to use a preview-sized additional D3D9 swap chain. The native game backbuffer is copied/downsampled to it, resolving MSAA if necessary. ImGui renders onto that preview surface in preview pixel coordinates, then the preview is presented. The original render target, depth, viewport and scissor are restored. The capture pipeline continues using the native game surfaces. Unsupported drivers/flags or a failed copy use the original scaled presentation path. Resources are released on reset, shutdown or when fit mode ends. The UI/status distinguishes preview-resolution compositing from the fallback. Live Windows support and output correctness still require testing.
 
-## Native Source UI cursor mapping
+## Editing and recording resolution switch
 
-While a fitted preview is active and the game is foreground, Source's visible
-cursor/menu state is sampled on the engine thread. Existing module-local
-cursor hooks translate absolute physical preview coordinates into native
-render coordinates and inverse-map cursor warps. Absolute window messages
-are translated only after HLAE processes them; relative/raw input is untouched.
-Extended render-space clip rectangles are mapped while already-physical ones
-are left alone. HLAE's overlay retains physical coordinates. Disable mapping
-with `mirv_resolution cursor 0` or enable with `mirv_resolution cursor 1`.
-Status reports the setting and cached Source UI state. No Windows VGUI
-behavior is verified by the portable coordinate tests.
-
-When a fitted Source UI owns the pointer, freecam mouse/button processing
-is suspended independently of the optional freecam UI-cursor preference.
-This avoids consuming native button messages or rewriting mouse-move button
-masks before Source receives them. HLAE's overlay retains first priority.
-
-Source's queued absolute mouse events can originate before the hooked
-window procedure. When the existing InputSystemVersion001 event hooks are
-available, keep WM_MOUSEMOVE physical and transform the copied event queue
-(MOUSE_X, MOUSE_Y and MOUSE_XY), rather than scaling the same event twice.
-Preserve all button events, counts and ordering, and the existing overlay
-capture filter. Polling/warps remain mapped by the cursor hooks. The status
-command reports whether the queue hooks installed. Live click behavior is
-not yet confirmed.
+Native Source UI input at fitted high resolutions is not currently supported
+reliably. The attempted cursor, event queue and freecam remapping changes
+have been removed. Use the original resolution for native menu interaction,
+then resume the last custom recording resolution. The Recording tab offers
+a switch/resume button and `mirv_resolution toggle` is its bindable console
+command. It remembers the most recently accepted custom mode and fit setting
+for the current session, refuses to switch while recording or pending, and
+uses the existing verified apply/restore paths. It does not start recording
+or automatically change resolution when opening a menu. Confirm the native
+render/capture indicators before recording.
