@@ -12,6 +12,14 @@ on:
       - 'AfxHookSource/MirvCam.h'
       - 'AfxHookSource/CinematicProject.inl'
       - 'shared/CameraRig.h'
+      - 'shared/RenderResolution.h'
+      - 'AfxHookSource/RecordingResolution.h'
+      - 'AfxHookSource/RecordingResolution.inl'
+      - 'AfxHookSource/AfxStreams.cpp'
+      - 'AfxHookSource/d3d9Hooks.cpp'
+      - 'AfxHookSource/Gui.cpp'
+      - 'AfxHookSource/main.cpp'
+      - 'AfxHookSource/MirvCommands.cpp'
       - 'tests/cinematic/**'
       - '.github/workflows/camera-transitions.yml'
   workflow_dispatch:
@@ -23,6 +31,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Check custom mode planning and fitted preview geometry
+        run: python3 tests/cinematic/test_recording_resolution.py
       - name: Check project persistence, overlapping transitions, Bezier and frozen poses
         run: python3 tests/cinematic/test_camera_project.py --build-dir /tmp/hlae-camera-transition-tests
 

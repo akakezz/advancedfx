@@ -238,7 +238,10 @@ struct FakeConVar{float Value=0,Maximum=-1;bool Writable=true;float GetFloat(){r
 struct FakeCvar{std::map<std::string,FakeConVar> Vars{{"cl_interpolate",{1}},{"cl_interp",{.015f}},{"cl_interp_ratio",{1}}};FakeConVar *FindVar(const char*name){auto it=Vars.find(name);return it==Vars.end()?nullptr:&it->second;}}fakeCvar;
 namespace AfxHookSource{namespace CameraOverlay{void NotifyDemoPlaybackFile(const char*);}}
 namespace SOURCESDK{struct matrix3x4_t{float m_flMatVal[3][4];};struct CCommand_004{int Count=2;const char*File="";int ArgC()const{return Count;}const char*Arg(int)const{return File;}};namespace CSS{FakeCvar*g_pCVar=&fakeCvar;}namespace L4D2{FakeCvar*g_pCVar=nullptr;}}
-bool testRecording=false;std::string previewHudText;void TestRecordHudText(const std::string&t){previewHudText=t;}
+bool testRecording=false;
+#include "AfxHookSource/RecordingResolution.h"
+namespace RecordingResolution { State GetState(){State s;s.Supported=true;s.Windowed=true;s.MaxWidth=8192;s.MaxHeight=8192;return s;} bool CanStart(){return true;} }
+std::string previewHudText;void TestRecordHudText(const std::string&t){previewHudText=t;}
 bool testThirdPerson=false;bool MirvPovSpectate_ThirdPerson(){return testThirdPerson;}
 void MirvSpectate_ReleaseView(){MirvCampathPreview_SetActive(false);for(size_t i=0;i<g_Hook_VClient_RenderView.m_CamPaths.GetCount();++i)g_Hook_VClient_RenderView.m_CamPaths.GetPath(i)->Enabled_set(false);input.SetCameraControlMode(false);}
 bool MirvPovSpectate_SetPlayer(int){return true;}const char *MirvPovSpectate_Status(){return "Test native spectator";}

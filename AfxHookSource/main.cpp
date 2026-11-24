@@ -12,6 +12,7 @@
 #include "../shared/AfxCommandLine.h"
 #include "addresses.h"
 #include "RenderView.h"
+#include "RecordingResolution.h"
 #include <SourceInterfaces.h>
 #include "WrpVEngineClient.h"
 #include "WrpConsole.h"
@@ -938,6 +939,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 {
 	if (curStage == SOURCESDK::TF2::FRAME_START)
 	{
+		RecordingResolution::Frame();
 		MirvFix_Update();
 		AfxHookSource::CameraOverlay::PreferencesFrame();
 	}
@@ -2382,6 +2384,12 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	__in LPARAM lParam
 )
 {
+	// Only the synchronous, HLAE-owned preview resize is hidden from the game.
+	if (RecordingResolution::SuppressSizeMessage(hwnd))
+	{
+		if (uMsg == WM_SIZE && wParam == SIZE_RESTORED) return 0;
+		if (uMsg == WM_WINDOWPOSCHANGED) return DefWindowProcW(hwnd, uMsg, wParam, lParam);
+	}
 	// Publish focus changes even when the overlay consumes the window message.
 	if (uMsg == WM_KILLFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) ||
 	    (uMsg == WM_ACTIVATEAPP && !wParam))

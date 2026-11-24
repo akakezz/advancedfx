@@ -7,6 +7,7 @@
 #include "D3D9ImageBuffer.h"
 
 #include "Gui.h"
+#include "RecordingResolution.h"
 #include "SourceInterfaces.h"
 #include "CampathDrawer.h"
 #include "EntityIndexDrawer.h"
@@ -187,6 +188,7 @@ void Shared_Direct3DDevice9_Init(
 
 void Shared_Direct3DDevice9_Shutdown()
 {
+	RecordingResolution::Invalidate();
 	g_EntityIndexDrawer.EndDevice();
 
 	g_CampathDrawer.EndDevice();
@@ -4803,6 +4805,7 @@ public:
 
 	void Afx_Reset_Before(D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX *pFullscreenDisplayMode)
 	{
+		RecordingResolution::Invalidate();
 		if (pPresentationParameters)
 		{
 			FixPresentationParementers(pPresentationParameters);
@@ -4942,6 +4945,37 @@ public:
 
 	void Afx_Present_After(HRESULT hResult)
 	{
+		// The capture target and swap-chain backbuffer are independent of the
+		// client window. Publish actual sizes only after a successful present.
+		if (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified)
+		{
+			if (SUCCEEDED(hResult) && g_OldDirect3DDevice9)
+			{
+				IDirect3DSwapChain9 *swap = nullptr;
+				IDirect3DSurface9 *back = nullptr;
+				D3DPRESENT_PARAMETERS pp{};
+				D3DSURFACE_DESC bd{}, cd{};
+				D3DCAPS9 caps{};
+				auto capture = AfxGetRenderTargetSurface();
+				const bool ok = SUCCEEDED(g_OldDirect3DDevice9->GetSwapChain(0,&swap)) && swap &&
+					SUCCEEDED(swap->GetPresentParameters(&pp)) &&
+					SUCCEEDED(g_OldDirect3DDevice9->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back)) && back &&
+					SUCCEEDED(back->GetDesc(&bd)) && capture && SUCCEEDED(capture->GetDesc(&cd)) &&
+					SUCCEEDED(g_OldDirect3DDevice9->GetDeviceCaps(&caps));
+				HWND window = pp.hDeviceWindow;
+				if (!window)
+				{
+					D3DDEVICE_CREATION_PARAMETERS cp{};
+					if (SUCCEEDED(g_OldDirect3DDevice9->GetCreationParameters(&cp))) window = cp.hFocusWindow;
+				}
+				if (ok) RecordingResolution::Publish(window, pp.Windowed != FALSE, int(bd.Width), int(bd.Height),
+					int(cd.Width),int(cd.Height),int(caps.MaxTextureWidth),int(caps.MaxTextureHeight));
+				else RecordingResolution::Invalidate();
+				if (back) back->Release();
+				if (swap) swap->Release();
+			}
+			else RecordingResolution::Invalidate();
+		}
 		AfxHookSource::Gui::On_Direct3DDevice9_Present(FAILED(hResult));
 
 #ifndef _WIN64
@@ -4962,6 +4996,12 @@ public:
 
 		Afx_Present_Before(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, 0);
 
+		if (RecordingResolution::FitPresentation(hDestWindowOverride))
+		{
+			// NULL rectangles present the entire native backbuffer into the
+			// smaller client area, including DISCARD swap chains.
+			pSourceRect = nullptr; pDestRect = nullptr; pDirtyRegion = nullptr;
+		}
 		HRESULT result = g_OldDirect3DDevice9->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 
 		Afx_Present_After(result);
@@ -6087,6 +6127,10 @@ public:
 	{
 		Afx_Present_Before(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 
+		if (RecordingResolution::FitPresentation(hDestWindowOverride))
+		{
+			pSourceRect = nullptr; pDestRect = nullptr; pDirtyRegion = nullptr;
+		}
 		HRESULT hResult = g_OldDirect3DDevice9Ex->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 
 		Afx_Present_After(hResult);

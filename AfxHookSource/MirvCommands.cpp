@@ -7905,3 +7905,5 @@ CON_COMMAND(mirv_overlay, "Cinematic workspace (supported games only).")
 	}
 	Tier0_Msg("mirv_overlay [0|1] - Toggle or set the cinematic workspace.\n");
 }
+
+#include "RecordingResolution.inl"

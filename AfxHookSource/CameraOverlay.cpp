@@ -2,6 +2,7 @@
 // MIT license; see shared/overlay/PORTING.md for provenance and scope.
 #include "MirvCam.h"
 #include "CameraOverlay.h"
+#include "RecordingResolution.h"
 #include "Tf2RenderPass.h"
 #include "CampathDrawer.h"
 #include "Gui.h"
@@ -1098,6 +1099,11 @@ bool Toggle()
 	}
 	else
 	{
+		if (!RecordingResolution::CanStart())
+		{
+			Tier0_Warning("Custom recording resolution is not verified. Apply or restore before recording.\n");
+			return false;
+		}
 		if(SeparatePassSupported() && !SeparateConfigured() && !ScreenEnabled())g_VEngineClient->ClientCmd_Unrestricted("mirv_streams record screen enabled 1");
 		const double fps = std::strtod(g_RecordFps, nullptr);
 		const double rate = std::isfinite(fps) && fps >= 1 && fps <= 10000 ? fps : 60.0;
@@ -8954,6 +8960,54 @@ void Draw()
 				ImGui::TextDisabled("Recording uses the screen stream and encoder settings already configured below.");
 			}
 
+			if (ImGui::CollapsingHeader("Recording resolution", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				const auto state = RecordingResolution::GetState();
+				if (state.RenderWidth > 0 && state.RenderHeight > 0)
+				{
+					ImGui::Text("Native render: %d x %d", state.RenderWidth, state.RenderHeight);
+					ImGui::Text("Capture surface: %d x %d", state.CaptureWidth, state.CaptureHeight);
+					ImGui::Text("Window preview: %d x %d", state.PreviewWidth, state.PreviewHeight);
+					ImGui::TextDisabled("GPU texture limit: %d x %d", state.MaxWidth, state.MaxHeight);
+				}
+				else ImGui::TextDisabled("Waiting for Direct3D surface dimensions.");
+				static int preset = 3, width = 3840, height = 2160;
+				static bool fit = true;
+				const char *names[] = {"Custom", "Full HD (1920 x 1080)", "QHD (2560 x 1440)",
+					"4K UHD (3840 x 2160)", "4K DCI (4096 x 2160)", "5K (5120 x 2880)", "8K (7680 x 4320)"};
+				const int sizes[][2] = {{0,0},{1920,1080},{2560,1440},{3840,2160},{4096,2160},{5120,2880},{7680,4320}};
+				const bool editable = state.Supported && state.Windowed && !Recording::IsActive() && !state.Pending;
+				ImGui::BeginDisabled(!editable);
+				if (ImGui::Combo("Resolution preset", &preset, names, IM_ARRAYSIZE(names)) && preset)
+				{ width = sizes[preset][0]; height = sizes[preset][1]; }
+				ImGui::SetNextItemWidth(120);
+				if (ImGui::InputInt("Width##captureResolution", &width, 0)) preset = 0;
+				ImGui::SetNextItemWidth(120);
+				if (ImGui::InputInt("Height##captureResolution", &height, 0)) preset = 0;
+				ImGui::Checkbox("Fit preview to monitor", &fit);
+				const bool valid = width >= 640 && height >= 480 && width <= 16384 && height <= 16384 &&
+					width <= state.MaxWidth && height <= state.MaxHeight;
+				ImGui::BeginDisabled(!valid);
+				if (ImGui::Button("Apply resolution"))
+				{
+					char command[100];
+					std::snprintf(command,sizeof(command),"mirv_resolution apply %d %d %d",width,height,int(fit));
+					Afx_ExecClientCmd(command);
+				}
+				ImGui::EndDisabled();
+				ImGui::EndDisabled();
+				ImGui::SameLine();
+				ImGui::BeginDisabled(!state.Managed || Recording::IsActive());
+				if (ImGui::Button("Restore original resolution")) Afx_ExecClientCmd("mirv_resolution restore");
+				ImGui::EndDisabled();
+				if (!state.Supported || !state.Windowed)
+					ImGui::TextDisabled("TF2 windowed mode required.");
+				if (!valid && state.MaxWidth > 0)
+					ImGui::TextDisabled("Requested size is outside the supported dimension or GPU limit.");
+				ImGui::TextWrapped("%s", state.Message.c_str());
+				ImGui::TextDisabled("Preview scaling affects presentation only, not the recorded render target.");
+			}
+
 			// Common HUD toggles
 			ImGui::Separator();
 			static bool s_hideHud = false;
@@ -9016,8 +9070,10 @@ void Draw()
 				DrawRecordingProfileEditor(Recording::CurrentProfile());
 
 				ImGui::Separator();
-				if (ImGui::Button("Start Recording") && !Recording::IsActive())
+				ImGui::BeginDisabled(Recording::IsActive() || !RecordingResolution::CanStart());
+				if (ImGui::Button("Start Recording"))
 					Recording::Toggle();
+				ImGui::EndDisabled();
 				ImGui::SameLine();
 				if (ImGui::Button("Stop") && Recording::IsActive())
 					Recording::Toggle();

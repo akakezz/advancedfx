@@ -16,6 +16,7 @@
 #include "RenderView.h"
 #include "ClientTools.h"
 #include "d3d9Hooks.h"
+#include "RecordingResolution.h"
 #include "D3D9ImageBuffer.h"
 
 #ifndef _WIN64
@@ -6903,6 +6904,7 @@ void CAfxStreams::Console_Record_Start()
 
 void CAfxStreams::Console_Record_Start2()
 {
+ if (!RecordingResolution::CanStart()) { Tier0_Warning("Custom recording resolution is not confirmed; apply or restore it first.\n"); return; }
  if(m_Tf2SeparateConfigured && !m_Tf2FullReference){
   bool any=false;for(const auto &enabled:m_Tf2PassEnabled)any|=enabled.load();
   if(!any){Tier0_Warning("No recording outputs selected; enable Base/world, an isolate, depth, or full-scene reference.\n");return;}

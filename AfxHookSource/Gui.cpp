@@ -6,6 +6,7 @@
 
 #include "Gui.h"
 #include "CameraOverlay.h"
+#include "RecordingResolution.h"
 
 #ifndef AFX_ENABLE_GUI
 #define AFX_ENABLE_GUI 0
@@ -367,6 +368,19 @@ private:
 			vp.X = vp.Y = 0;
 			vp.Width = (DWORD)m_Width;
 			vp.Height = (DWORD)m_Height;
+			if (RecordingResolution::FitPresentation(nullptr))
+			{
+				IDirect3DSurface9 *surface = nullptr;
+				D3DSURFACE_DESC desc{};
+				if (SUCCEEDED(m_Device->GetRenderTarget(0,&surface)) && surface)
+				{
+					if (SUCCEEDED(surface->GetDesc(&desc)))
+					{ vp.Width = desc.Width; vp.Height = desc.Height; }
+					surface->Release();
+				}
+			}
+			const float previewScaleX = float(vp.Width)/m_Width;
+			const float previewScaleY = float(vp.Height)/m_Height;
 			vp.MinZ = 0.0f;
 			vp.MaxZ = 1.0f;
 			m_Device->SetViewport(&vp);
@@ -445,7 +459,12 @@ private:
 					}
 					else
 					{
-						const RECT r = { (LONG)pcmd->ClipRect.x, (LONG)pcmd->ClipRect.y, (LONG)pcmd->ClipRect.z, (LONG)pcmd->ClipRect.w };
+						const RECT r = {
+							std::clamp<LONG>(LONG(std::floor(pcmd->ClipRect.x*previewScaleX)),0,LONG(vp.Width)),
+							std::clamp<LONG>(LONG(std::floor(pcmd->ClipRect.y*previewScaleY)),0,LONG(vp.Height)),
+							std::clamp<LONG>(LONG(std::ceil(pcmd->ClipRect.z*previewScaleX)),0,LONG(vp.Width)),
+							std::clamp<LONG>(LONG(std::ceil(pcmd->ClipRect.w*previewScaleY)),0,LONG(vp.Height)) };
+						if (r.right <= r.left || r.bottom <= r.top) continue;
 						m_Device->SetTexture(0, pcmd->TextureId && pcmd->TextureId == (void *)1 ? g_FontTexture : NULL);
 						m_Device->SetScissorRect(&r);
 						m_Device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, vtx_offset + pcmd->VtxOffset, 0,
