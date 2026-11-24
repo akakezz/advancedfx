@@ -19,4 +19,6 @@ void Invalidate();
 void PublishPreviewPath(bool native);
 bool FitPresentation(void *window);
 bool SuppressSizeMessage(void *window);
+bool MapCursor(int &x, int &y, bool toRender, bool screen, void *window = nullptr);
+bool MapCursorClip(int &left, int &top, int &right, int &bottom);
 }

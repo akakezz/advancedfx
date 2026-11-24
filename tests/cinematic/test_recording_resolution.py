@@ -35,6 +35,17 @@ int main()
     assert(BorrowIndex(modes,{3840,2160},original,{1280,720})==-2);
     assert(SameMode(modes[0],{800,600,32,60}));
     assert(!SameMode(modes[0],{800,600,32,75}));
+    assert(MapAxis(960,0,1920,3840)==1920);
+    assert(MapAxis(540,0,1080,2160)==1080);
+    assert(MapAxis(3840,0,3840,1920)==1920);
+    assert(MapAxis(100,-860,1920,3840)==1060);
+    assert(MapAxis(1060,-860,3840,1920)==100);
+    assert(MapAxis(-10,0,1920,3840)==-20);
+    assert(MapAxis(2000,0,1920,3840)==4000);
+    assert(MapAxis(950,0,1904,4700)==2345);
+    assert(MapAxis(2345,0,4700,1904)==950);
+    assert(MapAxis(12,0,0,3840)==12);
+    assert(MapAxis(12,0,1920,1920)==12);
     const Size high{3840,2160}, low{1920,1080};
     assert(Ready(high,high,high,high));
     assert(!Ready(high,low,high,high));

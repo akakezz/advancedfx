@@ -19,6 +19,8 @@ struct Surface
 std::recursive_mutex Mutex;
 Surface Current;
 std::atomic_bool NativePreview{false};
+std::atomic_bool SourceUiCursor{false};
+std::atomic_bool MapPreviewCursor{true};
 Size Requested, Original;
 bool Managed = false, Pending = false, WantFit = true, Fitted = false, Restoring = false, Confirmed = false;
 unsigned long long WaitSerial = 0;
@@ -285,6 +287,7 @@ void PublishPreviewPath(bool native) { NativePreview.store(native); }
 void Invalidate()
 {
     NativePreview.store(false);
+    SourceUiCursor.store(false);
     std::lock_guard<std::recursive_mutex> lock(Mutex);
     Current.Back = Current.Capture = {};
 }
@@ -299,8 +302,63 @@ bool FitPresentation(void *window)
         Current.Back == Requested && Current.Capture == Requested &&
         (!window || window == Current.Window);
 }
+namespace
+{
+struct CursorSpace { HWND Window=nullptr; Size Preview, Render; POINT Origin{}; };
+bool GetCursorSpace(CursorSpace &space, void *window)
+{
+    if (!MapPreviewCursor.load() || !SourceUiCursor.load()) return false;
+    std::unique_lock<std::recursive_mutex> lock(Mutex,std::try_to_lock);
+    if (!lock.owns_lock() || !Managed || !Fitted || !Current.Windowed ||
+        !Current.Window || Current.Back!=Requested || Current.Capture!=Requested ||
+        (window && window!=Current.Window)) return false;
+    space.Window=Current.Window;
+    space.Render=Requested;
+    lock.unlock();
+    if (GetForegroundWindow()!=space.Window || IsIconic(space.Window)) return false;
+    RECT rc{};
+    if (!GetClientRect(space.Window,&rc) || !ClientToScreen(space.Window,&space.Origin)) return false;
+    space.Preview={int(rc.right-rc.left),int(rc.bottom-rc.top)};
+    return space.Preview.Width>0 && space.Preview.Height>0 &&
+           space.Preview.Width<=space.Render.Width && space.Preview.Height<=space.Render.Height &&
+           space.Preview!=space.Render;
+}
+}
+bool MapCursor(int &x, int &y, bool toRender, bool screen, void *window)
+{
+    CursorSpace space;
+    if (!GetCursorSpace(space,window)) return false;
+    const Size from=toRender ? space.Preview : space.Render;
+    const Size to=toRender ? space.Render : space.Preview;
+    x=MapAxis(x,screen ? space.Origin.x : 0,from.Width,to.Width);
+    y=MapAxis(y,screen ? space.Origin.y : 0,from.Height,to.Height);
+    return true;
+}
+bool MapCursorClip(int &left, int &top, int &right, int &bottom)
+{
+    CursorSpace space;
+    if (!GetCursorSpace(space,nullptr)) return false;
+    const int x=space.Origin.x,y=space.Origin.y;
+    // Leave already-physical clip rectangles alone.
+    if (left<x || top<y || right>x+space.Render.Width || bottom>y+space.Render.Height ||
+        right<=left || bottom<=top ||
+        (right<=x+space.Preview.Width && bottom<=y+space.Preview.Height)) return false;
+    left=MapAxis(left,x,space.Render.Width,space.Preview.Width);
+    right=MapAxis(right,x,space.Render.Width,space.Preview.Width);
+    top=MapAxis(top,y,space.Render.Height,space.Preview.Height);
+    bottom=MapAxis(bottom,y,space.Render.Height,space.Preview.Height);
+    return true;
+}
 void Frame()
 {
+    // Sample on the engine thread; never reenter Source from cursor hooks.
+    bool available=false, visible=false;
+    if (Supported() && g_VEngineClient && FitPresentation(nullptr))
+    {
+        g_Hook_VClient_RenderView.UiCursorStatus(available,visible);
+        SourceUiCursor.store((available && visible) || g_Hook_VClient_RenderView.IsSourceUiActive());
+    }
+    else SourceUiCursor.store(false);
     std::unique_lock<std::recursive_mutex> lock(Mutex);
     if (!Managed || !Supported() || !g_VEngineClient) return;
     const bool exact = Current.Windowed && advancedfx::RenderResolution::Ready(Requested, EngineSize(), Current.Back, Current.Capture);
@@ -437,6 +495,9 @@ void Console(IWrpCommandArgs *args)
         queue = Apply(size,argc==4 || args->ArgV(4)[0]=='1');
     }
     else if (argc==2 && !_stricmp(args->ArgV(1),"restore")) queue = Restore();
+    else if (argc==3 && !_stricmp(args->ArgV(1),"cursor") &&
+        (!std::strcmp(args->ArgV(2),"0") || !std::strcmp(args->ArgV(2),"1")))
+        MapPreviewCursor.store(args->ArgV(2)[0]=='1');
     else if (argc==2 && !_stricmp(args->ArgV(1),"refit"))
     {
         if (!Managed || Recording() || !Current.Windowed ||
@@ -451,7 +512,7 @@ void Console(IWrpCommandArgs *args)
         }
     }
     else if (argc!=1 && !(argc==2 && !_stricmp(args->ArgV(1),"status")))
-    { Tier0_Msg("mirv_resolution apply <width> <height> [fit 0|1] | restore | refit | status\n"); return; }
+    { Tier0_Msg("mirv_resolution apply <width> <height> [fit 0|1] | restore | refit | cursor 0|1 | status\n"); return; }
     const Size requested = Requested;
     lock.unlock();
     if (queue) QueueMode(requested);
@@ -459,6 +520,8 @@ void Console(IWrpCommandArgs *args)
     Tier0_Msg("Recording resolution: backbuffer %dx%d, capture %dx%d, preview %dx%d, GPU limit %dx%d.\n%s\nOverlay presentation: %s.\n",
         s.RenderWidth,s.RenderHeight,s.CaptureWidth,s.CaptureHeight,s.PreviewWidth,s.PreviewHeight,
         s.MaxWidth,s.MaxHeight,s.Message.c_str(),s.NativePreview ? "preview-resolution composite" : "ordinary/scaled backbuffer");
+    Tier0_Msg("Preview cursor remapping: %s; Source UI cursor/menu: %s.\n",
+        MapPreviewCursor.load() ? "enabled" : "disabled", SourceUiCursor.load() ? "active" : "inactive");
 }
 }
 CON_COMMAND(mirv_resolution, "Native TF2 windowed recording resolution and fitted preview")

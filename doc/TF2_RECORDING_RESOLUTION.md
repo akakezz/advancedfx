@@ -74,3 +74,16 @@ capture result.
 The preview fit validates the actual outer window against the original monitor's work area and checks the client aspect ratio to within integer pixel rounding. A bounded retry handles subsequent engine-driven window resizing; use `mirv_resolution refit` (or Refit preview in the Recording tab) to retry without changing the engine mode. If the exact render/capture mode was not accepted, refit is refused.
 
 When the overlay is visible, the fitted preview attempts to use a preview-sized additional D3D9 swap chain. The native game backbuffer is copied/downsampled to it, resolving MSAA if necessary. ImGui renders onto that preview surface in preview pixel coordinates, then the preview is presented. The original render target, depth, viewport and scissor are restored. The capture pipeline continues using the native game surfaces. Unsupported drivers/flags or a failed copy use the original scaled presentation path. Resources are released on reset, shutdown or when fit mode ends. The UI/status distinguishes preview-resolution compositing from the fallback. Live Windows support and output correctness still require testing.
+
+## Native Source UI cursor mapping
+
+While a fitted preview is active and the game is foreground, Source's visible
+cursor/menu state is sampled on the engine thread. Existing module-local
+cursor hooks translate absolute physical preview coordinates into native
+render coordinates and inverse-map cursor warps. Absolute window messages
+are translated only after HLAE processes them; relative/raw input is untouched.
+Extended render-space clip rectangles are mapped while already-physical ones
+are left alone. HLAE's overlay retains physical coordinates. Disable mapping
+with `mirv_resolution cursor 0` or enable with `mirv_resolution cursor 1`.
+Status reports the setting and cached Source UI state. No Windows VGUI
+behavior is verified by the portable coordinate tests.
