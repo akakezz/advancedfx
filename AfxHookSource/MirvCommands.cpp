@@ -4579,7 +4579,7 @@ void *Tf2RecorderSoundInterface()
     auto sound = g_AppSystemFactory("IEngineSoundClient003", nullptr);
     // SDK 2013 exposes these same slots and SndInfo_t. OF must additionally
     // pass the existing private StartSound resolver before any sound calls.
-    if (g_OpenFortressLegacyMode && !OfNativeInterfaces::Slots(sound,"engine.dll",{11,16,17})) return nullptr;
+    if (g_OpenFortressLegacyMode && !OfNativeInterfaces::ExactEngineSlots(sound,0x2ecd3c,{{11,0x578d0},{16,0x57f90},{17,0x57e20}})) return nullptr;
     return sound;
 }
 bool Tf2RecorderSoundPov()
@@ -4679,7 +4679,7 @@ bool Tf2SoundCodeRead(const void *address, void *buffer, size_t length)
 	        (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) &&
 	       ReadProcessMemory(GetCurrentProcess(), address, buffer, length, &read) && read == length;
 }
-void *Tf2FindStartSound(const void *ambient, bool is64)
+void *Tf2FindStartSound(const void *ambient, bool is64, bool legacyOf = false)
 {
 	unsigned char code[256];
 	if (!Tf2SoundCodeRead(ambient, code, sizeof(code)))
@@ -4727,13 +4727,18 @@ void *Tf2FindStartSound(const void *ambient, bool is64)
 		unsigned char entry[21];
 		if (!Tf2SoundCodeRead(target, entry, sizeof(entry)))
 			continue;
+		// The examined OF engine uses a small stack frame, but the same
+		// cdecl parameter, Sfx null check and zero-return sequence. This
+		// alternative is only enabled after exact engine/vtable validation.
+		const bool legacyMatch = legacyOf && !is64 &&
+			!std::memcmp(entry, "\x55\x8b\xec\x83\xec\x0c\x56\x8b\x75\x08\x83\x7e\x10\x00\x75\x07\x33\xc0\x5e\x8b\xe5", 21);
 		const bool match = is64 ? !std::memcmp(entry, "\x40\x57\x48\x81\xec", 5) &&
 		                              !std::memcmp(entry + 9, "\x48\x83\x79\x10\x00\x48\x8b\xf9\x75", 9) &&
 		                              !std::memcmp(entry + 19, "\x33\xc0", 2)
 		                        : !std::memcmp(entry, "\x55\x8b\xec\x81\xec", 5) &&
 		                              !std::memcmp(entry + 9, "\x56\x8b\x75\x08\x83\x7e\x10\x00\x75", 9) &&
 		                              !std::memcmp(entry + 19, "\x33\xc0", 2);
-		if (match)
+		if (match || legacyMatch)
 		{
 			if (result && result != target)
 				return nullptr;
@@ -4746,9 +4751,12 @@ bool Tf2InstallRecorderSoundHook(void *sound)
 {
 	if (g_Tf2StartSound)
 		return true;
-	auto address = Tf2FindStartSound((*static_cast<void ***>(sound))[11], sizeof(void *) == 8);
+	if (g_OpenFortressLegacyMode && !OfNativeInterfaces::ExactEngineSlots(sound,0x2ecd3c,{{11,0x578d0},{16,0x57f90},{17,0x57e20}}))
+		return false;
+	auto address = Tf2FindStartSound((*static_cast<void ***>(sound))[11], sizeof(void *) == 8, g_OpenFortressLegacyMode);
 	if (!address || (g_OpenFortressLegacyMode &&
-        !OfNativeInterfaces::Executable(address, GetModuleHandleA("engine.dll"))))
+        (!OfNativeInterfaces::Executable(address, GetModuleHandleA("engine.dll")) ||
+         reinterpret_cast<std::uintptr_t>(address) != reinterpret_cast<std::uintptr_t>(GetModuleHandleA("engine.dll")) + 0x6ce50)))
 		return false;
 	g_Tf2StartSound = reinterpret_cast<Tf2StartSound>(address);
 	LONG error = DetourTransactionBegin();
@@ -6016,7 +6024,7 @@ static void AngleTraceDiscover(Tf2FixRecvTable *table, int offset, std::vector<A
 		         p.Stride == 4 && p.Array && p.Array->Type == 1)
 			for (int k = 0; k < p.Elements; ++k)
 				add("pose_" + std::to_string(k), at + k * 4, 0, 2 + k);
-		else if (n == "m_AnimOverlay" && p.Type == 6 && p.Table && p.Table->Props && p.Table->Count > 1 &&
+		else if (!g_OpenFortressLegacyMode && n == "m_AnimOverlay" && p.Type == 6 && p.Table && p.Table->Props && p.Table->Count > 1 &&
 		         p.Table->Count <= 65)
 		{
 			// Layout from public dt_utlvector_recv.cpp. Do not sum offsets through
@@ -6809,9 +6817,9 @@ void MirvFix_PlayerRepairFrameEnd()
 bool MirvFix_PlayerAngleTraceBegin(int entity, int first, int last)
 {
 	auto &t = g_PlayerAngleTrace;
-    if (g_OpenFortressLegacyMode)
+    if (g_OpenFortressLegacyMode && !OfDemoFixCandidate())
     {
-        t.Status = "OF private animation/bone diagnostics are not yet ABI-verified; basic position/eye-angle repair is separate.";
+        t.Status = "OF angle diagnostics require the supported client and native demo controls.";
         return false;
     }
 	if (g_RepairCollect || !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || g_RepairDemo.empty() ||
@@ -6824,7 +6832,7 @@ bool MirvFix_PlayerAngleTraceBegin(int entity, int first, int last)
 	char name[64];
 	if (!Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user) || user <= 0 || !InstallRepairProxies(entity))
 	{
-		t.Status = "Choose a recorded TF2 player; receive observers must be available.";
+		t.Status = "Choose a recorded player; receive observers must be available.";
 		return false;
 	}
 	t = PlayerAngleTrace{};
@@ -6860,6 +6868,7 @@ bool MirvFix_PlayerAngleTraceBegin(int entity, int first, int last)
 	           " live pose slots; " + std::to_string(layers) + " layer fields; bone observer " +
 	           (bones ? "available" : "unavailable") +
 	           ". Waiting for the capture interval.";
+	if (g_OpenFortressLegacyMode) t.Status += " OF: private animation state and layer vectors are not sampled.";
 	return true;
 }
 void MirvFix_PlayerAngleTraceEnd()
@@ -6951,6 +6960,17 @@ void MirvFix_PlayerAngleTraceFrame(int stage)
 	if (!t.Active || tick < t.First || tick > t.Last || !AngleTraceTarget(t.Entity) || stage < 0 || stage > 3)
 		return;
 	int generation = 0;
+	if (g_OpenFortressLegacyMode)
+	{
+		Tf2FixClientClass liveClass{};
+		if (!OfDemoFixCandidate() || g_VEngineClient->IsDrawingLoadingImage() ||
+		    !OfNativeInterfaces::Read(Mirv_Of_PlayerRecvClass(t.Entity),&liveClass,sizeof(liveClass)) ||
+		    liveClass.Table != g_RepairPlayerTable)
+		{
+			Mirv_Tf2_DiagnosticBoneStop();
+			return;
+		}
+	}
 	int boneCount = Mirv_Tf2_DiagnosticBoneConfigure(t.Entity, generation);
 	if (boneCount > 0 && !t.BoneFields.count(generation) && t.BoneFields.size() >= 8)
 	{
@@ -7191,7 +7211,7 @@ void *StaticPropOpacityManager()
     auto manager = g_AppSystemFactory("StaticPropMgrClient004", nullptr);
     // Source SDK 2013 declares ComputePropOpacity as slot 5 of version 004.
     // Reject an unrecognized object or non-engine executable target in OF.
-    if (g_OpenFortressLegacyMode && !OfNativeInterfaces::Slots(manager,"engine.dll",{5})) return nullptr;
+    if (g_OpenFortressLegacyMode && !OfNativeInterfaces::ExactEngineSlots(manager,0x330214,{{5,0x1f8840}})) return nullptr;
     return manager;
 }
 

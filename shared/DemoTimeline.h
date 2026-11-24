@@ -28,7 +28,7 @@ struct Event
 struct Index
 {
 	std::filesystem::path File;
-	std::string Map, Recorder, Error;
+	std::string Map, Recorder, Error, Warning;
 	int TotalTicks = 0;
 	double Interval = 1.0 / 66;
 	std::vector<Event> Events;

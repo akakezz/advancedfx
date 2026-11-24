@@ -36,6 +36,16 @@ inline bool KnownClient()
         !std::memcmp(a,expectA,sizeof(a)) && !std::memcmp(b,expectB,sizeof(b));
 #endif
 }
+// Source SDK Base 2013 Multiplayer, 2021-06-24 engine examined offline.
+inline bool KnownEngine()
+{
+#ifdef _WIN64
+    return false;
+#else
+    return Image(GetModuleHandleA("engine.dll"), 0x60d42fc7, 0x006d8000);
+#endif
+}
+
 inline bool Executable(const void *address, HMODULE module)
 {
     MEMORY_BASIC_INFORMATION info{};
@@ -57,4 +67,31 @@ inline bool Slots(void *object, const char *moduleName, std::initializer_list<un
     }
     return true;
 }
+// A named factory and executable slots are not sufficient for legacy hooks.
+// Require the actual relocated vtable and function RVAs of the examined image.
+struct EngineSlot { unsigned Index; std::uintptr_t Rva; }; // index/RVA pair for either native module
+inline bool ExactSlots(void *object, HMODULE module, std::uintptr_t vtableRva, std::initializer_list<EngineSlot> slots)
+{
+    if (!module) return false;
+    const auto base = reinterpret_cast<std::uintptr_t>(module);
+    void **table = nullptr;
+    if (!Read(object,&table,sizeof(table)) || reinterpret_cast<std::uintptr_t>(table) != base+vtableRva)
+        return false;
+    for (const auto &slot : slots) {
+        void *function = nullptr;
+        if (!Read(table+slot.Index,&function,sizeof(function)) ||
+            reinterpret_cast<std::uintptr_t>(function) != base+slot.Rva || !Executable(function,module)) return false;
+    }
+    return true;
+}
+
+inline bool ExactEngineSlots(void *object, std::uintptr_t vtableRva, std::initializer_list<EngineSlot> slots)
+{
+    return KnownEngine() && ExactSlots(object,GetModuleHandleA("engine.dll"),vtableRva,slots);
+}
+inline bool ExactClientSlots(void *object, std::uintptr_t vtableRva, std::initializer_list<EngineSlot> slots)
+{
+    return KnownClient() && ExactSlots(object,GetModuleHandleA("client.dll"),vtableRva,slots);
+}
+
 }

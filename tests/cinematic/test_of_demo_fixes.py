@@ -38,7 +38,7 @@ void*GetCurrentThread(){return nullptr;}void*GetModuleHandleA(const char*){retur
 constexpr int SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2,SourceSdkVer_HL2MP=3;
 int g_SourceSdkVer=3;bool g_OpenFortressLegacyMode=true,g_OfNativeCommands=false,known=false,slots=false,executable=false;
 bool OfDemoFixCandidate(){return g_OpenFortressLegacyMode&&g_SourceSdkVer==3&&g_OfNativeCommands&&known;}
-namespace OfNativeInterfaces{bool Slots(void*p,const char*,std::initializer_list<unsigned>){return p&&slots;}bool Read(const void*p,void*out,size_t n){if(!p)return false;memcpy(out,p,n);return true;}bool Executable(void*p,void*){return p&&executable;}}
+namespace OfNativeInterfaces{bool Slots(void*p,const char*,std::initializer_list<unsigned>){return p&&slots;} struct EngineSlot{unsigned Index;uintptr_t Rva;}; bool ExactEngineSlots(void*p,uintptr_t,std::initializer_list<EngineSlot>){return p&&slots;}bool Read(const void*p,void*out,size_t n){if(!p)return false;memcpy(out,p,n);return true;}bool Executable(void*p,void*){return p&&executable;}}
 struct Engine{bool Playing=true,Loading=false;std::string Dir;bool IsPlayingDemo(){return Playing;}bool IsDrawingLoadingImage(){return Loading;}const char*GetGameDirectory(){return Dir.c_str();}}engine,*g_VEngineClient=&engine;
 int tick=15;int user=42;bool GetCurrentDemoTick(int&out){out=tick;return true;}bool Mirv_Tf2_GetPlayerInfo(int index,char*,int,int*out){*out=user;return index==1;}
 void*Factory(const char*,int*);auto g_AppSystemFactory=Factory;

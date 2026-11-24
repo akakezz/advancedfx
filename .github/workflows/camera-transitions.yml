@@ -26,6 +26,7 @@ on:
       - 'AfxHookSource/MirvCalcs.h'
       - 'AfxHookSource/OfNativeInterfaces.h'
       - 'shared/DemoTimeline.cpp'
+      - 'shared/DemoTimeline.h'
       - 'shared/PlayerRepair.cpp'
       - 'tests/cinematic/**'
       - '.github/workflows/camera-transitions.yml'
@@ -46,6 +47,7 @@ jobs:
       - name: Check demo fixes and parser diagnostics
         run: |
           python3 tests/cinematic/test_of_demo_fixes.py
+          python3 tests/cinematic/test_of_diagnostic_abi.py
           python3 tests/cinematic/test_recorder_sound.py
           python3 tests/cinematic/test_demo_index_no_throw.py
       - name: Check custom mode planning and fitted preview geometry

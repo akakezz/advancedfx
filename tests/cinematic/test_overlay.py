@@ -238,7 +238,7 @@ bool g_OpenFortressLegacyMode=false,g_OfNativeCollision=false,g_OfNativeResoluti
 bool OfDemoFixCandidate(){return false;}
 void* GetModuleHandleA(const char*){return nullptr;}
 const void* Mirv_Of_PlayerRecvClass(int){return nullptr;}
-namespace OfNativeInterfaces { bool Slots(void*,const char*,std::initializer_list<unsigned>){return false;} bool Read(const void*,void*,size_t){return false;} template<class T> bool Executable(void*,T){return false;} }
+namespace OfNativeInterfaces { bool Slots(void*,const char*,std::initializer_list<unsigned>){return false;} struct EngineSlot{unsigned Index;uintptr_t Rva;}; bool ExactEngineSlots(void*p,uintptr_t,std::initializer_list<EngineSlot>){return false;} bool ExactClientSlots(void*p,uintptr_t,std::initializer_list<EngineSlot>){return false;} bool Read(const void*,void*,size_t){return false;} template<class T> bool Executable(void*,T){return false;} }
 
 struct FakeConVar{float Value=0,Maximum=-1;bool Writable=true;float GetFloat(){return Value;}void SetValue(float value){if(Writable)Value=Maximum<0?value:(std::min)(Maximum,value);}};
 struct FakeCvar{std::map<std::string,FakeConVar> Vars{{"cl_interpolate",{1}},{"cl_interp",{.015f}},{"cl_interp_ratio",{1}}};FakeConVar *FindVar(const char*name){auto it=Vars.find(name);return it==Vars.end()?nullptr:&it->second;}}fakeCvar;
@@ -1173,6 +1173,7 @@ while depth:
 reader_fixture=r"""
 namespace AngleFieldReaderTest {
 struct Renderable { float Angles[3]={4,5,6}; const float*GetRenderAngles(){return Angles;} } renderable;
+using CMirvTf2ClientRenderable=Renderable;
 struct CMirvTf2ClientUnknown { Renderable *GetClientRenderable(){return &renderable;} };
 struct Entity: CMirvTf2ClientUnknown { float Pitch=30; } entity;
 struct Tools { void*FirstEntity(){return &entity;}void*NextEntity(void*){return nullptr;}int GetEntIndex(void*){return 1;} } tools;
@@ -1182,7 +1183,7 @@ void Tests(){
  int offset=int(reinterpret_cast<uintptr_t>(&entity.Pitch)-reinterpret_cast<uintptr_t>(&entity));float value=-999,angles[3]={};Mirv_Tf2_ReadDiagnosticFields(1,&entity,&offset,&value,1,angles);check(value==30&&angles[0]==4,"The actual diagnostic accessor reads observed live-entity fields and render angles");value=-999;Entity stale;Mirv_Tf2_ReadDiagnosticFields(1,&stale,&offset,&value,1,angles);check(value==-999,"The actual accessor rejects an object that is no longer the current entity");Mirv_Tf2_ReadDiagnosticFields(2,&entity,&offset,&value,1,angles);check(value==-999,"The actual accessor rejects another entity index");offset=-1;Mirv_Tf2_ReadDiagnosticFields(1,&entity,&offset,&value,1,angles);check(value==-999,"Unobserved field offsets are never read");offset=65536;Mirv_Tf2_ReadDiagnosticFields(1,&entity,&offset,&value,1,angles);check(value==-999,"Out-of-bound field offsets are never read");
 }
 }
-""".replace('READER_IMPLEMENTATION',reader[a:end])
+""".replace('READER_IMPLEMENTATION',reader[reader.index('static CMirvTf2ClientRenderable *DiagnosticRenderable('):a]+reader[a:end])
 test=test.replace('int main(){try{',reader_fixture+'int main(){try{AngleFieldReaderTest::Tests();')
 
 def cpp_function(text, signature):
@@ -1229,7 +1230,7 @@ void Tests(){
 """
 bone_start=reader.index('namespace\n{\nstruct DiagnosticBoneObserver')
 bone_end=reader.index('static bool Mirv_IsUsableBound',bone_start)
-deep_fixture=deep_fixture.replace('ANIMATION_READER',cpp_function(reader,'void Mirv_Tf2_ReadAnimationDiagnostic(')).replace('BONE_OBSERVER',reader[bone_start:bone_end])
+deep_fixture=deep_fixture.replace('ANIMATION_READER',cpp_function(reader,'static CMirvTf2ClientRenderable *DiagnosticRenderable(')+cpp_function(reader,'void Mirv_Tf2_ReadAnimationDiagnostic(')).replace('BONE_OBSERVER',reader[bone_start:bone_end])
 test=test.replace('int main(){try{',deep_fixture+'int main(){try{DeepAnimationDiagnosticTest::Tests();')
 collision_tests=r"""
 void CollisionTests(){

@@ -9,6 +9,7 @@ import tempfile
 parser = argparse.ArgumentParser()
 parser.add_argument('--build-dir', type=Path)
 parser.add_argument('--engine-dir', type=Path, help='Also validate the resolver against installed TF2 Windows engine binaries')
+parser.add_argument('--of-engine', type=Path, help='Verify the examined OF Source SDK Base 2013 MP engine DLL without loading it')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[2]
 native = (root / 'AfxHookSource/MirvCommands.cpp').read_text()
@@ -47,7 +48,7 @@ struct Alloc { int Frees=0; void Free(void*p){++Frees;free(p);} } alloc;
 namespace SOURCESDK { namespace L4D2 { Alloc *g_pMemAlloc=&alloc; } }
 enum {SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2,SourceSdkVer_HL2MP=3};
 bool g_OpenFortressLegacyMode=false,g_OfNativeCommands=false;
-namespace OfNativeInterfaces { bool known=false, slots=false; bool KnownClient(){return known;} bool Slots(void*p,const char*,std::initializer_list<unsigned>){return p&&slots;} }
+namespace OfNativeInterfaces { bool known=false, slots=false; bool KnownClient(){return known;} bool Slots(void*p,const char*,std::initializer_list<unsigned>){return p&&slots;} struct EngineSlot{unsigned Index;uintptr_t Rva;}; bool ExactEngineSlots(void*p,uintptr_t,std::initializer_list<EngineSlot>){return p&&slots;} }
 int g_SourceSdkVer=SourceSdkVer_TF2;
 struct Engine {
  bool Playing=true,Hltv=false,Loading=false;int Local=1;
@@ -82,10 +83,11 @@ bool Tf2SoundCodeRead(const void*address,void*buffer,size_t length){
 }
 """+resolver+r"""
 void ResolverCheck(bool ok,const char*why){if(!ok)throw std::runtime_error(why);}
-void RunEngineCase(const char*file,uintptr_t base,uintptr_t ambient,bool is64){
+void RunEngineCase(const char*file,uintptr_t base,uintptr_t ambient,bool is64,bool legacyOf=false){
  std::ifstream input(file,std::ios::binary);std::vector<unsigned char> data((std::istreambuf_iterator<char>(input)),{});
  ResolverCheck(!data.empty(),"engine test image exists");soundCode.clear();soundCode.emplace(base,std::move(data));
- auto result=Tf2FindStartSound(reinterpret_cast<void*>(ambient),is64);
+ auto result=Tf2FindStartSound(reinterpret_cast<void*>(ambient),is64,legacyOf);
+ if(legacyOf) ResolverCheck(reinterpret_cast<uintptr_t>(result)==base+0x6ce50,"exact OF StartSound RVA");
  ResolverCheck(result!=nullptr,"versioned ambient emitter resolves one verified native sound start in the installed engine");
 }
 void ResolverTests(){
@@ -102,6 +104,17 @@ void ResolverTests(){
   soundCode[0x3000]=entry;code[80]=0xe8;relative=0x3000-(0x1000+85);memcpy(code.data()+81,&relative,4);
   ResolverCheck(!Tf2FindStartSound((void*)0x1000,is64),"ambiguous sound start discovery is rejected");
  }
+ soundCode.clear();
+ // Exact SDK MP stack-frame variant: reject on TF2, accept on OF only.
+ auto&code=soundCode[0x1000];code.assign(256,0x90);
+ const std::vector<unsigned char> prefix{0xc6,0x45,0xa4,1,0xc7,0x45,0xac,255,255,255,255,0xc7,0x45,0xb0,6,0,0,0};
+ std::copy(prefix.begin(),prefix.end(),code.begin()+16);
+ code[48]=0x89;code[49]=0x45;code[50]=0xdc;
+ code[64]=0xe8;int relative=0x2000-(0x1000+69);memcpy(code.data()+65,&relative,4);
+ auto&entry=soundCode[0x2000];entry={0x55,0x8b,0xec,0x83,0xec,0x0c,0x56,0x8b,0x75,0x08,0x83,0x7e,0x10,0x00,0x75,0x07,0x33,0xc0,0x5e,0x8b,0xe5};
+ ResolverCheck(!Tf2FindStartSound((void*)0x1000,false),"legacy prologue rejected on TF2");
+ ResolverCheck(Tf2FindStartSound((void*)0x1000,false,true)==(void*)0x2000,"legacy prologue resolves on OF");
+ entry[12]=0x14;ResolverCheck(!Tf2FindStartSound((void*)0x1000,false,true),"legacy wrong Sfx offset rejected");
  soundCode.clear();
 }
 """
@@ -243,9 +256,47 @@ with tempfile.TemporaryDirectory(prefix='hlae-recorder-sound-') as temp:
             image_file = out/f'engine{arch}.image'
             image_file.write_bytes(image)
             engine_cases.append(f'RunEngineCase({json.dumps(str(image_file))}, {base}ull, {ambient}ull, {str(arch==64).lower()});')
+    if args.of_engine:
+        # Map raw PE sections exactly as the loader would, without executing it.
+        raw = args.of_engine.read_bytes()
+        pe = struct.unpack_from('<I',raw,60)[0]
+        assert raw[pe:pe+4]==b'PE\0\0' and struct.unpack_from('<H',raw,pe+4)[0]==0x14c
+        assert struct.unpack_from('<I',raw,pe+8)[0]==0x60d42fc7
+        base = struct.unpack_from('<I',raw,pe+52)[0]
+        assert struct.unpack_from('<I',raw,pe+80)[0]==0x6d8000
+        image = bytearray(0x6d8000)
+        for i in range(struct.unpack_from('<H',raw,pe+6)[0]):
+            header = pe+24+struct.unpack_from('<H',raw,pe+20)[0]+40*i
+            _,rva,size,offset = struct.unpack_from('<IIII',raw,header+8)
+            image[rva:rva+size] = raw[offset:offset+size]
+        def factory_object(name):
+            nameptr = base+image.index(name+b'\0')
+            pattern = b'\x68'+struct.pack('<I',nameptr)+b'\x68'
+            assert image.count(pattern)==1
+            factory = struct.unpack_from('<I',image,image.index(pattern)+6)[0]-base
+            assert image[factory]==0xb8 and image[factory+5]==0xc3
+            return struct.unpack_from('<I',image,factory+1)[0]-base
+        sound = factory_object(b'IEngineSoundClient003')
+        assert sound==0x3be008 and struct.unpack_from('<I',image,sound)[0]==base+0x2ecd3c
+        for slot,rva in ((11,0x578d0),(16,0x57f90),(17,0x57e20)):
+            assert struct.unpack_from('<I',image,0x2ecd3c+slot*4)[0]==base+rva
+        # GetActiveSounds copies 13 dwords per element (52 bytes), and the
+        # vector Size/Elements are at +12/+16, matching the C++ static asserts.
+        assert bytes.fromhex('6b fe 34 03 3b') in image[0x6aaf0:0x6ad00]
+        assert bytes.fromhex('b9 0d 00 00 00 8d 75 c8 f3 a5') in image[0x6aaf0:0x6ad00]
+        # The factory returns the client subobject at +4. Its constructor
+        # writes the secondary client vtable there; slot 5 takes Vector&,float.
+        assert factory_object(b'StaticPropMgrClient004')==0x655cfc
+        assert bytes.fromhex('c7 41 04')+struct.pack('<I',base+0x330214) in image[0x1f7d80:0x1f7de0]
+        assert struct.unpack_from('<I',image,0x330214+20)[0]==base+0x1f8840
+        assert image[0x1f8840:0x1f884b]==bytes.fromhex('55 8b ec 8b 45 08 f3 0f 10 45 0c')
+        assert image[0x1f8862:0x1f8865]==bytes.fromhex('c2 08 00')
+        image_file = out/'of-engine32.image';image_file.write_bytes(image)
+        engine_cases.append(f'RunEngineCase({json.dumps(str(image_file))}, {base}ull, {base+0x578d0}ull, false, true);')
+        print('OF engine factory, sound query stride, and static-prop ABI checks passed',flush=True)
     preference_header = (root / 'AfxHookSource/CameraOverlay.h').read_text()
     preference_enum = preference_header[preference_header.index('enum class DemoFixPreference'):].split(';', 1)[0] + ';'
     preamble = preamble.replace('DEMO_FIX_PREFERENCE_ENUM', 'namespace AfxHookSource{namespace CameraOverlay{' + preference_enum + '}}')
     source.write_text(preamble + code + resolver_test + test.replace('ENGINE_CASES', ''.join(engine_cases)))
-    subprocess.run(['g++', '-std=c++17', '-g', '-I', str(root), '-fsanitize=address,undefined', '-fno-omit-frame-pointer', str(source), '-o', str(out/'recorder_sound')], check=True)
+    subprocess.run(['g++', '-std=c++17', '-g', '-I', str(root), '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-no-pie', str(source), '-o', str(out/'recorder_sound')], check=True)
     subprocess.run([str(out/'recorder_sound')], check=True)

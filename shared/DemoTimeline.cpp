@@ -272,30 +272,47 @@ struct Reader
 			history.push_back(text);
 		}
 	}
-	void Snapshot(Bits data)
+	void Snapshot(const std::vector<unsigned char> &payload, bool openFortress)
 	{
+		// Source 2013 can write a full 512 KiB string-table buffer even when
+		// the serialized tables overflow it. The event index needs userinfo,
+		// not the later model/sound/scene tables. Keep errors local until we
+		// know whether the complete userinfo table was recovered.
+		std::string error;
+		Bits data(payload, error);
+		bool completeUserInfo = false;
 		unsigned count = data.U(8);
-		for (unsigned i = 0; !Failed() && i < count; ++i)
+		for (unsigned i = 0; !Failed() && !data.Failed() && i < count; ++i)
 		{
 			auto name = data.String();
 			unsigned entries = data.U(16);
-			for (unsigned j = 0; !Failed() && j < entries; ++j)
+			for (unsigned j = 0; !Failed() && !data.Failed() && j < entries; ++j)
 			{
 				data.String();
 				if (data.U(1))
 				{
 					auto payload = data.Bytes(data.U(16));
-					if (name == "userinfo")
+					if (name == "userinfo" && !data.Failed())
 						User(payload);
 				}
 			}
 			if (data.U(1))
-				for (unsigned j = 0, n = data.U(16); !Failed() && j < n; ++j)
+				for (unsigned j = 0, n = data.U(16); !Failed() && !data.Failed() && j < n; ++j)
 				{
 					data.String();
 					if (data.U(1))
 						data.Skip(size_t(data.U(16)) * 8);
 				}
+			if (name == "userinfo" && !data.Failed() && !Failed())
+				completeUserInfo = true;
+		}
+		if (data.Failed() && !Failed())
+		{
+			const bool truncated = error == "Truncated network message" ||
+				error == "Truncated message payload" || error == "Truncated byte payload";
+			if (openFortress && payload.size() == 512 * 1024 && completeUserInfo && truncated)
+				Result.Warning = "OF string-table snapshot reached its 512 KiB limit after userinfo; remaining network packets were indexed normally.";
+			else Fail(std::move(error));
 		}
 	}
 	void GameEvent(Bits data, int tick)
@@ -692,6 +709,7 @@ Index Read(const std::filesystem::path &file, const std::atomic_bool &cancel, st
 			};
 			reader.Result.Map = stringAt(536);
 			reader.Result.Recorder = stringAt(276);
+			const bool openFortress = stringAt(796) == "open_fortress";
 			reader.Result.TotalTicks = int(LE(header.data() + 1060));
 			if (reader.Result.TotalTicks < 0)
 			{ reader.Fail("Invalid demo tick count"); return; }
@@ -729,7 +747,7 @@ Index Read(const std::filesystem::path &file, const std::atomic_bool &cancel, st
 					auto length = bytes(4);
 					if (reader.Failed()) return;
 					auto payload = bytes(LE(length.data()));
-					if (!reader.Failed() && type == 8) reader.Snapshot(Bits(payload, reader.Result.Error));
+					if (!reader.Failed() && type == 8) reader.Snapshot(payload, openFortress);
 					break;
 				}
 				default: reader.Fail("Unsupported demo packet " + std::to_string(type)); return;

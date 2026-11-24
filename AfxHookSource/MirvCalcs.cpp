@@ -7616,6 +7616,20 @@ bool Mirv_Tf2_GetEntityAnglesInfo(int entityIndex, float outAbsAngles[3], float 
 	return ok;
 }
 
+// Use the exact OF C_TFPlayer IClientRenderable subobject verified in the
+// supplied PE32 client. Do not apply private TF2 offsets to unknown players.
+static CMirvTf2ClientRenderable *DiagnosticRenderable(void *live)
+{
+	if (!live) return nullptr;
+	if (g_OpenFortressLegacyMode &&
+	    (!g_OfNativeCommands || !OfNativeInterfaces::ExactClientSlots(live,0x664408,{{5,0x83090}})))
+		return nullptr;
+	auto renderable = reinterpret_cast<CMirvTf2ClientUnknown *>(live)->GetClientRenderable();
+	if (g_OpenFortressLegacyMode &&
+	    !OfNativeInterfaces::ExactClientSlots(renderable,0x6648f0,{{1,0xd1a20},{2,0x2ad950},{9,0x83400},{16,0xb2ad0}}))
+		return nullptr;
+	return renderable;
+}
 void Mirv_Tf2_ReadDiagnosticFields(int entity, const void *object, const int *offsets, float *values,
                                    int count, float renderAngles[3])
 {
@@ -7631,13 +7645,25 @@ void Mirv_Tf2_ReadDiagnosticFields(int entity, const void *object, const int *of
 			continue;
 		if (static_cast<const void *>(ent) != object)
 			return;
+		auto renderable = DiagnosticRenderable(ent);
+		if (g_OpenFortressLegacyMode && !renderable) return;
 		for (int i = 0; i < count; ++i)
 			if (offsets[i] >= 0 && offsets[i] <= 65536 - int(sizeof(float)))
-				std::memcpy(values + i, static_cast<const char *>(object) + offsets[i], sizeof(float));
-		auto renderable = reinterpret_cast<CMirvTf2ClientUnknown *>(ent)->GetClientRenderable();
+			{
+				const auto *address = static_cast<const char *>(object) + offsets[i];
+				if (g_OpenFortressLegacyMode)
+				{
+					float value;
+					if (OfNativeInterfaces::Read(address,&value,sizeof(value))) values[i]=value;
+				}
+				else std::memcpy(values+i,address,sizeof(float));
+			}
 		auto angles = renderable ? reinterpret_cast<const float *>(renderable->GetRenderAngles()) : nullptr;
 		if (angles && renderAngles)
-			std::copy(angles, angles + 3, renderAngles);
+		{
+			if (g_OpenFortressLegacyMode) OfNativeInterfaces::Read(angles,renderAngles,3*sizeof(float));
+			else std::copy(angles, angles + 3, renderAngles);
+		}
 		return;
 	}
 }
@@ -7659,7 +7685,7 @@ void Mirv_Tf2_ReadAnimationDiagnostic(int entity, const void *object, const Mirv
 	if (!fields || !values || !status || count < 0 || count > 512)
 		return;
 	void *live = Mirv_Tf2_DiagnosticEntity(entity);
-	if (!live || live != object)
+	if (!live || live != object || (g_OpenFortressLegacyMode && !DiagnosticRenderable(live)))
 		return;
 	struct VectorCopy
 	{
@@ -7676,6 +7702,7 @@ void Mirv_Tf2_ReadAnimationDiagnostic(int entity, const void *object, const Mirv
 		const char *base = static_cast<const char *>(object);
 		if (f.VectorOffset >= 0)
 		{
+			if (g_OpenFortressLegacyMode) { status[i]=3; continue; }
 			// Public Source SDK CUtlVector/CUtlMemory layout. The location, element
 			// stride and maximum are supplied by validated receive-proxy extra data.
 			if (f.VectorOffset > 65536 - 32 || f.Maximum < 1 || f.Maximum > 64 || f.Element < 0 ||
@@ -7722,42 +7749,52 @@ void Mirv_Tf2_ReadAnimationDiagnostic(int entity, const void *object, const Mirv
 			}
 			base = copy.Data.data() + f.Element * f.Stride;
 		}
+		char verified[4]{};
+		int readOffset=f.Offset;
+		if (g_OpenFortressLegacyMode)
+		{
+			if (!OfNativeInterfaces::Read(base+f.Offset,verified,size)) { status[i]=3; continue; }
+			base=verified; readOffset=0;
+		}
 		if (f.Kind == 0)
 		{
 			float v;
-			std::memcpy(&v, base + f.Offset, 4);
+			std::memcpy(&v, base + readOffset, 4);
 			values[i] = v;
 		}
 		else if (f.Kind == 1)
 		{
 			int v;
-			std::memcpy(&v, base + f.Offset, 4);
+			std::memcpy(&v, base + readOffset, 4);
 			values[i] = v;
 		}
 		else if (f.Kind == 2)
 		{
 			unsigned char v;
-			std::memcpy(&v, base + f.Offset, 1);
+			std::memcpy(&v, base + readOffset, 1);
 			values[i] = v;
 		}
 		else
 		{
 			short v;
-			std::memcpy(&v, base + f.Offset, 2);
+			std::memcpy(&v, base + readOffset, 2);
 			values[i] = v;
 		}
 		status[i] = std::isfinite(values[i]) ? 0 : 5;
 	}
-	auto renderable = reinterpret_cast<CMirvTf2ClientUnknown *>(live)->GetClientRenderable();
+	auto renderable = DiagnosticRenderable(live);
 	auto renderOrigin = renderable ? reinterpret_cast<const float *>(renderable->GetRenderOrigin()) : nullptr;
 	if (origin && renderOrigin)
-		std::copy(renderOrigin, renderOrigin + 3, origin);
+	{
+		if (g_OpenFortressLegacyMode) OfNativeInterfaces::Read(renderOrigin,origin,3*sizeof(float));
+		else std::copy(renderOrigin, renderOrigin + 3, origin);
+	}
 }
 bool Mirv_Tf2_DiagnosticModel(int entity, MirvTf2DiagnosticModel &out)
 {
 	out = MirvTf2DiagnosticModel{};
 	auto live = Mirv_Tf2_DiagnosticEntity(entity);
-	auto renderable = live ? reinterpret_cast<CMirvTf2ClientUnknown *>(live)->GetClientRenderable() : nullptr;
+	auto renderable = DiagnosticRenderable(live);
 	auto info = Mirv_Tf2_GetModelInfo();
 	auto model = renderable ? renderable->GetModel() : nullptr;
 	if (!info || !model)
@@ -7867,7 +7904,7 @@ int Mirv_Tf2_DiagnosticBoneConfigure(int entity, int &generation)
 {
 	auto &o = g_DiagnosticBones;
 	void *live = Mirv_Tf2_DiagnosticEntity(entity);
-	auto renderable = live ? reinterpret_cast<CMirvTf2ClientUnknown *>(live)->GetClientRenderable() : nullptr;
+	auto renderable = DiagnosticRenderable(live);
 	if (!renderable)
 	{
 		Mirv_Tf2_DiagnosticBoneStop();
@@ -7876,6 +7913,14 @@ int Mirv_Tf2_DiagnosticBoneConfigure(int entity, int &generation)
 	void *address = (*reinterpret_cast<void ***>(renderable))[16];
 	if (!g_DiagnosticSetupBones)
 	{
+		if (g_OpenFortressLegacyMode)
+		{
+			unsigned char entry[5]{}, ret[3]{};
+			const auto *base = reinterpret_cast<const unsigned char *>(GetModuleHandleA("client.dll"));
+			if (!OfNativeInterfaces::Read(address,entry,sizeof(entry)) ||
+			    std::memcmp(entry,"\x55\x8b\xec\x6a\xff",5) ||
+			    !OfNativeInterfaces::Read(base+0xb358d,ret,sizeof(ret)) || std::memcmp(ret,"\xc2\x10\x00",3)) return 0;
+		}
 		g_DiagnosticSetupBones = reinterpret_cast<DiagnosticSetupBones>(address);
 		LONG error = DetourTransactionBegin();
 		if (error == NO_ERROR)

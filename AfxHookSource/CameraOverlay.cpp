@@ -5266,6 +5266,8 @@ static void PollTimelineIndex()
 		state.FilterDirty = true;
 		if (!state.Index.Error.empty())
 			advancedfx::Warning("Demo event indexing failed: %s\n", state.Index.Error.c_str());
+		else if (!state.Index.Warning.empty())
+			advancedfx::Warning("Demo event indexing: %s\n", state.Index.Warning.c_str());
 		if (state.Index.Error.empty())
 		{
 			std::error_code error;
@@ -6076,8 +6078,8 @@ static void DrawPlayerRepairEditor(int playhead)
 	                   "not the quality of the rendered result.");
 	if (!ui.Status.empty())
 		ImGui::TextWrapped("%s", ui.Status.c_str());
-	if (!g_OpenFortressLegacyMode) DrawPlayerAngleDiagnostic(playhead);
-    else ImGui::TextDisabled("OF: basic position and eye-angle repair; private animation diagnostics unavailable.");
+	DrawPlayerAngleDiagnostic(playhead);
+    if (g_OpenFortressLegacyMode) ImGui::TextDisabled("OF diagnostics: verified player renderable and public fields; private animation and layer vectors unavailable.");
 	ImGui::EndTabItem();
 }
 static bool SceneCategoryCheckbox(const char *label, bool &value, int category, const char *hint)
@@ -6907,6 +6909,8 @@ static void DrawSequencerDetails(int playhead)
 			ImGui::TextDisabled("No demo indexed. Open a demo or choose Index demo events.");
 		if (!state.Index.Error.empty())
 			ImGui::TextWrapped("Index failed: %s", state.Index.Error.c_str());
+		else if (!state.Index.Warning.empty())
+			ImGui::TextWrapped("Index note: %s", state.Index.Warning.c_str());
 		ImGui::Checkbox("Automatically index opened demos", &state.AutoIndex);
 		ImGui::SetNextItemWidth(140);
 		ImGui::InputInt("Event lead-in (ticks)", &state.EventLeadTicks);
