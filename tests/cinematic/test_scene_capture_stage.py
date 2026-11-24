@@ -54,7 +54,7 @@ naturalBonesReady=renderComplete=afterRender=observing=false;
 old_CVClient_FrameStageNotify_OpenFortress=old_CVClient_FrameStageNotify_TF2;
 auto of=[](Stage s){new_CVClient_FrameStageNotify_OpenFortress(nullptr,nullptr,s);};
 of(SOURCESDK::TF2::FRAME_START);assert(resolutions==1&&preferences==1&&updates==1);
-of(SOURCESDK::TF2::FRAME_NET_UPDATE_END);assert(repairs==0);
+of(SOURCESDK::TF2::FRAME_NET_UPDATE_END);assert(repairs==1);
 of(SOURCESDK::TF2::FRAME_RENDER_START);assert(!observing&&captures==0);
 naturalBonesReady=true;
 of(SOURCESDK::TF2::FRAME_RENDER_END);assert(captures==1&&probes==1&&afterRender);

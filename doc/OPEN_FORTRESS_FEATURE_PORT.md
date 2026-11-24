@@ -39,3 +39,38 @@ build or live OF test in this environment. Recorder sound suppression, manual
 player repair and static-prop fade suppression still lack OF-specific native
 implementations; this consolidation does not claim to implement them. Refer to
 V2's historical notes for detailed feature and ABI evidence.
+
+## Follow-up: remaining demo fixes
+
+The user reported ordinary demo playback and most integrated features working
+with `2d6508f5`; event indexing still failed in their OF demo. The follow-up
+adds compatibility-gated recorder sound suppression, manual position/eye-angle
+player repair and static-prop fade suppression to the shared demo-fix controls.
+They require explicit normal UI/console activation, not new launch switches.
+OF-specific activation is session-only; saved TF2 preferences are not applied
+automatically. `-afxOfSafeMode` still disables the new native paths.
+
+Sound suppression requires the known OF client and engine-owned sound slots,
+plus the existing unique executable StartSound resolver. Static prop suppression
+requires the known client and StaticPropMgrClient004 slot 5 in the engine; it
+reuses the existing opacity factor override. Manual player repair resolves
+the selected live player's actual receive class and validates the required fields
+and proxy addresses before detouring. It refuses a different class after
+installation; private TF2 animation and bone diagnostics remain disabled.
+These guards and source-extracted fixtures are not proof of the actual engine ABI.
+
+SDK reference: Valve Source SDK 2013 `src/public/engine/IEngineSound.h`,
+`SndInfo.h`, and `IStaticPropMgr.h`. The runtime engine binary and matching
+OF demo have not been inspected for these adapters.
+
+Indexing now includes the header network protocol and failing command, tick,
+file offset and network-message bit position where available. It does not guess
+unsupported network layouts. A real failing OF `.dem` is required to verify
+protocol support. Manual repair demo identity failures also return ordinary
+errors rather than throwing on expected missing or invalid input.
+
+New source-extracted tests cover repair installation and selected-entity
+forwarding, static-prop activation, and sound resolver rejection; the existing
+parser fixture exercises malformed input and diagnostic context. CI now targets
+the actual `of-feature-port-test` branch. Windows build and live demo verification
+remain required.

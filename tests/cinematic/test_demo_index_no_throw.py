@@ -56,7 +56,11 @@ int main(int argc, char **argv) {
     auto header = Demo(); header.resize(1072);
     Writer oversized; oversized.U(32,6); oversized.U(0xffffffffu,32);
     Packet(header,2,10,oversized.Data); header.push_back(7);
-    Check(!run(header).Error.empty(),"Overflowing bit length accepted");
+    auto malformed=run(header);
+    Check(!malformed.Error.empty(),"Overflowing bit length accepted");
+    Check(malformed.Error.find("network protocol")!=std::string::npos && malformed.Error.find("message 32")!=std::string::npos && malformed.Error.find("tick 10")!=std::string::npos,"Failure should identify packet protocol, type and tick");
+    auto unknown=Demo(); unknown[12]=99; unknown[13]=unknown[14]=unknown[15]=0;
+    Check(run(unknown).Error.find("network protocol 99")!=std::string::npos,"Unsupported protocol must identify its actual value");
     auto missing=advancedfx::DemoTimeline::Read(dir/"missing.dem",cancel,progress);
     Check(!missing.Error.empty() && missing.Events.empty(),"Missing file should be an ordinary error");
     std::cout << "Valid demos, cancellation, missing file, and " << tested << " malformed/truncated inputs checked without a C++ throw\n";

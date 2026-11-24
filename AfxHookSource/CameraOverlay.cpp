@@ -2160,7 +2160,7 @@ void PreferencesFrame()
 	if (now - g_DemoFixAttempt < std::chrono::seconds(1))
 		return;
 	g_DemoFixAttempt = now;
-	if (MirvFix_StaticPropFadeSupported() && g_NoStaticPropFade != MirvFix_GetNoStaticPropFade())
+	if (!g_OpenFortressLegacyMode && MirvFix_StaticPropFadeSupported() && g_NoStaticPropFade != MirvFix_GetNoStaticPropFade())
 		MirvFix_SetNoStaticPropFade(g_NoStaticPropFade);
 	if (!g_OpenFortressLegacyMode)
 	{
@@ -5230,15 +5230,19 @@ static void AutoIndexRequestedDemo()
 			}
 			file = *found;
 		}
-		file = std::filesystem::weakly_canonical(file);
+        std::error_code ec;
+        file = std::filesystem::weakly_canonical(file,ec);
+        if (ec) { state.Status = "Automatic event indexing: cannot resolve demo path: " + ec.message(); return; }
 		if (state.Worker.valid() && state.Index.File == file && !state.Cancel->load())
 		{
 			state.Pending.clear();
 			return;
 		}
-		if (!state.Worker.valid() && state.Index.File == file && state.Index.Error.empty() &&
-		    std::filesystem::last_write_time(file) == state.IndexedStamp)
-			return;
+        if (!state.Worker.valid() && state.Index.File == file && state.Index.Error.empty())
+        {
+            const auto stamp = std::filesystem::last_write_time(file,ec);
+            if (!ec && stamp == state.IndexedStamp) return;
+        }
 		StartTimelineIndex(file);
 	}
 	catch (const std::exception &e)
@@ -6072,7 +6076,8 @@ static void DrawPlayerRepairEditor(int playhead)
 	                   "not the quality of the rendered result.");
 	if (!ui.Status.empty())
 		ImGui::TextWrapped("%s", ui.Status.c_str());
-	DrawPlayerAngleDiagnostic(playhead);
+	if (!g_OpenFortressLegacyMode) DrawPlayerAngleDiagnostic(playhead);
+    else ImGui::TextDisabled("OF: basic position and eye-angle repair; private animation diagnostics unavailable.");
 	ImGui::EndTabItem();
 }
 static bool SceneCategoryCheckbox(const char *label, bool &value, int category, const char *hint)
@@ -6966,8 +6971,7 @@ static void DrawSequencerDetails(int playhead)
 		}
 		ImGui::EndTabItem();
 	}
-	if (!g_OpenFortressLegacyMode)
-		DrawPlayerRepairEditor(playhead);
+	DrawPlayerRepairEditor(playhead);
 	ImGui::EndTabBar();
 }
 
@@ -9142,14 +9146,13 @@ void Draw()
 				ImGui::TextDisabled("Campaths return gradually after blocking. Speed 0 removes the cap; half-life 0 removes damping.");
 				if (ImGui::Button("Reset collision history"))
 					Afx_ExecClientCmd("mirv_cam collision reset");
-				ImGui::TextWrapped("TF2/TF2C only; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
+				ImGui::TextWrapped("Supported TF2/TF2C and OF builds; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
 			}
 
 			if (ImGui::CollapsingHeader("Demo fixes"))
 			{
-				// OF's separate native-entity interpolation override persists via
-				// the same preferences as TF2/TF2C cvar fixes. Other TF2-specific
-				// recorder-sound and player-repair paths remain out of scope.
+				// OF native demo fixes are requested explicitly in this session.
+				// Do not reapply the unrelated TF2 saved preferences.
 				if (!g_OpenFortressLegacyMode)
 				{
 				bool muteRecorder = g_DemoMute;
@@ -9187,7 +9190,19 @@ void Draw()
 				}
 				else
 				{
-					ImGui::TextDisabled("OF: experimental native interpolation and opt-in POV deathcam. Recorder sound and player repair remain unsupported.");
+                    ImGui::TextDisabled("OF native demo fixes are experimental; enable only during offline demo playback.");
+                    bool mute = MirvFix_GetRecorderSoundMute();
+                    if (ImGui::Checkbox("Mute recorder sounds", &mute))
+                        MirvFix_SetRecorderSoundMute(mute);
+                    ImGui::TextWrapped("%s", MirvFix_RecorderSoundStatus());
+                    if (MirvFix_StaticPropFadeSupported())
+                    {
+                        bool noFade = MirvFix_GetNoStaticPropFade();
+                        if (ImGui::Checkbox("Disable static prop fading", &noFade))
+                            if (!MirvFix_SetNoStaticPropFade(noFade))
+                                g_DocumentStatus = "OF static prop fade override unavailable or demo is loading.";
+                    }
+                    else ImGui::TextDisabled("Static prop fade: compatible engine interface unavailable.");
 					bool deathcam = MirvFix_GetPovDeathcam();
 					if (ImGui::Checkbox("Suppress POV deathcam (OF experimental)", &deathcam))
 						if (!MirvFix_SetPovDeathcam(deathcam))
@@ -10516,7 +10531,7 @@ void Draw()
 					if (SequencerTrackVisible(3, !g_SceneCache.Frames().empty()))
 						DrawSceneCoverage();
 					DrawSequencerExtraTracks(visibleStart, visibleEnd);
-					if (!g_OpenFortressLegacyMode && SequencerTrackVisible(6, SequencerRepairPopulated()))
+					if (SequencerTrackVisible(6, SequencerRepairPopulated()))
 						DrawPlayerRepairTrack(visibleStart, visibleEnd);
 					DrawSequencerSeekContext(keyframeContextOpened);
 					if (choosePath < document.GetCount())

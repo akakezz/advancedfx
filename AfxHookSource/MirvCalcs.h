@@ -510,6 +510,7 @@ enum class MirvOfSceneStage { Entities, Poses, Replay };
 const char *Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage stage);
 bool Mirv_Of_ScenePosesSupported();
 bool Mirv_Of_SceneInterfacesSupported(bool draw);
+const void *Mirv_Of_PlayerRecvClass(int index);
 void Mirv_Of_CollectSceneEntities(bool players, bool projectiles, bool weapons,
                                   bool cosmetics, bool ragdolls, bool gibs,
                                   bool buildings, bool props,

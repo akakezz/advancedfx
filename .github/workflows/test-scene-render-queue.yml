@@ -7,7 +7,7 @@ on:
       - 'tests/cinematic/test_scene_render_queue.py'
       - '.github/workflows/test-scene-render-queue.yml'
   push:
-    branches: [experiment/open-fortress-legacy-2026-11]
+    branches: [experiment/open-fortress-legacy-2026-11, of-feature-port-test]
     paths:
       - 'AfxHookSource/MirvCalcs.cpp'
       - 'AfxHookSource/MaterialSystemHooks.cpp'

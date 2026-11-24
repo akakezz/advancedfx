@@ -4,6 +4,7 @@
 
 #include "MirvCalcs.h"
 #include "MaterialSystemHooks.h"
+#include "OfNativeInterfaces.h"
 #include <cstdio>
 #include <map>
 #include <tf2/sdk_src/public/vstdlib/IKeyValuesSystem.h>
@@ -12288,6 +12289,24 @@ bool Mirv_Of_SceneInterfacesSupported(bool draw)
 {
     return nullptr == Mirv_Of_SceneCompatibilityIssue(
         draw ? MirvOfSceneStage::Replay : MirvOfSceneStage::Entities);
+}
+// Use the actual selected player's network class, not TF2's table name.
+const void *Mirv_Of_PlayerRecvClass(int index)
+{
+    if (index <= 0 || !Mirv_Of_SceneInterfacesSupported(false)) return nullptr;
+    auto tools = CClientToolsTf2::Instance();
+    auto iface = tools ? tools->GetClientTools() : nullptr;
+    if (!iface) return nullptr;
+    unsigned visited = 0;
+    for (auto object = iface->FirstEntity(); object && visited++ < 4096; object = iface->NextEntity(object))
+    {
+        if (iface->GetEntIndex(object) != index || !iface->IsPlayer(object)) continue;
+        auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
+        auto network = unknown->GetClientNetworkable();
+        if (!OfNativeInterfaces::Slots(network,"client.dll",{2})) return nullptr;
+        return SceneInterfaceCall<const void *>(network,2);
+    }
+    return nullptr;
 }
 bool Mirv_Of_ScenePosesSupported()
 {

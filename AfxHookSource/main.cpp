@@ -1017,8 +1017,8 @@ void __fastcall new_CVClient_FrameStageNotify_OpenFortress(
 {
     if (curStage == SOURCESDK::TF2::FRAME_START)
     {
-        // Source cvar-only demo fixes and persisted overlay preferences.
-        // Do not run TF2-specific player repair, sound or camera hooks here.
+        // Shared demo lifecycle and persisted overlay preferences.
+        // Experimental OF fixes still require explicit user activation.
         RecordingResolution::Frame();
         MirvFix_Update();
         AfxHookSource::CameraOverlay::PreferencesFrame();
@@ -1031,6 +1031,10 @@ void __fastcall new_CVClient_FrameStageNotify_OpenFortress(
 
     old_CVClient_FrameStageNotify_OpenFortress(This, Edx, curStage);
 
+    if (curStage == SOURCESDK::TF2::FRAME_NET_UPDATE_END)
+        MirvFix_PlayerRepairFrameEnd(); // inactive until the explicit compatibility-gated request
+    if (curStage == SOURCESDK::TF2::FRAME_RENDER_START)
+        MirvFix_RecorderSoundUpdate();
     if (curStage == SOURCESDK::TF2::FRAME_RENDER_END)
     {
         // Restore temporary observer fields before capturing the completed scene.

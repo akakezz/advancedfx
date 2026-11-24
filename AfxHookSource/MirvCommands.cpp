@@ -4560,9 +4560,31 @@ Tf2ActiveSoundList g_Tf2RecorderSoundList;
 std::map<int, Tf2MutedSound> g_Tf2MutedSounds;
 const char *g_Tf2RecorderSoundStatus = "Disabled.";
 
+// All OF demo fixes share the consolidated native policy/safe-mode gate.
+// The known client is not evidence that the separate engine.dll ABI is correct.
+bool OfDemoFixCandidate()
+{
+    return g_OpenFortressLegacyMode && g_SourceSdkVer == SourceSdkVer_HL2MP &&
+        g_OfNativeCommands && OfNativeInterfaces::KnownClient();
+}
+bool Tf2RecorderSoundGame()
+{
+    return g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified ||
+        (g_OpenFortressLegacyMode && g_SourceSdkVer == SourceSdkVer_HL2MP && g_OfNativeCommands);
+}
+void *Tf2RecorderSoundInterface()
+{
+    if (!Tf2RecorderSoundGame() || !g_AppSystemFactory ||
+        (g_OpenFortressLegacyMode && !OfDemoFixCandidate())) return nullptr;
+    auto sound = g_AppSystemFactory("IEngineSoundClient003", nullptr);
+    // SDK 2013 exposes these same slots and SndInfo_t. OF must additionally
+    // pass the existing private StartSound resolver before any sound calls.
+    if (g_OpenFortressLegacyMode && !OfNativeInterfaces::Slots(sound,"engine.dll",{11,16,17})) return nullptr;
+    return sound;
+}
 bool Tf2RecorderSoundPov()
 {
-	return (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified) &&
+	return Tf2RecorderSoundGame() &&
 	       g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV() &&
 	       !g_VEngineClient->IsDrawingLoadingImage() && g_VEngineClient->GetLocalPlayer() > 0;
 }
@@ -4725,7 +4747,8 @@ bool Tf2InstallRecorderSoundHook(void *sound)
 	if (g_Tf2StartSound)
 		return true;
 	auto address = Tf2FindStartSound((*static_cast<void ***>(sound))[11], sizeof(void *) == 8);
-	if (!address)
+	if (!address || (g_OpenFortressLegacyMode &&
+        !OfNativeInterfaces::Executable(address, GetModuleHandleA("engine.dll"))))
 		return false;
 	g_Tf2StartSound = reinterpret_cast<Tf2StartSound>(address);
 	LONG error = DetourTransactionBegin();
@@ -4774,15 +4797,14 @@ void Tf2RecorderSoundRestore(const Tf2ActiveSound &sound)
 } // namespace
 bool MirvFix_ArmRecorderSoundMute(bool enabled)
 {
-	g_Tf2RecorderMuteArmed.store(enabled);
+	g_Tf2RecorderMuteArmed.store(false);
 	if (!enabled)
 		return true;
-	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
-		return false;
-	void *sound = g_AppSystemFactory ? g_AppSystemFactory("IEngineSoundClient003", nullptr) : nullptr;
+	void *sound = Tf2RecorderSoundInterface();
 	if (!sound || !Tf2InstallRecorderSoundHook(sound))
 		return false;
 	g_Tf2RecorderSoundThread = GetCurrentThreadId();
+	g_Tf2RecorderMuteArmed.store(true);
 	return true;
 }
 bool MirvFix_GetRecorderSoundMute()
@@ -4815,12 +4837,12 @@ bool MirvFix_SetRecorderSoundMute(bool enabled)
 	if (!Tf2RecorderSoundPov() || !SOURCESDK::L4D2::g_pMemAlloc || !CClientToolsTf2::Instance() ||
 	    !CClientToolsTf2::Instance()->GetClientTools())
 	{
-		g_Tf2RecorderSoundStatus = "Requires a playing TF2/TF2C POV demo and native client tools/allocator.";
+		g_Tf2RecorderSoundStatus = "Requires a playing compatible POV demo and native client tools/allocator.";
 		return false;
 	}
-	if (!g_AppSystemFactory || !(g_Tf2RecorderSound = g_AppSystemFactory("IEngineSoundClient003", nullptr)))
+	if (!(g_Tf2RecorderSound = Tf2RecorderSoundInterface()))
 	{
-		g_Tf2RecorderSoundStatus = "IEngineSoundClient003 is unavailable.";
+		g_Tf2RecorderSoundStatus = "IEngineSoundClient003 is unavailable or failed compatibility checks.";
 		return false;
 	}
 	if (!Tf2InstallRecorderSoundHook(g_Tf2RecorderSound))
@@ -6209,7 +6231,8 @@ void RepairReceive(unsigned slot, const Tf2FixProxyData *data, void *object, voi
 	if ((!g_RepairCollect && !g_RepairEnabled && !g_PlayerAngleTrace.Active) ||
 	    property == g_RepairProperties.end() || (property->second.Pose >= 0 && !g_PlayerAngleTrace.Active) ||
 	    !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
-	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified))
+	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified &&
+         !(g_OpenFortressLegacyMode && g_OfNativeCommands && g_RepairHooks)))
 	{
 		original(data, object, out);
 		return;
@@ -6317,13 +6340,15 @@ void FindRepairProperties(Tf2FixRecvTable *table, std::set<Tf2FixRecvTable *> &s
 	std::string name = table->Name;
 	bool playerTable = name == "DT_TFPlayer" || name == "DT_TFLocalPlayerExclusive" ||
 	                   name == "DT_TFNonLocalPlayerExclusive" || name == "DT_BaseEntity" ||
-	                   name == "DT_BasePlayer";
+	                   name == "DT_BasePlayer" || (g_OpenFortressLegacyMode &&
+                       (table == g_RepairPlayerTable || name == "DT_HL2MP_Player" ||
+                        name == "DT_HL2MPLocalPlayerExclusive" || name == "DT_HL2MPNonLocalPlayerExclusive"));
 	for (int i = 0; i < table->Count; ++i)
 	{
 		auto &p = table->Props[i];
 		if (p.Type == 6)
 			FindRepairProperties(p.Table, seen, depth + 1);
-		if (name == "DT_BaseAnimating" && p.Name && !std::strcmp(p.Name, "m_flPoseParameter"))
+		if (!g_OpenFortressLegacyMode && name == "DT_BaseAnimating" && p.Name && !std::strcmp(p.Name, "m_flPoseParameter"))
 		{
 			if (p.Type == 6 && p.Table && p.Table->Props && p.Table->Count > 0 && p.Table->Count <= 24)
 				for (int pose = 0; pose < p.Table->Count; ++pose)
@@ -6378,14 +6403,38 @@ void FindRepairProperties(Tf2FixRecvTable *table, std::set<Tf2FixRecvTable *> &s
 		g_RepairProperties[&p] = spec;
 	}
 }
-bool InstallRepairProxies()
+bool InstallRepairProxies(int entity)
 {
+    Tf2FixRecvTable *ofTable = nullptr;
+    if (g_OpenFortressLegacyMode)
+    {
+        if (!OfDemoFixCandidate() || !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+            g_VEngineClient->IsDrawingLoadingImage() || !OfNativeInterfaces::Slots(g_Tf2FixClient,"client.dll",{8}))
+        {
+            g_RepairStatus = "OF repair requires a supported VClient017 client and a loaded offline demo.";
+            return false;
+        }
+        Tf2FixClientClass live{};
+        if (!OfNativeInterfaces::Read(Mirv_Of_PlayerRecvClass(entity),&live,sizeof(live)) || !live.Table)
+        {
+            g_RepairStatus = "OF repair: selected player's receive table unavailable.";
+            return false;
+        }
+        ofTable = live.Table;
+    }
 	if (g_RepairHooks)
+    {
+        if (ofTable && ofTable != g_RepairPlayerTable)
+        {
+            g_RepairStatus = "OF repair: player class changed; restart HLAE before collecting a different class.";
+            return false;
+        }
 		return true;
+    }
 	if (!g_Tf2FixClient ||
-	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified))
+	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified && !ofTable))
 	{
-		g_RepairStatus = "Player collection requires the TF2/TF2C VClient017 receive-table interface.";
+		g_RepairStatus = "Player collection requires a compatible VClient017 receive-table interface.";
 		return false;
 	}
 	g_RepairProperties.clear();
@@ -6399,7 +6448,7 @@ bool InstallRepairProxies()
 	std::set<Tf2FixClientClass *> visited;
 	std::set<Tf2FixRecvTable *> tables;
 	for (auto c = classes; c && visited.size() < 4096 && visited.insert(c).second; c = c->Next)
-		if (c->Table && c->Table->Name && !std::strcmp(c->Table->Name, "DT_TFPlayer"))
+		if (c->Table && (ofTable ? c->Table == ofTable : c->Table->Name && !std::strcmp(c->Table->Name, "DT_TFPlayer")))
 		{
 			g_RepairPlayerTable = c->Table;
 			FindRepairProperties(c->Table, tables);
@@ -6425,6 +6474,19 @@ bool InstallRepairProxies()
 		g_RepairProperties.clear();
 		return false;
 	}
+    if (ofTable)
+    {
+        // Refuse foreign/non-executable proxy targets before any detour.
+        auto client = GetModuleHandleA("client.dll"), engine = GetModuleHandleA("engine.dll");
+        for (auto proxy : originals)
+            if (!OfNativeInterfaces::Executable(reinterpret_cast<void *>(proxy),client) &&
+                !OfNativeInterfaces::Executable(reinterpret_cast<void *>(proxy),engine))
+            {
+                g_RepairStatus = "OF repair: receive proxy is outside the supported client/engine modules.";
+                g_RepairProperties.clear();
+                return false;
+            }
+    }
 	for (size_t i = 0; i < originals.size(); ++i)
 		g_RepairProxySlots[i].Original = originals[i];
 	LONG error = DetourTransactionBegin();
@@ -6485,10 +6547,13 @@ struct RepairDemoIdentity
 	std::string Key, Map;
 	int Ticks = 0;
 };
-RepairDemoIdentity ReadRepairDemoIdentity(const char *name)
+bool ReadRepairDemoIdentity(const char *name, RepairDemoIdentity &result, std::string &error)
 {
+    auto fail = [&](const char *message) { error = message; return false; };
+    result = {};
+    error.clear();
 	if (!name || !*name)
-		throw std::runtime_error("Choose the .dem file currently playing.");
+        return fail("Choose the .dem file currently playing.");
 	std::filesystem::path file(name);
 	if (!file.has_extension())
 		file += ".dem";
@@ -6496,35 +6561,37 @@ RepairDemoIdentity ReadRepairDemoIdentity(const char *name)
 	{
 		auto directory = g_VEngineClient ? g_VEngineClient->GetGameDirectory() : nullptr;
 		if (!directory || !*directory)
-			throw std::runtime_error("The game directory is unavailable; choose an absolute demo filename.");
+            return fail("The game directory is unavailable; choose an absolute demo filename.");
 		file = std::filesystem::path(directory) / file;
 	}
-	file = std::filesystem::weakly_canonical(file);
+    std::error_code ec;
+    file = std::filesystem::weakly_canonical(file,ec);
+    if (ec) return fail("Cannot resolve the selected demo path.");
 	std::ifstream input(file, std::ios::binary);
 	unsigned char header[1072];
 	if (!input.read(reinterpret_cast<char *>(header), sizeof(header)) || std::memcmp(header, "HL2DEMO\0", 8))
-		throw std::runtime_error("Cannot read the selected Source demo header.");
+        return fail("Cannot read the selected Source demo header.");
 	auto integer = [&](int at) {
 		return uint32_t(header[at]) | uint32_t(header[at + 1]) << 8 | uint32_t(header[at + 2]) << 16 |
 		       uint32_t(header[at + 3]) << 24;
 	};
 	if (integer(8) != 3 || integer(1060) > INT_MAX)
-		throw std::runtime_error("The selected file is not a supported Source demo.");
+        return fail("The selected file is not a supported Source demo.");
 	unsigned long long hash = 14695981039346656037ull;
 	for (auto byte : header)
 	{
 		hash ^= byte;
 		hash *= 1099511628211ull;
 	}
-	RepairDemoIdentity result;
-	result.Key =
-	    file.u8string() + "|" + std::to_string(std::filesystem::file_size(file)) + "|" + std::to_string(hash);
+    const auto size = std::filesystem::file_size(file,ec);
+    if (ec) return fail("Cannot read the selected demo size.");
+	result.Key = file.u8string() + "|" + std::to_string(size) + "|" + std::to_string(hash);
 	result.Map.assign(reinterpret_cast<char *>(header + 536), 260);
 	auto end = result.Map.find('\0');
 	if (end != std::string::npos)
 		result.Map.resize(end);
 	result.Ticks = int(integer(1060));
-	return result;
+	return true;
 }
 void BindRepairDemoIdentity(const RepairDemoIdentity &file)
 {
@@ -6543,18 +6610,16 @@ void MirvFix_PlayerRepairNewDemo(const char *name)
 {
 	// A backward comparison seek may restart this same demo through playdemo.
 	// Keep the requested repair active while the engine rebuilds its history.
-	if (name && *name && MirvCampathPreview_IsSeeking())
-	{
-		try
-		{
-			if (ReadRepairDemoIdentity(name).Key == g_RepairDemo)
-				return;
-		}
-		catch (const std::exception &)
-		{
-			// Unknown or different files must disarm repairs below.
-		}
-	}
+    RepairDemoIdentity file;
+    std::string error;
+    bool identified = false;
+    if (name && *name)
+    {
+        try { identified = ReadRepairDemoIdentity(name,file,error); }
+        catch (const std::exception &e) { error = e.what(); }
+        if (identified && MirvCampathPreview_IsSeeking() && file.Key == g_RepairDemo)
+            return;
+    }
 	RepairFlush();
 	g_RepairCollect = false;
 	g_RepairEnabled = false;
@@ -6564,14 +6629,8 @@ void MirvFix_PlayerRepairNewDemo(const char *name)
 		MirvFix_PlayerAngleTraceEnd();
 	if (!name || !*name)
 		return;
-	try
-	{
-		BindRepairDemoIdentity(ReadRepairDemoIdentity(name));
-	}
-	catch (const std::exception &e)
-	{
-		g_RepairStatus = e.what();
-	}
+    if (identified) BindRepairDemoIdentity(file);
+    else g_RepairStatus = error;
 }
 bool MirvFix_PlayerRepairBindPlayingDemo(const char *name)
 {
@@ -6582,17 +6641,22 @@ bool MirvFix_PlayerRepairBindPlayingDemo(const char *name)
 	}
 	try
 	{
-		auto file = ReadRepairDemoIdentity(name);
+        RepairDemoIdentity file;
+        if (!ReadRepairDemoIdentity(name,file,g_RepairStatus)) return false;
 		auto demo = g_VEngineClient->GetDemoInfoEx();
 		auto level = g_VEngineClient->GetLevelName();
 		if (!demo || !level || !*level)
-			throw std::runtime_error(
-			    "Wait for the playing demo's map to finish loading before choosing its file.");
+        {
+            g_RepairStatus = "Wait for the playing demo's map to finish loading before choosing its file.";
+            return false;
+        }
 		if (!advancedfx::DemoTimeline::SameMap(level, file.Map) ||
 		    (file.Ticks > 0 && demo->GetDemoPlaybackTotalTicks() > 0 &&
 		     file.Ticks != demo->GetDemoPlaybackTotalTicks()))
-			throw std::runtime_error("The selected demo's map or tick count differs from the playing demo. "
-			                         "Choose the currently playing file.");
+        {
+            g_RepairStatus = "The selected demo's map or tick count differs from the playing demo. Choose the currently playing file.";
+            return false;
+        }
 		BindRepairDemoIdentity(file);
 		return true;
 	}
@@ -6607,7 +6671,7 @@ bool MirvFix_PlayerRepairBegin(int entity)
 	g_RepairRequestedEntity = entity;
 	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())
 	{
-		g_RepairStatus = "Start player collection while a TF2 demo is playing.";
+		g_RepairStatus = "Start player collection while a compatible demo is playing.";
 		return false;
 	}
 	if (g_RepairDemo.empty())
@@ -6631,7 +6695,7 @@ bool MirvFix_PlayerRepairBegin(int entity)
 		                 "; choose a recorded player instead.";
 		return false;
 	}
-	if (!InstallRepairProxies())
+	if (!InstallRepairProxies(entity))
 		return false;
 	g_PlayerRepair.Reset();
 	g_PlayerRepair.Demo = g_RepairDemo;
@@ -6715,11 +6779,12 @@ bool MirvFix_PlayerRepairEnable(bool enabled)
 			break;
 		}
 	}
-	if (g_RepairEntity < 0 || !InstallRepairProxies())
+	if (g_RepairEntity < 0)
 	{
-		g_RepairStatus = "The sampled player or required receive hooks are unavailable.";
+		g_RepairStatus = "The sampled player is unavailable.";
 		return false;
 	}
+    if (!InstallRepairProxies(g_RepairEntity)) return false;
 	g_RepairEnabled = true;
 	g_RepairWrites = g_RepairChanged = 0;
 	g_RepairEvaluationTick = -1;
@@ -6744,6 +6809,11 @@ void MirvFix_PlayerRepairFrameEnd()
 bool MirvFix_PlayerAngleTraceBegin(int entity, int first, int last)
 {
 	auto &t = g_PlayerAngleTrace;
+    if (g_OpenFortressLegacyMode)
+    {
+        t.Status = "OF private animation/bone diagnostics are not yet ABI-verified; basic position/eye-angle repair is separate.";
+        return false;
+    }
 	if (g_RepairCollect || !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || g_RepairDemo.empty() ||
 	    first < 0 || last < first || last - first > 2000)
 	{
@@ -6752,7 +6822,7 @@ bool MirvFix_PlayerAngleTraceBegin(int entity, int first, int last)
 	}
 	int user = 0;
 	char name[64];
-	if (!Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user) || user <= 0 || !InstallRepairProxies())
+	if (!Mirv_Tf2_GetPlayerInfo(entity, name, sizeof(name), &user) || user <= 0 || !InstallRepairProxies(entity))
 	{
 		t.Status = "Choose a recorded TF2 player; receive observers must be available.";
 		return false;
@@ -7117,7 +7187,12 @@ void __fastcall Tf2DemoComputePropOpacity(void *manager,
 
 void *StaticPropOpacityManager()
 {
-	return !g_OpenFortressLegacyMode && g_AppSystemFactory ? g_AppSystemFactory("StaticPropMgrClient004", nullptr) : nullptr;
+    if (!g_AppSystemFactory || (g_OpenFortressLegacyMode && !OfDemoFixCandidate())) return nullptr;
+    auto manager = g_AppSystemFactory("StaticPropMgrClient004", nullptr);
+    // Source SDK 2013 declares ComputePropOpacity as slot 5 of version 004.
+    // Reject an unrecognized object or non-engine executable target in OF.
+    if (g_OpenFortressLegacyMode && !OfNativeInterfaces::Slots(manager,"engine.dll",{5})) return nullptr;
+    return manager;
 }
 
 bool Tf2InstallPropOpacityHook()
@@ -7161,6 +7236,9 @@ bool MirvFix_GetNoStaticPropFade()
 
 bool MirvFix_SetNoStaticPropFade(bool enabled)
 {
+    // Do not install experimental OF detours during loading or live gameplay.
+    if (enabled && g_OpenFortressLegacyMode && (!g_VEngineClient ||
+        !g_VEngineClient->IsPlayingDemo() || g_VEngineClient->IsDrawingLoadingImage())) return false;
 	if (enabled && !Tf2InstallPropOpacityHook())
 		return false;
 	g_Tf2NoPropFade.store(enabled);
@@ -7189,7 +7267,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 					Tier0_Warning("StaticPropMgrClient004 opacity hook unavailable.\n");
 					return;
 				}
-				AfxHookSource::CameraOverlay::RememberDemoFixPreference(
+				if (!g_OpenFortressLegacyMode) AfxHookSource::CameraOverlay::RememberDemoFixPreference(
 				    AfxHookSource::CameraOverlay::DemoFixPreference::NoStaticPropFade, enabled);
 			}
 			else if (argc != 2 && !(argc == 3 && !_stricmp(args->ArgV(2), "status")))
@@ -7208,7 +7286,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 			{
 				if (!MirvFix_SetRecorderSoundMute(!std::strcmp(args->ArgV(2), "0")))
 					Tier0_Warning("Recorder sound mute could not be enabled.\n");
-				else
+				else if (!g_OpenFortressLegacyMode)
 					AfxHookSource::CameraOverlay::RememberDemoFixPreference(
 					    AfxHookSource::CameraOverlay::DemoFixPreference::RecorderMute,
 					    !std::strcmp(args->ArgV(2), "0"));
@@ -7811,7 +7889,7 @@ CON_COMMAND(mirv_fix, "Various fixes")
 		"mirv_fix suppressFileCRCCheck 0|1 - This is only useful with HLAE special builds and it's on by default.\n"
 	);
 #endif // #ifndef _WIN64
-	Tier0_Msg("mirv_fix playerRepair [...] - Manual TF2 player sample reconstruction.\n"
+	Tier0_Msg("mirv_fix playerRepair [...] - Manual player sample reconstruction (supported TF2/TF2C and OF demos).\n"
         "mirv_fix noStaticPropFade [...] - Disable static prop fading during demo playback (StaticPropMgrClient004).\n"
         "mirv_fix playerInterpolation [...] - TF2 demo player movement interpolation.\n"
 			  "mirv_fix recorderSounds [...] - Mute/restore recorder sounds in TF2 POV demos.\n"

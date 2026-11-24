@@ -30,6 +30,7 @@ public:
 	bool Failed() const { return !m_Error->empty(); }
 	std::string &Error() const { return *m_Error; }
 	void Fail(const char *message) { if (!Failed()) *m_Error = message; }
+    size_t Position() const { return m_Pos; }
 	size_t Left() const
 	{
 		return Failed() ? 0 : m_End - m_Pos;
@@ -204,6 +205,9 @@ struct Reader
 {
 	Index Result;
 	unsigned Protocol = 0;
+    int LastCommand = -1, LastTick = -1, LastMessage = -1;
+    size_t LastMessageBit = 0;
+    std::streamoff LastOffset = -1;
 	std::map<unsigned, Definition> Definitions;
 	std::vector<Table> Tables;
 	std::map<int, std::string> Players;
@@ -404,7 +408,9 @@ struct Reader
 	{
 		while (b.Left() >= 6)
 		{
+            LastMessageBit = b.Position();
 			unsigned type = b.U(6);
+            LastMessage = int(type);
 			switch (type)
 			{
 			case 0:
@@ -671,11 +677,14 @@ Index Read(const std::filesystem::path &file, const std::atomic_bool &cancel, st
 			};
 			auto header = bytes(1072);
 			if (reader.Failed()) return;
-			if (std::memcmp(header.data(), "HL2DEMO\0", 8) || LE(header.data() + 8) != 3)
-			{ reader.Fail("Expected a Source demo protocol 3 file (TF2/TF2C)"); return; }
+			if (std::memcmp(header.data(), "HL2DEMO\0", 8))
+            { reader.Fail("Expected a Source HL2DEMO header"); return; }
+            const auto demoProtocol = LE(header.data() + 8);
 			reader.Protocol = LE(header.data() + 12);
+            if (demoProtocol != 3)
+            { reader.Fail("Unsupported demo protocol " + std::to_string(demoProtocol) + " (expected 3)"); return; }
 			if (reader.Protocol < 15 || reader.Protocol > 24)
-			{ reader.Fail("Unsupported demo network protocol"); return; }
+			{ reader.Fail("Unsupported demo network protocol " + std::to_string(reader.Protocol)); return; }
 			auto stringAt = [&](size_t pos) {
 				std::string s(reinterpret_cast<char *>(header.data() + pos), 260);
 				s.resize(s.find('\0') == std::string::npos ? s.size() : s.find('\0'));
@@ -689,13 +698,18 @@ Index Read(const std::filesystem::path &file, const std::atomic_bool &cancel, st
 			while (!reader.Failed())
 			{
 				if (cancel.load()) { reader.Fail("Indexing cancelled"); return; }
+                reader.LastOffset = stream.tellg();
+                reader.LastCommand = reader.LastTick = reader.LastMessage = -1;
+                reader.LastMessageBit = 0;
 				auto command = bytes(1);
 				if (reader.Failed()) return;
 				unsigned type = command[0];
+                reader.LastCommand = int(type);
 				if (type == 7) break;
 				auto head = bytes(4);
 				if (reader.Failed()) return;
 				int tick = int(LE(head.data()));
+                reader.LastTick = tick;
 				switch (type)
 				{
 				case 1:
@@ -740,7 +754,17 @@ Index Read(const std::filesystem::path &file, const std::atomic_bool &cancel, st
 	{
 		reader.Fail(error.what());
 	}
-	if (reader.Failed()) reader.Result.Events.clear();
+    if (reader.Failed())
+    {
+        reader.Result.Events.clear();
+        // Preserve first failure and provide enough context to inspect an OF demo
+        // without guessing a different network layout or publishing partial data.
+        if (reader.Protocol) reader.Result.Error += " [network protocol " + std::to_string(reader.Protocol) + "]";
+        if (reader.LastOffset >= 0) reader.Result.Error += " [file offset " + std::to_string(reader.LastOffset) +
+            ", command " + std::to_string(reader.LastCommand) + ", tick " + std::to_string(reader.LastTick) + "]";
+        if (reader.LastMessage >= 0) reader.Result.Error += " [message " + std::to_string(reader.LastMessage) +
+            ", packet bit " + std::to_string(reader.LastMessageBit) + "]";
+    }
 	return std::move(reader.Result);
 }
 } // namespace DemoTimeline

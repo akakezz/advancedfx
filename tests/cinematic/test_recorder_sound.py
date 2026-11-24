@@ -45,7 +45,9 @@ using DWORD=unsigned long;DWORD soundThread=1;DWORD GetCurrentThreadId(){return 
 #define Tier0_Warning printf
 struct Alloc { int Frees=0; void Free(void*p){++Frees;free(p);} } alloc;
 namespace SOURCESDK { namespace L4D2 { Alloc *g_pMemAlloc=&alloc; } }
-enum {SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2};
+enum {SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2,SourceSdkVer_HL2MP=3};
+bool g_OpenFortressLegacyMode=false,g_OfNativeCommands=false;
+namespace OfNativeInterfaces { bool known=false, slots=false; bool KnownClient(){return known;} bool Slots(void*p,const char*,std::initializer_list<unsigned>){return p&&slots;} }
 int g_SourceSdkVer=SourceSdkVer_TF2;
 struct Engine {
  bool Playing=true,Hltv=false,Loading=false;int Local=1;
@@ -187,6 +189,14 @@ int main(){try{ResolverTests();ENGINE_CASES
  Check(MirvFix_SetRecorderSoundMute(true),"enable before playback end");engine.Playing=false;MirvFix_RecorderSoundUpdate();
  Check(!MirvFix_GetRecorderSoundMute()&&g_Tf2MutedSounds.empty(),"playback end restores and clears state");
  engine.Playing=true;badQuery=true;Check(!MirvFix_SetRecorderSoundMute(true)&&!MirvFix_GetRecorderSoundMute(),"failed query cannot report an enabled mute");
+ badQuery=false;g_SourceSdkVer=SourceSdkVer_HL2MP;g_OpenFortressLegacyMode=true;
+ Check(!MirvFix_SetRecorderSoundMute(true),"OF safe-mode gate");g_OfNativeCommands=true;
+ Check(!MirvFix_SetRecorderSoundMute(true),"unknown OF client rejected");OfNativeInterfaces::known=true;
+ Check(!MirvFix_SetRecorderSoundMute(true),"unknown OF sound slots rejected");OfNativeInterfaces::slots=true;
+ hookAvailable=false;Check(!MirvFix_ArmRecorderSoundMute(true)&&!g_Tf2RecorderMuteArmed.load(),"failed OF resolver does not leave mute armed");
+ Check(!MirvFix_SetRecorderSoundMute(true),"OF requires verified private resolver");hookAvailable=true;
+ Check(MirvFix_SetRecorderSoundMute(true)&&Emit(1)==0&&Emit(2)==77,"compatible OF uses same mute policy");
+ MirvFix_SetRecorderSoundMute(false);Check(Emit(1)==77,"OF restore forwards sounds");
  puts("Recorder sound mute tests passed");return 0;
 }catch(const std::exception&e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}}
 '''

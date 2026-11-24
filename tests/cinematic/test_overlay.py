@@ -235,6 +235,11 @@ void Tier0_Msg(const char*f,...){va_list a;va_start(a,f);FixMessage(f,a);va_end(
 void Tier0_Warning(const char*f,...){va_list a;va_start(a,f);FixMessage(f,a);va_end(a);}
 enum{SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2,SourceSdkVer_HL2MP=3};int g_SourceSdkVer=SourceSdkVer_TF2;
 bool g_OpenFortressLegacyMode=false,g_OfNativeCollision=false,g_OfNativeResolution=false,g_OfNativePovReady=false,g_OfNativeCommands=false;
+bool OfDemoFixCandidate(){return false;}
+void* GetModuleHandleA(const char*){return nullptr;}
+const void* Mirv_Of_PlayerRecvClass(int){return nullptr;}
+namespace OfNativeInterfaces { bool Slots(void*,const char*,std::initializer_list<unsigned>){return false;} bool Read(const void*,void*,size_t){return false;} template<class T> bool Executable(void*,T){return false;} }
+
 struct FakeConVar{float Value=0,Maximum=-1;bool Writable=true;float GetFloat(){return Value;}void SetValue(float value){if(Writable)Value=Maximum<0?value:(std::min)(Maximum,value);}};
 struct FakeCvar{std::map<std::string,FakeConVar> Vars{{"cl_interpolate",{1}},{"cl_interp",{.015f}},{"cl_interp_ratio",{1}}};FakeConVar *FindVar(const char*name){auto it=Vars.find(name);return it==Vars.end()?nullptr:&it->second;}}fakeCvar;
 namespace AfxHookSource{namespace CameraOverlay{void NotifyDemoPlaybackFile(const char*);}}

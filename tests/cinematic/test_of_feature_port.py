@@ -28,8 +28,8 @@ assert 'RecordingResolution::Frame();' in of
 assert 'MirvFix_OfInterpolationProbeFrame();' in of
 assert 'if (g_OfNativePovReady) MirvPovSpectate_FrameBegin();' in of
 assert 'if (g_OfNativePovReady) MirvPovSpectate_FrameEnd();' in of
-assert 'MirvFix_PlayerRepairFrameEnd();' not in of
-assert 'MirvFix_RecorderSoundUpdate();' not in of
+assert 'MirvFix_PlayerRepairFrameEnd();' in of
+assert 'MirvFix_RecorderSoundUpdate();' in of
 # Exercise the actual startup assignment block and Scene Cache defaults, not a duplicate policy.
 overlay=(root/'AfxHookSource/CameraOverlay.cpp').read_text()
 policy=main[main.index('const bool ofNative ='):main.index('#endif',main.index('const bool ofNative ='))]
