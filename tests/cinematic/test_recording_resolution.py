@@ -10,6 +10,8 @@ using namespace advancedfx::RenderResolution;
 int main()
 {
     assert((Fit({3840,2160},{1920,1080}) == Size{1920,1080}));
+    assert((Fit({3840,1634},{1920,1040}) == Size{1920,817}));
+    assert((Fit({4700,2000},{1904,1000}) == Size{1904,810}));
     assert((Fit({7680,4320},{1920,1040}) == Size{1848,1040}));
     assert((Fit({2160,3840},{1920,1080}) == Size{607,1080}));
     assert((Fit({1080,1080},{1920,1040}) == Size{1040,1040}));

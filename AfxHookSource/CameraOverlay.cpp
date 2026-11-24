@@ -9000,6 +9000,10 @@ void Draw()
 				ImGui::BeginDisabled(!state.Managed || Recording::IsActive());
 				if (ImGui::Button("Restore original resolution")) Afx_ExecClientCmd("mirv_resolution restore");
 				ImGui::EndDisabled();
+				ImGui::BeginDisabled(!state.Managed || !state.Windowed || Recording::IsActive());
+				if (ImGui::Button("Refit preview")) Afx_ExecClientCmd("mirv_resolution refit");
+				ImGui::EndDisabled();
+				if (state.Fit) ImGui::TextDisabled("Overlay: %s", state.NativePreview ? "native preview pixels" : "scaled backbuffer (fallback)");
 				if (!state.Supported || !state.Windowed)
 					ImGui::TextDisabled("TF2 windowed mode required.");
 				if (!valid && state.MaxWidth > 0)

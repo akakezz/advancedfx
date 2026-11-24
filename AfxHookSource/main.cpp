@@ -2387,6 +2387,7 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	// Only the synchronous, HLAE-owned preview resize is hidden from the game.
 	if (RecordingResolution::SuppressSizeMessage(hwnd))
 	{
+		if (uMsg == WM_WINDOWPOSCHANGING) return 0;
 		if (uMsg == WM_SIZE && wParam == SIZE_RESTORED) return 0;
 		if (uMsg == WM_WINDOWPOSCHANGED) return DefWindowProcW(hwnd, uMsg, wParam, lParam);
 	}

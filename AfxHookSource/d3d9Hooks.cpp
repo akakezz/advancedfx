@@ -4994,15 +4994,16 @@ public:
 			g_ReShadeAdvancedfx.AdvancedfxRenderEffects(nullptr, nullptr);
 		}
 
-		Afx_Present_Before(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, 0);
-
-		if (RecordingResolution::FitPresentation(hDestWindowOverride))
+		HRESULT result;
+		const bool nativePreview=AfxHookSource::Gui::TryPresentFittedPreview(hDestWindowOverride,0,result);
+		RecordingResolution::PublishPreviewPath(nativePreview && SUCCEEDED(result));
+		if (!nativePreview)
 		{
-			// NULL rectangles present the entire native backbuffer into the
-			// smaller client area, including DISCARD swap chains.
-			pSourceRect = nullptr; pDestRect = nullptr; pDirtyRegion = nullptr;
+			Afx_Present_Before(pSourceRect,pDestRect,hDestWindowOverride,pDirtyRegion,0);
+			if (RecordingResolution::FitPresentation(hDestWindowOverride))
+			{ pSourceRect=nullptr; pDestRect=nullptr; pDirtyRegion=nullptr; }
+			result=g_OldDirect3DDevice9->Present(pSourceRect,pDestRect,hDestWindowOverride,pDirtyRegion);
 		}
-		HRESULT result = g_OldDirect3DDevice9->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 
 		Afx_Present_After(result);
 
@@ -6125,13 +6126,16 @@ public:
 
 	STDMETHOD(PresentEx)(THIS_ CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion, DWORD dwFlags)
 	{
-		Afx_Present_Before(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
-
-		if (RecordingResolution::FitPresentation(hDestWindowOverride))
+		HRESULT hResult;
+		const bool nativePreview=AfxHookSource::Gui::TryPresentFittedPreview(hDestWindowOverride,dwFlags,hResult);
+		RecordingResolution::PublishPreviewPath(nativePreview && SUCCEEDED(hResult));
+		if (!nativePreview)
 		{
-			pSourceRect = nullptr; pDestRect = nullptr; pDirtyRegion = nullptr;
+			Afx_Present_Before(pSourceRect,pDestRect,hDestWindowOverride,pDirtyRegion,dwFlags);
+			if (RecordingResolution::FitPresentation(hDestWindowOverride))
+			{ pSourceRect=nullptr; pDestRect=nullptr; pDirtyRegion=nullptr; }
+			hResult=g_OldDirect3DDevice9Ex->PresentEx(pSourceRect,pDestRect,hDestWindowOverride,pDirtyRegion,dwFlags);
 		}
-		HRESULT hResult = g_OldDirect3DDevice9Ex->PresentEx(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 
 		Afx_Present_After(hResult);
 

@@ -61,6 +61,21 @@ static INT64                    g_Time = 0;
 static INT64                    g_TicksPerSecond = 0;
 static LPDIRECT3DDEVICE9        g_pd3dDevice = NULL;
 static LPDIRECT3DTEXTURE9       g_FontTexture = NULL;
+static IDirect3DSwapChain9 *g_FittedChain = nullptr;
+static IDirect3DSurface9 *g_FittedResolve = nullptr;
+static UINT g_FittedWidth=0, g_FittedHeight=0;
+static D3DFORMAT g_FittedFormat=D3DFMT_UNKNOWN;
+static HWND g_FittedWindow=nullptr;
+static bool g_FittedFailed=false;
+static void ReleaseFittedPreview()
+{
+	if (g_FittedResolve) { g_FittedResolve->Release(); g_FittedResolve=nullptr; }
+	if (g_FittedChain) { g_FittedChain->Release(); g_FittedChain=nullptr; }
+	g_FittedWidth=g_FittedHeight=0;
+	g_FittedFormat=D3DFMT_UNKNOWN;
+	g_FittedWindow=nullptr;
+	g_FittedFailed=false;
+}
 
 struct CUSTOMVERTEX
 {
@@ -126,15 +141,15 @@ public:
 		m_Device = 0;
 	}
 
-	bool Dx9_Render()
+	bool Dx9_Render(IDirect3DSurface9 *preview = nullptr)
 	{
 		if (!m_Device) return false;
 		// Source may end offscreen scenes before the main scene. Drawing into
 		// a material/shadow/atlas texture here corrupts subsequent game frames.
 		IDirect3DSurface9 *target = nullptr, *backbuffer = nullptr;
-		const bool mainTarget = m_Device->GetRenderTarget(0, &target) >= 0 &&
-			m_Device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backbuffer) >= 0 &&
-			target && target == backbuffer;
+		const bool mainTarget = m_Device->GetRenderTarget(0, &target) >= 0 && target &&
+			(preview ? target == preview :
+			 (m_Device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backbuffer) >= 0 && target == backbuffer));
 		if (target) target->Release();
 		if (backbuffer) backbuffer->Release();
 		if (!mainTarget) return false;
@@ -430,7 +445,8 @@ private:
 			// Setup orthographic projection matrix
 			// Being agnostic of whether <d3dx9.h> or <DirectXMath.h> can be used, we aren't relying on D3DXMatrixIdentity()/D3DXMatrixOrthoOffCenterLH() or DirectX::XMMatrixIdentity()/DirectX::XMMatrixOrthographicOffCenterLH()
 			{
-				const float L = 0.5f, R = m_Width + 0.5f, T = 0.5f, B = m_Height + 0.5f;
+				const float L = 0.5f/previewScaleX, R = m_Width + L,
+					T = 0.5f/previewScaleY, B = m_Height + T;
 				D3DMATRIX mat_identity = { { 1.0f, 0.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 0.0f, 1.0f } };
 				D3DMATRIX mat_projection =
 				{
@@ -1097,6 +1113,7 @@ bool On_Direct3DDevice9_Init(void* hwnd, IDirect3DDevice9* device)
 
 void DX9_InvalidateDeviceObjects()
 {
+	ReleaseFittedPreview();
 	if (!g_pd3dDevice)
 		return;
 
@@ -1143,6 +1160,138 @@ void On_Direct3DDevice9_EndScene()
 {
 	// Draw at Present instead: Source can submit menu scenes after the world EndScene.
 }
+// Use a preview-sized swap chain only when an HLAE overlay is visible.
+// The game still renders/captures into its original implicit backbuffer.
+// Copy and resolve outside BeginScene; render the UI after downsampling.
+// Any unsupported driver/format/flag combination uses the original path.
+bool TryPresentFittedPreview(HWND overrideWindow, DWORD flags, HRESULT &result)
+{
+	auto device=g_pd3dDevice;
+	if (!device || !IsSupported() || !RecordingResolution::FitPresentation(overrideWindow) ||
+		!g_hWnd || (overrideWindow && overrideWindow!=g_hWnd))
+	{
+		ReleaseFittedPreview();
+		return false;
+	}
+	if (flags || !m_Active || !g_FontTexture ||
+		(!CameraOverlay::IsOpen() && !CameraOverlay::PreviewHudVisible()))
+		return false;
+	RECT client{};
+	if (IsIconic(g_hWnd) || !GetClientRect(g_hWnd,&client) || client.right<=0 || client.bottom<=0)
+		return false;
+	const UINT width=UINT(client.right-client.left), height=UINT(client.bottom-client.top);
+	IDirect3DSurface9 *source=nullptr, *preview=nullptr, *target=nullptr, *depth=nullptr;
+	D3DSURFACE_DESC desc{};
+	D3DVIEWPORT9 viewport{};
+	RECT scissor{};
+	bool ok=SUCCEEDED(device->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&source)) &&
+		source && SUCCEEDED(source->GetDesc(&desc));
+	if (ok && (width>desc.Width || height>desc.Height || (width==desc.Width && height==desc.Height)))
+		ok=false;
+	if (ok && (g_FittedWidth!=width || g_FittedHeight!=height ||
+		g_FittedFormat!=desc.Format || g_FittedWindow!=g_hWnd))
+	{
+		ReleaseFittedPreview();
+		g_FittedWidth=width; g_FittedHeight=height;
+		g_FittedFormat=desc.Format; g_FittedWindow=g_hWnd;
+	}
+	if (ok && !g_FittedChain && !g_FittedFailed)
+	{
+		D3DPRESENT_PARAMETERS pp{};
+		pp.BackBufferWidth=width; pp.BackBufferHeight=height;
+		pp.BackBufferFormat=desc.Format; pp.BackBufferCount=1;
+		pp.MultiSampleType=D3DMULTISAMPLE_NONE;
+		pp.SwapEffect=D3DSWAPEFFECT_DISCARD;
+		pp.hDeviceWindow=g_hWnd; pp.Windowed=TRUE;
+		pp.PresentationInterval=D3DPRESENT_INTERVAL_DEFAULT;
+		if (FAILED(device->CreateAdditionalSwapChain(&pp,&g_FittedChain)) || !g_FittedChain)
+			g_FittedFailed=true;
+	}
+	ok=ok && g_FittedChain && !g_FittedFailed &&
+		SUCCEEDED(g_FittedChain->GetBackBuffer(0,D3DBACKBUFFER_TYPE_MONO,&preview)) && preview;
+	if (ok)
+	{
+		D3DSURFACE_DESC pd{};
+		ok=SUCCEEDED(preview->GetDesc(&pd)) && pd.Width==width && pd.Height==height;
+	}
+	if (ok && desc.MultiSampleType!=D3DMULTISAMPLE_NONE)
+	{
+		D3DSURFACE_DESC old{};
+		if (g_FittedResolve && (FAILED(g_FittedResolve->GetDesc(&old)) ||
+			old.Width!=desc.Width || old.Height!=desc.Height || old.Format!=desc.Format))
+		{ g_FittedResolve->Release(); g_FittedResolve=nullptr; }
+		if (!g_FittedResolve)
+			ok=SUCCEEDED(device->CreateRenderTarget(desc.Width,desc.Height,desc.Format,
+				D3DMULTISAMPLE_NONE,0,FALSE,&g_FittedResolve,nullptr)) && g_FittedResolve;
+		if (ok) ok=SUCCEEDED(device->StretchRect(source,nullptr,g_FittedResolve,nullptr,D3DTEXF_NONE));
+	}
+	if (ok)
+	{
+		auto from=desc.MultiSampleType==D3DMULTISAMPLE_NONE ? source : g_FittedResolve;
+		ok=SUCCEEDED(device->StretchRect(from,nullptr,preview,nullptr,D3DTEXF_LINEAR));
+	}
+	if (ok)
+	{
+		// Do not interfere with an unexpected offscreen/MRT scene.
+		ok=SUCCEEDED(device->GetRenderTarget(0,&target)) && target &&
+			SUCCEEDED(device->GetViewport(&viewport)) && SUCCEEDED(device->GetScissorRect(&scissor));
+		for (DWORD i=1;ok && i<4;++i)
+		{
+			IDirect3DSurface9 *extra=nullptr;
+			if (SUCCEEDED(device->GetRenderTarget(i,&extra)) && extra)
+			{ extra->Release(); ok=false; }
+		}
+	}
+	bool restore=false;
+	if (ok)
+	{
+		const HRESULT hr=device->GetDepthStencilSurface(&depth);
+		ok=SUCCEEDED(hr) || hr==D3DERR_NOTFOUND;
+	}
+	if (ok)
+	{
+		restore=true;
+		ok=SUCCEEDED(device->SetDepthStencilSurface(nullptr)) &&
+			SUCCEEDED(device->SetRenderTarget(0,preview));
+		if (ok && SUCCEEDED(device->BeginScene()))
+		{
+			ok=m_ImGuiRernderCacheManager.Dx9_Render(preview);
+			if (FAILED(device->EndScene())) ok=false;
+		}
+		else ok=false;
+	}
+	if (restore)
+	{
+		const HRESULT rt=device->SetRenderTarget(0,target);
+		const HRESULT ds=device->SetDepthStencilSurface(depth);
+		const HRESULT vp=device->SetViewport(&viewport);
+		const HRESULT sr=device->SetScissorRect(&scissor);
+		ok=ok && SUCCEEDED(rt) && SUCCEEDED(ds) && SUCCEEDED(vp) && SUCCEEDED(sr);
+	}
+	if (depth) depth->Release();
+	if (target) target->Release();
+	if (preview) preview->Release();
+	if (source) source->Release();
+	if (!ok)
+	{
+		// Avoid retrying a failed path on every frame until the size changes.
+		if (g_FittedChain) { g_FittedChain->Release(); g_FittedChain=nullptr; }
+		if (g_FittedResolve) { g_FittedResolve->Release(); g_FittedResolve=nullptr; }
+		g_FittedFailed=true;
+		return false;
+	}
+	result=g_FittedChain->Present(nullptr,nullptr,nullptr,nullptr,0);
+	if (FAILED(result))
+	{
+		if (result==D3DERR_DEVICELOST || result==D3DERR_DRIVERINTERNALERROR) return true;
+		g_FittedChain->Release(); g_FittedChain=nullptr;
+		if (g_FittedResolve) { g_FittedResolve->Release(); g_FittedResolve=nullptr; }
+		g_FittedFailed=true;
+		return false;
+	}
+	return true;
+}
+
 void On_Direct3DDevice9_Present_Before()
 {
 	if (!IsSupported() || !m_Active || !g_FontTexture || !g_pd3dDevice ||
@@ -1373,6 +1522,7 @@ void On_Direct3DDevice9_EndScene()
 
 }
 
+bool TryPresentFittedPreview(HWND, DWORD, HRESULT &) { return false; }
 void On_Direct3DDevice9_Present_Before() {}
 
 void On_Direct3DDevice9_Present(bool deviceLost)

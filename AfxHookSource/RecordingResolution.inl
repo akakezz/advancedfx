@@ -18,9 +18,11 @@ struct Surface
 };
 std::recursive_mutex Mutex;
 Surface Current;
+std::atomic_bool NativePreview{false};
 Size Requested, Original;
 bool Managed = false, Pending = false, WantFit = true, Fitted = false, Restoring = false, Confirmed = false;
 unsigned long long WaitSerial = 0;
+unsigned FitRetries = 0;
 std::chrono::steady_clock::time_point Deadline;
 std::string Message = "Select a resolution and apply it while recording is stopped.";
 thread_local HWND ResizeWindow = nullptr;
@@ -168,28 +170,51 @@ void QueueMode(Size size)
     std::snprintf(cmd, sizeof(cmd), "mat_setvideomode %d %d 1", size.Width, size.Height);
     g_VEngineClient->ClientCmd_Unrestricted(cmd);
 }
+bool WorkArea(HWND hwnd, RECT &work)
+{
+    MONITORINFO mi{};
+    mi.cbSize=sizeof(mi);
+    if ((!OriginalMonitor || !GetMonitorInfoW(OriginalMonitor,&mi)) &&
+        !GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&mi)) return false;
+    work=mi.rcWork;
+    return true;
+}
+bool PreviewFits(HWND hwnd, Size render)
+{
+    RECT work{}, wr{}, cr{};
+    if (!hwnd || IsIconic(hwnd) || !WorkArea(hwnd,work) ||
+        !GetWindowRect(hwnd,&wr) || !GetClientRect(hwnd,&cr)) return false;
+    const Size actual{int(cr.right-cr.left),int(cr.bottom-cr.top)};
+    return actual.Width>0 && actual.Height>0 && actual.Width<=render.Width && actual.Height<=render.Height &&
+        wr.left>=work.left && wr.top>=work.top && wr.right<=work.right && wr.bottom<=work.bottom &&
+        std::abs(std::int64_t(actual.Width)*render.Height-std::int64_t(actual.Height)*render.Width)
+            <= (std::max)(render.Width,render.Height);
+}
 bool FitWindow(HWND hwnd, Size render)
 {
     if (!hwnd || !IsWindow(hwnd) || IsIconic(hwnd) ||
         GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()) return false;
-    MONITORINFO mi{};
-    mi.cbSize = sizeof(mi);
-    HMONITOR monitor = OriginalMonitor ? OriginalMonitor : MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    RECT wr{}, cr{};
-    if (!GetMonitorInfoW(monitor, &mi) || !GetWindowRect(hwnd, &wr) || !GetClientRect(hwnd, &cr)) return false;
+    RECT work{}, wr{}, cr{};
+    if (!WorkArea(hwnd,work)) return false;
+    if (IsZoomed(hwnd))
+    {
+        ResizeWindow=hwnd;
+        ShowWindow(hwnd,SW_RESTORE);
+        ResizeWindow=nullptr;
+    }
+    if (!GetWindowRect(hwnd,&wr) || !GetClientRect(hwnd,&cr)) return false;
     const int borderW = (std::max)(0L, (wr.right-wr.left)-(cr.right-cr.left));
     const int borderH = (std::max)(0L, (wr.bottom-wr.top)-(cr.bottom-cr.top));
-    const int workW = mi.rcWork.right-mi.rcWork.left, workH = mi.rcWork.bottom-mi.rcWork.top;
+    const int workW = work.right-work.left, workH = work.bottom-work.top;
     const Size fit = advancedfx::RenderResolution::Fit(render, {workW-borderW,workH-borderH});
     if (fit.Width <= 0 || fit.Height <= 0) return false;
     const int w = fit.Width+borderW, h = fit.Height+borderH;
-    const int x = mi.rcWork.left+(workW-w)/2, y = mi.rcWork.top+(workH-h)/2;
+    const int x = work.left+(workW-w)/2, y = work.top+(workH-h)/2;
     ResizeWindow = hwnd;
     const bool ok = SetWindowPos(hwnd, nullptr, x, y, w, h, SWP_NOACTIVATE|SWP_NOZORDER|SWP_NOOWNERZORDER) != FALSE;
     ResizeWindow = nullptr;
     RECT actual{};
-    return ok && GetClientRect(hwnd, &actual) &&
-           actual.right-actual.left == fit.Width && actual.bottom-actual.top == fit.Height;
+    return ok && GetClientRect(hwnd, &actual) && PreviewFits(hwnd,render);
 }
 bool RestoreWindow(HWND hwnd)
 {
@@ -206,6 +231,7 @@ void Begin(Size size, bool fit, bool restore)
 {
     Requested = size; WantFit = fit; Restoring = restore;
     Pending = true; Confirmed = false; Fitted = false; Managed = true;
+    FitRetries = 0;
     WaitSerial = Current.Serial;
     Deadline = std::chrono::steady_clock::now()+std::chrono::seconds(8);
     Message = "Waiting for the engine and capture surfaces to confirm the requested resolution.";
@@ -255,8 +281,10 @@ void Publish(void *window, bool windowed, int bw, int bh, int cw, int ch, int mw
     std::lock_guard<std::recursive_mutex> lock(Mutex);
     Current = {static_cast<HWND>(window),windowed,{bw,bh},{cw,ch},{mw,mh},Current.Serial+1};
 }
+void PublishPreviewPath(bool native) { NativePreview.store(native); }
 void Invalidate()
 {
+    NativePreview.store(false);
     std::lock_guard<std::recursive_mutex> lock(Mutex);
     Current.Back = Current.Capture = {};
 }
@@ -323,6 +351,19 @@ void Frame()
                 Deadline = std::chrono::steady_clock::now()+std::chrono::seconds(8);
                 return; // require a new successful present AFTER shrinking the window
             }
+            if (WantFit && !PreviewFits(Current.Window,Requested))
+            {
+                if (++FitRetries <= 3)
+                {
+                    Fitted=false;
+                    WaitSerial=Current.Serial;
+                    Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(8);
+                    return;
+                }
+                Pending=false; Confirmed=false;
+                Message="Engine resized the fitted window again. Use mirv_resolution refit or restore.";
+                return;
+            }
             Pending = false; Confirmed = true;
             Message = WantFit ? "Native resolution verified; fitted preview active." : "Native resolution verified.";
         }
@@ -330,6 +371,22 @@ void Frame()
         {
             Pending = false; Confirmed = false;
             Message = "Resolution not confirmed. Restore original or retry; recording is blocked.";
+        }
+    }
+    else if (Confirmed && exact && WantFit && Fitted && Current.Window && !IsIconic(Current.Window) &&
+             !PreviewFits(Current.Window,Requested))
+    {
+        if (++FitRetries > 3)
+        {
+            Confirmed=false;
+            Message="Preview no longer fits monitor. Use mirv_resolution refit or restore.";
+        }
+        else
+        {
+            Pending=true; Confirmed=false; Fitted=false;
+            WaitSerial=Current.Serial;
+            Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(8);
+            Message="Refitting preview after the game moved or resized its window.";
         }
     }
     else if (Confirmed && !exact)
@@ -350,6 +407,7 @@ State GetState()
     if (Current.Window && GetClientRect(Current.Window,&rc))
     { state.PreviewWidth=rc.right-rc.left; state.PreviewHeight=rc.bottom-rc.top; }
     state.Pending=Pending; state.Managed=Managed; state.Fit=Fitted; state.Ready=Confirmed;
+    state.NativePreview=NativePreview.load();
     state.Message=Message;
     return state;
 }
@@ -379,15 +437,28 @@ void Console(IWrpCommandArgs *args)
         queue = Apply(size,argc==4 || args->ArgV(4)[0]=='1');
     }
     else if (argc==2 && !_stricmp(args->ArgV(1),"restore")) queue = Restore();
+    else if (argc==2 && !_stricmp(args->ArgV(1),"refit"))
+    {
+        if (!Managed || Recording() || !Current.Windowed ||
+            !advancedfx::RenderResolution::Ready(Requested,EngineSize(),Current.Back,Current.Capture))
+            Message="Refit requires a confirmed native mode and recording stopped.";
+        else
+        {
+            WantFit=true; Pending=true; Confirmed=false; Fitted=false; Restoring=false;
+            FitRetries=0; WaitSerial=Current.Serial;
+            Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(8);
+            Message="Refitting preview without changing the native mode.";
+        }
+    }
     else if (argc!=1 && !(argc==2 && !_stricmp(args->ArgV(1),"status")))
-    { Tier0_Msg("mirv_resolution apply <width> <height> [fit 0|1] | restore | status\n"); return; }
+    { Tier0_Msg("mirv_resolution apply <width> <height> [fit 0|1] | restore | refit | status\n"); return; }
     const Size requested = Requested;
     lock.unlock();
     if (queue) QueueMode(requested);
     const auto s = GetState();
-    Tier0_Msg("Recording resolution: backbuffer %dx%d, capture %dx%d, preview %dx%d, GPU limit %dx%d.\n%s\n",
+    Tier0_Msg("Recording resolution: backbuffer %dx%d, capture %dx%d, preview %dx%d, GPU limit %dx%d.\n%s\nOverlay presentation: %s.\n",
         s.RenderWidth,s.RenderHeight,s.CaptureWidth,s.CaptureHeight,s.PreviewWidth,s.PreviewHeight,
-        s.MaxWidth,s.MaxHeight,s.Message.c_str());
+        s.MaxWidth,s.MaxHeight,s.Message.c_str(),s.NativePreview ? "preview-resolution composite" : "ordinary/scaled backbuffer");
 }
 }
 CON_COMMAND(mirv_resolution, "Native TF2 windowed recording resolution and fitted preview")
