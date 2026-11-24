@@ -3550,20 +3550,6 @@ public:
  bool SetTf2PassEnabled(Tf2RenderPass pass, bool enabled);
  bool Tf2PassRecording(Tf2RenderPass pass) const;
  bool DrawingThread_BindTf2PassTarget();
- bool Tf2OffscreenSize(int &width, int &height) const;
- bool DrawingThread_BeginTf2Offscreen(int width, int height);
- // Temporarily correct a full-native viewport clamped by Source's shader API.
- struct Tf2OffscreenDrawScope {
-  D3DVIEWPORT9 Viewport{};
-  RECT Scissor{};
-  bool Full=false, RestoreViewport=false, RestoreScissor=false, Observe=false;
- };
- void DrawingThread_BeginTf2OffscreenDraw(Tf2OffscreenDrawScope &scope);
- void DrawingThread_EndTf2OffscreenDraw(const Tf2OffscreenDrawScope &scope,unsigned primitives,HRESULT result);
- void DrawingThread_CaptureTf2Offscreen();
- void DrawingThread_EndTf2Offscreen();
- void DrawingThread_ReleaseTf2Offscreen();
- void DrawingThread_SkipTf2Offscreen(const char *reason);
  bool DrawingThread_Tf2White(bool white);
  void EngineThread_PassCapture(Tf2RenderPass pass);
  void DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass);
@@ -3898,19 +3884,6 @@ private:
  std::atomic<unsigned long long> m_Tf2PassAttempts[unsigned(Tf2RenderPass::Count)] = {};
  std::atomic<unsigned long long> m_Tf2PassCaptured[unsigned(Tf2RenderPass::Count)] = {};
  std::atomic<unsigned long long> m_Tf2PassFailed[unsigned(Tf2RenderPass::Count)] = {};
- std::atomic<int> m_Tf2OffscreenWidth{0}, m_Tf2OffscreenHeight{0};
- IDirect3DSurface9 *m_Tf2OffscreenColor=nullptr, *m_Tf2OffscreenDepth=nullptr;
- IDirect3DSurface9 *m_Tf2OffscreenPreviousColor=nullptr, *m_Tf2OffscreenPreviousDepth=nullptr;
- D3DVIEWPORT9 m_Tf2OffscreenPreviousViewport{};
- RECT m_Tf2OffscreenPreviousScissor{};
- bool m_Tf2OffscreenActive=false, m_Tf2OffscreenCaptured=false;
- unsigned m_Tf2OffscreenPrimitives=0;
- unsigned m_Tf2OffscreenNativeWidth=0,m_Tf2OffscreenNativeHeight=0;
- unsigned m_Tf2OffscreenDraws=0,m_Tf2OffscreenColorDraws=0,m_Tf2OffscreenPairDraws=0;
- unsigned m_Tf2OffscreenCorrected=0,m_Tf2OffscreenFullDraws=0,m_Tf2OffscreenFailedDraws=0;
- D3DVIEWPORT9 m_Tf2OffscreenObservedViewport{};
- HRESULT m_Tf2OffscreenDrawError=S_OK;
- bool m_Tf2OffscreenReported=false;
  IDirect3DSurface9 *m_Tf2WhiteSurface = nullptr;
  bool m_Tf2WhiteBound = false;
  IDirect3DSurface9 *m_Tf2PlayerDepth = nullptr;

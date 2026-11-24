@@ -1,4 +1,3 @@
-#include <shared/Tf2OffscreenView.h>
 // Source SDK 2013 VClient017 / VEngineModel016 adapter. Encoding, capture,
 // render targets and D3D state overrides remain owned by existing HLAE systems.
 namespace {
@@ -156,20 +155,6 @@ void __fastcall Tf2PassRenderFrame(void *self,
   std::memcpy(&projection, view, sizeof(projection));
   if (!(projection.Near > 0 && projection.Far > projection.Near)) return;
   g_Tf2CapturedFrame = globals->framecount_get();
-  int width=0,height=0;
-  if(g_AfxStreams.Tf2OffscreenSize(width,height)) {
-   if(!MaterialSystem_IsImmediate() ||
-      !advancedfx::Tf2Offscreen::Prepare(view,sizeof(view),width,height) ||
-      !g_AfxStreams.DrawingThread_BeginTf2Offscreen(width,height)) {
-    g_AfxStreams.DrawingThread_SkipTf2Offscreen("view layout, size, immediate rendering or target allocation");
-    return;
-   }
-   g_Tf2ActivePass=Tf2RenderPass::World;
-   render(2,4); // no HUD/viewmodel; capture at scene end
-   g_AfxStreams.DrawingThread_EndTf2Offscreen();
-   g_Tf2ActivePass=Tf2RenderPass::Count;
-   return;
-  }
   for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) {
    const auto pass = Tf2RenderPass(i);
    if (!g_AfxStreams.Tf2PassRecording(pass)) continue;
@@ -249,7 +234,6 @@ void __fastcall Tf2PassSceneEnd(void *self
 #endif
  );
  if(g_Tf2ActivePass==Tf2RenderPass::Players)g_AfxStreams.EngineThread_PassCapture(g_Tf2ActivePass);
- if(g_Tf2ActivePass==Tf2RenderPass::World)g_AfxStreams.DrawingThread_CaptureTf2Offscreen();
 }
 }
 void Tf2RenderPassInstallRenderView(void *render)

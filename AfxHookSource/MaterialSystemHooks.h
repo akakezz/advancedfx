@@ -8,7 +8,6 @@ public:
 
 // Query before submitting engine work that needs an ordered cleanup callback.
 bool MaterialSystem_CanExecuteOnRenderThread();
-bool MaterialSystem_IsImmediate();
 
 bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor * functor);
 

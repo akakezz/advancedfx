@@ -4070,7 +4070,7 @@ public:
 	}
 
  void SetPlayerHoldoutEnabled(bool enabled) { m_PlayerHoldoutEnabled=enabled; }
- template<typename Draw> HRESULT DrawWithPlayerHoldout(Draw draw, unsigned primitives) {
+ template<typename Draw> HRESULT DrawWithPlayerHoldout(Draw draw) {
   // Brush entities, static batches and custom renderables can bypass DrawModelExecute.
   // Tag their native depth-writing fragments too, but never shadow/reflection targets.
   bool scope=false;
@@ -4082,10 +4082,7 @@ public:
    if(color)color->Release();if(depth)depth->Release();
    if(scope){AfxPushOverrideState(false);OverrideBegin_PlayerHoldout(false);}
   }
-  CAfxStreams::Tf2OffscreenDrawScope offscreen;
-  g_AfxStreams.DrawingThread_BeginTf2OffscreenDraw(offscreen);
   const auto result=draw();
-  g_AfxStreams.DrawingThread_EndTf2OffscreenDraw(offscreen,primitives,result);
   if(scope)AfxPopOverrideState();
   return result;
  }
@@ -5702,10 +5699,10 @@ public:
     IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, GetSoftwareVertexProcessing);
     IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, SetNPatchMode);
     IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, GetNPatchMode);
-    STDMETHOD(DrawPrimitive)(THIS_ D3DPRIMITIVETYPE type, UINT start, UINT count) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawPrimitive(type,start,count);},count); }
-    STDMETHOD(DrawIndexedPrimitive)(THIS_ D3DPRIMITIVETYPE type, INT base, UINT min, UINT vertices, UINT start, UINT count) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawIndexedPrimitive(type,base,min,vertices,start,count);},count); }
-    STDMETHOD(DrawPrimitiveUP)(THIS_ D3DPRIMITIVETYPE type, UINT count, const void *vertices, UINT stride) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawPrimitiveUP(type,count,vertices,stride);},count); }
-    STDMETHOD(DrawIndexedPrimitiveUP)(THIS_ D3DPRIMITIVETYPE type, UINT min, UINT vertices, UINT count, const void *indices, D3DFORMAT format, const void *data, UINT stride) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawIndexedPrimitiveUP(type,min,vertices,count,indices,format,data,stride);},count); }
+    STDMETHOD(DrawPrimitive)(THIS_ D3DPRIMITIVETYPE type, UINT start, UINT count) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawPrimitive(type,start,count);}); }
+    STDMETHOD(DrawIndexedPrimitive)(THIS_ D3DPRIMITIVETYPE type, INT base, UINT min, UINT vertices, UINT start, UINT count) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawIndexedPrimitive(type,base,min,vertices,start,count);}); }
+    STDMETHOD(DrawPrimitiveUP)(THIS_ D3DPRIMITIVETYPE type, UINT count, const void *vertices, UINT stride) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawPrimitiveUP(type,count,vertices,stride);}); }
+    STDMETHOD(DrawIndexedPrimitiveUP)(THIS_ D3DPRIMITIVETYPE type, UINT min, UINT vertices, UINT count, const void *indices, D3DFORMAT format, const void *data, UINT stride) { return DrawWithPlayerHoldout([&]{return g_OldDirect3DDevice9->DrawIndexedPrimitiveUP(type,min,vertices,count,indices,format,data,stride);}); }
 	
 
 	IFACE_PASSTHROUGH_DECL(IDirect3DDevice9, ProcessVertices);

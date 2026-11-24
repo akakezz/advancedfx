@@ -13,11 +13,6 @@ on:
       - 'AfxHookSource/CinematicProject.inl'
       - 'shared/CameraRig.h'
       - 'shared/RenderResolution.h'
-      - 'shared/Tf2OffscreenView.h'
-      - 'AfxHookSource/Tf2RenderPass.inl'
-      - 'AfxHookSource/AfxStreams.h'
-      - 'AfxHookSource/MaterialSystemHooks.cpp'
-      - 'AfxHookSource/MaterialSystemHooks.h'
       - 'AfxHookSource/RecordingResolution.h'
       - 'AfxHookSource/RecordingResolution.inl'
       - 'AfxHookSource/AfxStreams.cpp'
@@ -38,8 +33,6 @@ jobs:
           submodules: recursive
       - name: Check custom mode planning and fitted preview geometry
         run: python3 tests/cinematic/test_recording_resolution.py
-      - name: Check offscreen camera view validation and projection
-        run: python3 tests/cinematic/test_tf2_offscreen_view.py
       - name: Check project persistence, overlapping transitions, Bezier and frozen poses
         run: python3 tests/cinematic/test_camera_project.py --build-dir /tmp/hlae-camera-transition-tests
 
