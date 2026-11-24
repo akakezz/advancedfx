@@ -240,7 +240,7 @@ namespace AfxHookSource{namespace CameraOverlay{void NotifyDemoPlaybackFile(cons
 namespace SOURCESDK{struct matrix3x4_t{float m_flMatVal[3][4];};struct CCommand_004{int Count=2;const char*File="";int ArgC()const{return Count;}const char*Arg(int)const{return File;}};namespace CSS{FakeCvar*g_pCVar=&fakeCvar;}namespace L4D2{FakeCvar*g_pCVar=nullptr;}}
 bool testRecording=false;
 #include "AfxHookSource/RecordingResolution.h"
-namespace RecordingResolution { State GetState(){State s;s.Supported=true;s.Windowed=true;s.MaxWidth=8192;s.MaxHeight=8192;return s;} bool CanStart(){return true;} }
+namespace RecordingResolution { State GetState(){State s;s.Supported=true;s.Windowed=true;s.MaxWidth=8192;s.MaxHeight=8192;return s;} bool CanStart(){return true;} bool FitPresentation(void *){return false;} }
 std::string previewHudText;void TestRecordHudText(const std::string&t){previewHudText=t;}
 bool testThirdPerson=false;bool MirvPovSpectate_ThirdPerson(){return testThirdPerson;}
 void MirvSpectate_ReleaseView(){MirvCampathPreview_SetActive(false);for(size_t i=0;i<g_Hook_VClient_RenderView.m_CamPaths.GetCount();++i)g_Hook_VClient_RenderView.m_CamPaths.GetPath(i)->Enabled_set(false);input.SetCameraControlMode(false);}
@@ -410,7 +410,7 @@ collision_code+=attached_view_prefix+attached_stage+'}\n'
 
 renderer=(root/'AfxHookSource/Gui.cpp').read_text()
 renderer=renderer[renderer.index('class CImGuiRenderCacheManager'):renderer.index('} m_ImGuiRernderCacheManager;')+1]+';'
-constants=sorted(set(re.findall(r'\bD3D[A-Z_0-9]+\b',renderer))-{'D3DVIEWPORT9','D3DMATRIX'})
+constants=sorted(set(re.findall(r'\bD3D[A-Z_0-9]+\b',renderer))-{'D3DVIEWPORT9','D3DMATRIX','D3DSURFACE_DESC'})
 render_preamble=r"""
 #include <thread>
 #include <functional>
@@ -426,7 +426,9 @@ std::thread::id renderThread;std::atomic<int> wrongThread{0},calls{0};
 void gpu(){++calls;if(std::this_thread::get_id()!=renderThread)++wrongThread;}
 struct Buffer{std::vector<unsigned char> Bytes;bool Locked=false;bool *Fail=nullptr;Buffer(size_t n,bool*f):Bytes(n),Fail(f){}int Lock(unsigned,unsigned,void**out,int){gpu();if(Fail&&*Fail){*Fail=false;return -1;}Locked=true;*out=Bytes.data();return 0;}void Unlock(){gpu();Locked=false;}void Release(){gpu();delete this;}};
 using IDirect3DVertexBuffer9=Buffer;using IDirect3DIndexBuffer9=Buffer;using LPDIRECT3DVERTEXBUFFER9=Buffer*;using LPDIRECT3DINDEXBUFFER9=Buffer*;
-struct IDirect3DSurface9{int References=1,Writes=0;void Release(){gpu();--References;}};
+struct D3DSURFACE_DESC{DWORD Width=1600,Height=1000;};
+bool SUCCEEDED(int hr){return hr>=0;}
+struct IDirect3DSurface9{int References=1,Writes=0;D3DSURFACE_DESC Desc{};int GetDesc(D3DSURFACE_DESC*d){gpu();*d=Desc;return 0;}void Release(){gpu();--References;}};
 struct IDirect3DStateBlock9{std::function<int()>Save,Restore;int Capture(){gpu();return Save();}int Apply(){gpu();return Restore();}void Release(){gpu();delete this;}};
 struct IDirect3DDevice9{
  bool FailVertex=false,FailIndex=false,FailCapture=false,FailTransform=false,FailTarget=false;int Draws=0,Frames=0;float FirstX=0;Buffer*VB=nullptr,*IB=nullptr;
@@ -674,6 +676,7 @@ button("Path display");auto labelsDrawn=g_CampathDrawer;button("Segment duration
  auto beforeOffscreen=device.Draws;manager.CacheRender(data);render([&]{device.Target=&device.Offscreen;check(!manager.Dx9_Render(),"Offscreen EndScene is not accepted as the overlay frame");});
  check(device.Draws==beforeOffscreen&&device.Offscreen.Writes==0&&device.States==gameState,"Overlay cannot write UI geometry into a game atlas or shadow target");
  render([&]{device.Target=&device.Back;check(manager.Dx9_Render(),"A later backbuffer scene can render the pending overlay");});check(device.Draws>beforeOffscreen,"Offscreen rejection does not discard queued UI data");
+ auto beforePreview=device.Draws;render([&]{device.Target=&device.Offscreen;check(manager.Dx9_Render(&device.Offscreen),"Explicit preview target accepts overlay composition");device.Target=&device.Back;});check(device.Draws>beforePreview,"Preview UI draws into explicitly selected surface");
  auto beforeCaptureFail=device.Draws;render([&]{device.FailCapture=true;manager.Dx9_Render();device.FailCapture=false;});check(device.Draws==beforeCaptureFail&&device.States==gameState,"Failed state capture skips drawing without changing game state");
  render([&]{device.FailTransform=true;manager.Dx9_Render();device.FailTransform=false;});check(device.Draws==beforeCaptureFail&&device.States==gameState,"Failed transform backup skips drawing without changing game state");
  render([&]{device.FailTarget=true;manager.Dx9_Render();device.FailTarget=false;});check(device.Draws==beforeCaptureFail,"Unavailable render target skips overlay drawing");
