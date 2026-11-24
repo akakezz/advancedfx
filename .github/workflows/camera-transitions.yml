@@ -42,6 +42,8 @@ jobs:
       - name: Check OF feature gates and original frame-stage ordering
         run: |
           python3 tests/cinematic/test_of_feature_port.py
+          python3 tests/cinematic/test_of_overlay_cleanup.py
+          python3 tests/cinematic/test_of_scene_parity.py
           python3 tests/cinematic/test_scene_capture_stage.py
           python3 tests/cinematic/test_scene_render_queue.py
       - name: Check demo fixes and parser diagnostics

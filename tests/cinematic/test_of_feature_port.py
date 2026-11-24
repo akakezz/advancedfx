@@ -49,7 +49,7 @@ void check(bool expected){
  using namespace AfxHookSource::CameraOverlay;
  assert(g_OfNativeResolution==expected && g_OfNativeCollision==expected && g_OfNativePasses==expected && g_OfNativePov==expected && g_OfNativeCommands==expected);
  assert(g_SceneOfExtended==expected && g_SceneOfPoses==expected && g_SceneOfReplay==expected);
- assert(!g_SceneOfSkeleton && !g_SceneOfColor080.load());
+ assert(!g_SceneOfSkeleton && g_SceneOfColor080.load()==expected);
 }
 int main(){Setup();check(false);g_OpenFortressLegacyMode=true;Setup();check(true);cmd.safe=true;Setup();check(false);}
 '''

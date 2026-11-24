@@ -77,9 +77,10 @@ static std::atomic_bool g_SceneOfColor080{false};
 void SetOfSceneDefaults(bool integrated)
 {
     g_SceneOfExtended = g_SceneOfPoses = g_SceneOfReplay = integrated;
-    // Visibility preferences and the unverified material shader remain explicit.
+    // Normal OF uses the runtime-confirmed category materials. Safe mode retains
+    // the bounds-only defaults and never requests the older material adapter.
     g_SceneOfSkeleton = false;
-    g_SceneOfColor080.store(false);
+    g_SceneOfColor080.store(integrated);
 }
 // Counters only; diagnostics never look through cached model pointers.
 static std::atomic<unsigned long long> g_SceneOfReplayDraws{0}, g_SceneOfReplayAttempts{0},
@@ -614,19 +615,7 @@ void SceneCacheDrawModels()
 			Entity OwnerSnapshot;
 			bool HasOwner = false;
 		};
-		static unsigned long long tracedEpoch = ~0ull;
-		static unsigned tracedFrames = 0;
-		if (tracedEpoch != epoch)
-		{
-			tracedEpoch = epoch;
-			tracedFrames = 0;
-		}
-		const bool trace = tracedFrames++ < 12;
 		const auto &entities = view->Entities;
-		if (trace)
-			Tier0_Msg("[OF replay] preflight epoch=%llu frame=%p count=%u data=%p\n",
-			          epoch, static_cast<const void *>(view.get()), unsigned(entities.size()),
-			          static_cast<const void *>(entities.data()));
 		if (entities.size() > 4096 ||
 		    (!entities.empty() && reinterpret_cast<std::uintptr_t>(entities.data()) % alignof(Entity)))
 		{
@@ -637,7 +626,7 @@ void SceneCacheDrawModels()
 		}
 		std::vector<ReplayCandidate> candidates;
 		candidates.reserve(entities.size());
-		size_t invalid = 0, brush = 0;
+		size_t brush = 0;
 		for (size_t i = 0; i < entities.size(); ++i)
 		{
 			// A readable page is not proof of a valid object, but probing before
@@ -680,10 +669,7 @@ void SceneCacheDrawModels()
 				return;
 			}
 			if (!advancedfx::SceneCache::ValidPose(*pose))
-			{
-				++invalid;
 				continue;
-			}
 			if (!model->WireEdges.empty())
 			{
 				++brush;
@@ -691,9 +677,7 @@ void SceneCacheDrawModels()
 			}
 			candidates.push_back({i, entity, {}, false}); // Own shared pointers before engine submission.
 		}
-		if (trace)
-			Tier0_Msg("[OF replay] preflight complete: studio=%u brush=%u invalid=%u\n",
-			          unsigned(candidates.size()), unsigned(brush), unsigned(invalid));
+
 		if (candidates.empty())
 		{
 			SceneModelStatus(brush ? "Cached brush meshes use the shared line renderer."
@@ -793,7 +777,7 @@ static std::string SceneAnimationSummary(const advancedfx::SceneCache::Entity &e
 	std::string text =
 	    (entity.Category == 0 ? "Player user " : "Entity handle ") +
 	    std::to_string(entity.Category == 0 ? entity.Identity : (entity.Identity & 0xffffffff)) + " | " +
-	    pose.ModelInfo->Name + ": ";
+	    pose.ModelInfo->Name + " | body " + std::to_string(pose.Body) + ": ";
 	if (pose.Local.empty())
 		text += "world-only pose (nearest); capture a fresh interval";
 	else if (pose.BlendFraction < 0)
@@ -1450,6 +1434,33 @@ static ImGuizmo::MODE g_GizmoMode = ImGuizmo::LOCAL;
 
 // Sequencer/curve editor shared state (parity with DX11)
 static bool g_SequencerNeedsRefresh = false;
+// Session-only fallback controls share one path between console and overlay.
+static const char *SetOfSceneOption(const char *op, bool enabled)
+{
+	if (!_stricmp(op, "ofColor080"))
+	{
+		g_SceneOfColor080.store(enabled);
+		++g_SceneDrawEpoch;
+		return nullptr;
+	}
+	bool *setting = !_stricmp(op, "ofExtended") ? &g_SceneOfExtended :
+	                !_stricmp(op, "ofPoses") ? &g_SceneOfPoses :
+	                !_stricmp(op, "ofReplay") ? &g_SceneOfReplay : &g_SceneOfSkeleton;
+	const MirvOfSceneStage stage = !_stricmp(op, "ofReplay")
+	    ? MirvOfSceneStage::Replay : !_stricmp(op, "ofPoses")
+	    ? MirvOfSceneStage::Poses : MirvOfSceneStage::Entities;
+	// Skeleton drawing consumes immutable cached data and needs no new engine hook.
+	const char *issue = !_stricmp(op, "ofSkeleton") || !enabled
+	    ? nullptr : Mirv_Of_SceneCompatibilityIssue(stage);
+	if (issue)
+		return issue;
+	*setting = enabled;
+	if (enabled && (!_stricmp(op, "ofPoses") || !_stricmp(op, "ofReplay")))
+		g_SceneOfExtended = true;
+	++g_SceneDrawEpoch;
+	SceneCacheFrame(false);
+	return nullptr;
+}
 void SceneCacheConsole(advancedfx::ICommandArgs *args)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
@@ -1474,37 +1485,14 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		g_SceneRecord = value != 0;
 		ok = true;
 	}
-	else if (g_OpenFortressLegacyMode && !_stricmp(op, "ofColor080") && integer(value) && (value == 0 || value == 1))
-	{
-		g_SceneOfColor080.store(value != 0);
-		++g_SceneDrawEpoch;
-		ok = true;
-	}
 	else if (g_OpenFortressLegacyMode && integer(value) && (value == 0 || value == 1) &&
 	         (!_stricmp(op, "ofExtended") || !_stricmp(op, "ofPoses") ||
-	          !_stricmp(op, "ofReplay") || !_stricmp(op, "ofSkeleton")))
+	          !_stricmp(op, "ofReplay") || !_stricmp(op, "ofSkeleton") || !_stricmp(op, "ofColor080")))
 	{
-		bool *setting = !_stricmp(op, "ofExtended") ? &g_SceneOfExtended :
-		                !_stricmp(op, "ofPoses") ? &g_SceneOfPoses :
-		                !_stricmp(op, "ofReplay") ? &g_SceneOfReplay : &g_SceneOfSkeleton;
-		const MirvOfSceneStage stage = !_stricmp(op, "ofReplay")
-		    ? MirvOfSceneStage::Replay : !_stricmp(op, "ofPoses")
-		    ? MirvOfSceneStage::Poses : MirvOfSceneStage::Entities;
-		// Skeleton drawing consumes immutable cached data; no engine interface
-		// is required merely to enable/disable the skeleton visibility toggle.
-		const char *issue = !_stricmp(op, "ofSkeleton") || !value
-		    ? nullptr : Mirv_Of_SceneCompatibilityIssue(stage);
-		if (!issue)
-		{
-			*setting = value != 0;
-			if (value && (!_stricmp(op, "ofPoses") || !_stricmp(op, "ofReplay")))
-				g_SceneOfExtended = true;
-			++g_SceneDrawEpoch;
-			SceneCacheFrame(false);
-			ok = true;
-		}
-		else
+		if (const char *issue = SetOfSceneOption(op, value != 0))
 			advancedfx::Warning("OF advanced Scene Cache %s unavailable: %s\n", op, issue);
+		else
+			ok = true;
 	}
 	else if (!_stricmp(op, "range"))
 	{
@@ -1803,7 +1791,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "  OF only: mirv_cache ofExtended|ofPoses|ofReplay|ofSkeleton <0|1>.\n"
-		    "  OF only: mirv_cache ofColor080 <0|1> (experimental, default 0).\n"
+		    "  OF only: mirv_cache ofColor080 <0|1> (default 1 in normal mode; 0 in safe mode).\n"
 		    "  OF studio replay submits all eligible cached models (queue backpressure retained).\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
@@ -3826,7 +3814,7 @@ static void DrawObserving()
                 int view=MirvPovSpectate_ThirdPerson()?1:0;
                 const char *views[]={"First person","Third person"};
                 if (ImGui::Combo("POV view",&view,views,2)) Afx_ExecClientCmd(view?"mirv_pov mode third":"mirv_pov mode first");
-                if (ImGui::Button("Spectate selected (OF experimental)")) ObservePlayer(selectedEntity,selectedUser);
+                if (ImGui::Button("Spectate selected")) ObservePlayer(selectedEntity,selectedUser);
                 if (ImGui::Button("Return to recorded POV")) Afx_ExecClientCmd("mirv_pov off");
                 ImGui::TextWrapped("%s",MirvPovSpectate_Status());
             }
@@ -6112,9 +6100,6 @@ static void SceneCategoryFilters(std::array<bool, advancedfx::SceneCache::Catego
 static void DrawSceneCacheMenu(int playhead)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
-	if (g_OpenFortressLegacyMode)
-		ImGui::TextWrapped("OF Scene Cache uses shared category controls, with extended capture and replay enabled by default. "
-		                   "Unsupported interfaces fall back to player bounds; compatibility controls are below.");
 	ImGui::Text("%s | %zu frames | %.2f MiB", g_SceneRecord ? "Recording / armed" : "Stopped",
 	            g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0);
 	if (g_SceneCache.Count() > 1)
@@ -6123,32 +6108,9 @@ static void DrawSceneCacheMenu(int playhead)
 	if (ImGui::CollapsingHeader("Capture", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		ImGui::TextDisabled("Choose categories; colors identify bounds and trails.");
-		if (g_OpenFortressLegacyMode && ImGui::TreeNode("OF capture compatibility / fallback"))
-		{
-			bool extended = g_SceneOfExtended;
-			if (ImGui::Checkbox("OF extended entity categories", &extended))
-			{
-				if (!extended || Mirv_Of_SceneInterfacesSupported(false))
-					g_SceneOfExtended = extended;
-				else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Entities);
-			}
-			if (g_SceneOfExtended)
-			{
-				bool poses = g_SceneOfPoses;
-				if (ImGui::Checkbox("Capture OF studio poses / animated bones", &poses))
-				{
-					if (!poses || Mirv_Of_ScenePosesSupported())
-						g_SceneOfPoses = poses;
-					else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Poses);
-				}
-				ImGui::TextDisabled("All enabled categories are attempted; cache memory budget still applies.");
-			}
-			if (const char *issue = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Entities))
-				ImGui::TextWrapped("%s", issue);
-			ImGui::TreePop();
-		}
-		if ((!g_OpenFortressLegacyMode || g_SceneOfExtended) &&
-		    ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
+		const bool boundsFallback = g_OpenFortressLegacyMode && !g_SceneOfExtended;
+		ImGui::BeginDisabled(boundsFallback);
+		if (ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
 		{
 			bool players = g_ScenePlayerModels;
 			ImGui::TableNextColumn();
@@ -6181,6 +6143,9 @@ static void DrawSceneCacheMenu(int playhead)
 			                      "Doors, payloads, intelligence and props, including brush surface meshes.");
 			ImGui::EndTable();
 		}
+		ImGui::EndDisabled();
+		if (boundsFallback)
+			ImGui::TextDisabled("Bounds-only fallback active. See Diagnostics for compatibility controls.");
 		if (ImGui::TreeNode("Player filter (optional)"))
 		{
 			ImGui::Checkbox("Only selected players", &g_ScenePlayerFilter);
@@ -6277,30 +6242,6 @@ static void DrawSceneCacheMenu(int playhead)
 			SceneModelStatus(models ? "Cached model drawing enabled." : "Cached model drawing disabled.");
 		}
 
-		if (g_OpenFortressLegacyMode)
-		{
-			if (ImGui::Checkbox("OF cached animated skeleton lines", &g_SceneOfSkeleton))
-				SceneCacheFrame(false);
-			bool replay = g_SceneOfReplay;
-			if (ImGui::Checkbox("OF studio replay (disable for bounds/lines only)", &replay))
-			{
-				if (!replay || Mirv_Of_SceneInterfacesSupported(true))
-				{
-					g_SceneOfReplay = replay;
-					if (replay) g_SceneOfExtended = true;
-					++g_SceneDrawEpoch;
-				}
-				else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Replay);
-			}
-			bool color080 = g_SceneOfColor080.load();
-			if (ImGui::Checkbox("OF category-colored studio wireframes (experimental 080)", &color080))
-			{
-				g_SceneOfColor080.store(color080);
-				++g_SceneDrawEpoch;
-			}
-			ImGui::TextDisabled("Color080 requires matching legacy engine binaries; OFF retains cyan wireframes.");
-			ImGui::TextDisabled("OF studio replay submits all eligible models; outstanding queue work is bounded.");
-		}
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
 		if (g_SceneDrawing.Bounds && ImGui::TreeNode("Bounding box filters"))
 		{
@@ -6446,7 +6387,25 @@ static void DrawSceneCacheMenu(int playhead)
 		if (g_OpenFortressLegacyMode && !SceneCanDrawLines())
 			ImGui::TextDisabled("Cached bounds drawing suspended during focus/device recovery.");
 		else if (g_OpenFortressLegacyMode && !SceneCanDrawModels())
-			ImGui::TextDisabled("OF studio replay disabled or unavailable; cached lines remain usable.");
+			ImGui::TextDisabled("Studio replay disabled or unavailable; cached lines remain usable.");
+		if (g_OpenFortressLegacyMode && ImGui::TreeNode("Compatibility and fallback"))
+		{
+			auto option = [](const char *label, const char *command, bool value) {
+				if (ImGui::Checkbox(label, &value))
+					if (const char *issue = SetOfSceneOption(command, value))
+						g_DocumentStatus = issue;
+			};
+			option("Extended entity capture", "ofExtended", g_SceneOfExtended);
+			option("Capture studio poses", "ofPoses", g_SceneOfPoses);
+			option("Studio model replay", "ofReplay", g_SceneOfReplay);
+			option("Draw animated skeleton lines", "ofSkeleton", g_SceneOfSkeleton);
+			option("Category-colored wireframes", "ofColor080", g_SceneOfColor080.load());
+			ImGui::TextWrapped("Compatible builds use category colors by default. The native cyan wireframe is the fallback.");
+			for (auto stage : {MirvOfSceneStage::Entities, MirvOfSceneStage::Poses, MirvOfSceneStage::Replay})
+				if (const char *issue = Mirv_Of_SceneCompatibilityIssue(stage))
+					ImGui::TextWrapped("%s", issue);
+			ImGui::TreePop();
+		}
 		if (ImGui::TreeNode("Animation diagnostics"))
 		{
 			ImGui::Text("Cached tick %.3f", g_SceneCursor / SceneTickInterval());
@@ -9003,8 +8962,7 @@ void Draw()
 	// Diagnostic watermark
 	ImGui::GetForegroundDrawList()->AddText(
 		ImVec2(8, 8), IM_COL32(255, 255, 255, 255),
-		g_OpenFortressLegacyMode ? "Open Fortress camera workspace (experimental) | F8 closes"
-								 : "HLAE Camera Overlay | F8 closes | RMB outside panels moves camera", nullptr);
+		"HLAE Camera Overlay | F8 closes | RMB outside panels moves camera", nullptr);
 
 	if (!s_campathDialogsInit)
 	{
@@ -9018,10 +8976,9 @@ void Draw()
 	ImGuizmo::BeginFrame();
 	ImGui::SetNextWindowPos(ImVec2(20, 30), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSizeConstraints(ImVec2(540, 200), ImVec2(900, ImGui::GetIO().DisplaySize.y - 50));
-	ImGui::Begin(g_OpenFortressLegacyMode ? "Open Fortress Camera" : "HLAE Camera", nullptr,
+	// Keep the existing OF window ID so docking/layout settings survive the cleanup.
+	ImGui::Begin(g_OpenFortressLegacyMode ? "HLAE Camera###Open Fortress Camera" : "HLAE Camera", nullptr,
 				 ImGuiWindowFlags_AlwaysAutoResize);
-	if (g_OpenFortressLegacyMode)
-		ImGui::TextDisabled("Experimental OF integration: model replay, collision and player repair are not yet validated.");
 	if (ImGui::Button("Undo"))
 		HistoryUndo(false);
 	ImGui::SameLine();
@@ -9194,7 +9151,7 @@ void Draw()
 				}
 				else
 				{
-                    ImGui::TextDisabled("OF native demo fixes are experimental; enable only during offline demo playback.");
+                    ImGui::TextDisabled("Demo fixes apply to compatible offline demos.");
                     bool mute = MirvFix_GetRecorderSoundMute();
                     if (ImGui::Checkbox("Mute recorder sounds", &mute))
                         MirvFix_SetRecorderSoundMute(mute);
@@ -9601,7 +9558,7 @@ void Draw()
 				ImGui::EndDisabled();
 				if (state.Fit) ImGui::TextDisabled("Overlay: %s", state.NativePreview ? "native preview pixels" : "scaled backbuffer (fallback)");
 				if (!state.Supported || !state.Windowed)
-					ImGui::TextDisabled(g_OpenFortressLegacyMode ? "OF requires a compatible client, windowed mode and native adapters enabled." : "TF2 windowed mode required.");
+					ImGui::TextDisabled(g_OpenFortressLegacyMode ? "Compatible client and windowed mode required; unavailable in safe mode." : "TF2 windowed mode required.");
 				if (!valid && state.MaxWidth > 0)
 					ImGui::TextDisabled("Requested size is outside the supported dimension or GPU limit.");
 				ImGui::TextWrapped("%s", state.Message.c_str());

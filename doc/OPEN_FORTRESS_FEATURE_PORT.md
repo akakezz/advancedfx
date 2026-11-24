@@ -4,7 +4,35 @@ This candidate continues V1 (`21cb1408`) and V2 (`1a527be5`) on the same
 `of-feature-port-test` branch. It does not replace the verified original OF branch.
 V2's fixes and features are all retained; this update consolidates startup policy.
 
-## Normal use
+## Current status: overlay cleanup (2026-11-25)
+
+The user reports the `bc3f26ed` integration works broadly as intended, including
+category-colored studio wireframes. Normal OF startup now requests category
+materials by default. The exact-binary preflight, material lifetime management,
+cyan wireframe fallback, and safe-mode defaults remain unchanged. Recording
+is still unarmed until explicitly started.
+
+The Scene Cache menu shares the normal TF2 Capture, Preview, Memory and
+Diagnostics layout. OF-specific fallback controls are under Diagnostics >
+Compatibility and fallback, with all existing `mirv_cache of*` commands
+retained. GUI and console share the same setting implementation. The workspace
+uses the shared HLAE Camera title while preserving the existing OF ImGui ID.
+Routine successful preflight pointer logs were removed; rejection diagnostics
+and all preflight memory checks remain.
+
+Known observation: a subset of OF ragdolls displays cached skeleton lines but
+no visible cached studio mesh. OF's detachable body parts are a plausible
+factor, not a confirmed cause. The cache already stores and replays the model
+bodygroup (`Pose::Body`). The animation diagnostics now include that value.
+No new dismemberment or mesh-reconstruction algorithm was introduced in this
+cleanup. A submitted draw is not proof of visible pixels. Private animation
+state/layer-vector reads and any remaining unsupported engine ABI paths remain
+excluded; see `OPEN_FORTRESS_BINARY_VALIDATION.md` for offline binary evidence.
+
+The following sections document earlier integration decisions; where they
+conflict with this status, the current status takes precedence.
+
+## Normal use (historical consolidation)
 
 Launch Open Fortress as usual. No per-feature `-afxOfNative*` flags are needed.
 The five existing native adapters are requested automatically in legacy OF x86:

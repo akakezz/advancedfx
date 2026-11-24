@@ -11070,7 +11070,7 @@ static_assert(offsetof(SceneStudioInfo, LightCount) == (sizeof(void *) == 8 ? 14
 // wireframe material or its color modulation. 082 is the verified TF2 ABI;
 // older engines retain the default studio wireframe and colored proxy bounds.
 static void *g_SceneMaterials[advancedfx::SceneCache::CategoryCount]{};
-// Separate, opt-in cache for the exact legacy OF/080 engine binaries.
+// Separate category-material cache for the exact legacy OF/080 engine binaries.
 static void *g_SceneOfMaterials080[advancedfx::SceneCache::CategoryCount]{};
 static bool g_SceneOfMaterial080Attempted[advancedfx::SceneCache::CategoryCount]{};
 static bool SceneOfMaterial080SlotPlausible(void *system)
@@ -11940,8 +11940,13 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached model cleanup callback could not be submitted.";
 		return false;
 	}
-	status = material ? (g_OpenFortressLegacyMode ? "OF 080 category material submitted (experimental)." : "Drawing category-colored cached models.")
-	                  : (g_OpenFortressLegacyMode && ofColor080 ? "OF 080 material rejected or unavailable; cyan wireframe retained." : "Drawing default cached wireframe; category material requires VMaterialSystem082.");
+	if (material)
+		status = "Drawing category-colored cached models.";
+	else if (g_OpenFortressLegacyMode)
+		status = ofColor080 ? "OF 080 material rejected or unavailable; cyan wireframe retained."
+		                    : "Drawing default cached wireframe.";
+	else
+		status = "Drawing default cached wireframe; category material requires VMaterialSystem082.";
 	return true;
 }
 void Mirv_Tf2_SceneRenderFrame()
