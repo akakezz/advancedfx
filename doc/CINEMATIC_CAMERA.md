@@ -1201,37 +1201,6 @@ For a visual check, replay the same section at the same timescale using default,
 Repeat with STV and POV demos. Compare movement smoothness and presentation delay;
 this control cannot replace snapshots missing from the recording.
 
-### Correlating camera, entity and frame-time jitter
-
-For jitter affecting both the viewpoint and moving entities, open the
-**Player repair** tab and expand **Investigate jitter / angle snapping**.
-Select a moving player, choose the problematic tick range (e.g. current tick
-plus/minus 66), and record original playback. Replay from the automatic
-preroll, then save the diagnostic CSV to a new filename.
-
-The existing player receive/network and render-stage fields are retained.
-The `render_end` stage also records the following **read-only** values:
-
-- `wall_elapsed_seconds` and `wall_frame_interval_seconds` from the
-  monotonic system clock, independently of demo simulation time.
-- `engine_curtime`, `engine_frametime`, `engine_framecount`,
-  `interpolated_demo_time`, and the existing interpolation fraction/tick
-  interval/timescale values.
-- `camera_view_current_frame` to avoid interpreting stale camera samples.
-  If true, `native_camera_origin_x/y/z`, `native_camera_angles_x/y/z`,
-  `final_camera_origin_x/y/z`, and `final_camera_angles_x/y/z`.
-
-The native view is the pose handed to HLAE *before* its optional camera
-overrides. The final view is the pose after those overrides. Neither alone
-proves how Direct3D presented the frame. Comparing repeated captures can
-separate irregular real frame intervals, nonmonotonic demo/render time,
-camera-only overrides, and inconsistent player interpolation. Camera fields
-are omitted when the engine did not render a matching view in that frame.
-
-This is **diagnostic only**, disabled except when the explicit player trace
-is active. It does not alter engine time, demo packets or interpolation.
-A final cause still requires an actual affected-demo comparison.
-
 ## TF2 / TF2C POV death/freeze camera suppression
 
 In **Demo fixes**, enable **Suppress POV deathcam**, or use:

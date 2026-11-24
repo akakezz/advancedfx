@@ -67,8 +67,6 @@ public:
 	double LastCameraOrigin[3];
 	double LastCameraAngles[3];
 	double LastCameraFov;
-	// Render-end diagnostics must not consume a camera pose from an earlier frame.
-	int LastCameraSampleFrame = -1;
 
 	int LastWidth = 1280;
 	int LastHeight = 720;

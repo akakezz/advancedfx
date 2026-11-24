@@ -48,7 +48,6 @@ class WrpGlobalsOther : public WrpGlobals
 public:
 	WrpGlobalsOther(void * pGlobals);
 
-	virtual void curtime_set(float value);
 	virtual int framecount_get(void);
 	virtual float absoluteframetime_get(void);
 	virtual float curtime_get(void);

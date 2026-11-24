@@ -12,14 +12,6 @@ on:
       - 'AfxHookSource/MirvCam.h'
       - 'AfxHookSource/CinematicProject.inl'
       - 'shared/CameraRig.h'
-      - 'shared/DemoRenderClockStabilizer.h'
-      - 'shared/Tf2EffectiveInterpolationClock.h'
-      - 'AfxHookSource/Tf2InterpolationProbe.inl'
-      - 'AfxHookSource/DemoRenderClock.h'
-      - 'AfxHookSource/WrpGlobals.cpp'
-      - 'AfxHookSource/WrpGlobals.h'
-      - 'AfxHookSource/main.cpp'
-      - 'AfxHookSource/MirvCommands.cpp'
       - 'tests/cinematic/**'
       - '.github/workflows/camera-transitions.yml'
   workflow_dispatch:
@@ -31,10 +23,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Check TF2 native effective interpolation time mapping
-        run: python3 tests/cinematic/test_tf2_effective_interpolation_clock.py
-      - name: Check render-clock mapping and seek safety
-        run: python3 tests/cinematic/test_demo_render_clock.py
       - name: Check project persistence, overlapping transitions, Bezier and frozen poses
         run: python3 tests/cinematic/test_camera_project.py --build-dir /tmp/hlae-camera-transition-tests
 

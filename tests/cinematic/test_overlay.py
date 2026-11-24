@@ -10,15 +10,13 @@ root=Path(__file__).resolve().parents[2];imgui=args.imgui_dir.resolve();out=args
 s=(root/'AfxHookSource/CameraOverlay.cpp').read_text();s=s[re.search(r'namespace AfxHookSource\s*\{\s*namespace CameraOverlay\s*\{',s).start():]
 native=(root/'AfxHookSource/MirvCommands.cpp').read_text()
 fix_api=native[native.index('// TF2 demo interpolation controls.'):native.index('// End TF2 demo interpolation controls.')]
-clock_api=native[native.index('// TF2 demo render-clock experiment.'):native.index('// End TF2 demo render-clock experiment.')]
 repair_api=native[native.index('// TF2 manual player repair.'):native.index('// End TF2 manual player repair.')]
 pov_api=native[native.index('// TF2 POV deathcam control.'):native.index('// End TF2 POV deathcam control.')]
 cache_at=native.index('CON_COMMAND(mirv_cache,');cache_body=native[native.index('{',cache_at):native.index('CON_COMMAND(mirv_campath,',cache_at)];cache_native_command='void TestNativeCacheCommand(advancedfx::ICommandArgs *args)'+cache_body+'\n'
 pov_command=native[native.index('// TF2 POV deathcam command.'):native.index('// End TF2 POV deathcam command.')]
 fix_command=native[native.index('// TF2 interpolation command.'):native.index('// End TF2 interpolation command.')]
-clock_command=native[native.index('// Experimental playback clock control:'):native.index('// TF2 interpolation command.')]
 repair_command=native[native.index('// TF2 player repair command.'):native.index('// End TF2 player repair command.')]
-fix_command='void callFix(std::initializer_list<const char*> words){struct Args{std::vector<const char*> V;int ArgC(){return (int)V.size();}const char*ArgV(int i){return V[i];}} data;data.V=words;auto *args=&data;int argc=args->ArgC();const char *cmd1=args->ArgV(1);'+repair_command+pov_command+clock_command+fix_command+'}\n'
+fix_command='void callFix(std::initializer_list<const char*> words){struct Args{std::vector<const char*> V;int ArgC(){return (int)V.size();}const char*ArgV(int i){return V[i];}} data;data.V=words;auto *args=&data;int argc=args->ArgC();const char *cmd1=args->ArgV(1);'+repair_command+pov_command+fix_command+'}\n'
 demo_time=native[native.index('bool GetCurrentDemoTime(double &outDemoTime)'):native.index('bool GetDemoTickFromClientTime(')].replace('GetCurrentDemoTime(', 'ActualGetCurrentDemoTime(',1)
 marker_observer=native[native.index('// Observe the native demo_gototick'):native.index('void MirvCampath_ObserveDemoSeeks')]
 main_source=(root/'AfxHookSource/main.cpp').read_text();clock_at=main_source.index('g_CommandSystem.UpdateTickMarkers');clock_start=main_source.rfind('\t\tif (g_VEngineClient)',0,clock_at);clock_end=main_source.index('g_CommandSystem.OnExecuteCommands();',clock_at)+len('g_CommandSystem.OnExecuteCommands();');marker_clock='void MarkerEngineFrame(){'+main_source[clock_start:clock_end]+'}\n'
@@ -33,8 +31,6 @@ preamble=r'''
 #include "shared/CameraModifier.h"
 #include "shared/RecordingLog.h"
 #include "shared/CameraRig.h"
-#include "shared/DemoRenderClockStabilizer.h"
-#include "AfxHookSource/DemoRenderClock.h"
 #include "shared/CommandSystem.h"
 #include "shared/DemoTimeline.h"
 #include <future>
@@ -112,8 +108,8 @@ template<size_t N>void strncpy_s(char(&b)[N],const char*s,size_t){snprintf(b,N,"
 bool UTF8StringToWideString(const char*s,std::wstring&w){try{w=std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.from_bytes(s);return true;}catch(...){return false;}}
 bool StringIBeginsWith(const char*a,const char*b){return strncasecmp(a,b,strlen(b))==0;}
 struct MirvInput{int MovementClears=0;void ClearMovementInput(){++MovementClears;}void ResetCameraSmoothing(){}int CollisionAdoptions=0;void AdoptCollisionPosition(float x,float y,float z){++CollisionAdoptions;Pose[0]=x;Pose[1]=y;Pose[2]=z;}bool Override(float,float&x,float&y,float&z,float&a,float&b,float&c,float&f){x=y=z=a=b=c=f=-999;return true;}bool Camera=false;float Pose[7]={};double Sens=1;bool GetCameraControlMode(){return Camera;}void SetCameraControlMode(bool b){Camera=b;}void SetTx(float x){Pose[0]=x;}void SetTy(float x){Pose[1]=x;}void SetTz(float x){Pose[2]=x;}void SetRx(float x){Pose[3]=x;}void SetRy(float x){Pose[4]=x;}void SetRz(float x){Pose[5]=x;}void SetFov(float x){Pose[6]=x;}double GetKeyboardSensitivty(){return Sens;}void SetKeyboardSensitivity(double x){Sens=x;}} input;
-struct WrpGlobals{float CurTime=1;void curtime_set(float v){CurTime=v;}void*GetRaw(){return this;}double absoluteframetime_get(){return 1.0/60;}double frametime_get(){return 1.0/60;}int framecount_get(){return 1;}double curtime_get(){return CurTime;}double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
-struct FakeView{CamPath m_CamPath;CamPathCollection m_CamPaths{m_CamPath};MirvInput*m_MirvInput=&input;int LastCameraSampleFrame=1;float GameCameraOrigin[3]={10,20,30},GameCameraAngles[3]={1,2,3};double LastCameraOrigin[3]={100,-100,50},LastCameraAngles[3]={0,135,0},LastCameraFov=130;int LastWidth=1600,LastHeight=1000;bool Menu=false,GlobalsAvailable=true,Installed=true;bool IsInstalled(){return Installed;}bool IsMenuActive(){return Menu;}bool IsSourceUiActive(){return Menu;}WrpGlobals*GetGlobals(){return GlobalsAvailable?&globals:nullptr;}}g_Hook_VClient_RenderView;
+struct WrpGlobals{double absoluteframetime_get(){return 1.0/60;}int framecount_get(){return 1;}double curtime_get(){return 1;}double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
+struct FakeView{CamPath m_CamPath;CamPathCollection m_CamPaths{m_CamPath};MirvInput*m_MirvInput=&input;double LastCameraOrigin[3]={100,-100,50},LastCameraAngles[3]={0,135,0},LastCameraFov=130;int LastWidth=1600,LastHeight=1000;bool Menu=false,GlobalsAvailable=true,Installed=true;bool IsInstalled(){return Installed;}bool IsMenuActive(){return Menu;}bool IsSourceUiActive(){return Menu;}WrpGlobals*GetGlobals(){return GlobalsAvailable?&globals:nullptr;}}g_Hook_VClient_RenderView;
 struct CCampathDrawer{bool Names=true,Holds=true,Durations=true;bool GetDrawNames(){return Names;}bool GetDrawHolds(){return Holds;}bool GetDrawDurations(){return Durations;}void SetDrawNames(bool v){Names=v;}void SetDrawHolds(bool v){Holds=v;}void SetDrawDurations(bool v){Durations=v;}bool Draw=false;float Index=18;bool Draw_get(){return Draw;}void Draw_set(bool b){Draw=b;}float GetDrawKeyframeIndex(){return Index;}void SetDrawKeyframeIndex(float x){Index=x;}}g_CampathDrawer;
 struct Clock{double Time=10;double GetTime(){return Time;}int PreviewFrame=-1;int GetFrameCount(){return PreviewFrame>=0?PreviewFrame:int(Time*100);}}g_MirvTime;
 std::vector<std::string> commands;
@@ -958,7 +954,7 @@ int previousStart=viewStart;frame(seqMouse,false,0,true);frame(ImVec2(seqMouse.x
  auto boundKey=g_RepairDemo;g_RepairEnabled=true;g_CampathSeekTarget=1;MirvFix_PlayerRepairNewDemo(bindFile.string().c_str());check(g_RepairEnabled&&g_RepairDemo==boundKey,"Same-file restart during a comparison seek preserves the requested repair");g_CampathSeekTarget=-1;MirvFix_PlayerRepairNewDemo(bindFile.string().c_str());check(!g_RepairEnabled,"Explicit playdemo outside a comparison still disables repair");Repair::Sample kept;kept.Mask=Repair::All;repair.Observe(2,kept);auto keptCount=repair.Samples().size();auto wrongBytes=bindBytes;std::memset(wrongBytes.data()+536,0,260);std::memcpy(wrongBytes.data()+536,"cp_wrong",8);auto wrongFile=RecoveryDirectory()/"wrong-player-demo.dem";{std::ofstream out(wrongFile,std::ios::binary);out.write((const char*)wrongBytes.data(),wrongBytes.size());}check(!MirvFix_PlayerRepairBindPlayingDemo(wrongFile.string().c_str())&&g_RepairDemo==boundKey&&repair.Samples().size()==keptCount,"A mismatched map is rejected without losing the current binding or samples");wrongBytes=bindBytes;wrongBytes[1060]^=1;{std::ofstream out(wrongFile,std::ios::binary);out.write((const char*)wrongBytes.data(),wrongBytes.size());}check(!MirvFix_PlayerRepairBindPlayingDemo(wrongFile.string().c_str()),"A mismatched demo tick count is rejected");
  g_RepairDemo.clear();g_SequencerTimeline.Index.File.clear();size_t commandsBeforeBinding=commands.size();repairButton("Start new player collection");check(g_RepairDemoDialog.IsOpened()&&g_RepairEditor.PendingEntity==1&&!g_RepairCollect&&repair.Samples().size()==keptCount,"Start without a known filename opens the file picker and preserves existing samples");g_RepairDemoDialog.Close();frame();frame();check(g_RepairEditor.PendingEntity<0&&!g_RepairCollect,"Cancelling the filename picker leaves collection stopped");
  repairButton("Start new player collection");CompleteRepairDemoSelection(bindFile);g_RepairDemoDialog.Close();frame();check(g_RepairCollect&&repair.UserId==42&&commands.size()==commandsBeforeBinding,"Choosing the playing file continues collection without reopening or seeking the demo");MirvFix_PlayerRepairEnd();repair.Observe(2,kept);OpenRepairDemoPicker();CompleteRepairDemoSelection(bindFile);g_RepairDemoDialog.Close();frame();check(!g_RepairCollect&&repair.Samples().size()==1,"Choosing a binding without Start preserves loaded repairs and does not collect");
-g_RepairHooks=true;repairButton("Investigate jitter / angle snapping");repairButton("Use current tick +/- 66");repairButton("Record original angle diagnostic");check(MirvFix_PlayerAngleTraceActive()&&!g_RepairEnabled&&g_CampathSeekTarget==0&&g_CampathSeekPendingMode==2,"The repair UI records original playback from demo start without deleting marks");MirvFix_PlayerAngleTraceEnd();g_CampathSeekTarget=-1;
+g_RepairHooks=true;repairButton("Investigate angle snapping");repairButton("Use current tick +/- 66");repairButton("Record original angle diagnostic");check(MirvFix_PlayerAngleTraceActive()&&!g_RepairEnabled&&g_CampathSeekTarget==0&&g_CampathSeekPendingMode==2,"The repair UI records original playback from demo start without deleting marks");MirvFix_PlayerAngleTraceEnd();g_CampathSeekTarget=-1;
  std::filesystem::remove(wrongFile);std::filesystem::remove(bindFile);g_RepairHooks=false; // Diagnostic capture is independent of sample collection and never substitutes its own values.
  {g_RepairHooks=true;g_RepairCollect=false;g_RepairDemo="trace-test";g_RepairEnabled=true;g_RepairEntity=1;
  struct Fields{float Pitch=-12,Yaw=20,Pose=.4f;} fields;diagnosticObject=&fields;Tf2FixRecvProp poseSlot{};poseSlot.Type=1;poseSlot.Offset=0;Tf2FixRecvTable poseMetadata{};poseMetadata.Name="pose slots";poseMetadata.Count=1;poseMetadata.Props=&poseSlot;Tf2FixRecvProp poseParent{};poseParent.Name="m_flPoseParameter";poseParent.Type=6;poseParent.Table=&poseMetadata;poseParent.Offset=int(reinterpret_cast<uintptr_t>(&fields.Pose)-reinterpret_cast<uintptr_t>(&fields));Tf2FixRecvTable rootMetadata{};rootMetadata.Name="DT_BaseAnimating";rootMetadata.Count=1;rootMetadata.Props=&poseParent;g_RepairPlayerTable=&rootMetadata;
@@ -966,17 +962,7 @@ g_RepairHooks=true;repairButton("Investigate jitter / angle snapping");repairBut
  check(!MirvFix_PlayerAngleTraceBegin(1,20,10)&&!MirvFix_PlayerAngleTraceActive(),"Diagnostic refuses reversed ranges");check(!MirvFix_PlayerAngleTraceBegin(1,0,2001),"Diagnostic windows are bounded to 2000 ticks");check(MirvFix_PlayerAngleTraceBegin(1,10,20)&&!g_RepairEnabled,"Diagnostic starts original playback without enabling repair");
  diagnosticBoneCount=2;MirvTf2DiagnosticBones natural{};natural.Count=2;natural.Generation=1;natural.Frame=123;natural.ClientTime=99;natural.Time=.5f;natural.Call=42;natural.Success=natural.Output=true;natural.Mask=0x7ff00;for(int i=0;i<2;++i){natural.Matrix[i][0]=natural.Matrix[i][5]=natural.Matrix[i][10]=1;natural.Matrix[i][3]=10;natural.Matrix[i][7]=20;natural.Matrix[i][11]=30;}diagnosticBones.push_back(natural);
  g_MirvTime.Time=10.0/66;MirvFix_PlayerAngleTraceFrame(0);bool boneRow=false;for(const auto&r:g_PlayerAngleTrace.Rows)if(r.Stage==7&&r.Count==12)boneRow|=r.Frame==123&&r.Time==99&&r.Event==42&&r.Extra[2]==10&&r.Extra[6]==20&&r.Extra[10]==30;check(boneRow&&g_PlayerAngleTrace.BoneRows==2,"Natural matrices retain callback frame/time, call ID and all translation columns");check(g_PlayerAngleTrace.Metadata.size()==1&&g_PlayerAngleTrace.Offsets[2]==-1&&g_PlayerAngleTrace.Valid[2]>0,"Live pose capture works without a pose receive callback");Tf2FixRecvProp pitch{},pose{};g_RepairProperties.clear();g_RepairProperties[&pitch]={3,1,false};g_RepairProperties[&pose]={0,1,false,0};g_RepairProxySlots[0].Original=RepairOriginal;
- Tf2FixProxyData d{};d.Prop=&pitch;d.ObjectId=1;d.Value.Float=-12;g_MirvTime.Time=10.0/66;RepairReceive(0,&d,&fields,&fields.Pitch);check(fields.Pitch==-12&&d.Value.Float==-12,"Diagnostic preserves the incoming angle and original proxy output");d.Prop=&pose;d.Value.Float=.4f;RepairReceive(0,&d,&fields,&fields.Pose);MirvFix_PlayerAngleTraceFrame(0);fields.Pitch=80;fields.Pose=.9f;natural.Generation=999;natural.Count=0;natural.Call=43;natural.Frame=124;natural.Success=natural.Output=false;diagnosticBones.push_back(natural);MirvFix_PlayerAngleTraceFrame(1);MirvFix_PlayerAngleTraceFrame(2);
- check(g_PlayerAngleTrace.NameIds.count("wall_frame_interval_seconds")&&
-       g_PlayerAngleTrace.NameIds.count("engine_curtime")&&
-       g_PlayerAngleTrace.NameIds.count("interpolated_demo_time")&&
-       g_PlayerAngleTrace.NameIds.count("native_camera_origin_x")&&
-       g_PlayerAngleTrace.NameIds.count("final_camera_origin_x")&&
-       g_PlayerAngleTrace.NameIds.count("native_cvar.cl_predict")&&
-       g_PlayerAngleTrace.NameIds.count("native_cvar.cl_interp_all")&&
-       g_PlayerAngleTrace.NameIds.count("native_cvar.cl_extrapolate"),
-       "Jitter diagnostic collects real-frame pacing and native/final camera poses");
- bool failedCall=false;for(const auto&r:g_PlayerAngleTrace.Rows)failedCall|=r.Stage==7&&r.Event==43&&r.Frame==124&&r.Field==g_PlayerAngleTrace.NameIds.at("setup_bones.success")&&r.Value==0;check(failedCall,"Failed natural calls remain visible even without skeleton metadata");
+ Tf2FixProxyData d{};d.Prop=&pitch;d.ObjectId=1;d.Value.Float=-12;g_MirvTime.Time=10.0/66;RepairReceive(0,&d,&fields,&fields.Pitch);check(fields.Pitch==-12&&d.Value.Float==-12,"Diagnostic preserves the incoming angle and original proxy output");d.Prop=&pose;d.Value.Float=.4f;RepairReceive(0,&d,&fields,&fields.Pose);MirvFix_PlayerAngleTraceFrame(0);fields.Pitch=80;fields.Pose=.9f;natural.Generation=999;natural.Count=0;natural.Call=43;natural.Frame=124;natural.Success=natural.Output=false;diagnosticBones.push_back(natural);MirvFix_PlayerAngleTraceFrame(1);MirvFix_PlayerAngleTraceFrame(2);bool failedCall=false;for(const auto&r:g_PlayerAngleTrace.Rows)failedCall|=r.Stage==7&&r.Event==43&&r.Frame==124&&r.Field==g_PlayerAngleTrace.NameIds.at("setup_bones.success")&&r.Value==0;check(failedCall,"Failed natural calls remain visible even without skeleton metadata");
  auto row=[&](int stage,int field,float value){for(auto &r:g_PlayerAngleTrace.Rows)if(r.Stage==stage&&r.Field==field&&std::abs(r.Value-value)<1e-5)return true;return false;};check(row(0,0,-12)&&row(2,0,-12)&&row(4,0,80),"Diagnostic distinguishes normal receive input/output from a later stored-angle spike");check(row(3,2,.4f)&&row(4,2,.9f),"Pose slots are sampled separately before and after render processing");check(row(5,26,0)&&row(5,27,0)&&row(5,28,0),"Entity render-angle fields are recorded when available");
  auto n=g_PlayerAngleTrace.Rows.size();d.ObjectId=2;RepairReceive(0,&d,&fields,&fields.Pose);check(g_PlayerAngleTrace.Rows.size()==n,"Other players cannot contaminate a diagnostic");repairTestUser=43;MirvFix_PlayerAngleTraceFrame(1);check(g_PlayerAngleTrace.Rows.size()==n,"A reused entity slot with another user is not sampled");repairTestUser=42;d.ObjectId=1;
  diagnosticObject=nullptr;MirvFix_PlayerAngleTraceFrame(1);check(std::isnan(g_PlayerAngleTrace.Rows[n+0].Value),"Unavailable live storage is recorded as unavailable rather than zero");diagnosticObject=&fields;
@@ -1593,54 +1579,14 @@ void Run(){
 """
 test=test.replace('void frame(',mode_preamble+mode_constants+mode_math+mode_class+mode_offset+mode_tests+'\nvoid frame(',1)
 
-
-clock_tests=r'''
-void DemoClockABTests()
-{
-  auto previousTime=g_MirvTime.Time;
-  auto previousCurtime=globals.CurTime;
-  auto previousPlaying=engine.Playing;
-  engine.Playing=true;
-  g_MirvTime.Time=10.0;
-  globals.CurTime=100.0f;
-  check(MirvFix_SetDemoRenderClock(true),"TF2 test clock can enable");
-  MirvFix_DemoRenderClockBegin();
-  check(globals.CurTime==100.0f,"First render clock frame anchors without changing curtime");
-  g_MirvTime.Time=10.0+1.0/66;
-  globals.CurTime=100.0f;
-  MirvFix_DemoRenderClockBegin();
-  check(std::abs(globals.CurTime-(100.0+1.0/66))<.0002,
-        "Render clock corrects repeated engine time to monotonic demo progression");
-  MirvFix_DemoRenderClockEnd();
-  check(std::abs(globals.CurTime-100.0f)<1e-5,
-        "End of render restores the exact engine curtime");
-  g_MirvTime.Time=10.0+2.0/66;
-  globals.CurTime=100.0f;
-  MirvFix_DemoRenderClockBegin();
-  check(globals.CurTime>100.02f,"Subsequent render correction remains monotonic");
-  MirvFix_SetDemoRenderClock(false);
-  check(std::abs(globals.CurTime-100.0f)<1e-5 && !MirvFix_GetDemoRenderClock(),
-        "Disabling mid-render immediately restores engine time");
-  engine.Playing=false;
-  check(MirvFix_SetDemoRenderClock(true),"Can arm clock ahead of demo playback");
-  MirvFix_DemoRenderClockBegin();
-  check(std::abs(globals.CurTime-100.0f)<1e-5,
-        "No mutation outside demo playback");
-  MirvFix_SetDemoRenderClock(false);
-  g_MirvTime.Time=previousTime;
-  globals.CurTime=previousCurtime;
-  engine.Playing=previousPlaying;
-}
-'''
-
-test=test.replace('int main(){try{',clock_tests+collision_tests+'\nint main(){try{DemoClockABTests();CollisionTests();AttachedFollowTests();AttachmentModeTest::Run();',1)
+test=test.replace('int main(){try{',collision_tests+'\nint main(){try{CollisionTests();AttachedFollowTests();AttachmentModeTest::Run();',1)
 
 neo=(root/'shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.cpp').read_text()
 neo='struct ImVec2; extern void TestRecordNeoLabel(int,int,ImVec2); extern void TestRecordSpanTooltip(int);\n'+neo.replace('TextUnformatted(context.SpanCaption.c_str());','TestRecordSpanTooltip(context.SpanBegin); TextUnformatted(context.SpanCaption.c_str());').replace('snprintf(lbl, sizeof(lbl), "%d", labelIndex);','snprintf(lbl, sizeof(lbl), "%d", labelIndex); TestRecordNeoLabel(*frame,labelIndex,center);')
 neo+='\nnamespace ImGui{void TestSetNeoView(float zoom,int offset){for(auto &entry:sequencerData){entry.second.Zoom=zoom;entry.second.OffsetFrame=offset;}}}\n'
 neo += '\nnamespace ImGui{ImVec2 TestNeoPlayheadPoint(double tick){auto&c=sequencerData.at(currentSequencer);return getCurrentFrameBB(tick,c).GetCenter();}double TestNeoDisplayFrame(){return sequencerData.at(currentSequencer).DisplayFrame;}}\n'
 neo_file=out/'neo_labels_test.cpp';neo_file.write_text(neo)
-source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+marker_observer+marker_clock+demo_time+fix_api+clock_api+pov_api+repair_api+fix_command+collision_code+s+cache_native_command+native+view+layout+test)
+source=out/'overlay_test.cpp';source.write_text(preamble+render_code+cursor_code+preview_api+marker_observer+marker_clock+demo_time+fix_api+pov_api+repair_api+fix_command+collision_code+s+cache_native_command+native+view+layout+test)
 cmd=['g++','-std=c++17','-O0','-g','-Dabstract=','-include',str(root/'tests/cinematic/msvc_crt_compat.h'),'-I'+str(root),'-I'+str(root/'AfxHookSource'),'-I'+str(imgui),'-I'+str(root/'shared/overlay/third_party/imgui_neo_sequencer'),str(source),str(root/'shared/CamPath.cpp'),str(root/'shared/AfxMath.cpp'),str(root/'shared/CommandSystem.cpp'),str(root/'shared/DemoTimeline.cpp'),str(root/'shared/PlayerRepair.cpp'),str(root/'shared/AfxConsole.cpp')]+[str(imgui/f) for f in ['imgui.cpp','imgui_draw.cpp','imgui_widgets.cpp','imgui_tables.cpp']]+[(str(neo_file) if f=='imgui_neo_sequencer.cpp' else str(root/'shared/overlay/third_party/imgui_neo_sequencer'/f)) for f in ['imgui_neo_sequencer.cpp','imgui_neo_internal.cpp']]+[str(root/'shared/overlay/third_party/imguizmo/ImGuizmo.cpp'),'-o',str(out/'overlay_test')]
 if args.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 p=subprocess.run(cmd,capture_output=True,text=True);(out/'build.log').write_text(p.stdout+p.stderr)
