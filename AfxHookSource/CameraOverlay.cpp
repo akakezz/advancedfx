@@ -70,10 +70,10 @@ static bool g_SceneSmoothAnimation = true;
 static bool g_SceneProjectiles = false, g_SceneWeapons = false, g_SceneCosmetics = false;
 static bool g_SceneRagdolls = false, g_SceneGibs = false;
 static bool g_SceneBuildings = false, g_SceneProps = false;
-// OF extended Scene Cache is explicitly opt-in, session-only, default off.
-// Avoid persisting risky engine-facing studio work across HLAE launches.
+// Preserve the previous safe, session-only opt-in defaults for engine-facing work.
 static bool g_SceneOfExtended = false, g_SceneOfPoses = false;
 static bool g_SceneOfReplay = false, g_SceneOfSkeleton = false;
+static std::atomic_bool g_SceneOfColor080{false};
 // Counters only; diagnostics never look through cached model pointers.
 static std::atomic<unsigned long long> g_SceneOfReplayDraws{0}, g_SceneOfReplayAttempts{0},
     g_SceneOfReplayAccepted{0}, g_SceneOfReplayRejected{0};
@@ -369,55 +369,14 @@ void SceneCacheFrame(bool capture)
 		if (auto globals = g_Hook_VClient_RenderView.GetGlobals())
 			MirvCam_CaptureCameras(frame.ClientTime, globals->framecount_get(),
 								   globals->absoluteframetime_get(), frame.Cameras);
-		if (g_OpenFortressLegacyMode)
+		const bool ofAdvanced = g_OpenFortressLegacyMode && g_SceneOfExtended &&
+		    Mirv_Of_SceneInterfacesSupported(false);
+		if (g_OpenFortressLegacyMode && !ofAdvanced)
 		{
-			// Stage 1 remains the fallback. Stage 2 is optional, known-client
-			// extended enumeration plus immutable bone poses; no live pointer is
-			// retained beyond this capture callback.
-			const bool advanced = g_SceneOfExtended && Mirv_Of_SceneInterfacesSupported(false);
-			if (advanced)
-			{
-				std::vector<MirvTf2SceneEntity> observed;
-				Mirv_Of_CollectSceneEntities(g_ScenePlayerModels, g_SceneProjectiles,
-				    g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls, g_SceneGibs,
-				    g_SceneBuildings, g_SceneProps, observed);
-				unsigned captured = 0, poses = 0, failed = 0;
-				std::string issue;
-				for (auto &row : observed)
-				{
-					const bool player = row.Snapshot.Category == MIRV_TF2_ENTITY_PLAYER;
-					if (player && !ScenePlayerMatches(row.Snapshot.Identity, row.Index))
-						continue;
-					// Bound per-frame studio work; categories can include many props.
-					if (g_SceneOfPoses && Mirv_Of_ScenePosesSupported() && poses + failed < 128)
-					{
-						std::string status;
-						if (Mirv_Tf2_CaptureScenePose(row.Index, row.Snapshot, status, row.ObservedObject))
-						{
-							++poses;
-							++g_ScenePoseCaptured;
-						}
-						else
-						{
-							++failed;
-							++g_ScenePoseFailures;
-							issue = std::move(status);
-						}
-					}
-					frame.Entities.push_back(std::move(row.Snapshot));
-					++captured;
-				}
-				g_ScenePoseStatus = "OF extended tick " + std::to_string(tick) + ": " +
-				    std::to_string(captured) + " entities, " + std::to_string(poses) +
-				    " poses; " + std::to_string(failed) + " pose failures. " + issue;
-			}
-			else
-			{
 			// OF phase 1: reuse observed player render origins and bounds.
 			// No TF2 studio-model ABI, SetupBones, or class/categorization calls.
 			size_t discovered = 0, captured = 0;
-			if (g_ScenePlayerModels)
-				for (int index = 1, count = (std::min)(Mirv_Tf2_GetMaxPlayers(), 128); index <= count; ++index)
+			for (int index = 1, count = (std::min)(Mirv_Tf2_GetMaxPlayers(), 128); index <= count; ++index)
 				{
 					int user = 0;
 					if (!Mirv_Tf2_GetPlayerInfo(index, nullptr, 0, &user) || user <= 0)
@@ -446,14 +405,18 @@ void SceneCacheFrame(bool capture)
 			    " cameras; no studio meshes.";
 			if (g_SceneOfExtended)
 				g_ScenePoseStatus += " Extended capture unavailable on this OF build.";
-			} // End safe OF player-bounds fallback.
 		}
 		else
 		{
 		size_t selectedSeen = 0;
 		std::vector<MirvTf2SceneEntity> entities;
-		Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls,
-		                              g_SceneGibs, g_SceneBuildings, g_SceneProps, entities);
+		if (ofAdvanced)
+			Mirv_Of_CollectSceneEntities(true, g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics,
+			    g_SceneRagdolls, g_SceneGibs, g_SceneBuildings, g_SceneProps, entities);
+		else
+			Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls,
+			                              g_SceneGibs, g_SceneBuildings, g_SceneProps, entities);
+		const bool canCapturePoses = !ofAdvanced || (g_SceneOfPoses && Mirv_Of_ScenePosesSupported());
 		unsigned int playerPoses = 0, projectilePoses = 0, weaponPoses = 0, cosmeticPoses = 0, failures = 0;
 		unsigned int ragdollPoses = 0, gibPoses = 0, buildingPoses = 0, propPoses = 0;
 		std::string lastIssue;
@@ -471,12 +434,12 @@ void SceneCacheFrame(bool capture)
 			    !ScenePlayerMatches(entity.OwnerIdentity))
 				continue;
 
-			if ((player && g_ScenePlayerModels && selected) ||
+			if (canCapturePoses && ((player && g_ScenePlayerModels && selected) ||
 			    (entity.Category == MIRV_TF2_ENTITY_PROJECTILE && g_SceneProjectiles) || gear ||
 			    (entity.Category == MIRV_TF2_ENTITY_RAGDOLL && g_SceneRagdolls) ||
 			    (entity.Category == MIRV_TF2_ENTITY_GIB && g_SceneGibs) ||
 			    (entity.Category == MIRV_TF2_ENTITY_BUILDING && g_SceneBuildings) ||
-			    (entity.Category == MIRV_TF2_ENTITY_PROP && g_SceneProps))
+			    (entity.Category == MIRV_TF2_ENTITY_PROP && g_SceneProps)))
 			{
 				std::string status;
 				if (Mirv_Tf2_CaptureScenePose(row.Index, entity, status, row.ObservedObject))
@@ -521,10 +484,12 @@ void SceneCacheFrame(bool capture)
 			if (!lastIssue.empty())
 				g_ScenePoseStatus += " " + lastIssue;
 		}
-		if (g_ScenePlayerFilter && g_ScenePlayerModels && selectedSeen < g_ScenePlayers.size())
+		if (ofAdvanced && !canCapturePoses)
+			g_ScenePoseStatus = "OF pose capture disabled or unavailable; entity bounds retained.";
+		if (g_ScenePlayerFilter && selectedSeen < g_ScenePlayers.size())
 			g_ScenePoseStatus += " " + std::to_string(selectedSeen) + "/" +
 			                     std::to_string(g_ScenePlayers.size()) + " selected players available.";
-		} // TF2 / TF2C studio-model scene capture ends here.
+		} // Shared TF2 / TF2C / OF studio-model scene capture.
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
@@ -582,6 +547,8 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 	}
 	auto options = g_SceneDrawing;
 	options.Meshes = g_SceneDrawModels.load();
+	if (g_OpenFortressLegacyMode && (!options.Meshes || !g_SceneOfReplay))
+		options.BoundsMissingOnly = false;
 	if (last != view || !(previous == options) || revision != g_SceneCache.Revision() ||
 	    previousSkeleton != g_SceneOfSkeleton)
 	{
@@ -608,12 +575,10 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 }
 void SceneCacheDrawModels()
 {
-	// OF replay is controlled independently from TF2's persisted model toggle.
-	if ((!g_OpenFortressLegacyMode && !g_SceneDrawModels.load()) ||
+	// The shared model toggle applies to both games; OF retains a compatibility kill switch.
+	if (!g_SceneDrawModels.load() ||
 	    !SceneCanDrawModels())
 		return;
-	if (g_OpenFortressLegacyMode)
-		g_SceneOfStudioEverUsed = true;
 	std::shared_ptr<const advancedfx::SceneCache::Frame> view;
 	unsigned long long epoch;
 	{
@@ -628,6 +593,7 @@ void SceneCacheDrawModels()
 
 	if (g_OpenFortressLegacyMode)
 	{
+		g_SceneOfStudioEverUsed = true;
 		// Diagnostic isolation for the experimental OF replay path only.
 		// Keep all reads of the published frame before the first studio call:
 		// a bad engine-side submission must not invalidate a later entity read.
@@ -761,7 +727,7 @@ void SceneCacheDrawModels()
 			const Entity *owner = selected.HasOwner ? &selected.OwnerSnapshot : nullptr;
 			// Avoid unreliable per-model logs and post-draw pointer formatting.
 			g_SceneOfReplayAttempts.fetch_add(1, std::memory_order_relaxed);
-			const bool submitted = Mirv_Tf2_DrawScenePose(entity, status, owner);
+			const bool submitted = Mirv_Tf2_DrawScenePose(entity, status, owner, g_SceneOfColor080.load());
 			if (submitted)
 				g_SceneOfReplayAccepted.fetch_add(1, std::memory_order_relaxed);
 			else
@@ -1497,8 +1463,14 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	bool ok = false;
 	if (!_stricmp(op, "record") && integer(value) && (value == 0 || value == 1))
 	{
-		// OF supports camera and selected player-bounds capture, not studio poses.
+		// Recording is explicitly armed regardless of game.
 		g_SceneRecord = value != 0;
+		ok = true;
+	}
+	else if (g_OpenFortressLegacyMode && !_stricmp(op, "ofColor080") && integer(value) && (value == 0 || value == 1))
+	{
+		g_SceneOfColor080.store(value != 0);
+		++g_SceneDrawEpoch;
 		ok = true;
 	}
 	else if (g_OpenFortressLegacyMode && integer(value) && (value == 0 || value == 1) &&
@@ -1824,6 +1796,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "  OF only: mirv_cache ofExtended|ofPoses|ofReplay|ofSkeleton <0|1>.\n"
+		    "  OF only: mirv_cache ofColor080 <0|1> (experimental, default 0).\n"
 		    "  OF studio replay submits all eligible cached models (queue backpressure retained).\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
@@ -1847,9 +1820,9 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 
 	if (g_OpenFortressLegacyMode)
 	{
-		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d; all eligible studio models.\n",
+		advancedfx::Message("OF Scene Cache toggles: entities %d, poses %d, replay %d, skeleton %d, color080 %d; all eligible studio models.\n",
 		                    int(g_SceneOfExtended), int(g_SceneOfPoses),
-		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton));
+		                    int(g_SceneOfReplay), int(g_SceneOfSkeleton), int(g_SceneOfColor080.load()));
 		for (auto stage : {MirvOfSceneStage::Entities, MirvOfSceneStage::Poses, MirvOfSceneStage::Replay})
 		{
 			const char *name = stage == MirvOfSceneStage::Entities ? "entity capture" :
@@ -3840,8 +3813,18 @@ static void DrawObserving()
 			}
 		}
 		else if (g_VEngineClient && g_VEngineClient->IsPlayingDemo())
-			ImGui::TextWrapped("POV demo: native player spectating is unavailable. Selecting players does not change the view. "
-				"Use Attach selected only when you explicitly want an HLAE camera attachment.");
+        {
+            if (g_OfNativePovReady)
+            {
+                int view=MirvPovSpectate_ThirdPerson()?1:0;
+                const char *views[]={"First person","Third person"};
+                if (ImGui::Combo("POV view",&view,views,2)) Afx_ExecClientCmd(view?"mirv_pov mode third":"mirv_pov mode first");
+                if (ImGui::Button("Spectate selected (OF experimental)")) ObservePlayer(selectedEntity,selectedUser);
+                if (ImGui::Button("Return to recorded POV")) Afx_ExecClientCmd("mirv_pov off");
+                ImGui::TextWrapped("%s",MirvPovSpectate_Status());
+            }
+            else ImGui::TextWrapped("POV demo: launch with -afxOfNativePov for experimental native spectating. Selecting players never changes the view.");
+        }
 		} else {
   if (!stv && g_VEngineClient && g_VEngineClient->IsPlayingDemo()) {
    int view = MirvPovSpectate_ThirdPerson() ? 1 : 0;
@@ -6106,12 +6089,10 @@ static void SceneCategoryFilters(std::array<bool, advancedfx::SceneCache::Catego
 }
 static void DrawSceneCacheMenu(int playhead)
 {
-	// OF shares the camera/timeline/bounds preview, not studio-model capture.
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	if (g_OpenFortressLegacyMode)
-		ImGui::TextWrapped("OF Scene Cache: camera/player bounds capture is validated. "
-		                   "The extended entity, pose and studio-model paths below are experimental "
-		                   "and enabled only for the verified Open Fortress x86 client.");
+		ImGui::TextWrapped("OF Scene Cache uses the shared category controls on the supported x86 client. "
+		                   "Unsupported interfaces fall back to player bounds; compatibility controls are below.");
 	ImGui::Text("%s | %zu frames | %.2f MiB", g_SceneRecord ? "Recording / armed" : "Stopped",
 	            g_SceneCache.Count(), g_SceneCache.Bytes() / 1048576.0);
 	if (g_SceneCache.Count() > 1)
@@ -6119,14 +6100,11 @@ static void DrawSceneCacheMenu(int playhead)
 		                    g_SceneCache.Frames().back().DemoTime - g_SceneCache.Frames().front().DemoTime);
 	if (ImGui::CollapsingHeader("Capture", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::TextDisabled(g_OpenFortressLegacyMode
-		    ? "Enable player bounds below; camera history is always captured."
-		    : "Choose categories; checked colors match the preview.");
-		if (g_OpenFortressLegacyMode)
+		ImGui::TextDisabled("Choose categories; colors identify bounds and trails.");
+		if (g_OpenFortressLegacyMode && ImGui::TreeNode("OF capture compatibility / fallback"))
 		{
-			ImGui::Checkbox("Capture OF player bounds", &g_ScenePlayerModels);
 			bool extended = g_SceneOfExtended;
-			if (ImGui::Checkbox("OF extended entity categories (experimental)", &extended))
+			if (ImGui::Checkbox("OF extended entity categories", &extended))
 			{
 				if (!extended || Mirv_Of_SceneInterfacesSupported(false))
 					g_SceneOfExtended = extended;
@@ -6135,23 +6113,24 @@ static void DrawSceneCacheMenu(int playhead)
 			if (g_SceneOfExtended)
 			{
 				bool poses = g_SceneOfPoses;
-				if (ImGui::Checkbox("Capture OF studio poses / animated bones (experimental)", &poses))
+				if (ImGui::Checkbox("Capture OF studio poses / animated bones", &poses))
 				{
 					if (!poses || Mirv_Of_ScenePosesSupported())
 						g_SceneOfPoses = poses;
 					else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Poses);
 				}
-				ImGui::TextDisabled("Per observed tick: up to 128 pose attempts; rest remain bounds-only.");
+				ImGui::TextDisabled("All enabled categories are attempted; cache memory budget still applies.");
 			}
+			if (const char *issue = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Entities))
+				ImGui::TextWrapped("%s", issue);
+			ImGui::TreePop();
 		}
 		if ((!g_OpenFortressLegacyMode || g_SceneOfExtended) &&
 		    ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
 		{
 			bool players = g_ScenePlayerModels;
 			ImGui::TableNextColumn();
-			if (g_OpenFortressLegacyMode)
-				ImGui::TextDisabled("Players: use OF player checkbox above.");
-			else if (SceneCategoryCheckbox("Player models", players, 0,
+			if (SceneCategoryCheckbox("Player models", players, 0,
 			                          "Full player bodies; defaults to all players. Off retains lightweight "
 			                          "player bounds. Optional filtering also scopes held gear."))
 				g_ScenePlayerModels = players;
@@ -6180,8 +6159,7 @@ static void DrawSceneCacheMenu(int playhead)
 			                      "Doors, payloads, intelligence and props, including brush surface meshes.");
 			ImGui::EndTable();
 		}
-		if ((g_ScenePlayerModels || (!g_OpenFortressLegacyMode && (g_SceneWeapons || g_SceneCosmetics))) &&
-		    ImGui::TreeNode("Player filter (optional)"))
+		if (ImGui::TreeNode("Player filter (optional)"))
 		{
 			ImGui::Checkbox("Only selected players", &g_ScenePlayerFilter);
 			ImGui::TextWrapped("Applies to player bodies and held gear. Other categories are independent. "
@@ -6270,7 +6248,7 @@ static void DrawSceneCacheMenu(int playhead)
 		if (ImGui::Checkbox("Smooth cached animation", &g_SceneSmoothAnimation))
 			SceneCacheFrame(false);
 		bool models = g_SceneDrawModels.load();
-		if (!g_OpenFortressLegacyMode && ImGui::Checkbox("Draw cached models", &models))
+		if (ImGui::Checkbox("Draw cached models", &models))
 		{
 			g_SceneDrawModels.store(models);
 			++g_SceneDrawEpoch;
@@ -6282,7 +6260,7 @@ static void DrawSceneCacheMenu(int playhead)
 			if (ImGui::Checkbox("OF cached animated skeleton lines", &g_SceneOfSkeleton))
 				SceneCacheFrame(false);
 			bool replay = g_SceneOfReplay;
-			if (ImGui::Checkbox("Draw OF cached studio models (experimental)", &replay))
+			if (ImGui::Checkbox("OF studio replay (disable for bounds/lines only)", &replay))
 			{
 				if (!replay || Mirv_Of_SceneInterfacesSupported(true))
 				{
@@ -6292,6 +6270,13 @@ static void DrawSceneCacheMenu(int playhead)
 				}
 				else g_DocumentStatus = Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage::Replay);
 			}
+			bool color080 = g_SceneOfColor080.load();
+			if (ImGui::Checkbox("OF category-colored studio wireframes (experimental 080)", &color080))
+			{
+				g_SceneOfColor080.store(color080);
+				++g_SceneDrawEpoch;
+			}
+			ImGui::TextDisabled("Color080 requires matching legacy engine binaries; OFF retains cyan wireframes.");
 			ImGui::TextDisabled("OF studio replay submits all eligible models; outstanding queue work is bounded.");
 		}
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
@@ -6438,6 +6423,8 @@ static void DrawSceneCacheMenu(int playhead)
 			ImGui::TextDisabled("Cached model drawing suspended during focus/device recovery.");
 		if (g_OpenFortressLegacyMode && !SceneCanDrawLines())
 			ImGui::TextDisabled("Cached bounds drawing suspended during focus/device recovery.");
+		else if (g_OpenFortressLegacyMode && !SceneCanDrawModels())
+			ImGui::TextDisabled("OF studio replay disabled or unavailable; cached lines remain usable.");
 		if (ImGui::TreeNode("Animation diagnostics"))
 		{
 			ImGui::Text("Cached tick %.3f", g_SceneCursor / SceneTickInterval());
@@ -6769,7 +6756,7 @@ static void DrawSequencerDetails(int playhead)
 			g_CommandSystem.EnableTickMarkers(enabled);
 		ImGui::EndDisabled();
 		if (!MirvCampath_CommandSeekObserverReady())
-			ImGui::TextDisabled("Automatic commands require the TF2/TF2C native seek observer.");
+			ImGui::TextDisabled("Automatic commands require the native seek observer (OF experimental: -afxOfNativeCommands).");
 		if (!g_CommandSystem.Enabled)
 			ImGui::TextDisabled("The global mirv_cmd scheduler is disabled.");
 		if (ImGui::Button("Add command at playhead"))
@@ -9628,7 +9615,7 @@ void Draw()
      if (alpha) ImGui::EndDisabled();
      if (!editable) ImGui::EndDisabled();
      ImGui::TextWrapped("Base/world contains everything not separated into Players, Viewmodel or HUD. Depth is additional data. The optional full-scene reference preserves the original shot. Outputs share the profile below; isolates use alpha or the chosen chroma background. Refraction and interleaved effects still have compositing limits.");
-     if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("TF2 render-pass hooks are unavailable.");
+     if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("Native render-pass hooks are unavailable (OF experimental: -afxOfNativePasses).");
     }
     // Record screen settings
 				bool screenEnabled = Recording::ScreenEnabled();

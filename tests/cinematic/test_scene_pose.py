@@ -22,7 +22,7 @@ preamble = r'''
 #include "shared/AfxMath.h"
 #include "AfxHookSource/MaterialSystemHooks.h"
 bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&,std::string&,void* = nullptr);
-bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr);
+bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr,bool = false);
 void Mirv_Tf2_SceneRenderFrame();
 #include <thread>
 #include <filesystem>
@@ -37,6 +37,8 @@ void Mirv_Tf2_SceneRenderFrame();
 #include <cstdlib>
 #define _WIN64 1
 #define MIRV_TF2_MAX_BONES 128
+bool g_OpenFortressLegacyMode=false;
+struct MirvTf2SceneRenderDiagnostics{unsigned Outstanding=0,Peak=0;unsigned long long Submitted=0,CallbacksInvoked=0,CompletionSignaled=0,Retired=0;};
 constexpr int MIRV_TF2_ENTITY_PLAYER=0,MIRV_TF2_ENTITY_WEAPON=2,MIRV_TF2_ENTITY_COSMETIC=3,MIRV_TF2_ENTITY_RAGDOLL=5,MIRV_TF2_ENTITY_BUILDING=7,MIRV_TF2_ENTITY_PROP=8;
 #define SOURCESDK_BONE_USED_BY_ANYTHING 0x0007ff00
 namespace SOURCESDK {
@@ -267,7 +269,7 @@ print(result.stdout + result.stderr)
 if result.returncode:
     raise SystemExit(result.returncode)
 # Exercise the real entity enumeration and its reused classifier separately.
-collector = calcs[calcs.index('// Scene entity enumeration shares'):calcs.index('// End scene entity enumeration.')]
+collector = calcs[calcs.index('// Scene entity enumeration shares'):calcs.index('// OF Scene Cache, version-checked and read-only.')]
 classifier = calcs[calcs.index('static int Mirv_Tf2_LabelCategory('):calcs.index('static bool Mirv_Tf2_LabelDebris(')]
 collector_source = r'''
 #include "shared/SceneCache.h"
@@ -316,7 +318,7 @@ struct CClientToolsTf2 {static CClientToolsTf2*Instance(){static CClientToolsTf2
 struct ModelInfo{int GetModelType(const void*model){auto n=static_cast<const char*>(model);return n[0]=='*'?1:strstr(n,".vmt")?2:3;}const char*GetModelName(const void*model){return static_cast<const char*>(model);}} modelInfo;ModelInfo*Mirv_Tf2_GetModelInfo(){return &modelInfo;}
 bool Mirv_Tf2_SceneEntityVisible(const void*object,const void*){return !static_cast<const CMirvTf2ClientUnknown*>(object)->NoDraw;}
 bool Mirv_Tf2_SceneMoveParent(const void*object,const void*,std::uint32_t&parent){auto*p=static_cast<const CMirvTf2ClientUnknown*>(object);parent=p->MoveParent;return p->ParentKnown;}
-bool Mirv_Tf2_ScenePlayerVisible(const void*object,const void*){auto*p=static_cast<const CMirvTf2ClientUnknown*>(object);return p->Alive&&!p->NoDraw;}
+bool Mirv_Tf2_ScenePlayerVisible(const void*object,const void*,bool=false){auto*p=static_cast<const CMirvTf2ClientUnknown*>(object);return p->Alive&&!p->NoDraw;}
 int Mirv_Tf2_GetMaxPlayers(){return 32;}
 bool Mirv_Tf2_GetPlayerInfo(int i,char*,int,int*u){for(auto*p:objects)if(p->Index==i){*u=p->User;return true;}return false;}
 template<typename R,typename...Args>R SceneInterfaceCall(void*p,size_t slot,Args...args){return reinterpret_cast<R(*)(void*,Args...)>((*static_cast<void***>(p))[slot])(p,args...);}

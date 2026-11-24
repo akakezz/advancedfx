@@ -11024,6 +11024,77 @@ static_assert(offsetof(SceneStudioInfo, LightCount) == (sizeof(void *) == 8 ? 14
 // wireframe material or its color modulation. 082 is the verified TF2 ABI;
 // older engines retain the default studio wireframe and colored proxy bounds.
 static void *g_SceneMaterials[advancedfx::SceneCache::CategoryCount]{};
+// Separate, opt-in cache for the exact legacy OF/080 engine binaries.
+static void *g_SceneOfMaterials080[advancedfx::SceneCache::CategoryCount]{};
+static bool g_SceneOfMaterial080Attempted[advancedfx::SceneCache::CategoryCount]{};
+static bool SceneOfMaterial080SlotPlausible(void *system)
+{
+#ifndef _WIN64
+    auto read = [](const void *address, void *target, SIZE_T size) {
+        SIZE_T copied = 0;
+        return ReadProcessMemory(GetCurrentProcess(), address, target, size, &copied) && copied == size;
+    };
+    auto checkedModule = [&](const char *name, DWORD stamp, DWORD size) -> HMODULE {
+        auto module = GetModuleHandleA(name);
+        IMAGE_DOS_HEADER dos{};
+        IMAGE_NT_HEADERS32 nt{};
+        if (!module || !read(module, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+            dos.e_lfanew < 0x40 || dos.e_lfanew > 0x1000 ||
+            !read(reinterpret_cast<const unsigned char *>(module) + dos.e_lfanew, &nt, sizeof(nt)) ||
+            nt.Signature != IMAGE_NT_SIGNATURE || nt.FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
+            nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+            nt.FileHeader.TimeDateStamp != stamp || nt.OptionalHeader.SizeOfImage != size)
+            return nullptr;
+        return module;
+    };
+    auto module = checkedModule("materialsystem.dll", 0x60d42f70, 0x157000);
+    auto vstdlib = checkedModule("vstdlib.dll", 0x60d42f5b, 0x9b000);
+    auto tier0 = checkedModule("tier0.dll", 0x60d3e2a2, 0x50000);
+    if (!system || !module || !vstdlib || !tier0) return false;
+    const auto base = reinterpret_cast<std::uintptr_t>(module);
+    const auto vbase = reinterpret_cast<std::uintptr_t>(vstdlib);
+    unsigned char thunk[6]{};
+    std::uintptr_t keyObject = 0;
+    auto keyExport = GetProcAddress(vstdlib, "KeyValuesSystem");
+    if (!keyExport || !read(reinterpret_cast<const void *>(keyExport), thunk, sizeof(thunk)) ||
+        thunk[0] != 0xb8 || thunk[5] != 0xc3) return false;
+    std::memcpy(&keyObject, thunk + 1, sizeof(keyObject));
+    if (keyObject != vbase + 0x92b98) return false;
+    void **keyVtable = nullptr;
+    if (!read(reinterpret_cast<const void *>(keyObject), &keyVtable, sizeof(keyVtable)) ||
+        reinterpret_cast<std::uintptr_t>(keyVtable) != vbase + 0x1f0ac) return false;
+    constexpr std::uintptr_t slots[] = {0x7a40, 0x7d60, 0x7d90};
+    for (unsigned i = 0; i < 3; ++i)
+    {
+        void *method = nullptr;
+        if (!read(keyVtable + i + 1, &method, sizeof(method)) ||
+            reinterpret_cast<std::uintptr_t>(method) != vbase + slots[i]) return false;
+    }
+    auto allocatorExport = GetProcAddress(tier0, "g_pMemAlloc");
+    void *allocator = nullptr;
+    if (!allocatorExport || !read(reinterpret_cast<const void *>(allocatorExport), &allocator, sizeof(allocator)) ||
+        !allocator || allocator != SOURCESDK::L4D2::g_pMemAlloc) return false;
+    void **vtable = nullptr;
+    void *function = nullptr;
+    if (!read(system, &vtable, sizeof(vtable)) ||
+        reinterpret_cast<std::uintptr_t>(vtable) != base + 0xb7b54 ||
+        !read(vtable + 70, &function, sizeof(function)) ||
+        reinterpret_cast<std::uintptr_t>(function) != base + 0x45b00) return false;
+    constexpr unsigned char expected[] = {0x55,0x8b,0xec,0x56,0x57,0xff,0x75,0x0c,0x8b,0xf9,0x68};
+    unsigned char actual[sizeof(expected)]{};
+    MEMORY_BASIC_INFORMATION memory{};
+    if (!read(function, actual, sizeof(actual)) || std::memcmp(actual, expected, sizeof(expected)) ||
+        !VirtualQuery(function, &memory, sizeof(memory)) || memory.State != MEM_COMMIT ||
+        memory.AllocationBase != module || (memory.Protect & PAGE_GUARD)) return false;
+    const DWORD protect = memory.Protect & 0xff;
+    return protect == PAGE_EXECUTE || protect == PAGE_EXECUTE_READ ||
+           protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+#else
+    (void)system;
+    return false;
+#endif
+}
+
 // MaterialSystem082 uses Source 2013's KeyValues layout. The older TF2
 // read-only tool-message adapter contains extra local-table fields, so it
 // cannot construct these shader definitions. Source owns the tree after
@@ -11087,15 +11158,19 @@ static bool SceneMaterialString(SceneMaterialKeyValues *root, const char *name, 
 	root->m_pSub = key;
 	return true;
 }
-static void *SceneCategoryMaterial(int category)
+static void *SceneCategoryMaterial(int category, bool ofColor080)
 {
 	if (category < 0 || category >= advancedfx::SceneCache::CategoryCount || !g_AppSystemFactory ||
 	    !SOURCESDK::L4D2::g_pMemAlloc)
 		return nullptr;
-	if (g_SceneMaterials[category])
-		return g_SceneMaterials[category];
-	void *system = g_AppSystemFactory("VMaterialSystem082", nullptr);
-	if (!system)
+	const bool olderOf = g_OpenFortressLegacyMode && ofColor080;
+	if (g_OpenFortressLegacyMode && !olderOf) return nullptr;
+	auto &cached = olderOf ? g_SceneOfMaterials080[category] : g_SceneMaterials[category];
+	if (cached) return cached;
+	if (olderOf && g_SceneOfMaterial080Attempted[category]) return nullptr;
+	if (olderOf) g_SceneOfMaterial080Attempted[category] = true;
+	void *system = g_AppSystemFactory(olderOf ? "VMaterialSystem080" : "VMaterialSystem082", nullptr);
+	if (!system || (olderOf && !SceneOfMaterial080SlotPlausible(system)))
 		return nullptr;
 	auto values = SceneMaterialKey("UnlitGeneric");
 	if (!values)
@@ -11108,7 +11183,7 @@ static void *SceneCategoryMaterial(int category)
 	const auto rgb = advancedfx::SceneCache::CategoryColor(category);
 	char color[96], name[96];
 	std::snprintf(color, sizeof(color), "[%.6f %.6f %.6f]", rgb[0] / 255.f, rgb[1] / 255.f, rgb[2] / 255.f);
-	std::snprintf(name, sizeof(name), "__hlae_scene_cache_category_%d_v2", category);
+	std::snprintf(name, sizeof(name), olderOf ? "__hlae_scene_cache_of080_category_%d_v1" : "__hlae_scene_cache_category_%d_v2", category);
 	// Studio overwrites IMaterial's $color with its per-draw modulation
 	// (normally white). $color2 is the shader's independent model tint and
 	// survives that update, including when Source executes the draw later.
@@ -11129,7 +11204,7 @@ static void *SceneCategoryMaterial(int category)
 		SceneInterfaceCall<void>(material, 13);
 		return nullptr;
 	}
-	g_SceneMaterials[category] = material;
+	cached = material;
 	return material;
 }
 // The render queue only signals completion. MDL/material APIs are retired
@@ -11692,7 +11767,7 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 	return true;
 }
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
-                            const advancedfx::SceneCache::Entity *owner)
+                            const advancedfx::SceneCache::Entity *owner, bool ofColor080)
 {
 	Mirv_Tf2_SceneRenderFrame();
 	if (g_SceneOutstanding.load() >= SceneMaxOutstanding)
@@ -11786,7 +11861,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		return false;
 	}
 	info.Body = pose->Body;
-	void *material = SceneCategoryMaterial(entity.Category);
+	void *material = SceneCategoryMaterial(entity.Category, ofColor080);
 	if (material)
 	{
 		SceneInterfaceCall<void>(material, 12);
@@ -11819,8 +11894,8 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached model cleanup callback could not be submitted.";
 		return false;
 	}
-	status = material ? "Drawing category-colored cached models."
-	                  : "Drawing default cached wireframe; category material requires VMaterialSystem082.";
+	status = material ? (g_OpenFortressLegacyMode ? "OF 080 category material submitted (experimental)." : "Drawing category-colored cached models.")
+	                  : (g_OpenFortressLegacyMode && ofColor080 ? "OF 080 material rejected or unavailable; cyan wireframe retained." : "Drawing default cached wireframe; category material requires VMaterialSystem082.");
 	return true;
 }
 void Mirv_Tf2_SceneRenderFrame()
@@ -11856,6 +11931,10 @@ void Mirv_Tf2_ReleaseSceneMaterials()
 	for (auto &material : g_SceneMaterials)
 		if (void *value = std::exchange(material, nullptr))
 			SceneInterfaceCall<void>(value, 13);
+	for (auto &material : g_SceneOfMaterials080)
+		if (void *value = std::exchange(material, nullptr))
+			SceneInterfaceCall<void>(value, 13);
+	for (auto &attempt : g_SceneOfMaterial080Attempted) attempt = false;
 }
 // Shared with the camera target provider: reconstruct the same sampled bones
 // used by cached mesh rendering, including parent transforms and bone merges.
@@ -11941,6 +12020,43 @@ bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc *calc, const advancedfx::SceneCac
 // Scene entity enumeration shares the label classifier, without attaching tool
 // recorders to every projectile. Network class metadata is read through the
 // public IClientNetworkable::GetClientClass slot (2).
+// Resolve recorded parent handles using the same host categories in TF2 and OF.
+// Keep loose entities independent and reject attachments with missing hosts.
+static void SceneResolveAttachmentHosts(std::vector<MirvTf2SceneEntity> &out)
+{
+	std::map<std::uint32_t, std::uint64_t> attachmentHosts;
+	std::vector<std::uint64_t> owners;
+	for (const auto &row : out)
+		if (row.Snapshot.Category == MIRV_TF2_ENTITY_PLAYER ||
+		    row.Snapshot.Category == MIRV_TF2_ENTITY_RAGDOLL ||
+		    row.Snapshot.Category == MIRV_TF2_ENTITY_BUILDING ||
+		    row.Snapshot.Category == MIRV_TF2_ENTITY_PROP)
+		{
+			owners.push_back(row.Snapshot.Identity);
+			std::uint32_t handle = 0xffffffff;
+			const void *reference =
+			    reinterpret_cast<CMirvTf2ClientUnknown *>(row.ObservedObject)->GetRefEHandle();
+			if (reference)
+				std::memcpy(&handle, reference, sizeof(handle));
+			if (handle != 0xffffffff)
+				attachmentHosts.emplace(handle, row.Snapshot.Identity);
+		}
+	for (auto &row : out)
+		if (row.HasMoveParent)
+			if (auto parent = attachmentHosts.find(row.MoveParent); parent != attachmentHosts.end())
+				row.Snapshot.OwnerIdentity = parent->second;
+			else if (!row.Snapshot.OwnerIdentity && row.MoveParent != 0xffffffff &&
+			         (row.MoveParent & SOURCESDK_TF2_ENT_ENTRY_MASK))
+				row.Snapshot.OwnerIdentity =
+				    (std::uint64_t(1) << 63) |
+				    row.MoveParent; // Unretained attachment host: orphan filter suppresses it.
+	std::sort(owners.begin(), owners.end());
+	const auto orphan = [&](const MirvTf2SceneEntity &row) {
+		return row.Snapshot.OwnerIdentity &&
+		       !std::binary_search(owners.begin(), owners.end(), row.Snapshot.OwnerIdentity);
+	};
+	out.erase(std::remove_if(out.begin(), out.end(), orphan), out.end());
+}
 void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs,
                                    bool buildings, bool props, std::vector<MirvTf2SceneEntity> &out)
 {
@@ -12102,38 +12218,7 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 		if (valid)
 			out.push_back(std::move(row));
 	}
-	std::map<std::uint32_t, std::uint64_t> attachmentHosts;
-	std::vector<std::uint64_t> owners;
-	for (const auto &row : out)
-		if (row.Snapshot.Category == MIRV_TF2_ENTITY_PLAYER ||
-		    row.Snapshot.Category == MIRV_TF2_ENTITY_RAGDOLL ||
-		    row.Snapshot.Category == MIRV_TF2_ENTITY_BUILDING ||
-		    row.Snapshot.Category == MIRV_TF2_ENTITY_PROP)
-		{
-			owners.push_back(row.Snapshot.Identity);
-			std::uint32_t handle = 0xffffffff;
-			const void *reference =
-			    reinterpret_cast<CMirvTf2ClientUnknown *>(row.ObservedObject)->GetRefEHandle();
-			if (reference)
-				std::memcpy(&handle, reference, sizeof(handle));
-			if (handle != 0xffffffff)
-				attachmentHosts.emplace(handle, row.Snapshot.Identity);
-		}
-	for (auto &row : out)
-		if (row.HasMoveParent)
-			if (auto parent = attachmentHosts.find(row.MoveParent); parent != attachmentHosts.end())
-				row.Snapshot.OwnerIdentity = parent->second;
-			else if (!row.Snapshot.OwnerIdentity && row.MoveParent != 0xffffffff &&
-			         (row.MoveParent & SOURCESDK_TF2_ENT_ENTRY_MASK))
-				row.Snapshot.OwnerIdentity =
-				    (std::uint64_t(1) << 63) |
-				    row.MoveParent; // Unretained attachment host: orphan filter suppresses it.
-	std::sort(owners.begin(), owners.end());
-	const auto orphan = [&](const MirvTf2SceneEntity &row) {
-		return row.Snapshot.OwnerIdentity &&
-		       !std::binary_search(owners.begin(), owners.end(), row.Snapshot.OwnerIdentity);
-	};
-	out.erase(std::remove_if(out.begin(), out.end(), orphan), out.end());
+	SceneResolveAttachmentHosts(out);
 }
 
 // OF Scene Cache, version-checked and read-only. Studio calls are opt-in.
@@ -12251,17 +12336,43 @@ static std::string OfSceneLower(const char *value)
     for (auto &c : out) c = char(std::tolower(static_cast<unsigned char>(c)));
     return out;
 }
+// Shared read-only labels for the cache and native render pass grouping.
+static void OfSceneDescribe(CMirvTf2ClientRenderable *renderable, const void *clientClass,
+                            std::string &cls, std::string &model)
+{
+    char className[96]{}, modelName[260]{};
+    if (clientClass)
+    {
+        const char *pointer = nullptr;
+        SIZE_T read = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), static_cast<const char *>(clientClass) + 2 * sizeof(void *),
+                              &pointer, sizeof(pointer), &read) && read == sizeof(pointer))
+            OfSceneCopyString(pointer, className, sizeof(className));
+    }
+    if (auto info = Mirv_Tf2_GetModelInfo())
+        if (const auto m = renderable->GetModel()) OfSceneCopyString(info->GetModelName(m), modelName, sizeof(modelName));
+    cls = OfSceneLower(className); model = OfSceneLower(modelName);
+    std::replace(model.begin(), model.end(), '\\', '/');
+}
+static bool OfSceneViewmodel(const std::string &cls, const std::string &model)
+{
+    return cls.find("viewmodel") != std::string::npos || cls.find("wearablevm") != std::string::npos ||
+        model.find("/v_") != std::string::npos || model.find("c_arms") != std::string::npos;
+}
 static int OfSceneCategory(const std::string &cls, const std::string &model)
 {
     auto has = [&](const char *needle) { return cls.find(needle) != std::string::npos ||
                                                 model.find(needle) != std::string::npos; };
-    if (has("viewmodel") || has("c_arms") || has("/v_") ||
+    if (OfSceneViewmodel(cls, model) ||
         has("particle") || has("sprite") || has("worldspawn")) return -1;
     if (has("ragdoll")) return MIRV_TF2_ENTITY_RAGDOLL;
     if (has("gib") || has("debris")) return MIRV_TF2_ENTITY_GIB;
     if (has("wearable") || has("cosmetic") || has("/player/items/") || has("/hats/"))
         return MIRV_TF2_ENTITY_COSMETIC;
-    if (has("projectile") || has("rocket") || has("pipebomb") || has("grenade") ||
+    if (cls.find("projectile") != std::string::npos) return MIRV_TF2_ENTITY_PROJECTILE;
+    if (cls.find("weapon") != std::string::npos || model.find("/w_") != std::string::npos)
+        return MIRV_TF2_ENTITY_WEAPON;
+    if (has("rocket") || has("pipebomb") || has("grenade") ||
         has("arrow") || has("flare") || has("missile")) return MIRV_TF2_ENTITY_PROJECTILE;
     if (has("sentry") || has("dispenser") || has("teleporter") ||
         has("buildable") || has("obj_")) return MIRV_TF2_ENTITY_BUILDING;
@@ -12275,26 +12386,34 @@ void Mirv_Of_CollectSceneEntities(bool players, bool projectiles, bool weapons,
                                   std::vector<MirvTf2SceneEntity> &out)
 {
     out.clear();
-    if (!g_OpenFortressLegacyMode || g_SourceSdkVer != SourceSdkVer_HL2MP) return;
+    if (!Mirv_Of_SceneInterfacesSupported(false)) return;
     auto tools = CClientToolsTf2::Instance();
     auto iface = tools ? tools->GetClientTools() : nullptr;
     if (!iface) return;
     const int maxPlayers = (std::min)(Mirv_Tf2_GetMaxPlayers(), 128);
+    // Ownership fallback only follows pointers observed in this very traversal.
+    // Do not dereference an arbitrary owner pointer returned by a stale entity.
+    std::map<const void *, int> observed;
     size_t visited = 0;
     for (auto object = iface->FirstEntity(); object && visited++ < 4096;
          object = iface->NextEntity(object))
     {
         const int index = iface->GetEntIndex(object);
-        if (index == 0) continue;
+        if (index == 0 || !observed.emplace(object, index).second) continue;
         auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
         auto renderable = unknown->GetClientRenderable();
-        if (!renderable || !renderable->GetModel() || !renderable->ShouldDraw()) continue;
+        auto networkable = unknown->GetClientNetworkable();
+        const bool networked = index > 0 && index < 2048;
+        if (!renderable || !renderable->GetModel() || !renderable->ShouldDraw() ||
+            (networked && (!networkable || SceneInterfaceCall<bool>(networkable, 8)))) continue;
+        const auto clientClass = networkable ? SceneInterfaceCall<const void *>(networkable, 2) : nullptr;
+        if (!Mirv_Tf2_SceneEntityVisible(object, clientClass)) continue;
         MirvTf2SceneEntity row;
         row.Index = index;
         row.ObservedObject = object;
         if (index > 0 && index <= maxPlayers && iface->IsPlayer(object))
         {
-            if (!players) continue;
+            if (!players || !Mirv_Tf2_ScenePlayerVisible(object, clientClass, true)) continue;
             int user = 0;
             if (!Mirv_Tf2_GetPlayerInfo(index, nullptr, 0, &user) || user <= 0) continue;
             row.Snapshot.Identity = static_cast<unsigned int>(user);
@@ -12303,26 +12422,13 @@ void Mirv_Of_CollectSceneEntities(bool players, bool projectiles, bool weapons,
         else
         {
             const auto handle = Mirv_Tf2_EntityHandle(object);
-            if (handle == 0xffffffffu || (index > 0 && index < 2048 &&
-                (handle & SOURCESDK_TF2_ENT_ENTRY_MASK) != unsigned(index))) continue;
-            char cls[96]{}, model[260]{};
-            if (auto networkable = unknown->GetClientNetworkable())
-            {
-                const auto *clientClass = SceneInterfaceCall<const char *>(networkable, 2);
-                if (clientClass)
-                {
-                    const char *pointer = nullptr;
-                    SIZE_T read = 0;
-                    if (ReadProcessMemory(GetCurrentProcess(), clientClass + 2 * sizeof(void *),
-                                          &pointer, sizeof(pointer), &read) && read == sizeof(pointer))
-                        OfSceneCopyString(pointer, cls, sizeof(cls));
-                }
-            }
-            auto info = Mirv_Tf2_GetModelInfo();
-            if (info)
-                OfSceneCopyString(info->GetModelName(renderable->GetModel()), model, sizeof(model));
-            if (!cls[0] && !model[0]) continue;
-            const int category = OfSceneCategory(OfSceneLower(cls), OfSceneLower(model));
+            if (handle == 0xffffffffu || !(handle & SOURCESDK_TF2_ENT_ENTRY_MASK) ||
+                (networked && (handle & SOURCESDK_TF2_ENT_ENTRY_MASK) != unsigned(index))) continue;
+            if (networked && iface->GetOwningWeaponEntIndex(index) > 0) continue;
+            std::string cls, model;
+            OfSceneDescribe(renderable, clientClass, cls, model);
+            if (cls.empty() && model.empty()) continue;
+            const int category = OfSceneCategory(cls, model);
             if (!((category == MIRV_TF2_ENTITY_PROJECTILE && projectiles) ||
                   (category == MIRV_TF2_ENTITY_WEAPON && weapons) ||
                   (category == MIRV_TF2_ENTITY_COSMETIC && cosmetics) ||
@@ -12332,6 +12438,9 @@ void Mirv_Of_CollectSceneEntities(bool players, bool projectiles, bool weapons,
                   (category == MIRV_TF2_ENTITY_PROP && props))) continue;
             row.Snapshot.Identity = (std::uint64_t(1) << 63) | handle;
             row.Snapshot.Category = category;
+            if (category == MIRV_TF2_ENTITY_WEAPON || category == MIRV_TF2_ENTITY_COSMETIC ||
+                category == MIRV_TF2_ENTITY_BUILDING || category == MIRV_TF2_ENTITY_PROP)
+                row.HasMoveParent = Mirv_Tf2_SceneMoveParent(object, clientClass, row.MoveParent);
         }
         const auto *origin = static_cast<const float *>(renderable->GetRenderOrigin());
         const auto *angles = static_cast<const float *>(renderable->GetRenderAngles());
@@ -12349,6 +12458,29 @@ void Mirv_Of_CollectSceneEntities(bool players, bool projectiles, bool weapons,
         }
         if (valid) out.push_back(std::move(row));
     }
+    // The network moveparent is authoritative, including a detached item.
+    // When the field is absent (client-only gear), use the bounded tools owner
+    // chain, matching the shared collector's player-identity fallback.
+    for (auto &row : out)
+    {
+        if (row.HasMoveParent || (row.Snapshot.Category != MIRV_TF2_ENTITY_WEAPON &&
+            row.Snapshot.Category != MIRV_TF2_ENTITY_COSMETIC)) continue;
+        auto owner = reinterpret_cast<SOURCESDK::TF2::EntitySearchResult>(row.ObservedObject);
+        for (int depth = 0; owner && depth < 8; ++depth)
+        {
+            owner = iface->GetOwnerEntity(owner);
+            const auto found = observed.find(owner);
+            if (found == observed.end() || owner == row.ObservedObject) break;
+            if (found->second > 0 && found->second <= maxPlayers && iface->IsPlayer(owner))
+            {
+                int user = 0;
+                if (Mirv_Tf2_GetPlayerInfo(found->second, nullptr, 0, &user) && user > 0)
+                    row.Snapshot.OwnerIdentity = static_cast<unsigned int>(user);
+                break;
+            }
+        }
+    }
+    SceneResolveAttachmentHosts(out);
 }
 
 // End scene entity enumeration.
@@ -12427,34 +12559,65 @@ void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenP
  groups.clear();
  auto tools = CClientToolsTf2::Instance();
  auto iface = tools ? tools->GetClientTools() : nullptr;
- if (!iface) return;
- struct Row { const void *Renderable; unsigned Handle, Parent, Group; };
+ if (!iface || (g_OpenFortressLegacyMode && !Mirv_Of_SceneInterfacesSupported(false))) return;
+ struct Row { const void *Renderable; unsigned Handle, Parent, Group; const void *Owner; };
  std::vector<Row> rows;
  std::map<unsigned, unsigned> handles;
+ std::map<const void *, unsigned> observed;
  size_t scanned = 0;
  for (auto object = iface->FirstEntity(); object && scanned++ < 4096; object = iface->NextEntity(object)) {
   auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
   auto renderable = unknown->GetClientRenderable();
   if (!renderable) continue;
   const bool player = iface->IsPlayer(object);
-  int category = Mirv_Tf2_ToolCategory(iface, object, iface->GetEntIndex(object), player, true);
-  if (category == MIRV_TF2_ENTITY_OTHER) category = Mirv_Tf2_ModelCategory(renderable, false);
-  // Match existing gib labels: debris is a fallback, never override a cosmetic.
-  if (category == MIRV_TF2_ENTITY_OTHER && Mirv_Tf2_LabelDebris(unknown)) category = MIRV_TF2_ENTITY_GIB;
+  int category;
+  const int index = iface->GetEntIndex(object);
+  auto network = unknown->GetClientNetworkable();
+  const auto clientClass = network ? SceneInterfaceCall<const void *>(network, 2) : nullptr;
+  if (g_OpenFortressLegacyMode)
+  {
+   std::string cls, model;
+   OfSceneDescribe(renderable,clientClass,cls,model);
+   category = player ? MIRV_TF2_ENTITY_PLAYER : OfSceneCategory(cls,model);
+   const bool viewmodel = !player && (OfSceneViewmodel(cls,model) ||
+       (index > 0 && index < 2048 && iface->GetOwningWeaponEntIndex(index) > 0));
+   // Particles/other uncached geometry must remain world, not viewmodel.
+   if (viewmodel) category = -1;
+   else if (category < 0) category = MIRV_TF2_ENTITY_OTHER;
+  }
+  else
+  {
+   category = Mirv_Tf2_ToolCategory(iface, object, index, player, true);
+   if (category == MIRV_TF2_ENTITY_OTHER) category = Mirv_Tf2_ModelCategory(renderable, false);
+   // Match existing gib labels: debris is a fallback, never override a cosmetic.
+   if (category == MIRV_TF2_ENTITY_OTHER && Mirv_Tf2_LabelDebris(unknown)) category = MIRV_TF2_ENTITY_GIB;
+  }
   unsigned group = category == -1 ? 2 :
    (category == MIRV_TF2_ENTITY_PLAYER || category == MIRV_TF2_ENTITY_WEAPON ||
     category == MIRV_TF2_ENTITY_COSMETIC || category == MIRV_TF2_ENTITY_RAGDOLL ||
     category == MIRV_TF2_ENTITY_GIB) ? 1 : 0;
   if (hiddenPlayer > 0 && iface->GetEntIndex(object) == hiddenPlayer) group |= 4;
   unsigned parent = 0xffffffffu;
-  if (auto network = unknown->GetClientNetworkable())
-   Mirv_Tf2_SceneMoveParent(object, SceneInterfaceCall<const void *>(network, 2), parent);
+  const bool hasParent=Mirv_Tf2_SceneMoveParent(object, clientClass, parent);
+  const void *owner=nullptr;
   if (parent == 0xffffffffu || parent == 0)
-   if (auto owner = iface->GetOwnerEntity(object)) parent = Mirv_Tf2_EntityHandle(owner);
+  {
+   if (!g_OpenFortressLegacyMode || !hasParent)
+   {
+    owner = iface->GetOwnerEntity(object);
+    if (!g_OpenFortressLegacyMode && owner) parent=Mirv_Tf2_EntityHandle(owner);
+   }
+  }
   const auto handle = Mirv_Tf2_EntityHandle(object);
-  rows.push_back({renderable, handle, parent, group});
+  rows.push_back({renderable, handle, parent, group, owner});
+  observed.emplace(object,handle);
   if (handle != 0xffffffffu) handles[handle] = group;
  }
+ if (g_OpenFortressLegacyMode)
+  for (auto &row : rows) if (row.Owner) {
+   auto owner=observed.find(row.Owner);
+   if(owner!=observed.end()) row.Parent=owner->second;
+  }
  // Wearables and carried weapons inherit their parent's pass; resolve nested gear.
  for (int depth = 0; depth < 16; ++depth) {
   bool changed = false;

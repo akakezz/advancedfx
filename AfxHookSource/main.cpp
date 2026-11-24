@@ -11,6 +11,7 @@
 
 #include "../shared/AfxCommandLine.h"
 #include "addresses.h"
+#include "OfNativeInterfaces.h"
 #include "RenderView.h"
 #include "RecordingResolution.h"
 #include <SourceInterfaces.h>
@@ -445,7 +446,7 @@ SOURCESDK::CSGO::IStudioRender * g_pStudioRender = nullptr;
 SOURCESDK::CSGO::IVModelInfoClient* g_pModelInfo = nullptr;	
 #endif //#ifndef _WIN64
 
-void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals)
+void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals, void *client = nullptr)
 {
 	static bool bFirstRun = true;
 
@@ -461,6 +462,29 @@ void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals
    Tf2RenderPassInstallModel(appSystemFactory("VEngineModel016", nullptr));
    Tf2RenderPassInstallRenderView(appSystemFactory("VEngineRenderView014", nullptr));
   }
+#ifndef _WIN64
+  if (g_OpenFortressLegacyMode && (g_OfNativePasses || g_OfNativePov))
+  {
+   void *model=appSystemFactory("VEngineModel016", nullptr);
+   void *view=appSystemFactory("VEngineRenderView014", nullptr);
+   void *engine=g_OfNativePov ? appSystemFactory("VEngineClient014", nullptr) : nullptr;
+   // Public SDK 2013 slots; this checks identity and address ownership, not
+   // the complete binary calling convention. OFF unless explicitly requested.
+   if (OfNativeInterfaces::KnownClient() &&
+       OfNativeInterfaces::Slots(client,"client.dll",{26,27,59}) &&
+       OfNativeInterfaces::Slots(model,"engine.dll",{19}) &&
+       OfNativeInterfaces::Slots(view,"engine.dll",{9,36}))
+   {
+    Tf2RenderPassInstallClient(client);
+    Tf2RenderPassInstallModel(model);
+    Tf2RenderPassInstallRenderView(view);
+    if (g_OfNativePov && Tf2RenderPassHooksReady() && OfNativeInterfaces::Slots(engine,"engine.dll",{19}))
+     g_OfNativePovReady=MirvPovSpectate_InstallEngine(engine);
+    Tier0_Msg("OF experimental hooks: render %d, POV %d. Live ABI unverified.\n",int(Tf2RenderPassHooksReady()),int(g_OfNativePovReady));
+   }
+   else Tier0_Warning("OF experimental rendering/POV preflight rejected; no new render hooks installed.\n");
+  }
+#endif
 
 		// VEngineClient:
 
@@ -750,7 +774,7 @@ int __fastcall new_CVClient_Init_Unknown(void* This,
 				pWrpGlobals = new  WrpGlobalsOther(pGlobals);
 				break;
 		}
-		MySetup(appSystemFactory, pWrpGlobals);
+		MySetup(appSystemFactory, pWrpGlobals, This);
 	}
 
 	return old_CVClient_Init_Unkown(This,
@@ -999,12 +1023,17 @@ void __fastcall new_CVClient_FrameStageNotify_OpenFortress(
         AfxHookSource::CameraOverlay::PreferencesFrame();
     }
     if (curStage == SOURCESDK::TF2::FRAME_RENDER_START)
+    {
+        if (g_OfNativePovReady) MirvPovSpectate_FrameBegin();
         Shared_BeforeFrameRenderStart();
+    }
 
     old_CVClient_FrameStageNotify_OpenFortress(This, Edx, curStage);
 
     if (curStage == SOURCESDK::TF2::FRAME_RENDER_END)
     {
+        // Restore temporary observer fields before capturing the completed scene.
+        if (g_OfNativePovReady) MirvPovSpectate_FrameEnd();
         // Observe completed render poses only after Source has drawn them.
         AfxHookSource::CameraOverlay::SceneCacheFrame();
         MirvFix_OfInterpolationProbeFrame();
@@ -2975,6 +3004,9 @@ void CommonHooks()
 #ifndef _WIN64
         g_OfNativeResolution = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativeResolution");
         g_OfNativeCollision = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativeCollision");
+        g_OfNativePasses = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativePasses");
+        g_OfNativePov = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativePov");
+        g_OfNativeCommands = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativeCommands");
 #endif
 		//ScriptEngine_StartUp();
 	}

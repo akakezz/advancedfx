@@ -65,6 +65,14 @@ void __fastcall Tf2PassDrawModel(void *self,
 #endif
  const void *state, const void *info, void *bones)
 {
+ if (!info || (g_Tf2ActivePass == Tf2RenderPass::Count && g_Tf2RenderGroups.empty())) {
+  g_Tf2OriginalModel(self,
+#ifndef _WIN64
+  edx,
+#endif
+  state, info, bones);
+  return;
+ }
  bool isolate = g_Tf2ActivePass == Tf2RenderPass::Players || g_Tf2ActivePass == Tf2RenderPass::Viewmodel;
  const auto &model = *static_cast<const Tf2ModelInfoPrefix *>(info);
  const auto found = g_Tf2RenderGroups.find(model.Renderable);
@@ -178,7 +186,8 @@ void __fastcall Tf2PassRenderFrame(void *self,
  // Offscreen pass targets are popped before normal screen recording/presentation.
 }
 }
-bool Tf2RenderPassSupported() { return g_Tf2OriginalFrame && g_Tf2OriginalRender && g_Tf2OriginalModel && g_Tf2PlayerView && g_Tf2OriginalPaint && g_Tf2OriginalSceneEnd; }
+bool Tf2RenderPassHooksReady() { return g_Tf2OriginalFrame && g_Tf2OriginalRender && g_Tf2OriginalModel && g_Tf2PlayerView && g_Tf2OriginalPaint && g_Tf2OriginalSceneEnd; }
+bool Tf2RenderPassSupported() { return Tf2RenderPassHooksReady() && (!g_OpenFortressLegacyMode || g_OfNativePasses); }
 void Tf2RenderPassInstallClient(void *client)
 {
  if (!client || g_Tf2OriginalRender) return;

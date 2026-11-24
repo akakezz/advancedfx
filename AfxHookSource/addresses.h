@@ -27,6 +27,10 @@ extern bool g_OpenFortressLegacyMode;
 // Unverified legacy engine ABI paths are opt-in, not enabled by the OF game switch.
 extern bool g_OfNativeResolution;
 extern bool g_OfNativeCollision;
+extern bool g_OfNativePasses;
+extern bool g_OfNativePov;
+extern bool g_OfNativeCommands;
+extern bool g_OfNativePovReady;
 
 //AFXADDR_DECL(csgo_CPredictionCopy_TransferData)
 //AFXADDR_DECL(csgo_CPredictionCopy_TransferData_DSZ)

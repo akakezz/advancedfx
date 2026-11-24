@@ -163,7 +163,8 @@ BOOL AfxDetourPtr(PVOID* ptr, PVOID myFunc, PVOID* outTrueFunc)
 		if(outTrueFunc) *outTrueFunc = *ptr;
 		*ptr = myFunc;
 
-		return VirtualProtect(ptr, sizeof(PVOID), oldProtect, NULL);
+		DWORD ignoredProtect;
+		return VirtualProtect(ptr, sizeof(PVOID), oldProtect, &ignoredProtect);
 	}
 
 	return FALSE;

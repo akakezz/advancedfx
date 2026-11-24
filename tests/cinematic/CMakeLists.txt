@@ -54,3 +54,8 @@ if(NOT MSVC)
     target_compile_options(camera_motion_tests PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/msvc_crt_compat.h)
 endif()
 add_test(NAME camera_motion_core COMMAND camera_motion_tests)
+
+if(UNIX)
+    add_test(NAME of_scene_parity COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_of_scene_parity.py")
+    add_test(NAME frozen_sequence_boundary COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_frozen_sequence_boundary.py")
+endif()

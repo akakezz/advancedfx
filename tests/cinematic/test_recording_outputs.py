@@ -10,8 +10,9 @@ source=r'''
 #include <cassert>
 #include <iostream>
 #include "AfxHookSource/Tf2RenderPass.h"
+bool g_OpenFortressLegacyMode=false,g_OfNativePasses=false;
 bool supported=true;bool Tf2RenderPassSupported(){return supported;}bool Hook_MaterialSystem(){return supported;}
-struct Engine{bool Console=false;bool Con_IsVisible(){return Console;}}engine,*g_VEngineClient=&engine;
+struct Engine{bool Console=false,Demo=true,Skipping=false,Loading=false;bool Con_IsVisible(){return Console;}bool IsPlayingDemo(){return Demo;}bool IsSkippingDemo(){return Skipping;}bool IsDrawingLoadingImage(){return Loading;}}engine,*g_VEngineClient=&engine;
 class CAfxStreams {public:
  struct Screen{bool Enabled=true;}screen;Screen*m_RecordScreen=&screen;
  bool m_Recording=false;std::atomic<bool>m_Tf2SeparateConfigured{false},m_Tf2FullReference{false};std::atomic<bool>m_Tf2PassEnabled[5]={};
@@ -26,6 +27,8 @@ int main(){
  assert(s.m_Tf2SeparateConfigured&&s.Tf2PassEnabled(Tf2RenderPass::World)&&!s.GetRecordScreenEnabled());
  s.m_Recording=true;assert(s.Tf2PassRecording(Tf2RenderPass::World)&&s.Tf2PassRecording(Tf2RenderPass::Hud));
  assert(!s.SetTf2FullReference(true)&&!s.ResetTf2Outputs()&&!s.SetTf2PassEnabled(Tf2RenderPass::Hud,false));
+ g_OpenFortressLegacyMode=true;assert(!s.Tf2PassRecording(Tf2RenderPass::World));g_OfNativePasses=true;assert(s.Tf2PassRecording(Tf2RenderPass::World));
+ engine.Demo=false;assert(!s.Tf2PassRecording(Tf2RenderPass::World));engine.Demo=true;engine.Skipping=true;assert(!s.Tf2PassRecording(Tf2RenderPass::World));engine.Skipping=false;engine.Loading=true;assert(!s.Tf2PassRecording(Tf2RenderPass::World));engine.Loading=false;g_OpenFortressLegacyMode=false;
  engine.Console=true;assert(!s.Tf2PassRecording(Tf2RenderPass::World));engine.Console=false;s.m_Recording=false;
  assert(s.SetTf2FullReference(true)&&s.GetRecordScreenEnabled());
  assert(s.SetTf2FullReference(false)&&!s.GetRecordScreenEnabled());

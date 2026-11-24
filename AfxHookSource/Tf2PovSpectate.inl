@@ -149,8 +149,10 @@ void PovRestoreCameraFields(PovObserverScope &scope)
 }
 bool PovSpectatePlayback()
 {
- return (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified) &&
-  g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV();
+ return (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified ||
+         (g_OpenFortressLegacyMode && g_OfNativePovReady)) &&
+  g_VEngineClient && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsHLTV() &&
+  (!g_OpenFortressLegacyMode || (!g_VEngineClient->IsSkippingDemo() && !g_VEngineClient->IsDrawingLoadingImage()));
 }
 }
 void MirvPovSpectate_FrameEnd()
@@ -176,7 +178,7 @@ bool MirvPovSpectate_SetPlayer(int index)
   return true;
  }
  if (!PovSpectatePlayback()) {
-  g_PovSpectateStatus = "Native POV spectating requires a TF2/TF2C POV demo.";
+  g_PovSpectateStatus = "Native POV spectating requires a supported POV demo and installed hooks.";
   return false;
  }
  int user = 0;
@@ -202,6 +204,8 @@ void MirvPovSpectate_FrameBegin()
 {
  MirvPovSpectate_FrameEnd();
  if (!g_PovSpectateUser) return;
+ if (g_OpenFortressLegacyMode && g_VEngineClient && g_VEngineClient->IsPlayingDemo() &&
+     (g_VEngineClient->IsSkippingDemo() || g_VEngineClient->IsDrawingLoadingImage())) return;
  if (!PovSpectatePlayback()) { MirvPovSpectate_SetPlayer(0); return; }
  PovGuardRecorderCamera(true);
  const int targetIndex = MirvPovSpectate_Player();
@@ -304,15 +308,17 @@ bool MirvPovSpectate_SetMode(bool thirdPerson)
  g_PovThirdPerson = thirdPerson;
  return true;
 }
-void MirvPovSpectate_InstallEngine(void *engine)
+bool MirvPovSpectate_InstallEngine(void *engine)
 {
- if (!engine) return;
+ if (!engine) return false;
  auto table = *static_cast<void ***>(engine);
- if (g_PovOriginalAngles.count(table)) return; // Versions can alias one vtable.
+ if (g_PovOriginalAngles.count(table)) return true; // Versions can alias one vtable.
  // TF2's client requests 014; HLAE may use 015. All share GetViewAngles at 19 (slot 18 is IsStreaming).
  auto &original = g_PovOriginalAngles[table];
  if (!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[19]), reinterpret_cast<PVOID>(PovGetViewAngles), reinterpret_cast<PVOID *>(&original)))
-  g_PovOriginalAngles.erase(table);
+  if (table[19] != reinterpret_cast<void *>(PovGetViewAngles) || !original)
+   g_PovOriginalAngles.erase(table);
+ return g_PovOriginalAngles.count(table) != 0;
 }
 
 // Source's local-player visibility and viewmodel selection already consult this

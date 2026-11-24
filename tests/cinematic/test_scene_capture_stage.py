@@ -16,6 +16,7 @@ using Stage=SOURCESDK::TF2::ClientFrameStage_t;
 int captures=0,preferences=0,repairs=0,updates=0,resolutions=0,probes=0;
 namespace RecordingResolution{void Frame(){++resolutions;}}
 void MirvFix_OfInterpolationProbeFrame(){++probes;}
+bool g_OfNativePovReady=false;
 bool naturalBonesReady=false,renderComplete=false,afterRender=false,observing=false;
 void MirvPovSpectate_FrameBegin(){assert(!naturalBonesReady);observing=true;}
 void MirvPovSpectate_FrameEnd(){assert(renderComplete&&observing);observing=false;}
@@ -57,6 +58,12 @@ of(SOURCESDK::TF2::FRAME_NET_UPDATE_END);assert(repairs==0);
 of(SOURCESDK::TF2::FRAME_RENDER_START);assert(!observing&&captures==0);
 naturalBonesReady=true;
 of(SOURCESDK::TF2::FRAME_RENDER_END);assert(captures==1&&probes==1&&afterRender);
+captures=preferences=repairs=updates=resolutions=probes=0;
+naturalBonesReady=renderComplete=afterRender=observing=false;
+g_OfNativePovReady=true;
+of(SOURCESDK::TF2::FRAME_START);of(SOURCESDK::TF2::FRAME_RENDER_START);
+assert(observing&&captures==0);naturalBonesReady=true;
+of(SOURCESDK::TF2::FRAME_RENDER_END);assert(captures==1&&afterRender&&!observing);
 #endif
 std::cout<<"Scene capture runs after natural rendering, before frame retirement\n";
 }

@@ -11,6 +11,10 @@ SourceSdkVer g_SourceSdkVer = SourceSdkVer_Unknonw;
 bool g_OpenFortressLegacyMode = false;
 bool g_OfNativeResolution = false;
 bool g_OfNativeCollision = false;
+bool g_OfNativePasses = false;
+bool g_OfNativePov = false;
+bool g_OfNativeCommands = false;
+bool g_OfNativePovReady = false;
 
 using namespace Afx::BinUtils;
 

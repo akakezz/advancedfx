@@ -469,7 +469,7 @@ bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float 
 
 // Read-only TF2 receive-table visibility; no repair/capture hooks are installed.
 bool Mirv_Tf2_SceneDebris(const void *object, const void *clientClass);
-bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass);
+bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass, bool ignoreTeam = false);
 bool Mirv_Tf2_SceneEntityVisible(const void *object, const void *clientClass);
 bool Mirv_Tf2_SceneMoveParent(const void *object, const void *clientClass, std::uint32_t &parent);
 // Opt-in scene-pose capture, including observed client-only debris. Does not change AGR recording mode.
@@ -492,7 +492,7 @@ void Mirv_Tf2_SceneBoneLines(const advancedfx::SceneCache::Entity &entity,
                             const advancedfx::SceneCache::Entity *owner,
                             std::vector<advancedfx::SceneCache::Line> &lines);
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
- const advancedfx::SceneCache::Entity *owner = nullptr);
+ const advancedfx::SceneCache::Entity *owner = nullptr, bool ofColor080 = false);
 
 struct MirvTf2SceneEntity
 {

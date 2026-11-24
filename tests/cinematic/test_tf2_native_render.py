@@ -20,7 +20,7 @@ pov=r'''
 using PVOID=void*;
 bool AfxDetourPtr(PVOID*slot,PVOID replacement,PVOID*original){*original=*slot;*slot=replacement;return true;}
 '''+structs+r'''
-constexpr int SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2;int g_SourceSdkVer=1;
+constexpr int SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2;int g_SourceSdkVer=1;bool g_OpenFortressLegacyMode=false,g_OfNativePovReady=false;
 #include <cmath>
 #define __declspec(x)
 #define __forceinline inline
@@ -28,7 +28,7 @@ constexpr int SourceSdkVer_TF2=1,SourceSdkVer_TF2Classified=2;int g_SourceSdkVer
 #define __int32 int
 #define __int64 long long
 #include "deps/release/prop/AfxHookSource/SourceSdkShared.h"
-struct Engine{SOURCESDK::QAngle Angles{3,12,0};void GetViewAngles(SOURCESDK::QAngle&a){a=Angles;}void SetViewAngles(const SOURCESDK::QAngle&a){Angles=a;}bool Demo=true,Hltv=false;int Local=1,FirstPersonRequests=0;void ExecuteClientCmd(const char*c){assert(std::string(c)=="firstperson");++FirstPersonRequests;}bool IsPlayingDemo(){return Demo;}bool IsHLTV(){return Hltv;}int GetLocalPlayer(){return Local;}}engine,*g_VEngineClient=&engine;
+struct Engine{SOURCESDK::QAngle Angles{3,12,0};void GetViewAngles(SOURCESDK::QAngle&a){a=Angles;}void SetViewAngles(const SOURCESDK::QAngle&a){Angles=a;}bool Demo=true,Hltv=false,Skipping=false,Loading=false;int Local=1,FirstPersonRequests=0;void ExecuteClientCmd(const char*c){assert(std::string(c)=="firstperson");++FirstPersonRequests;}bool IsPlayingDemo(){return Demo;}bool IsHLTV(){return Hltv;}bool IsSkippingDemo(){return Skipping;}bool IsDrawingLoadingImage(){return Loading;}int GetLocalPlayer(){return Local;}}engine,*g_VEngineClient=&engine;
 struct TauntVar {float Value=0;float GetFloat(){return Value;}void SetValue(float v){Value=v;}}tauntVar;
 TauntVar bodyVar,viewmodelVar,demoVar;
 struct Vars{TauntVar*FindVar(const char*name){if(!std::strcmp(name,"tf_taunt_first_person"))return &tauntVar;if(!std::strcmp(name,"cl_first_person_uses_world_model"))return &bodyVar;if(!std::strcmp(name,"r_drawviewmodel"))return &viewmodelVar;if(!std::strcmp(name,"cl_demoviewoverride"))return &demoVar;return nullptr;}}vars;
@@ -107,6 +107,7 @@ render=r'''
 using PVOID=void*;
 bool AfxDetourPtr(PVOID *slot,PVOID replacement,PVOID *original){*original=*slot;*slot=replacement;return true;}
 struct CMaterialSystemFunctor{virtual ~CMaterialSystemFunctor(){};virtual void operator()()=0;};
+bool g_OpenFortressLegacyMode=false,g_OfNativePasses=false;
 std::vector<int> colorStack;int mask=15;
 void AfxD3D9PushOverrideState(bool){colorStack.push_back(mask);}
 void AfxD3D9OverrideBegin_D3DRS_COLORWRITEENABLE(int value){mask=value;}
@@ -151,7 +152,7 @@ int main(){
  void *clientSlots[60]={};clientSlots[26]=reinterpret_cast<void*>(Frame);clientSlots[27]=reinterpret_cast<void*>(Render);clientSlots[59]=reinterpret_cast<void*>(PlayerView);void **client=clientSlots;
  void *modelSlots[20]={};modelSlots[19]=reinterpret_cast<void*>(Model);void **model=modelSlots;
  int rect[4]={0,0,1280,720};Tf2RenderPassInstallClient(&client);assert(!Tf2RenderPassSupported());Tf2RenderPassInstallModel(&model);assert(!Tf2RenderPassSupported());
- void *paintSlots[37]={};paintSlots[9]=reinterpret_cast<void*>(SceneEnd);paintSlots[36]=reinterpret_cast<void*>(Paint);void **paint=paintSlots;Tf2RenderPassInstallRenderView(&paint);assert(Tf2RenderPassSupported());
+ void *paintSlots[37]={};paintSlots[9]=reinterpret_cast<void*>(SceneEnd);paintSlots[36]=reinterpret_cast<void*>(Paint);void **paint=paintSlots;Tf2RenderPassInstallRenderView(&paint);assert(Tf2RenderPassSupported());g_OpenFortressLegacyMode=true;assert(!Tf2RenderPassSupported()&&Tf2RenderPassHooksReady());g_OfNativePasses=true;assert(Tf2RenderPassSupported());g_OpenFortressLegacyMode=false;
  assert(clientSlots[27]==reinterpret_cast<void*>(Render)); // Normal-frame interception, not the tools-only entry.
  Tf2PassRenderFrame(&client,rect);FlushGpu();
  assert(ordinaryFrames==1&&renderCalls==5&&hudWrites==1&&mask==15&&colorStack.empty());
@@ -370,6 +371,7 @@ groups=r'''
 #include <vector>
 #include <cstring>
 #include <cctype>
+#include <string>
 #include <cassert>
 #include <iostream>
 '''+enum_source+r'''
@@ -381,6 +383,7 @@ std::vector<CMirvTf2ClientUnknown>objects;
 struct Iface {
  void*FirstEntity(){return objects.empty()?nullptr:&objects[0];}
  void*NextEntity(void*p){auto n=static_cast<CMirvTf2ClientUnknown*>(p)+1;return n==objects.data()+objects.size()?nullptr:n;}
+ int GetOwningWeaponEntIndex(int){return 0;}
  bool IsPlayer(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Player;}
  int GetEntIndex(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Handle;}
  void*GetOwnerEntity(void*p){auto parent=static_cast<CMirvTf2ClientUnknown*>(p)->Parent;for(auto &o:objects)if(o.Handle==parent)return &o;return nullptr;}
@@ -388,11 +391,14 @@ struct Iface {
 struct CClientToolsTf2{static CClientToolsTf2*Instance(){static CClientToolsTf2 t;return &t;}Iface*GetClientTools(){return &iface;}};
 unsigned Mirv_Tf2_EntityHandle(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Handle;}
 template<typename T>T SceneInterfaceCall(void*p,int){return static_cast<T>(p);}
-void Mirv_Tf2_SceneMoveParent(void*p,const void*,unsigned&out){out=static_cast<CMirvTf2ClientUnknown*>(p)->Parent;}
+bool Mirv_Tf2_SceneMoveParent(void*p,const void*,unsigned&out){out=static_cast<CMirvTf2ClientUnknown*>(p)->Parent;return true;}
 '''+label_category+model_category+r'''
 int Mirv_Tf2_ToolCategory(Iface*,void*p,int,bool player,bool scene){return Mirv_Tf2_LabelCategory(static_cast<CMirvTf2ClientUnknown*>(p)->Name,player,scene);}
 bool Mirv_Tf2_LabelDebris(CMirvTf2ClientUnknown*p){return p->Debris;}
-'''+group_method+r'''
+bool g_OpenFortressLegacyMode=false;
+bool Mirv_Of_SceneInterfacesSupported(bool){return true;}
+void OfSceneDescribe(CMirvTf2ClientRenderable*r,const void*c,std::string&cls,std::string&model){cls=static_cast<const CMirvTf2ClientUnknown*>(c)->Name;model=r->Path;for(auto &ch:cls)ch=tolower(static_cast<unsigned char>(ch));}
+'''+calcs[calcs.index('static bool OfSceneViewmodel('):calcs.index('void Mirv_Of_CollectSceneEntities(')]+group_method+r'''
 int main(){
  objects={
   {{"models/player/demo.mdl"},"CTFPlayer",1,0,true},

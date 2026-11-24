@@ -6905,6 +6905,9 @@ void CAfxStreams::Console_Record_Start()
 void CAfxStreams::Console_Record_Start2()
 {
  if (!RecordingResolution::CanStart()) { Tier0_Warning("Custom recording resolution is not confirmed; apply or restore it first.\n"); return; }
+ if(g_OpenFortressLegacyMode && m_Tf2SeparateConfigured && (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo())) {
+  Tier0_Warning("OF experimental separate passes require an offline playing demo.\n"); return;
+ }
  if(m_Tf2SeparateConfigured && !m_Tf2FullReference){
   bool any=false;for(const auto &enabled:m_Tf2PassEnabled)any|=enabled.load();
   if(!any){Tier0_Warning("No recording outputs selected; enable Base/world, an isolate, depth, or full-scene reference.\n");return;}
@@ -10402,7 +10405,8 @@ bool CAfxStreams::ResetTf2Outputs(){
  m_Tf2SeparateConfigured=false;m_Tf2FullReference=false;return true;
 }
 bool CAfxStreams::Tf2PassRecording(Tf2RenderPass pass) const {
- return m_Recording && m_Tf2SeparateConfigured && Tf2PassEnabled(pass) && g_VEngineClient && !g_VEngineClient->Con_IsVisible();
+ return m_Recording && m_Tf2SeparateConfigured && Tf2PassEnabled(pass) && g_VEngineClient && !g_VEngineClient->Con_IsVisible() &&
+  (!g_OpenFortressLegacyMode || (g_OfNativePasses && g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsSkippingDemo() && !g_VEngineClient->IsDrawingLoadingImage()));
 }
 void CAfxStreams::EngineThread_PassBegin(Tf2RenderPass pass, int matteSample) {
  const unsigned background = matteSample == 0 ? 0xff000000u : matteSample == 1 ? 0xffffffffu : Tf2PassBackground();

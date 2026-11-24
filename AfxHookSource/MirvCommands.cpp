@@ -27,6 +27,7 @@ extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 #include "CampathDrawer.h"
 #include "Gui.h"
 #include "addresses.h"
+#include "OfNativeInterfaces.h"
 #include <shared/hooks/gameOverlayRenderer.h>
 
 #ifndef _WIN64
@@ -1559,13 +1560,24 @@ bool MirvCampath_CommandSeekObserverReady()
 void MirvCampath_ObserveDemoSeeks(void *command, void *play, void *timedemo, size_t callbackOffset)
 {
 	if (g_NativeDemoSeek || !command || !play ||
-	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified))
+	    (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified &&
+         !(g_OpenFortressLegacyMode && g_OfNativeCommands && OfNativeInterfaces::KnownClient())))
 		return;
 	auto callbackAt = [&](void *object) -> DemoSeekCallback {
 		if (!object)
 			return nullptr;
 		DemoSeekCallback callback = nullptr;
-		std::memcpy(&callback, static_cast<const char *>(object) + callbackOffset, sizeof(callback));
+        if (g_OpenFortressLegacyMode)
+        {
+            // Source 2013 ConCommand: callback union, completion union,
+            // flags (hasCompletion:1, usingNewCallback:1, usingInterface:1).
+            // Refuse old/no-argument and interface-style callbacks.
+            unsigned char flags=0;
+            if (!OfNativeInterfaces::Read(static_cast<const char *>(object)+callbackOffset,&callback,sizeof(callback)) ||
+                !OfNativeInterfaces::Read(static_cast<const char *>(object)+callbackOffset+2*sizeof(void *),&flags,1) ||
+                (flags & 6) != 2 || !OfNativeInterfaces::Executable(reinterpret_cast<void *>(callback),GetModuleHandleA("engine.dll"))) return nullptr;
+        }
+        else std::memcpy(&callback, static_cast<const char *>(object) + callbackOffset, sizeof(callback));
 		MEMORY_BASIC_INFORMATION info = {};
 		if (!callback || !VirtualQuery(reinterpret_cast<void *>(callback), &info, sizeof(info)) ||
 		    (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
@@ -5764,7 +5776,7 @@ bool Mirv_Tf2_SceneMoveParent(const void *object, const void *clientClass, std::
 	std::memcpy(&parent, static_cast<const unsigned char *>(object) + offset, sizeof(parent));
 	return true;
 }
-bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass)
+bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass, bool ignoreTeam)
 {
 	if (!object || !clientClass)
 		return true; // Unknown metadata: retain the normal render checks.
@@ -5782,7 +5794,7 @@ bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass)
 		if (value & 0x20)
 			return false; // EF_NODRAW
 	}
-	if (fields.Team >= 0)
+	if (!ignoreTeam && fields.Team >= 0)
 	{
 		std::memcpy(&value, bytes + fields.Team, sizeof(value));
 		if (value <= 1)
@@ -8494,7 +8506,7 @@ void MirvSpectate_ReleaseView()
 CON_COMMAND(mirv_pov, "Native player spectating in TF2 POV demos.")
 {
  if (args->ArgC() == 2 && !_stricmp(args->ArgV(1), "debug")) { Tier0_Msg("%s\n", MirvPovSpectate_Debug()); return; }
- if (g_OpenFortressLegacyMode) { Tier0_Msg("Native POV spectating requires an OF-specific ABI adapter. Use STV spectating or camera attachment.\n"); return; }
+ if (g_OpenFortressLegacyMode && !g_OfNativePovReady) { Tier0_Msg("OF experimental POV requires -afxOfNativePov and passing hook preflight. Use STV or camera attachment otherwise.\n"); return; }
  if (args->ArgC() == 3 && !_stricmp(args->ArgV(1), "mode")) {
   const char *mode = args->ArgV(2);
   if (!_stricmp(mode, "first") || !_stricmp(mode, "third")) {

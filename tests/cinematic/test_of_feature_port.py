@@ -25,6 +25,8 @@ main=(root/'AfxHookSource/main.cpp').read_text()
 of=main[main.index('void __fastcall new_CVClient_FrameStageNotify_OpenFortress('):main.index('typedef void(__fastcall* CVClient_FrameStageNotify_CSS_t)')]
 assert 'RecordingResolution::Frame();' in of
 assert 'MirvFix_OfInterpolationProbeFrame();' in of
-assert 'MirvPovSpectate_FrameBegin();' not in of and 'MirvFix_PlayerRepairFrameEnd();' not in of
+assert 'if (g_OfNativePovReady) MirvPovSpectate_FrameBegin();' in of
+assert 'if (g_OfNativePovReady) MirvPovSpectate_FrameEnd();' in of
+assert 'MirvFix_PlayerRepairFrameEnd();' not in of
 assert 'MirvFix_RecorderSoundUpdate();' not in of
 print('OF resolution opt-in and frame-stage engine-hook separation passed')

@@ -1488,24 +1488,68 @@ std::uint64_t g_SequenceFrozenRevision = ~std::uint64_t(0);
 std::string g_SequenceFrozenDemo;
 
 bool EvaluateSequenceComposite(double time, size_t limit, advancedfx::CameraPose &pose);
+// A fixed rig or campath has a time-deterministic boundary without history.
+// Ignore clips replaced by completed transitions before the boundary.
+bool SequenceNeedsHistory(size_t limit, double time)
+{
+    size_t base = 0;
+    for (size_t i = 1; i < limit; ++i)
+    {
+        const auto &clip = g_CameraClips[i];
+        if (time < clip.TransitionStart()) break;
+        if (clip.Blend <= 0 || time >= clip.TransitionStart() + clip.Blend) base = i;
+    }
+    for (size_t i = base; i < limit; ++i)
+    {
+        const auto &clip = g_CameraClips[i];
+        if (i > base && time < clip.TransitionStart()) break;
+        if (clip.Campath) continue;
+        auto rig = FindRig(std::to_string(clip.Target));
+        if (rig == g_CameraRigs.end() || rig->second.Rig.Attached || rig->second.AimTarget ||
+            (rig->second.Aim && (rig->second.Aim->Active || rig->second.Aim->SoftDeactivate))) return true;
+    }
+    return false;
+}
+// Only clone state that can be mutated by a historical evaluation. In
+// particular, never rebind a live engine entity during a boundary probe.
+NamedCameraRig SequenceProbeRig(const NamedCameraRig &rig)
+{
+    auto copy = rig;
+    copy.FollowCache.reset();
+    if (rig.Aim) copy.Aim = rig.Aim->CloneSettings();
+    if (rig.AimTarget) copy.AimTarget = std::make_shared<NamedCameraRig>(SequenceProbeRig(*rig.AimTarget));
+    return copy;
+}
 bool SequenceOutgoingAtStart(size_t index, double start, advancedfx::CameraPose &out)
 {
-	advancedfx::SceneCache::Frame frame;
-	if (!AfxHookSource::CameraOverlay::SampleCameraScene(start, frame))
-		return false; // Never resurrect the subject from an unrelated historical frame.
-	const auto oldFrame = g_BakeFrame;
-	const bool oldBaking = g_BakingCamera;
-	const double oldTime = g_CameraEvaluationTime;
-	const std::string oldFailure = g_CameraFailureReason;
-	g_BakeFrame = std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame));
-	g_BakingCamera = true;
-	g_CameraEvaluationTime = start;
-	const bool valid = EvaluateSequenceComposite(start, index, out);
-	g_CameraEvaluationTime = oldTime;
-	g_BakingCamera = oldBaking;
-	g_BakeFrame = oldFrame;
-	g_CameraFailureReason = oldFailure;
-	return valid;
+    advancedfx::SceneCache::Frame frame;
+    if (SequenceNeedsHistory(index, start) &&
+        !AfxHookSource::CameraOverlay::SampleCameraScene(start, frame))
+        return false; // Never resurrect a moving subject from an unrelated historical frame.
+    frame.ClientTime = start;
+    const auto oldFrame = g_BakeFrame;
+    const bool oldBaking = g_BakingCamera, oldInspecting = g_InspectingSequence;
+    const double oldTime = g_CameraEvaluationTime;
+    const int oldEvaluationFrame = g_CameraEvaluationFrame;
+    const std::string oldFailure = g_CameraFailureReason;
+    auto oldRigs = std::move(g_CameraRigs);
+    g_CameraRigs.clear();
+    for (const auto &entry : oldRigs)
+        g_CameraRigs.emplace(entry.first, SequenceProbeRig(entry.second));
+    g_BakeFrame = std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame));
+    g_BakingCamera = true;
+    g_InspectingSequence = true;
+    g_CameraEvaluationTime = start;
+    g_CameraEvaluationFrame = -1;
+    const bool valid = EvaluateSequenceComposite(start, index, out);
+    g_CameraRigs = std::move(oldRigs);
+    g_CameraEvaluationTime = oldTime;
+    g_CameraEvaluationFrame = oldEvaluationFrame;
+    g_BakingCamera = oldBaking;
+    g_InspectingSequence = oldInspecting;
+    g_BakeFrame = oldFrame;
+    g_CameraFailureReason = oldFailure;
+    return valid;
 }
 bool EvaluateSequenceComposite(double time, size_t limit, advancedfx::CameraPose &pose)
 {
@@ -1556,11 +1600,19 @@ bool EvaluateSequenceComposite(double time, size_t limit, advancedfx::CameraPose
 				{
 					// Live engine entities cannot be sampled in the past. Release
 					// the last actually displayed composite at the boundary.
-					if (g_SequencePreviousTime < start && g_SequencePreviousPose.Valid())
-					{
-						outgoing = g_SequencePreviousPose;
-						haveOutgoing = true;
-					}
+                    // Fixed and cached targets use the exact release boundary.
+                    // For a live moving target, only a recent, actually displayed
+                    // sample can be used. -infinity means no displayed sample.
+                    if ((std::abs(time-start) <= 1e-6 && haveOutgoing) || SequenceOutgoingAtStart(i, start, outgoing))
+                        haveOutgoing = true;
+                    else if (std::isfinite(g_SequencePreviousTime) && g_SequencePreviousTime < start &&
+                             start - g_SequencePreviousTime <= .25 && g_SequencePreviousPose.Valid())
+                    {
+                        outgoing = g_SequencePreviousPose;
+                        haveOutgoing = true;
+                    }
+                    else
+                        haveOutgoing = false; // No release history: cut rather than freeze a fabricated pose.
 					if (haveOutgoing)
 						g_SequenceFrozenPoses[clip.Id] = {start, outgoing};
 				}
