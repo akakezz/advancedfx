@@ -35,9 +35,12 @@ capture dimensions may exceed hardware encoder limits.
 Inspired by the video-mode registration technique documented and demonstrated
 by jooonior/SourceRes (https://github.com/jooonior/SourceRes). The
 implementation here is independent and uses the public Source SDK 2013
-IVEngineClient013/014 GetVideoModes and vmode_s layout. The existing
-engine mode count, plausible sorted entries, writable storage and a zeroed
-spare entry are checked before insertion; unsupported layouts are refused.
+IGameUIFuncs005 GetVideoModes and vmode_s layout. The existing engine
+mode count, plausible entries, writable expected 512-entry storage and
+zeroed or plausible stale spare entry are checked before insertion.
+Sorted lists use ordered insertion; unsorted lists retain their order
+with the custom mode appended. Re-query the native list after insertion
+and roll back if the engine reports an unexpected pointer or count.
 No SourceRes plugin or source file is bundled. Modes remain registered
 for the engine session; restore changes the active mode, not the list.
 

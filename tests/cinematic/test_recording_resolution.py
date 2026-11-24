@@ -24,7 +24,8 @@ int main()
     assert(Plan(modes,{1920,1080},inserted) && !inserted && modes.size()==4);
     assert(Plan(modes,{3840,2160},inserted) && inserted && modes.back().Width==3840);
     std::vector<Mode> bad{{1920,1080,32,60},{800,600,32,60}};
-    assert(!Plan(bad,{3840,2160},inserted) && bad.size()==2);
+    assert(Plan(bad,{3840,2160},inserted) && inserted && bad.size()==3);
+    assert(bad[0].Width==1920 && bad[1].Width==800 && bad[2].Width==3840);
     bad={{1920,1080,0,60}};
     assert(!Plan(bad,{3840,2160},inserted));
     bad.assign(512,{1920,1080,32,60});

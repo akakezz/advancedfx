@@ -35,9 +35,12 @@ inline bool Plan(std::vector<Mode> &modes, Size requested, bool &inserted)
         !std::all_of(modes.begin(), modes.end(), Plausible)) return false;
     for (const auto &m : modes)
         if (m.Width == requested.Width && m.Height == requested.Height) return true;
-    if (modes.size() >= 512 || !std::is_sorted(modes.begin(), modes.end(), Before)) return false;
+    if (modes.size() >= 512) return false;
     Mode mode{requested.Width, requested.Height, modes.front().Bits, modes.front().Refresh};
-    modes.insert(std::upper_bound(modes.begin(), modes.end(), mode, Before), mode);
+    if (std::is_sorted(modes.begin(), modes.end(), Before))
+        modes.insert(std::upper_bound(modes.begin(), modes.end(), mode, Before), mode);
+    else
+        modes.push_back(mode); // retain native ordering for unsorted mode lists
     inserted = true;
     return true;
 }
