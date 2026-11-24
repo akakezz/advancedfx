@@ -549,3 +549,31 @@ Base: `f773d8d20b026e5c7657c091c33212aff60a47af` (the last confirmed OF replay m
 ### Local validation and remaining work
 
 The bundle does not include the pinned submodule working trees (notably `deps/release/prop`, `deps/release/rapidxml`) or Dear ImGui/Windows build dependencies. Portable independent C++/Python regression fixtures can run without them; the Windows x86 Release build, XML/project round-trip, complete scene pose and native render adapter tests require the real dependencies. See the supplied validation report for actual outcomes. A full in-game pass needs to confirm ordinary startup, cache capture/replay, cameras and timeline, recording/profile selection, output correctness, and separately the opt-in resolution and collision paths. No new native render or POV path is advertised as functional for OF.
+
+
+## Integrated-port demo-load crash investigation (2026-11-24)
+
+Three user-supplied Sentry minidumps from the consolidated build contain the same
+MSVC C++ exception (`0xe06d7363`) on a worker thread; the first HLAE return RVA
+is `0x20c7be`, followed by `0x20aec6` and the same asynchronous worker stack.
+The last console log confirms the native render/POV hooks were installed and
+reports `Playing demo` immediately before Sentry handles the exception. The
+new OF native command observer now requests event indexing automatically. The
+existing TF2/TF2C demo reader used C++ exceptions for expected parse failures;
+a first-chance crash reporter can intercept those throws before the reader's
+catch handler. This is the leading hypothesis, not a symbolicated diagnosis.
+The exact message, matching HLAE PDB and failing demo were not supplied.
+
+The reader now propagates expected parse/IO failures as an error result, clears
+partial events, checks byte-to-bit multiplication bounds for PE32, and keeps
+the exception handler only for unforeseen library failures. OF automatic
+indexing waits until playback is active and not loading/skipping; parse errors
+are reported to the console as well as in the Events panel. This does not claim
+that all OF network messages are supported. The standalone sanitized test
+reuses the three valid sequencer fixtures, checks cancellation and missing files,
+and tests 8,571 truncated or mutated inputs with a linker-level throw trap.
+The OF startup, recording-resolution, scene capture ordering and frozen-camera
+checks also pass. The full sequencer target remains dependency-blocked by the
+missing RapidXML submodule. Windows compilation and live reproduction are
+pending. No separate cause for the custom-resolution error dialog can be
+identified from this archive; do not assume this change fixes that case.

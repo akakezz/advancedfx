@@ -21,19 +21,24 @@ class Bits
 {
 	const std::vector<unsigned char> *m_Data;
 	size_t m_Pos = 0, m_End;
+	std::string *m_Error;
 
 public:
-	explicit Bits(const std::vector<unsigned char> &data) : m_Data(&data), m_End(data.size() * 8)
+	explicit Bits(const std::vector<unsigned char> &data, std::string &error) : m_Data(&data), m_End(data.size() * 8), m_Error(&error)
 	{
 	}
+	bool Failed() const { return !m_Error->empty(); }
+	std::string &Error() const { return *m_Error; }
+	void Fail(const char *message) { if (!Failed()) *m_Error = message; }
 	size_t Left() const
 	{
-		return m_End - m_Pos;
+		return Failed() ? 0 : m_End - m_Pos;
 	}
 	uint32_t U(unsigned count)
 	{
+		if (Failed()) return 0;
 		if (count > 32 || count > Left())
-			throw std::runtime_error("Truncated network message");
+		{ Fail("Truncated network message"); return 0; }
 		uint32_t value = 0;
 		for (unsigned i = 0; i < count; ++i, ++m_Pos)
 			value |= uint32_t(((*m_Data)[m_Pos / 8] >> (m_Pos % 8)) & 1) << i;
@@ -41,8 +46,9 @@ public:
 	}
 	void Skip(size_t count)
 	{
+		if (Failed()) return;
 		if (count > Left())
-			throw std::runtime_error("Truncated message payload");
+		{ Fail("Truncated message payload"); return; }
 		m_Pos += count;
 	}
 	Bits Part(size_t count)
@@ -58,13 +64,14 @@ public:
 		for (unsigned shift = 0; shift < 35; shift += 7)
 		{
 			unsigned byte = U(8);
+			if (Failed()) return 0;
 			if (shift == 28 && (byte & 0xf0))
-				throw std::runtime_error("Invalid variable-length integer");
+				{ Fail("Invalid variable-length integer"); return 0; }
 			value |= (byte & 127) << shift;
 			if (!(byte & 128))
 				return value;
 		}
-		throw std::runtime_error("Invalid variable-length integer");
+		{ Fail("Invalid variable-length integer"); return 0; }
 	}
 	std::string String(size_t limit = 4096)
 	{
@@ -72,16 +79,18 @@ public:
 		while (out.size() <= limit)
 		{
 			auto c = U(8);
+			if (Failed()) return {};
 			if (!c)
 				return out;
 			out.push_back(char(c));
 		}
-		throw std::runtime_error("Oversized demo string");
+		{ Fail("Oversized demo string"); return {}; }
 	}
 	std::vector<unsigned char> Bytes(size_t count)
 	{
+		if (Failed()) return {};
 		if (count > Left() / 8)
-			throw std::runtime_error("Truncated byte payload");
+		{ Fail("Truncated byte payload"); return {}; }
 		std::vector<unsigned char> out(count);
 		for (auto &b : out)
 			b = static_cast<unsigned char>(U(8));
@@ -103,24 +112,25 @@ uint32_t LE(const unsigned char *p)
 std::vector<unsigned char> Decompress(Bits data)
 {
 	const size_t expected = data.U(32), size = data.U(32);
+	if (data.Failed()) return {};
 	if (expected > 16 * 1024 * 1024 || size < 4 || size > data.Left() / 8)
-		throw std::runtime_error("Invalid compressed string table size");
+	{ data.Fail("Invalid compressed string table size"); return {}; }
 	auto bytes = data.Bytes(size);
 	std::vector<unsigned char> out;
 	out.reserve(expected);
 	auto copy = [&](size_t offset, size_t count) {
 		if (!offset || offset > out.size() || count > expected - out.size())
-			throw std::runtime_error("Invalid compressed string table reference");
+			{ data.Fail("Invalid compressed string table reference"); return; }
 		while (count--)
 			out.push_back(out[out.size() - offset]);
 	};
 	if (!std::memcmp(bytes.data(), "SNAP", 4))
 	{
 		std::vector<unsigned char> raw(bytes.begin() + 4, bytes.end());
-		Bits input(raw);
+		Bits input(raw, data.Error());
 		if (input.Var() != expected)
-			throw std::runtime_error("Snappy size mismatch");
-		while (out.size() < expected)
+			{ data.Fail("Snappy size mismatch"); return {}; }
+		while (!data.Failed() && out.size() < expected)
 		{
 			unsigned tag = input.U(8), type = tag & 3;
 			if (type == 0)
@@ -128,9 +138,9 @@ std::vector<unsigned char> Decompress(Bits data)
 				size_t n = tag >> 2;
 				if (n >= 60)
 					n = input.U(unsigned(n - 59) * 8);
+				if (data.Failed() || n >= expected - out.size())
+				{ data.Fail("Oversized Snappy literal"); return {}; }
 				++n;
-				if (n > expected - out.size())
-					throw std::runtime_error("Oversized Snappy literal");
 				auto literal = input.Bytes(n);
 				out.insert(out.end(), literal.begin(), literal.end());
 			}
@@ -149,34 +159,34 @@ std::vector<unsigned char> Decompress(Bits data)
 	else if (!std::memcmp(bytes.data(), "LZSS", 4))
 	{
 		if (bytes.size() < 8 || LE(bytes.data() + 4) != expected)
-			throw std::runtime_error("LZSS size mismatch");
+			{ data.Fail("LZSS size mismatch"); return {}; }
 		size_t p = 8;
-		while (out.size() < expected)
+		while (!data.Failed() && out.size() < expected)
 		{
 			if (p >= bytes.size())
-				throw std::runtime_error("Truncated LZSS table");
+				{ data.Fail("Truncated LZSS table"); return {}; }
 			unsigned flags = bytes[p++];
-			for (int bit = 0; bit < 8 && out.size() < expected; ++bit)
+			for (int bit = 0; bit < 8 && !data.Failed() && out.size() < expected; ++bit)
 			{
 				if (p >= bytes.size())
-					throw std::runtime_error("Truncated LZSS token");
+					{ data.Fail("Truncated LZSS token"); return {}; }
 				if (!(flags & (1 << bit)))
 					out.push_back(bytes[p++]);
 				else
 				{
 					if (p + 2 > bytes.size())
-						throw std::runtime_error("Truncated LZSS reference");
+						{ data.Fail("Truncated LZSS reference"); return {}; }
 					unsigned a = bytes[p++], b = bytes[p++], n = (b & 15) + 1;
 					if (n == 1)
-						throw std::runtime_error("Early LZSS terminator");
+						{ data.Fail("Early LZSS terminator"); return {}; }
 					copy(((a << 4) | (b >> 4)) + 1, n);
 				}
 			}
 		}
 	}
 	else
-		throw std::runtime_error("Unsupported string table compression");
-	return out;
+		{ data.Fail("Unsupported string table compression"); return {}; }
+	return data.Failed() ? std::vector<unsigned char>{} : std::move(out);
 }
 
 struct Definition
@@ -199,9 +209,11 @@ struct Reader
 	std::map<int, std::string> Players;
 	int RecorderId = -1;
 	size_t StoredBytes = 0;
+	bool Failed() const { return !Result.Error.empty(); }
+	void Fail(std::string error) { if (!Failed()) Result.Error = std::move(error); }
 	void User(const std::vector<unsigned char> &data)
 	{
-		if (data.size() < 36)
+		if (Failed() || data.size() < 36)
 			return;
 		int id = int(LE(data.data() + 32));
 		std::string name(reinterpret_cast<const char *>(data.data()), 32);
@@ -209,7 +221,7 @@ struct Reader
 		if (id > 0 && !name.empty())
 		{
 			if (Players.size() >= 65536 && !Players.count(id))
-				throw std::runtime_error("Too many demo player identities");
+				{ Fail("Too many demo player identities"); return; }
 			Players[id] = name;
 			if (name == Result.Recorder)
 				RecorderId = id;
@@ -224,14 +236,14 @@ struct Reader
 	void Entries(Bits data, const Table &table, unsigned count)
 	{
 		if (count > table.Maximum || count > 65536)
-			throw std::runtime_error("Invalid string table count");
+			{ Fail("Invalid string table count"); return; }
 		std::vector<std::string> history;
 		int index = -1;
-		for (unsigned i = 0; i < count; ++i)
+		for (unsigned i = 0; !Failed() && i < count; ++i)
 		{
 			index = data.U(1) ? index + 1 : int(data.U(Log2(table.Maximum)));
 			if (index < 0 || unsigned(index) >= table.Maximum)
-				throw std::runtime_error("Invalid string table index");
+				{ Fail("Invalid string table index"); return; }
 			std::string text;
 			if (data.U(1))
 			{
@@ -239,7 +251,7 @@ struct Reader
 				{
 					unsigned h = data.U(5), length = data.U(5);
 					if (h >= history.size() || length > history[h].size())
-						throw std::runtime_error("Invalid string table history");
+						{ Fail("Invalid string table history"); return; }
 					text = history[h].substr(0, length) + data.String();
 				}
 				else
@@ -259,11 +271,11 @@ struct Reader
 	void Snapshot(Bits data)
 	{
 		unsigned count = data.U(8);
-		for (unsigned i = 0; i < count; ++i)
+		for (unsigned i = 0; !Failed() && i < count; ++i)
 		{
 			auto name = data.String();
 			unsigned entries = data.U(16);
-			for (unsigned j = 0; j < entries; ++j)
+			for (unsigned j = 0; !Failed() && j < entries; ++j)
 			{
 				data.String();
 				if (data.U(1))
@@ -274,7 +286,7 @@ struct Reader
 				}
 			}
 			if (data.U(1))
-				for (unsigned j = 0, n = data.U(16); j < n; ++j)
+				for (unsigned j = 0, n = data.U(16); !Failed() && j < n; ++j)
 				{
 					data.String();
 					if (data.U(1))
@@ -287,12 +299,13 @@ struct Reader
 		unsigned id = data.U(9);
 		auto definition = Definitions.find(id);
 		if (definition == Definitions.end())
-			throw std::runtime_error("Game event has no descriptor");
+			{ Fail("Game event has no descriptor"); return; }
 		Event event;
 		event.Tick = tick;
 		event.Name = definition->second.Name;
 		for (const auto &field : definition->second.Fields)
 		{
+			if (Failed()) return;
 			std::string value;
 			switch (field.second)
 			{
@@ -321,10 +334,11 @@ struct Reader
 			case 7:
 				break;
 			default:
-				throw std::runtime_error("Unknown event field type");
+				{ Fail("Unknown event field type"); return; }
 			}
 			event.Fields[field.first] = value;
 		}
+		if (Failed()) return;
 		auto &f = event.Fields;
 		const auto &name = event.Name;
 		if (name == "player_connect" || name == "player_connect_client" || name == "player_changename")
@@ -334,7 +348,7 @@ struct Reader
 			if (user > 0 && !label.empty())
 			{
 				if (Players.size() >= 65536 && !Players.count(user))
-					throw std::runtime_error("Too many demo player identities");
+					{ Fail("Too many demo player identities"); return; }
 				Players[user] = label;
 				if (label == Result.Recorder)
 					RecorderId = user;
@@ -377,12 +391,12 @@ struct Reader
 			}
 			StoredBytes += event.Search.size() + event.Summary.size() + event.Name.size() + sizeof(Event);
 			if (StoredBytes > 64 * 1024 * 1024)
-				throw std::runtime_error("Event index exceeds 64 MiB");
+				{ Fail("Event index exceeds 64 MiB"); return; }
 			for (auto &c : event.Search)
 				if ('A' <= c && c <= 'Z')
 					c = char(c - 'A' + 'a');
 			if (Result.Events.size() >= 250000)
-				throw std::runtime_error("Event index exceeds 250000 entries");
+				{ Fail("Event index exceeds 250000 entries"); return; }
 			Result.Events.push_back(std::move(event));
 		}
 	}
@@ -411,7 +425,7 @@ struct Reader
 				b.String();
 				break;
 			case 5:
-				for (unsigned i = 0, n = b.U(8); i < n; ++i)
+				for (unsigned i = 0, n = b.U(8); !Failed() && i < n; ++i)
 				{
 					b.String();
 					b.String();
@@ -438,7 +452,7 @@ struct Reader
 			case 10: {
 				unsigned n = b.U(16);
 				if (!b.U(1))
-					for (unsigned i = 0; i < n; ++i)
+					for (unsigned i = 0; !Failed() && i < n; ++i)
 					{
 						b.Skip(Log2(n) + 1);
 						b.String();
@@ -454,7 +468,7 @@ struct Reader
 				table.Name = b.String();
 				table.Maximum = b.U(16);
 				if (!table.Maximum || Tables.size() >= 32)
-					throw std::runtime_error("Invalid string table header");
+					{ Fail("Invalid string table header"); return; }
 				unsigned n = b.U(Log2(table.Maximum) + 1), length = Protocol > 23 ? b.Var() : b.U(20);
 				if (b.U(1))
 				{
@@ -468,7 +482,7 @@ struct Reader
 					if (compressed)
 					{
 						auto bytes = Decompress(part);
-						Entries(Bits(bytes), table, n);
+						if (!Failed()) Entries(Bits(bytes, Result.Error), table, n);
 					}
 					else
 						Entries(part, table, n);
@@ -480,7 +494,7 @@ struct Reader
 				unsigned id = b.U(5), n = b.U(1) ? b.U(16) : 1, length = b.U(20);
 				auto part = b.Part(length);
 				if (id >= Tables.size())
-					throw std::runtime_error("String table update has no descriptor");
+					{ Fail("String table update has no descriptor"); return; }
 				if (Tables[id].Name == "userinfo")
 					Entries(part, Tables[id], n);
 				break;
@@ -564,7 +578,7 @@ struct Reader
 			case 30: {
 				unsigned n = b.U(9);
 				auto data = b.Part(b.U(20));
-				for (unsigned i = 0; i < n; ++i)
+				for (unsigned i = 0; !Failed() && i < n; ++i)
 				{
 					unsigned id = data.U(9);
 					Definition def;
@@ -573,7 +587,7 @@ struct Reader
 					{
 						auto name = data.String(256);
 						if (def.Fields.size() >= 128)
-							throw std::runtime_error("Oversized game event definition");
+							{ Fail("Oversized game event definition"); return; }
 						def.Fields.emplace_back(name, kind);
 					}
 					Definitions[id] = std::move(def);
@@ -584,12 +598,16 @@ struct Reader
 				b.Skip(32);
 				b.String();
 				break;
-			case 32:
-				b.Skip(size_t(b.U(32)) * 8);
+			case 32: {
+				const auto bytes = b.U(32);
+				if (bytes > b.Left() / 8) { Fail("Truncated message payload"); return; }
+				b.Skip(size_t(bytes) * 8);
 				break;
+			}
 			default:
-				throw std::runtime_error("Unsupported network message " + std::to_string(type) +
-				                         " at demo tick " + std::to_string(tick));
+				Fail("Unsupported network message " + std::to_string(type) +
+				     " at demo tick " + std::to_string(tick));
+				return;
 			}
 		}
 	}
@@ -628,92 +646,101 @@ Index Read(const std::filesystem::path &file, const std::atomic_bool &cancel, st
 {
 	Reader reader;
 	reader.Result.File = file;
+	progress.store(0);
+	// Unsupported/truncated demo data is an expected outcome, not a C++ exception.
+	// Some games install first-chance exception reporters which can intercept a
+	// throw even when this worker would subsequently catch it.
 	try
 	{
-		const auto stamp = std::filesystem::last_write_time(file);
-		const auto size = std::filesystem::file_size(file);
-		std::ifstream stream(file, std::ios::binary);
-		auto bytes = [&](size_t count) {
-			if (count > 16 * 1024 * 1024)
-				throw std::runtime_error("Oversized demo packet");
-			std::vector<unsigned char> out(count);
-			if (count && !stream.read(reinterpret_cast<char *>(out.data()), count))
-				throw std::runtime_error("Truncated demo file");
-			return out;
-		};
-		auto header = bytes(1072);
-		if (std::memcmp(header.data(), "HL2DEMO\0", 8) || LE(header.data() + 8) != 3)
-			throw std::runtime_error("Expected a Source demo protocol 3 file (TF2/TF2C)");
-		reader.Protocol = LE(header.data() + 12);
-		if (reader.Protocol < 15 || reader.Protocol > 24)
-			throw std::runtime_error("Unsupported demo network protocol");
-		auto stringAt = [&](size_t pos) {
-			std::string s(reinterpret_cast<char *>(header.data() + pos), 260);
-			s.resize(s.find('\0') == std::string::npos ? s.size() : s.find('\0'));
-			return s;
-		};
-		reader.Result.Map = stringAt(536);
-		reader.Result.Recorder = stringAt(276);
-		reader.Result.TotalTicks = int(LE(header.data() + 1060));
-		if (reader.Result.TotalTicks < 0)
-			throw std::runtime_error("Invalid demo tick count");
-		bool stopped = false;
-		while (!stopped)
-		{
-			if (cancel.load())
-				throw std::runtime_error("Indexing cancelled");
-			auto command = bytes(1);
-			unsigned type = command[0];
-			if (type == 7)
+		auto parse = [&]() {
+			std::error_code ec;
+			const auto stamp = std::filesystem::last_write_time(file, ec);
+			if (ec) { reader.Fail("Cannot read demo timestamp: " + ec.message()); return; }
+			const auto size = std::filesystem::file_size(file, ec);
+			if (ec) { reader.Fail("Cannot read demo size: " + ec.message()); return; }
+			std::ifstream stream(file, std::ios::binary);
+			if (!stream) { reader.Fail("Cannot open demo file"); return; }
+			auto bytes = [&](size_t count) {
+				if (reader.Failed()) return std::vector<unsigned char>{};
+				if (count > 16 * 1024 * 1024)
+				{ reader.Fail("Oversized demo packet"); return std::vector<unsigned char>{}; }
+				std::vector<unsigned char> out(count);
+				if (count && !stream.read(reinterpret_cast<char *>(out.data()), count))
+				{ reader.Fail("Truncated demo file"); return std::vector<unsigned char>{}; }
+				return out;
+			};
+			auto header = bytes(1072);
+			if (reader.Failed()) return;
+			if (std::memcmp(header.data(), "HL2DEMO\0", 8) || LE(header.data() + 8) != 3)
+			{ reader.Fail("Expected a Source demo protocol 3 file (TF2/TF2C)"); return; }
+			reader.Protocol = LE(header.data() + 12);
+			if (reader.Protocol < 15 || reader.Protocol > 24)
+			{ reader.Fail("Unsupported demo network protocol"); return; }
+			auto stringAt = [&](size_t pos) {
+				std::string s(reinterpret_cast<char *>(header.data() + pos), 260);
+				s.resize(s.find('\0') == std::string::npos ? s.size() : s.find('\0'));
+				return s;
+			};
+			reader.Result.Map = stringAt(536);
+			reader.Result.Recorder = stringAt(276);
+			reader.Result.TotalTicks = int(LE(header.data() + 1060));
+			if (reader.Result.TotalTicks < 0)
+			{ reader.Fail("Invalid demo tick count"); return; }
+			while (!reader.Failed())
 			{
-				stopped = true;
-				break;
+				if (cancel.load()) { reader.Fail("Indexing cancelled"); return; }
+				auto command = bytes(1);
+				if (reader.Failed()) return;
+				unsigned type = command[0];
+				if (type == 7) break;
+				auto head = bytes(4);
+				if (reader.Failed()) return;
+				int tick = int(LE(head.data()));
+				switch (type)
+				{
+				case 1:
+				case 2: {
+					bytes(84);
+					auto length = bytes(4);
+					if (reader.Failed()) return;
+					auto packet = bytes(LE(length.data()));
+					if (!reader.Failed()) reader.Packet(Bits(packet, reader.Result.Error), tick);
+					break;
+				}
+				case 3: break;
+				case 5: bytes(4); [[fallthrough]];
+				case 4:
+				case 6:
+				case 8: {
+					auto length = bytes(4);
+					if (reader.Failed()) return;
+					auto payload = bytes(LE(length.data()));
+					if (!reader.Failed() && type == 8) reader.Snapshot(Bits(payload, reader.Result.Error));
+					break;
+				}
+				default: reader.Fail("Unsupported demo packet " + std::to_string(type)); return;
+				}
+				if (reader.Failed()) return;
+				const auto position = stream.tellg();
+				if (position < 0) { reader.Fail("Cannot read demo position"); return; }
+				progress.store(size ? float(double(position) / double(size)) : 0);
 			}
-			auto head = bytes(4);
-			int tick = int(LE(head.data()));
-			switch (type)
-			{
-			case 1:
-			case 2: {
-				bytes(84);
-				auto length = bytes(4);
-				auto packet = bytes(LE(length.data()));
-				reader.Packet(Bits(packet), tick);
-				break;
-			}
-			case 3:
-				break;
-			case 5:
-				bytes(4);
-				[[fallthrough]];
-			case 4:
-			case 6:
-			case 8: {
-				auto length = bytes(4);
-				auto payload = bytes(LE(length.data()));
-				if (type == 8)
-					reader.Snapshot(Bits(payload));
-				break;
-			}
-			case 7:
-				stopped = true;
-				break;
-			default:
-				throw std::runtime_error("Unsupported demo packet " + std::to_string(type));
-			}
-			progress.store(size ? float(double(stream.tellg()) / double(size)) : 0);
-		}
-		if (std::filesystem::last_write_time(file) != stamp || std::filesystem::file_size(file) != size)
-			throw std::runtime_error("Demo file changed while indexing");
-		std::stable_sort(reader.Result.Events.begin(), reader.Result.Events.end(),
-		                 [](const Event &a, const Event &b) { return a.Tick < b.Tick; });
-		progress.store(1);
+			if (reader.Failed()) return;
+			const auto finalStamp = std::filesystem::last_write_time(file, ec);
+			if (ec || finalStamp != stamp) { reader.Fail("Demo file changed while indexing"); return; }
+			const auto finalSize = std::filesystem::file_size(file, ec);
+			if (ec || finalSize != size) { reader.Fail("Demo file changed while indexing"); return; }
+			std::stable_sort(reader.Result.Events.begin(), reader.Result.Events.end(),
+			                 [](const Event &a, const Event &b) { return a.Tick < b.Tick; });
+			progress.store(1);
+		};
+		parse();
 	}
 	catch (const std::exception &error)
 	{
-		reader.Result.Error = error.what();
-		reader.Result.Events.clear();
+		reader.Fail(error.what());
 	}
+	if (reader.Failed()) reader.Result.Events.clear();
 	return std::move(reader.Result);
 }
 } // namespace DemoTimeline

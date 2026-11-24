@@ -5188,6 +5188,12 @@ static void AutoIndexRequestedDemo()
 	auto &state = g_SequencerTimeline;
 	if (state.RequestedDemo.empty())
 		return;
+	// On OF the newly installed playdemo observer can notify us before Source
+	// has finished loading the map. Do not start background indexing then.
+	if (g_OpenFortressLegacyMode && state.AutoIndex && g_VEngineClient &&
+	    (!g_VEngineClient->IsPlayingDemo() || g_VEngineClient->IsDrawingLoadingImage() ||
+	     g_VEngineClient->IsSkippingDemo()))
+		return;
 	auto name = std::move(state.RequestedDemo);
 	state.RequestedDemo.clear();
 	if (!state.AutoIndex || !g_VEngineClient)
@@ -5254,6 +5260,8 @@ static void PollTimelineIndex()
 			state.Index.Error = e.what();
 		}
 		state.FilterDirty = true;
+		if (!state.Index.Error.empty())
+			advancedfx::Warning("Demo event indexing failed: %s\n", state.Index.Error.c_str());
 		if (state.Index.Error.empty())
 		{
 			std::error_code error;
