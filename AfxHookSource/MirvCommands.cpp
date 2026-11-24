@@ -5636,7 +5636,8 @@ static void AngleTraceDiscover(Tf2FixRecvTable *table, int offset, std::vector<A
 				add(field, at, 0);
 			else if (p.Type == 0 &&
 			         (n == "m_nSequence" || n == "m_nSkin" || n == "m_nBody" || n == "m_nHitboxSet" ||
-			          n == "m_fFlags" || n == "m_fEffects" || n == "m_iHealth" || n == "m_iTeamNum"))
+			          n == "m_fFlags" || n == "m_fEffects" || n == "m_iHealth" || n == "m_iTeamNum" ||
+			          n == "m_nTickBase"))
 				add(field, at, 1);
 			else if (p.Type == 0 && n == "m_nModelIndex")
 				add(field, at, 3);
@@ -6559,6 +6560,23 @@ void MirvFix_PlayerAngleTraceFrame(int stage)
 	                 double(Mirv_Tf2_DiagnosticBoneDropped() - t.DroppedStart));
 	if (stage == 2)
 	{
+		// Log native controls independently. Missing/hidden cvars are explicitly
+		// unavailable, not silently interpreted as zero.
+		const char *nativeControls[] = {"cl_predict", "cl_predictweapons", "cl_interp_all",
+			"cl_extrapolate", "cl_smooth", "cl_smoothtime", "demo_interpolateview",
+			"demo_legacy_rollback", "fps_max", "host_framerate"};
+		for (const char *name : nativeControls)
+		{
+			float value = std::numeric_limits<float>::quiet_NaN();
+			auto read = [&](auto *iface)
+			{
+				if (!iface) return;
+				if (auto var = iface->FindVar(name)) value = var->GetFloat();
+			};
+			if (SOURCESDK::L4D2::g_pCVar) read(SOURCESDK::L4D2::g_pCVar);
+			else read(SOURCESDK::CSS::g_pCVar);
+			AngleTraceAppend(tick, phase, AngleTraceNamedField(std::string("native_cvar.") + name), value);
+		}
 		// Frame cadence is measured independently of the demo's simulated clock.
 		// Sample after normal rendering, so the final view belongs to this frame.
 		const auto now = std::chrono::steady_clock::now();
@@ -8101,3 +8119,6 @@ CON_COMMAND(mirv_overlay, "Cinematic workspace (supported games only).")
 	}
 	Tier0_Msg("mirv_overlay [0|1] - Toggle or set the cinematic workspace.\n");
 }
+
+// Optional build-verified native interpolation observer; does not install on startup.
+#include "Tf2InterpolationProbe.inl"

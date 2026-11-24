@@ -971,7 +971,10 @@ g_RepairHooks=true;repairButton("Investigate jitter / angle snapping");repairBut
        g_PlayerAngleTrace.NameIds.count("engine_curtime")&&
        g_PlayerAngleTrace.NameIds.count("interpolated_demo_time")&&
        g_PlayerAngleTrace.NameIds.count("native_camera_origin_x")&&
-       g_PlayerAngleTrace.NameIds.count("final_camera_origin_x"),
+       g_PlayerAngleTrace.NameIds.count("final_camera_origin_x")&&
+       g_PlayerAngleTrace.NameIds.count("native_cvar.cl_predict")&&
+       g_PlayerAngleTrace.NameIds.count("native_cvar.cl_interp_all")&&
+       g_PlayerAngleTrace.NameIds.count("native_cvar.cl_extrapolate"),
        "Jitter diagnostic collects real-frame pacing and native/final camera poses");
  bool failedCall=false;for(const auto&r:g_PlayerAngleTrace.Rows)failedCall|=r.Stage==7&&r.Event==43&&r.Frame==124&&r.Field==g_PlayerAngleTrace.NameIds.at("setup_bones.success")&&r.Value==0;check(failedCall,"Failed natural calls remain visible even without skeleton metadata");
  auto row=[&](int stage,int field,float value){for(auto &r:g_PlayerAngleTrace.Rows)if(r.Stage==stage&&r.Field==field&&std::abs(r.Value-value)<1e-5)return true;return false;};check(row(0,0,-12)&&row(2,0,-12)&&row(4,0,80),"Diagnostic distinguishes normal receive input/output from a later stored-angle spike");check(row(3,2,.4f)&&row(4,2,.9f),"Pose slots are sampled separately before and after render processing");check(row(5,26,0)&&row(5,27,0)&&row(5,28,0),"Entity render-angle fields are recorded when available");
