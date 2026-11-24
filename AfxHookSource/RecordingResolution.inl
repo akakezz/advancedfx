@@ -53,82 +53,113 @@ bool Writable(const void *p, size_t bytes)
     const auto base = reinterpret_cast<uintptr_t>(m.BaseAddress);
     return start >= base && start-base <= m.RegionSize && bytes <= m.RegionSize-(start-base);
 }
-bool Register(Size size)
+struct ModeList
 {
-    auto reject = [](const std::string &why) {
-        Message = "Engine video-mode registration rejected: " + why;
-        return false;
-    };
-    // The game UI interface is versioned independently of IVEngineClient,
-    // and exposes the same native list with pointer/count arguments.
+    void *Interface = nullptr;
+    using Getter = void (__thiscall *)(void *, Mode **, int *);
+    Getter Get = nullptr;
+    Mode *Data = nullptr;
+    int Count = 0;
+};
+struct BorrowedMode
+{
+    Mode *List = nullptr;
+    int Count = 0, Index = -1;
+    Mode Saved{}, Custom{};
+} Borrowed;
+
+bool RejectMode(const std::string &why)
+{
+    Message = "Engine video-mode registration rejected: " + why;
+    return false;
+}
+bool QueryModes(ModeList &list)
+{
     HMODULE engine = GetModuleHandleW(L"engine.dll");
-    if (!engine) return reject("engine.dll unavailable.");
+    if (!engine) return RejectMode("engine.dll unavailable.");
     using Factory = void *(__cdecl *)(const char *, int *);
     auto factory = reinterpret_cast<Factory>(GetProcAddress(engine,"CreateInterface"));
     void *iface = factory ? factory("VENGINE_GAMEUIFUNCS_VERSION005",nullptr) : nullptr;
     if (!iface && g_AppSystemFactory)
         iface = g_AppSystemFactory("VENGINE_GAMEUIFUNCS_VERSION005",nullptr);
-    if (!iface) return reject("IGameUIFuncs005 unavailable.");
+    if (!iface) return RejectMode("IGameUIFuncs005 unavailable.");
     auto table = *reinterpret_cast<void ***>(iface);
     MEMORY_BASIC_INFORMATION code{};
     if (!table || !VirtualQuery(table[3], &code, sizeof(code)) ||
         code.AllocationBase != engine || code.State != MEM_COMMIT ||
         (code.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
         !(code.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
-        return reject("IGameUIFuncs GetVideoModes entry is not executable engine code.");
-    using GetModes = void (__thiscall *)(void *, Mode **, int *);
-    auto getModes = reinterpret_cast<GetModes>(table[3]);
-    int count = 0;
-    Mode *native = nullptr;
-    getModes(iface, &native, &count);
-    if (!native || count < 1 || count > 512)
-        return reject("invalid list pointer or count (" + std::to_string(count) + ").");
-    auto *counter = reinterpret_cast<int *>(native) - 1;
-    int stored = 0;
-    SIZE_T read = 0;
-    if (!ReadProcessMemory(GetCurrentProcess(), counter, &stored, sizeof(stored), &read) ||
-        read != sizeof(stored))
-        return reject("cannot read internal mode count.");
-    if (stored != count)
-        return reject("internal count " + std::to_string(stored) +
-                      " does not match reported count " + std::to_string(count) + ".");
-    std::vector<Mode> modes(size_t(count), Mode{});
-    if (!ReadProcessMemory(GetCurrentProcess(), native, modes.data(), modes.size()*sizeof(Mode), &read) ||
-        read != modes.size()*sizeof(Mode))
-        return reject("cannot read reported mode entries.");
-    bool inserted = false;
-    if (!Plan(modes, size, inserted))
-        return reject("invalid mode entries, dimensions or full mode list (count " + std::to_string(count) + ").");
-    if (!inserted) return true;
-    // The SDK 2013 native list has 512 entries. Require the complete
-    // expected storage to be writable before accepting an append. Unused
-    // entries can retain old video modes after the engine rebuilds the list.
-    if (!Writable(counter, sizeof(int)+512*sizeof(Mode)))
-        return reject("full native mode storage is not writable.");
-    Mode spare{};
-    if (!ReadProcessMemory(GetCurrentProcess(), native+count, &spare, sizeof(spare), &read) ||
-        read != sizeof(spare))
-        return reject("cannot read spare mode slot.");
-    const bool zero = !spare.Width && !spare.Height && !spare.Bits && !spare.Refresh;
-    if (!zero && !Plausible(spare))
-        return reject("spare entry does not look like zero or an old mode (" +
-            std::to_string(spare.Width) + "x" + std::to_string(spare.Height) + ", " +
-            std::to_string(spare.Bits) + " bpp, " + std::to_string(spare.Refresh) + " Hz).");
-    std::vector<Mode> original(size_t(count)+1, Mode{});
-    if (!ReadProcessMemory(GetCurrentProcess(), native, original.data(), original.size()*sizeof(Mode), &read) ||
-        read != original.size()*sizeof(Mode))
-        return reject("cannot save original list for rollback.");
-    std::memcpy(native, modes.data(), modes.size()*sizeof(Mode));
-    *counter = int(modes.size());
-    int afterCount = 0;
-    Mode *afterList = nullptr;
-    getModes(iface, &afterList, &afterCount);
-    if (afterList != native || afterCount != int(modes.size()))
+        return RejectMode("IGameUIFuncs GetVideoModes entry is not executable engine code.");
+    list.Interface = iface;
+    list.Get = reinterpret_cast<ModeList::Getter>(table[3]);
+    list.Get(iface, &list.Data, &list.Count);
+    if (!list.Data || list.Count < 1 || list.Count > 512)
+        return RejectMode("invalid list pointer or count ("+std::to_string(list.Count)+").");
+    return true;
+}
+bool ReadMode(const Mode *p, Mode &mode)
+{
+    SIZE_T read=0;
+    return ReadProcessMemory(GetCurrentProcess(),p,&mode,sizeof(mode),&read) && read==sizeof(mode);
+}
+bool StillBorrowed(const ModeList &list)
+{
+    Mode value{};
+    return Borrowed.Index>0 && list.Data==Borrowed.List && list.Count==Borrowed.Count &&
+        Borrowed.Index<list.Count && ReadMode(list.Data+Borrowed.Index,value) &&
+        SameMode(value,Borrowed.Custom);
+}
+bool ReleaseBorrowed()
+{
+    if (!Borrowed.List) return true;
+    ModeList list;
+    // Never write into a rebuilt list or an entry that another owner changed.
+    if (!QueryModes(list) || !StillBorrowed(list) ||
+        !Writable(list.Data+Borrowed.Index,sizeof(Mode))) return false;
+    std::memcpy(list.Data+Borrowed.Index,&Borrowed.Saved,sizeof(Mode));
+    Borrowed = {};
+    return true;
+}
+bool Register(Size size)
+{
+    ModeList list;
+    if (!QueryModes(list)) return false;
+    if (Borrowed.List)
     {
-        std::memcpy(native, original.data(), original.size()*sizeof(Mode));
-        *counter = count;
-        return reject("engine did not report the updated mode list; rolled back.");
+        if (!StillBorrowed(list))
+            return RejectMode("the borrowed mode changed; restore original resolution or restart TF2.");
+        if (Dimensions(Borrowed.Custom)==size) return true;
+        return RejectMode("restore original resolution before selecting another custom size.");
     }
+    std::vector<Mode> modes(size_t(list.Count), Mode{});
+    SIZE_T read=0;
+    if (!ReadProcessMemory(GetCurrentProcess(), list.Data, modes.data(), modes.size()*sizeof(Mode), &read) ||
+        read != modes.size()*sizeof(Mode))
+        return RejectMode("cannot read reported mode entries.");
+    const int index = BorrowIndex(modes,size,EngineSize(),Original);
+    if (index==-1) return true;
+    if (index<0)
+        return RejectMode("no safe existing mode to borrow (count "+std::to_string(list.Count)+").");
+    auto *slot=list.Data+index;
+    Mode saved{};
+    if (!Writable(slot,sizeof(Mode)) || !ReadMode(slot,saved) || !SameMode(saved,modes[index]))
+        return RejectMode("selected existing mode is not writable or changed.");
+    Mode custom{size.Width,size.Height,saved.Bits,saved.Refresh};
+    // Do not append, shift entries or write the engine's internal count.
+    std::memcpy(slot,&custom,sizeof(Mode));
+    Borrowed={list.Data,list.Count,index,saved,custom};
+    ModeList after;
+    if (!QueryModes(after) || !StillBorrowed(after))
+    {
+        // If the list moved, do not dereference its former pointer.
+        if (after.Data==list.Data && after.Count==list.Count &&
+            ReadMode(slot,custom) && SameMode(custom,Borrowed.Custom) && Writable(slot,sizeof(Mode)))
+            std::memcpy(slot,&saved,sizeof(Mode));
+        Borrowed={};
+        return RejectMode("engine did not report the substituted mode; restore or restart TF2.");
+    }
+    Tier0_Msg("Temporarily borrowed mode %d: %dx%d -> %dx%d (list count unchanged: %d).\n",
+              index,saved.Width,saved.Height,size.Width,size.Height,list.Count);
     return true;
 }
 void QueueMode(Size size)
@@ -266,9 +297,12 @@ void Frame()
                 lock.unlock();
                 const bool restored = RestoreWindow(window);
                 lock.lock();
+                const bool released = ReleaseBorrowed();
                 Managed = Pending = Fitted = Restoring = false;
                 Confirmed = true;
-                Message = restored ? "Original render resolution and window restored." : "Original render resolution restored; window position could not be restored.";
+                Message = !released ? "Original resolution restored; borrowed mode could not be safely restored. Restart TF2." :
+                    restored ? "Original render resolution, window and borrowed mode restored." :
+                    "Original render resolution restored; window position could not be restored.";
                 return;
             }
             if (WantFit && !Fitted)

@@ -35,14 +35,18 @@ capture dimensions may exceed hardware encoder limits.
 Inspired by the video-mode registration technique documented and demonstrated
 by jooonior/SourceRes (https://github.com/jooonior/SourceRes). The
 implementation here is independent and uses the public Source SDK 2013
-IGameUIFuncs005 GetVideoModes and vmode_s layout. The existing engine
-mode count, plausible entries, writable expected 512-entry storage and
-zeroed or plausible stale spare entry are checked before insertion.
-Sorted lists use ordered insertion; unsorted lists retain their order
-with the custom mode appended. Re-query the native list after insertion
-and roll back if the engine reports an unexpected pointer or count.
-No SourceRes plugin or source file is bundled. Modes remain registered
-for the engine session; restore changes the active mode, not the list.
+IGameUIFuncs005 GetVideoModes and vmode_s layout. The actual array capacity
+is not exposed by the interface; current TF2 returned non-mode data after
+the reported list. No entries outside the reported count are accessed.
+Instead, an existing non-current, non-original video mode (never index
+zero) is temporarily replaced in place. The entry's original dimensions,
+bits and refresh rate are saved. The engine's count and other entries
+are unchanged. The list is re-queried to verify the substitution. Restore
+the original resolution before selecting a different custom size.
+After the original resolution is confirmed, the saved entry is restored
+only if the pointer, count and custom value still match. If the list was
+rebuilt or changed, restart TF2 rather than overwriting unknown memory.
+No SourceRes plugin or source file is bundled.
 
 The engine applies mat_setvideomode in windowed mode. HLAE waits for a
 successful Direct3D present and exact engine/backbuffer/capture dimensions

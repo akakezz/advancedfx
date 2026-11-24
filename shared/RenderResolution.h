@@ -23,26 +23,30 @@ inline bool Plausible(Mode m)
     return m.Width > 0 && m.Width <= 32768 && m.Height > 0 && m.Height <= 32768 &&
            (m.Bits == 16 || m.Bits == 24 || m.Bits == 32) && m.Refresh >= 0 && m.Refresh <= 1000;
 }
-inline bool Before(Mode a, Mode b)
+inline Size Dimensions(Mode m) { return {m.Width,m.Height}; }
+inline bool SameMode(Mode a, Mode b)
 {
-    return a.Width < b.Width || (a.Width == b.Width && a.Height < b.Height);
+    return Dimensions(a)==Dimensions(b) && a.Bits==b.Bits && a.Refresh==b.Refresh;
 }
-// Pure planner: preserve all existing entries; reject an unexpected list layout.
-inline bool Plan(std::vector<Mode> &modes, Size requested, bool &inserted)
+// Only existing entries can be borrowed. Never infer capacity or touch
+// the count, fallback slot zero, current mode or saved original mode.
+// -2 = rejected; -1 = already present; otherwise an index within the list.
+inline int BorrowIndex(const std::vector<Mode> &modes, Size requested, Size current, Size original)
 {
-    inserted = false;
-    if (!Valid(requested) || modes.empty() || modes.size() > 512 ||
-        !std::all_of(modes.begin(), modes.end(), Plausible)) return false;
+    if (!Valid(requested) || modes.empty() || modes.size()>512 ||
+        !std::all_of(modes.begin(),modes.end(),Plausible)) return -2;
+    bool haveOriginal=false;
     for (const auto &m : modes)
-        if (m.Width == requested.Width && m.Height == requested.Height) return true;
-    if (modes.size() >= 512) return false;
-    Mode mode{requested.Width, requested.Height, modes.front().Bits, modes.front().Refresh};
-    if (std::is_sorted(modes.begin(), modes.end(), Before))
-        modes.insert(std::upper_bound(modes.begin(), modes.end(), mode, Before), mode);
-    else
-        modes.push_back(mode); // retain native ordering for unsorted mode lists
-    inserted = true;
-    return true;
+    {
+        if (Dimensions(m)==requested) return -1;
+        if (Dimensions(m)==original) haveOriginal=true;
+    }
+    if (!haveOriginal) return -2;
+    // Prefer the highest remaining index, typically the largest mode.
+    for (int i=int(modes.size())-1;i>0;--i)
+        if (Dimensions(modes[i])!=current && Dimensions(modes[i])!=original)
+            return i;
+    return -2;
 }
 inline bool Ready(Size requested, Size engine, Size back, Size capture)
 {
