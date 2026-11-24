@@ -8,7 +8,6 @@ struct State
     int PreviewWidth = 0, PreviewHeight = 0, MaxWidth = 0, MaxHeight = 0;
     bool Supported = false, Windowed = false, Pending = false, Managed = false, Fit = false, Ready = false;
     bool NativePreview = false;
-    int LastWidth = 0, LastHeight = 0;
     std::string Message;
 };
 State GetState();
@@ -20,4 +19,6 @@ void Invalidate();
 void PublishPreviewPath(bool native);
 bool FitPresentation(void *window);
 bool SuppressSizeMessage(void *window);
+// Only for engine/shader rendering-module client size queries.
+bool NativeClientSize(void *window, int &width, int &height);
 }

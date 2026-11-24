@@ -36,6 +36,12 @@ int main()
     assert(SameMode(modes[0],{800,600,32,60}));
     assert(!SameMode(modes[0],{800,600,32,75}));
     const Size high{3840,2160}, low{1920,1080};
+    assert(NativeClient(low,high)==high);
+    assert((NativeClient({1904,810},{4700,2000})==Size{4700,2000}));
+    assert(NativeClient(low,{})==low);
+    assert(NativeClient({},high)==Size{});
+    assert(NativeClient(high,high)==high);
+    assert((NativeClient({4000,1080},high)==Size{4000,1080}));
     assert(Ready(high,high,high,high));
     assert(!Ready(high,low,high,high));
     assert(!Ready(high,high,low,high));

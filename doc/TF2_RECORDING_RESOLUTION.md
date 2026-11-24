@@ -75,15 +75,16 @@ The preview fit validates the actual outer window against the original monitor's
 
 When the overlay is visible, the fitted preview attempts to use a preview-sized additional D3D9 swap chain. The native game backbuffer is copied/downsampled to it, resolving MSAA if necessary. ImGui renders onto that preview surface in preview pixel coordinates, then the preview is presented. The original render target, depth, viewport and scissor are restored. The capture pipeline continues using the native game surfaces. Unsupported drivers/flags or a failed copy use the original scaled presentation path. Resources are released on reset, shutdown or when fit mode ends. The UI/status distinguishes preview-resolution compositing from the fallback. Live Windows support and output correctness still require testing.
 
-## Editing and recording resolution switch
+## Native HUD layout in fitted preview
 
-Native Source UI input at fitted high resolutions is not currently supported
-reliably. The attempted cursor, event queue and freecam remapping changes
-have been removed. Use the original resolution for native menu interaction,
-then resume the last custom recording resolution. The Recording tab offers
-a switch/resume button and `mirv_resolution toggle` is its bindable console
-command. It remembers the most recently accepted custom mode and fit setting
-for the current session, refuses to switch while recording or pending, and
-uses the existing verified apply/restore paths. It does not start recording
-or automatically change resolution when opening a menu. Confirm the native
-render/capture indicators before recording.
+Source's engine UI simulation uses the physical client rectangle to set
+its viewport, which can leave HUD panels clipped to the smaller preview.
+The engine.dll and shaderapidx9.dll GetClientRect import hooks report the
+verified native dimensions only for the managed fitted window. Other
+windows, normal modes, minimized windows, invalid surfaces and HLAE's own
+Win32 calls retain actual client bounds. No mouse coordinate or input
+queue hooks are added. Native game UI interaction remains a known
+limitation. Resolution changes may disrupt loaded demos; the separate
+editing/recording toggle has been removed. Status reports the count of
+native client-size overrides for diagnostics. Live HUD correctness still
+requires Windows testing.

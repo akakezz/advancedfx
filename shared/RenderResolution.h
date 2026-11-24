@@ -16,6 +16,15 @@ inline Size Fit(Size source, Size available)
         return {available.Width, (std::max)(1, int(std::int64_t(source.Height)*available.Width/source.Width))};
     return {(std::max)(1, int(std::int64_t(source.Width)*available.Height/source.Height)), available.Height};
 }
+// Engine rendering and VGUI layout must continue to see the native
+// dimensions, but only for a valid smaller fitted client.
+inline Size NativeClient(Size physical, Size native)
+{
+    if (!Valid(native) || physical.Width<=0 || physical.Height<=0 ||
+        physical.Width>native.Width || physical.Height>native.Height)
+        return physical;
+    return native;
+}
 struct Mode { int Width, Height, Bits, Refresh; };
 static_assert(sizeof(Mode) == 16, "Source vmode_t layout");
 inline bool Plausible(Mode m)

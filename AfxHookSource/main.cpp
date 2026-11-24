@@ -3107,6 +3107,20 @@ CAfxImportFuncHook<LONG(WINAPI*)(HWND, int)> g_Import_engine_USER32_GetWindowLon
 CAfxImportFuncHook<LONG(WINAPI*)(HWND, int, LONG)> g_Import_engine_USER32_SetWindowLongW("SetWindowLongW", &new_SetWindowLongW);
 #endif //#ifndef _WIN64
 
+// Only engine and shaderapi imports use logical client bounds. HLAE's
+// own calls and inputsystem/vgui mouse APIs keep the real window geometry.
+BOOL WINAPI new_render_GetClientRect(HWND window, LPRECT rect)
+{
+    const BOOL result=GetClientRect(window,rect);
+    if (result && rect && rect->left==0 && rect->top==0 && !IsIconic(window))
+    {
+        int width=rect->right,height=rect->bottom;
+        if (RecordingResolution::NativeClientSize(window,width,height))
+        { rect->right=width; rect->bottom=height; }
+    }
+    return result;
+}
+CAfxImportFuncHook<BOOL(WINAPI*)(HWND,LPRECT)> g_Import_engine_USER32_GetClientRect("GetClientRect",&new_render_GetClientRect);
 CAfxImportFuncHook<HCURSOR(WINAPI *)()> g_Import_engine_USER32_GetCursor("GetCursor", &new_GetCursor);
 CAfxImportFuncHook<HCURSOR(WINAPI*)(HCURSOR)> g_Import_engine_USER32_SetCursor("SetCursor", &new_SetCursor);
 CAfxImportFuncHook<HWND(WINAPI*)(HWND)> g_Import_engine_USER32_SetCapture("SetCapture", &new_SetCapture);
@@ -3123,7 +3137,7 @@ CAfxImportFuncHook<BOOL(WINAPI *)(const RECT *)> g_Import_engine_USER32_ClipCurs
 CAfxImportFuncHook<int(WINAPI *)(BOOL)> g_Import_engine_USER32_ShowCursor("ShowCursor", &new_ShowCursor);
 CAfxImportDllHook g_Import_engine_USER32(
 	"USER32.dll",
-	CAfxImportDllHooks({&g_Import_engine_USER32_ClipCursor, &g_Import_engine_USER32_ShowCursor,
+	CAfxImportDllHooks({&g_Import_engine_USER32_GetClientRect, &g_Import_engine_USER32_ClipCursor, &g_Import_engine_USER32_ShowCursor,
 #ifndef _WIN64
 						&g_Import_engine_USER32_GetWindowLongW, &g_Import_engine_USER32_SetWindowLongW,
 #endif //#ifndef _WIN64
@@ -3306,7 +3320,10 @@ CAfxImportFuncHook<IDirect3D9 * (WINAPI*)(UINT)> g_Import_shaderapidx9_d3d9_Dire
 CAfxImportDllHook g_Import_shaderapidx9_d3d9("d3d9.dll", CAfxImportDllHooks({
 	&g_Import_shaderapidx9_d3d9_Direct3DCreate9 }));
 
+CAfxImportFuncHook<BOOL(WINAPI*)(HWND,LPRECT)> g_Import_shaderapidx9_USER32_GetClientRect("GetClientRect",&new_render_GetClientRect);
+CAfxImportDllHook g_Import_shaderapidx9_USER32("USER32.dll", CAfxImportDllHooks({&g_Import_shaderapidx9_USER32_GetClientRect}));
 CAfxImportsHook g_Import_shaderapidx9(CAfxImportsHooks({
+    &g_Import_shaderapidx9_USER32,
 	&g_Import_shaderapidx9_KERNEL32,
 	&g_Import_shaderapidx9_d3d9}));
 

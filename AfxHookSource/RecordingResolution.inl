@@ -19,14 +19,34 @@ struct Surface
 std::recursive_mutex Mutex;
 Surface Current;
 std::atomic_bool NativePreview{false};
-Size Requested, Original, LastCustom;
-bool LastCustomFit = true;
+Size Requested, Original;
 bool Managed = false, Pending = false, WantFit = true, Fitted = false, Restoring = false, Confirmed = false;
 unsigned long long WaitSerial = 0;
 unsigned FitRetries = 0;
 std::chrono::steady_clock::time_point Deadline;
 std::string Message = "Select a resolution and apply it while recording is stopped.";
 thread_local HWND ResizeWindow = nullptr;
+// A separate snapshot lock avoids taking the controller lock from the
+// rendering API while the engine is waiting for its render thread.
+std::mutex HudBoundsMutex;
+HWND HudBoundsWindow=nullptr;
+Size HudBoundsSize;
+std::atomic<unsigned long long> HudBoundsQueries{0};
+void SetHudBounds(HWND window, Size size={})
+{
+    std::lock_guard<std::mutex> lock(HudBoundsMutex);
+    HudBoundsWindow=window;
+    HudBoundsSize=size;
+}
+// Called only while holding Mutex. Never call engine/Win32 APIs under
+// HudBoundsMutex.
+void SyncHudBounds()
+{
+    if (Managed && Fitted && Current.Windowed && Current.Window &&
+        Current.Back==Requested && Current.Capture==Requested)
+        SetHudBounds(Current.Window,Requested);
+    else SetHudBounds(nullptr);
+}
 RECT OriginalRect{};
 HWND OriginalWindow = nullptr;
 HMONITOR OriginalMonitor = nullptr;
@@ -232,6 +252,8 @@ void Begin(Size size, bool fit, bool restore)
 {
     Requested = size; WantFit = fit; Restoring = restore;
     Pending = true; Confirmed = false; Fitted = false; Managed = true;
+    SetHudBounds(nullptr);
+    HudBoundsQueries.store(0);
     FitRetries = 0;
     WaitSerial = Current.Serial;
     Deadline = std::chrono::steady_clock::now()+std::chrono::seconds(8);
@@ -264,8 +286,6 @@ bool Apply(Size size, bool fit)
     }
     if (!Register(size)) return false;
     Begin(size,fit,false);
-    LastCustom=size;
-    LastCustomFit=fit;
     return true;
 }
 bool Restore()
@@ -283,6 +303,7 @@ void Publish(void *window, bool windowed, int bw, int bh, int cw, int ch, int mw
 {
     std::lock_guard<std::recursive_mutex> lock(Mutex);
     Current = {static_cast<HWND>(window),windowed,{bw,bh},{cw,ch},{mw,mh},Current.Serial+1};
+    SyncHudBounds();
 }
 void PublishPreviewPath(bool native) { NativePreview.store(native); }
 void Invalidate()
@@ -290,10 +311,22 @@ void Invalidate()
     NativePreview.store(false);
     std::lock_guard<std::recursive_mutex> lock(Mutex);
     Current.Back = Current.Capture = {};
+    SetHudBounds(nullptr);
 }
 bool SuppressSizeMessage(void *window)
 {
     return ResizeWindow && ResizeWindow == window;
+}
+bool NativeClientSize(void *window,int &width,int &height)
+{
+    std::lock_guard<std::mutex> lock(HudBoundsMutex);
+    if (!window || window!=HudBoundsWindow) return false;
+    const Size physical{width,height};
+    const Size logical=advancedfx::RenderResolution::NativeClient(physical,HudBoundsSize);
+    if (logical==physical) return false;
+    width=logical.Width; height=logical.Height;
+    HudBoundsQueries.fetch_add(1,std::memory_order_relaxed);
+    return true;
 }
 bool FitPresentation(void *window)
 {
@@ -330,6 +363,7 @@ void Frame()
                 lock.lock();
                 const bool released = ReleaseBorrowed();
                 Managed = Pending = Fitted = Restoring = false;
+                SetHudBounds(nullptr);
                 Confirmed = true;
                 Message = !released ? "Original resolution restored; borrowed mode could not be safely restored. Restart TF2." :
                     restored ? "Original render resolution, window and borrowed mode restored." :
@@ -340,16 +374,21 @@ void Frame()
             {
                 const HWND window = Current.Window;
                 const Size requested = Requested;
+                // The engine may query client dimensions synchronously
+                // during the HLAE-owned window resize.
+                SetHudBounds(window,requested);
                 lock.unlock();
                 const bool fitted = FitWindow(window,requested);
                 lock.lock();
                 if (!fitted)
                 {
                     Pending = false; Confirmed = false;
+                    SetHudBounds(nullptr);
                     Message = "Preview fit failed. Restore original or apply again without fit.";
                     return;
                 }
                 Fitted = true;
+                SyncHudBounds();
                 WaitSerial = Current.Serial;
                 Deadline = std::chrono::steady_clock::now()+std::chrono::seconds(8);
                 return; // require a new successful present AFTER shrinking the window
@@ -359,6 +398,7 @@ void Frame()
                 if (++FitRetries <= 3)
                 {
                     Fitted=false;
+                    SetHudBounds(nullptr);
                     WaitSerial=Current.Serial;
                     Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(8);
                     return;
@@ -387,6 +427,7 @@ void Frame()
         else
         {
             Pending=true; Confirmed=false; Fitted=false;
+            SetHudBounds(nullptr);
             WaitSerial=Current.Serial;
             Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(8);
             Message="Refitting preview after the game moved or resized its window.";
@@ -411,8 +452,6 @@ State GetState()
     { state.PreviewWidth=rc.right-rc.left; state.PreviewHeight=rc.bottom-rc.top; }
     state.Pending=Pending; state.Managed=Managed; state.Fit=Fitted; state.Ready=Confirmed;
     state.NativePreview=NativePreview.load();
-    state.LastWidth=LastCustom.Width;
-    state.LastHeight=LastCustom.Height;
     state.Message=Message;
     return state;
 }
@@ -442,14 +481,6 @@ void Console(IWrpCommandArgs *args)
         queue = Apply(size,argc==4 || args->ArgV(4)[0]=='1');
     }
     else if (argc==2 && !_stricmp(args->ArgV(1),"restore")) queue = Restore();
-    else if (argc==2 && !_stricmp(args->ArgV(1),"toggle"))
-    {
-        if (Pending || Recording())
-            Message="Stop recording and wait for the current resolution change before switching.";
-        else if (Managed) queue=Restore();
-        else if (Valid(LastCustom)) queue=Apply(LastCustom,LastCustomFit);
-        else Message="Apply a custom recording resolution first.";
-    }
     else if (argc==2 && !_stricmp(args->ArgV(1),"refit"))
     {
         if (!Managed || Recording() || !Current.Windowed ||
@@ -458,13 +489,14 @@ void Console(IWrpCommandArgs *args)
         else
         {
             WantFit=true; Pending=true; Confirmed=false; Fitted=false; Restoring=false;
+            SetHudBounds(nullptr);
             FitRetries=0; WaitSerial=Current.Serial;
             Deadline=std::chrono::steady_clock::now()+std::chrono::seconds(8);
             Message="Refitting preview without changing the native mode.";
         }
     }
     else if (argc!=1 && !(argc==2 && !_stricmp(args->ArgV(1),"status")))
-    { Tier0_Msg("mirv_resolution apply <width> <height> [fit 0|1] | restore | refit | toggle | status\n"); return; }
+    { Tier0_Msg("mirv_resolution apply <width> <height> [fit 0|1] | restore | refit | status\n"); return; }
     const Size requested = Requested;
     lock.unlock();
     if (queue) QueueMode(requested);
@@ -472,6 +504,7 @@ void Console(IWrpCommandArgs *args)
     Tier0_Msg("Recording resolution: backbuffer %dx%d, capture %dx%d, preview %dx%d, GPU limit %dx%d.\n%s\nOverlay presentation: %s.\n",
         s.RenderWidth,s.RenderHeight,s.CaptureWidth,s.CaptureHeight,s.PreviewWidth,s.PreviewHeight,
         s.MaxWidth,s.MaxHeight,s.Message.c_str(),s.NativePreview ? "preview-resolution composite" : "ordinary/scaled backbuffer");
+    Tier0_Msg("Native HUD client-size overrides: %llu.\n",HudBoundsQueries.load());
 }
 }
 CON_COMMAND(mirv_resolution, "Native TF2 windowed recording resolution and fitted preview")
