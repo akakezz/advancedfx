@@ -362,6 +362,8 @@ void Frame()
     {
         g_Hook_VClient_RenderView.UiCursorStatus(available,visible);
         SourceUiCursor.store((available && visible) || g_Hook_VClient_RenderView.IsSourceUiActive());
+        if (SourceUiCursor.load() && !AfxHookSource::Gui::PreviewInputQueueInstalled())
+            AfxHookSource::Gui::EnablePreviewInputQueue();
     }
     else SourceUiCursor.store(false);
     std::unique_lock<std::recursive_mutex> lock(Mutex);
@@ -527,6 +529,7 @@ void Console(IWrpCommandArgs *args)
         s.MaxWidth,s.MaxHeight,s.Message.c_str(),s.NativePreview ? "preview-resolution composite" : "ordinary/scaled backbuffer");
     Tier0_Msg("Preview cursor remapping: %s; Source UI cursor/menu: %s.\n",
         MapPreviewCursor.load() ? "enabled" : "disabled", SourceUiCursor.load() ? "active" : "inactive");
+    Tier0_Msg("Source input queue mapping: %s.\n",AfxHookSource::Gui::PreviewInputQueueInstalled() ? "installed" : "not installed");
 }
 }
 CON_COMMAND(mirv_resolution, "Native TF2 windowed recording resolution and fitted preview")

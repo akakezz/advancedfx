@@ -92,3 +92,12 @@ When a fitted Source UI owns the pointer, freecam mouse/button processing
 is suspended independently of the optional freecam UI-cursor preference.
 This avoids consuming native button messages or rewriting mouse-move button
 masks before Source receives them. HLAE's overlay retains first priority.
+
+Source's queued absolute mouse events can originate before the hooked
+window procedure. When the existing InputSystemVersion001 event hooks are
+available, keep WM_MOUSEMOVE physical and transform the copied event queue
+(MOUSE_X, MOUSE_Y and MOUSE_XY), rather than scaling the same event twice.
+Preserve all button events, counts and ordering, and the existing overlay
+capture filter. Polling/warps remain mapped by the cursor hooks. The status
+command reports whether the queue hooks installed. Live click behavior is
+not yet confirmed.

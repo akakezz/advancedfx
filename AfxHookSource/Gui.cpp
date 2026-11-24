@@ -558,6 +558,8 @@ using InputEnable = void(__thiscall *)(void *, bool);
 using InputCount = int(__thiscall *)(void *);
 using InputData = const NativeEvent *(__thiscall *)(void *);
 void *g_SourceInput = nullptr;
+std::atomic_bool g_PreviewQueueInstalled{false};
+std::vector<NativeEvent> g_PreviewEvents;
 InputEnable g_SourceEnable = nullptr;
 InputCount g_SourceCount = nullptr;
 InputData g_SourceData = nullptr;
@@ -607,7 +609,42 @@ const NativeEvent *__fastcall SourceDataHook(void *self
 	std::lock_guard<std::recursive_mutex> lock(g_SourceInputMutex);
 	const int poll = SourceInputPoll();
 	const auto data = g_SourceData(self);
-	return g_SourceFilter.NeedsFilter(poll) ? g_SourceFilter.Filter(data, g_SourceCount(self), poll).data() : data;
+	const int count=g_SourceCount(self);
+	const bool filtering=g_SourceFilter.NeedsFilter(poll);
+	const auto *events=data;
+	int size=count;
+	if (filtering)
+	{
+		const auto &filtered=g_SourceFilter.Filter(data,count,poll);
+		events=filtered.data(); size=int(filtered.size());
+	}
+	if (!g_SourceFilter.Capturing() && g_PreviewQueueInstalled.load() &&
+		RecordingResolution::SourceUiOwnsPointer() && events && size>0 && size<=65536)
+	{
+		// Source can enqueue physical positions before our chained WndProc.
+		// Keep the engine-owned queue intact and map the copy exactly once.
+		g_PreviewEvents.assign(events,events+size);
+		for (auto &e:g_PreviewEvents)
+		{
+			if (e.Type!=3) continue; // IE_AnalogValueChanged
+			if (e.Data==2) // MOUSE_XY: absolute x and y, not delta
+				RecordingResolution::MapCursor(e.Data2,e.Data3,true,false);
+			else if (e.Data==0 || e.Data==1) // MOUSE_X/Y: value and delta
+			{
+				int value=e.Data2, previous=value-e.Data3;
+				int x=e.Data==0?value:0,y=e.Data==1?value:0;
+				int px=e.Data==0?previous:0,py=e.Data==1?previous:0;
+				if (RecordingResolution::MapCursor(x,y,true,false) &&
+					RecordingResolution::MapCursor(px,py,true,false))
+				{
+					e.Data2=e.Data==0?x:y;
+					e.Data3=e.Data2-(e.Data==0?px:py);
+				}
+			}
+		}
+		return g_PreviewEvents.data();
+	}
+	return events;
 }
 bool InstallSourceInput()
 {
@@ -678,6 +715,7 @@ void NativeInput_EatKey(unsigned key)
 }
 void NativeInput_Shutdown()
 {
+	g_PreviewQueueInstalled.store(false);
 	std::lock_guard<std::recursive_mutex> lock(g_SourceInputMutex);
 	if (!g_SourceInput)
 		return;
@@ -697,6 +735,15 @@ void NativeInput_Shutdown()
 	g_SourceFilter.ResetButtons();
 }
 } // namespace
+
+bool EnablePreviewInputQueue()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SourceInputMutex);
+	const bool ok=IsSupported() && InstallSourceInput();
+	g_PreviewQueueInstalled.store(ok);
+	return ok;
+}
+bool PreviewInputQueueInstalled() { return g_PreviewQueueInstalled.load(); }
 
 namespace
 {
@@ -1522,6 +1569,8 @@ void On_Direct3DDevice9_EndScene()
 
 }
 
+bool EnablePreviewInputQueue() { return false; }
+bool PreviewInputQueueInstalled() { return false; }
 bool TryPresentFittedPreview(HWND, DWORD, HRESULT &) { return false; }
 void On_Direct3DDevice9_Present_Before() {}
 

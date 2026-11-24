@@ -2474,8 +2474,9 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
 	{
 		int x=short(LOWORD(lParam)), y=short(HIWORD(lParam));
-		if (RecordingResolution::MapCursor(x,y,true,
-			uMsg==WM_MOUSEWHEEL || uMsg==WM_MOUSEHWHEEL,hwnd))
+		if (!(uMsg==WM_MOUSEMOVE && AfxHookSource::Gui::PreviewInputQueueInstalled()) &&
+			RecordingResolution::MapCursor(x,y,true,
+				uMsg==WM_MOUSEWHEEL || uMsg==WM_MOUSEHWHEEL,hwnd))
 			lParam=MAKELPARAM(x<-32768?-32768:x>32767?32767:x,
 				y<-32768?-32768:y>32767?32767:y);
 		break;

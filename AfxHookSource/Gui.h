@@ -22,6 +22,8 @@ void DllProcessDetach(void);
 bool WndProcHandler(HWND hwnd, UINT msg, WPARAM & wParam, LPARAM & lParam);
 // Expose existing GUI ownership so camera/editor input can yield between events.
 bool WantsKeyboardInput();
+bool EnablePreviewInputQueue();
+bool PreviewInputQueueInstalled();
 bool SetOverlayOpen(bool value);
 bool OnSetCursorPos(__in int X, __in int Y);
 bool OnGetCursorPos(__out LPPOINT lpPoint);
