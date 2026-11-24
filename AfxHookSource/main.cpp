@@ -929,6 +929,7 @@ typedef void (__fastcall* CVClient_FrameStageNotify_TF2_t)(void* This,
 	 SOURCESDK::TF2::ClientFrameStage_t curStage);
 
 CVClient_FrameStageNotify_TF2_t old_CVClient_FrameStageNotify_TF2;
+void MirvInterpProbeFrameGuard();
 
 // Notification that we're moving into another stage during the frame.
 void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
@@ -940,6 +941,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 	if (curStage == SOURCESDK::TF2::FRAME_START)
 	{
 		MirvFix_DemoRenderClockEnd(); // Recover any interrupted frame.
+		MirvInterpProbeFrameGuard();
 		MirvFix_Update();
 		AfxHookSource::CameraOverlay::PreferencesFrame();
 	}
@@ -962,6 +964,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 	switch (curStage)
 	{
 	case SOURCESDK::TF2::FRAME_NET_UPDATE_END:
+		MirvInterpProbeFrameGuard();
 		MirvFix_PlayerRepairFrameEnd();
 		MirvFix_PlayerAngleTraceFrame(0);
 		break;

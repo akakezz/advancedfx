@@ -13,6 +13,8 @@ on:
       - 'AfxHookSource/CinematicProject.inl'
       - 'shared/CameraRig.h'
       - 'shared/DemoRenderClockStabilizer.h'
+      - 'shared/Tf2EffectiveInterpolationClock.h'
+      - 'AfxHookSource/Tf2InterpolationProbe.inl'
       - 'AfxHookSource/DemoRenderClock.h'
       - 'AfxHookSource/WrpGlobals.cpp'
       - 'AfxHookSource/WrpGlobals.h'
@@ -29,6 +31,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Check TF2 native effective interpolation time mapping
+        run: python3 tests/cinematic/test_tf2_effective_interpolation_clock.py
       - name: Check render-clock mapping and seek safety
         run: python3 tests/cinematic/test_demo_render_clock.py
       - name: Check project persistence, overlapping transitions, Bezier and frozen poses
