@@ -4082,9 +4082,11 @@ public:
    if(color)color->Release();if(depth)depth->Release();
    if(scope){AfxPushOverrideState(false);OverrideBegin_PlayerHoldout(false);}
   }
+  CAfxStreams::Tf2OffscreenDrawScope offscreen;
+  g_AfxStreams.DrawingThread_BeginTf2OffscreenDraw(offscreen);
   const auto result=draw();
+  g_AfxStreams.DrawingThread_EndTf2OffscreenDraw(offscreen,primitives,result);
   if(scope)AfxPopOverrideState();
-  if(SUCCEEDED(result))g_AfxStreams.DrawingThread_ObserveTf2OffscreenDraw(primitives);
   return result;
  }
  void OverrideBegin_PlayerHoldout(bool selected) {

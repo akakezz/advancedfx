@@ -10,6 +10,14 @@ inline bool CompatibleSize(int w,int h,int outW,int outH)
  return w>0 && h>0 && outW>w && outH>h && outW<=8192 && outH<=8192 &&
     std::int64_t(w)*outH==std::int64_t(h)*outW;
 }
+// Recognize Source's full-backbuffer clamp without altering deliberate
+// subrects, shadow views or already-correct full-size viewports.
+inline bool ClampedViewport(unsigned x,unsigned y,unsigned w,unsigned h,
+ unsigned nativeW,unsigned nativeH,unsigned outW,unsigned outH)
+{
+ return x==0 && y==0 && nativeW && nativeH && w==nativeW && h==nativeH &&
+  outW>nativeW && outH>nativeH;
+}
 struct View
 {
  int X,UnscaledX,Y,UnscaledY,Width,UnscaledWidth,Height,Stereo,UnscaledHeight;

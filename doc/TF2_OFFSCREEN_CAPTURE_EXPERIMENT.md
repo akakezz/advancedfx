@@ -62,3 +62,16 @@ later effects, but RenderView itself still runs to completion. No promise
 of Windows compatibility or absence of demo/render regressions is made.
 Portable tests exercise the copied view layout and validation, not the
 native renderer. Disable the option if the output is wrong.
+
+## Viewport clamp diagnostics
+
+Source's DX9 shader API can clamp a backbuffer viewport to native dimensions
+before handing it to D3D9. During the experimental pass only, when both actual
+D3D surfaces match the independent pair, a full-native viewport is expanded
+for the draw and then restored. An enabled full-native scissor is similarly
+expanded and restored. Deliberate smaller viewports are not altered. The
+first scene end of each recording prints the counts of intercepted draws,
+color matches, pair matches, observed viewport, corrections, successful
+full-size draws and failed draws, plus the first failed draw HRESULT.
+Rejected frames do not submit empty capture buffers to the writer; the pass
+statistics still count them. Native-size or unverified captures are not accepted.

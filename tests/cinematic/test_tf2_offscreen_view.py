@@ -9,6 +9,11 @@ source=r'''
 #include <cstring>
 using namespace advancedfx::Tf2Offscreen;
 int main() {
+ assert(ClampedViewport(0,0,1920,1080,1920,1080,3840,2160));
+ assert(!ClampedViewport(0,0,3840,2160,1920,1080,3840,2160));
+ assert(!ClampedViewport(10,0,1920,1080,1920,1080,3840,2160));
+ assert(!ClampedViewport(0,0,960,540,1920,1080,3840,2160));
+ assert(!ClampedViewport(0,0,1920,1080,1920,1080,1920,1080));
  View v{};
  v.Width=v.UnscaledWidth=1920;v.Height=v.UnscaledHeight=1080;
  v.Fov=90;v.FovViewmodel=54;v.Near=4;v.Far=32768;v.Aspect=1920.f/1080;

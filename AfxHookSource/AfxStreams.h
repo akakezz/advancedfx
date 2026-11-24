@@ -3552,7 +3552,14 @@ public:
  bool DrawingThread_BindTf2PassTarget();
  bool Tf2OffscreenSize(int &width, int &height) const;
  bool DrawingThread_BeginTf2Offscreen(int width, int height);
- void DrawingThread_ObserveTf2OffscreenDraw(unsigned primitives);
+ // Temporarily correct a full-native viewport clamped by Source's shader API.
+ struct Tf2OffscreenDrawScope {
+  D3DVIEWPORT9 Viewport{};
+  RECT Scissor{};
+  bool Full=false, RestoreViewport=false, RestoreScissor=false, Observe=false;
+ };
+ void DrawingThread_BeginTf2OffscreenDraw(Tf2OffscreenDrawScope &scope);
+ void DrawingThread_EndTf2OffscreenDraw(const Tf2OffscreenDrawScope &scope,unsigned primitives,HRESULT result);
  void DrawingThread_CaptureTf2Offscreen();
  void DrawingThread_EndTf2Offscreen();
  void DrawingThread_ReleaseTf2Offscreen();
@@ -3898,6 +3905,12 @@ private:
  RECT m_Tf2OffscreenPreviousScissor{};
  bool m_Tf2OffscreenActive=false, m_Tf2OffscreenCaptured=false;
  unsigned m_Tf2OffscreenPrimitives=0;
+ unsigned m_Tf2OffscreenNativeWidth=0,m_Tf2OffscreenNativeHeight=0;
+ unsigned m_Tf2OffscreenDraws=0,m_Tf2OffscreenColorDraws=0,m_Tf2OffscreenPairDraws=0;
+ unsigned m_Tf2OffscreenCorrected=0,m_Tf2OffscreenFullDraws=0,m_Tf2OffscreenFailedDraws=0;
+ D3DVIEWPORT9 m_Tf2OffscreenObservedViewport{};
+ HRESULT m_Tf2OffscreenDrawError=S_OK;
+ bool m_Tf2OffscreenReported=false;
  IDirect3DSurface9 *m_Tf2WhiteSurface = nullptr;
  bool m_Tf2WhiteBound = false;
  IDirect3DSurface9 *m_Tf2PlayerDepth = nullptr;

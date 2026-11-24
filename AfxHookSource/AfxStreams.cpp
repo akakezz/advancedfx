@@ -10484,7 +10484,8 @@ void CAfxStreams::DrawingThread_SkipTf2Offscreen(const char *reason) {
  const unsigned i=unsigned(Tf2RenderPass::World);
  ++m_Tf2PassAttempts[i];
  if (++m_Tf2PassFailed[i]==1) Tier0_Warning("Offscreen base capture rejected: %s\n",reason);
- if(auto node=m_Tf2PassNodes[i]) node->GpuCaptureSkipped();
+ // No output buffer exists for a deliberate rejection. The pass counters
+ // record the missing frame; avoid queuing a second generic AFXERROR.
 }
 bool CAfxStreams::DrawingThread_BeginTf2Offscreen(int width,int height) {
  auto device=AfxGetDirect3DDevice9();
@@ -10525,6 +10526,10 @@ bool CAfxStreams::DrawingThread_BeginTf2Offscreen(int width,int height) {
  m_Tf2OffscreenActive=true;
  m_Tf2OffscreenCaptured=false;
  m_Tf2OffscreenPrimitives=0;
+ m_Tf2OffscreenNativeWidth=cd.Width;m_Tf2OffscreenNativeHeight=cd.Height;
+ m_Tf2OffscreenDraws=m_Tf2OffscreenColorDraws=m_Tf2OffscreenPairDraws=0;
+ m_Tf2OffscreenCorrected=m_Tf2OffscreenFullDraws=m_Tf2OffscreenFailedDraws=0;
+ m_Tf2OffscreenObservedViewport={};m_Tf2OffscreenDrawError=S_OK;
  D3DVIEWPORT9 vp{0,0,DWORD(width),DWORD(height),0,1};
  RECT rect{0,0,width,height};
  const DWORD stencil=(dd.Format==D3DFMT_D24S8 || dd.Format==D3DFMT_D24FS8 || dd.Format==D3DFMT_D15S1)?D3DCLEAR_STENCIL:0;
@@ -10537,35 +10542,96 @@ bool CAfxStreams::DrawingThread_BeginTf2Offscreen(int width,int height) {
  }
  return true;
 }
-void CAfxStreams::DrawingThread_ObserveTf2OffscreenDraw(unsigned primitives) {
- if(!m_Tf2OffscreenActive || m_Tf2OffscreenCaptured || m_Tf2OffscreenPrimitives>=32 || !primitives) return;
+void CAfxStreams::DrawingThread_BeginTf2OffscreenDraw(Tf2OffscreenDrawScope &scope) {
+ // Only the experimental scene before its readback is affected.
+ if(!m_Tf2OffscreenActive || m_Tf2OffscreenCaptured)return;
  auto device=AfxGetDirect3DDevice9();
  if(!device)return;
+ scope.Observe=true;
+ ++m_Tf2OffscreenDraws;
  IDirect3DSurface9 *color=nullptr,*depth=nullptr;
- D3DVIEWPORT9 vp{};
- const bool exact=SUCCEEDED(device->GetRenderTarget(0,&color)) && color==m_Tf2OffscreenColor &&
-  SUCCEEDED(device->GetDepthStencilSurface(&depth)) && depth==m_Tf2OffscreenDepth &&
-  SUCCEEDED(device->GetViewport(&vp)) && vp.X==0 && vp.Y==0 &&
-  vp.Width==unsigned(m_Tf2OffscreenWidth.load()) && vp.Height==unsigned(m_Tf2OffscreenHeight.load());
+ const bool gotColor=SUCCEEDED(device->GetRenderTarget(0,&color));
+ const bool gotDepth=SUCCEEDED(device->GetDepthStencilSurface(&depth));
+ const bool colorMatch=gotColor && color==m_Tf2OffscreenColor;
+ const bool pair=colorMatch && gotDepth && depth==m_Tf2OffscreenDepth;
  if(color)color->Release();if(depth)depth->Release();
- if(exact)m_Tf2OffscreenPrimitives+=primitives>32?32:primitives;
+ if(colorMatch)++m_Tf2OffscreenColorDraws;
+ if(!pair)return; // never alter shadow/refraction/other intermediate targets
+ ++m_Tf2OffscreenPairDraws;
+ if(FAILED(device->GetViewport(&scope.Viewport)))return;
+ m_Tf2OffscreenObservedViewport=scope.Viewport;
+ const unsigned w=unsigned(m_Tf2OffscreenWidth.load()),h=unsigned(m_Tf2OffscreenHeight.load());
+ const auto &vp=scope.Viewport;
+ const bool clamped=advancedfx::Tf2Offscreen::ClampedViewport(vp.X,vp.Y,vp.Width,vp.Height,
+  m_Tf2OffscreenNativeWidth,m_Tf2OffscreenNativeHeight,w,h);
+ if(clamped) {
+  auto expanded=vp;expanded.Width=w;expanded.Height=h;
+  if(FAILED(device->SetViewport(&expanded)))return;
+  scope.RestoreViewport=true;
+  ++m_Tf2OffscreenCorrected;
+ }
+ if(!clamped && (vp.X || vp.Y || vp.Width!=w || vp.Height!=h))return;
+ // Only expand an enabled scissor when it is precisely the full native
+ // rectangle. Preserve intentional local clipping; never modify other targets.
+ DWORD enabled=FALSE;
+ if(SUCCEEDED(device->GetRenderState(D3DRS_SCISSORTESTENABLE,&enabled)) && enabled) {
+  if(FAILED(device->GetScissorRect(&scope.Scissor)))return;
+  const auto &r=scope.Scissor;
+  if(r.left==0 && r.top==0 && r.right==LONG(m_Tf2OffscreenNativeWidth) &&
+     r.bottom==LONG(m_Tf2OffscreenNativeHeight)) {
+   const RECT expanded{0,0,LONG(w),LONG(h)};
+   if(FAILED(device->SetScissorRect(&expanded)))return;
+   scope.RestoreScissor=true;
+  } else if(r.left!=0 || r.top!=0 || r.right!=LONG(w) || r.bottom!=LONG(h))return;
+ }
+ scope.Full=true;
+}
+void CAfxStreams::DrawingThread_EndTf2OffscreenDraw(const Tf2OffscreenDrawScope &scope,unsigned primitives,HRESULT result) {
+ if(!scope.Observe)return;
+ if(FAILED(result)) {
+  ++m_Tf2OffscreenFailedDraws;
+  if(SUCCEEDED(m_Tf2OffscreenDrawError))m_Tf2OffscreenDrawError=result;
+ } else if(scope.Full && primitives) {
+  ++m_Tf2OffscreenFullDraws;
+  if(m_Tf2OffscreenPrimitives<32)m_Tf2OffscreenPrimitives+=primitives>32?32:primitives;
+ }
+ // Restore the actual device state to the engine's cached expectations.
+ // The next draw receives its own correction, if necessary.
+ if(auto device=AfxGetDirect3DDevice9()) {
+  if(scope.RestoreScissor)device->SetScissorRect(&scope.Scissor);
+  if(scope.RestoreViewport)device->SetViewport(&scope.Viewport);
+ }
 }
 void CAfxStreams::DrawingThread_CaptureTf2Offscreen() {
  if(!m_Tf2OffscreenActive || m_Tf2OffscreenCaptured)return;
  m_Tf2OffscreenCaptured=true;
  const unsigned i=unsigned(Tf2RenderPass::World);
  D3DSURFACE_DESC desc{};
- if(m_Tf2OffscreenPrimitives<32 || AfxGetRenderTargetSurface()!=m_Tf2OffscreenColor ||
-    FAILED(m_Tf2OffscreenColor->GetDesc(&desc)) ||
-    desc.Width!=unsigned(m_Tf2OffscreenWidth.load()) || desc.Height!=unsigned(m_Tf2OffscreenHeight.load())) {
-  DrawingThread_SkipTf2Offscreen("native full-size geometry draws or capture dimensions not verified");
+ const bool dimensions=m_Tf2OffscreenColor && AfxGetRenderTargetSurface()==m_Tf2OffscreenColor &&
+    SUCCEEDED(m_Tf2OffscreenColor->GetDesc(&desc)) &&
+    desc.Width==unsigned(m_Tf2OffscreenWidth.load()) && desc.Height==unsigned(m_Tf2OffscreenHeight.load());
+ if(!m_Tf2OffscreenReported) {
+  m_Tf2OffscreenReported=true;
+  const auto &vp=m_Tf2OffscreenObservedViewport;
+  Tier0_Msg("Offscreen diagnostics: native %ux%u, target %ux%u (verified %d), draws %u, color matches %u, color+depth matches %u, viewport %u,%u %ux%u, corrected %u, full-size draws %u, failed draws %u, first draw HRESULT 0x%08x.\n",
+   m_Tf2OffscreenNativeWidth,m_Tf2OffscreenNativeHeight,desc.Width,desc.Height,int(dimensions),
+   m_Tf2OffscreenDraws,m_Tf2OffscreenColorDraws,m_Tf2OffscreenPairDraws,vp.X,vp.Y,vp.Width,vp.Height,
+   m_Tf2OffscreenCorrected,m_Tf2OffscreenFullDraws,m_Tf2OffscreenFailedDraws,unsigned(m_Tf2OffscreenDrawError));
+ }
+ if(!dimensions || m_Tf2OffscreenPrimitives<32) {
+  const char *reason=!dimensions?"capture surface dimensions not verified":
+   !m_Tf2OffscreenDraws?"no intercepted D3D9 draws":
+   !m_Tf2OffscreenColorDraws?"no draws into replacement color target":
+   !m_Tf2OffscreenPairDraws?"no matching color and depth bindings":
+   "insufficient successful full-size draws";
+  DrawingThread_SkipTf2Offscreen(reason);
   return;
  }
  ++m_Tf2PassAttempts[i];
  auto node=m_Tf2PassNodes[i];
  if(node && node->GpuCapture()) {
   if(++m_Tf2PassCaptured[i]==1)Tier0_Msg("Offscreen base: captured %ux%u after full-size geometry draws.\n",desc.Width,desc.Height);
- } else ++m_Tf2PassFailed[i];
+ } else if(++m_Tf2PassFailed[i]==1)Tier0_Warning("Offscreen base: full-size draws verified but GPU readback failed.\n");
 }
 void CAfxStreams::DrawingThread_EndTf2Offscreen() {
  if(!m_Tf2OffscreenActive)return;
@@ -10595,6 +10661,7 @@ void CAfxStreams::CPassCaptureFunctor::operator()() {
  auto &node = g_AfxStreams.m_Tf2PassNodes[unsigned(Pass)];
  const bool matte = g_AfxStreams.m_Tf2PassMatte[unsigned(Pass)];
  if (Op == Create) {
+  if(Pass==Tf2RenderPass::World)g_AfxStreams.m_Tf2OffscreenReported=false;
   g_AfxStreams.m_Tf2PassMatte[unsigned(Pass)] = Matte;
   g_AfxStreams.m_Tf2PassAttempts[unsigned(Pass)] = 0;
   g_AfxStreams.m_Tf2PassCaptured[unsigned(Pass)] = 0;
