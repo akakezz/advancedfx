@@ -324,6 +324,11 @@ bool GetCursorSpace(CursorSpace &space, void *window)
            space.Preview!=space.Render;
 }
 }
+bool SourceUiOwnsPointer()
+{
+    CursorSpace space;
+    return GetCursorSpace(space,nullptr);
+}
 bool MapCursor(int &x, int &y, bool toRender, bool screen, void *window)
 {
     CursorSpace space;

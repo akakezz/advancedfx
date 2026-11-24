@@ -8,6 +8,7 @@
 
 #include "Gui.h"
 #include "RenderView.h"
+#include "RecordingResolution.h"
 
 // Preview controller is implemented by the mirv_campath console command.
 extern void MirvCampathPreview_Update();
@@ -228,6 +229,10 @@ bool Hook_VClient_RenderView::IsSourceUiActive() const
 
 bool Hook_VClient_RenderView::GetSuspendMirvInput() {
 	if (AfxHookSource::Gui::WantsKeyboardInput())
+		return true;
+	// The demo playback panel and other visible VGUI cursors also own input
+	// in a fitted preview, even if optional freecam cursor suspension is off.
+	if (RecordingResolution::SourceUiOwnsPointer())
 		return true;
 	if (g_VEngineClient && g_VEngineClient->Con_IsVisible()) return true;
 	if (!m_MirvInput || !m_MirvInput->GetCameraControlMode()) return false;

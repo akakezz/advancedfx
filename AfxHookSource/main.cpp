@@ -2458,7 +2458,8 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	case WM_RBUTTONUP:
 	case WM_MOUSEMOVE:
 	case WM_MOUSEWHEEL:
-		if (g_Hook_VClient_RenderView.m_MirvInput->Supply_MouseEvent(uMsg, wParam, lParam))
+		if (!RecordingResolution::SourceUiOwnsPointer() &&
+			g_Hook_VClient_RenderView.m_MirvInput->Supply_MouseEvent(uMsg, wParam, lParam))
 			return 0;
 		break;	
 	}

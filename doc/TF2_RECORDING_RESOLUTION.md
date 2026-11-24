@@ -87,3 +87,8 @@ are left alone. HLAE's overlay retains physical coordinates. Disable mapping
 with `mirv_resolution cursor 0` or enable with `mirv_resolution cursor 1`.
 Status reports the setting and cached Source UI state. No Windows VGUI
 behavior is verified by the portable coordinate tests.
+
+When a fitted Source UI owns the pointer, freecam mouse/button processing
+is suspended independently of the optional freecam UI-cursor preference.
+This avoids consuming native button messages or rewriting mouse-move button
+masks before Source receives them. HLAE's overlay retains first priority.
