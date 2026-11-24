@@ -1,0 +1,55 @@
+name: Camera transition regressions
+
+on:
+  push:
+    branches:
+      - feature/cinematic-campath
+      - experiment/open-fortress-legacy-2026-11
+      - of-port
+    paths:
+      - 'AfxHookSource/MirvCam.cpp'
+      - 'AfxHookSource/CameraOverlay.cpp'
+      - 'AfxHookSource/CameraOverlay.h'
+      - 'AfxHookSource/CampathDrawer.cpp'
+      - 'AfxHookSource/MirvCam.h'
+      - 'AfxHookSource/CinematicProject.inl'
+      - 'shared/CameraRig.h'
+      - 'shared/RenderResolution.h'
+      - 'AfxHookSource/RecordingResolution.h'
+      - 'AfxHookSource/RecordingResolution.inl'
+      - 'AfxHookSource/AfxStreams.cpp'
+      - 'AfxHookSource/d3d9Hooks.cpp'
+      - 'AfxHookSource/Gui.cpp'
+      - 'AfxHookSource/main.cpp'
+      - 'AfxHookSource/MirvCommands.cpp'
+      - 'tests/cinematic/**'
+      - '.github/workflows/camera-transitions.yml'
+  workflow_dispatch:
+
+jobs:
+  project-roundtrip-and-blends:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Check OF feature gates and original frame-stage ordering
+        run: |
+          python3 tests/cinematic/test_of_feature_port.py
+          python3 tests/cinematic/test_scene_capture_stage.py
+          python3 tests/cinematic/test_scene_render_queue.py
+      - name: Check custom mode planning and fitted preview geometry
+        run: python3 tests/cinematic/test_recording_resolution.py
+      - name: Check project persistence, overlapping transitions, Bezier and frozen poses
+        run: python3 tests/cinematic/test_camera_project.py --build-dir /tmp/hlae-camera-transition-tests
+
+  overlay-interaction:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Fetch pinned Dear ImGui used by the cinematic overlay
+        run: git clone --depth 1 --branch v1.89.9-docking https://github.com/ocornut/imgui.git /tmp/imgui-docking
+      - name: Compile and exercise headless sequencer/Bezier overlay
+        run: python3 tests/cinematic/test_overlay.py --imgui-dir /tmp/imgui-docking --build-dir /tmp/hlae-transition-overlay

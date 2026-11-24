@@ -15,7 +15,7 @@ inline int _wfopen_s(FILE **f,const wchar_t *p,const wchar_t *m) { std::string m
 template<size_t N> int _snprintf_s(char (&b)[N],size_t,const char *format,...) { va_list v;va_start(v,format);int r=vsnprintf(b,N,format,v);va_end(v);return r; }
 #endif
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(AFX_CINEMATIC_NO_XML)
 #include "../../deps/release/rapidxml/rapidxml.hpp"
 namespace rapidxml { namespace internal {
 template<class O,class C> O print_children(O,const xml_node<C>*,int,int);

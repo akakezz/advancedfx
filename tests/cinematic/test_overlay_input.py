@@ -38,8 +38,9 @@ unsigned LOWORD(std::intptr_t v){return unsigned(v)&65535;}unsigned HIWORD(std::
 struct POINT{int x=0,y=0;};using LPPOINT=POINT*;struct RECT{int left=0,top=0,right=1600,bottom=900;};
 struct ImVec2{float x,y;ImVec2(float a=0,float b=0):x(a),y(b){}};
 namespace ImGui{struct IO{bool MouseDrawCursor=false,WantCaptureMouse=false;bool MouseDown[5]{},KeysDown[512]{};ImVec2 MousePos;void AddFocusEvent(bool){}}io;IO&GetIO(){return io;}}
+bool g_OpenFortressLegacyMode=false;constexpr int IDC_ARROW=32512;HCURSOR LoadCursor(void*,int){return (void*)2;}
 bool Supported=true,AltHeld=false;bool IsSupported(){return Supported;}short GetKeyState(unsigned k){return k==VK_MENU&&AltHeld?short(0x8000):0;}
-namespace CameraOverlay{bool Open=false,Look=false,Hud=false,DeviceReady=true;int Frames=0,Finishes=0;bool IsOpen(){return Open;}void SetOpen(bool b){Open=b;}bool IsMouseLook(){return Look;}void SetMouseLook(bool b){Look=b;}void FinishEdit(){++Finishes;}bool PreviewHudVisible(){return Hud;}void ResetPreviewHudFrame(){}void Draw(){++Frames;}void SceneCacheDevicePresent(bool b){DeviceReady=b;}}
+namespace CameraOverlay{namespace Recording{bool CaptureHotkey(unsigned){return false;}bool HandleHotkey(unsigned){return false;}}bool Open=false,Look=false,Hud=false,DeviceReady=true;int Frames=0,Finishes=0;bool IsOpen(){return Open;}void SetOpen(bool b){Open=b;}bool IsMouseLook(){return Look;}void SetMouseLook(bool b){Look=b;}void FinishEdit(){++Finishes;}bool PreviewHudVisible(){return Hud;}void ResetPreviewHudFrame(){}void Draw(){++Frames;}void SceneCacheDevicePresent(bool b){DeviceReady=b;}}
 struct Input{bool Enabled=true;int Clears=0;void ClearMovementInput(){++Clears;}bool GetCameraControlMode(){return Enabled;}}input;
 struct View{Input*m_MirvInput=&input;bool Menu=true,Visible=true;int Queries=0;bool IsSourceUiActive(){++Queries;return Menu;}void UiCursorStatus(bool&a,bool&v){++Queries;a=true;v=Visible;}}g_Hook_VClient_RenderView;
 void MirvCampathPreview_ReleaseKeys(){}bool MirvCampathPreview_SetActive(bool){return true;}

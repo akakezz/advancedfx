@@ -1380,6 +1380,13 @@ commits a validated edit to the actual profile; **Revert unsaved edits**
 re-reads its last committed settings. Recording must be stopped to switch,
 edit, duplicate, or delete profiles.
 
+Custom recording profiles, the `afxDefault` output route and the selected screen
+profile now restore across sessions from `%APPDATA%\HLAE\RecordingProfiles.txt`.
+Console and overlay edits save the same registry automatically. FFmpeg, FFmpegEx,
+sampler, multi-output and interleave dependencies are preserved. Invalid files are
+left intact and automatic overwriting is suppressed; move the file aside and restart
+to reset preferences. Pass selections remain session settings.
+
 For example, Capture FPS **480** with a sampler configured for Output FPS **60**
 gives a nominal **8:1 capture-to-output frame ratio**. The sampler's exposure
 and strength determine temporal blending; the output encoder is independent
@@ -2335,8 +2342,10 @@ a competing tracking system.
 The current legacy aim override executes before the saved-camera pose override,
 which replaces its angles. Integration therefore needs to evaluate the camera's
 position first, apply its aiming configuration, then pass the completed pose to
-the mixer. Outgoing and incoming cameras both continue evaluating during a blend.
-Their aim configuration and smoothing history must be isolated: evaluating an
+the mixer. A transition can release its outgoing pose at the boundary, while the incoming
+camera continues evaluating; legacy live-outgoing sequence clips remain
+supported. Each source's aim configuration and smoothing history remain
+isolated: evaluating an
 inactive camera must not advance the active camera's global aiming state. The
 existing `Aiming` object owns a reference-counted target and mutable smoothing
 history, so an implicit object copy is not a suitable configuration snapshot.
@@ -2359,10 +2368,14 @@ implemented below. Deterministic cached smoothing remains pending.
 
 `mirv_cam transition <ID/name|campath> <seconds>` starts a transition when the
 command is issued. Use `0` for an immediate cut. Transition progress follows
-live demo or cached preview time, so pausing pauses the blend. From an existing
-camera/campath source, both sources continue evaluating during the blend. From
-the free camera, or when replacing an unfinished transition, the outgoing pose
-is the currently displayed view.
+live demo or cached preview time, so pausing pauses the blend. Manual
+transitions now capture the displayed outgoing camera pose once at command time
+when that view is available, rather than allowing an attached/aimed source to
+continue rotating or snapping throughout the fade. The incoming camera or path
+continues evaluating. From the free camera or when interrupting an unfinished
+transition, the same displayed-pose release is used. If the displayed pose
+cannot be captured but the outgoing camera remains valid, the previous live
+outgoing evaluator remains as a fallback.
 
 `campath` captures the active path's stable ID at command time. It evaluates that
 path regardless of the normal playback-enabled flag or collection mute/solo
@@ -2454,21 +2467,73 @@ intervals. Click a clip to select it. Open the **Camera clips** tab beside Comma
 3. Press **Add camera clip**, or **Save changes** when editing an existing clip.
 4. Enable **Enable camera sequence**, then play or scrub the demo/cache.
 
-Zero blend makes a cut. A positive blend evaluates both the preceding and new
-source at the current time. Clip blending follows demo/cache time and is sampled
-by timestamp, so moving backward across a boundary selects the appropriate
-source and blend weight. Cached preview first uses observed tracking-camera samples recorded with the
+Zero blend makes a cut at the transition start, which may be offset from the edit
+point. A positive blend applies the selected timing curves to position, rotation
+and FOV independently; position can follow an authored cubic Bezier trajectory.
+The outgoing handle and incoming handle are **world-space XYZ offsets** from
+the straight-line control points at one-third and two-thirds distance between
+the evaluated endpoint poses. Zero handles reproduce the straight-line route.
+The trajectory editor uses a small interactive 2D canvas with two draggable
+control points and switchable **XY/XZ/YZ** projection planes. The graph edits
+the chosen two world-offset axes; switch planes for the remaining axis. An
+optional collapsed panel retains exact numeric XYZ values.
+Clip blending follows demo/cache time and is sampled by timestamp. Cached preview first uses observed tracking-camera samples recorded with the
 scene. Without matching camera samples, it evaluates built-in aiming without
 smoothing on a private settings copy, preserving live smoothing history. Custom aiming calculations
 still require live playback. Cached attachments and aim targets require coverage.
 The first clip is already active before its start tick. Its camera/path is
-evaluated during pre-roll, and its own initial blend duration is ignored; later
-clips blend from their preceding source. No editor/freecam pose seeds the shot.
+evaluated during pre-roll, and its own initial blend duration is ignored; later clips blend from the previously composited result, which may include an
+unfinished earlier transition. No editor/freecam pose seeds the shot.
 
-Clips extend until the next clip, with the final clip continuing indefinitely.
-Each blend must finish before the next clip, and two clips cannot start at the
-same time. Retiming and source changes apply together through Save; rejected
-edits leave the existing clips intact. Clip edits use camera undo/redo. Removing
+Camera source blocks still begin at their editorial **Start tick**, and the last
+source continues indefinitely. The **transition offset** separately places an
+incoming envelope before (negative), on (zero), or after (positive) that edit
+point. Before/Center/After buttons set the offset to -duration,
+-half-duration or zero; exact offset seconds remain editable. Two camera edit
+points cannot coincide, and transition envelope start times must retain the
+same chronological order as the clips' edit points.
+
+**Overlapping envelopes are supported.** Rather than choosing a single
+incoming/preceding pair, the mixer composes each active transition in order.
+The next transition begins from the output of any earlier transitions (for
+example, an unfinished A/B composite can become the outgoing side of B/C).
+A fully completed later transition supersedes previous transitions. Blue
+transition overlays are drawn on the same Camera sources strip as the camera
+clips, not on separate rows. They can extend across later edit points and overlap other envelopes.
+**Normal drag moves the camera clip**; hold **Shift while dragging** a blue
+transition to move its timing independently, or Shift-drag its right edge to
+resize its duration. A visual overlay that is not being Shift-edited cannot
+capture the clip's ordinary mouse drag.
+
+With **Show selected transition path in 3D** enabled, the existing DX9
+camera-guide renderer shows only the selected transition as an amber dashed
+line (not a solid campath). This is editor-only and suppressed during HLAE
+recording. Attached and aimed camera guides use historical Scene Cache samples
+at the transition's timestamps, regardless of whether cached preview is
+currently enabled. If historical coverage is absent or incomplete, no guide
+is drawn for those moving sources: a guess from the live entity position at
+another timestamp could place the guide far away from the shot. Fixed cameras
+and ordinary campaths can still be evaluated directly without a cache.
+The draw-only sampler restores live camera and aiming state and never changes
+the active transition.
+
+New clips authored in the UI enable **Freeze outgoing camera at transition
+start** by default. This releases the outgoing attached/aimed/path camera from
+further influencing the blend; the incoming camera continues evaluating at
+each timestamp. Disable the freeze checkbox to keep both sides live. For
+live demos, freeze captures the last displayed composite at the first crossed
+boundary, or falls back to the evaluated outgoing pose when playback begins
+inside an envelope. For Scene Cache preview and classic baking, it samples the
+outgoing composite at the envelope's exact start timestamp. If that sample
+has no available camera/target, the valid incoming source takes over rather
+than resurrecting an unrelated historical pose. Cached preview therefore
+requires coverage of the transition boundary for a frozen release.
+
+Saved cinematic projects now use **HLAE_CINEMATIC 9** and preserve all transition
+timing, rotation/FOV curves, freeze state and Bezier handles. Versions 1-8
+remain loadable and retain their original live-outgoing/zero-offset semantics.
+Retiming and source changes apply together through Save; rejected edits
+leave the existing clips intact. Clip edits use camera undo/redo. Removing
 a referenced camera leaves its clips visibly addressable for correction and
 produces an unavailable source until restored or retargeted. Deleting the last
 clip or clearing the sequence stops sequence preview.
@@ -2479,8 +2544,10 @@ exiting preview restores enabled sequence playback. Sequence clips are bound to
 their demo/session; clear them before authoring for a different demo. Cameras and
 clips can be saved in cinematic projects; ordinary campath files still contain paths only.
 
-Camera clips use bright start markers, blue blend regions and faint continuation
-spans. For cached transitions, enable Cached preview and Enable camera sequence;
+Camera clips use start markers and faint continuation spans. Translucent blue
+transition spans sit directly over the camera source clips, marking the
+actual offset start/end without introducing a lane per transition. For cached
+transitions, enable Cached preview and Enable camera sequence;
 there is no need to preview an individual camera or campath first.
 
 Sequence playback is enabled independently of preview. Entering preview while it
@@ -2562,8 +2629,8 @@ still control its evaluation clock.
 Clip creation does not require leaving freecam. Enter a **Start tick**, select the source and press **Add camera clip**.
 Select a timeline block to edit it with **Save changes**; **New clip** returns
 to creation mode without copying the playhead tick. Duplicate
-start times and blends crossing neighboring clips are rejected with an explanation
-inside the clip tab. New clips do not move the free camera.
+edit points or envelopes that start out of order are rejected inside the clip
+tab. Overlapping transition envelopes are allowed. New clips do not move the free camera.
 
 Dense classic bakes exposed an out-of-bounds write in trajectory polyline drawing:
 the helper writes four vertex slots while the caller reserved only two. The
@@ -2602,8 +2669,11 @@ from a failed export which retained a previous file.
 
 Camera source clips draw as solid labelled blocks. A hatched region inside the
 leading edge indicates the blend into that source; the selected block has a gold
-outline. Clicking anywhere in the block, including its blend, opens the same clip
-editor. Exact start tick and blend duration remain editable numerically.
+outline. Clicking a source block or its translucent blue transition opens the same clip
+editor. Drag normally to move the source clip; **Shift+drag** the blue region
+to move the envelope or **Shift+drag its right edge** to resize the duration.
+The edit point remains independent. Edit points, offsets and durations also
+remain editable numerically.
 
 A full-sequence bake requires coverage for every active tracked source, including
 its incoming blend. If a camera has neither a recorded camera sample nor its
@@ -2966,3 +3036,250 @@ are at least one float clock step apart, rather than collapsing into the same
 representable playback time in stock HLAE. This does not replace testing a newly
 reported file: the earlier supplied XML matches stock 2.189.6 at every key and
 midpoint; the reported missing-motion case still needs its current XML to isolate.
+
+
+### Experimental TF2 separate recording passes
+
+The Recording tab's **Separate recording passes** section enables a complementary
+Base / world output plus selected Players, Viewmodel, HUD and Depth outputs.
+Selecting an isolate enables Base by default. Base contains the remaining scene;
+normal recording remains unchanged until separate outputs are configured.
+**Record full scene reference** optionally adds an untouched scene recording,
+disabled by default. Disable Base for isolate-only recording, or use
+**Reset separate outputs** to restore ordinary recording. These use the
+existing `mirv_streams` capture nodes, recording clock and selected screen profile.
+Choose an FFmpeg profile for video files; image-sequence profiles still write images.
+Each enabled pass writes inside its own named subfolder of the same take.
+
+```text
+mirv_streams record pass base 1
+mirv_streams record pass players 1
+mirv_streams record pass viewmodel 1
+mirv_streams record pass hud 1
+mirv_streams record pass depth 1
+```
+
+Use `mirv_streams record pass reference 0|1` for the optional reference, or
+`mirv_streams record pass reset` to restore ordinary recording. The legacy
+`world` name aliases `base`. Base files use the `base` subfolder; optional
+reference files use `reference`.
+
+Use `0` to disable an output. Configure passes before recording, then use the normal
+record start/stop controls. They initially share the screen recording profile,
+including any sampler output FPS. Extra passes render extra views at the same demo
+frame; they do not advance the demo for each output. Unsupported hooks or missing
+INTZ depth support reject recording rather than silently treating depth as color.
+
+Base omits players, weapons, cosmetics, ragdolls and gibs only when Players is
+selected. Likewise, it omits HUD or viewmodels only when their outputs are selected.
+Removed models submit no depth or stencil, so they cannot leave invisible
+silhouettes blocking particles or translucent map geometry. Depth is auxiliary
+and subtracts nothing. The players
+pass includes those models (including dropped/debris models and corpse-attached
+gear) and retains world depth occlusion. Viewmodels remain a separate pass;
+decals and ordinary props remain in the world pass. The render passes share the
+scene-cache class/model classification fallback. Player, viewmodel and HUD
+outputs default to chroma green. **Transparent isolated passes** enables embedded
+alpha for these three outputs; Base, Depth and full scene reference keep
+their existing format. **Isolated pass background**
+offers Green, Blue and Black; custom RGB is available using
+`mirv_streams record pass background <red 0..255> <green 0..255> <blue 0..255>`.
+Transparency reuses HLAE's existing black/white matte transform. The world is
+rendered once per isolated pass; only selected models or HUD paint are replayed
+into a second color target, sharing scene depth and preserving the viewport and
+viewmodel depth range. The two samples recover coverage, and the opt-in
+straight-color conversion removes
+coverage from the black render without selecting/removing a key color. This keeps
+opaque greens and partially covered edges in the output. Capture failures retain
+pair boundaries, so one failed sample cannot shift later frames. The mode adds
+extra selected-object draws, a second readback, and matte processing; it does not
+advance the demo or render the full scene a second time. Transform workers sleep
+until shared tasks finish instead of busy-waiting. Capture surfaces use the
+existing bounded readback pool; creation references are released when ownership
+passes to the wrapper, avoiding a per-take COM surface leak.
+
+Select an alpha-capable recording profile, such as `afxFfmpegProresAlpha` (ProRes
+4444 MOV), before recording; ordinary H.264/H.265 profiles can discard alpha.
+Console equivalent:
+
+```text
+mirv_streams record pass alpha 1
+mirv_streams record screen settings afxFfmpegProresAlpha
+```
+
+For NVIDIA hardware, `afxFfmpegNvencColorAlpha` uses H.264 NVENC to write
+`color.mp4` plus a synchronized grayscale `alpha.mp4` for each transparent isolate.
+Use the mask as a **luma matte** (white opaque, black transparent) for the straight
+color footage in your editor. Enable transparent isolated passes first:
+
+```text
+mirv_streams record pass alpha 1
+mirv_streams record screen settings afxFfmpegNvencColorAlpha
+```
+
+Base, Depth and full scene reference write only `color.mp4`. This preset
+requires a GPU/driver supporting NVENC H.264 4:4:4 lossless encoding. Color uses
+NVENC; masks use single-threaded, lossless x264 ultrafast to avoid consuming a
+second GPU session for each isolate. All five passes request five GPU sessions;
+the optional full scene reference adds a sixth. Older drivers can expose a lower limit;
+update the driver or enable fewer outputs if session allocation still fails.
+It accelerates color encoding, while matte rendering/readbacks
+still have their existing cost. The split graph and frame/mask integrity have been
+tested with a CPU encoder substitute; hardware performance needs in-game testing.
+Duplicating this preset preserves its separate RGB-only options in the editor.
+Existing custom copies retain their own options and must be edited or copied again
+to pick up this change. The built-in name uses the new settings after restarting.
+
+The Recording tab contains a scrollable **FFmpeg log** with a **Clear log**
+button. It shows each output's expanded command, encoder stderr and exit code,
+labelled with the output path so simultaneous pass failures can be distinguished.
+New messages follow the bottom while you are already there; scrolling up preserves
+your position. The shared log is bounded to 256 KiB / 2,048 chunks and is session-only.
+No FFmpeg log files are written to the recording folders. Console diagnostics remain
+available, and failed encoder exits direct you to the overlay.
+`OpenEncodeSessionEx failed: incompatible client key (21)` with multiple outputs
+indicates an NVENC session-allocation failure; the subsequent AFX image-write
+errors are a consequence of the encoder exiting.
+
+`alpha 0` restores chroma backgrounds. The option cannot change during a take.
+Matte reconstruction assumes ordinary alpha compositing; additive/refractive
+materials and screen effects still need an in-game check.
+
+World shadows are not separated. Color passes preserve the game's MSAA sample count;
+only depth extraction uses a matched non-MSAA color/INTZ pair. The capture callback
+explicitly binds the capture surface even if Source left an intermediate target
+bound, and restores the previous color/depth surfaces and viewport afterward.
+Depth uses the existing logarithmic axial-distance shader over 0–4096 world units
+(near is dark; far is light), with the rendered frame's actual projection planes.
+It is not a floating-point depth file. The HUD color mask brackets native in-game
+`IVRenderView::VGui_Paint`, including its offscreen capture binding, rather than
+the tools-only paint callbacks. Use lossless encoding when preserving
+its values matters. Pass selections are session settings. This initial adapter still
+needs an in-game check for TF2/TF2C render effects and per-pass output synchronization.
+
+### Native POV-demo spectating
+
+Click a player name in **Observing** to spectate immediately, or use:
+
+```text
+mirv_pov <player entity index>
+mirv_pov off
+mirv_pov mode first
+mirv_pov mode third
+```
+
+The click/console action stops HLAE
+camera playback/preview and releases the live view source without detaching or
+replacing saved camera definitions. It temporarily sets the recorder's native
+observer mode and target during rendering, then restores the original observer values
+before scene capture and subsequent network updates. No camera rig is created. **POV view** selects native first-person or third-person
+chase. For another player, chase reads their interpolated eye angles at the native
+engine angle query, rather than using the recorder's look direction. The adapter
+covers distinct `VEngineClient013/014/015` interfaces: TF2's client requests `014`,
+while HLAE can select `015`; hooking only HLAE's interface leaves the native chase
+query unchanged. Aliased interface vtables are hooked once. The recorder's
+engine angles are never overwritten. The recorded player's own third-person view
+uses Source's existing `thirdperson` behavior. Native chase positioning and collision
+remain handled by Source. While a remote observer scope is active, Source's tools
+third-person-camera visibility flag displays the recorder's world model and hides
+the recorder's first-person viewmodels; it does not move the spectator camera.
+The flag is released when the observer scope ends. In first-person observation,
+the shared render classification excludes the observed player's own world mesh
+and attached gear, so enabling the recorder's body does not put the target's
+head or world weapon in front of the camera. Chase view retains the target model.
+
+While observing another player, native input third-person offsets are cleared
+before view calculation. The existing `tf_taunt_first_person` and
+`cl_first_person_uses_world_model` options are enabled, `r_drawviewmodel` and
+`cl_demoviewoverride` disabled, while native chase position and orientation are preserved as a pair.
+An angle-only final override is not applied. These guards prevent recorder camera/viewmodel
+state from overwriting remote spectating. The previous
+values are restored on exit; taunt conditions and animations are not cleared. Native
+view setup also uses the target's available recoil, FOV and eye-offset inputs;
+those temporary substitutions on the recorder are restored immediately after
+view calculation, before simulation, tools processing and scene-cache capture.
+Unrecorded recoil is neutral, and missing eye-height data uses the standard fallback.
+
+Returning to the recorded player, changing demos, or shutting down the level restores
+normal observation. Targets are tracked by user ID and validated entity handles, so
+a reused entity slot cannot silently select a different player.
+
+A POV demo only contains entities and local-player data recorded by its author.
+Spectating cannot reconstruct missing players, remote viewmodel animation, or HUD
+information that the demo did not record. STV continues to use its native spectator
+command separately.
+
+Spectating diagnostics: `mirv_pov debug` prints native angle-query count, the
+last native/target orientation and active camera guards. If the view still drifts,
+include this output along with first/third-person mode and the demo tick.
+
+### Compositing scope and depth diagnostics
+
+These outputs are object isolates. Excluded models retain native depth writes,
+but refractive cloak shaders and interleaved/additive particles still need a
+depth-aware effects workflow for accurate reconstruction. Keep normal screen
+recording as the beauty reference. See [TF2 pass compositing](TF2_PASS_COMPOSITING.md)
+for the proposed capture contract and current unsupported cases.
+
+After recording finishes, `mirv_streams record pass stats` reports GPU attempts,
+complete captured frames and failures per output. Compare these along with media
+frame counts/FPS before attributing depth stutter to capture or the codec.
+
+### Attached collision reliability and diagnostics
+
+The attachment controller now keeps return damping active when the camera-sized
+hull overlaps geometry at the attachment point (common for gibs near a floor).
+It searches a bounded distance on the existing boom for a clear sweep origin,
+using a point trace to prevent searching through an intervening wall. Moving
+obstacles still require immediate safety corrections; unobstructed return uses
+the existing return half-life and speed cap. Pause freezes that return.
+
+Embedded-start recovery probes upward before away-from-goal escape, preventing
+a goal above a thin floor from first sending an embedded camera underneath it. First-frame results are checked against world geometry;
+deeply embedded starts with no verified clear result report unavailable. A subject
+can occupy all remaining space between camera and wall; world safety wins and
+the diagnostic reports missing subject clearance rather than crossing the wall.
+
+Cameras > Attached camera collision uses the existing shared collision controls:
+
+- Minimum subject distance: optional distance from the physical attachment point.
+  Useful for non-solid gibs that engine traces do not hit; zero keeps engine-only
+  subject checks. This is an explicit exclusion distance, not a visible-mesh fit.
+- Attached near-plane depth: zero keeps radius-only collision. A positive depth
+  expands the existing clearance hull using a roll-safe bound for the attachment
+  pose FOV and viewport aspect. Leave margin for later modifiers that widen FOV.
+  Set it to the depth you want protected; it does not change the game near clip.
+- Draw collision diagnostics: requires camera guides enabled. Draws the requested
+  to corrected displacement, boom, corrected hull and contact normal. Labels
+  identify embedded anchors and impossible subject gaps. Disabled in recording.
+
+Console equivalents are `mirv_cam collision subjectClearance <0..256>`,
+`mirv_cam collision nearPlane <0..32>` and `mirv_cam collision debug 0|1`.
+These are shared live settings, like the existing radius/return settings.
+Return speed zero is unlimited; half-life zero disables exponential easing.
+The existing blocked-follow recovery delay can intentionally cut to a verified
+clear shot after a closed-door obstruction; set it to zero for strict collision.
+Historical world collision remains deferred: cached scrubbing never traces
+against the unrelated live positions of doors or entities.
+
+### Camera interaction and collision overrides
+
+Global collision settings remain the defaults. In Cameras → Attached camera collision,
+**Use per-camera collision override** lets selected cameras use their own clearance,
+return, subject-distance and recovery settings. Disable it to inherit the globals.
+Overrides participate in undo/redo and project format 8; older projects still load.
+Freecam/campath collision remains global.
+
+`mirv_cam edit <index/name> collision <field> <value>` edits an override; `collision
+inherit` clears it and `collision status` reports effective settings and controller
+state. Motion edits retain live return damping. Preserve framing now respects the
+filtered subject/orbit frame and explicit aiming ownership; it does not lock every
+raw bone sample to the same pixel. Camera and clip modifier outputs receive a final
+shared collision safety check. See [camera interaction audit](CAMERA_INTERACTION_AUDIT.md)
+for findings, test cases and live retest guidance.
+
+### Proposed POV visibility continuity fix
+
+See [TF2 POV visibility research](TF2_POV_VISIBILITY_RESEARCH.md) for the intended
+map/prop continuity behavior, dormant-entity retention options, source evidence,
+validation gates and proposed milestones. This is research, not an implemented fix.

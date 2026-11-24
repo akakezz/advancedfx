@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <shared/CameraCollisionSettings.h>
 
 #include "SourceInterfaces.h"
 
@@ -315,24 +316,25 @@ struct MirvTf2BoneName_t
 int Mirv_Tf2_GetBoneNames(int entityIndex, MirvTf2BoneName_t * outNames);
 
 // Optional TF2 camera collision.
-struct MirvCameraCollisionSettings
-{
-	bool Free = false, Campath = false, Attached = false, Players = true, Slide = true, IgnoreLocal = true;
-	double Radius = 6, ReturnHalfLife = .2, ReturnSpeed = 300, FollowHalfLife = 0, FollowMaxDistance = 128;
-	double BoneHalfLife = 0, FollowTeleportDistance = 1024, AttachedSoftDistance = 24;
-	double OrbitHalfLife = .15, OrbitSpeed = 360, FollowRecoveryDelay = 1;
-	bool PreserveFraming = false, AimOwnsAngles = false;
-	double FramingMargin = .1, FrameFov = 90, FrameAspect = 16.0 / 9;
-	double BonePositionInfluence = 1, BoneRotationInfluence = 1, BonePositionLimit = 0, BoneRotationLimit = 0;
-};
 struct MirvCameraAttachedState
 {
 	static constexpr double MaxContinuousGap = 10; // Shared follow/aim scene-time reset threshold.
 	bool Valid = false, Retracted = false, Contracting = false;
+	bool CollisionActive = false, AnchorEmbedded = false, SubjectBlocked = false, HasContact = false;
+	double CollisionRadius = 0, CollisionAnchor[3] = {}, CollisionDesired[3] = {}, Contact[3] = {},
+		   ContactNormal[3] = {};
+ double FramingFocus[3] = {};
+	double FramingOffset[3] = {}, FramingVelocity[3] = {};
+	bool FramingActive = false;
 	double LastAllowed = 0;
 	const void *Identity = nullptr;
 	void *Entity = nullptr;
 	unsigned long long Generation = 0;
+	// Read-only diagnostics; never used to drive the controller or serialized.
+	unsigned long long Samples = 0, TimeRewinds = 0, StalledRootChanges = 0;
+	unsigned long long InputTimeRewinds = 0;
+	double InputTime = 0;
+	double MaxTimeStep = 0;
 	double Time = 0, ArmLength = 0, Position[3] = {}, FollowPosition[3] = {};
 	double Desired[3] = {}, AuthoredAngles[3] = {}, DisplayAngles[3] = {};
 	bool HasAngles = false;
@@ -344,24 +346,32 @@ struct MirvCameraAttachedState
 	double OrbitLength = 0, OrbitYaw = 0, BlockedTime = 0;
 	bool CompositionValid = false;
 };
+// Live state uses the existing demo clock; cached/inspection callers keep their own time.
+double MirvCameraAttachedSampleTime(double fallbackTime);
 // One implementation for legacy attachment and saved-camera evaluation.
 // Callers own the state and settings; cached callers disable live collision tracing.
+// Optional inputTime records the original client clock for diagnostics only.
 bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &state, const MirvCameraCollisionSettings &settings,
 								unsigned long long generation, const void *identity, void *entity,
 								const double pivot[3], double sceneTime, float &x, float &y, float &z,
 								const double *entityOrigin = nullptr, float *angles = nullptr,
 								const double *rootAngles = nullptr, const double *targetAngles = nullptr,
-								const advancedfx::CameraPose *boneReference = nullptr);
+								const advancedfx::CameraPose *boneReference = nullptr, const double *inputTime = nullptr);
+bool MirvCameraCollisionConstrain(const MirvCameraCollisionSettings &settings,void *entity,const double from[3],double position[3],const double *pivot=nullptr);
 MirvCameraCollisionSettings MirvCameraCollisionGet();
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings);
 void MirvCameraCollisionReset();
-void MirvCameraAttachedReset();
+// Binding changes reset legacy state only; explicit user resets include saved rigs.
+void MirvCameraAttachedReset(bool resetSavedCameras=false);
+unsigned long long MirvCameraAttachedGeneration();
 // Recover the authored pose if this is the current corrected view; retain history on success.
 bool MirvCameraAttachedCapturePose(const void *identity, double origin[3], double angles[3]);
 bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,
-	double sceneTime, double pathTime, const double seed[3], float &x, float &y, float &z);
-bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3],
-	double sceneTime, float &x, float &y, float &z, const double *entityOrigin = nullptr, float *angles = nullptr);
+							  double sceneTime, double pathTime, const double seed[3], float &x, float &y,
+							  float &z);
+bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
+							 float &x, float &y, float &z, const double *entityOrigin = nullptr,
+							 float *angles = nullptr, double fov = 90, double aspect = 16.0 / 9);
 // Live Open Fortress attachment filter diagnostics (prints counters only, no engine calls).
 void MirvCameraAttachedPrintRuntimeStatus();
 // Preserve target framing after a position correction without advancing mirv_aim twice.

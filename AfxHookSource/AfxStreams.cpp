@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "hlaeFolder.h"
 
 #include "AfxStreams.h"
 
@@ -15,6 +16,7 @@
 #include "RenderView.h"
 #include "ClientTools.h"
 #include "d3d9Hooks.h"
+#include "RecordingResolution.h"
 #include "D3D9ImageBuffer.h"
 
 #ifndef _WIN64
@@ -6902,6 +6904,18 @@ void CAfxStreams::Console_Record_Start()
 
 void CAfxStreams::Console_Record_Start2()
 {
+ if (!RecordingResolution::CanStart()) { Tier0_Warning("Custom recording resolution is not confirmed; apply or restore it first.\n"); return; }
+ if(m_Tf2SeparateConfigured && !m_Tf2FullReference){
+  bool any=false;for(const auto &enabled:m_Tf2PassEnabled)any|=enabled.load();
+  if(!any){Tier0_Warning("No recording outputs selected; enable Base/world, an isolate, depth, or full-scene reference.\n");return;}
+ }
+
+ for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) if (m_Tf2SeparateConfigured && m_Tf2PassEnabled[i] &&
+     (!Tf2RenderPassSupported() || !MaterialSystem_CanExecuteOnRenderThread() ||
+      (i == unsigned(Tf2RenderPass::Depth) && !AfxD3d9_DrawDepthSupported()))) {
+  Tier0_Warning("TF2 separate passes require supported render hooks and material queue; depth requires INTZ support.\n");
+  return;
+ }
 	if(UTF8StringToWideString(m_RecordName.c_str(), m_TakeDir)
 		&& (m_TakeDir.append(L"\\take"), SuggestTakePath(m_TakeDir.c_str(), 4, m_TakeDir))
 		&& CreatePath(m_TakeDir.c_str(), m_TakeDir)
@@ -6941,12 +6955,26 @@ void CAfxStreams::Console_Record_Start2()
 			}
 		}
 
-		if(m_RecordScreen->Enabled) {
-			auto videoStreamCreator = m_RecordScreen->Settings->CreateOutVideoStreamCreator(
+  for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) if (m_Tf2SeparateConfigured && m_Tf2PassEnabled[i]) {
+   const std::string suffix = std::string("\\") + Tf2RenderPassName(Tf2RenderPass(i));
+   std::wstring folderSuffix, passFolder;
+   if (!UTF8StringToWideString(suffix.c_str(), folderSuffix) ||
+       !(passFolder = m_TakeDir + folderSuffix, CreatePath(passFolder.c_str(), passFolder))) {
+    Tier0_Warning("Could not create %s recording folder.\n", Tf2RenderPassName(Tf2RenderPass(i)));
+    continue;
+   }
+   auto creator = m_RecordScreen->Settings->CreateOutVideoStreamCreator(*this, *this, GetStartHostFrameRate(), suffix.c_str());
+   if (creator) {
+    MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(Tf2RenderPass(i), CPassCaptureFunctor::Create, creator, 0, 1, 32768, Tf2PassAlpha() && Tf2RenderPassIsolated(Tf2RenderPass(i))));
+    creator->Release();
+   } else Tier0_Warning("Could not create %s output.\n", Tf2RenderPassName(Tf2RenderPass(i)));
+  }
+  if(GetRecordScreenEnabled()) {
+   auto videoStreamCreator = m_RecordScreen->Settings->CreateOutVideoStreamCreator(
 				*this,
 				*this,
 				GetStartHostFrameRate(),
-				""
+				m_Tf2SeparateConfigured ? "\\reference" : ""
 			);
 			m_DrawingRecordScreen = new CDrawingRecordScreen(
 				videoStreamCreator, advancedfx::StreamCaptureType::Normal
@@ -7115,7 +7143,9 @@ void CAfxStreams::Console_Record_End2()
 		}
 #endif //#ifndef _WIN64	
 
-		if(m_DrawingRecordScreen) {
+  for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
+   if (m_Tf2PassEnabled[i]) MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(Tf2RenderPass(i), CPassCaptureFunctor::Destroy));
+  if(m_DrawingRecordScreen) {
 			delete g_AfxStreams.m_DrawingRecordScreen;
 			g_AfxStreams.m_DrawingRecordScreen = nullptr;
 			MaterialSystem_ExecuteOnRenderThread(new CDeleteScreenCaptureNodeFunctor());
@@ -7413,7 +7443,9 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 		char const* arg1 = args->ArgV(1);
 		if (0 == _stricmp(arg1, "enabled")) {
 			if (3 <= argC) {
+                if(m_Recording && m_Tf2SeparateConfigured){Tier0_Warning("Stop recording before changing reference output.\n");return;}
 				m_RecordScreen->Enabled = 0 != atoi(args->ArgV(2));
+                if(m_Tf2SeparateConfigured)m_Tf2FullReference=m_RecordScreen->Enabled;
 				if(m_RecordScreen->Enabled && !Hook_MaterialSystem()) {
 					advancedfx::Warning("AFXERROR: Your Source 1 game is not supported for mirv_streams record screen. Consider to file a feature request on GitHub (and provide materialsystem.dll of your game).\n");
 				}
@@ -7424,7 +7456,7 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 				"%s enabled 0|1 - Disable (0, default) or enable (1) game screen recording.\n"
 				"Current value: %i\n"
 				, arg0
-				, (m_RecordScreen->Enabled?1:0)
+				, (GetRecordScreenEnabled()?1:0)
 			);
 			return;
 		}
@@ -7435,9 +7467,7 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 
 				if (advancedfx::CRecordingSettings* settings = advancedfx::CRecordingSettings::GetByName(arg2))
 				{
-					settings->AddRef();
-					m_RecordScreen->Settings->Release();
-					m_RecordScreen->Settings = settings;
+					SetRecordScreenSettings(settings->GetName());
 				}
 				else
 				{
@@ -10027,6 +10057,12 @@ void CAfxStreams::BlockPresent(IAfxMatRenderContextOrg * ctx, bool value)
 
 void CAfxStreams::AfxStreamsInitGlobal() {
 	m_RecordScreen = new CRecordScreen(false, advancedfx::CRecordingSettings::GetDefault());
+ const auto folder=GetHlaeRoamingAppDataFolderW();
+ if(folder && *folder){
+  const std::wstring preferences=std::wstring(folder)+L"RecordingProfiles.txt";
+  advancedfx::CRecordingSettings::ConfigurePersistence(preferences.c_str());
+  SetRecordScreenSettings(advancedfx::CRecordingSettings::PreferredProfile().c_str());
+ }
 }
 
 void CAfxStreams::AfxStreamsInit(void)
@@ -10105,6 +10141,10 @@ void CAfxStreams::ShutDown2(void)
 }
 
 void CAfxStreams::DrawingThread_DeviceLost() {
+ AfxD3D9SetPlayerHoldoutEnabled(false);
+ DrawingThread_Tf2White(false);
+ if (m_Tf2WhiteSurface) { m_Tf2WhiteSurface->Release(); m_Tf2WhiteSurface = nullptr; }
+ if(m_Tf2PlayerDepth){m_Tf2PlayerDepth->Release();m_Tf2PlayerDepth=nullptr;}
 	if (m_IntZTextureSurface) {
 		m_IntZTextureSurface->Release();
 		m_IntZTextureSurface = nullptr;
@@ -10212,7 +10252,7 @@ void CAfxStreams::DrawingThread_UnsetIntZTextureSurface() {
 }
 
 void CAfxStreams::EngineThread_QueueCapture() {
-	if(m_Recording && m_RecordScreen->Enabled) {
+	if(m_Recording && GetRecordScreenEnabled()) {
 		if(g_AfxStreams.IsRecording() && (g_VEngineClient && !g_VEngineClient->Con_IsVisible() || g_SourceSdkVer == SourceSdkVer_CSGO || SourceSdkVer_CSCO == g_SourceSdkVer)) {
 			MaterialSystem_ExecuteOnRenderThread(new CQueueCaptureFunctor());
 		}
@@ -10226,48 +10266,44 @@ void CAfxStreams::DrawingThread_Capture() {
 }
 
 void CAfxStreams::CDrawingRecordScreenOutput::ProcessingThreadFunc() {
-	std::unique_lock<std::mutex> lock(m_ProcessingThreadMutex);
-	while (!m_Shutdown || !m_Captures.empty()) {
-		if (!m_Captures.empty()) {
-			auto * capture = m_Captures.front();
-			m_Captures.pop_front();
-			
-			lock.unlock();
-
-			if (capture) {
-				if(auto buffer = capture->LockCpu()) {
-					capture->Release();
-					advancedfx::IImageBufferThreadSafe* outBuffer = advancedfx::ImageTransformer::StripAlpha(g_pThreadPool,&g_ImageBufferPoolThreadSafe,buffer);
-					buffer->Release();
-					if (outBuffer) {
-						if (m_OutVideoStream == nullptr) {
-							m_OutVideoStream = m_OutVideoStreamCreator->CreateOutVideoStream(*outBuffer->GetImageBufferFormat());
-							if (nullptr == m_OutVideoStream)
-							{
-								Tier0_Warning("AFXERROR: Failed to create image stream for screen recording.\n");
-							}
-						}
-						if (nullptr != m_OutVideoStream && !m_OutVideoStream->SupplyImageBuffer(this, outBuffer))
-						{
-							Tier0_Warning("AFXERROR: Failed writing image for screen recording.\n");
-						}
-						outBuffer->Release();
-					}
-					else {
-						Tier0_Warning("AFXERROR: Could not get transform buffer for screen recording.\n");
-					}
-				} else {
-					capture->Release();
-				}
-			}
-			
-			lock.lock();
-		} else {
-			m_ProcessingThreadCv.wait(lock);
-		}
-	}
-	if (m_OutVideoStream) m_OutVideoStream->Release();
-	m_OutVideoStreamCreator->Release();
+ advancedfx::IImageBufferThreadSafe *black = nullptr;
+ bool expectWhite = false;
+ std::unique_lock<std::mutex> lock(m_ProcessingThreadMutex);
+ while (!m_Shutdown || !m_Captures.empty()) {
+  if (m_Captures.empty()) { m_ProcessingThreadCv.wait(lock); continue; }
+  auto capture = m_Captures.front(); m_Captures.pop_front();
+  lock.unlock();
+  auto buffer = capture ? capture->LockCpu() : nullptr;
+  if (capture) capture->Release();
+  advancedfx::IImageBufferThreadSafe *outBuffer = nullptr;
+  bool complete = true;
+  if (m_Matte) {
+   if (!expectWhite) {
+    black = buffer; buffer = nullptr; expectWhite = true; complete = false;
+   } else {
+    if (black && buffer)
+     outBuffer = advancedfx::ImageTransformer::Matte(g_pThreadPool, &g_ImageBufferPoolThreadSafe, black, buffer, true);
+    if (black) black->Release();
+    black = nullptr; expectWhite = false;
+   }
+  } else if (buffer) {
+   outBuffer = advancedfx::ImageTransformer::StripAlpha(g_pThreadPool, &g_ImageBufferPoolThreadSafe, buffer);
+  }
+  if (buffer) buffer->Release();
+  if (outBuffer) {
+   if (!m_OutVideoStream) {
+    m_OutVideoStream = m_OutVideoStreamCreator->CreateOutVideoStream(*outBuffer->GetImageBufferFormat());
+    if (!m_OutVideoStream) Tier0_Warning("AFXERROR: Failed to create image stream for screen recording.\n");
+   }
+   if (m_OutVideoStream && !m_OutVideoStream->SupplyImageBuffer(this, outBuffer))
+    Tier0_Warning("AFXERROR: Failed writing image for screen recording.\n");
+   outBuffer->Release();
+  } else if (complete) Tier0_Warning("AFXERROR: Missing capture or failed transform; skipping recording frame.\n");
+  lock.lock();
+ }
+ if (black) black->Release();
+ if (expectWhite) Tier0_Warning("AFXERROR: Incomplete alpha capture pair at recording end.\n");
+ if (m_OutVideoStream) m_OutVideoStream->Release();
 }
 
 const char *CAfxStreams::GetRecordScreenSettingsName() const
@@ -10284,6 +10320,7 @@ bool CAfxStreams::SetRecordScreenSettings(const char *name)
 	settings->AddRef();
 	m_RecordScreen->Settings->Release();
 	m_RecordScreen->Settings = settings;
+ advancedfx::CRecordingSettings::SetPreferredProfile(name);
 	return true;
 }
 
@@ -10341,3 +10378,278 @@ bool RemoveProfile(const char *name)
 } // namespace Recording
 } // namespace CameraOverlay
 } // namespace AfxHookSource
+
+// TF2 uses the same render-target capture node and profile writers as record screen.
+bool CAfxStreams::Tf2PassEnabled(Tf2RenderPass pass) const {
+ if(unsigned(pass)>=unsigned(Tf2RenderPass::Count))return false;
+ return pass==Tf2RenderPass::World && !m_Tf2SeparateConfigured ? true : m_Tf2PassEnabled[unsigned(pass)].load();
+}
+bool CAfxStreams::SetTf2PassEnabled(Tf2RenderPass pass, bool enabled) {
+ if(m_Recording || unsigned(pass)>=unsigned(Tf2RenderPass::Count) ||
+    (enabled && (!Tf2RenderPassSupported() || !Hook_MaterialSystem())))return false;
+ if(!enabled && !m_Tf2SeparateConfigured && (pass!=Tf2RenderPass::World || !Tf2RenderPassSupported()))return true;
+ if(!m_Tf2SeparateConfigured){m_Tf2SeparateConfigured=true;m_Tf2PassEnabled[unsigned(Tf2RenderPass::World)]=true;}
+ m_Tf2PassEnabled[unsigned(pass)]=enabled;return true;
+}
+bool CAfxStreams::SetTf2FullReference(bool enabled){
+ if(m_Recording)return false;
+ if(enabled && !SetTf2PassEnabled(Tf2RenderPass::World,Tf2PassEnabled(Tf2RenderPass::World)))return false;
+ m_Tf2FullReference=enabled;return true;
+}
+bool CAfxStreams::ResetTf2Outputs(){
+ if(m_Recording)return false;
+ for(auto &enabled:m_Tf2PassEnabled)enabled=false;
+ m_Tf2SeparateConfigured=false;m_Tf2FullReference=false;return true;
+}
+bool CAfxStreams::Tf2PassRecording(Tf2RenderPass pass) const {
+ return m_Recording && m_Tf2SeparateConfigured && Tf2PassEnabled(pass) && g_VEngineClient && !g_VEngineClient->Con_IsVisible();
+}
+void CAfxStreams::EngineThread_PassBegin(Tf2RenderPass pass, int matteSample) {
+ const unsigned background = matteSample == 0 ? 0xff000000u : matteSample == 1 ? 0xffffffffu : Tf2PassBackground();
+ MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::Begin, nullptr, background));
+}
+void CAfxStreams::EngineThread_PassCapture(Tf2RenderPass pass){
+ if(pass!=Tf2RenderPass::Players)return;
+ MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass,CPassCaptureFunctor::Capture));
+}
+void CAfxStreams::EngineThread_PassEnd(Tf2RenderPass pass, float zNear, float zFar) {
+ MaterialSystem_ExecuteOnRenderThread(new CPassCaptureFunctor(pass, CPassCaptureFunctor::End, nullptr, 0, zNear, zFar));
+}
+// Material-system bookkeeping can finish a view with another target bound.
+// Keep HLAE's replacement mapping, but bind and restore the actual D3D pair too.
+bool CAfxStreams::DrawingThread_BindTf2PassTarget() {
+ auto device = AfxGetDirect3DDevice9();
+ auto color = AfxGetRenderTargetSurface(), depth = AfxGetDepthStencilSurface();
+ if (!device || !color || !depth) return false;
+ return SUCCEEDED(device->SetDepthStencilSurface(nullptr)) &&
+  SUCCEEDED(device->SetRenderTarget(0, color)) && SUCCEEDED(device->SetDepthStencilSurface(depth));
+}
+bool CAfxStreams::DrawingThread_Tf2White(bool white) {
+ if (white == m_Tf2WhiteBound) return true;
+ auto device = AfxGetDirect3DDevice9(); D3DVIEWPORT9 viewport{};
+ const bool haveViewport = device && SUCCEEDED(device->GetViewport(&viewport));
+ if (white && !haveViewport) return false;
+ if (white) {
+  // Shadow/reflection model draws must not be replayed into the main matte.
+  IDirect3DSurface9 *actual = nullptr;
+  if (FAILED(device->GetRenderTarget(0, &actual))) return false;
+  const bool main = actual == AfxGetRenderTargetSurface();
+  if (actual) actual->Release();
+  if (!main) return false;
+ }
+ if (white) {
+  if (!m_Tf2WhiteSurface) return false;
+  AfxD3d9PushRenderTargetEx(m_Tf2WhiteSurface);
+ } else AfxD3d9PopRenderTarget(false);
+ m_Tf2WhiteBound = white;
+ const bool bound = DrawingThread_BindTf2PassTarget();
+ // Preserve viewmodel depth range across render-target switches.
+ return haveViewport && SUCCEEDED(device->SetViewport(&viewport)) && bound;
+}
+void CAfxStreams::DrawingThread_RestoreTf2PassBindings(Tf2RenderPass pass) {
+ auto &color = m_Tf2PassPreviousColor[unsigned(pass)];
+ auto &depth = m_Tf2PassPreviousDepth[unsigned(pass)];
+ if (!color && !depth) return;
+ if (auto device = AfxGetDirect3DDevice9()) {
+  device->SetDepthStencilSurface(nullptr);
+  if (color) device->SetRenderTarget(0, color);
+  device->SetDepthStencilSurface(depth);
+  const auto &viewport = m_Tf2PassPreviousViewport[unsigned(pass)];
+  if (viewport.Width && viewport.Height) device->SetViewport(&viewport);
+ }
+ if (color) { color->Release(); color = nullptr; }
+ if (depth) { depth->Release(); depth = nullptr; }
+}
+void CAfxStreams::CPassCaptureFunctor::operator()() {
+ auto &node = g_AfxStreams.m_Tf2PassNodes[unsigned(Pass)];
+ const bool matte = g_AfxStreams.m_Tf2PassMatte[unsigned(Pass)];
+ if (Op == Create) {
+  g_AfxStreams.m_Tf2PassMatte[unsigned(Pass)] = Matte;
+  g_AfxStreams.m_Tf2PassAttempts[unsigned(Pass)] = 0;
+  g_AfxStreams.m_Tf2PassCaptured[unsigned(Pass)] = 0;
+  g_AfxStreams.m_Tf2PassFailed[unsigned(Pass)] = 0;
+  if (!node) { node = new CCaptureNode(new CCaptureInputRenderTarget(), new CDrawingRecordScreenOutput(Creator, Matte)); node->AddRef(); }
+  return;
+ }
+ if (Op == Destroy) { g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass); if (node) { node->GpuRelease(); node->Release(); node = nullptr; } return; }
+ if (Op == Begin) {
+  if(Pass==Tf2RenderPass::Players)AfxD3D9SetPlayerHoldoutEnabled(false);
+  g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
+  g_AfxStreams.m_Tf2PassCapturedEarly[unsigned(Pass)] = false;
+  g_AfxStreams.m_Tf2PassMatteColor[unsigned(Pass)] = Background;
+  g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] = false;
+  if (!node || !(Pass == Tf2RenderPass::Depth ? g_AfxStreams.DrawingThread_GetOrCreateRenderTargetSurfaceNoMssaa() : g_AfxStreams.DrawingThread_GetOrCreateRenderTargetSurface()) ||
+      (Pass == Tf2RenderPass::Depth && !g_AfxStreams.DrawingThread_GetOrCreateIntZTextureSurface())) {
+   Tier0_Warning("Could not allocate TF2 pass capture target; skipping frame.\n");
+   return;
+  }
+  auto device = AfxGetDirect3DDevice9();
+  if (!device || FAILED(device->GetRenderTarget(0, &g_AfxStreams.m_Tf2PassPreviousColor[unsigned(Pass)]))) return;
+  device->GetDepthStencilSurface(&g_AfxStreams.m_Tf2PassPreviousDepth[unsigned(Pass)]);
+  device->GetViewport(&g_AfxStreams.m_Tf2PassPreviousViewport[unsigned(Pass)]);
+  if(Pass==Tf2RenderPass::Players && !g_AfxStreams.m_Tf2PlayerDepth){
+   D3DSURFACE_DESC desc{};
+   if(FAILED(AfxGetRenderTargetSurface()->GetDesc(&desc)) || FAILED(device->CreateDepthStencilSurface(desc.Width,desc.Height,D3DFMT_D24S8,desc.MultiSampleType,desc.MultiSampleQuality,FALSE,&g_AfxStreams.m_Tf2PlayerDepth,nullptr))){
+    g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass);Tier0_Warning("Could not allocate player holdout depth/stencil target.\n");return;
+   }
+  }
+  device->SetDepthStencilSurface(nullptr);
+  g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = true;
+  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_SetRenderTargetNoMsaa();
+  else g_AfxStreams.DrawingThread_SetRenderTarget();
+  if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_SetIntZTextureSurface();
+  if(Pass==Tf2RenderPass::Players) AfxD3d9PushDepthStencilEx(g_AfxStreams.m_Tf2PlayerDepth);
+  if(Pass==Tf2RenderPass::Players)AfxD3D9SetPlayerHoldoutEnabled(true);
+  if (g_AfxStreams.DrawingThread_BindTf2PassTarget()) {
+   DWORD clearFlags=D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER;
+   if(Pass==Tf2RenderPass::Players)clearFlags|=D3DCLEAR_STENCIL;
+   if(Pass==Tf2RenderPass::World){
+    D3DSURFACE_DESC desc{};auto depth=AfxGetDepthStencilSurface();
+    if(depth && SUCCEEDED(depth->GetDesc(&desc)) && (desc.Format==D3DFMT_D24S8 || desc.Format==D3DFMT_D24FS8 || desc.Format==D3DFMT_D15S1))clearFlags|=D3DCLEAR_STENCIL;
+   }
+   const auto result = device->Clear(0, nullptr, clearFlags,
+    Pass == Tf2RenderPass::Players || Pass == Tf2RenderPass::Viewmodel || Pass == Tf2RenderPass::Hud ? Background : 0, 1, 0);
+   g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] = SUCCEEDED(result);
+   if (FAILED(result)) Tier0_Warning("TF2 %s pass clear failed: 0x%08x.\n", Tf2RenderPassName(Pass), unsigned(result));
+  } else Tier0_Warning("TF2 %s pass could not bind its color/depth targets.\n", Tf2RenderPassName(Pass));
+  if (matte && g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) {
+   if (!g_AfxStreams.m_Tf2WhiteSurface)
+    g_AfxStreams.m_Tf2WhiteSurface = AfxCreateCompatibleRenderTarget(AfxGetRenderTargetSurface(), true);
+   const bool white = g_AfxStreams.DrawingThread_Tf2White(true);
+   const bool cleared = white && SUCCEEDED(device->Clear(0, nullptr, D3DCLEAR_TARGET, 0xffffffffu, 1, 0));
+   const bool restored = g_AfxStreams.DrawingThread_Tf2White(false);
+   g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] &= cleared && restored;
+  }
+  return;
+ }
+ // Stop automatic tagging before matte cleanup/postprocessing and all exit paths.
+ if(Pass==Tf2RenderPass::Players)AfxD3D9SetPlayerHoldoutEnabled(false);
+ if(g_AfxStreams.m_Tf2PassCapturedEarly[unsigned(Pass)]){
+  if(Op==Capture)return;
+  if(g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]){
+   if(Pass==Tf2RenderPass::Players)AfxD3d9PopDepthStencil();
+   g_AfxStreams.DrawingThread_UnsetRenderTarget(false);
+  }
+  g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass);
+  g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]=false;return;
+ }
+ ++g_AfxStreams.m_Tf2PassAttempts[unsigned(Pass)];
+ if (!g_AfxStreams.m_Tf2PassActive[unsigned(Pass)]) { if(Op==Capture)g_AfxStreams.m_Tf2PassCapturedEarly[unsigned(Pass)]=true; ++g_AfxStreams.m_Tf2PassFailed[unsigned(Pass)]; if (node) { node->GpuCaptureSkipped(); if (matte) node->GpuCaptureSkipped(); } return; }
+ if(Op!=Capture)g_AfxStreams.m_Tf2PassActive[unsigned(Pass)] = false;
+ bool capture = g_AfxStreams.m_Tf2PassPixelsValid[unsigned(Pass)] && g_AfxStreams.DrawingThread_BindTf2PassTarget();
+ if (capture && Pass == Tf2RenderPass::Depth) {
+  D3DVIEWPORT9 viewport{};
+  if (auto device = AfxGetDirect3DDevice9()) if (SUCCEEDED(device->GetViewport(&viewport)))
+   // Inverse mode divides by output-near; the previous zero produced NaNs.
+   // Reuse HLAE's logarithmic axial-depth conversion for a visible grayscale range.
+   AfxDrawDepth(AfxDrawDepthEncode_Gray, AfxDrawDepthMode_PyramidalLogE, false, 0, 4096,
+     viewport.X, viewport.Y, viewport.Width, viewport.Height, Near, Far, nullptr);
+ }
+ if(capture && Pass==Tf2RenderPass::Players)capture=AfxD3D9ClearPlayerHoldout(g_AfxStreams.m_Tf2PassMatteColor[unsigned(Pass)]);
+ bool captured = false;
+ if (node) {
+  if (capture) captured = node->GpuCapture(); else node->GpuCaptureSkipped();
+  if (matte) {
+   if (capture && g_AfxStreams.DrawingThread_Tf2White(true)) {
+    const bool holdout=Pass!=Tf2RenderPass::Players || AfxD3D9ClearPlayerHoldout(0xffffffffu);
+    const bool whiteCaptured=holdout?node->GpuCapture():(node->GpuCaptureSkipped(),false);captured &= whiteCaptured;
+   } else { node->GpuCaptureSkipped(); captured = false; }
+   g_AfxStreams.DrawingThread_Tf2White(false);
+  }
+ }
+ if (captured) ++g_AfxStreams.m_Tf2PassCaptured[unsigned(Pass)];
+ else ++g_AfxStreams.m_Tf2PassFailed[unsigned(Pass)];
+ if(Op==Capture){g_AfxStreams.m_Tf2PassCapturedEarly[unsigned(Pass)]=true;return;}
+ if(Pass==Tf2RenderPass::Players)AfxD3d9PopDepthStencil();
+ if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetIntZTextureSurface();
+ if (Pass == Tf2RenderPass::Depth) g_AfxStreams.DrawingThread_UnsetRenderTargetNoMsaa(false);
+ else g_AfxStreams.DrawingThread_UnsetRenderTarget(false);
+ g_AfxStreams.DrawingThread_RestoreTf2PassBindings(Pass);
+}
+void CAfxStreams::Console_RecordPass(IWrpCommandArgs *args) {
+ if(args->ArgC()==2 && !_stricmp(args->ArgV(1),"reset")){if(!ResetTf2Outputs())Tier0_Warning("Stop recording before resetting outputs.\n");return;}
+ if(args->ArgC()>=2 && !_stricmp(args->ArgV(1),"reference")){
+  if(args->ArgC()==3 && (!std::strcmp(args->ArgV(2),"0") || !std::strcmp(args->ArgV(2),"1"))){
+   if(!SetTf2FullReference(!std::strcmp(args->ArgV(2),"1")))Tier0_Warning("Stop recording first; supported TF2 pass hooks are required.\n");
+  }
+  Tier0_Msg("mirv_streams record pass reference 0|1 - Optional full scene reference (currently %d).\n",int(Tf2FullReference()));return;
+ }
+
+ if (args->ArgC() == 2 && !_stricmp(args->ArgV(1), "stats")) {
+  for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
+   Tier0_Msg("%s: attempted %llu, captured %llu, failed %llu frames (GPU readbacks, before encoding).\n", Tf2RenderPassName(Tf2RenderPass(i)),
+    m_Tf2PassAttempts[i].load(), m_Tf2PassCaptured[i].load(), m_Tf2PassFailed[i].load());
+  return;
+ }
+ if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "alpha")) {
+  if (args->ArgC() == 3 && (!std::strcmp(args->ArgV(2), "0") || !std::strcmp(args->ArgV(2), "1"))) {
+   if (!SetTf2PassAlpha(!std::strcmp(args->ArgV(2), "1"))) Tier0_Warning("Stop recording before changing pass alpha.\n");
+  }
+  Tier0_Msg("mirv_streams record pass alpha 0|1 - Black/white matte capture for isolated passes (currently %i). Use an alpha-capable output profile, e.g. afxFfmpegProresAlpha.\n", int(Tf2PassAlpha()));
+  return;
+ }
+ if (args->ArgC() >= 2 && !_stricmp(args->ArgV(1), "background")) {
+  unsigned color = 0; bool valid = false;
+  if (args->ArgC() == 3) {
+   if (!_stricmp(args->ArgV(2), "green")) { color = 0x00ff00; valid = true; }
+   else if (!_stricmp(args->ArgV(2), "blue")) { color = 0x0000ff; valid = true; }
+   else if (!_stricmp(args->ArgV(2), "black")) { valid = true; }
+  } else if (args->ArgC() == 5) {
+   valid = true;
+   for (int i = 2; i < 5; ++i) {
+    char *end = nullptr; const char *value = args->ArgV(i); const long channel = std::strtol(value, &end, 10);
+    if (!end || end == value || *end || channel < 0 || channel > 255) { valid = false; break; }
+    color = (color << 8) | unsigned(channel);
+   }
+  }
+  if (!valid || !SetTf2PassBackground(color)) Tier0_Warning("Stop recording before setting a valid pass background.\n");
+  Tier0_Msg("mirv_streams record pass background <green|blue|black> - Chroma background for isolated outputs.\n"
+    "mirv_streams record pass background <red 0..255> <green 0..255> <blue 0..255> - Custom chroma color.\n");
+  return;
+ }
+ if (args->ArgC() == 3) for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
+  if ((!_stricmp(args->ArgV(1), Tf2RenderPassName(Tf2RenderPass(i))) || (i==0 && !_stricmp(args->ArgV(1),"world"))) &&
+      (!std::strcmp(args->ArgV(2), "0") || !std::strcmp(args->ArgV(2), "1"))) {
+   if (!SetTf2PassEnabled(Tf2RenderPass(i), !std::strcmp(args->ArgV(2), "1")))
+    Tier0_Warning("Stop recording first; TF2 separate-pass hooks must be available.\n");
+   return;
+  }
+ Tier0_Msg("mirv_streams record pass <base|players|viewmodel|hud|depth> 0|1 - Complementary outputs; world is an alias for base.\n"
+  "mirv_streams record pass reference 0|1 - Optional unchanged full-scene output.\n"
+  "mirv_streams record pass reset - Restore ordinary screen recording configuration.\n"
+  "mirv_streams record pass stats - Show GPU frame readback counts for the current/last take.\n");
+ for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
+  Tier0_Msg("%s: %i\n", Tf2RenderPassName(Tf2RenderPass(i)), int(Tf2PassEnabled(Tf2RenderPass(i))));
+}
+
+namespace AfxHookSource { namespace CameraOverlay { namespace Recording {
+bool PassAlpha() { return g_AfxStreams.Tf2PassAlpha(); }
+bool SetPassAlpha(bool value) {
+ if (IsActive() || !g_VEngineClient) return false;
+ g_VEngineClient->ClientCmd_Unrestricted(value ? "mirv_streams record pass alpha 1" : "mirv_streams record pass alpha 0"); return true;
+}
+unsigned PassBackground() { return g_AfxStreams.Tf2PassBackground(); }
+bool SetPassBackground(unsigned color) {
+ if (IsActive() || !g_VEngineClient) return false;
+ const auto command = std::string("mirv_streams record pass background ") + std::to_string((color >> 16) & 255) + " " + std::to_string((color >> 8) & 255) + " " + std::to_string(color & 255);
+ g_VEngineClient->ClientCmd_Unrestricted(command.c_str()); return true;
+}
+bool SeparatePassSupported() { return Tf2RenderPassSupported(); }
+bool SeparateConfigured(){return g_AfxStreams.Tf2SeparateConfigured();}
+bool FullReference(){return g_AfxStreams.Tf2FullReference();}
+bool SetFullReference(bool enabled){
+ if(IsActive() || !g_VEngineClient)return false;
+ g_VEngineClient->ClientCmd_Unrestricted(enabled?"mirv_streams record pass reference 1":"mirv_streams record pass reference 0");return true;
+}
+bool ResetSeparateOutputs(){
+ if(IsActive() || !g_VEngineClient)return false;
+ g_VEngineClient->ClientCmd_Unrestricted("mirv_streams record pass reset");return true;
+}
+bool PassEnabled(unsigned pass) { return g_AfxStreams.Tf2PassEnabled(Tf2RenderPass(pass)); }
+bool SetPassEnabled(unsigned pass, bool enabled) {
+ if (pass >= unsigned(Tf2RenderPass::Count) || IsActive() || !g_VEngineClient) return false;
+ const auto command = std::string("mirv_streams record pass ") + Tf2RenderPassName(Tf2RenderPass(pass)) + (enabled ? " 1" : " 0");
+ g_VEngineClient->ClientCmd_Unrestricted(command.c_str());
+ return true;
+}
+}}}

@@ -19,6 +19,7 @@ enum class DemoFixPreference
 {
 	RecorderMute,
 	Deathcam,
+	NoStaticPropFade,
 	PlayerInterpolation
 };
 void RememberDemoFixPreference(DemoFixPreference setting, double value);
@@ -65,12 +66,25 @@ void SetCameraGuides(bool enabled);
 void SetCameraFrustums(bool enabled);
 bool CameraGuidesEnabled();
 bool CameraFrustumsEnabled();
+// Thread-safe selected clip for optional in-world transition trajectory guides.
+std::uint64_t TransitionGuideClip();
 bool PreviewInsert();
 bool PreviewHold(bool clear);
 void PreviewSelectAll();
 bool PreviewAnchor();
 namespace Recording
 {
+bool PassAlpha();
+bool SetPassAlpha(bool value);
+unsigned PassBackground();
+bool SetPassBackground(unsigned color);
+bool SeparatePassSupported();
+bool SeparateConfigured();
+bool FullReference();
+bool SetFullReference(bool enabled);
+bool ResetSeparateOutputs();
+bool PassEnabled(unsigned pass);
+bool SetPassEnabled(unsigned pass, bool enabled);
 const char *GetName();
 void SetName(const char *value);
 bool ScreenEnabled();

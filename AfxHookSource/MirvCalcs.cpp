@@ -2724,13 +2724,27 @@ private:
 			if (!CalcEntity(iface, absOrigin, absAngles))
 				return false;
 
-			m_AnchorRoot[0] = absOrigin.x;
-			m_AnchorRoot[1] = absOrigin.y;
-			m_AnchorRoot[2] = absOrigin.z;
 			m_AnchorEntity = ent;
 			// EntitySearchResult is a C_BaseEntity pointer, IClientUnknown is its first base.
 			CMirvTf2ClientUnknown * unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(ent);
 			CMirvTf2ClientRenderable * renderable = unknown ? unknown->GetClientRenderable() : 0;
+
+			// SetupBones is in render space. A predicted/absolute root can differ
+			// during POV playback; mixing it with rendered bones turns that difference
+			// into a false bone offset which bypasses root-follow damping.
+			if (renderable)
+			{
+				const auto origin = static_cast<const float *>(renderable->GetRenderOrigin());
+				if (origin && std::isfinite(origin[0]) && std::isfinite(origin[1]) && std::isfinite(origin[2]))
+				{
+					absOrigin.x = origin[0];
+					absOrigin.y = origin[1];
+					absOrigin.z = origin[2];
+				}
+			}
+			m_AnchorRoot[0] = absOrigin.x;
+			m_AnchorRoot[1] = absOrigin.y;
+			m_AnchorRoot[2] = absOrigin.z;
 
 			if (!BindModel(ent, renderable ? renderable->GetModel() : nullptr))
 				return false;
@@ -5850,6 +5864,14 @@ public:
 			return false;
 		if (!m_Tools)
 			return true;
+		// Trace callbacks can also receive static props, not client tool entities.
+        if (g_OpenFortressLegacyMode)
+        {
+            bool known = false;
+            for (auto ent = m_Tools->FirstEntity(); ent; ent = m_Tools->NextEntity(ent))
+                if (ent == entity) { known = true; break; }
+            if (!known) return true;
+        }
 		if (m_Tools->IsPlayer(entity))
 			return entity == m_Local || m_Players;
 		if (m_Camera)
@@ -5904,16 +5926,40 @@ public:
 	virtual void TraceRay(const MirvTf2Ray_t &, unsigned int, CMirvTf2TraceFilter *, MirvTf2Trace_t *) = 0;
 };
 
+// OF exposes EngineTraceClient003, but the exact binary ABI is not runtime-verified.
+// Check readable interface/vtable entries and executable ownership before opt-in use.
+static CMirvTf2EngineTrace *GetCameraTraceInterface()
+{
+    if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified &&
+        !(g_OpenFortressLegacyMode && g_OfNativeCollision)) return nullptr;
+    static CMirvTf2EngineTrace *trace = nullptr;
+    if (!trace && g_AppSystemFactory)
+        trace = reinterpret_cast<CMirvTf2EngineTrace *>(g_AppSystemFactory("EngineTraceClient003", nullptr));
+    if (!trace || !g_OpenFortressLegacyMode) return trace;
+    if (!Mirv_Of_SceneInterfacesSupported(false)) return nullptr;
+    auto engine = GetModuleHandleW(L"engine.dll");
+    void **table = nullptr;
+    SIZE_T read = 0;
+    if (!engine || !ReadProcessMemory(GetCurrentProcess(), trace, &table, sizeof(table), &read) || read != sizeof(table) || !table)
+        return nullptr;
+    for (int slot : {2, 4})
+    {
+        void *entry = nullptr;
+        MEMORY_BASIC_INFORMATION code{};
+        if (!ReadProcessMemory(GetCurrentProcess(), table + slot, &entry, sizeof(entry), &read) || read != sizeof(entry) ||
+            !entry || !VirtualQuery(entry, &code, sizeof(code)) || code.AllocationBase != engine || code.State != MEM_COMMIT ||
+            (code.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+            !(code.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) return nullptr;
+    }
+    return trace;
+}
+
 bool Mirv_Tf2_TraceEntity(const double origin[3], const double angles[3], int &outIndex)
 {
 	outIndex = -1;
-	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
-		return false;
+	auto *trace = GetCameraTraceInterface();
 	auto *tools = CClientToolsTf2::Instance();
 	auto *iface = tools ? tools->GetClientTools() : nullptr;
-	static CMirvTf2EngineTrace *trace = nullptr;
-	if (!trace && g_AppSystemFactory)
-		trace = reinterpret_cast<CMirvTf2EngineTrace *>(g_AppSystemFactory("EngineTraceClient003", nullptr));
 	if (!trace || !iface)
 		return false;
 	double forward[3], right[3], up[3];
@@ -5951,7 +5997,7 @@ namespace
 {
 std::mutex g_CameraCollisionMutex;
 MirvCameraCollisionSettings g_CameraCollisionSettings;
-std::atomic<unsigned long long> g_CameraCollisionGeneration{0}, g_AttachedCameraGeneration{0};
+std::atomic<unsigned long long> g_CameraCollisionGeneration{0}, g_AttachedCameraGeneration{0}, g_SavedCameraResetGeneration{0};
 struct CameraCollisionHistory
 {
 	bool Valid = false, Free = false, Recovering = false;
@@ -5962,12 +6008,7 @@ struct CameraCollisionHistory
 
 CMirvTf2EngineTrace *CameraCollisionTraceInterface()
 {
-	if (g_SourceSdkVer != SourceSdkVer_TF2 && g_SourceSdkVer != SourceSdkVer_TF2Classified)
-		return nullptr;
-	static CMirvTf2EngineTrace *trace = nullptr;
-	if (!trace && g_AppSystemFactory)
-		trace = reinterpret_cast<CMirvTf2EngineTrace *>(g_AppSystemFactory("EngineTraceClient003", nullptr));
-	return trace;
+	return GetCameraTraceInterface();
 }
 
 bool CameraCollisionTrace(const double start[3], const double end[3],
@@ -5993,7 +6034,7 @@ bool CameraCollisionTrace(const double start[3], const double end[3],
 	}
 	if (length2 > 56756.0 * 56756.0)
 		return false;
-	ray.isRay = false;
+	ray.isRay = settings.Radius <= 0;
 	ray.isSwept = length2 > 0;
 	hit = {};
 	hit.fraction = 1;
@@ -6030,14 +6071,25 @@ bool CameraCollisionMove(const double from[3], const double target[3],
 			awayLength2 += away[a] * away[a];
 		}
 		int directions[6] = {0, 1, 2, 3, 4, 5};
-		std::sort(directions, directions + 6, [&](int a, int b) {
-			const double sa = (a % 2 ? 1 : -1) * away[a / 2], sb = (b % 2 ? 1 : -1) * away[b / 2];
-			return sa == sb ? a < b : sa > sb;
-		});
+		std::sort(directions, directions + 6,
+				  [&](int a, int b)
+				  {
+					  const double sa = (a % 2 ? 1 : -1) * away[a / 2], sb = (b % 2 ? 1 : -1) * away[b / 2];
+					  const int priority[6] = {1, 2, 3, 4, 5, 0}; // +Z, then horizontal, -Z last.
+					  return sa == sb ? priority[a] < priority[b] : sa > sb;
+				  });
 		for (int ring = 0; ring < 4 && !clear; ++ring)
 		{
 			const double distance = (std::min)(64.0, (settings.Radius + 1) * (1 << ring));
-			if (awayLength2 > 1e-8)
+			// Try above the overlap before an away-from-goal direction can
+			// choose the underside of a thin floor.
+			double above[3] = {from[0], from[1], from[2] + distance};
+			if (CameraCollisionClear(above, settings, attached))
+			{
+				std::copy(above, above + 3, position);
+				clear = true;
+			}
+			if (!clear && awayLength2 > 1e-8)
 			{
 				double candidate[3];
 				for (int axis = 0; axis < 3; ++axis)
@@ -6051,6 +6103,8 @@ bool CameraCollisionMove(const double from[3], const double target[3],
 			for (int d = 0; d < 6 && !clear; ++d)
 			{
 				const int direction = directions[d];
+				if (direction == 5)
+					continue; // Already tested +Z above.
 				double candidate[3] = {from[0], from[1], from[2]};
 				candidate[direction / 2] += direction % 2 ? distance : -distance;
 				if (CameraCollisionClear(candidate, settings, attached))
@@ -6147,6 +6201,60 @@ void CameraReturnTarget(const double from[3], const double desired[3], double dt
 }
 } // namespace
 
+bool CameraCollisionSubjectClear(const double point[3], const MirvCameraCollisionSettings &settings,
+								 void *entity, const double pivot[3])
+{
+	MirvTf2Trace_t subject;
+	double distance2 = 0;
+	for (int a = 0; a < 3; ++a)
+		distance2 += std::pow(point[a] - pivot[a], 2);
+	return distance2 + 1e-6 >= settings.SubjectClearance * settings.SubjectClearance &&
+		   CameraCollisionClear(point, settings, entity) &&
+		   CameraCollisionTrace(point, point, settings, subject, nullptr, entity) && !subject.startSolid &&
+		   !subject.allSolid;
+}
+bool CameraCollisionFrustumSettings(const MirvCameraCollisionSettings &inputSettings,
+									MirvCameraCollisionSettings &settings)
+{
+	settings = inputSettings;
+	if (settings.Attached && settings.NearPlane > 0)
+	{
+		const double aspect = (std::max)(.1, settings.FrameAspect);
+		const double tangent = std::tan(std::clamp(settings.FrameFov, 1.0, 179.0) * .008726646259971648);
+		// Source can specify FOV at 4:3; include that wider interpretation as
+		// well as horizontal FOV. A bounding sphere covers arbitrary camera roll.
+		const double horizontal = tangent * (std::max)(1.0, aspect / (4.0 / 3));
+		const double vertical = horizontal / aspect;
+		const double radius =
+			settings.NearPlane * std::sqrt(1 + horizontal * horizontal + vertical * vertical);
+		if (!std::isfinite(radius) || radius > 32768)
+		{
+			return false;
+		}
+		settings.Radius = (std::max)(settings.Radius, radius);
+	}
+
+	return true;
+}
+bool MirvCameraCollisionConstrain(const MirvCameraCollisionSettings &settings, void *entity,
+								  const double from[3], double position[3], const double *pivot)
+{
+	MirvCameraCollisionSettings effective;
+	if (!CameraCollisionFrustumSettings(settings, effective))
+		return false;
+	double corrected[3];
+	if (!CameraCollisionMove(from, position, effective, corrected, entity) ||
+		!CameraCollisionClear(corrected, effective, entity))
+		return false;
+	if (pivot && !CameraCollisionSubjectClear(corrected, effective, entity, pivot))
+	{
+		if (!CameraCollisionSubjectClear(from, effective, entity, pivot))
+			return false;
+		std::copy(from, from + 3, corrected);
+	}
+	std::copy(corrected, corrected + 3, position);
+	return true;
+}
 MirvCameraCollisionSettings MirvCameraCollisionGet()
 {
 	std::lock_guard<std::mutex> lock(g_CameraCollisionMutex);
@@ -6154,28 +6262,15 @@ MirvCameraCollisionSettings MirvCameraCollisionGet()
 }
 bool MirvCameraCollisionSet(const MirvCameraCollisionSettings &settings)
 {
-	if (!std::isfinite(settings.Radius) || settings.Radius < 1 || settings.Radius > 64 ||
-	    !std::isfinite(settings.ReturnHalfLife) || settings.ReturnHalfLife < 0 ||
-	    settings.ReturnHalfLife > 10 || !std::isfinite(settings.ReturnSpeed) || settings.ReturnSpeed < 0 ||
-	    settings.ReturnSpeed > 1e6 || !std::isfinite(settings.FollowHalfLife) ||
-	    settings.FollowHalfLife < 0 || settings.FollowHalfLife > 10 ||
-	    !std::isfinite(settings.FollowMaxDistance) || settings.FollowMaxDistance < 1 ||
-	    settings.FollowMaxDistance > 10000 || !std::isfinite(settings.BoneHalfLife) ||
-	    settings.BoneHalfLife < 0 || settings.BoneHalfLife > 10 ||
-	    !std::isfinite(settings.FollowTeleportDistance) || settings.FollowTeleportDistance < 0 ||
-	    settings.FollowTeleportDistance > 1e6 || !std::isfinite(settings.OrbitHalfLife) ||
-	    settings.OrbitHalfLife < 0 || settings.OrbitHalfLife > 10 || !std::isfinite(settings.OrbitSpeed) ||
-	    settings.OrbitSpeed < 0 || settings.OrbitSpeed > 1e6 ||
-	    !std::isfinite(settings.FollowRecoveryDelay) || settings.FollowRecoveryDelay < 0 ||
-	    settings.FollowRecoveryDelay > 60 || !std::isfinite(settings.AttachedSoftDistance) ||
-	    settings.AttachedSoftDistance < 0 || settings.AttachedSoftDistance > 256 ||
-	    ((settings.Free || settings.Campath || settings.Attached) && !CameraCollisionTraceInterface()) ||
-	    ((settings.FollowHalfLife > 0 || settings.BoneHalfLife > 0) && g_SourceSdkVer != SourceSdkVer_TF2 &&
-	     g_SourceSdkVer != SourceSdkVer_TF2Classified && !g_OpenFortressLegacyMode))
-		return false;
+	if (!settings.Valid() ||
+        ((settings.Free || settings.Campath || settings.Attached) && !CameraCollisionTraceInterface()) ||
+        ((settings.FollowHalfLife > 0 || settings.BoneHalfLife > 0) && g_SourceSdkVer != SourceSdkVer_TF2 &&
+         g_SourceSdkVer != SourceSdkVer_TF2Classified && !g_OpenFortressLegacyMode))
+        return false;
 	{
 		std::lock_guard<std::mutex> lock(g_CameraCollisionMutex);
-		g_CameraCollisionSettings = settings;
+		if(g_CameraCollisionSettings==settings)return true;
+        g_CameraCollisionSettings = settings;
 	}
 	return true;
 }
@@ -6183,6 +6278,7 @@ void MirvCameraCollisionReset()
 {
 	++g_CameraCollisionGeneration;
 	++g_AttachedCameraGeneration;
+ ++g_SavedCameraResetGeneration;
 }
 
 bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long long revision,
@@ -6255,9 +6351,23 @@ bool MirvCameraCollisionApply(bool freeCamera, const void *path, unsigned long l
 	std::copy(corrected, corrected + 3, history.Position);
 	return true;
 }
-void MirvCameraAttachedReset()
+extern bool GetCurrentDemoTime(double &outDemoTime);
+double MirvCameraAttachedSampleTime(double fallbackTime)
+{
+    // Preserve OF's validated simulation-clock and same-time pose reuse semantics.
+    if (g_OpenFortressLegacyMode) return fallbackTime;
+	double time;
+	// curtime is client simulation time and can be corrected during POV playback.
+	// Reuse the sequencer's demo clock, including its fractional tick. Do not
+	// clamp backwards time: actual backward seeks must still reset follow.
+	return g_VEngineClient && g_VEngineClient->IsPlayingDemo() &&
+		GetCurrentDemoTime(time) && std::isfinite(time) ? time : fallbackTime;
+}
+unsigned long long MirvCameraAttachedGeneration(){return g_SavedCameraResetGeneration.load();}
+void MirvCameraAttachedReset(bool resetSavedCameras)
 {
 	++g_AttachedCameraGeneration;
+ if(resetSavedCameras)++g_SavedCameraResetGeneration;
 }
 namespace
 {
@@ -6345,14 +6455,20 @@ bool MirvCameraAttachedReframe(const double from[3], const double to[3], const d
 	angles[1] = float(bestYaw);
 	return true;
 }
-bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCameraCollisionSettings &settings,
+bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history,
+								const MirvCameraCollisionSettings &inputSettings,
 								unsigned long long generation, const void *identity, void *entity,
 								const double pivot[3], double sceneTime, float &x, float &y, float &z,
 								const double *entityOrigin, float *angles, const double *rootAngles,
-								const double *targetAngles, const advancedfx::CameraPose *boneReference)
+								const double *targetAngles, const advancedfx::CameraPose *boneReference, const double *inputTime)
 {
+	// A cube around the optical centre enclosing the requested near-plane
+	// corners also protects them while sliding and recovering. Zero is legacy radius-only.
+ MirvCameraCollisionSettings settings;
+ if(!CameraCollisionFrustumSettings(inputSettings,settings)){history.Valid=false;return false;}
+
 	if (!identity || !entity ||
-		(!settings.Attached && settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 &&
+		(!settings.Attached && settings.FollowHalfLife == 0 && settings.BoneHalfLife == 0 && !(settings.IndependentOrbit && settings.OrbitHalfLife>0) &&
 		 settings.BonePositionInfluence == 1 && settings.BoneRotationInfluence == 1 &&
 		 settings.BonePositionLimit == 0 && settings.BoneRotationLimit == 0) ||
 		!std::isfinite(sceneTime))
@@ -6360,6 +6476,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		history.Valid = false;
 		return false;
 	}
+	history.CollisionActive = history.AnchorEmbedded = history.SubjectBlocked = history.HasContact = false;
 	double desired[3] = {x, y, z};
 	const double rawDesired[3] = {x, y, z};
 	float rawAngles[3] = {angles ? angles[0] : 0, angles ? angles[1] : 0, angles ? angles[2] : 0};
@@ -6368,13 +6485,22 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 	for (int a = 0; a < 3; ++a)
 	{
 		if ((angles && !std::isfinite(angles[a])) || !std::isfinite(desired[a]) || !std::isfinite(pivot[a]) ||
-		    !std::isfinite(root[a]) || std::abs(desired[a]) > 1e7 || std::abs(pivot[a]) > 1e7 ||
-		    std::abs(root[a]) > 1e7)
+			!std::isfinite(root[a]) || std::abs(desired[a]) > 1e7 || std::abs(pivot[a]) > 1e7 ||
+			std::abs(root[a]) > 1e7)
 		{
 			history.Valid = false;
 			return false;
 		}
 		rootJump2 += (root[a] - history.Root[a]) * (root[a] - history.Root[a]);
+	}
+	++history.Samples;
+	if (history.Valid && history.Identity == identity && history.Entity == entity && history.Generation == generation)
+	{
+		const double step = sceneTime - history.Time;
+		if ((inputTime ? *inputTime : sceneTime) < history.InputTime) ++history.InputTimeRewinds;
+		if (step < 0) ++history.TimeRewinds;
+		if (step == 0 && rootJump2 > 1e-6) ++history.StalledRootChanges;
+		history.MaxTimeStep = (std::max)(history.MaxTimeStep, step);
 	}
 	const bool continuous = history.Valid && history.Identity == identity && history.Entity == entity &&
 							history.Generation == generation && sceneTime >= history.Time &&
@@ -6384,9 +6510,10 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 	const double dt = continuous ? sceneTime - history.Time : 0;
 	const bool following = settings.FollowHalfLife > 1e-6;
 	const bool shotContinuous = continuous && (history.FollowHalfLife > 1e-6) == following;
-	const double orbitAlpha = following && settings.OrbitHalfLife > 1e-6
-	                              ? -std::expm1(-std::log(2.0) * dt / settings.OrbitHalfLife)
-	                              : 1;
+ const bool orbitFiltering=following || (settings.IndependentOrbit && settings.OrbitHalfLife>1e-6);
+	const double orbitAlpha = orbitFiltering && settings.OrbitHalfLife > 1e-6
+								  ? -std::expm1(-std::log(2.0) * dt / settings.OrbitHalfLife)
+								  : 1;
 	if (!shotContinuous)
 		history.OrbitYaw = angles ? angles[1] : 0;
 	if (!continuous)
@@ -6395,11 +6522,12 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		history.BlockedTime = 0;
 	}
 	using namespace Afx::Math;
-	auto directionFrame = [](const double v[3], double fallbackYaw) {
+	auto directionFrame = [](const double v[3], double fallbackYaw)
+	{
 		const double flat = std::hypot(v[0], v[1]);
 		return Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles(
-		    QEulerAngles(std::atan2(-v[2], flat) * 57.29577951308232,
-			             flat > 1e-9 ? std::atan2(v[1], v[0]) * 57.29577951308232 : fallbackYaw, 0)));
+			QEulerAngles(std::atan2(-v[2], flat) * 57.29577951308232,
+						 flat > 1e-9 ? std::atan2(v[1], v[0]) * 57.29577951308232 : fallbackYaw, 0)));
 	};
 	auto forward = [](const Quaternion &q, double v[3])
 	{
@@ -6414,6 +6542,11 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 			to = -1.0 * to;
 		return from.Slerp(to, alpha).Normalized();
 	};
+ auto rollStep=[&](double from,double goal){
+  double change=std::remainder(goal-from,360.)*orbitAlpha;
+  if(orbitFiltering && settings.OrbitSpeed>0)change=std::clamp(change,-settings.OrbitSpeed*dt,settings.OrbitSpeed*dt);
+  return from+change;
+ };
 	auto rotate = [](const Quaternion &q, const double v[3], double out[3])
 	{
 		const auto r = q * Quaternion(0, v[0], v[1], v[2]) * q.Conjugate();
@@ -6489,7 +6622,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		}
 		else
 			Afx::Math::SpringStep(history.FollowPosition[a], history.FollowVelocity[a], root[a], dt,
-			                      1.67834699001666 / (6.283185307179586 * settings.FollowHalfLife), 1);
+								  1.67834699001666 / (6.283185307179586 * settings.FollowHalfLife), 1);
 		if (!continuous || settings.BoneHalfLife <= 1e-6 || history.BoneHalfLife == 0)
 		{
 			history.BonePosition[a] = boneOffset;
@@ -6501,8 +6634,6 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 	}
 	double boneWorld[3];
 	rotate(rootRotation, history.BonePosition, boneWorld);
-	double boneGoalWorld[3];
-	rotate(rootRotation, boneGoal, boneGoalWorld);
 	// A lagged world position must not let the subject walk through its own camera.
 	// Limit the steady lag estimated from the filtered velocity. Clamping the
 	// raw root-to-camera difference feeds snapshot jitter straight back into
@@ -6513,8 +6644,8 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		offset[a] = rawOffset[a] = desired[a] - pivot[a];
 		offset2 += offset[a] * offset[a];
 		lag[a] = settings.FollowHalfLife > 1e-6
-		             ? -history.FollowVelocity[a] * (2 * settings.FollowHalfLife / 1.67834699001666)
-		             : 0;
+					 ? -history.FollowVelocity[a] * (2 * settings.FollowHalfLife / 1.67834699001666)
+					 : 0;
 		rawLag[a] = lag[a];
 		lag2 += lag[a] * lag[a];
 		anchor[a] = root[a] + boneWorld[a];
@@ -6525,7 +6656,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		if (std::hypot(rawOffset[0], rawOffset[1]) > 1e-6)
 			history.OrbitYaw = std::atan2(rawOffset[1], rawOffset[0]) * 57.29577951308232;
 		auto target = directionFrame(rawOffset, history.OrbitYaw);
-		if (!shotContinuous || history.OrbitLength < 1e-6 || orbitAlpha == 1)
+		if (!shotContinuous || history.OrbitLength < 1e-6 || (orbitAlpha == 1 && (!orbitFiltering || settings.OrbitSpeed<=0)))
 			history.Orbit = target;
 		else
 		{
@@ -6534,9 +6665,9 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 				target = -1.0 * target;
 			const double angle = std::abs(history.Orbit.GetAng(target, axis));
 			const double alpha =
-			    settings.OrbitSpeed > 0 && angle > 1e-9
-			        ? (std::min)(orbitAlpha, settings.OrbitSpeed / 57.29577951308232 * dt / angle)
-			        : orbitAlpha;
+				settings.OrbitSpeed > 0 && angle > 1e-9
+					? (std::min)(orbitAlpha, settings.OrbitSpeed / 57.29577951308232 * dt / angle)
+					: orbitAlpha;
 			history.Orbit = blend(history.Orbit, target, alpha);
 		}
 	}
@@ -6554,9 +6685,9 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		std::fill(offset, offset + 3, 0.0);
 	const double offsetLength = history.OrbitLength;
 	const double lagScale =
-	    lagLength > 1e-9
-	        ? settings.FollowMaxDistance * std::tanh(lagLength / settings.FollowMaxDistance) / lagLength
-	        : 1;
+		lagLength > 1e-9
+			? settings.FollowMaxDistance * std::tanh(lagLength / settings.FollowMaxDistance) / lagLength
+			: 1;
 	for (int a = 0; a < 3; ++a)
 		lag[a] *= lagScale;
 	if (offsetLength > 1e-3)
@@ -6573,33 +6704,49 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		const double along = alongLimit * std::tanh(parallel / alongLimit);
 		const double acrossLength = std::sqrt(transverse2);
 		const double acrossScale =
-		    acrossLength > 1e-9 ? acrossLimit * std::tanh(acrossLength / acrossLimit) / acrossLength : 1;
+			acrossLength > 1e-9 ? acrossLimit * std::tanh(acrossLength / acrossLimit) / acrossLength : 1;
 		for (int a = 0; a < 3; ++a)
 			lag[a] = along * offset[a] / offsetLength + transverse[a] * acrossScale;
 	}
 	for (int a = 0; a < 3; ++a)
 		candidate[a] = history.FollowPosition[a] + boneWorld[a] + offset[a] + lag[a] - rawLag[a];
-	// The explicit user limit remains a hard bound, including sudden corrections.
-	double actualLag2 = 0;
-	for (int a = 0; a < 3; ++a)
-		actualLag2 += std::pow(candidate[a] - anchor[a] - offset[a], 2);
-	if (actualLag2 > settings.FollowMaxDistance * settings.FollowMaxDistance)
-		for (int a = 0; a < 3; ++a)
-			candidate[a] =
-			    anchor[a] + offset[a] +
-			    (candidate[a] - anchor[a] - offset[a]) * settings.FollowMaxDistance / std::sqrt(actualLag2);
-	// The smooth estimate can briefly lag further during acceleration. Keep a
-	// hard safety envelope as a fallback, rather than using it for every frame.
-	if (offsetLength > 1e-3)
+	auto constrainFollowLag = [&]()
 	{
-		double along = 0;
+		// The explicit user limit remains a hard bound, including sudden corrections.
+		double actualLag2 = 0;
 		for (int a = 0; a < 3; ++a)
-			along += (candidate[a] - anchor[a] - offset[a]) * offset[a] / offsetLength;
-		const double bounded = (std::max)(-.5 * offsetLength, (std::min)(.5 * offsetLength, along));
-		for (int a = 0; a < 3; ++a)
-			candidate[a] += (bounded - along) * offset[a] / offsetLength;
-	}
-	if (settings.PreserveFraming && angles && rawLength > 1e-3)
+			actualLag2 += std::pow(candidate[a] - anchor[a] - offset[a], 2);
+		if (actualLag2 > settings.FollowMaxDistance * settings.FollowMaxDistance)
+			for (int a = 0; a < 3; ++a)
+				candidate[a] =
+					anchor[a] + offset[a] +
+					(candidate[a] - anchor[a] - offset[a]) * settings.FollowMaxDistance / std::sqrt(actualLag2);
+		// The smooth estimate can briefly lag further during acceleration. Keep a
+		// hard safety envelope as a fallback, rather than using it for every frame.
+		if (offsetLength > 1e-3)
+		{
+			double along = 0;
+			for (int a = 0; a < 3; ++a)
+				along += (candidate[a] - anchor[a] - offset[a]) * offset[a] / offsetLength;
+			const double bounded = (std::max)(-.5 * offsetLength, (std::min)(.5 * offsetLength, along));
+			for (int a = 0; a < 3; ++a)
+				candidate[a] += (bounded - along) * offset[a] / offsetLength;
+		}
+	};
+	constrainFollowLag();
+ // Preserve composition in the filtered boom frame, rather than rotating back to
+ // the raw bone every frame and cancelling orbit damping.
+ if(settings.PreserveFraming && !settings.AimOwnsAngles && angles && orbitFiltering && rawLength>1e-3){
+  const auto rawFrame=directionFrame(rawOffset,history.OrbitYaw);
+  const auto authored=Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({angles[0],angles[1],angles[2]}));
+  const auto view=(history.Orbit*rawFrame.Conjugate()*authored).Normalized();
+  const auto reference=shotContinuous && history.HasAngles ? QEulerAngles(history.DisplayAngles[0],history.DisplayAngles[1],history.DisplayAngles[2]) : QEulerAngles(angles[0],angles[1],angles[2]);
+  const auto e=NearestEquivalentEuler(view.ToQREulerAngles().ToQEulerAngles(),reference);
+  angles[0]=float(e.Pitch);angles[1]=float(e.Yaw);angles[2]=float(shotContinuous && history.HasAngles?rollStep(history.DisplayAngles[2],e.Roll):e.Roll);
+ }
+	double framingGoal[3] = {};
+	const bool framing = settings.PreserveFraming && !settings.AimOwnsAngles && angles && rawLength > 1e-3;
+	if (framing)
 	{
 		double f[3], r[3], u[3];
 		MakeVectors(angles[2], angles[0], angles[1], f, r, u);
@@ -6609,9 +6756,13 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		double rigid[3], path[3], ray[3], projection[3] = {}, motion[3] = {};
 		for (int a = 0; a < 3; ++a)
 		{
-			rigid[a] = root[a] + boneGoalWorld[a] + rawOffset[a];
+			// Keep the real root as the framing goal, while retaining bone/orbit
+			// filtering. The correction below uses the existing follow spring;
+			// a raw snapshot must not directly replace the damped camera pose.
+			const double subject = root[a] + boneWorld[a];
+			rigid[a] = subject + offset[a];
 			path[a] = candidate[a] - rigid[a];
-			ray[a] = pivot[a] - rigid[a];
+			ray[a] = subject - rigid[a];
 			projection[0] += ray[a] * f[a];
 			projection[1] += ray[a] * r[a];
 			projection[2] += ray[a] * u[a];
@@ -6639,15 +6790,36 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		{
 			const double weight = allowed * std::tanh(1 / allowed);
 			for (int a = 0; a < 3; ++a)
-				candidate[a] = rigid[a] + path[a] * weight;
+				framingGoal[a] = rigid[a] + path[a] * weight - candidate[a];
 		}
 	}
+	const double framingHalfLife = settings.FollowHalfLife > 1e-6 ? settings.FollowHalfLife
+		: settings.BoneHalfLife > 1e-6 ? settings.BoneHalfLife
+		: orbitFiltering ? settings.OrbitHalfLife : 0;
+	for (int a = 0; a < 3; ++a)
+	{
+		if (!shotContinuous || !history.FramingActive || !framing)
+			history.FramingOffset[a] = history.FramingVelocity[a] = 0;
+		if (framing && framingHalfLife > 1e-6)
+			Afx::Math::SpringStep(history.FramingOffset[a], history.FramingVelocity[a], framingGoal[a], dt,
+				1.67834699001666 / (6.283185307179586 * framingHalfLife), 1);
+		else if (framing)
+			history.FramingOffset[a] = framingGoal[a];
+		candidate[a] += history.FramingOffset[a];
+	}
+	history.FramingActive = framing;
+	// A delayed correction may outlive a direction change; retain the same explicit safety bounds.
+	if (framing) constrainFollowLag();
 	double focus[3];
 	for (int a = 0; a < 3; ++a)
 		focus[a] = candidate[a] - offset[a];
 	const double followed[3] = {candidate[0], candidate[1], candidate[2]};
 	if (settings.Attached)
 	{
+		history.CollisionActive = true;
+		history.CollisionRadius = settings.Radius;
+		std::copy(anchor, anchor + 3, history.CollisionAnchor);
+		std::copy(candidate, candidate + 3, history.CollisionDesired);
 		double recoveryGoal[3] = {candidate[0], candidate[1], candidate[2]};
 		double direction[3], length2 = 0;
 		for (int a = 0; a < 3; ++a)
@@ -6660,8 +6832,8 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		{
 			MirvTf2Trace_t subject;
 			const bool embedded =
-			    !CameraCollisionClear(candidate, settings, entity) ||
-			    (CameraCollisionTrace(candidate, candidate, settings, subject, nullptr, entity) &&
+				!CameraCollisionClear(candidate, settings, entity) ||
+				(CameraCollisionTrace(candidate, candidate, settings, subject, nullptr, entity) &&
 				 (subject.startSolid || subject.allSolid));
 			if (embedded)
 			{
@@ -6688,6 +6860,52 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 			history.Valid = false;
 			return false;
 		}
+		history.AnchorEmbedded = hit.startSolid || hit.allSolid;
+		if ((hit.startSolid || hit.allSolid) && length > 1e-6)
+		{
+			// A camera-sized hull need not fit at a tiny subject's pivot. Find
+			// a nearby clear origin on the same boom, without crossing a point
+			// obstruction or jumping to another side of a wall.
+			auto pointSettings = settings;
+			pointSettings.Radius = 0;
+			MirvTf2Trace_t pointHit;
+			if (CameraCollisionTrace(anchor, rayEnd, pointSettings, pointHit, entity) &&
+				!pointHit.startSolid && !pointHit.allSolid)
+			{
+				const double reach =
+					(std::min)((std::min)(length + soft, (std::max)(8.0, settings.Radius * 4)),
+							   (length + soft) * pointHit.fraction);
+				for (int step = 1; step <= 32; ++step)
+				{
+					const double distance = reach * step / 32;
+					double start[3];
+					for (int a = 0; a < 3; ++a)
+						start[a] = anchor[a] + direction[a] * distance;
+					if (!CameraCollisionClear(start, settings, entity))
+						continue;
+					MirvTf2Trace_t shifted;
+					if (CameraCollisionTrace(start, rayEnd, settings, shifted, entity) &&
+						!shifted.startSolid && !shifted.allSolid)
+					{
+						hit = shifted;
+						hit.fraction =
+							float((distance + (length + soft - distance) * hit.fraction) / (length + soft));
+					}
+					break;
+				}
+			}
+		}
+		double normalLength2 = 0;
+		for (int a = 0; a < 3; ++a)
+			normalLength2 += hit.plane.normal[a] * hit.plane.normal[a];
+		history.HasContact = !hit.startSolid && !hit.allSolid && hit.fraction < 1 &&
+							 std::isfinite(normalLength2) && normalLength2 >= .5 && normalLength2 <= 1.5;
+		if (history.HasContact)
+			for (int a = 0; a < 3; ++a)
+			{
+				history.Contact[a] = anchor[a] + direction[a] * (length + soft) * hit.fraction;
+				history.ContactNormal[a] = hit.plane.normal[a];
+			}
 		double allowed = length, hardLimit = length + soft;
 		if (!hit.startSolid && !hit.allSolid)
 		{
@@ -6701,40 +6919,35 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 					allowed = (std::max)(0.0, allowed - .25 * soft * h * h);
 				}
 			}
-			// A recovery cut uses the verified boom target, independently of
-			// gradual retraction, which can still be on the obstructed side.
-			for (int a = 0; a < 3; ++a)
-				recoveryGoal[a] = anchor[a] + direction[a] * allowed;
-			const bool abrupt =
-			    continuous && allowed < history.ArmLength &&
-			    (history.Contracting || history.LastAllowed - allowed > (std::max)(1.0, soft * .25));
-			history.LastAllowed = allowed;
-			history.Contracting = abrupt && CameraCollisionClear(history.Position, settings, entity);
-			if (continuous && (history.Contracting || (history.Retracted && allowed > history.ArmLength)) &&
-			    CameraCollisionClear(history.Position, settings, entity))
-			{
-				const double from[3] = {history.ArmLength, 0, 0}, to[3] = {allowed, 0, 0};
-				double limited[3];
-				CameraReturnTarget(from, to, dt, settings.ReturnHalfLife, settings.ReturnSpeed, limited);
-				allowed = limited[0];
-				if (std::abs(allowed - history.LastAllowed) < .001)
-					history.Contracting = false;
-			}
-			for (int a = 0; a < 3; ++a)
-				candidate[a] = anchor[a] + direction[a] * allowed;
 		}
+		// A recovery cut uses the verified boom target, independently of
+		// gradual retraction, which can still be on the obstructed side.
+		for (int a = 0; a < 3; ++a)
+			recoveryGoal[a] = anchor[a] + direction[a] * allowed;
+		const bool abrupt =
+			continuous && allowed < history.ArmLength &&
+			(history.Contracting || history.LastAllowed - allowed > (std::max)(1.0, soft * .25));
+		history.LastAllowed = allowed;
+		history.Contracting = abrupt && CameraCollisionClear(history.Position, settings, entity);
+		if (continuous && (history.Contracting || (history.Retracted && allowed > history.ArmLength)) &&
+			CameraCollisionClear(history.Position, settings, entity))
+		{
+			const double from[3] = {history.ArmLength, 0, 0}, to[3] = {allowed, 0, 0};
+			double limited[3];
+			CameraReturnTarget(from, to, dt, settings.ReturnHalfLife, settings.ReturnSpeed, limited);
+			allowed = limited[0];
+			if (std::abs(allowed - history.LastAllowed) < .001)
+				history.Contracting = false;
+		}
+		for (int a = 0; a < 3; ++a)
+			candidate[a] = anchor[a] + direction[a] * allowed;
 		// Test the final hull against the subject even if other player collisions
 		// are disabled. Find its exit along the boom, not an arbitrary axis jump.
-		auto clear = [&](const double point[3]) {
-			MirvTf2Trace_t subject;
-			return CameraCollisionClear(point, settings, entity) &&
-			       CameraCollisionTrace(point, point, settings, subject, nullptr, entity) &&
-			       !subject.startSolid && !subject.allSolid;
-		};
+		auto clear=[&](const double point[3]){return CameraCollisionSubjectClear(point,settings,entity,pivot);};
 		MirvTf2Trace_t overlap;
 		const bool insideSubject =
-		    CameraCollisionTrace(candidate, candidate, settings, overlap, nullptr, entity) &&
-		    (overlap.startSolid || overlap.allSolid);
+			CameraCollisionTrace(candidate, candidate, settings, overlap, nullptr, entity) &&
+			(overlap.startSolid || overlap.allSolid);
 		if (insideSubject && length > 1e-6 && !hit.startSolid && !hit.allSolid)
 		{
 			const double outerLength = length + 64 + settings.Radius * 2;
@@ -6743,7 +6956,7 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 				outer[a] = anchor[a] + direction[a] * outerLength;
 			MirvTf2Trace_t subject;
 			if (CameraCollisionTrace(outer, anchor, settings, subject, nullptr, entity) &&
-			    !subject.startSolid && !subject.allSolid && subject.fraction < 1)
+				!subject.startSolid && !subject.allSolid && subject.fraction < 1)
 			{
 				const double exit = outerLength * (1 - subject.fraction) + .03125;
 				double trial[3];
@@ -6751,8 +6964,30 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 					trial[a] = anchor[a] + direction[a] * exit;
 				MirvTf2Trace_t tether;
 				if (clear(trial) && CameraCollisionTrace(anchor, trial, settings, tether, entity) &&
-				    !tether.startSolid && !tether.allSolid && tether.fraction == 1)
+					!tether.startSolid && !tether.allSolid && tether.fraction == 1)
 					std::copy(trial, trial + 3, candidate);
+			}
+		}
+		if (settings.SubjectClearance > 0)
+		{
+			double d[3], distance2 = 0;
+			for (int a = 0; a < 3; ++a)
+			{
+				d[a] = candidate[a] - pivot[a];
+				distance2 += d[a] * d[a];
+			}
+			const double distance = std::sqrt(distance2);
+			if (distance < settings.SubjectClearance)
+			{
+				double forward[3] = {1, 0, 0}, right[3], up[3], trial[3], swept[3];
+				if (angles)
+					MakeVectors(angles[2], angles[0], angles[1], forward, right, up);
+				for (int a = 0; a < 3; ++a)
+					trial[a] = pivot[a] +
+							   settings.SubjectClearance * (distance > 1e-6 ? d[a] / distance : -forward[a]);
+				// Exclusion distance cannot justify crossing an intervening wall.
+				if (CameraCollisionMove(candidate, trial, settings, swept, entity))
+					std::copy(swept, swept + 3, candidate);
 			}
 		}
 		const double movementGoal[3] = {candidate[0], candidate[1], candidate[2]};
@@ -6767,10 +7002,10 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 			// The same sweep must not pass through the attached subject itself.
 			MirvTf2Trace_t subject;
 			if (CameraCollisionTrace(history.Position, swept, settings, subject, nullptr, entity) &&
-			    !subject.startSolid && !subject.allSolid && subject.fraction < 1)
+				!subject.startSolid && !subject.allSolid && subject.fraction < 1)
 				for (int a = 0; a < 3; ++a)
 					swept[a] = history.Position[a] + (swept[a] - history.Position[a]) *
-					                                     (std::max)(0.0, double(subject.fraction) - .001);
+														 (std::max)(0.0, double(subject.fraction) - .001);
 			std::copy(swept, swept + 3, candidate);
 		}
 		if (!clear(candidate) && continuous && clear(history.Position))
@@ -6784,25 +7019,25 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		const double tolerance = (std::max)(settings.Radius * 2, offsetLength * .25);
 		bool blockedView = false;
 		if (following && continuous && settings.FollowRecoveryDelay > 0 &&
-		    (hit.startSolid || hit.allSolid || hit.fraction < 1 || blocked2 > 1e-6))
+			(hit.startSolid || hit.allSolid || hit.fraction < 1 || blocked2 > 1e-6))
 		{
 			// A clear boom and unchanged movement endpoint already prove visibility.
 			MirvTf2Trace_t visibility;
 			auto sight = settings;
 			sight.Radius = 0; // Visibility uses a point ray, rather than the camera clearance hull.
 			blockedView = CameraCollisionTrace(anchor, candidate, sight, visibility, entity) &&
-			              !visibility.startSolid && !visibility.allSolid && visibility.fraction < 1;
+						  !visibility.startSolid && !visibility.allSolid && visibility.fraction < 1;
 		}
 		// Opposite sides of a thin closed door can be only a few units apart.
 		// Distance alone must not leave the camera stranded indefinitely.
 		if (following && continuous && settings.FollowRecoveryDelay > 0 &&
-		    (blocked2 > tolerance * tolerance || blockedView))
+			(blocked2 > tolerance * tolerance || blockedView))
 		{
 			if (!clear(recoveryGoal))
 				std::copy(movementGoal, movementGoal + 3, recoveryGoal);
 			MirvTf2Trace_t tether;
 			if (clear(recoveryGoal) && CameraCollisionTrace(anchor, recoveryGoal, settings, tether, entity) &&
-			    !tether.startSolid && !tether.allSolid && tether.fraction == 1)
+				!tether.startSolid && !tether.allSolid && tether.fraction == 1)
 			{
 				history.BlockedTime += dt;
 				if (history.BlockedTime >= settings.FollowRecoveryDelay)
@@ -6831,6 +7066,24 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		}
 		else
 			history.BlockedTime = 0;
+		if (!CameraCollisionClear(candidate, settings, entity))
+		{
+			if (continuous && CameraCollisionClear(history.Position, settings, entity))
+				std::copy(history.Position, history.Position + 3, candidate);
+			else
+			{
+				double recovered[3];
+				if (!CameraCollisionMove(candidate, candidate, settings, recovered, entity) ||
+					!CameraCollisionClear(recovered, settings, entity))
+				{
+					history.Valid = false;
+					std::copy(candidate, candidate + 3, history.Position);
+					return false; // No verified camera-sized gap; do not report penetration as success.
+				}
+				std::copy(recovered, recovered + 3, candidate);
+			}
+		}
+		history.SubjectBlocked = !clear(candidate);
 		// There may be no camera-sized gap between the subject and geometry.
 		// Keep the swept result in that case; do not teleport to another side.
 	}
@@ -6852,9 +7105,9 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 		for (int a = 0; a < 3; ++a)
 		{
 			direction[a] = f[a] * local[0] + r[a] * local[1] + u[a] * local[2];
-			reference[a] = pivot[a] - direction[a];
+			reference[a] = focus[a] - direction[a];
 		}
-		MirvCameraAttachedReframe(reference, candidate, pivot, angles);
+		MirvCameraAttachedReframe(reference, candidate, focus, angles);
 		history.View =
 			Quaternion::FromQREulerAngles(QREulerAngles::FromQEulerAngles({angles[0], angles[1], angles[2]}));
 		std::copy(angles, angles + 3, history.DisplayAngles);
@@ -6876,9 +7129,8 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 			const bool previous = shotContinuous && history.HasAngles && history.CompositionValid;
 			history.Composition = previous ? blend(history.Composition, target, orbitAlpha) : target;
 			const float roll =
-			    previous ? float(history.DisplayAngles[2] +
-				                 std::remainder(angles[2] - history.DisplayAngles[2], 360.0) * orbitAlpha)
-				         : angles[2];
+				previous ? float(rollStep(history.DisplayAngles[2],angles[2]))
+						 : angles[2];
 			if (previous)
 				std::copy(history.DisplayAngles, history.DisplayAngles + 3, angles);
 			angles[2] = roll;
@@ -6896,29 +7148,29 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 			if (distance2 > 1)
 				MirvCameraAttachedReframe(reference, candidate, targetPoint, angles);
 		}
-		else if (following && shotContinuous && history.HasAngles)
+		else if (orbitFiltering && shotContinuous && history.HasAngles)
 		{
 			// At zero boom length the target direction is undefined. Smooth the
 			// authored view directly instead of solving a coincident look-at.
 			auto target = Quaternion::FromQREulerAngles(
-			    QREulerAngles::FromQEulerAngles(QEulerAngles(angles[0], angles[1], angles[2])));
+				QREulerAngles::FromQEulerAngles(QEulerAngles(angles[0], angles[1], angles[2])));
 			if (DotProduct(history.View, target) < 0)
 				target = -1.0 * target;
 			Vector3 axis;
 			const double angle = std::abs(history.View.GetAng(target, axis));
 			const double alpha =
-			    orbitAlpha < 1 && settings.OrbitSpeed > 0 && angle > 1e-9
-			        ? (std::min)(orbitAlpha, settings.OrbitSpeed / 57.29577951308232 * dt / angle)
-			        : orbitAlpha;
+				orbitFiltering && settings.OrbitSpeed > 0 && angle > 1e-9
+					? (std::min)(orbitAlpha, settings.OrbitSpeed / 57.29577951308232 * dt / angle)
+					: orbitAlpha;
 			const auto value = NearestEquivalentEuler(
-			    blend(history.View, target, alpha).ToQREulerAngles().ToQEulerAngles(),
-			    QEulerAngles(history.DisplayAngles[0], history.DisplayAngles[1], history.DisplayAngles[2]));
+				blend(history.View, target, alpha).ToQREulerAngles().ToQEulerAngles(),
+				QEulerAngles(history.DisplayAngles[0], history.DisplayAngles[1], history.DisplayAngles[2]));
 			angles[0] = float(value.Pitch);
 			angles[1] = float(value.Yaw);
 			angles[2] = float(value.Roll);
 		}
 		history.View = Quaternion::FromQREulerAngles(
-		    QREulerAngles::FromQEulerAngles(QEulerAngles(angles[0], angles[1], angles[2])));
+			QREulerAngles::FromQEulerAngles(QEulerAngles(angles[0], angles[1], angles[2])));
 		std::copy(angles, angles + 3, history.DisplayAngles);
 	}
 	history.CompositionValid =
@@ -6930,12 +7182,14 @@ bool MirvCameraAttachedEvaluate(MirvCameraAttachedState &history, const MirvCame
 	double error2 = 0;
 	for (int a = 0; a < 3; ++a)
 		error2 += (candidate[a] - followed[a]) * (candidate[a] - followed[a]);
+ std::copy(focus,focus+3,history.FramingFocus);
 	history.Retracted = settings.Attached && error2 > 1e-6;
 	history.Valid = true;
 	history.Identity = identity;
 	history.Entity = entity;
 	history.Generation = generation;
 	history.Time = sceneTime;
+	history.InputTime = inputTime ? *inputTime : sceneTime;
 	std::copy(candidate, candidate + 3, history.Position);
 	std::copy(root, root + 3, history.Root);
 	history.FollowHalfLife = settings.FollowHalfLife;
@@ -6978,14 +7232,18 @@ void MirvCameraAttachedPrintRuntimeStatus()
 }
 
 bool MirvCameraAttachedApply(const void *identity, void *entity, const double pivot[3], double sceneTime,
-							 float &x, float &y, float &z, const double *entityOrigin, float *angles)
+							 float &x, float &y, float &z, const double *entityOrigin, float *angles,
+							 double fov, double aspect)
 {
 	if (!g_VEngineClient || !g_VEngineClient->IsInGame() || g_VEngineClient->IsDrawingLoadingImage())
 	{
 		g_AttachedCameraHistory.Valid = false;
 		return false;
 	}
-	const auto settings = MirvCameraCollisionGet();
+	auto settings = MirvCameraCollisionGet();
+	settings.FrameFov = fov;
+	settings.FrameAspect = aspect;
+	const double sampleTime = g_OpenFortressLegacyMode ? sceneTime : MirvCameraAttachedSampleTime(sceneTime);
 	const auto generation = g_AttachedCameraGeneration.load();
 	if (g_OpenFortressLegacyMode)
 	{
@@ -7008,8 +7266,8 @@ bool MirvCameraAttachedApply(const void *identity, void *entity, const double pi
 	}
 	const float originalX = x, originalY = y, originalZ = z;
 	const bool applied = MirvCameraAttachedEvaluate(g_AttachedCameraHistory, settings,
-									  generation, identity, entity, pivot, sceneTime,
-									  x, y, z, entityOrigin, angles);
+									  generation, identity, entity, pivot, sampleTime,
+									  x, y, z, entityOrigin, angles, nullptr, nullptr, nullptr, &sceneTime);
 	if (g_OpenFortressLegacyMode)
 	{
 		if (applied)
@@ -7778,6 +8036,25 @@ static int Mirv_Tf2_ToolCategory(SOURCESDK::TF2::IClientTools *iface,
 		iface->DetachFromEntity(entity);
 	return category;
 }
+// Shared fallback for generic physics/dynamic entities in cache and render passes.
+static int Mirv_Tf2_ModelCategory(CMirvTf2ClientRenderable *renderable, bool props)
+{
+ auto info = Mirv_Tf2_GetModelInfo();
+ const void *model = renderable->GetModel();
+ const char *name = info && model ? info->GetModelName(model) : nullptr;
+ if (!name) return MIRV_TF2_ENTITY_OTHER;
+ char path[260]; size_t i = 0;
+ for (; name[i] && i + 1 < sizeof(path); ++i)
+  path[i] = name[i] == '\\' ? '/' : char(tolower(static_cast<unsigned char>(name[i])));
+ path[i] = 0;
+ if (strstr(path, "/gibs/")) return MIRV_TF2_ENTITY_GIB;
+ if (strstr(path, "/weapons/")) return MIRV_TF2_ENTITY_WEAPON;
+ if (strstr(path, "/player/items/") || strstr(path, "/bots/items/")) return MIRV_TF2_ENTITY_COSMETIC;
+ if (strstr(path, "/buildables/")) return MIRV_TF2_ENTITY_BUILDING;
+ if (props && (info->GetModelType(model) == 1 || info->GetModelType(model) == 3)) return MIRV_TF2_ENTITY_PROP;
+ return MIRV_TF2_ENTITY_OTHER;
+}
+
 static bool Mirv_Tf2_LabelDebris(CMirvTf2ClientUnknown *object)
 {
 	const auto networkable = object->GetClientNetworkable();
@@ -11741,32 +12018,9 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 				continue;
 			if ((gibs || weapons || cosmetics || buildings || props) && category == MIRV_TF2_ENTITY_OTHER)
 			{
-				// Generic dynamic/physics classes need a model-based category fallback.
-				auto info = Mirv_Tf2_GetModelInfo();
-				const void *model = renderable->GetModel();
-				const char *modelName = info && model ? info->GetModelName(model) : nullptr;
-				if (modelName)
-				{
-					char path[260];
-					size_t i = 0;
-					for (; modelName[i] && i + 1 < sizeof(path); ++i)
-						path[i] = modelName[i] == '\\'
-						              ? '/'
-						              : char(tolower(static_cast<unsigned char>(modelName[i])));
-					path[i] = 0;
-					if (strstr(path, "/gibs/"))
-						category = MIRV_TF2_ENTITY_GIB;
-					else if (strstr(path, "/weapons/"))
-						category = MIRV_TF2_ENTITY_WEAPON;
-					else if (strstr(path, "/player/items/") || strstr(path, "/bots/items/"))
-						category = MIRV_TF2_ENTITY_COSMETIC;
-					else if (strstr(path, "/buildables/"))
-						category = MIRV_TF2_ENTITY_BUILDING;
-					else if (props && (info->GetModelType(model) == 1 || info->GetModelType(model) == 3))
-						category = MIRV_TF2_ENTITY_PROP; // Brush or studio model; no sprites/particles/world.
-					looseModel = !networked &&
-					             (category == MIRV_TF2_ENTITY_WEAPON || category == MIRV_TF2_ENTITY_COSMETIC);
-				}
+				category = Mirv_Tf2_ModelCategory(renderable, props);
+				looseModel = !networked &&
+				             (category == MIRV_TF2_ENTITY_WEAPON || category == MIRV_TF2_ENTITY_COSMETIC);
 			}
 			if (!networked && category != MIRV_TF2_ENTITY_RAGDOLL && category != MIRV_TF2_ENTITY_GIB &&
 			    category != MIRV_TF2_ENTITY_WEAPON && category != MIRV_TF2_ENTITY_COSMETIC &&
@@ -12165,4 +12419,57 @@ void Mirv_Tf2_DebugEntityLabel(int address)
 			return;
 		}
 	Tier0_Msg("Label address %i is unavailable.\n", address);
+}
+
+// Per-render snapshot: no engine entity pointers survive the synchronous pass batch.
+void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenPlayer)
+{
+ groups.clear();
+ auto tools = CClientToolsTf2::Instance();
+ auto iface = tools ? tools->GetClientTools() : nullptr;
+ if (!iface) return;
+ struct Row { const void *Renderable; unsigned Handle, Parent, Group; };
+ std::vector<Row> rows;
+ std::map<unsigned, unsigned> handles;
+ size_t scanned = 0;
+ for (auto object = iface->FirstEntity(); object && scanned++ < 4096; object = iface->NextEntity(object)) {
+  auto unknown = reinterpret_cast<CMirvTf2ClientUnknown *>(object);
+  auto renderable = unknown->GetClientRenderable();
+  if (!renderable) continue;
+  const bool player = iface->IsPlayer(object);
+  int category = Mirv_Tf2_ToolCategory(iface, object, iface->GetEntIndex(object), player, true);
+  if (category == MIRV_TF2_ENTITY_OTHER) category = Mirv_Tf2_ModelCategory(renderable, false);
+  // Match existing gib labels: debris is a fallback, never override a cosmetic.
+  if (category == MIRV_TF2_ENTITY_OTHER && Mirv_Tf2_LabelDebris(unknown)) category = MIRV_TF2_ENTITY_GIB;
+  unsigned group = category == -1 ? 2 :
+   (category == MIRV_TF2_ENTITY_PLAYER || category == MIRV_TF2_ENTITY_WEAPON ||
+    category == MIRV_TF2_ENTITY_COSMETIC || category == MIRV_TF2_ENTITY_RAGDOLL ||
+    category == MIRV_TF2_ENTITY_GIB) ? 1 : 0;
+  if (hiddenPlayer > 0 && iface->GetEntIndex(object) == hiddenPlayer) group |= 4;
+  unsigned parent = 0xffffffffu;
+  if (auto network = unknown->GetClientNetworkable())
+   Mirv_Tf2_SceneMoveParent(object, SceneInterfaceCall<const void *>(network, 2), parent);
+  if (parent == 0xffffffffu || parent == 0)
+   if (auto owner = iface->GetOwnerEntity(object)) parent = Mirv_Tf2_EntityHandle(owner);
+  const auto handle = Mirv_Tf2_EntityHandle(object);
+  rows.push_back({renderable, handle, parent, group});
+  if (handle != 0xffffffffu) handles[handle] = group;
+ }
+ // Wearables and carried weapons inherit their parent's pass; resolve nested gear.
+ for (int depth = 0; depth < 16; ++depth) {
+  bool changed = false;
+  for (auto &row : rows) if (row.Parent != 0xffffffffu) {
+   auto parent = handles.find(row.Parent);
+   if (parent != handles.end()) {
+    unsigned inherited = row.Group | (parent->second & 4);
+    if (!(inherited & 3)) inherited |= parent->second & 3;
+    if (inherited == row.Group) continue;
+    row.Group = inherited;
+    if (row.Handle != 0xffffffffu) handles[row.Handle] = row.Group;
+    changed = true;
+   }
+  }
+  if (!changed) break;
+ }
+ for (const auto &row : rows) groups[row.Renderable] = row.Group;
 }

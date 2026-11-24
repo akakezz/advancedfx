@@ -1,6 +1,9 @@
 #include "stdafx.h"
 #include "RecordingSettings.h"
 #include "StringTools.h"
+#include "RecordingProfilePersistence.h"
+#include <filesystem>
+#include <fstream>
 
 #include <set>
 #include <cmath>
@@ -12,6 +15,104 @@ namespace advancedfx {
 // CRecordingSettings ///////////////////////////////////////////////////////
 
 CRecordingSettings::CShared CRecordingSettings::m_Shared;
+
+namespace {
+ std::filesystem::path g_ProfileFile;
+ std::string g_PreferredProfile = "afxDefault";
+ bool g_ProfileLoadFailed = false;
+ RecordingProfilePersistence::Snapshot ProfileValues() {
+  RecordingProfilePersistence::Snapshot result;result.Selected=g_PreferredProfile;
+  RecordingProfileInfo defaults;CRecordingSettings::Describe("afxDefault",defaults);result.DefaultOutput=defaults.OutputSettings;
+  for (const auto &name : CRecordingSettings::GetNames()) {
+   RecordingProfileInfo p;
+   if (CRecordingSettings::Describe(name.c_str(),p) && !p.Protected && p.Type!=RecordingProfileInfo::Kind::Other) result.Profiles.push_back(std::move(p));
+  }
+  return result;
+ }
+ struct ProfileCommandSave {
+  std::string Before=CRecordingSettings::ProfileSnapshot();
+  ~ProfileCommandSave(){if (Before!=CRecordingSettings::ProfileSnapshot()) CRecordingSettings::SavePersistent();}
+ };
+}
+std::string CRecordingSettings::ProfileSnapshot(){return RecordingProfilePersistence::Encode(ProfileValues());}
+std::string CRecordingSettings::PreferredProfile(){return g_PreferredProfile;}
+void CRecordingSettings::SetPreferredProfile(const char *name){
+ if (name && GetByName(name) && g_PreferredProfile!=name) {g_PreferredProfile=name;SavePersistent();}
+}
+void CRecordingSettings::SavePersistent(){
+ if (g_ProfileFile.empty() || g_ProfileLoadFailed) return;
+ const auto snapshot=ProfileValues();
+ if (!RecordingProfilePersistence::Validate(snapshot)) {Warning("Could not save invalid recording profiles.\n");return;}
+ auto temp=g_ProfileFile;temp+=L".tmp";
+ {std::ofstream out(temp,std::ios::binary|std::ios::trunc);out<<RecordingProfilePersistence::Encode(snapshot);out.flush();if(!out){Warning("Could not write recording profile preferences.\n");return;}}
+#ifdef _WIN32
+ if (!MoveFileExW(temp.c_str(),g_ProfileFile.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) Warning("Could not replace recording profile preferences.\n");
+#else
+ std::error_code ec;std::filesystem::rename(temp,g_ProfileFile,ec);if(ec) Warning("Could not replace recording profile preferences.\n");
+#endif
+}
+bool CRecordingSettings::ConfigurePersistence(const wchar_t *file){
+ if (!g_ProfileFile.empty()) return !g_ProfileLoadFailed;
+ if (!file || !*file) return false;
+ g_ProfileFile=file;
+ std::error_code ec;
+ auto fail=[&]{g_ProfileLoadFailed=true;Warning("Recording profile preferences could not be loaded; the existing file was preserved.\n");return false;};
+ if (!std::filesystem::exists(g_ProfileFile,ec)) return ec?fail():true;
+ const auto size=std::filesystem::file_size(g_ProfileFile,ec);if(ec||size>2*1024*1024) return fail();
+ std::ifstream in(g_ProfileFile,std::ios::binary);if(!in)return fail();
+ const std::string text((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>());
+ if(in.bad())return fail();
+ RecordingProfilePersistence::Snapshot snapshot;
+ if (!RecordingProfilePersistence::Decode(text,snapshot)) return fail();
+ // Validate references before touching the registry, then build dependency-first.
+ std::set<std::string> names;
+ for(const auto &p:snapshot.Profiles){if(GetByName(p.Name.c_str()))return fail();names.insert(RecordingProfilePersistence::Key(p.Name));}
+ auto known=[&](const std::string &name){return GetByName(name.c_str()) || names.count(RecordingProfilePersistence::Key(name));};
+ if(!known(snapshot.DefaultOutput))return fail();
+ for(const auto &p:snapshot.Profiles){
+  if(p.Type==RecordingProfileInfo::Kind::Multi){for(const auto &n:p.Outputs)if(!known(n))return fail();}
+  else if(p.Type!=RecordingProfileInfo::Kind::Ffmpeg && p.Type!=RecordingProfileInfo::Kind::FfmpegEx && !known(p.OutputSettings))return fail();
+ }
+ // Built-in samplers can refer to afxDefault; include those implicit edges too.
+ std::map<std::string,const RecordingProfileInfo*> definitions;
+ for(const auto &p:snapshot.Profiles)definitions.emplace(RecordingProfilePersistence::Key(p.Name),&p);
+ std::set<std::string> checked;
+ std::function<bool(const std::string&)> reachesDefault=[&](const std::string &name){
+  const auto key=RecordingProfilePersistence::Key(name);
+  if(key=="afxdefault")return true;
+  if(!checked.insert(key).second)return false;
+  auto it=definitions.find(key);
+  if(it==definitions.end()){auto existing=GetByName(name.c_str());return existing && existing->InheritsFrom(m_Shared.m_DefaultSettings);}
+  const auto &p=*it->second;
+  if(p.Type==RecordingProfileInfo::Kind::Multi){for(const auto &n:p.Outputs)if(reachesDefault(n))return true;return false;}
+  if(p.Type==RecordingProfileInfo::Kind::Ffmpeg||p.Type==RecordingProfileInfo::Kind::FfmpegEx)return false;
+  return reachesDefault(p.OutputSettings);
+ };
+ if(reachesDefault(snapshot.DefaultOutput))return fail();
+ std::vector<RecordingProfileInfo> pending=snapshot.Profiles;
+ while(!pending.empty()){
+  bool progress=false;
+  for(auto i=pending.begin();i!=pending.end();){
+   CRecordingSettings *setting=nullptr;
+   if(i->Type==RecordingProfileInfo::Kind::Ffmpeg) setting=new CFfmpegRecordingSettings(i->Name.c_str(),false,i->FfmpegOptions.c_str(),i->FfmpegOptionsNoAlpha.c_str());
+   else if(i->Type==RecordingProfileInfo::Kind::FfmpegEx) setting=new CFfmpegExRecordingSettings(i->Name.c_str(),false,i->FfmpegOptions.c_str());
+   else if(i->Type==RecordingProfileInfo::Kind::Multi){
+    bool ready=true;for(const auto &n:i->Outputs)ready &= GetByName(n.c_str())!=nullptr;
+    if(ready){auto multi=new CMultiRecordingSettings(i->Name.c_str(),false);if(!multi->ApplyFields(*i)){multi->AddRef();multi->Release();return fail();}setting=multi;}
+   } else if(auto output=GetByName(i->OutputSettings.c_str())){
+    if(i->Type==RecordingProfileInfo::Kind::Sampler) setting=new CSamplingRecordingSettings(i->Name.c_str(),false,output,i->Method==0?EasySamplerSettings::ESM_Rectangle:EasySamplerSettings::ESM_Trapezoid,i->OutputFps,float(i->Exposure),i->Strength);
+    else if(i->Type==RecordingProfileInfo::Kind::Interleave)setting=new CInterleaveRecordingSettings(i->Name.c_str(),false,output,size_t(i->InputCount));
+    else if(auto main=dynamic_cast<CInterleaveRecordingSettings *>(output))setting=new CInterleaveInputRecordingSettings(i->Name.c_str(),false,main,i->InputIndex);
+   }
+   if(!setting){++i;continue;}
+   m_Shared.m_NamedSettings.emplace(setting->GetName(),setting);i=pending.erase(i);progress=true;
+  }
+  if(!progress)return fail();
+ }
+ if(!static_cast<CDefaultRecordingSettings *>(m_Shared.m_DefaultSettings)->SetOutputSettings(GetByName(snapshot.DefaultOutput.c_str())))return fail();
+ if(GetByName(snapshot.Selected.c_str()))g_PreferredProfile=snapshot.Selected;
+ return true;
+}
 
 std::vector<std::string> CRecordingSettings::GetNames()
 {
@@ -48,13 +149,16 @@ bool CRecordingSettings::DuplicateEditable(const char *source, const char *newNa
 	auto *copy = original ? original->CloneEditable(newName) : nullptr;
 	if (!copy) return false;
 	m_Shared.m_NamedSettings.emplace(copy->GetName(), copy);
+ SavePersistent();
 	return true;
 }
 
 bool CRecordingSettings::ApplyEdits(const RecordingProfileInfo &info)
 {
 	auto *setting = GetByName(info.Name.c_str());
-	return setting && !setting->GetProtected() && setting->ApplyFields(info);
+	const bool changed=setting && !setting->GetProtected() && setting->ApplyFields(info);
+ if(changed)SavePersistent();
+ return changed;
 }
 
 bool CRecordingSettings::RemoveEditable(const char *name)
@@ -64,7 +168,9 @@ bool CRecordingSettings::RemoveEditable(const char *name)
 	if (it == m_Shared.m_NamedSettings.end() || !it->second.Settings ||
 		it->second.Settings->GetProtected())
 		return false;
-	return m_Shared.DeleteIfUnrefrenced(it);
+	const bool removed=m_Shared.DeleteIfUnrefrenced(it);
+ if(removed)SavePersistent();
+ return removed;
 }
 
 CRecordingSettings::CShared::CShared()
@@ -117,6 +223,16 @@ CRecordingSettings::CShared::CShared()
 	}
 
 	{
+  // Keep one NVENC session per output; lossless masks are cheap to encode on CPU.
+  CRecordingSettings *settings=new CFfmpegRecordingSettings("afxFfmpegNvencColorAlpha",true,
+   "-filter_complex_threads 1 -filter_complex {QUOTE}[0:v]format=rgba,setsar=1/1,split=2[c0][a0];[c0]format=yuv444p[c];[a0]alphaextract,format=yuv444p[a]{QUOTE} "
+   "-map {QUOTE}[c]{QUOTE} -an -c:v h264_nvenc -preset p4 -tune lossless -profile:v high444p -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\\color.mp4{QUOTE} "
+   "-map {QUOTE}[a]{QUOTE} -an -c:v libx264 -preset ultrafast -qp 0 -threads 1 -profile:v high444 -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\\alpha.mp4{QUOTE}",
+   "-an -c:v h264_nvenc -preset p4 -tune lossless -profile:v high444p -pix_fmt yuv444p {QUOTE}{AFX_STREAM_PATH}\\color.mp4{QUOTE}");
+  m_NamedSettings.emplace(settings->GetName(),settings);
+ }
+
+	{
 		CRecordingSettings * settings = new CSamplingRecordingSettings("afxSampler30", true, m_DefaultSettings, EasySamplerSettings::ESM_Trapezoid, 30.0f, 1.0f, 1.0f);
 		m_NamedSettings.emplace(settings->GetName(), settings);
 	}
@@ -130,6 +246,7 @@ CClassicRecordingSettings::CShared::~CShared()
 
 void CRecordingSettings::Console(ICommandArgs * args)
 {
+ ProfileCommandSave save;
 	int argC = args->ArgC();
 	const char * arg0 = args->ArgV(0);
 
@@ -367,9 +484,10 @@ advancedfx::COutVideoStreamCreator * CClassicRecordingSettings::CreateOutVideoSt
 bool CFfmpegRecordingSettings::ApplyFields(const RecordingProfileInfo &info)
 {
 	if (m_Protected || info.Type != RecordingProfileInfo::Kind::Ffmpeg ||
-		info.FfmpegOptions.empty() || info.FfmpegOptions.size() > 4095)
+		info.FfmpegOptions.empty() || info.FfmpegOptions.size() > 4095 || info.FfmpegOptionsNoAlpha.size()>4095)
 		return false;
 	m_FfmpegOptions = info.FfmpegOptions;
+ m_NoAlphaOptions = info.FfmpegOptionsNoAlpha;
 	return true;
 }
 
@@ -456,7 +574,14 @@ advancedfx::COutVideoStreamCreator* CFfmpegRecordingSettings::CreateOutVideoStre
 
 				advancedfx::StreamCaptureType captureType = stream.GetCaptureType();
 
-				auto result = new advancedfx::CFfmpegRecordingSettingsCreator(capturePath, std::wstring(L"{QUOTE}{FFMPEG_PATH}{QUOTE} -f rawvideo -pixel_format {PIXEL_FORMAT} -loglevel repeat+level+warning -framerate {FRAMERATE} -video_size {WIDTH}x{HEIGHT} -i pipe:0 -vf setsar=sar=1/1 ").append(wideOptions), frameRate);
+    auto command=[](const std::wstring &options){
+     std::wstring result=L"{QUOTE}{FFMPEG_PATH}{QUOTE} -f rawvideo -pixel_format {PIXEL_FORMAT} -loglevel repeat+level+warning -framerate {FRAMERATE} -video_size {WIDTH}x{HEIGHT} -i pipe:0 ";
+     if(options.find(L"-filter_complex")==std::wstring::npos) result+=L"-vf setsar=sar=1/1 ";
+     return result+options;
+    };
+    std::wstring noAlpha;
+    if(!m_NoAlphaOptions.empty() && !UTF8StringToWideString(m_NoAlphaOptions.c_str(),noAlpha))return nullptr;
+    auto result = new advancedfx::CFfmpegRecordingSettingsCreator(capturePath, command(wideOptions), frameRate, noAlpha.empty()?L"":command(noAlpha));
 				result->AddRef();
 				return result;
 			}
@@ -616,9 +741,7 @@ void CDefaultRecordingSettings::Console_Edit(ICommandArgs * args)
 				}
 				else
 				{
-					if (m_DefaultSettings) m_DefaultSettings->Release();
-					m_DefaultSettings = settings;
-					if (m_DefaultSettings) m_DefaultSettings->AddRef();
+					SetOutputSettings(settings);
 				}
 
 				return;
@@ -967,6 +1090,7 @@ CInterleaveInputRecordingSettings::CInterleaveInputRecordingSettings(const char 
 	m_pMainInterleaveInput->AddRef();
 }
 
+void CInterleaveInputRecordingSettings::DescribeFields(RecordingProfileInfo &out) const {out.Type=RecordingProfileInfo::Kind::InterleaveInput;out.OutputSettings=m_pMainInterleaveInput?m_pMainInterleaveInput->GetName():"";out.InputIndex=m_Index;}
 void CInterleaveInputRecordingSettings::Console_Edit(ICommandArgs * args) {
 	advancedfx::Message("%s (type interleave-other-input) has no options.\n", m_Name.c_str());
 }

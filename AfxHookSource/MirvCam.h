@@ -119,6 +119,7 @@ bool MirvCam_CameraAction(const char *action, std::uint64_t id);
 bool MirvCam_RenameCamera(std::uint64_t id, const char *name);
 void MirvCam_NotifyDemoFile(const char *file, const char *gameDirectory);
 bool MirvCam_EditCamera(std::uint64_t id, const advancedfx::CameraPose &pose);
+bool MirvCam_EditCollision(std::uint64_t id, const std::optional<MirvCameraCollisionSettings> &settings);
 bool MirvCam_EditMotion(std::uint64_t id, const advancedfx::CameraMotion &motion);
 bool MirvCam_EditCameras(const std::vector<std::uint64_t> &ids,
 						 const std::function<bool(std::uint64_t)> &edit);
@@ -130,6 +131,8 @@ class Aiming;
 bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advancedfx::ICommandArgs *, Aiming &));
 
 std::vector<advancedfx::CameraClip> MirvCam_Clips();
+// Engine-thread visualization only: no changes to the active camera state.
+std::vector<advancedfx::CameraGuideLine> MirvCam_TransitionGuideLines(std::uint64_t clipId);
 bool MirvCam_EditClip(advancedfx::CameraClip &clip);
 bool MirvCam_RemoveClip(std::uint64_t id);
 bool MirvCam_EnableSequence(bool enabled);

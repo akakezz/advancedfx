@@ -12,6 +12,7 @@
 #include "../shared/AfxCommandLine.h"
 #include "addresses.h"
 #include "RenderView.h"
+#include "RecordingResolution.h"
 #include <SourceInterfaces.h>
 #include "WrpVEngineClient.h"
 #include "WrpConsole.h"
@@ -272,7 +273,7 @@ public:
 		g_Engine_ClientEngineTools->LevelInitPreEntityAllTools();
 	}
 	virtual void LevelInitPostEntityAllTools() { g_Engine_ClientEngineTools->LevelInitPostEntityAllTools(); }
-	virtual void LevelShutdownPreEntityAllTools() { g_Engine_ClientEngineTools->LevelShutdownPreEntityAllTools(); }
+	virtual void LevelShutdownPreEntityAllTools() { MirvPovSpectate_SetPlayer(0); g_Engine_ClientEngineTools->LevelShutdownPreEntityAllTools(); }
 	virtual void LevelShutdownPostEntityAllTools() { g_Engine_ClientEngineTools->LevelShutdownPostEntityAllTools(); }
 	virtual void PreRenderAllTools()
 	{
@@ -348,6 +349,7 @@ public:
 
 		//Tier0_Msg("ClientEngineTools::SetupEngineView\n");
 		if (g_Engine_ClientEngineTools->SetupEngineView(origin, angles, fov)) bRet = true;
+		MirvPovSpectate_ViewDone(&angles);
 
 		g_Hook_VClient_RenderView.OnViewOverride(
 			origin.x, origin.y, origin.z,
@@ -380,7 +382,7 @@ public:
 		g_Engine_ClientEngineTools->VGui_PostRenderAllTools(paintMode);
 	}
 
-	virtual bool IsThirdPersonCamera() { return g_Engine_ClientEngineTools->IsThirdPersonCamera(); }
+	virtual bool IsThirdPersonCamera() { return MirvPovSpectate_DrawRecorderWorldModel() || g_Engine_ClientEngineTools->IsThirdPersonCamera(); }
 
 	virtual bool InToolMode()
 	{
@@ -420,6 +422,8 @@ void OnAfter_CMaterialSystem_SwappBuffers() {
 
 SOURCESDK::CreateInterfaceFn g_AppSystemFactory = 0;
 
+#include "Tf2RenderPass.inl"
+
 #ifndef _WIN64
 SOURCESDK::IMaterialSystem_csgo * g_MaterialSystem_csgo = 0;
 
@@ -452,6 +456,11 @@ void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals
 		void *iface , *iface2;
 
 		g_AppSystemFactory = appSystemFactory;
+  if (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified)
+  {
+   Tf2RenderPassInstallModel(appSystemFactory("VEngineModel016", nullptr));
+   Tf2RenderPassInstallRenderView(appSystemFactory("VEngineRenderView014", nullptr));
+  }
 
 		// VEngineClient:
 
@@ -511,6 +520,11 @@ void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals
 			break;
 		}
 		if (nullptr == iface) ErrorBox("Could not get a supported VEngineClient interface.");
+  else if (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified) {
+   MirvPovSpectate_InstallEngine(iface);
+   for (const char *version : {"VEngineClient013", "VEngineClient014", "VEngineClient015"})
+    MirvPovSpectate_InstallEngine(appSystemFactory(version, nullptr));
+  }
 
 		// VEngineCvar:
 
@@ -925,12 +939,14 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 {
 	if (curStage == SOURCESDK::TF2::FRAME_START)
 	{
+		RecordingResolution::Frame();
 		MirvFix_Update();
 		AfxHookSource::CameraOverlay::PreferencesFrame();
 	}
 	switch (curStage)
 	{
 	case SOURCESDK::TF2::FRAME_RENDER_START:
+		MirvPovSpectate_FrameBegin();
 		Shared_BeforeFrameRenderStart();
 		MirvFix_PlayerAngleTraceFrame(3);
 		break;
@@ -953,6 +969,7 @@ void __fastcall new_CVClient_FrameStageNotify_TF2(void* This,
 		MirvFix_RecorderSoundUpdate();
 		break;
 	case SOURCESDK::TF2::FRAME_RENDER_END:
+		MirvPovSpectate_FrameEnd();
 		// Copy completed render poses only after the engine has drawn this frame.
 		// Capturing at RENDER_START could preempt Source's normal bone setup/interpolation.
 		AfxHookSource::CameraOverlay::SceneCacheFrame();
@@ -977,6 +994,7 @@ void __fastcall new_CVClient_FrameStageNotify_OpenFortress(
     {
         // Source cvar-only demo fixes and persisted overlay preferences.
         // Do not run TF2-specific player repair, sound or camera hooks here.
+        RecordingResolution::Frame();
         MirvFix_Update();
         AfxHookSource::CameraOverlay::PreferencesFrame();
     }
@@ -2259,6 +2277,7 @@ void* new_Client_CreateInterface(const char *pName, int *pReturnCode)
 				case SourceSdkVer_TF2Classified:
 				case SourceSdkVer_TF2:
 					MirvFix_InitializeTf2Client(!strcmp(g_Info_VClient, CLIENT_DLL_INTERFACE_VERSION_017) ? iface : nullptr);
+     if (!strcmp(g_Info_VClient, CLIENT_DLL_INTERFACE_VERSION_017)) Tf2RenderPassInstallClient(iface);
 					AfxDetourPtr((PVOID*) & (vtable[2]), new_CVClient_Shutdown, (PVOID*)&old_CVClient_Shutdown);
 					AfxDetourPtr((PVOID*) & (vtable[35]), new_CVClient_FrameStageNotify_TF2, (PVOID*)&old_CVClient_FrameStageNotify_TF2);
 					break;
@@ -2422,6 +2441,13 @@ LRESULT CALLBACK new_Afx_WindowProc(
 	__in LPARAM lParam
 )
 {
+	// Only the synchronous, HLAE-owned preview resize is hidden from the game.
+	if (RecordingResolution::SuppressSizeMessage(hwnd))
+	{
+		if (uMsg == WM_WINDOWPOSCHANGING) return 0;
+		if (uMsg == WM_SIZE && wParam == SIZE_RESTORED) return 0;
+		if (uMsg == WM_WINDOWPOSCHANGED) return DefWindowProcW(hwnd, uMsg, wParam, lParam);
+	}
 	// Publish focus changes even when the overlay consumes the window message.
 	if (uMsg == WM_KILLFOCUS || (uMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) ||
 	    (uMsg == WM_ACTIVATEAPP && !wParam))
@@ -2946,6 +2972,10 @@ void CommonHooks()
 		}
 
 
+#ifndef _WIN64
+        g_OfNativeResolution = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativeResolution");
+        g_OfNativeCollision = g_OpenFortressLegacyMode && g_CommandLine->FindParam(L"-afxOfNativeCollision");
+#endif
 		//ScriptEngine_StartUp();
 	}
 
@@ -3150,6 +3180,20 @@ CAfxImportFuncHook<LONG(WINAPI*)(HWND, int)> g_Import_engine_USER32_GetWindowLon
 CAfxImportFuncHook<LONG(WINAPI*)(HWND, int, LONG)> g_Import_engine_USER32_SetWindowLongW("SetWindowLongW", &new_SetWindowLongW);
 #endif //#ifndef _WIN64
 
+// Only engine and shaderapi imports use logical client bounds. HLAE's
+// own calls and inputsystem/vgui mouse APIs keep the real window geometry.
+BOOL WINAPI new_render_GetClientRect(HWND window, LPRECT rect)
+{
+    const BOOL result=GetClientRect(window,rect);
+    if (result && rect && rect->left==0 && rect->top==0 && !IsIconic(window))
+    {
+        int width=rect->right,height=rect->bottom;
+        if (RecordingResolution::NativeClientSize(window,width,height))
+        { rect->right=width; rect->bottom=height; }
+    }
+    return result;
+}
+CAfxImportFuncHook<BOOL(WINAPI*)(HWND,LPRECT)> g_Import_engine_USER32_GetClientRect("GetClientRect",&new_render_GetClientRect);
 CAfxImportFuncHook<HCURSOR(WINAPI *)()> g_Import_engine_USER32_GetCursor("GetCursor", &new_GetCursor);
 CAfxImportFuncHook<HCURSOR(WINAPI*)(HCURSOR)> g_Import_engine_USER32_SetCursor("SetCursor", &new_SetCursor);
 CAfxImportFuncHook<HWND(WINAPI*)(HWND)> g_Import_engine_USER32_SetCapture("SetCapture", &new_SetCapture);
@@ -3166,7 +3210,7 @@ CAfxImportFuncHook<BOOL(WINAPI *)(const RECT *)> g_Import_engine_USER32_ClipCurs
 CAfxImportFuncHook<int(WINAPI *)(BOOL)> g_Import_engine_USER32_ShowCursor("ShowCursor", &new_ShowCursor);
 CAfxImportDllHook g_Import_engine_USER32(
 	"USER32.dll",
-	CAfxImportDllHooks({&g_Import_engine_USER32_ClipCursor, &g_Import_engine_USER32_ShowCursor,
+	CAfxImportDllHooks({&g_Import_engine_USER32_GetClientRect, &g_Import_engine_USER32_ClipCursor, &g_Import_engine_USER32_ShowCursor,
 #ifndef _WIN64
 						&g_Import_engine_USER32_GetWindowLongW, &g_Import_engine_USER32_SetWindowLongW,
 #endif //#ifndef _WIN64
@@ -3349,7 +3393,10 @@ CAfxImportFuncHook<IDirect3D9 * (WINAPI*)(UINT)> g_Import_shaderapidx9_d3d9_Dire
 CAfxImportDllHook g_Import_shaderapidx9_d3d9("d3d9.dll", CAfxImportDllHooks({
 	&g_Import_shaderapidx9_d3d9_Direct3DCreate9 }));
 
+CAfxImportFuncHook<BOOL(WINAPI*)(HWND,LPRECT)> g_Import_shaderapidx9_USER32_GetClientRect("GetClientRect",&new_render_GetClientRect);
+CAfxImportDllHook g_Import_shaderapidx9_USER32("USER32.dll", CAfxImportDllHooks({&g_Import_shaderapidx9_USER32_GetClientRect}));
 CAfxImportsHook g_Import_shaderapidx9(CAfxImportsHooks({
+    &g_Import_shaderapidx9_USER32,
 	&g_Import_shaderapidx9_KERNEL32,
 	&g_Import_shaderapidx9_d3d9}));
 

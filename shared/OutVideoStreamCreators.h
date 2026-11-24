@@ -42,15 +42,16 @@ class CFfmpegRecordingSettingsCreator
 	: public COutVideoStreamCreator
 {
 public:
-	CFfmpegRecordingSettingsCreator(const std::wstring& capturePath, const std::wstring& ffmpegOptions, float frameRate)
+	CFfmpegRecordingSettingsCreator(const std::wstring& capturePath, const std::wstring& ffmpegOptions, float frameRate, const std::wstring& noAlphaOptions = L"")
 		: m_CapturePath(capturePath)
 		, m_FfmpegOptions(ffmpegOptions)
+        , m_NoAlphaOptions(noAlphaOptions)
 		, m_FrameRate(frameRate) {
 
 	}
 
 	virtual TIOutVideoStream<true>* CreateOutVideoStream(const CImageFormat& imageFormat) override {
-		auto result = new COutFFMPEGVideoStream<true>(imageFormat, m_CapturePath, m_FfmpegOptions, m_FrameRate);;
+		auto result = new COutFFMPEGVideoStream<true>(imageFormat, m_CapturePath, imageFormat.Format!=ImageFormat::BGRA && !m_NoAlphaOptions.empty()?m_NoAlphaOptions:m_FfmpegOptions, m_FrameRate);
 		result->AddRef();
 		return result;
 	}
@@ -58,6 +59,7 @@ public:
 private:
 	std::wstring m_CapturePath;
 	std::wstring m_FfmpegOptions;
+ std::wstring m_NoAlphaOptions;
 	float m_FrameRate;
 };
 

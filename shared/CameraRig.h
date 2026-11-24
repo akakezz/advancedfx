@@ -1,5 +1,7 @@
 #pragma once
 #include "AfxMath.h"
+#include "CameraCollisionSettings.h"
+#include <optional>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -47,6 +49,7 @@ struct CameraMotion
 		else if (name == "soft-follow")
 		{
 			value.FollowHalfLife = .15;
+            value.RotationHalfLife = .15;
 			value.BoneHalfLife = .05;
 			value.BonePositionInfluence = .5;
 			value.BoneRotationInfluence = .5;
@@ -113,6 +116,7 @@ struct CameraRig
 {
 	CameraPose Pose;
 	CameraMotion Motion;
+ std::optional<MirvCameraCollisionSettings> CollisionOverride;
 	bool Attached = false;
 	bool InheritRotation = true;
 	bool Evaluate(const CameraPose *target, CameraPose &out, double time = 0,
@@ -202,7 +206,13 @@ struct CameraInfo
 	std::string Name;
 	CameraPose Pose, BasePose;
 	CameraMotion Motion;
+ std::optional<MirvCameraCollisionSettings> CollisionOverride;
 	bool Attached = false, Available = true, Selected = false, Viewed = false;
+	bool CollisionDebug = false, CollisionBlocked = false, CollisionAnchorEmbedded = false,
+		 CollisionContact = false;
+	double CollisionRadius = 0;
+	std::array<double, 3> CollisionAnchor{}, CollisionDesired{}, CollisionPosition{}, CollisionHit{},
+		CollisionNormal{};
 	int EntityAddress = -1, AttachMode = 0, BoneIndex = -1;
 	std::string BoneName;
 	bool AimActive = false, AimSnap = true, AimCustomSource = false;
@@ -231,19 +241,74 @@ struct CameraClip
 {
 	std::uint64_t Id = ~std::uint64_t(0), Target = 0;
 	double Time = 0, Blend = 0;
-	int BlendCurve = 0; // 0 smoothstep, 1 linear, 2 smootherstep
+	// TransitionStart() may precede or follow the clip's editorial Time.
+	// Clips stay ordered by edit point; transition starts must also stay ordered.
+	double TransitionOffset = 0;
+	int BlendCurve = 0; // Position timing: 0 smoothstep, 1 linear, 2 smootherstep.
+	int RotationCurve = 0, FovCurve = 0;
+	// For historical projects, the default is the original live outgoing evaluation.
+	// Newly authored clips in the editor opt into a frozen outgoing pose.
+	bool FreezeOutgoing = false;
+	bool CurvedPath = false;
+	// World-space offsets from the straight-line cubic Bezier control points
+	// (at one-third and two-thirds of the endpoint displacement).
+	std::array<double, 3> HandleOut{{0, 0, 0}}, HandleIn{{0, 0, 0}};
 	bool Campath = false;
 	std::vector<CameraClipModifier> Modifiers;
+	double TransitionStart() const { return Time + TransitionOffset; }
+	bool ValidTransition() const
+	{
+		if (!std::isfinite(Time) || std::abs(Time) > 1e9 || !std::isfinite(Blend) ||
+			Blend < 0 || Blend > 3600 || !std::isfinite(TransitionOffset) ||
+			std::abs(TransitionOffset) > 3600 || BlendCurve < 0 || BlendCurve > 2 ||
+			RotationCurve < 0 || RotationCurve > 2 || FovCurve < 0 || FovCurve > 2)
+			return false;
+		for (double value : HandleOut)
+			if (!std::isfinite(value) || std::abs(value) > 1e6)
+				return false;
+		for (double value : HandleIn)
+			if (!std::isfinite(value) || std::abs(value) > 1e6)
+				return false;
+		return std::isfinite(TransitionStart());
+	}
 	bool operator==(const CameraClip &o) const
 	{
 		return Id == o.Id && Target == o.Target && Time == o.Time && Blend == o.Blend &&
-			   BlendCurve == o.BlendCurve && Campath == o.Campath && Modifiers == o.Modifiers;
+			   TransitionOffset == o.TransitionOffset && BlendCurve == o.BlendCurve &&
+			   RotationCurve == o.RotationCurve && FovCurve == o.FovCurve &&
+			   FreezeOutgoing == o.FreezeOutgoing && CurvedPath == o.CurvedPath &&
+			   HandleOut == o.HandleOut && HandleIn == o.HandleIn &&
+			   Campath == o.Campath && Modifiers == o.Modifiers;
 	}
 };
 struct CameraGuideLine
 {
 	std::array<double, 3> A, B;
 };
+inline std::vector<CameraGuideLine> CameraCollisionGuideLines(const CameraInfo &camera)
+{
+	std::vector<CameraGuideLine> lines;
+	if (!camera.CollisionDebug)
+		return lines;
+	lines.push_back({camera.CollisionDesired, camera.CollisionPosition});
+	lines.push_back({camera.CollisionAnchor, camera.CollisionPosition});
+	std::array<double, 3> corners[8];
+	for (int c = 0; c < 8; ++c)
+		for (int a = 0; a < 3; ++a)
+			corners[c][a] = camera.CollisionPosition[a] + ((c & (1 << a)) ? 1 : -1) * camera.CollisionRadius;
+	for (int c = 0; c < 8; ++c)
+		for (int a = 0; a < 3; ++a)
+			if (!(c & (1 << a)))
+				lines.push_back({corners[c], corners[c | (1 << a)]});
+	if (camera.CollisionContact)
+	{
+		auto end = camera.CollisionHit;
+		for (int a = 0; a < 3; ++a)
+			end[a] += camera.CollisionNormal[a] * 12;
+		lines.push_back({camera.CollisionHit, end});
+	}
+	return lines;
+}
 inline std::vector<CameraGuideLine> CameraGuideLines(const CameraPose &pose, double aspect, bool frustum)
 {
 	std::vector<CameraGuideLine> lines;

@@ -30,5 +30,23 @@ int main()
 	assert(std::abs(rig.Pose.Position[0]) < 1e-7);
 	assert(rig.Evaluate(&target, out, 101, physicalPivot));
 	assert(near(out.Position[0], 0) && near(out.Position[1], 30));
+	CameraInfo camera;
+	assert(CameraCollisionGuideLines(camera).empty());
+	camera.CollisionDebug = true;
+	camera.CollisionRadius = 6;
+	camera.CollisionPosition = {1, 2, 3};
+	camera.CollisionDesired = {10, 20, 30};
+	auto lines = CameraCollisionGuideLines(camera);
+	assert(lines.size() == 14);
+	assert(lines[0].A == camera.CollisionDesired && lines[0].B == camera.CollisionPosition);
+	for (size_t i = 2; i < lines.size(); ++i)
+		for (int a = 0; a < 3; ++a)
+			assert(std::abs(lines[i].A[a] - camera.CollisionPosition[a]) == 6 &&
+				   std::abs(lines[i].B[a] - camera.CollisionPosition[a]) == 6);
+	camera.CollisionContact = true;
+	camera.CollisionHit = {4, 5, 6};
+	camera.CollisionNormal = {0, 0, 1};
+	lines = CameraCollisionGuideLines(camera);
+	assert(lines.size() == 15 && near(lines.back().B[2], 18));
 	std::cout << "Camera orbit, physical pivot and recapture checks passed\n";
 }

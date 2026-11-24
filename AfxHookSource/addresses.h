@@ -24,6 +24,9 @@ enum SourceSdkVer
 extern SourceSdkVer g_SourceSdkVer;
 // Explicit opt-in for Open Fortress's 32-bit Source SDK Base 2013 MP layout.
 extern bool g_OpenFortressLegacyMode;
+// Unverified legacy engine ABI paths are opt-in, not enabled by the OF game switch.
+extern bool g_OfNativeResolution;
+extern bool g_OfNativeCollision;
 
 //AFXADDR_DECL(csgo_CPredictionCopy_TransferData)
 //AFXADDR_DECL(csgo_CPredictionCopy_TransferData_DSZ)

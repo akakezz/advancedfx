@@ -2,6 +2,8 @@
 // MIT license; see shared/overlay/PORTING.md for provenance and scope.
 #include "MirvCam.h"
 #include "CameraOverlay.h"
+#include "RecordingResolution.h"
+#include "Tf2RenderPass.h"
 #include "CampathDrawer.h"
 #include "Gui.h"
 #include "MirvCalcs.h"
@@ -32,6 +34,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <shared/AfxConsole.h>
+#include <shared/RecordingLog.h>
 #include <shared/overlay/third_party/imgui_filebrowser/imfilebrowser.h>
 #include <shared/overlay/third_party/imgui_neo_sequencer/imgui_neo_sequencer.h>
 #include <shared/overlay/third_party/imguizmo/ImGuizmo.h>
@@ -1374,6 +1377,12 @@ bool Toggle()
 	}
 	else
 	{
+		if (!RecordingResolution::CanStart())
+		{
+			Tier0_Warning("Custom recording resolution is not verified. Apply or restore before recording.\n");
+			return false;
+		}
+		if(SeparatePassSupported() && !SeparateConfigured() && !ScreenEnabled())g_VEngineClient->ClientCmd_Unrestricted("mirv_streams record screen enabled 1");
 		const double fps = std::strtod(g_RecordFps, nullptr);
 		const double rate = std::isfinite(fps) && fps >= 1 && fps <= 10000 ? fps : 60.0;
 		char command[256];
@@ -1457,6 +1466,8 @@ static bool g_ShowGizmo = false;
 static bool g_PreviewHudEnabled = true;
 static bool g_CameraClipsEditing = false;
 static std::uint64_t g_SelectedCameraClip = ~std::uint64_t(0);
+static bool g_ShowTransitionGuide = true;
+static std::atomic<std::uint64_t> g_TransitionGuidePublished{~std::uint64_t(0)};
 static bool g_OpenCameraClips = false;
 static bool g_ShowCameraGuides = false, g_CameraFrustums = true, g_FocusCameras = false,
 			g_CamerasTabActive = false;
@@ -2061,6 +2072,7 @@ static double g_ExportFps = 120;
 // Preferences share the existing ImGui settings file. Demo identities and running
 // operations deliberately stay in memory; saved fixes are armed only for compatible demos.
 static bool g_OverlayPreferencesReady = false;
+static bool g_NoStaticPropFade = false;
 static bool g_DemoMute = false, g_DemoDeathcam = false, g_DemoSmooth = false;
 static double g_DemoInterpolation = .1;
 // OF engine interpolation bypass: independently remembered from the TF2/TF2C
@@ -2077,7 +2089,7 @@ static std::pair<std::uint64_t, size_t> OverlayPreferenceStamp()
 	for (bool value : {g_ScenePlayerModels, g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics,
 	                   g_SceneRagdolls, g_SceneGibs, g_SceneBuildings, g_SceneProps, g_SceneSmoothAnimation,
 	                   g_SceneDrawModels.load(), g_ShowSequencer, g_ShowCameraControl, g_ShowCurveEditor,
-	                   g_ShowGizmo, g_PreviewHudEnabled, g_ShowCameraGuides, g_CameraFrustums, g_DemoMute, g_DemoDeathcam, g_DemoSmooth,
+	                   g_ShowGizmo, g_PreviewHudEnabled, g_ShowCameraGuides, g_CameraFrustums, g_DemoMute, g_DemoDeathcam, g_NoStaticPropFade, g_DemoSmooth,
 	                   g_DemoOfEngine, g_DemoOfEngineAll})
 	{
 		if (value)
@@ -2130,6 +2142,8 @@ void RememberDemoFixPreference(DemoFixPreference setting, double value)
 		if (!g_DemoMute)
 			MirvFix_ArmRecorderSoundMute(false);
 	}
+	else if (setting == DemoFixPreference::NoStaticPropFade)
+		g_NoStaticPropFade = value != 0;
 	else if (setting == DemoFixPreference::Deathcam)
 		g_DemoDeathcam = value != 0;
 	else
@@ -2166,6 +2180,8 @@ void PreferencesFrame()
 	if (now - g_DemoFixAttempt < std::chrono::seconds(1))
 		return;
 	g_DemoFixAttempt = now;
+	if (MirvFix_StaticPropFadeSupported() && g_NoStaticPropFade != MirvFix_GetNoStaticPropFade())
+		MirvFix_SetNoStaticPropFade(g_NoStaticPropFade);
 	if (!g_OpenFortressLegacyMode)
 	{
 		MirvFix_ArmRecorderSoundMute(g_DemoMute);
@@ -2309,6 +2325,8 @@ static void OverlayPaths_ReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *
 		option = &g_PreviewHudEnabled;
 	if (key == "FixRecorderMute")
 		option = &g_DemoMute;
+	if (key == "FixNoStaticPropFade")
+		option = &g_NoStaticPropFade;
 	if (key == "FixDeathcam")
 		option = &g_DemoDeathcam;
 	if (key == "FixSmoothMovement")
@@ -2463,6 +2481,7 @@ static void OverlayPaths_WriteAll(ImGuiContext *, ImGuiSettingsHandler *handler,
 	out_buf->appendf("PreviewHud=%d\n", int(g_PreviewHudEnabled));
 	out_buf->appendf("CameraGuides=%d\nCameraFrustums=%d\n",int(g_ShowCameraGuides),int(g_CameraFrustums));
 	out_buf->appendf("FixRecorderMute=%d\n", int(g_DemoMute));
+	out_buf->appendf("FixNoStaticPropFade=%d\n", int(g_NoStaticPropFade));
 	out_buf->appendf("FixDeathcam=%d\n", int(g_DemoDeathcam));
 	out_buf->appendf("FixSmoothMovement=%d\n", int(g_DemoSmooth));
 	out_buf->appendf("FixOfEngineEnabled=%d\nFixOfEngineAll=%d\nFixOfEngineSeconds=%.6f\n",
@@ -3714,11 +3733,24 @@ static void DrawInterpolationSettings(CamPath &path)
 			"remain smooth; broken or weighted handles use editable cubic on that channel.");
 }
 
+static bool ObservePlayer(int entity, int user)
+{
+ if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo()) return false;
+ char cmd[192];
+ if (g_VEngineClient->IsHLTV()) {
+  MirvCampathPreview_SetActive(false);
+  MirvSpectate_ReleaseView();
+  std::snprintf(cmd, sizeof(cmd), "spec_autodirector 0; spec_mode 4; spec_player \"#%d\"", user);
+ } else std::snprintf(cmd, sizeof(cmd), "mirv_pov %d", entity);
+ Afx_ExecClientCmd(cmd);
+ return true;
+}
+
 static void DrawObserving()
 {
 	if (!ImGui::BeginTabItem("Observing"))
 		return;
-	ImGui::TextUnformatted("Select a player to inspect. Spectating and camera attachment are separate actions.");
+	ImGui::TextUnformatted(g_OpenFortressLegacyMode ? "Select a player to inspect. Spectating and camera attachment are separate actions." : "Click a player to spectate. Bone selection and camera attachment remain available below.");
 	if (ImGui::Button("Detach"))
 		Afx_ExecClientCmd("mirv_cam attach clear");
 	ImGui::SameLine();
@@ -3741,7 +3773,7 @@ static void DrawObserving()
 		int index = -1;
 		if (!Mirv_Tf2_TraceEntity(g_Hook_VClient_RenderView.LastCameraOrigin,
 								g_Hook_VClient_RenderView.LastCameraAngles, index))
-			traceStatus = "TF2 tracing interface is unavailable.";
+			traceStatus = g_OpenFortressLegacyMode ? "OF tracing unavailable (experimental -afxOfNativeCollision required)." : "TF2 tracing interface is unavailable.";
 		else if (index < 0)
 			traceStatus = "No entity under the camera crosshair (world geometry blocks the trace).";
 		else
@@ -3785,7 +3817,10 @@ static void DrawObserving()
 					bone = -1;
 				selectedEntity = i;
 				selectedUser = user;
+				if (g_OpenFortressLegacyMode)
 				traceStatus = "Selected " + std::string(name) + ". Camera and spectator view unchanged.";
+				else
+				traceStatus = ObservePlayer(i, user) ? "Spectating " + std::string(name) + "." : "Selected " + std::string(name) + ".";
 			}
 			ImGui::PopID();
 		}
@@ -3795,23 +3830,27 @@ static void DrawObserving()
 	{
 		ImGui::Separator();
 		const bool stv = g_VEngineClient && g_VEngineClient->IsPlayingDemo() && g_VEngineClient->IsHLTV();
+		if (g_OpenFortressLegacyMode) {
 		if (stv && selectedUser > 0)
 		{
 			if (ImGui::Button("Spectate selected (STV)"))
 			{
-				MirvCampathPreview_SetActive(false);
-				g_Hook_VClient_RenderView.m_CamPath.Enabled_set(false);
-				char cmd[192];
-				std::snprintf(cmd, sizeof(cmd),
-					"mirv_campath preview exit; mirv_cam attach clear; mirv_input end; spec_autodirector 0; spec_mode 4; spec_player \"#%d\"",
-					selectedUser);
-				Afx_ExecClientCmd(cmd);
+				ObservePlayer(selectedEntity, selectedUser);
 				traceStatus = "Requested STV spectating for the selected player.";
 			}
 		}
 		else if (g_VEngineClient && g_VEngineClient->IsPlayingDemo())
 			ImGui::TextWrapped("POV demo: native player spectating is unavailable. Selecting players does not change the view. "
 				"Use Attach selected only when you explicitly want an HLAE camera attachment.");
+		} else {
+  if (!stv && g_VEngineClient && g_VEngineClient->IsPlayingDemo()) {
+   int view = MirvPovSpectate_ThirdPerson() ? 1 : 0;
+   const char *views[] = {"First person", "Third person"};
+   if (ImGui::Combo("POV view", &view, views, 2)) Afx_ExecClientCmd(view ? "mirv_pov mode third" : "mirv_pov mode first");
+   if (ImGui::Button("Return to recorded POV")) Afx_ExecClientCmd("mirv_pov off");
+   ImGui::TextWrapped("%s", MirvPovSpectate_Status());
+  }
+		}
 		ImGui::Separator();
 		ImGui::Text("Selected entity: %d", selectedEntity);
 		ImGui::InputFloat3("Forward / left / up", offset);
@@ -6563,8 +6602,9 @@ static void DrawCinematicBakeControls(const std::string &source)
 	double sourceBegin = 0, sourceEnd = 0;
 	if (sequence && !clips.empty())
 	{
-		sourceBegin = clips.front().Time;
-		sourceEnd = clips.back().Time + clips.back().Blend;
+		sourceBegin = (std::min)(clips.front().Time, clips.size() > 1
+			? clips[1].TransitionStart() : clips.front().Time);
+		sourceEnd = (std::max)(clips.back().Time, clips.back().TransitionStart() + clips.back().Blend);
 		if (clips.back().Campath)
 		{
 			auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
@@ -7001,6 +7041,7 @@ void SetCameraFrustums(bool enabled)
 }
 bool CameraGuidesEnabled() { return g_CameraGuidesPublished.load(); }
 bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
+std::uint64_t TransitionGuideClip() { return g_TransitionGuidePublished.load(); }
 static std::string CameraClipSourceName(bool campath, std::uint64_t target)
 {
 	if (campath)
@@ -7026,6 +7067,10 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 	static std::uint64_t moving = ~std::uint64_t(0);
 	static advancedfx::CameraClip originalMove, pendingMove;
 	static int moveMouse = 0;
+	// Envelope editing is independent of dragging the underlying source block.
+	static std::uint64_t movingEnvelope = ~std::uint64_t(0);
+	static advancedfx::CameraClip originalEnvelope, pendingEnvelope;
+	static int envelopeMouse = 0, envelopeEdge = 0;
 	int mouseTick = 0;
 	const bool haveMouseTick =
 		ImGui::GetNeoSequencerMouseFrame(&mouseTick, ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
@@ -7052,6 +7097,39 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 			moving = ~std::uint64_t(0);
 		}
 	}
+	if (movingEnvelope != ~std::uint64_t(0))
+	{
+		auto found = std::find_if(clips.begin(), clips.end(),
+			[&](const auto &c) { return c.Id == movingEnvelope; });
+		if (found == clips.end() || !(*found == originalEnvelope) ||
+			ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+			(!ImGui::IsMouseDown(0) && !ImGui::IsMouseReleased(0)))
+			movingEnvelope = ~std::uint64_t(0);
+		else if (haveMouseTick && ImGui::IsMouseDown(0))
+		{
+			double originalDemo = 0, shifted = 0;
+			if (CinematicClock(originalEnvelope.TransitionStart(), true, originalDemo, SceneCachePreviewActive()) &&
+				CinematicClock(originalDemo + (mouseTick - envelopeMouse) * SceneTickInterval(), false,
+					shifted, SceneCachePreviewActive()))
+			{
+				pendingEnvelope = originalEnvelope;
+				if (envelopeEdge == 1)
+					pendingEnvelope.Blend = (std::max)(0.0,
+						originalEnvelope.Blend + shifted - originalEnvelope.TransitionStart());
+				else
+					pendingEnvelope.TransitionOffset =
+						originalEnvelope.TransitionOffset + shifted - originalEnvelope.TransitionStart();
+				*found = pendingEnvelope;
+			}
+			ImGui::NeoCancelSelection();
+		}
+		else if (ImGui::IsMouseReleased(0))
+		{
+			if (!(pendingEnvelope == originalEnvelope) && !MirvCam_EditClip(pendingEnvelope))
+				g_DocumentStatus = "Transition edit rejected: envelope starts must remain in clip order.";
+			movingEnvelope = ~std::uint64_t(0);
+		}
+	}
 	for (size_t i = 0; i < clips.size(); ++i)
 	{
 		const auto &clip = clips[i];
@@ -7060,21 +7138,53 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		if (begin > visibleEnd || end < visibleStart)
 			continue;
 		std::string label = CameraClipSourceName(clip.Campath, clip.Target);
-		if(i && clip.Blend>0){char blend[64];snprintf(blend,sizeof(blend)," | Blend %.2f s",clip.Blend);label+=blend;}
+		if (i && clip.Blend > 0) { char blend[64]; snprintf(blend, sizeof(blend),
+			" | Transition %.2f s", clip.Blend); label += blend; }
 		const bool choose = ImGui::NeoTimelineSpan(
 			begin, end, IM_COL32(90, 65, 125, 230), label.c_str(), nullptr, true,
-			clip.Id == g_SelectedCameraClip, i && clip.Blend > 0 ? tick(clip.Time + clip.Blend) : -1, true);
+			clip.Id == g_SelectedCameraClip, -1, true);
 		if (choose)
 		{
 			g_SelectedCameraClip = clip.Id;
 			g_OpenCameraClips = true;
-			if (haveMouseTick)
+			if (haveMouseTick && !ImGui::GetIO().KeyShift)
 			{
 				moving = clip.Id;
 				originalMove = pendingMove = clip;
 				moveMouse = mouseTick;
 				ImGui::NeoCancelSelection();
 			}
+		}
+	}
+	// Render all transition envelopes on the SAME camera-source row. The
+	// sequencer's groupHeader span mode supplies the parent row's exact Y,
+	// eliminating the former one-row-per-transition clutter.
+	for (size_t i = 1; i < clips.size(); ++i)
+	{
+		const auto &clip = clips[i];
+		const int begin = tick(clip.TransitionStart());
+		const int end = (std::max)(begin, tick(clip.TransitionStart() + clip.Blend));
+		if (end < visibleStart || begin > visibleEnd)
+			continue;
+		const std::string caption = CameraClipSourceName(clip.Campath, clip.Target) +
+			" transition | Shift-drag to move; Shift-drag right edge to resize";
+		// Default drags go to the camera clip. Only Shift+drag turns the
+		// overlaid transition into an interactive target. Keeping the span
+		// visible but inert avoids the lower clip's mouse events being stolen.
+		const bool editEnvelope = ImGui::GetIO().KeyShift || movingEnvelope == clip.Id;
+		const bool chose = ImGui::NeoTimelineSpan(begin, end, IM_COL32(55, 168, 236, 115),
+			caption.c_str(), nullptr, false, clip.Id == g_SelectedCameraClip, -1, true, editEnvelope);
+		if (chose)
+		{
+			moving = ~std::uint64_t(0); // The envelope takes precedence over the source block.
+			movingEnvelope = clip.Id;
+			originalEnvelope = pendingEnvelope = clip;
+			envelopeMouse = mouseTick;
+			envelopeEdge = std::abs(mouseTick - end) <=
+				(std::max)(2, (visibleEnd - visibleStart) / 180) ? 1 : 0;
+			g_SelectedCameraClip = clip.Id;
+			g_OpenCameraClips = true;
+			ImGui::NeoCancelSelection();
 		}
 	}
 	if (!childrenOpen)
@@ -7173,13 +7283,105 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		}
 	}
 	ImGui::EndNeoGroup();
+
 }
+
+static void DrawTransitionTrajectoryGraph(std::array<double, 3> &handleOut,
+										  std::array<double, 3> &handleIn)
+{
+	// An uncomplicated projected handle editor. The origin/end and reference
+	// controls are fixed; handle movement edits actual world-space offset axes.
+	static int plane = 0;
+	static float halfRange = 64;
+	static std::uint64_t activeClip = ~std::uint64_t(0);
+	static int activeHandle = -1;
+	const char *planes[] = {"XY (top)", "XZ (side)", "YZ (side)"};
+	ImGui::Combo("Graph plane", &plane, planes, 3);
+	ImGui::SliderFloat("Graph scale (units)", &halfRange, 8, 2048, "%.0f");
+	ImGui::TextDisabled("Drag either control point. Switch planes to edit the third axis.");
+	const int axes[3][2] = {{0, 1}, {0, 2}, {1, 2}};
+	const int horizontal = axes[plane][0], vertical = axes[plane][1];
+	const float width = (std::max)(240.0f, ImGui::GetContentRegionAvail().x);
+	const ImVec2 size(width, 180);
+	ImGui::InvisibleButton("##transition_bezier_graph", size, ImGuiButtonFlags_MouseButtonLeft);
+	const ImVec2 origin = ImGui::GetItemRectMin(), end = ImGui::GetItemRectMax();
+	const ImVec2 a(origin.x + 24, end.y - 24), b(end.x - 24, origin.y + 24);
+	const float pixelsPerUnit = (std::min)(size.x, size.y) * 0.42f / halfRange;
+	auto baseline = [&](double t) {
+		return ImVec2(float(a.x + (b.x - a.x) * t), float(a.y + (b.y - a.y) * t));
+	};
+	auto move = [&](const std::array<double, 3> &handle, double t) {
+		auto p = baseline(t);
+		p.x += float(handle[horizontal]) * pixelsPerUnit;
+		p.y -= float(handle[vertical]) * pixelsPerUnit;
+		return p;
+	};
+	ImVec2 p1 = move(handleOut, 1.0 / 3.0), p2 = move(handleIn, 2.0 / 3.0);
+	const ImVec2 cursor = ImGui::GetIO().MousePos;
+	auto distanceSquared = [&](const ImVec2 &p) {
+		const float dx = p.x - cursor.x, dy = p.y - cursor.y;
+		return dx * dx + dy * dy;
+	};
+	if (activeClip != g_SelectedCameraClip || !ImGui::IsMouseDown(0))
+	{
+		activeHandle = -1;
+		activeClip = g_SelectedCameraClip;
+	}
+	if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(0))
+	{
+		const float d1 = distanceSquared(p1), d2 = distanceSquared(p2);
+		if ((std::min)(d1, d2) < 16 * 16)
+			activeHandle = d1 <= d2 ? 0 : 1;
+	}
+	if (activeHandle >= 0 && ImGui::IsMouseDown(0) && pixelsPerUnit > 0)
+	{
+		auto &handle = activeHandle == 0 ? handleOut : handleIn;
+		const auto delta = ImGui::GetIO().MouseDelta;
+		handle[horizontal] = std::clamp(handle[horizontal] + double(delta.x / pixelsPerUnit), -1e6, 1e6);
+		handle[vertical] = std::clamp(handle[vertical] - double(delta.y / pixelsPerUnit), -1e6, 1e6);
+		p1 = move(handleOut, 1.0 / 3.0);
+		p2 = move(handleIn, 2.0 / 3.0);
+	}
+	ImDrawList *draw = ImGui::GetWindowDrawList();
+	draw->AddRectFilled(origin, end, IM_COL32(23, 28, 38, 245), 5);
+	draw->PushClipRect(origin, end, true);
+	for (int n = 1; n < 4; ++n)
+	{
+		const float x = origin.x + size.x * n / 4, y = origin.y + size.y * n / 4;
+		draw->AddLine(ImVec2(x, origin.y), ImVec2(x, end.y), IM_COL32(100, 115, 135, 60));
+		draw->AddLine(ImVec2(origin.x, y), ImVec2(end.x, y), IM_COL32(100, 115, 135, 60));
+	}
+	draw->AddLine(a, b, IM_COL32(155, 155, 160, 100), 1.3f);
+	draw->AddLine(a, p1, IM_COL32(190, 165, 255, 160));
+	draw->AddLine(p2, b, IM_COL32(190, 165, 255, 160));
+	ImVec2 last = a;
+	for (int i = 1; i <= 64; ++i)
+	{
+		const double t = i / 64.0, u = 1 - t;
+		const ImVec2 point(
+			float(u*u*u*a.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*b.x),
+			float(u*u*u*a.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*b.y));
+		draw->AddLine(last, point, IM_COL32(130, 198, 255, 245), 2.5f);
+		last = point;
+	}
+	draw->AddCircleFilled(a, 4, IM_COL32(80, 215, 170, 255));
+	draw->AddCircleFilled(b, 4, IM_COL32(80, 215, 170, 255));
+	draw->AddCircleFilled(p1, 7, IM_COL32(210, 155, 255, 255));
+	draw->AddCircleFilled(p2, 7, IM_COL32(255, 189, 120, 255));
+	draw->AddCircle(p1, 10, IM_COL32(210, 155, 255, 190));
+	draw->AddCircle(p2, 10, IM_COL32(255, 189, 120, 190));
+	draw->PopClipRect();
+	ImGui::TextDisabled("Projected offset handles: %s. Dashed in-world preview shows the actual path.", planes[plane]);
+}
+
 static void DrawCameraClipsPanel()
 {
 	ImGui::TextWrapped(
 		"Enable the sequence to play these clips. Preview navigation is independent. You can use free camera "
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
-	ImGui::TextDisabled("One block per source | Hatched leading section: blend into this source");
+	ImGui::TextDisabled("Drag a camera clip normally. Hold Shift to move its blue transition, or Shift-drag the right edge to resize. Overlaps are allowed.");
+	ImGui::Checkbox("Show selected transition path in 3D (dashed orange)", &g_ShowTransitionGuide);
+	ImGui::TextDisabled("Editor only; hidden during recording. Moving/aimed cameras need Scene Cache history for an accurate 3D guide.");
 	if (SceneCachePreviewActive())
 		ImGui::TextWrapped("Recorded tracking preserves observed aiming. Without camera samples, aiming is "
 						   "unsmoothed. Re-record after editing a camera. Targets must be "
@@ -7209,8 +7411,10 @@ static void DrawCameraClipsPanel()
 	auto clips = MirvCam_Clips();
 	static std::uint64_t loaded = ~std::uint64_t(0);
 	static int tick = 0;
-	static double blend = 0;
-	static int blendCurve = 0;
+	static double blend = 0, transitionOffset = 0;
+	static int blendCurve = 0, rotationCurve = 0, fovCurve = 0;
+	static bool freezeOutgoing = true, curvedPath = false;
+	static std::array<double, 3> handleOut{{0, 0, 0}}, handleIn{{0, 0, 0}};
 	static bool campath = true;
 	static std::uint64_t target =
 		g_Hook_VClient_RenderView.m_CamPaths.GetId(g_Hook_VClient_RenderView.m_CamPaths.GetActive());
@@ -7220,6 +7424,10 @@ static void DrawCameraClipsPanel()
 	if (found != clips.end() && mapping &&
 		(loaded != g_SelectedCameraClip || found->Time != loadedValue.Time ||
 		 found->Blend != loadedValue.Blend || found->BlendCurve != loadedValue.BlendCurve ||
+		 found->TransitionOffset != loadedValue.TransitionOffset ||
+		 found->RotationCurve != loadedValue.RotationCurve || found->FovCurve != loadedValue.FovCurve ||
+		 found->FreezeOutgoing != loadedValue.FreezeOutgoing || found->CurvedPath != loadedValue.CurvedPath ||
+		 found->HandleOut != loadedValue.HandleOut || found->HandleIn != loadedValue.HandleIn ||
 		 found->Target != loadedValue.Target || found->Campath != loadedValue.Campath))
 	{
 		loadedValue = *found;
@@ -7228,7 +7436,14 @@ static void DrawCameraClipsPanel()
 		CinematicClock(found->Time, true, clipDemo, SceneCachePreviewActive());
 		tick = (std::max)(0, int(llround(clipDemo / interval)));
 		blend = found->Blend;
+		transitionOffset = found->TransitionOffset;
 		blendCurve = found->BlendCurve;
+		rotationCurve = found->RotationCurve;
+		fovCurve = found->FovCurve;
+		freezeOutgoing = found->FreezeOutgoing;
+		curvedPath = found->CurvedPath;
+		handleOut = found->HandleOut;
+		handleIn = found->HandleIn;
 		campath = found->Campath;
 		target = found->Target;
 	}
@@ -7237,6 +7452,11 @@ static void DrawCameraClipsPanel()
 	if(editing && ImGui::Button("New clip"))
 	{
 		g_SelectedCameraClip=loaded=~std::uint64_t(0);
+		blend = transitionOffset = 0;
+		blendCurve = rotationCurve = fovCurve = 0;
+		freezeOutgoing = true;
+		curvedPath = false;
+		handleOut = handleIn = {{0, 0, 0}};
 		clipStatus="Choose a start tick and source, then add the new camera clip.";
 	}
 	if (ImGui::Button("New camera clip at playhead") && mapping)
@@ -7249,14 +7469,50 @@ static void DrawCameraClipsPanel()
 		{
 			tick = (std::max)(0, int(llround(playheadDemo / interval)));
 			g_SelectedCameraClip = loaded = ~std::uint64_t(0);
+			blend = transitionOffset = 0;
+			blendCurve = rotationCurve = fovCurve = 0;
+			freezeOutgoing = true;
+			curvedPath = false;
+			handleOut = handleIn = {{0, 0, 0}};
 			clipStatus = "Start tick set to playhead; choose a source and press Add camera clip.";
 		}
 	}
 	ImGui::InputInt("Start tick", &tick);
 	tick = (std::max)(0, tick);
-	ImGui::InputDouble("Blend into this source (s)", &blend, 0, 0, "%.3f");
+	ImGui::InputDouble("Transition duration (s)", &blend, 0, 0, "%.3f");
+	ImGui::InputDouble("Transition offset from edit point (s)", &transitionOffset, 0, 0, "%.3f");
+	if (ImGui::Button("Before edit")) transitionOffset = -blend;
+	ImGui::SameLine();
+	if (ImGui::Button("Center on edit")) transitionOffset = -blend * 0.5;
+	ImGui::SameLine();
+	if (ImGui::Button("After edit")) transitionOffset = 0;
+	if (std::isfinite(blend) && std::isfinite(transitionOffset))
+		ImGui::TextDisabled("Envelope: %.3f - %.3f s (client time)",
+			(tick * interval) + transitionOffset, (tick * interval) + transitionOffset + blend);
 	const char *blendCurves[] = {"Smooth", "Linear", "Smoother"};
-	ImGui::Combo("Blend interpolation", &blendCurve, blendCurves, 3);
+	ImGui::Combo("Position easing", &blendCurve, blendCurves, 3);
+	ImGui::Combo("Rotation easing", &rotationCurve, blendCurves, 3);
+	ImGui::Combo("FOV easing", &fovCurve, blendCurves, 3);
+	ImGui::Checkbox("Freeze outgoing camera at transition start", &freezeOutgoing);
+	ImGui::Checkbox("Curved transition trajectory (cubic Bezier)", &curvedPath);
+	if (curvedPath)
+	{
+		DrawTransitionTrajectoryGraph(handleOut, handleIn);
+		if (ImGui::Button("Reset trajectory handles"))
+			handleOut = handleIn = {{0, 0, 0}};
+		if (ImGui::TreeNode("Precise XYZ handles (optional)"))
+		{
+			const char *axis[] = {"X", "Y", "Z"};
+			for (int i = 0; i < 3; ++i)
+			{
+				ImGui::PushID(i);
+				ImGui::InputDouble((std::string("Outgoing ") + axis[i]).c_str(), &handleOut[i], 0, 0, "%.2f");
+				ImGui::InputDouble((std::string("Incoming ") + axis[i]).c_str(), &handleIn[i], 0, 0, "%.2f");
+				ImGui::PopID();
+			}
+			ImGui::TreePop();
+		}
+	}
 	auto cameras = MirvCam_Cameras();
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	std::string selectedName = CameraClipSourceName(campath, target);
@@ -7293,7 +7549,14 @@ static void DrawCameraClipsPanel()
 		clip.Id = g_SelectedCameraClip;
 		CinematicClock(tick * interval, false, clip.Time, SceneCachePreviewActive());
 		clip.Blend = blend;
+		clip.TransitionOffset = transitionOffset;
 		clip.BlendCurve = blendCurve;
+		clip.RotationCurve = rotationCurve;
+		clip.FovCurve = fovCurve;
+		clip.FreezeOutgoing = freezeOutgoing;
+		clip.CurvedPath = curvedPath;
+		clip.HandleOut = handleOut;
+		clip.HandleIn = handleIn;
 		clip.Campath = campath;
 		clip.Target = target;
 		clipStatus.clear();
@@ -7303,9 +7566,10 @@ static void DrawCameraClipsPanel()
 				if (std::abs(other.Time - clip.Time) < 1e-9)
 					clipStatus = "Another clip starts at this tick. Select that clip to edit it, or choose a "
 								 "different tick.";
-				else if ((other.Time < clip.Time && other.Time + other.Blend > clip.Time + 1e-9) ||
-						 (other.Time > clip.Time && clip.Time + clip.Blend > other.Time + 1e-9))
-					clipStatus = "The blend overlaps a neighboring clip. Shorten the blend or move the clip.";
+				else if ((other.Time < clip.Time && other.TransitionStart() >= clip.TransitionStart() - 1e-9) ||
+						 (other.Time > clip.Time && other.TransitionStart() <= clip.TransitionStart() + 1e-9))
+					clipStatus = "Transition starts must follow the same order as camera edit points. "
+								 "Move the envelope offset or edit point.";
 			}
 		if (clipStatus.empty() && MirvCam_EditClip(clip))
 		{
@@ -7441,47 +7705,27 @@ static void DrawCameraClipsPanel()
 			"Ranges follow their clip. Drag a modifier edge or fade marker on its selected clip's lane.");
 	}
 	ImGui::TextWrapped(
-		"Clips start at demo ticks. Zero blend cuts; positive blend transitions from the previous source. "
-		"Blends must finish before the next clip. Save the cinematic project to keep clips, cameras and commands.");
+		"Camera edit points and transition envelopes are independent. Envelopes may overlap: a later "
+		"transition blends from the prior composite, and Freeze outgoing captures it at the boundary. "
+		"Envelope starts must retain edit-point order. The first clip provides pre-roll and has no incoming "
+		"transition. Save the cinematic project to preserve timing, handles and easing.");
 	if (!clipStatus.empty())
 		ImGui::TextWrapped("%s", clipStatus.c_str());
 	if (!mapping)
 		ImGui::TextDisabled("Demo tick mapping is unavailable.");
 }
-static void DrawSharedCollisionOptions()
+static void DrawSharedCollisionOptions(MirvCameraCollisionSettings *value=nullptr,
+ const std::function<bool(const MirvCameraCollisionSettings&)> &commit={})
 {
-	auto collision = MirvCameraCollisionGet();
-	if (ImGui::Checkbox("Ignore local player", &collision.IgnoreLocal))
-		Afx_ExecClientCmd(collision.IgnoreLocal ? "mirv_cam collision ignoreLocal 1"
-												: "mirv_cam collision ignoreLocal 0");
-	if (ImGui::Checkbox("Collide with other players", &collision.Players))
-		Afx_ExecClientCmd(collision.Players ? "mirv_cam collision players 1"
-											: "mirv_cam collision players 0");
-	if (ImGui::Checkbox("Slide along obstacles", &collision.Slide))
-		Afx_ExecClientCmd(collision.Slide ? "mirv_cam collision response slide"
-										  : "mirv_cam collision response stop");
-	if (ImGui::InputDouble("Camera clearance (units)", &collision.Radius, 0, 0, "%.2f",
-						   ImGuiInputTextFlags_EnterReturnsTrue))
-	{
-		char command[128];
-		std::snprintf(command, sizeof(command), "mirv_cam collision radius %.9g", collision.Radius);
-		Afx_ExecClientCmd(command);
-	}
-	if (ImGui::InputDouble("Collision return half-life (s)", &collision.ReturnHalfLife, 0, 0, "%.3f",
-						   ImGuiInputTextFlags_EnterReturnsTrue))
-	{
-		char command[128];
-		std::snprintf(command, sizeof(command), "mirv_cam collision returnHalfLife %.9g",
-					  collision.ReturnHalfLife);
-		Afx_ExecClientCmd(command);
-	}
-	if (ImGui::InputDouble("Maximum return speed (units/s)", &collision.ReturnSpeed, 0, 0, "%.1f",
-						   ImGuiInputTextFlags_EnterReturnsTrue))
-	{
-		char command[128];
-		std::snprintf(command, sizeof(command), "mirv_cam collision returnSpeed %.9g", collision.ReturnSpeed);
-		Afx_ExecClientCmd(command);
-	}
+ auto collision=value?*value:MirvCameraCollisionGet();bool dirty=false;
+ dirty|=ImGui::Checkbox("Ignore local player",&collision.IgnoreLocal);
+ dirty|=ImGui::Checkbox("Collide with other players",&collision.Players);
+ dirty|=ImGui::Checkbox("Slide along obstacles",&collision.Slide);
+ dirty|=ImGui::InputDouble("Camera clearance (units)",&collision.Radius,0,0,"%.2f",ImGuiInputTextFlags_EnterReturnsTrue);
+ dirty|=ImGui::InputDouble("Collision return half-life (s)",&collision.ReturnHalfLife,0,0,"%.3f",ImGuiInputTextFlags_EnterReturnsTrue);
+ dirty|=ImGui::InputDouble("Maximum return speed (units/s)",&collision.ReturnSpeed,0,0,"%.1f",ImGuiInputTextFlags_EnterReturnsTrue);
+ if(dirty){if(commit)commit(collision);else MirvCameraCollisionSet(collision);}
+ if(value)*value=collision;
 }
 static std::string CameraModifierLabel(const MirvCameraModifier &modifier,
 									   const std::vector<MirvCameraModifier> &definitions)
@@ -8152,6 +8396,7 @@ static void DrawCamerasTab()
 			motionDirty |= ImGui::Checkbox("Preserve subject framing", &motion.PreserveFraming);
 			ImGui::EndDisabled();
 			motionDirty |= ImGui::InputDouble("Follow half-life (s)", &motion.FollowHalfLife, 0, 0, "%.3f");
+   if(ImGui::IsItemHovered())ImGui::SetTooltip("Smooths entity root translation. Bone and orbit half-lives control the other motion channels; zero keeps that channel rigid.");
 			motionDirty |=
 				ImGui::InputDouble("Follow bone half-life (s)", &motion.BoneHalfLife, 0, 0, "%.3f");
 			motionDirty |=
@@ -8338,35 +8583,38 @@ static void DrawCamerasTab()
 	}
 	if (found == cameras.end())
 		DrawCameraModifierLibrary();
-	if (!g_OpenFortressLegacyMode && ImGui::CollapsingHeader("Attached camera collision"))
-	{
-		auto collision = MirvCameraCollisionGet();
-
-		DrawSharedCollisionOptions();
-		if (ImGui::Checkbox("Enable attached collision", &collision.Attached))
-			Afx_ExecClientCmd(collision.Attached ? "mirv_cam collision attached 1"
-												 : "mirv_cam collision attached 0");
-		if (ImGui::InputDouble("Attached collision soft zone (units)", &collision.AttachedSoftDistance, 0, 0,
-							   "%.1f", ImGuiInputTextFlags_EnterReturnsTrue))
-		{
-			char command[128];
-			std::snprintf(command, sizeof(command), "mirv_cam collision attachedSoftDistance %.9g",
-						  collision.AttachedSoftDistance);
-			Afx_ExecClientCmd(command);
-		}
-		auto follow = collision;
-		if (ImGui::InputDouble("Blocked recovery cut delay (s)", &follow.FollowRecoveryDelay, 0, 0, "%.2f",
-							   ImGuiInputTextFlags_EnterReturnsTrue))
-		{
-			char command[128];
-			std::snprintf(command, sizeof(command), "mirv_cam attach follow recoveryDelay %.9g",
-						  follow.FollowRecoveryDelay);
-			Afx_ExecClientCmd(command);
-		}
-		ImGui::TextWrapped("Applies to attached cameras during live playback. Cached preview uses recorded "
-						   "motion without live collision traces. Clearance and obstacle settings are shared "
-						   "with freecam and campath collision.");
-	}
+ if((!g_OpenFortressLegacyMode || g_OfNativeCollision) && ImGui::CollapsingHeader("Attached camera collision")){
+  bool overrideCollision=found!=cameras.end() && found->CollisionOverride.has_value();
+  if(found!=cameras.end() && ImGui::Checkbox("Use per-camera collision override",&overrideCollision)){
+   const auto defaults=MirvCameraCollisionGet();
+   editSelected([&](auto id){return MirvCam_EditCollision(id,overrideCollision?std::optional<MirvCameraCollisionSettings>(defaults):std::nullopt);});
+  }
+  auto collision=overrideCollision && found!=cameras.end()?found->CollisionOverride.value_or(MirvCameraCollisionGet()):MirvCameraCollisionGet();
+  const auto initialCollision=collision;
+  auto commit=[&](const MirvCameraCollisionSettings &value){
+   const bool ok=overrideCollision?editSelected([&](auto id){
+    auto target=std::find_if(cameras.begin(),cameras.end(),[&](const auto &c){return c.Id==id;});
+    if(target==cameras.end())return false;
+    auto next=target->CollisionOverride.value_or(MirvCameraCollisionGet());
+    auto patch=[&](auto field){if(initialCollision.*field!=value.*field)next.*field=value.*field;};
+    patch(&MirvCameraCollisionSettings::Attached);patch(&MirvCameraCollisionSettings::Players);patch(&MirvCameraCollisionSettings::Slide);patch(&MirvCameraCollisionSettings::IgnoreLocal);patch(&MirvCameraCollisionSettings::Debug);patch(&MirvCameraCollisionSettings::Radius);patch(&MirvCameraCollisionSettings::ReturnHalfLife);patch(&MirvCameraCollisionSettings::ReturnSpeed);patch(&MirvCameraCollisionSettings::AttachedSoftDistance);patch(&MirvCameraCollisionSettings::SubjectClearance);patch(&MirvCameraCollisionSettings::NearPlane);patch(&MirvCameraCollisionSettings::FollowRecoveryDelay);
+    return MirvCam_EditCollision(id,next);
+   }):MirvCameraCollisionSet(value);
+   if(!ok)g_DocumentStatus="Invalid collision settings.";return ok;
+  };
+  ImGui::TextDisabled(overrideCollision?"Editing selected camera overrides.":"Editing global collision defaults.");
+  DrawSharedCollisionOptions(&collision,commit);
+  bool dirty=false;
+  dirty|=ImGui::InputDouble("Minimum subject distance (units)",&collision.SubjectClearance,0,0,"%.2f",ImGuiInputTextFlags_EnterReturnsTrue);
+  dirty|=ImGui::InputDouble("Attached near-plane depth (0 disables)",&collision.NearPlane,0,0,"%.2f",ImGuiInputTextFlags_EnterReturnsTrue);
+  dirty|=ImGui::Checkbox("Draw collision diagnostics",&collision.Debug);
+  dirty|=ImGui::Checkbox("Enable attached collision",&collision.Attached);
+  dirty|=ImGui::InputDouble("Attached collision soft zone (units)",&collision.AttachedSoftDistance,0,0,"%.1f",ImGuiInputTextFlags_EnterReturnsTrue);
+  dirty|=ImGui::InputDouble("Blocked recovery cut delay (s)",&collision.FollowRecoveryDelay,0,0,"%.2f",ImGuiInputTextFlags_EnterReturnsTrue);
+  if(dirty)commit(collision);
+  if(found!=cameras.end() && found->CollisionDebug)ImGui::TextWrapped("Collision: %s%s",found->CollisionBlocked?"no subject-sized gap":"clear camera hull",found->CollisionAnchorEmbedded?"; anchor hull overlaps geometry":"");
+  ImGui::TextWrapped("Cameras inherit global settings unless overridden. Overrides belong to selected cameras; freecam/campath remain global. Cached preview never traces the live world.");
+ }
 	if (ImGui::CollapsingHeader("Display"))
 	{
 		ImGui::Checkbox("Show camera guides", &g_ShowCameraGuides);
@@ -8435,6 +8683,27 @@ void ProcessExternalActions()
 
 // The profile editor reads the *same* live registry as mirv_streams. Draft
 // changes are applied explicitly, never on each ImGui frame or during a take.
+static void DrawRecordingLog()
+{
+ if (!ImGui::CollapsingHeader("FFmpeg log", ImGuiTreeNodeFlags_DefaultOpen)) return;
+ if (ImGui::SmallButton("Clear log")) advancedfx::RecordingLog::Get().Clear();
+ static uint64_t revision=0;
+ static std::vector<advancedfx::RecordingLog::Entry> entries;
+ const bool changed=advancedfx::RecordingLog::Get().Read(revision,entries);
+ if (ImGui::BeginChild("##ffmpeg_log",ImVec2(0,ImGui::GetTextLineHeightWithSpacing()*6),true,
+                       ImGuiWindowFlags_HorizontalScrollbar)) {
+  const bool atBottom=ImGui::GetScrollY()>=ImGui::GetScrollMaxY()-1;
+  if (entries.empty()) ImGui::TextDisabled("No FFmpeg messages.");
+  std::string source;
+  for (const auto &entry:entries) {
+   if (source!=entry.Source) {source=entry.Source;ImGui::TextDisabled("%s",source.c_str());}
+   ImGui::TextUnformatted(entry.Text.data(),entry.Text.data()+entry.Text.size());
+  }
+  if (changed && atBottom) ImGui::SetScrollHereY(1.0f);
+ }
+ ImGui::EndChild();
+}
+
 static void DrawRecordingProfileEditor(const std::string &selected)
 {
 	advancedfx::RecordingProfileInfo current;
@@ -8446,13 +8715,14 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 	static std::string editingName, status;
 	static advancedfx::RecordingProfileInfo draft;
 	static char copyName[64] = {};
-	static char ffmpegOptions[4096] = {};
+	static char ffmpegOptions[4096] = {}, ffmpegNoAlphaOptions[4096] = {};
 	if (editingName != current.Name)
 	{
 		editingName = current.Name;
 		draft = current;
 		copyName[0] = 0;
 		std::snprintf(ffmpegOptions, sizeof(ffmpegOptions), "%s", draft.FfmpegOptions.c_str());
+  std::snprintf(ffmpegNoAlphaOptions,sizeof(ffmpegNoAlphaOptions),"%s",draft.FfmpegOptionsNoAlpha.c_str());
 		status.clear();
 	}
 	if (!ImGui::CollapsingHeader("Recording profile details / editor", ImGuiTreeNodeFlags_DefaultOpen))
@@ -8460,7 +8730,7 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 
 	const bool recording = Recording::IsActive();
 	const bool editable = !current.Protected && !recording;
-	const bool supported = current.Type != advancedfx::RecordingProfileInfo::Kind::Other;
+	const bool supported = current.Type == advancedfx::RecordingProfileInfo::Kind::Sampler || current.Type == advancedfx::RecordingProfileInfo::Kind::Ffmpeg || current.Type == advancedfx::RecordingProfileInfo::Kind::FfmpegEx;
 	ImGui::Text("Profile: %s", current.Name.c_str());
 	ImGui::SameLine();
 	ImGui::TextDisabled(current.Protected ? "(built-in, read-only)" : "(custom)");
@@ -8505,6 +8775,11 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 		if (!editable) ImGui::BeginDisabled();
 		ImGui::InputTextMultiline("##record_ffmpeg_options", ffmpegOptions, sizeof(ffmpegOptions),
 			ImVec2(-1.0f, ImGui::GetTextLineHeight() * 4));
+  if(!draft.FfmpegOptionsNoAlpha.empty()){
+   ImGui::TextUnformatted("Color-only options (inputs without alpha)");
+   ImGui::InputTextMultiline("##record_ffmpeg_noalpha",ffmpegNoAlphaOptions,sizeof(ffmpegNoAlphaOptions),ImVec2(-1,ImGui::GetTextLineHeight()*3));
+   draft.FfmpegOptionsNoAlpha=ffmpegNoAlphaOptions;
+  }
 		if (!editable) ImGui::EndDisabled();
 		draft.FfmpegOptions = ffmpegOptions;
 		ImGui::TextDisabled("Use HLAE's {QUOTE} / {AFX_STREAM_PATH} variables; applies to future takes.");
@@ -8526,7 +8801,8 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 		{
 			draft = current;
 			std::snprintf(ffmpegOptions, sizeof(ffmpegOptions), "%s", current.FfmpegOptions.c_str());
-			status = "Restored the latest saved-in-session profile values.";
+   std::snprintf(ffmpegNoAlphaOptions,sizeof(ffmpegNoAlphaOptions),"%s",current.FfmpegOptionsNoAlpha.c_str());
+			status = "Restored the latest profile values.";
 		}
 		if (!editable) ImGui::EndDisabled();
 	}
@@ -8565,7 +8841,12 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 				status = "Custom profile removed.";
 			}
 			else
+			{
+				// Removal can fail while another sampler still references this profile.
+				// Keep a failed delete from changing the next recording's encoder.
+				Recording::SetProfile(current.Name.c_str());
 				status = "Profile still referenced by another setting, or removal failed.";
+			}
 		}
 		if (recording) ImGui::EndDisabled();
 	}
@@ -8578,6 +8859,7 @@ void Draw()
 {
 	CheckOverlayPreferences();
 	g_CameraGuidesPublished.store(g_ShowCameraGuides);
+	g_TransitionGuidePublished.store(g_ShowTransitionGuide ? g_SelectedCameraClip : ~std::uint64_t(0));
 	g_CameraFrustumsPublished.store(g_CameraFrustums);
 	DrawPreviewHud();
 	PollTimelineIndex();
@@ -8847,7 +9129,7 @@ void Draw()
 			if (ImGui::Button("Anchor selection here"))
 				PreviewAnchor();
 			DrawSeekSettings();
-			if (!g_OpenFortressLegacyMode && ImGui::CollapsingHeader("Camera collision"))
+			if ((!g_OpenFortressLegacyMode || g_OfNativeCollision) && ImGui::CollapsingHeader("Camera collision"))
 			{
 				auto collision = MirvCameraCollisionGet();
 				if (ImGui::Checkbox("Free camera collision", &collision.Free))
@@ -8889,6 +9171,17 @@ void Draw()
 					ImGui::TextDisabled("Saved; waiting for the TF2/TF2C client hooks.");
 				ImGui::TextWrapped("Prevents POV death/freeze camera effects from freezing the HLAE view or "
 				                   "selecting the freeze-cam sound mixer. Enable before death.");
+				if (MirvFix_StaticPropFadeSupported())
+				{
+					bool enabled = g_NoStaticPropFade;
+					if (ImGui::Checkbox("Disable static prop fading", &enabled))
+					{
+						RememberDemoFixPreference(DemoFixPreference::NoStaticPropFade, enabled);
+						MirvFix_SetNoStaticPropFade(enabled);
+					}
+					if (g_NoStaticPropFade && !MirvFix_GetNoStaticPropFade())
+						ImGui::TextDisabled("Waiting for the static prop renderer.");
+				}
 				}
 				else
 				{
@@ -9136,6 +9429,7 @@ void Draw()
 		if (ImGui::BeginTabItem("Recording"))
 		{
 			ImGui::TextUnformatted(Recording::IsActive() ? "Recording is active" : "Recording is stopped");
+   DrawRecordingLog();
 			// Shared: record path chooser
 			static char s_recName[512] = {0};
 			static bool recInit = false;
@@ -9241,6 +9535,58 @@ void Draw()
 				ImGui::TextDisabled("Recording uses the screen stream and encoder settings already configured below.");
 			}
 
+			if (ImGui::CollapsingHeader("Recording resolution", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				const auto state = RecordingResolution::GetState();
+				if (state.RenderWidth > 0 && state.RenderHeight > 0)
+				{
+					ImGui::Text("Native render: %d x %d", state.RenderWidth, state.RenderHeight);
+					ImGui::Text("Capture surface: %d x %d", state.CaptureWidth, state.CaptureHeight);
+					ImGui::Text("Window preview: %d x %d", state.PreviewWidth, state.PreviewHeight);
+					ImGui::TextDisabled("GPU texture limit: %d x %d", state.MaxWidth, state.MaxHeight);
+				}
+				else ImGui::TextDisabled("Waiting for Direct3D surface dimensions.");
+				static int preset = 3, width = 3840, height = 2160;
+				static bool fit = true;
+				const char *names[] = {"Custom", "Full HD (1920 x 1080)", "QHD (2560 x 1440)",
+					"4K UHD (3840 x 2160)", "4K DCI (4096 x 2160)", "5K (5120 x 2880)", "8K (7680 x 4320)"};
+				const int sizes[][2] = {{0,0},{1920,1080},{2560,1440},{3840,2160},{4096,2160},{5120,2880},{7680,4320}};
+				const bool editable = state.Supported && state.Windowed && !Recording::IsActive() && !state.Pending;
+				ImGui::BeginDisabled(!editable);
+				if (ImGui::Combo("Resolution preset", &preset, names, IM_ARRAYSIZE(names)) && preset)
+				{ width = sizes[preset][0]; height = sizes[preset][1]; }
+				ImGui::SetNextItemWidth(120);
+				if (ImGui::InputInt("Width##captureResolution", &width, 0)) preset = 0;
+				ImGui::SetNextItemWidth(120);
+				if (ImGui::InputInt("Height##captureResolution", &height, 0)) preset = 0;
+				ImGui::Checkbox("Fit preview to monitor", &fit);
+				const bool valid = width >= 640 && height >= 480 && width <= 16384 && height <= 16384 &&
+					width <= state.MaxWidth && height <= state.MaxHeight;
+				ImGui::BeginDisabled(!valid);
+				if (ImGui::Button("Apply resolution"))
+				{
+					char command[100];
+					std::snprintf(command,sizeof(command),"mirv_resolution apply %d %d %d",width,height,int(fit));
+					Afx_ExecClientCmd(command);
+				}
+				ImGui::EndDisabled();
+				ImGui::EndDisabled();
+				ImGui::SameLine();
+				ImGui::BeginDisabled(!state.Managed || Recording::IsActive());
+				if (ImGui::Button("Restore original resolution")) Afx_ExecClientCmd("mirv_resolution restore");
+				ImGui::EndDisabled();
+				ImGui::BeginDisabled(!state.Managed || !state.Windowed || Recording::IsActive());
+				if (ImGui::Button("Refit preview")) Afx_ExecClientCmd("mirv_resolution refit");
+				ImGui::EndDisabled();
+				if (state.Fit) ImGui::TextDisabled("Overlay: %s", state.NativePreview ? "native preview pixels" : "scaled backbuffer (fallback)");
+				if (!state.Supported || !state.Windowed)
+					ImGui::TextDisabled(g_OpenFortressLegacyMode ? "OF experimental: launch with -afxOfNativeResolution and use windowed mode." : "TF2 windowed mode required.");
+				if (!valid && state.MaxWidth > 0)
+					ImGui::TextDisabled("Requested size is outside the supported dimension or GPU limit.");
+				ImGui::TextWrapped("%s", state.Message.c_str());
+				ImGui::TextDisabled("Preview scaling affects presentation only, not the recorded render target.");
+			}
+
 			// Common HUD toggles
 			ImGui::Separator();
 			static bool s_hideHud = false;
@@ -9255,9 +9601,38 @@ void Draw()
 					Afx_ExecClientCmd("engine_no_focus_sleep 0; snd_mute_losefocus 0");
 				}
 
-				// Record screen settings
+				// Separate TF2 passes share the existing capture clock and profile registry.
+    if (ImGui::CollapsingHeader("Separate recording passes")) {
+     const bool editable = Recording::SeparatePassSupported() && !Recording::IsActive();
+     if (!editable) ImGui::BeginDisabled();
+     for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i) {
+      bool enabled = Recording::PassEnabled(i);
+      if (ImGui::Checkbox(i==0?"Base / world":Tf2RenderPassName(Tf2RenderPass(i)), &enabled)) Recording::SetPassEnabled(i, enabled);
+     }
+     bool reference=Recording::FullReference();
+     if(ImGui::Checkbox("Record full scene reference",&reference))Recording::SetFullReference(reference);
+     if(ImGui::SmallButton("Reset separate outputs"))Recording::ResetSeparateOutputs();
+     bool alpha = Recording::PassAlpha();
+     if (ImGui::Checkbox("Transparent isolated passes", &alpha)) Recording::SetPassAlpha(alpha);
+     if (alpha) ImGui::TextWrapped("Alpha replays isolated draws into a second target; the world renders once. Choose an alpha-capable profile below, such as afxFfmpegProresAlpha; other codecs may discard transparency.");
+     if (alpha) ImGui::BeginDisabled();
+     const unsigned background = Recording::PassBackground() & 0xffffffu;
+     const char *backgroundNames[] = {"Green", "Blue", "Black"};
+     const unsigned backgroundColors[] = {0x00ff00u, 0x0000ffu, 0x000000u};
+     const char *preview = "Custom RGB";
+     for (int i = 0; i < 3; ++i) if (background == backgroundColors[i]) preview = backgroundNames[i];
+     if (ImGui::BeginCombo("Isolated pass background", preview)) {
+      for (int i = 0; i < 3; ++i) if (ImGui::Selectable(backgroundNames[i], background == backgroundColors[i])) Recording::SetPassBackground(backgroundColors[i]);
+      ImGui::EndCombo();
+     }
+     if (alpha) ImGui::EndDisabled();
+     if (!editable) ImGui::EndDisabled();
+     ImGui::TextWrapped("Base/world contains everything not separated into Players, Viewmodel or HUD. Depth is additional data. The optional full-scene reference preserves the original shot. Outputs share the profile below; isolates use alpha or the chosen chroma background. Refraction and interleaved effects still have compositing limits.");
+     if (!Recording::SeparatePassSupported()) ImGui::TextDisabled("TF2 render-pass hooks are unavailable.");
+    }
+    // Record screen settings
 				bool screenEnabled = Recording::ScreenEnabled();
-				if (ImGui::Checkbox("Record screen enabled", &screenEnabled))
+				if (!Recording::SeparatePassSupported() && ImGui::Checkbox("Record screen enabled", &screenEnabled))
 				{
 					Afx_ExecClientCmd(screenEnabled ? "mirv_streams record screen enabled 1"
 													: "mirv_streams record screen enabled 0");
@@ -9274,8 +9649,10 @@ void Draw()
 				DrawRecordingProfileEditor(Recording::CurrentProfile());
 
 				ImGui::Separator();
-				if (ImGui::Button("Start Recording") && !Recording::IsActive())
+				ImGui::BeginDisabled(Recording::IsActive() || !RecordingResolution::CanStart());
+				if (ImGui::Button("Start Recording"))
 					Recording::Toggle();
+				ImGui::EndDisabled();
 				ImGui::SameLine();
 				if (ImGui::Button("Stop") && Recording::IsActive())
 					Recording::Toggle();
