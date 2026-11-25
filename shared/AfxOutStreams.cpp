@@ -3,6 +3,7 @@
 #include "AfxOutStreams.h"
 #include "AfxConsole.h"
 #include "RecordingLog.h"
+#include "PackedVideoFrame.h"
 
 #include "RawOutput.h"
 #include "OpenExrOutput.h"
@@ -520,85 +521,54 @@ void COutFFMPEGVideoStreamImpl::Close()
 
 bool COutFFMPEGVideoStreamImpl::WriteBuffer(const unsigned char* pBuffer)
 {
-	/*
-	static DWORD frames = 0;
-	static DWORD firstTickCount = GetTickCount();
+    RecordingTiming::Scope timing{m_EncoderWriteTime};
+    const bool ok=WritePackedFrame(pBuffer);
+    if (ok) ++m_EncoderFrames; else ++m_EncoderFailures;
+    return ok;
+}
 
-	++frames;
-	DWORD delta = GetTickCount() - firstTickCount;
-
-	if (1000 < delta)
-	{
-		float fps = delta ? (float)frames / (delta / 1000.0f): 0;
-		advancedfx::Message("FPS: %f\n",fps);
-		frames = 0;
-		firstTickCount = GetTickCount();
-	}
-
-	return true;
-	*/
-
-	if (TRUE != m_Okay) return false;
-
-	//DWORD lastTickCount = GetTickCount();
-
-	DWORD length = (DWORD)m_ImageFormat.Bytes;
-	DWORD srcStride = m_ImageFormat.GetPixelStride();
-	DWORD batchLength = (DWORD)(srcStride * m_ImageFormat.Width);
-	if (batchLength == m_ImageFormat.GetLineStride()) batchLength *= (DWORD)m_ImageFormat.Height;
-
-	while (0 < length) {
-
-		if (WriteFile(m_hChildStd_IN_Wr, (LPCVOID)pBuffer, batchLength, NULL, &m_OverlappedStdin)) {
-			length -= batchLength;
-			pBuffer += batchLength;
-			continue;
-		}
-
-		if (ERROR_IO_PENDING != GetLastError()) {
-			Close();
-			return false;
-		}
-
-		bool completed = false;
-
-		while (!completed)
-		{
-			if (!HandleOutAndErr()) {
-				Close();
-				return false;
-			}
-
-			DWORD result = WaitForSingleObject(m_OverlappedStdin.hEvent, 1000);
-			switch (result)
-			{
-			case WAIT_OBJECT_0:
-				completed = true;
-				break;
-			case WAIT_TIMEOUT:
-				break;
-			default:
-				Close();
-				return false;
-			}
-		}
-
-		DWORD bytesWritten;
-		if (!GetOverlappedResult(m_hChildStd_IN_Wr, &m_OverlappedStdin, &bytesWritten, FALSE) || bytesWritten != length) {
-			Close();
-			return false;
-		}
-
-		length -= batchLength;
-		pBuffer += batchLength;
-	}
-
-	return true;
+bool COutFFMPEGVideoStreamImpl::WritePackedFrame(const unsigned char* pBuffer)
+{
+    if (TRUE != m_Okay) return false;
+    size_t packedBytes=0;
+    {
+        RecordingTiming::Scope timing{m_EncoderPackTime};
+        if (!PackedVideoFrame(m_ImageFormat,pBuffer,m_PackedFrame,packedBytes)) return false;
+    }
+    DWORD length=static_cast<DWORD>(packedBytes);
+    while (length) {
+        // Normally one overlapped write for the whole frame, even with padded source rows.
+        if (!WriteFile(m_hChildStd_IN_Wr, pBuffer, length, NULL, &m_OverlappedStdin)) {
+            if (ERROR_IO_PENDING != GetLastError()) { Close(); return false; }
+            for (;;) {
+                if (!HandleOutAndErr()) { Close(); return false; }
+                const DWORD result=WaitForSingleObject(m_OverlappedStdin.hEvent,1000);
+                if (result==WAIT_OBJECT_0) break;
+                if (result!=WAIT_TIMEOUT) { Close(); return false; }
+            }
+        }
+        DWORD written=0;
+        if (!GetOverlappedResult(m_hChildStd_IN_Wr,&m_OverlappedStdin,&written,FALSE) || !written || written>length) {
+            Close(); return false;
+        }
+        length-=written;
+        pBuffer+=written;
+    }
+    return true;
 }
 
 COutFFMPEGVideoStreamImpl::~COutFFMPEGVideoStreamImpl()
 {
-	Close();
+    const auto closeStart=RecordingTiming::Clock::now();
+    Close();
+    const double closeMs=std::chrono::duration<double,std::milli>(RecordingTiming::Clock::now()-closeStart).count();
+    if (m_EncoderWriteTime.Calls) {
+        char report[512];
+        ::_snprintf_s(report,sizeof(report),_TRUNCATE,
+            "FFmpeg input: %llu frames (%llu failed) | total submission %.2f ms, packing/validation %.2f ms, final close %.2f ms.\n",
+            m_EncoderFrames,m_EncoderFailures,m_EncoderWriteTime.Milliseconds(),m_EncoderPackTime.Milliseconds(),closeMs);
+        RecordingTiming::Report(m_EncoderLogSource.c_str(),report);
+    }
 }
 
 bool COutFFMPEGVideoStreamImpl::HandleOutAndErr(DWORD processWaitTimeOut)

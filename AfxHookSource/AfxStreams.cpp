@@ -10277,6 +10277,7 @@ void CAfxStreams::DrawingThread_Capture() {
 void CAfxStreams::CDrawingRecordScreenOutput::ProcessingThreadFunc() {
  advancedfx::IImageBufferThreadSafe *black = nullptr;
  bool expectWhite = false;
+ advancedfx::RecordingTiming::Counter transformTiming;
  std::unique_lock<std::mutex> lock(m_ProcessingThreadMutex);
  while (!m_Shutdown || !m_Captures.empty()) {
   if (m_Captures.empty()) { m_ProcessingThreadCv.wait(lock); continue; }
@@ -10290,12 +10291,15 @@ void CAfxStreams::CDrawingRecordScreenOutput::ProcessingThreadFunc() {
    if (!expectWhite) {
     black = buffer; buffer = nullptr; expectWhite = true; complete = false;
    } else {
-    if (black && buffer)
+    if (black && buffer) {
+     advancedfx::RecordingTiming::Scope timing{transformTiming};
      outBuffer = advancedfx::ImageTransformer::Matte(g_pThreadPool, &g_ImageBufferPoolThreadSafe, black, buffer, true);
+    }
     if (black) black->Release();
     black = nullptr; expectWhite = false;
    }
   } else if (buffer) {
+   advancedfx::RecordingTiming::Scope timing{transformTiming};
    outBuffer = advancedfx::ImageTransformer::StripAlpha(g_pThreadPool, &g_ImageBufferPoolThreadSafe, buffer);
   }
   if (buffer) buffer->Release();
@@ -10313,6 +10317,12 @@ void CAfxStreams::CDrawingRecordScreenOutput::ProcessingThreadFunc() {
  if (black) black->Release();
  if (expectWhite) Tier0_Warning("AFXERROR: Incomplete alpha capture pair at recording end.\n");
  if (m_OutVideoStream) m_OutVideoStream->Release();
+ if (transformTiming.Calls) {
+  char report[256];
+  ::_snprintf_s(report,sizeof(report),_TRUNCATE,"%s conversion: %llu calls, %.2f ms (%.3f ms/call).\n",
+      m_Matte ? "Matte" : "Color",transformTiming.Calls,transformTiming.Milliseconds(),transformTiming.Milliseconds()/transformTiming.Calls);
+  advancedfx::RecordingTiming::Report("Screen transform timing",report);
+ }
 }
 
 const char *CAfxStreams::GetRecordScreenSettingsName() const

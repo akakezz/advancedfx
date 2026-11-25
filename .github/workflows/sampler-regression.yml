@@ -2,7 +2,7 @@ name: Sampler regression
 on:
   push:
     branches: [feature/cinematic-campath, of-feature-port-test]
-    paths: ['shared/EasySampler*', 'shared/SamplerKernels.h', 'shared/ImageFormat.h', 'shared/RecordingTiming.h', 'shared/AfxOutStreams.h', 'tests/cinematic/*sampler*', '.github/workflows/sampler-regression.yml']
+    paths: ['shared/EasySampler*', 'shared/SamplerKernels.h', 'shared/ImageFormat.h', 'shared/RecordingTiming.h', 'shared/AfxOutStreams.h', 'shared/AfxOutStreams.cpp', 'shared/ColorConversionKernels.h', 'shared/PackedVideoFrame.h', 'shared/ImageTransformer.cpp', 'tests/cinematic/test_recording_fastpath*', 'tests/cinematic/*sampler*', '.github/workflows/sampler-regression.yml']
   workflow_dispatch:
 jobs:
   sampler:
@@ -10,3 +10,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 tests/cinematic/test_sampler.py --sanitize
+      - run: python3 tests/cinematic/test_recording_fastpath.py --sanitize

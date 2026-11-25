@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "ImageTransformer.h"
+#include "ColorConversionKernels.h"
 #include "ImageBufferThreadSafe.h"
 #include "RefCountedThreadSafe.h"
 #include "AfxConsole.h"
@@ -348,20 +349,10 @@ namespace ImageTransformer {
 			}
 
 			virtual void Execute() {
-				size_t targetPitch = width * 3 * sizeof(unsigned char);
-				for (size_t y = 0; y < height; ++y)
-				{
-					for (size_t x = 0; x < width; ++x)
-					{
-						const unsigned char * pIn = (const unsigned char *)(pData + y * pitch + x * 4 * sizeof(unsigned char));
-						unsigned char * pOut = (unsigned char*)(pOutData + y * targetPitch + x * 3 * sizeof(unsigned char));
-	
-						pOut[0] = pIn[0];
-						pOut[1] = pIn[1];
-						pOut[2] = pIn[2];
-					}
-				}
-			}
+                const size_t targetPitch=width*3;
+                for (size_t y=0;y<height;++y)
+                    ColorConversion::StripAlpha(pData+y*pitch,pOutData+y*targetPitch,width);
+            }
 
 		private:
 			const unsigned char* pData;

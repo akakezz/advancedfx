@@ -2447,13 +2447,16 @@ protected:
 		assert(m_pIntermediateSurface == nullptr);
         if (m_CaptureTiming.Calls) {
             char report[512];
-            std::snprintf(report,sizeof(report),
+            ::_snprintf_s(report,sizeof(report),_TRUNCATE,
                 "%ux%u D3D format %u | %llu capture attempts (%llu failed)\n"
-                "Capture %.2f ms; GetRenderTargetData %.2f ms (%llu calls, %.3f ms/call).\n",
+                "Capture %.2f ms; GetRenderTargetData %.2f ms (%llu calls, %.3f ms/call).\n"
+                "Offscreen pool wait %.2f ms (%llu waits); CPU surface acquisition %.2f ms (%llu calls).\n",
                 static_cast<unsigned>(m_SurfaceDesc.Width),static_cast<unsigned>(m_SurfaceDesc.Height),static_cast<unsigned>(m_SurfaceDesc.Format),
                 m_CaptureTiming.Calls,m_CaptureFailures,m_CaptureTiming.Milliseconds(),
                 m_ReadbackTiming.Milliseconds(),m_ReadbackTiming.Calls,
-                m_ReadbackTiming.Calls ? m_ReadbackTiming.Milliseconds()/m_ReadbackTiming.Calls : 0.0);
+                m_ReadbackTiming.Calls ? m_ReadbackTiming.Milliseconds()/m_ReadbackTiming.Calls : 0.0,
+                m_OffscreenWaitTiming.Milliseconds(),m_OffscreenWaitTiming.Calls,
+                m_CpuLockTiming.Milliseconds(),m_CpuLockTiming.Calls.load(std::memory_order_relaxed));
             advancedfx::RecordingTiming::Report("GPU capture timing",report);
         }
 
@@ -2467,7 +2470,8 @@ protected:
 		}
 	}
 private:
-    advancedfx::RecordingTiming::Counter m_CaptureTiming, m_ReadbackTiming;
+    advancedfx::RecordingTiming::Counter m_CaptureTiming, m_ReadbackTiming, m_OffscreenWaitTiming;
+    advancedfx::RecordingTiming::AtomicCounter m_CpuLockTiming;
     unsigned long long m_CaptureFailures=0;
     HRESULT Readback(IDirect3DDevice9 *device, IDirect3DSurface9 *source, IDirect3DSurface9 *destination) {
         advancedfx::RecordingTiming::Scope timing{m_ReadbackTiming};
@@ -2559,7 +2563,10 @@ private:
 		{
 			std::unique_lock<std::mutex> lock(m_OffscreenSurfacesMutex);
 			if(2 <= m_NumOffscreenSurfaces) {
-				m_OffscreenSurfacesCv.wait(lock,[this]{return !m_OffscreenSurfaces.empty();});
+				if (m_OffscreenSurfaces.empty()) {
+                    advancedfx::RecordingTiming::Scope waitTiming{m_OffscreenWaitTiming};
+                    m_OffscreenSurfacesCv.wait(lock,[this]{return !m_OffscreenSurfaces.empty();});
+                }
 				pResult = m_OffscreenSurfaces.front();
 				m_OffscreenSurfaces.pop_front();
 			}
@@ -2630,8 +2637,12 @@ private:
 		}
 
 	    virtual advancedfx::IImageBufferThreadSafe * IAfxD3D9CaptureBuffer::LockCpu() override {
-			static_cast<advancedfx::IImageBufferThreadSafe *>(this)->AddRef();
-			return this;
+			const auto start=advancedfx::RecordingTiming::Clock::now();
+            auto *buffer=static_cast<advancedfx::IImageBufferThreadSafe *>(this);
+            buffer->AddRef();
+            m_pCapture->m_CpuLockTiming.Add(start);
+            if (!m_pData) { buffer->Release(); return nullptr; }
+            return buffer;
 		}
 
 		IDirect3DSurface9 * GetOffScreenSurfaceNoRef() {
@@ -2683,7 +2694,7 @@ private:
 		virtual void advancedfx::IImageBufferThreadSafe::Release() override {
 			if(1 == std::atomic_fetch_sub_explicit(&m_LockedRefCount, 1, std::memory_order_relaxed)) {
 				// Buffer is about to be accessed the last time.
-				if(nullptr != m_pOffscreenSurface) {
+				if(m_pData && m_pOffscreenSurface) {
 					m_pOffscreenSurface->UnlockRect();
 					
 					m_ImageFormat = advancedfx::CImageFormat();

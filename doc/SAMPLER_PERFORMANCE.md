@@ -57,3 +57,35 @@ The benchmark compares the original scalar pixel loops with the optimized
 kernels, using a float accumulator and two BGRA inputs. These are kernel
 measurements, not recording speed estimates. The GPU, readback, game rendering,
 image transforms, preview presentation, encoding and disk are excluded.
+
+## Shared recording fast path
+
+Ordinary and sampler color captures use the same BGRA-to-BGR transform. On
+SSSE3-capable x86/x64 CPUs, convert 16 pixels per iteration, with a runtime
+CPU check and exact scalar fallback. No alpha/pixel-format policy changes.
+FFmpeg input borrows packed buffers and packs padded rows into reusable scratch
+storage (one frame write in the normal case); partial pipe writes are handled
+without skipping bytes or sending row padding. No codec or bitrate changes.
+
+The log now includes the offscreen pool wait (a subset of GPU capture time),
+CPU surface acquisition (including LockRect), screen color/matte conversion,
+FFmpeg input submission and packing time (packing is a subset of submission),
+and FFmpeg final close. CPU acquisition can include deferred synchronization;
+these are elapsed calls, not GPU timestamps. Multiple streams and workers may
+overlap; never sum these counters to derive wall time. No change to rendering,
+preview cadence, capture ratio or simulation time. GPU accumulation is pending.
+
+To benchmark regular recording, repeat the same demo interval at the same
+resolution, input FPS, output profile, and graphics settings, with a single
+ordinary color stream and no sampler. Compare the median take timing and
+copied full log across builds; confirm exact frame count and visual output.
+For a color-kernel-only microbenchmark on Linux:
+
+```
+g++ -std=c++17 -O2 -I. tests/cinematic/test_recording_fastpath.cpp -o color-benchmark
+./color-benchmark bench
+```
+
+`python3 tests/cinematic/test_recording_fastpath.py --sanitize` verifies exact
+color conversion, padded/packed input and immediate, pending, partial and
+zero-byte pipe write behavior. Real Windows D3D/FFmpeg performance is untested.
