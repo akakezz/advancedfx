@@ -111,7 +111,7 @@ struct MirvInput{int MovementClears=0;void ClearMovementInput(){++MovementClears
 struct WrpGlobals{double absoluteframetime_get(){return 1.0/60;}int framecount_get(){return 1;}double curtime_get(){return 1;}double interval_per_tick_get(){return 1.0/66;}double interpolation_amount_get(){return 0;}} globals;
 struct FakeView{CamPath m_CamPath;CamPathCollection m_CamPaths{m_CamPath};MirvInput*m_MirvInput=&input;double LastCameraOrigin[3]={100,-100,50},LastCameraAngles[3]={0,135,0},LastCameraFov=130;int LastWidth=1600,LastHeight=1000;bool Menu=false,GlobalsAvailable=true,Installed=true;bool IsInstalled(){return Installed;}bool IsMenuActive(){return Menu;}bool IsSourceUiActive(){return Menu;}WrpGlobals*GetGlobals(){return GlobalsAvailable?&globals:nullptr;}}g_Hook_VClient_RenderView;
 struct CCampathDrawer{bool Names=true,Holds=true,Durations=true;bool GetDrawNames(){return Names;}bool GetDrawHolds(){return Holds;}bool GetDrawDurations(){return Durations;}void SetDrawNames(bool v){Names=v;}void SetDrawHolds(bool v){Holds=v;}void SetDrawDurations(bool v){Durations=v;}bool Draw=false;float Index=18;bool Draw_get(){return Draw;}void Draw_set(bool b){Draw=b;}float GetDrawKeyframeIndex(){return Index;}void SetDrawKeyframeIndex(float x){Index=x;}}g_CampathDrawer;
-struct Clock{double Time=10;double GetTime(){return Time;}int PreviewFrame=-1;int GetFrameCount(){return PreviewFrame>=0?PreviewFrame:int(Time*100);}}g_MirvTime;
+struct Clock{double Time=10;float PausedTime=0;float GetPausedTime(){return PausedTime;}double GetTime(){return Time;}int PreviewFrame=-1;int GetFrameCount(){return PreviewFrame>=0?PreviewFrame:int(Time*100);}}g_MirvTime;
 std::vector<std::string> commands;
 struct CommandExecutor:IExecuteClientCmdForCommandSystem{void ExecuteClientCmd(const char*s)override{commands.emplace_back(s);}}markerExecutor;
 CommandSystem g_CommandSystem(&markerExecutor,nullptr,nullptr);
@@ -234,6 +234,12 @@ void*GetCurrentThread(){return nullptr;}LONG DetourTransactionBegin(){return pov
 using UINT=unsigned int;using DWORD=unsigned long;using WPARAM=uintptr_t;using LPARAM=intptr_t;
 // The native OF pointer-validation path must fail closed in the headless process.
 using SIZE_T=size_t;
+using HMODULE=void*;
+// Field-only PE declarations for the extracted native guard; no module is loaded.
+struct IMAGE_DOS_HEADER {std::uint16_t e_magic=0;std::int32_t e_lfanew=0;};
+struct IMAGE_NT_HEADERS32 {std::uint32_t Signature=0;struct {std::uint16_t Machine=0;std::uint32_t TimeDateStamp=0;} FileHeader;struct {std::uint16_t Magic=0;std::uint32_t SizeOfImage=0;} OptionalHeader;};
+constexpr std::uint16_t IMAGE_DOS_SIGNATURE=0x5a4d, IMAGE_FILE_MACHINE_I386=0x14c, IMAGE_NT_OPTIONAL_HDR32_MAGIC=0x10b;
+constexpr std::uint32_t IMAGE_NT_SIGNATURE=0x4550;
 struct MEMORY_BASIC_INFORMATION {void *AllocationBase=nullptr;DWORD State=0,Protect=0;};
 constexpr DWORD MEM_COMMIT=0x1000,PAGE_NOACCESS=0x01,PAGE_GUARD=0x100,
  PAGE_EXECUTE=0x10,PAGE_EXECUTE_READ=0x20,PAGE_EXECUTE_READWRITE=0x40,PAGE_EXECUTE_WRITECOPY=0x80;
