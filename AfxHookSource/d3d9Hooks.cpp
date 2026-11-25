@@ -4985,17 +4985,21 @@ public:
         // Do not alter presentation for post-swap capture, ReShade, special presents,
         // or external drawing/interop. A successful windowed present must precede skips.
         if(!advancedfx::RecordingPreview().Active()) return false;
-        bool eligible=m_RecordingPreviewWindowed && !source && !dest && !window && !dirty && !flags &&
-            !g_bCaptureAfterSwapBuffers && !g_ReShadeAdvancedfx.IsConnected();
+        using Preview=advancedfx::RecordingPreviewLimiter;
+        unsigned reasons=0;
+        if(!m_RecordingPreviewWindowed) reasons|=Preview::WindowUnconfirmed;
+        if(source || dest || window || dirty || flags) reasons|=Preview::SpecialPresent;
+        if(g_bCaptureAfterSwapBuffers) reasons|=Preview::AfterSwap;
+        if(g_ReShadeAdvancedfx.IsConnected()) reasons|=Preview::ReShade;
 #ifndef _WIN64
 #if AFX_INTEROP
-        eligible=eligible && !AfxInterop::Enabled();
+        if(AfxInterop::Enabled()) reasons|=Preview::ExternalInterop;
 #endif
 #ifdef AFX_MIRV_PGL
-        eligible=eligible && !MirvPgl::IsDataActive() && !MirvPgl::IsDrawingActive();
+        if(MirvPgl::IsDataActive() || MirvPgl::IsDrawingActive()) reasons|=Preview::ExternalInterop;
 #endif
 #endif
-        if(!advancedfx::RecordingPreview().ShouldSkip(eligible)) return false;
+        if(!advancedfx::RecordingPreview().ShouldSkip(reasons)) return false;
         // Keep the non-rendering end-of-present housekeeping. Do not publish
         // fake device success or change the last confirmed preview geometry.
         g_ReShadeAdvancedfx.ResetHasRendered();
@@ -5055,9 +5059,12 @@ public:
 
     STDMETHOD(Present)(THIS_ CONST RECT* pSourceRect,CONST RECT* pDestRect,HWND hDestWindowOverride,CONST RGNDATA* pDirtyRegion)
 	{
-		if (m_Block_Present)
+		if (m_Block_Present) {
+            advancedfx::RecordingPreview().NoteBlocked();
 			return D3D_OK;
+        }
         if (SkipRecordingPreview(pSourceRect,pDestRect,hDestWindowOverride,pDirtyRegion,0)) return D3D_OK;
+        const auto previewMeasurement=advancedfx::RecordingPreview().StartPresent();
 
 		if (g_ReShadeAdvancedfx.IsConnected() && !g_ReShadeAdvancedfx.HasRendered()) {
 			g_ReShadeAdvancedfx.AdvancedfxRenderEffects(nullptr, nullptr);
@@ -5077,6 +5084,7 @@ public:
 		Afx_Present_After(result);
 
 		g_ReShadeAdvancedfx.ResetHasRendered();
+        advancedfx::RecordingPreview().FinishPresent(previewMeasurement,nativePreview,FAILED(result));
 
 		return result;
 	}
@@ -6196,6 +6204,7 @@ public:
 	STDMETHOD(PresentEx)(THIS_ CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion, DWORD dwFlags)
 	{
         if (SkipRecordingPreview(pSourceRect,pDestRect,hDestWindowOverride,pDirtyRegion,dwFlags)) return D3D_OK;
+        const auto previewMeasurement=advancedfx::RecordingPreview().StartPresent();
 		HRESULT hResult;
 		const bool nativePreview=AfxHookSource::Gui::TryPresentFittedPreview(hDestWindowOverride,dwFlags,hResult);
 		RecordingResolution::PublishPreviewPath(nativePreview && SUCCEEDED(hResult));
@@ -6208,6 +6217,7 @@ public:
 		}
 
 		Afx_Present_After(hResult);
+        advancedfx::RecordingPreview().FinishPresent(previewMeasurement,nativePreview,FAILED(hResult));
 
 		return hResult;
 	}

@@ -6933,7 +6933,7 @@ void CAfxStreams::Console_Record_Start2()
 #ifndef _WIN64
         previewEligible=previewEligible && m_Streams.empty();
 #endif
-        advancedfx::RecordingPreview().Begin(previewEligible ? previewFps : 0);
+        advancedfx::RecordingPreview().Begin(previewFps, previewEligible);
         if(previewFps && !previewEligible) advancedfx::RecordingTiming::Report("Recording preview","Preview limit bypassed: unsupported game or recording outputs.\n");
 		m_StartMovieWavUsed = false;
 
@@ -7121,9 +7121,16 @@ void CAfxStreams::Console_Record_End2()
 	if(m_Recording)
 	{
         const auto preview=advancedfx::RecordingPreview().End();
-        if(preview.Fps) {
-            char report[256];
-            ::_snprintf_s(report,sizeof(report),_TRUNCATE,"Limit %u FPS | normal presentation requests %llu, skipped %llu, bypassed %llu.\n",preview.Fps,preview.Presented,preview.Skipped,preview.Bypassed);
+        {
+            char report[1024];
+            ::_snprintf_s(report,sizeof(report),_TRUNCATE,
+                "Limit %u FPS (0 = unlimited) | normal requests %llu, skipped %llu, bypassed %llu, already blocked %llu.\n"
+                "Completed presents %llu (fitted %llu, failed %llu); CPU wall time in present path %.2f ms (%.3f ms/completed).\n"
+                "Bypass reasons (can overlap): recording mode %llu, window unconfirmed %llu, special present %llu, after swap %llu, ReShade %llu, external interop %llu.\n",
+                preview.Fps,preview.Presented,preview.Skipped,preview.Bypassed,preview.Blocked,
+                preview.Completed,preview.Fitted,preview.Failed,preview.PresentMs,
+                preview.Completed ? preview.PresentMs/preview.Completed : 0.0,
+                preview.Reasons[0],preview.Reasons[1],preview.Reasons[2],preview.Reasons[3],preview.Reasons[4],preview.Reasons[5]);
             advancedfx::RecordingTiming::Report("Recording preview",report);
         }
 
@@ -7486,14 +7493,14 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 		}
         if (0 == _stricmp(arg1,"previewFps")) {
             if (3<=argC) {
-                const char *value=args->ArgV(2);
-                if (strcmp(value,"0") && strcmp(value,"15") && strcmp(value,"30")) {
-                    Tier0_Warning("Preview FPS must be 0, 15 or 30.\n"); return;
+                unsigned fps=0;
+                if (!advancedfx::ParseRecordingPreviewFps(args->ArgV(2),fps)) {
+                    Tier0_Warning("Preview FPS must be a non-negative integer (0 = unlimited).\n"); return;
                 }
-                if (!SetRecordingPreviewFps(static_cast<unsigned>(atoi(value)))) Tier0_Warning("Stop recording before changing preview FPS.\n");
+                if (!SetRecordingPreviewFps(fps)) Tier0_Warning("Stop recording before changing preview FPS.\n");
                 return;
             }
-            Tier0_Msg("%s previewFps 0|15|30 - Recording-only preview limit (0 = unlimited). Current: %u\n",arg0,GetRecordingPreviewFps());
+            Tier0_Msg("%s previewFps <fps> - Recording-only preview limit (0 = unlimited). Current: %u\n",arg0,GetRecordingPreviewFps());
             return;
         }
         if (0 == _stricmp(arg1,"gpuCapture")) {
