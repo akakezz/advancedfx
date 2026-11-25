@@ -1,6 +1,9 @@
 #include "stdafx.h"
 
 #include "EasySampler.h"
+#include "SamplerKernels.h"
+
+using namespace advancedfx::SamplerKernels;
 
 #include <assert.h>
 #include <math.h>
@@ -67,13 +70,9 @@ void EasyByteSamplerImpl::Fn_1(void const * sample)
 
 	for( int iy=0; iy < height; iy++ )
 	{
-		for( int ix=0; ix < width; ix++ ) 
-		{
-			*fdata = *fdata + *cdata;
-			
-			fdata++;
-			cdata++;
-		}
+		Bytes<Operation::Add>(fdata, cdata, nullptr, width, 1.0f);
+		fdata += width;
+		cdata += width;
 		cdata += deltaPitch;
 	}
 
@@ -91,13 +90,9 @@ void EasyByteSamplerImpl::Fn_2(void const * sample, float w)
 
 	for( int iy=0; iy < height; iy++ )
 	{
-		for( int ix=0; ix < width; ix++ ) 
-		{
-			*fdata = *fdata + w * *cdata;
-			
-			fdata++;
-			cdata++;
-		}
+		Bytes<Operation::Weighted>(fdata, cdata, nullptr, width, w);
+		fdata += width;
+		cdata += width;
 		cdata += deltaPitch;
 	}
 
@@ -116,19 +111,39 @@ void EasyByteSamplerImpl::Fn_4(void const * sampleA, void const * sampleB, float
 
 	for( int iy=0; iy < height; iy++ )
 	{
-		for( int ix=0; ix < width; ix++ ) 
-		{
-			*fdata = *fdata + w * ((unsigned int)*cdataA +(unsigned int)*cdataB);
-			
-			fdata++;
-			cdataA++;
-			cdataB++;
-		}
+		Bytes<Operation::Pair>(fdata, cdataA, cdataB, width, w);
+		fdata += width;
+		cdataA += width;
+		cdataB += width;
 		cdataA += deltaPitch;
 		cdataB += deltaPitch;
 	}
 
 	m_Frame->WhitePoint += w * 2.0f * 255.0f;
+}
+
+void EasyByteSamplerImpl::Fn_5(void const * sampleA, void const * sampleB, float wa, float wb)
+{
+	const advancedfx::CImageFormat& imageFormat = m_Settings.ImageFormat_get();
+	int height = imageFormat.Height;
+	int width = imageFormat.Width *  imageFormat.GetPixelStride();
+	size_t deltaPitch = imageFormat.Pitch - width;
+	float *fdata = m_Frame->Data;
+	unsigned char const * cdataA = (unsigned char const *)sampleA;
+	unsigned char const * cdataB = (unsigned char const *)sampleB;
+
+	for( int iy=0; iy < height; iy++ )
+	{
+		BytesWeightedPair(fdata, cdataA, cdataB, width, wa, wb);
+		fdata += width;
+		cdataA += width;
+		cdataB += width;
+		cdataA += deltaPitch;
+		cdataB += deltaPitch;
+	}
+
+	m_Frame->WhitePoint += wa * 255.0f;
+	m_Frame->WhitePoint += wb * 255.0f;
 }
 
 
@@ -232,14 +247,14 @@ EasyFloatSamplerImpl::EasyFloatSamplerImpl(
 
 	assert(packedRowSize <= pitch);
 
-	m_FrameData = new float[height * width];
+	m_FrameData = new float[height * width]();
 	m_FrameWhitePoint = 0;
 }
 
 
 EasyFloatSamplerImpl::~EasyFloatSamplerImpl()
 {
-	delete m_FrameData;
+	delete[] m_FrameData;
 }
 
 void EasyFloatSamplerImpl::ClearFrame(float frameStrength)
@@ -260,13 +275,9 @@ void EasyFloatSamplerImpl::Fn_1(void const * sample)
 
 	for( int iy=0; iy < height; iy++ )
 	{
-		for( int ix=0; ix < width; ix++ ) 
-		{
-			*fdata = *fdata + *cdata;
-			
-			fdata++;
-			cdata++;
-		}
+		Floats<Operation::Add>(fdata, cdata, nullptr, width, 1.0f);
+		fdata += width;
+		cdata += width;
 
 		cdata = (float const *)((unsigned char const *)cdata + deltaPitch);
 	}
@@ -285,13 +296,9 @@ void EasyFloatSamplerImpl::Fn_2(void const * sample, float w)
 
 	for( int iy=0; iy < height; iy++ )
 	{
-		for( int ix=0; ix < width; ix++ ) 
-		{
-			*fdata = *fdata + w * *cdata;
-			
-			fdata++;
-			cdata++;
-		}
+		Floats<Operation::Weighted>(fdata, cdata, nullptr, width, w);
+		fdata += width;
+		cdata += width;
 
 		cdata = (float const *)((unsigned char const *)cdata + deltaPitch);
 	}
@@ -311,20 +318,41 @@ void EasyFloatSamplerImpl::Fn_4(void const * sampleA, void const * sampleB, floa
 
 	for( int iy=0; iy < height; iy++ )
 	{
-		for( int ix=0; ix < width; ix++ ) 
-		{
-			*fdata = *fdata + w * (*cdataA + *cdataB);
-			
-			fdata++;
-			cdataA++;
-			cdataB++;
-		}
+		Floats<Operation::Pair>(fdata, cdataA, cdataB, width, w);
+		fdata += width;
+		cdataA += width;
+		cdataB += width;
 
 		cdataA = (float const *)((unsigned char const *)cdataA + deltaPitch);
 		cdataB = (float const *)((unsigned char const *)cdataB + deltaPitch);
 	}
 
 	m_FrameWhitePoint += w * 2.0f * 1.0f;
+}
+
+void EasyFloatSamplerImpl::Fn_5(void const * sampleA, void const * sampleB, float wa, float wb)
+{
+	const advancedfx::CImageFormat& imageFormat = m_Settings.ImageFormat_get();
+	int height = imageFormat.Height;
+	int width = imageFormat.Width;
+	size_t deltaPitch = imageFormat.Pitch - width *  imageFormat.GetPixelStride();
+	float *fdata = m_FrameData;
+	float const * cdataA = (float const *)sampleA;
+	float const * cdataB = (float const *)sampleB;
+
+	for( int iy=0; iy < height; iy++ )
+	{
+		FloatsWeightedPair(fdata, cdataA, cdataB, width, wa, wb);
+		fdata += width;
+		cdataA += width;
+		cdataB += width;
+
+		cdataA = (float const *)((unsigned char const *)cdataA + deltaPitch);
+		cdataB = (float const *)((unsigned char const *)cdataB + deltaPitch);
+	}
+
+	m_FrameWhitePoint += wa * 1.0f;
+	m_FrameWhitePoint += wb * 1.0f;
 }
 
 
@@ -542,8 +570,7 @@ void EasySamplerBase::Integrator_Fn(ISampleFns *fns, void const * sampleA, void 
 			}
 			else
 			{
-				fns->Fn_2(sampleA, (float)weightA);
-				fns->Fn_2(sampleB, (float)weightB);
+				fns->Fn_5(sampleA, sampleB, (float)weightA, (float)weightB);
 			}
 		}
 	}

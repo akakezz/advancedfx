@@ -31,6 +31,7 @@ public:
 
 	/// <summary>frame += w * (sampleA + sampleB)</summary>
 	virtual void Fn_4(void const *sampleA, void const *sampleB, float w) abstract = 0;
+	virtual void Fn_5(void const *sampleA, void const *sampleB, float wa, float wb) { Fn_2(sampleA, wa); Fn_2(sampleB, wb); }
 };
 
 
@@ -179,7 +180,7 @@ private:
 
 		~Frame()
 		{
-			delete Data;
+			delete[] Data;
 		}
 
 		float * Data;
@@ -196,6 +197,7 @@ private:
 
 	/// <summary>Implements ISampleFns.</summary>
 	virtual void Fn_4(void const * sampleA, void const * sampleB, float w) override;
+	virtual void Fn_5(void const * sampleA, void const * sampleB, float wa, float wb) override;
 
 	void ScaleFrame(float factor);
 };
@@ -324,6 +326,7 @@ private:
 
 	/// <summary>Implements ISampleFns.</summary>
 	virtual void Fn_4(void const * sampleA, void const * sampleB, float w);
+	virtual void Fn_5(void const * sampleA, void const * sampleB, float wa, float wb) override;
 
 	void ScaleFrame(float factor);
 };

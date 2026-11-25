@@ -48,6 +48,7 @@
 #include <shared/StringTools.h>
 #include <shared/FileTools.h>
 #include <shared/ThreadPool.h>
+#include <shared/RecordingTiming.h>
 
 #include <Windows.h>
 #include <deps/release/Detours/src/detours.h>
@@ -6924,6 +6925,7 @@ void CAfxStreams::Console_Record_Start2()
 		&& CreatePath(m_TakeDir.c_str(), m_TakeDir)
 	)
 	{
+		m_RecordWallStart = advancedfx::RecordingTiming::Clock::now();
 		m_Recording = true;
 		m_StartMovieWavUsed = false;
 
@@ -7159,6 +7161,10 @@ void CAfxStreams::Console_Record_End2()
 			RestoreMatVars();
 #endif //#ifndef _WIN64	
 
+        const double seconds=std::chrono::duration<double>(advancedfx::RecordingTiming::Clock::now()-m_RecordWallStart).count();
+        char timingReport[160];
+        std::snprintf(timingReport,sizeof(timingReport),"Recording start to stop/queued teardown: %.3f seconds.\n",seconds);
+        advancedfx::RecordingTiming::Report("Take timing",timingReport);
 		Tier0_Msg("done.\n");
 
 		//AfxD3D9_Block_Present(false);

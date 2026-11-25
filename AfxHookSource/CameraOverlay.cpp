@@ -8654,7 +8654,7 @@ void ProcessExternalActions()
 // changes are applied explicitly, never on each ImGui frame or during a take.
 static void DrawRecordingLog()
 {
- if (!ImGui::CollapsingHeader("FFmpeg log", ImGuiTreeNodeFlags_DefaultOpen)) return;
+ if (!ImGui::CollapsingHeader("Recording log / timings", ImGuiTreeNodeFlags_DefaultOpen)) return;
  if (ImGui::SmallButton("Clear log")) advancedfx::RecordingLog::Get().Clear();
  static uint64_t revision=0;
  static std::vector<advancedfx::RecordingLog::Entry> entries;
@@ -8662,7 +8662,7 @@ static void DrawRecordingLog()
  if (ImGui::BeginChild("##ffmpeg_log",ImVec2(0,ImGui::GetTextLineHeightWithSpacing()*6),true,
                        ImGuiWindowFlags_HorizontalScrollbar)) {
   const bool atBottom=ImGui::GetScrollY()>=ImGui::GetScrollMaxY()-1;
-  if (entries.empty()) ImGui::TextDisabled("No FFmpeg messages.");
+  if (entries.empty()) ImGui::TextDisabled("No recording messages.");
   std::string source;
   for (const auto &entry:entries) {
    if (source!=entry.Source) {source=entry.Source;ImGui::TextDisabled("%s",source.c_str());}

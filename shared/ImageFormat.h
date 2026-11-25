@@ -86,6 +86,7 @@ public:
 		case ImageFormat::BGR:
 			return 3 * sizeof(unsigned char);
 		case ImageFormat::BGRA:
+		case ImageFormat::RGBA:
 			return 4 * sizeof(unsigned char);
 		case ImageFormat::A:
 			return 1 * sizeof(unsigned char);
