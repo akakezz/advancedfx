@@ -453,6 +453,8 @@ int g_CameraEvaluationFrame = -1;
 double g_CameraEvaluationStep = 0;
 std::vector<advancedfx::CameraClip> g_CameraClips;
 unsigned long long g_NextClipId = 0;
+std::vector<advancedfx::SequenceModifierClip> g_SequenceModifiers;
+std::uint64_t g_NextSequenceModifierId = 0;
 bool g_SequencePlaying = false;
 std::string g_SequenceDemo;
 int g_SequenceLevel = -1;
@@ -567,6 +569,7 @@ struct CameraHistoryState
 	std::string Demo;
 	int Level = -1;
 	std::vector<MirvCameraModifier> Modifiers;
+	std::vector<advancedfx::SequenceModifierClip> SequenceModifiers;
 };
 std::vector<CameraHistoryState> g_CameraUndo, g_CameraRedo;
 std::vector<std::uint64_t> g_CameraUndoIndices, g_CameraRedoIndices;
@@ -643,6 +646,7 @@ bool SameCameraDefinitions(const std::map<std::string, NamedCameraRig> &a,
 class CameraEditTransaction
 {
 	bool Owner = false;
+	std::uint64_t *Gesture = nullptr;
 	CameraHistoryState Before, Snapshot;
 	unsigned long long CaptureRevision = 0;
 	bool AimChanged() const
@@ -662,7 +666,7 @@ class CameraEditTransaction
 	}
 
   public:
-	explicit CameraEditTransaction(bool enabled = true)
+	explicit CameraEditTransaction(bool enabled = true, std::uint64_t *gesture = nullptr) : Gesture(gesture)
 	{
 		if (!enabled)
 			return;
@@ -670,7 +674,7 @@ class CameraEditTransaction
 		if (Owner)
 		{
 			Before = {g_CameraRigs,	  g_CameraRigName, g_CameraClips,
-					  g_SequenceDemo, g_SequenceLevel, g_CameraModifiers};
+					  g_SequenceDemo, g_SequenceLevel, g_CameraModifiers, g_SequenceModifiers};
 			Snapshot = CloneCameraState(Before);
 			CaptureRevision = g_CameraCaptureRevision;
 		}
@@ -704,6 +708,12 @@ class CameraEditTransaction
 			if (changed)
 				entry.second.Definition = g_NextCameraDefinition++;
 		}
+  // Only merge consecutive updates of the same UI gesture. A newer edit,
+  // undo/redo or a path edit breaks the lease on this history entry.
+  if (Gesture && *Gesture && !g_CameraUndoIndices.empty() &&
+   g_CameraUndoIndices.back() == *Gesture && CinematicSessionEditIndex() == *Gesture &&
+   g_CameraRedo.empty() && g_CameraRedoGeneration == CinematicRedoGeneration())
+   return;
 		if (g_CameraUndo.size() == 64)
 		{
 			g_CameraUndo.erase(g_CameraUndo.begin());
@@ -712,6 +722,7 @@ class CameraEditTransaction
 		}
 		g_CameraUndo.push_back(std::move(Snapshot));
 		g_CameraUndoIndices.push_back(CinematicNewEditIndex());
+		if (Gesture) *Gesture = g_CameraUndoIndices.back();
 		g_CameraRedo.clear();
 		g_CameraRedoIndices.clear();
 		g_CameraRedoGeneration = CinematicRedoGeneration();
@@ -1136,6 +1147,26 @@ bool ApplyClipModifiers(const advancedfx::CameraClip &clip, double time, advance
 		}
 	return pose.Valid();
 }
+// Evaluate once, after the underlying camera composite (including transitions).
+// Keep the frozen outgoing history unmodified to avoid double-applying effects.
+bool ApplySequenceModifiers(double time, advancedfx::CameraPose &pose)
+{
+ for (const auto &clip : g_SequenceModifiers)
+ {
+  if (!clip.Active(time)) continue;
+  const auto definition = std::find_if(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+   [&](const auto &m) { return m.Id == clip.Definition; });
+  if (definition == g_CameraModifiers.end()) return false;
+  auto settings = definition->Settings;
+  settings.Begin = 0;
+  settings.End = clip.End - clip.Begin;
+  settings.FadeIn = clip.FadeIn;
+  settings.FadeOut = clip.FadeOut;
+  settings.Strength *= clip.Influence;
+  if (!ApplyCameraPoseModifier(pose, settings, time - clip.Begin)) return false;
+ }
+ return pose.Valid();
+}
 const advancedfx::CameraClip *CameraModifierClip(const NamedCameraRig &camera, double time)
 {
 	if ((!g_SequenceDemo.empty() && g_SequenceDemo != g_CameraDemoKey) ||
@@ -1467,7 +1498,12 @@ bool EvaluateSequence(double time, advancedfx::CameraPose &pose)
 		g_SequencePreviousTime = time;
 		g_SequencePreviousPose = pose;
 	}
-	return true;
+ if (!ApplySequenceModifiers(time, pose))
+ {
+  g_CameraFailureReason = "Sequence adjustment produced an invalid camera pose.";
+  return false;
+ }
+ return true;
 }
 // Draw-only transition trajectory sampling. The scene cache supplies exact
 // historical entities; without cache, moving attachments are a current-scene
@@ -1562,6 +1598,7 @@ std::vector<advancedfx::CameraGuideLine> TransitionGuideLinesInternal(std::uint6
 			g_SequencePreviousPose = samples[i];
 			g_SequencePreviousTime = time;
 		}
+  if (!ApplySequenceModifiers(time, samples[i])) { complete = false; break; }
 	}
 	if (complete)
 	for (int i = 1; i <= steps; i += 2)
@@ -2143,14 +2180,14 @@ std::vector<advancedfx::CameraClip> MirvCam_Clips()
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	return g_CameraClips;
 }
-bool MirvCam_EditClip(advancedfx::CameraClip &clip)
+bool MirvCam_EditClipLive(advancedfx::CameraClip &clip, std::uint64_t *gesture)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	SyncRigLevel();
 	if (!clip.ValidTransition() || !ValidClipModifiers(clip.Modifiers))
 		return false;
 	if ((!g_SequenceDemo.empty() && g_SequenceDemo != g_CameraDemoKey) ||
-		(!g_CameraClips.empty() && g_SequenceDemo.empty() && g_SequenceLevel != g_LevelInitCount))
+		((!g_CameraClips.empty() || !g_SequenceModifiers.empty()) && g_SequenceDemo.empty() && g_SequenceLevel != g_LevelInitCount))
 		return false;
 	if (clip.Campath)
 	{
@@ -2189,8 +2226,8 @@ bool MirvCam_EditClip(advancedfx::CameraClip &clip)
 		if (candidate[i].Time - candidate[i - 1].Time < 1e-9 ||
 			candidate[i].TransitionStart() - candidate[i - 1].TransitionStart() < 1e-9)
 			return false;
-	CameraEditTransaction history;
-	if (g_CameraClips.empty())
+	CameraEditTransaction history(true, gesture);
+	if (g_CameraClips.empty() && g_SequenceModifiers.empty())
 	{
 		g_SequenceDemo = g_CameraDemoKey;
 		g_SequenceLevel = g_LevelInitCount;
@@ -2200,6 +2237,61 @@ bool MirvCam_EditClip(advancedfx::CameraClip &clip)
 	g_CameraClips = std::move(candidate);
 	++g_CameraCaptureRevision;
 	return true;
+}
+bool MirvCam_EditClip(advancedfx::CameraClip &clip) { return MirvCam_EditClipLive(clip, nullptr); }
+std::vector<advancedfx::SequenceModifierClip> MirvCam_SequenceModifiers()
+{
+ std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+ return g_SequenceModifiers;
+}
+bool MirvCam_EditSequenceModifier(advancedfx::SequenceModifierClip &clip, std::uint64_t *gesture)
+{
+ std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+ SyncRigLevel();
+ if (!clip.Valid() || std::none_of(g_CameraModifiers.begin(), g_CameraModifiers.end(),
+  [&](const auto &m){return m.Id == clip.Definition;})) return false;
+ if ((!g_SequenceDemo.empty() && g_SequenceDemo != g_CameraDemoKey) ||
+  ((!g_CameraClips.empty() || !g_SequenceModifiers.empty()) && g_SequenceDemo.empty() && g_SequenceLevel != g_LevelInitCount)) return false;
+ const bool add = clip.Id == ~std::uint64_t(0);
+ auto found = std::find_if(g_SequenceModifiers.begin(), g_SequenceModifiers.end(), [&](const auto &c){return c.Id == clip.Id;});
+ if ((add && g_SequenceModifiers.size() >= advancedfx::SequenceModifierClip::MaxClips) || (!add && found == g_SequenceModifiers.end())) return false;
+ for (const auto &other : g_SequenceModifiers)
+  if (other.Id != clip.Id && clip.Overlaps(other)) return false;
+ if (!add && *found == clip) return true;
+ CameraEditTransaction history(true, gesture);
+ if (g_CameraClips.empty() && g_SequenceModifiers.empty()) {g_SequenceDemo = g_CameraDemoKey; g_SequenceLevel = g_LevelInitCount;}
+ if (add) {clip.Id = g_NextSequenceModifierId++; g_SequenceModifiers.push_back(clip);}
+ else *found = clip;
+ std::sort(g_SequenceModifiers.begin(), g_SequenceModifiers.end(), advancedfx::SequenceModifierClip::Less);
+ ++g_CameraCaptureRevision;
+ return true;
+}
+bool MirvCam_RemoveSequenceModifier(std::uint64_t id)
+{
+ std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+ auto found = std::find_if(g_SequenceModifiers.begin(), g_SequenceModifiers.end(), [&](const auto &c){return c.Id == id;});
+ if (found == g_SequenceModifiers.end()) return false;
+ CameraEditTransaction history;
+ g_SequenceModifiers.erase(found);
+ if (g_CameraClips.empty() && g_SequenceModifiers.empty()) {g_SequenceDemo.clear();g_SequenceLevel = -1;}
+ ++g_CameraCaptureRevision;
+ return true;
+}
+bool MirvCam_ConvertClipModifier(std::uint64_t parent, size_t index, int track, advancedfx::SequenceModifierClip &result)
+{
+ std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+ auto found = std::find_if(g_CameraClips.begin(), g_CameraClips.end(), [&](const auto &c){return c.Id == parent;});
+ if (found == g_CameraClips.end() || index >= found->Modifiers.size()) return false;
+ const auto link = found->Modifiers[index];
+ advancedfx::SequenceModifierClip next;
+ next.Definition = link.Id; next.Track = track; next.Begin = found->Time + link.Begin;
+ next.End = found->Time + link.End; next.Influence = link.Influence; next.Enabled = link.Enabled;
+ next.FadeIn = link.FadeIn; next.FadeOut = link.FadeOut;
+ CameraEditTransaction history;
+ if (!MirvCam_EditSequenceModifier(next, nullptr)) return false;
+ found->Modifiers.erase(found->Modifiers.begin() + index);
+ result = next;
+ return true;
 }
 bool MirvCam_RemoveClip(std::uint64_t id)
 {
@@ -2214,8 +2306,7 @@ bool MirvCam_RemoveClip(std::uint64_t id)
 	if (g_CameraClips.empty())
 	{
 		MirvCam_EnableSequence(false);
-		g_SequenceDemo.clear();
-		g_SequenceLevel = -1;
+		if (g_SequenceModifiers.empty()) {g_SequenceDemo.clear(); g_SequenceLevel = -1;}
 	}
 	return true;
 }
@@ -2227,8 +2318,7 @@ void MirvCam_ClearClips()
 	CameraEditTransaction history;
 	MirvCam_EnableSequence(false);
 	g_CameraClips.clear();
-	g_SequenceDemo.clear();
-	g_SequenceLevel = -1;
+	if (g_SequenceModifiers.empty()) {g_SequenceDemo.clear(); g_SequenceLevel = -1;}
 	++g_CameraCaptureRevision;
 }
 bool MirvCam_SequenceEnabled()
@@ -2384,7 +2474,7 @@ bool MirvCam_HistoryUndo(bool redo)
 	if (selected != g_CameraRigs.end())
 		selectedId = selected->second.Id;
 	to.push_back(CloneCameraState(
-		{g_CameraRigs, g_CameraRigName, g_CameraClips, g_SequenceDemo, g_SequenceLevel, g_CameraModifiers}));
+		{g_CameraRigs, g_CameraRigName, g_CameraClips, g_SequenceDemo, g_SequenceLevel, g_CameraModifiers, g_SequenceModifiers}));
 	toIndices.push_back(fromIndices.back());
 	fromIndices.pop_back();
 	auto state = std::move(from.back());
@@ -2398,6 +2488,7 @@ bool MirvCam_HistoryUndo(bool redo)
 	g_SequenceDemo = state.Demo;
 	g_SequenceLevel = state.Level;
 	g_CameraModifiers = std::move(state.Modifiers);
+	g_SequenceModifiers = std::move(state.SequenceModifiers);
 	g_CameraRigName = state.Selected;
 	for (auto &entry : g_CameraRigs)
 		if (entry.second.Id == selectedId)
@@ -2450,6 +2541,7 @@ bool MirvCam_SequencePreviewRange(double &begin, double &end)
 					if (path->CanEval())
 						end = (std::max)(last.TransitionStart() + last.Blend, path->GetOffset() + path->GetUpperBound());
 	}
+ for (const auto &m : g_SequenceModifiers) {begin = (std::min)(begin, m.Begin); end = (std::max)(end, m.End);}
 	end = (std::max)(end, begin + .001);
 	return true;
 }
@@ -3261,7 +3353,7 @@ bool MirvCam_EditCameras(const std::vector<std::uint64_t> &ids,
 			return false;
 	CameraEditTransaction history;
 	auto before = CameraHistoryState{g_CameraRigs,	 g_CameraRigName, g_CameraClips,
-									 g_SequenceDemo, g_SequenceLevel, g_CameraModifiers};
+									 g_SequenceDemo, g_SequenceLevel, g_CameraModifiers, g_SequenceModifiers};
 	const auto source = g_CameraSource;
 	const auto preview = g_RigPreview;
 	const auto last = g_LastRigPose;
@@ -3290,6 +3382,7 @@ bool MirvCam_EditCameras(const std::vector<std::uint64_t> &ids,
 			g_SequenceDemo = before.Demo;
 			g_SequenceLevel = before.Level;
 			g_CameraModifiers = std::move(before.Modifiers);
+			g_SequenceModifiers = std::move(before.SequenceModifiers);
 			g_CameraSource = source;
 			g_RigPreview = preview;
 			g_LastRigPose = last;
@@ -3446,7 +3539,7 @@ std::vector<MirvCameraModifier> MirvCam_Modifiers()
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	return g_CameraModifiers;
 }
-bool MirvCam_SetModifier(MirvCameraModifier &modifier)
+bool MirvCam_SetModifierLive(MirvCameraModifier &modifier, std::uint64_t *gesture)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
 	CamPath checked;
@@ -3473,7 +3566,8 @@ bool MirvCam_SetModifier(MirvCameraModifier &modifier)
 	else if (modifier.Name != found->Name && std::any_of(g_CameraModifiers.begin(), g_CameraModifiers.end(),
 						 [&](const auto &m) { return m.Id != modifier.Id && m.Name == modifier.Name; }))
 		return false;
-	CameraEditTransaction history;
+	if (modifier.Id && found->Name == uniqueName && found->Settings == modifier.Settings) return true;
+ CameraEditTransaction history(true, gesture);
 	modifier.Name = uniqueName;
 	if (!modifier.Id)
 	{
@@ -3484,6 +3578,21 @@ bool MirvCam_SetModifier(MirvCameraModifier &modifier)
 		*found = modifier;
 	++g_CameraCaptureRevision;
 	return true;
+}
+bool MirvCam_SetModifier(MirvCameraModifier &modifier) { return MirvCam_SetModifierLive(modifier, nullptr); }
+bool MirvCam_MakeSequenceModifierUnique(std::uint64_t id, advancedfx::SequenceModifierClip &result)
+{
+ std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+ auto clip = std::find_if(g_SequenceModifiers.begin(), g_SequenceModifiers.end(), [&](const auto &c){return c.Id == id;});
+ if (clip == g_SequenceModifiers.end()) return false;
+ auto definition = std::find_if(g_CameraModifiers.begin(), g_CameraModifiers.end(), [&](const auto &m){return m.Id == clip->Definition;});
+ if (definition == g_CameraModifiers.end()) return false;
+ auto copy = *definition; copy.Id = 0;
+ CameraEditTransaction history;
+ if (!MirvCam_SetModifier(copy)) return false;
+ clip->Definition = copy.Id;
+ result = *clip;
+ return true;
 }
 bool MirvCam_RemoveModifier(std::uint64_t id)
 {
@@ -3503,6 +3612,9 @@ bool MirvCam_RemoveModifier(std::uint64_t id)
 		clip.Modifiers.erase(std::remove_if(clip.Modifiers.begin(), clip.Modifiers.end(),
 											[&](const auto &link) { return link.Id == id; }),
 							 clip.Modifiers.end());
+ g_SequenceModifiers.erase(std::remove_if(g_SequenceModifiers.begin(), g_SequenceModifiers.end(),
+  [&](const auto &clip){return clip.Definition == id;}), g_SequenceModifiers.end());
+ if (g_CameraClips.empty() && g_SequenceModifiers.empty()) {g_SequenceDemo.clear(); g_SequenceLevel = -1;}
 	g_CameraModifiers.erase(found);
 	++g_CameraCaptureRevision;
 	return true;

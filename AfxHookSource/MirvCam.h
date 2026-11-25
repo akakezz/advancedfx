@@ -134,6 +134,12 @@ std::vector<advancedfx::CameraClip> MirvCam_Clips();
 // Engine-thread visualization only: no changes to the active camera state.
 std::vector<advancedfx::CameraGuideLine> MirvCam_TransitionGuideLines(std::uint64_t clipId);
 bool MirvCam_EditClip(advancedfx::CameraClip &clip);
+bool MirvCam_EditClipLive(advancedfx::CameraClip &clip, std::uint64_t *gesture);
+std::vector<advancedfx::SequenceModifierClip> MirvCam_SequenceModifiers();
+bool MirvCam_EditSequenceModifier(advancedfx::SequenceModifierClip &clip, std::uint64_t *gesture);
+bool MirvCam_RemoveSequenceModifier(std::uint64_t id);
+bool MirvCam_MakeSequenceModifierUnique(std::uint64_t id, advancedfx::SequenceModifierClip &result);
+bool MirvCam_ConvertClipModifier(std::uint64_t parent, size_t index, int track, advancedfx::SequenceModifierClip &result);
 bool MirvCam_RemoveClip(std::uint64_t id);
 bool MirvCam_EnableSequence(bool enabled);
 bool MirvCam_SequenceEnabled();
@@ -154,5 +160,6 @@ void MirvCam_BeginFreeCamera();
 #include <shared/CameraModifier.h>
 std::vector<MirvCameraModifier> MirvCam_Modifiers();
 bool MirvCam_SetModifier(MirvCameraModifier &modifier);
+bool MirvCam_SetModifierLive(MirvCameraModifier &modifier, std::uint64_t *gesture);
 bool MirvCam_RemoveModifier(std::uint64_t id);
 bool MirvCam_SetModifierLinks(std::uint64_t camera, const std::vector<advancedfx::CameraModifierLink> &links);

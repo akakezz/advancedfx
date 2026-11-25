@@ -237,6 +237,43 @@ struct CameraClipModifier : CameraModifierLink
 			   FadeOut == o.FadeOut;
 	}
 };
+// A sequence adjustment clip has no parent camera. The shared effect definition
+// supplies its shape; the instance owns absolute client-clock timing and mix.
+struct SequenceModifierClip
+{
+ static constexpr int MaxTracks = 8;
+ static constexpr size_t MaxClips = 256;
+ std::uint64_t Id = ~std::uint64_t(0), Definition = 0;
+ int Track = 0; // lower tracks evaluate first; higher tracks adjust their result
+ double Begin = 0, End = 1, FadeIn = 0, FadeOut = 0, Influence = 1;
+ bool Enabled = true;
+ bool Valid() const
+ {
+  return Definition != 0 && Track >= 0 && Track < MaxTracks &&
+   std::isfinite(Begin) && std::isfinite(End) && std::abs(Begin) <= 1e9 &&
+   std::abs(End) <= 1e9 && End > Begin && End - Begin <= 1e6 && std::isfinite(FadeIn) &&
+   std::isfinite(FadeOut) && FadeIn >= 0 && FadeOut >= 0 &&
+   FadeIn <= End - Begin && FadeOut <= End - Begin &&
+   std::isfinite(Influence) && Influence >= 0 && Influence <= 1;
+ }
+ bool operator==(const SequenceModifierClip &o) const
+ {
+  return Id == o.Id && Definition == o.Definition && Track == o.Track &&
+   Begin == o.Begin && End == o.End && FadeIn == o.FadeIn && FadeOut == o.FadeOut &&
+   Influence == o.Influence && Enabled == o.Enabled;
+ }
+ bool Active(double time) const { return Enabled && Influence > 0 && Begin <= time && time < End; }
+ static bool Less(const SequenceModifierClip &a, const SequenceModifierClip &b)
+ {
+  if (a.Track != b.Track) return a.Track < b.Track;
+  if (a.Begin != b.Begin) return a.Begin < b.Begin;
+  return a.Id < b.Id;
+ }
+ // Stacking is explicit: overlaps occupy different tracks. Half-open ranges
+ // allow adjacent clips to share a track without a double-applied boundary.
+ bool Overlaps(const SequenceModifierClip &o) const
+ { return Track == o.Track && Begin < o.End && o.Begin < End; }
+};
 struct CameraClip
 {
 	std::uint64_t Id = ~std::uint64_t(0), Target = 0;
