@@ -17,7 +17,6 @@
 #include "ClientTools.h"
 #include "d3d9Hooks.h"
 #include "RecordingResolution.h"
-#include <shared/RecordingPreviewLimiter.h>
 #include "D3D9ImageBuffer.h"
 
 #ifndef _WIN64
@@ -6925,13 +6924,6 @@ void CAfxStreams::Console_Record_Start2()
 	{
 		m_RecordWallStart = advancedfx::RecordingTiming::Clock::now();
 		m_Recording = true;
-        const unsigned previewFps=GetRecordingPreviewFps();
-        bool previewEligible=GetRecordScreenEnabled() && !m_Tf2SeparateConfigured && (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified);
-#ifndef _WIN64
-        previewEligible=previewEligible && m_Streams.empty();
-#endif
-        advancedfx::RecordingPreview().Begin(previewFps, previewEligible);
-        if(previewFps && !previewEligible) advancedfx::RecordingTiming::Report("Recording preview","Preview limit bypassed: unsupported game or recording outputs.\n");
 		m_StartMovieWavUsed = false;
 
 		std::string utf8TakeDir;
@@ -7117,19 +7109,6 @@ void CAfxStreams::Console_Record_End2()
 {
 	if(m_Recording)
 	{
-        const auto preview=advancedfx::RecordingPreview().End();
-        {
-            char report[1024];
-            ::_snprintf_s(report,sizeof(report),_TRUNCATE,
-                "Limit %u FPS (0 = unlimited) | normal requests %llu, skipped %llu, bypassed %llu, already blocked %llu.\n"
-                "Completed presents %llu (fitted %llu, failed %llu); CPU wall time in present path %.2f ms (%.3f ms/completed).\n"
-                "Bypass reasons (can overlap): recording mode %llu, window unconfirmed %llu, special present %llu, after swap %llu, ReShade %llu, external interop %llu.\n",
-                preview.Fps,preview.Presented,preview.Skipped,preview.Bypassed,preview.Blocked,
-                preview.Completed,preview.Fitted,preview.Failed,preview.PresentMs,
-                preview.Completed ? preview.PresentMs/preview.Completed : 0.0,
-                preview.Reasons[0],preview.Reasons[1],preview.Reasons[2],preview.Reasons[3],preview.Reasons[4],preview.Reasons[5]);
-            advancedfx::RecordingTiming::Report("Recording preview",report);
-        }
 
 #ifndef _WIN64	
 		if (m_RecordVoicesUsed)
@@ -7461,7 +7440,7 @@ void CAfxStreams::Console_PrintStreams2()
 #endif //#ifndef _WIN64	
 
 extern bool Hook_MaterialSystem(void);
-extern std::atomic<bool> g_bCaptureAfterSwapBuffers;
+extern bool g_bCaptureAfterSwapBuffers;
 void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 	int argC = args->ArgC();
 	char const* arg0 = args->ArgV(0);
@@ -7488,18 +7467,6 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 			);
 			return;
 		}
-        if (0 == _stricmp(arg1,"previewFps")) {
-            if (3<=argC) {
-                unsigned fps=0;
-                if (!advancedfx::ParseRecordingPreviewFps(args->ArgV(2),fps)) {
-                    Tier0_Warning("Preview FPS must be a non-negative integer (0 = unlimited).\n"); return;
-                }
-                if (!SetRecordingPreviewFps(fps)) Tier0_Warning("Stop recording before changing preview FPS.\n");
-                return;
-            }
-            Tier0_Msg("%s previewFps <fps> - Recording-only preview limit (0 = unlimited). Current: %u\n",arg0,GetRecordingPreviewFps());
-            return;
-        }
         if (0 == _stricmp(arg1,"gpuCapture")) {
             if (3<=argC) {
                 if (!SetGpuScreenCapture(0!=atoi(args->ArgV(2)))) Tier0_Warning("Stop recording before changing GPU capture.\n");
@@ -7557,11 +7524,9 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 		"%s settings [...] - Controls recording settings.\n"
 		"%s afterSwap [...] - If to record after swapping buffers or before (can help with ReShade).\n"
         "%s gpuCapture [...] - Experimental D3D11 screen capture.\n"
-        "%s previewFps [...] - Recording-only preview limit.\n"
 		, arg0
 		, arg0
 		, arg0
-        , arg0
         , arg0
 	);
 }
@@ -10434,8 +10399,6 @@ void SetName(const char *value)
 {
 	g_AfxStreams.Console_RecordName_set(value);
 }
-unsigned PreviewFps() { return g_AfxStreams.GetRecordingPreviewFps(); }
-bool SetPreviewFps(unsigned fps) { return g_AfxStreams.SetRecordingPreviewFps(fps); }
 bool GpuCaptureEnabled() { return g_AfxStreams.GetGpuScreenCapture(); }
 bool SetGpuCaptureEnabled(bool enabled) { return g_AfxStreams.SetGpuScreenCapture(enabled); }
 bool ScreenEnabled()

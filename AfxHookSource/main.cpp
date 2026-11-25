@@ -4,7 +4,6 @@
 // - Memory for Wrp* is never freed atm
 
 #include <windows.h>
-#include <atomic>
 
 #include <shared/StringTools.h>
 
@@ -400,7 +399,7 @@ private:
 
 } g_ClientEngineTools;
 
-std::atomic<bool> g_bCaptureAfterSwapBuffers{false};
+bool g_bCaptureAfterSwapBuffers = false;
 
 void OnBefore_CMaterialSystem_SwappBuffers() {
 
