@@ -90,12 +90,25 @@ public:
     ~CaptureImpl() override { ReleaseGpu(); if(m_Output) m_Output->Release(); }
     bool Init() {
         RecordingTiming::Scope time{m_InitTime};
-        auto native=AfxGetDirect3DDevice9Ex();
         auto src=AfxGetRenderTargetSurface();
-        if(!native || !src) return Reject("D3D9Ex render target unavailable");
+        if(!src) return Reject("No tracked render target at first capture; using CPU.");
+        // The cached Ex pointer is set only by specific creation hooks. Query
+        // the unwrapped surface's owning device, not HLAE's interface wrapper
+        // (which intentionally hides Ex) or a potentially stale global pointer.
+        ComPtr<IDirect3DDevice9> device;
+        HRESULT hr=src->GetDevice(device.GetAddressOf());
+        if(FAILED(hr) || !device) return RejectHr("Render target GetDevice failed",hr);
+        ComPtr<IDirect3DDevice9Ex> native;
+        hr=device.As(&native);
+        if(FAILED(hr) || !native) return RejectHr("Capture device does not expose IDirect3DDevice9Ex. Check game launch options (remove -nod3d9ex / -disable_d3d9ex if present) and use native Direct3D",hr);
         D3DSURFACE_DESC d{};
-        if(FAILED(src->GetDesc(&d)) || d.Format!=D3DFMT_A8R8G8B8 || d.Pool!=D3DPOOL_DEFAULT || !d.Width || !d.Height || d.Width>8192 || d.Height>8192)
-            return Reject("unsupported render target format or size");
+        hr=src->GetDesc(&d);
+        if(FAILED(hr)) return RejectHr("Render target GetDesc failed",hr);
+        char target[256];
+        ::_snprintf_s(target,sizeof(target),_TRUNCATE,"%ux%u | D3D9Ex confirmed via surface device | D3D format %u, pool %u, MSAA %u.\n",d.Width,d.Height,unsigned(d.Format),unsigned(d.Pool),unsigned(d.MultiSampleType));
+        RecordingTiming::Report("GPU capture device",target);
+        if(d.Format!=D3DFMT_A8R8G8B8 || d.Pool!=D3DPOOL_DEFAULT || !d.Width || !d.Height || d.Width>8192 || d.Height>8192)
+            return Reject("unsupported render target format or size; using CPU");
         m_W=d.Width; m_H=d.Height;
         // Bound resource allocations for the 32-bit Source engine. Large
         // targets remain on the established CPU path.
@@ -105,11 +118,18 @@ public:
         ComPtr<IDirect3D9> d9;
         ComPtr<IDirect3D9Ex> d9ex;
         LUID luid{};
-        if(FAILED(native->GetCreationParameters(&cp)) || FAILED(native->GetDirect3D(d9.GetAddressOf())) ||
-           FAILED(d9.As(&d9ex)) || FAILED(d9ex->GetAdapterLUID(cp.AdapterOrdinal,&luid))) return Reject("could not identify D3D9 adapter");
+        hr=native->GetCreationParameters(&cp);
+        if(FAILED(hr)) return RejectHr("D3D9 GetCreationParameters failed",hr);
+        hr=native->GetDirect3D(d9.GetAddressOf());
+        if(FAILED(hr) || !d9) return RejectHr("D3D9 GetDirect3D failed",hr);
+        hr=d9.As(&d9ex);
+        if(FAILED(hr) || !d9ex) return RejectHr("Parent Direct3D object does not expose IDirect3D9Ex",hr);
+        hr=d9ex->GetAdapterLUID(cp.AdapterOrdinal,&luid);
+        if(FAILED(hr)) return RejectHr("D3D9Ex GetAdapterLUID failed",hr);
         ComPtr<IDXGIFactory1> factory;
         ComPtr<IDXGIAdapter1> adapter;
-        if(FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) return Reject("DXGI factory creation failed");
+        hr=CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf()));
+        if(FAILED(hr)) return RejectHr("DXGI factory creation failed",hr);
         for(UINT i=0;;++i) {
             ComPtr<IDXGIAdapter1> candidate;
             if(FAILED(factory->EnumAdapters1(i,candidate.GetAddressOf()))) break;
@@ -118,13 +138,20 @@ public:
         }
         if(!adapter) return Reject("no matching D3D11 adapter");
         const D3D_FEATURE_LEVEL level=D3D_FEATURE_LEVEL_11_0;
-        if(FAILED(D3D11CreateDevice(adapter.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,&level,1,D3D11_SDK_VERSION,m_D11.GetAddressOf(),nullptr,m_Context.GetAddressOf())))
-            return Reject("D3D11 feature level 11_0 unavailable");
+        hr=D3D11CreateDevice(adapter.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,&level,1,D3D11_SDK_VERSION,m_D11.GetAddressOf(),nullptr,m_Context.GetAddressOf());
+        if(FAILED(hr)) return RejectHr("D3D11 feature level 11_0 device creation failed",hr);
         for(auto &s:m_Inputs) {
             HANDLE handle=nullptr;
-            if(FAILED(native->CreateTexture(m_W,m_H,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,s.Shared9.GetAddressOf(),&handle)) || !handle ||
-               FAILED(s.Shared9->GetSurfaceLevel(0,s.Surface9.GetAddressOf())) || FAILED(native->CreateQuery(D3DQUERYTYPE_EVENT,s.Ready9.GetAddressOf())) ||
-               FAILED(m_D11->OpenSharedResource(handle,IID_PPV_ARGS(s.Shared11.Tex.GetAddressOf()))) || !NewQuery(s.Done11)) return Reject("D3D9Ex/D3D11 shared texture or event query unavailable");
+            hr=native->CreateTexture(m_W,m_H,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,s.Shared9.GetAddressOf(),&handle);
+            if(FAILED(hr)) return RejectHr("D3D9Ex shared texture creation failed",hr);
+            if(!handle) return Reject("D3D9Ex texture returned no shared handle; using CPU");
+            hr=s.Shared9->GetSurfaceLevel(0,s.Surface9.GetAddressOf());
+            if(FAILED(hr)) return RejectHr("D3D9Ex shared surface acquisition failed",hr);
+            hr=native->CreateQuery(D3DQUERYTYPE_EVENT,s.Ready9.GetAddressOf());
+            if(FAILED(hr)) return RejectHr("D3D9Ex event query creation failed",hr);
+            hr=m_D11->OpenSharedResource(handle,IID_PPV_ARGS(s.Shared11.Tex.GetAddressOf()));
+            if(FAILED(hr)) return RejectHr("D3D11 OpenSharedResource failed",hr);
+            if(!NewQuery(s.Done11)) return Reject("D3D11 input event query unavailable; using CPU");
             D3D11_TEXTURE2D_DESC desc{}; s.Shared11.Tex->GetDesc(&desc);
             if(desc.Format!=DXGI_FORMAT_B8G8R8A8_UNORM || desc.Width!=m_W || desc.Height!=m_H || desc.SampleDesc.Count!=1 ||
                FAILED(m_D11->CreateShaderResourceView(s.Shared11.Tex.Get(),nullptr,s.Shared11.Srv.GetAddressOf()))) return Reject("shared texture format/view incompatible");
@@ -184,6 +211,11 @@ public:
     }
 private:
     bool Reject(const char *why) { RecordingTiming::Report("GPU capture fallback",why); return false; }
+    bool RejectHr(const char *why,HRESULT hr) {
+        char msg[512];
+        ::_snprintf_s(msg,sizeof(msg),_TRUNCATE,"%s (HRESULT 0x%08lX); using CPU.\n",why,static_cast<unsigned long>(hr));
+        return Reject(msg);
+    }
     void Fail(const char *why) {
         if(m_Failed) return; m_Failed=true;
         RecordingTiming::Report("GPU capture ERROR",why);

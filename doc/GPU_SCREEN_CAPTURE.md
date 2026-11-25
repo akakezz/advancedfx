@@ -11,3 +11,7 @@ Unsupported startup conditions automatically fall back before the first input sa
 ## Validation
 
 `tests/cinematic/test_sampler.py` exercises the shared CPU and GPU scheduling logic with a CPU emulation of shader arithmetic, covering rectangle/trapezoid, several input/output rates, exposure and residual frame strength, and ring ordering. This is not a native GPU test. Test short regular and 20:1 sampler takes on the same demo interval with the same output profile, compare exact frame counts and image content, then compare elapsed times. Test MSAA, custom resolution, normal stop, repeated takes and device reset before wider rollout. No SourceDemoRender implementation code is included.
+
+## Device detection and troubleshooting
+
+The backend queries the owning native device of the first tracked capture surface, not the cached Ex pointer populated by some HLAE creation hooks. The log distinguishes missing surfaces, non-Ex devices, unsupported surface formats, adapter selection and shared-resource failures (including HRESULTs where available). If the device does not expose Ex, check for `-nod3d9ex` or `-disable_d3d9ex` in the game launch options and remove them if present, then restart with the native Direct3D renderer. No forced Ex conversion or new launch flag is introduced. A CPU selection is logged even when GPU capture was not requested. Clear the recording log between benchmark takes and confirm the active D3D11 backend before measuring performance.

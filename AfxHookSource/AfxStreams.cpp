@@ -10284,6 +10284,7 @@ void CAfxStreams::DrawingThread_CreateScreenCapture(advancedfx::COutVideoStreamC
     // the recording command is queued. Retain the creator across queue delay.
     if(m_DrawingPendingCreator || m_DrawingCaptureNode || m_DrawingGpuCapture) DrawingThread_DeleteScreenCapture();
     if(!gpu) {
+        advancedfx::RecordingTiming::Report("Recording backend","CPU capture selected (GPU capture disabled or separate streams configured).\n");
         m_DrawingCaptureNode=new CCaptureNode(new CCaptureInputRenderTarget(),new CDrawingRecordScreenOutput(creator));
         m_DrawingCaptureNode->AddRef();
         return;
@@ -10306,6 +10307,7 @@ void CAfxStreams::DrawingThread_Capture() {
             } else advancedfx::RecordingTiming::Report("GPU capture fallback","Unsupported recording profile; using CPU.\n");
         }
         if(!m_DrawingGpuCapture) {
+            advancedfx::RecordingTiming::Report("Recording backend","CPU capture selected after GPU initialization fallback.\n");
             m_DrawingCaptureNode=new CCaptureNode(new CCaptureInputRenderTarget(),new CDrawingRecordScreenOutput(creator));
             m_DrawingCaptureNode->AddRef();
         }
