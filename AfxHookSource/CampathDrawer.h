@@ -90,14 +90,16 @@ private:
 		TempPoint * nextPt;
 	};
 
+	class CLessDynamicProperties;
 	class CDynamicProperties {
 	public:
 		CDynamicProperties(CCampathDrawer *drawer, CamPath *path, const std::string &name,
-		                   bool sceneOnly = false);
+		                   const CLessDynamicProperties &geometry, bool activePath, bool sceneOnly = false);
 		std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneLines;
 		struct CameraLine { Vector3 A,B; DWORD Color; };
 		std::vector<CameraLine> CameraLines;
 		bool SceneOnly = false;
+		bool ActivePath = true;
 		struct Text
 		{
 			CamPathValue Anchor;
@@ -225,6 +227,7 @@ private:
 		bool GetCampathCanEval() const {
 			return m_CampathCanEval;
 		}
+		bool HasPositionModifiers() const { return m_HasPositionModifiers; }
 
 		std::list<CKeyframe>::const_iterator GetKeyframesBegin() const {
 			return m_Keyframes.cbegin();
@@ -260,6 +263,7 @@ private:
 	private:
 		std::atomic_int m_RefCount = 0;
 		bool m_CampathCanEval;
+		bool m_HasPositionModifiers = false;
 		std::list<CKeyframe> m_Keyframes;
 		std::shared_ptr<const std::list<CKeyframe>> m_TrajectoryPoints;
 		unsigned long long m_PositionRevision = 0;
@@ -270,9 +274,9 @@ private:
 	class CCampathDrawerFunctor : public CMaterialSystemFunctor {
 	public:
 		CCampathDrawerFunctor(CCampathDrawer *drawer, CamPath *path, const std::string &name,
-		                      CLessDynamicProperties *properties, bool sceneOnly = false)
+		                      CLessDynamicProperties *properties, bool activePath = true, bool sceneOnly = false)
 		{
-			m_DynamicProperties = new CDynamicProperties(drawer, path, name, sceneOnly);
+			m_DynamicProperties = new CDynamicProperties(drawer, path, name, *properties, activePath, sceneOnly);
 			m_LessDynamicProperties = properties;
 			m_LessDynamicProperties->AddRef();
 		}
