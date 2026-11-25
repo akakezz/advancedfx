@@ -9637,13 +9637,6 @@ void Draw()
                 if(ImGui::Checkbox("GPU capture (experimental)",&gpuCapture)) Recording::SetGpuCaptureEnabled(gpuCapture);
                 ImGui::EndDisabled();
                 ImGui::TextDisabled("Screen color only; unsupported devices/profiles use CPU. See recording log.");
-                int previewFps=static_cast<int>(Recording::PreviewFps());
-                ImGui::BeginDisabled(Recording::IsActive() || Recording::SeparateConfigured());
-                if(ImGui::InputInt("Recording preview FPS",&previewFps,1,10) && previewFps>=0)
-                    Recording::SetPreviewFps(static_cast<unsigned>(previewFps));
-                ImGui::EndDisabled();
-                ImGui::TextDisabled("0 = unlimited; enter any positive integer FPS.");
-                ImGui::TextWrapped("Experimental: limits window updates only during compatible screen recordings. Capture FPS and sampler settings are unchanged.");
 
 				ImGui::Separator();
 				ImGui::BeginDisabled(Recording::IsActive() || !RecordingResolution::CanStart());

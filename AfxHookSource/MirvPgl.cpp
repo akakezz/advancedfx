@@ -1067,7 +1067,7 @@ namespace MirvPgl
 
 	bool m_InTransaction;
 
-	std::atomic<bool> m_DataActive{false};
+	bool m_DataActive = false;
 
 	std::thread * m_Thread = 0;
 	bool m_WantClose = false;
