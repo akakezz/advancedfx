@@ -4,14 +4,27 @@
 #include "GrowingBufferPoolThreadSafe.h"
 #include "ImageBufferThreadSafe.h"
 #include "AfxOutStreams.h"
+#include <cmath>
 
 namespace advancedfx {
+
+class COutVideoStreamCreator;
+// Only a leaf output, or one sampler directly wrapping a leaf, can bypass
+// CPU sampling. Interleaved/nested/custom creators keep the old path.
+struct GpuCaptureSettings {
+    COutVideoStreamCreator *Output=nullptr;
+    bool Sampling=false;
+    double InputDuration=1, OutputDuration=1, Exposure=1;
+    float Strength=1;
+    EasySamplerSettings::Method Method=EasySamplerSettings::ESM_Rectangle;
+};
 
 class COutVideoStreamCreator
 	: public CRefCountedThreadSafe
 {
 public:
 	virtual TIOutVideoStream<true>* CreateOutVideoStream(const CImageFormat& imageFormat) = 0;
+	virtual bool GetGpuCaptureSettings(GpuCaptureSettings &) { return false; }
 };
 
 class CClassicRecordingSettingsCreator
@@ -24,6 +37,8 @@ public:
 	, m_bFormatBmpAndNotga(bFormatBmpAndNotga) {
 
 	}
+
+	bool GetGpuCaptureSettings(GpuCaptureSettings &out) override { out = {}; out.Output=this; return true; }
 
 	virtual TIOutVideoStream<true>* CreateOutVideoStream(const CImageFormat& imageFormat) override {
 		auto result = new COutImageStream<true>(imageFormat, m_CapturePath, m_bIfZip, m_bFormatBmpAndNotga);
@@ -49,6 +64,8 @@ public:
 		, m_FrameRate(frameRate) {
 
 	}
+
+	bool GetGpuCaptureSettings(GpuCaptureSettings &out) override { out = {}; out.Output=this; return true; }
 
 	virtual TIOutVideoStream<true>* CreateOutVideoStream(const CImageFormat& imageFormat) override {
 		auto result = new COutFFMPEGVideoStream<true>(imageFormat, m_CapturePath, imageFormat.Format!=ImageFormat::BGRA && !m_NoAlphaOptions.empty()?m_NoAlphaOptions:m_FfmpegOptions, m_FrameRate);
@@ -78,6 +95,20 @@ public:
 	{
 		outVideoStreamCreator->AddRef();
 	}
+
+	bool GetGpuCaptureSettings(GpuCaptureSettings &out) override {
+        GpuCaptureSettings leaf;
+        if (!m_OutVideoStreamCreator->GetGpuCaptureSettings(leaf) || leaf.Sampling || !leaf.Output ||
+            !std::isfinite(m_FrameRate) || m_FrameRate <= 0 || !std::isfinite(m_FrameDuration) || m_FrameDuration <= 0 ||
+            !std::isfinite(m_Exposure) || m_Exposure < 0 || m_Exposure > 1 ||
+            !std::isfinite(m_FrameStrength) || m_FrameStrength < 0 || m_FrameStrength > 1) return false;
+        // Extremely high output/input ratios can generate huge bursts of frames.
+        if (1.0 / m_FrameRate > m_FrameDuration) return false;
+        out=leaf; out.Sampling=true; out.InputDuration=1.0/m_FrameRate;
+        out.OutputDuration=m_FrameDuration; out.Exposure=m_Exposure;
+        out.Strength=m_FrameStrength; out.Method=m_Method;
+        return true;
+    }
 
 	virtual TIOutVideoStream<true>* CreateOutVideoStream(const CImageFormat& imageFormat) override {
 		auto outVideoStream = m_OutVideoStreamCreator->CreateOutVideoStream(imageFormat);

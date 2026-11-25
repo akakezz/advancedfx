@@ -90,6 +90,8 @@ bool SetPassEnabled(unsigned pass, bool enabled);
 const char *GetName();
 void SetName(const char *value);
 bool ScreenEnabled();
+bool GpuCaptureEnabled();
+bool SetGpuCaptureEnabled(bool enabled);
 bool IsActive();
 bool Toggle();
 bool HandleHotkey(unsigned int key);

@@ -9,6 +9,8 @@
 #include <cmath>
 #include "shared/SamplerKernels.h"
 #include "shared/EasySampler.h"
+#include "shared/GpuSamplerSchedule.h"
+#include "shared/GpuCaptureFifo.h"
 #include "shared/RecordingTiming.h"
 using namespace advancedfx;
 using namespace SamplerKernels;
@@ -51,7 +53,48 @@ template<class Impl,class Pixel> void Timeline(ImageFormat format){
   assert(fix.frames==10);
  }
 }
+
+// CPU emulation of the GPU shader arithmetic. Compare the real sampler to the
+// actual GPU scheduling adapter, including frame boundaries, shutter gaps and
+// residual frame strength. This does not claim shader/driver execution.
+struct Reference : EasyByteSamplerImpl {
+ bool trap; float strength; const unsigned char *prev=nullptr,*cur=nullptr;
+ std::vector<std::vector<unsigned char>> frames;
+ Reference(double out,double exp,float st,bool t):EasyByteSamplerImpl(EasySamplerSettings(CImageFormat(ImageFormat::BGRA,3,2),t?EasySamplerSettings::ESM_Trapezoid:EasySamplerSettings::ESM_Rectangle,out,0,exp,st)),trap(t),strength(st){}
+ void Feed(const unsigned char *p,double time){cur=p;EasySamplerBase::Sample(time);prev=p;}
+ void SubSample(double a,double b,double c,double d) override {Integrator_Fn(this,trap?prev:nullptr,cur,a,b,c,d);}
+ void MakeFrame() override {frames.emplace_back(24);PrintFrame(frames.back().data());ClearFrame(strength);}
+};
+struct GpuReference : GpuSamplerSchedule {
+ std::vector<float> accum=std::vector<float>(24,0);std::vector<std::vector<unsigned char>> frames;
+ GpuReference(double in,double out,double exp,float st,bool t):GpuSamplerSchedule(in,out,exp,st,t?EasySamplerSettings::ESM_Trapezoid:EasySamplerSettings::ESM_Rectangle){}
+ void Accumulate(const void *a,const void *b,float wa,float wb,bool pair) override {
+  auto x=static_cast<const unsigned char*>(a),y=static_cast<const unsigned char*>(b);
+  for(size_t i=0;i<accum.size();++i){if(pair)accum[i]+=wa*(unsigned(x[i])+unsigned(y[i]));else{if(wa)accum[i]+=wa*x[i];if(wb)accum[i]+=wb*y[i];}}
+ }
+ void Output(float white) override {frames.emplace_back(24);for(size_t i=0;i<accum.size();++i) frames.back()[i]=static_cast<unsigned char>(white?accum[i]*(255.f/white):0.f);}
+ void Scale(float f) override {for(auto &v:accum)v*=f;}
+};
+void CheckGpuSchedule(){
+ for(double fps:{60.,120.,239.76,600.,1200.,2400.}) for(double output:{24.,30.,60.}) for(bool trap:{false,true}) for(double exp:{0.,0.2,0.5,0.99,1.}) for(float strength:{0.f,0.35f,1.f}){
+  Reference ref(1/output,exp,strength,trap); GpuReference gpu(1/fps,1/output,exp,strength,trap);
+  std::mt19937 rng(51);std::vector<unsigned char> previous(24),cur(24);double t=0;
+  for(int i=0;i<173;++i){for(auto &c:cur)c=static_cast<unsigned char>(rng());ref.Feed(cur.data(),t);gpu.Submit(i?previous.data():nullptr,cur.data());previous.swap(cur);t+=1/fps;}
+  assert(ref.frames==gpu.frames);
+ }
+}
+void CheckGpuFifo(){
+ GpuCaptureFifo<3> fifo;unsigned long long slots[3]={};std::mt19937 rng(7);
+ for(unsigned i=0;i<10000;++i){
+  if(!fifo.Full()&&(fifo.Empty()||rng()%2)){slots[fifo.WriteSlot()]=fifo.Written();fifo.Push();}
+  else {assert(slots[fifo.ReadSlot()]==fifo.Read());fifo.Pop();}
+ }
+ while(!fifo.Empty()){assert(slots[fifo.ReadSlot()]==fifo.Read());fifo.Pop();}
+ assert(fifo.Read()==fifo.Written());
+}
 int main(){
+ CheckGpuSchedule();
+ CheckGpuFifo();
  CheckRows<Operation::Add>();CheckRows<Operation::Weighted>();CheckRows<Operation::Pair>();
  for(auto f:{ImageFormat::BGR,ImageFormat::BGRA,ImageFormat::RGBA,ImageFormat::A})Timeline<EasyByteSamplerImpl,unsigned char>(f);
  Timeline<EasyFloatSamplerImpl,float>(ImageFormat::ZFloat);

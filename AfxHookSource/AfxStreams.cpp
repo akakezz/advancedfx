@@ -6986,7 +6986,8 @@ void CAfxStreams::Console_Record_Start2()
 			);
 			videoStreamCreator->Release();
 
-			MaterialSystem_ExecuteOnRenderThread(new CCreateScreenCaptureNodeFunctor(m_DrawingRecordScreen->GetOutVideoStreamCreator()));
+			if(m_GpuScreenCaptureEnabled && m_Tf2SeparateConfigured) advancedfx::RecordingTiming::Report("GPU capture fallback","Separate render passes use CPU capture.\n");
+            MaterialSystem_ExecuteOnRenderThread(new CCreateScreenCaptureNodeFunctor(m_DrawingRecordScreen->GetOutVideoStreamCreator(),m_GpuScreenCaptureEnabled && !m_Tf2SeparateConfigured));
 		}
 
 #ifndef _WIN64
@@ -7469,6 +7470,14 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 			);
 			return;
 		}
+        if (0 == _stricmp(arg1,"gpuCapture")) {
+            if (3<=argC) {
+                if (!SetGpuScreenCapture(0!=atoi(args->ArgV(2)))) Tier0_Warning("Stop recording before changing GPU capture.\n");
+                return;
+            }
+            Tier0_Msg("%s gpuCapture 0|1 - Experimental D3D11 screen capture (default 0). Current: %i\n",arg0,GetGpuScreenCapture()?1:0);
+            return;
+        }
 		if (0 == _stricmp(arg1, "settings")) {
 			if (3 <= argC)
 			{
@@ -7517,9 +7526,11 @@ void CAfxStreams::Console_RecordScreen(IWrpCommandArgs* args) {
 		"%s enabled [...] - Enables / disables screen recording.\n"
 		"%s settings [...] - Controls recording settings.\n"
 		"%s afterSwap [...] - If to record after swapping buffers or before (can help with ReShade).\n"
+        "%s gpuCapture [...] - Experimental D3D11 screen capture.\n"
 		, arg0
 		, arg0
 		, arg0
+        , arg0
 	);
 }
 
@@ -10268,10 +10279,40 @@ void CAfxStreams::EngineThread_QueueCapture() {
 	}
 }
 
+void CAfxStreams::DrawingThread_CreateScreenCapture(advancedfx::COutVideoStreamCreator *creator,bool gpu) {
+    // Select the backend on the first actual captured render target, not when
+    // the recording command is queued. Retain the creator across queue delay.
+    if(m_DrawingPendingCreator || m_DrawingCaptureNode || m_DrawingGpuCapture) DrawingThread_DeleteScreenCapture();
+    if(!gpu) {
+        m_DrawingCaptureNode=new CCaptureNode(new CCaptureInputRenderTarget(),new CDrawingRecordScreenOutput(creator));
+        m_DrawingCaptureNode->AddRef();
+        return;
+    }
+    m_DrawingPendingCreator=creator; creator->AddRef(); m_DrawingTryGpu=true;
+}
+void CAfxStreams::DrawingThread_DeleteScreenCapture() {
+    if(m_DrawingGpuCapture) { m_DrawingGpuCapture->Finish(); delete m_DrawingGpuCapture; m_DrawingGpuCapture=nullptr; }
+    if(m_DrawingCaptureNode) { m_DrawingCaptureNode->GpuRelease(); m_DrawingCaptureNode->Release(); m_DrawingCaptureNode=nullptr; }
+    if(m_DrawingPendingCreator) { m_DrawingPendingCreator->Release(); m_DrawingPendingCreator=nullptr; }
+}
 void CAfxStreams::DrawingThread_Capture() {
-	if (m_DrawingCaptureNode) {
-		m_DrawingCaptureNode->GpuCapture();
-	}
+    if(m_DrawingPendingCreator) {
+        auto *creator=m_DrawingPendingCreator;
+        if(m_DrawingTryGpu) {
+            advancedfx::GpuCaptureSettings settings;
+            if(creator->GetGpuCaptureSettings(settings)) {
+                auto *output=new CDrawingRecordScreenOutput(settings.Output); output->AddRef();
+                m_DrawingGpuCapture=CreateGpuScreenCapture(settings,output); output->Release();
+            } else advancedfx::RecordingTiming::Report("GPU capture fallback","Unsupported recording profile; using CPU.\n");
+        }
+        if(!m_DrawingGpuCapture) {
+            m_DrawingCaptureNode=new CCaptureNode(new CCaptureInputRenderTarget(),new CDrawingRecordScreenOutput(creator));
+            m_DrawingCaptureNode->AddRef();
+        }
+        creator->Release(); m_DrawingPendingCreator=nullptr;
+    }
+    if(m_DrawingGpuCapture) m_DrawingGpuCapture->Capture();
+    else if(m_DrawingCaptureNode) m_DrawingCaptureNode->GpuCapture();
 }
 
 void CAfxStreams::CDrawingRecordScreenOutput::ProcessingThreadFunc() {
@@ -10282,6 +10323,7 @@ void CAfxStreams::CDrawingRecordScreenOutput::ProcessingThreadFunc() {
  while (!m_Shutdown || !m_Captures.empty()) {
   if (m_Captures.empty()) { m_ProcessingThreadCv.wait(lock); continue; }
   auto capture = m_Captures.front(); m_Captures.pop_front();
+  m_ProcessingThreadCv.notify_all();
   lock.unlock();
   auto buffer = capture ? capture->LockCpu() : nullptr;
   if (capture) capture->Release();
@@ -10358,6 +10400,8 @@ void SetName(const char *value)
 {
 	g_AfxStreams.Console_RecordName_set(value);
 }
+bool GpuCaptureEnabled() { return g_AfxStreams.GetGpuScreenCapture(); }
+bool SetGpuCaptureEnabled(bool enabled) { return g_AfxStreams.SetGpuScreenCapture(enabled); }
 bool ScreenEnabled()
 {
 	return g_AfxStreams.GetRecordScreenEnabled();
