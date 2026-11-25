@@ -56,6 +56,7 @@
 #include <map>
 #include <stack>
 #include <atomic>
+#include <climits>
 #include <shared_mutex>
 #include <mutex>
 #include <condition_variable>
@@ -3492,7 +3493,7 @@ public:
 	const char *GetRecordScreenSettingsName() const;
 	bool SetRecordScreenSettings(const char *name);
     unsigned GetRecordingPreviewFps() const { return m_RecordingPreviewFps; }
-    bool SetRecordingPreviewFps(unsigned fps) { if(m_Recording || (fps!=0 && fps!=15 && fps!=30)) return false; m_RecordingPreviewFps=fps; return true; }
+    bool SetRecordingPreviewFps(unsigned fps) { if(m_Recording || fps>static_cast<unsigned>(INT_MAX)) return false; m_RecordingPreviewFps=fps; return true; }
     bool GetGpuScreenCapture() const { return m_GpuScreenCaptureEnabled; }
     bool SetGpuScreenCapture(bool enabled) { if(m_Recording) return false; m_GpuScreenCaptureEnabled=enabled; return true; }
 	bool GetRecordScreenEnabled() const
