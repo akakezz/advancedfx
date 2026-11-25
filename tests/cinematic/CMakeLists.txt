@@ -56,6 +56,7 @@ endif()
 add_test(NAME camera_motion_core COMMAND camera_motion_tests)
 
 if(UNIX)
+    add_test(NAME gpu_capture_device COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_gpu_capture_device.py" --sanitize --build-dir "${CMAKE_CURRENT_BINARY_DIR}/gpu-capture-device")
     add_test(NAME sampler_backend_equivalence COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_sampler.py" --sanitize --build-dir "${CMAKE_CURRENT_BINARY_DIR}/sampler-backends")
     add_test(NAME recording_fastpath COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_recording_fastpath.py" --sanitize --build-dir "${CMAKE_CURRENT_BINARY_DIR}/recording-fastpath")
 endif()
