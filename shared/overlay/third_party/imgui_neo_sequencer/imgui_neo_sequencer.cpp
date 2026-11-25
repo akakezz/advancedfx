@@ -1141,6 +1141,31 @@ namespace ImGui
         context.LastSelectedTimeline = context.SelectedTimeline;
         context.IsSelectionRightClicked = false;
 
+        // Musical lines cross all visible tracks, including clip spans. Draw faintly
+        // before selection/playhead so they never obscure editing feedback.
+        const auto &ruler = style.Ruler;
+        const double ipt = style.RulerTickInterval;
+        if (ruler.Mode == 2 && ruler.Valid() && ipt > 0 && std::isfinite(ipt)) {
+            const double width = GetPerFrameWidth(context.Size.x,context.ValuesWidth,context.EndFrame,context.StartFrame,context.Zoom);
+            const double pps = width / ipt;
+            if(pps>0) {
+                const float left=context.StartValuesCursor.x+GetStyle().FramePadding.x+context.ValuesWidth;
+                const float right=context.TopLeftCursor.x+context.Size.x;
+                const double start=(double(context.StartFrame)+context.OffsetFrame)*ipt;
+                const double end=start+(right-left)/pps;
+                auto *draw=GetWindowDrawList();
+                const float top=context.StartValuesCursor.y, bottom=context.ValuesCursor.y;
+                if(bottom>top && right>left) {
+                    draw->PushClipRect({left,top},{right,bottom},true);
+                    for(const auto &mark:advancedfx::TimelineRulerMarks(ruler,start,end,pps,8.0)) {
+                        const float x=left+float((mark.Time-start)*pps);
+                        draw->AddLine({x,top},{x,bottom},mark.Kind==2?IM_COL32(235,235,255,65):mark.Kind==1?IM_COL32(235,235,255,40):IM_COL32(235,235,255,24));
+                    }
+                    draw->PopClipRect();
+                }
+            }
+        }
+
         if (context.SelectionEnabled)
             renderSelection(context);
 

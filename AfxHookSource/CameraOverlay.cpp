@@ -7083,6 +7083,8 @@ static void DrawClipModifierFades(int begin, int end, int in, int out)
 static double SnapClipDemoTime(double dest, int visibleStart, int visibleEnd, bool camera, std::uint64_t id)
 {
  if (ImGui::GetIO().KeyShift) return dest;
+ const auto &grid = advancedfx::TimelineTimebase();
+ if (grid.Mode == 2 && grid.Snap) return grid.SnapTime(dest);
  const double interval = SceneTickInterval();
  const double threshold = (std::max)(1.0, (double(visibleEnd) - visibleStart) / 180.0) * interval;
  double best = threshold, result = dest;
@@ -7134,9 +7136,9 @@ static void DrawSequenceModifierTracks(const std::function<int(double)> &tick, i
     pending.Begin = (std::min)(moved, original.End - (std::min)(interval, original.End - original.Begin));
    else if (edge == 1 && shifted(original.End, moved, true))
     pending.End = (std::max)(original.Begin + (std::min)(interval, original.End - original.Begin), moved);
-   else if (edge == 2 && shifted(original.Begin + original.FadeIn, moved, false))
+   else if (edge == 2 && shifted(original.Begin + original.FadeIn, moved, advancedfx::TimelineTimebase().Mode == 2 && advancedfx::TimelineTimebase().Snap))
     pending.FadeIn = std::clamp(moved - original.Begin, 0.0, original.End - original.Begin);
-   else if (edge == 3 && shifted(original.End - original.FadeOut, moved, false))
+   else if (edge == 3 && shifted(original.End - original.FadeOut, moved, advancedfx::TimelineTimebase().Mode == 2 && advancedfx::TimelineTimebase().Snap))
     pending.FadeOut = std::clamp(original.End - moved, 0.0, original.End - original.Begin);
    else if (edge == -1 && shifted(original.Begin, moved, true))
    {pending.Begin = moved; pending.End = moved + original.End - original.Begin;}
@@ -7275,14 +7277,15 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		else if (haveMouseTick && ImGui::IsMouseDown(0))
 		{
 			double originalDemo = 0, shifted = 0;
-			if (CinematicClock(originalEnvelope.TransitionStart(), true, originalDemo, SceneCachePreviewActive()) &&
-				CinematicClock(originalDemo + (mouseTick - envelopeMouse) * SceneTickInterval(), false,
-					shifted, SceneCachePreviewActive()))
+			const double edgeTime = originalEnvelope.TransitionStart() + (envelopeEdge == 1 ? originalEnvelope.Blend : 0.);
+            if (CinematicClock(edgeTime, true, originalDemo, SceneCachePreviewActive()) &&
+                CinematicClock((!ImGui::GetIO().KeyShift && mouseTick != envelopeMouse) ? advancedfx::TimelineTimebase().SnapTime(originalDemo + (mouseTick - envelopeMouse) * SceneTickInterval()) : originalDemo + (mouseTick - envelopeMouse) * SceneTickInterval(), false,
+                    shifted, SceneCachePreviewActive()))
 			{
 				pendingEnvelope = originalEnvelope;
 				if (envelopeEdge == 1)
 					pendingEnvelope.Blend = (std::max)(0.0,
-						originalEnvelope.Blend + shifted - originalEnvelope.TransitionStart());
+						shifted - originalEnvelope.TransitionStart());
 				else
 					pendingEnvelope.TransitionOffset =
 						originalEnvelope.TransitionOffset + shifted - originalEnvelope.TransitionStart();
@@ -7437,7 +7440,13 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 			{
 				auto &m = dragClip.Modifiers[i];
 				const auto &original = dragOriginal.Modifiers[i];
-				const double delta = (mouse - dragMouse) * SceneTickInterval();
+				double delta = (mouse - dragMouse) * SceneTickInterval();
+                if (delta != 0 && !ImGui::GetIO().KeyShift) {
+                    const double relative = dragEdge == 1 ? original.End : dragEdge == 2 ? original.Begin + original.FadeIn : dragEdge == 3 ? original.End - original.FadeOut : original.Begin;
+                    double demoTime, client;
+                    const double base = dragOriginal.Time + relative;
+                    if (CinematicClock(base,true,demoTime,SceneCachePreviewActive()) && CinematicClock(advancedfx::TimelineTimebase().SnapTime(demoTime+delta),false,client,SceneCachePreviewActive())) delta=client-base;
+                }
 				m = original;
 				if (dragEdge == 0)
 					m.Begin = std::clamp(original.Begin + delta, 0.0,
@@ -7585,7 +7594,7 @@ static void DrawSequenceModifierPanel(bool mapping, double demo, double interval
  auto addAtPlayhead = [&](advancedfx::SequenceModifierClip clip, double duration)
  {
   clip.Id = ~std::uint64_t(0);
-  if (!CinematicClock(demo, false, clip.Begin, SceneCachePreviewActive())) return false;
+  if (!CinematicClock(ImGui::GetIO().KeyShift ? demo : advancedfx::TimelineTimebase().SnapTime(demo), false, clip.Begin, SceneCachePreviewActive())) return false;
   clip.End = clip.Begin + duration;
   clip.Track = FreeModifierTrack(clip, clips);
   if (clip.Track < 0 || !MirvCam_EditSequenceModifier(clip, nullptr)) return false;
@@ -7644,6 +7653,12 @@ static void DrawSequenceModifierPanel(bool mapping, double demo, double interval
   ImGui::InputInt("Adjustment end tick", &endTick);
   if (ImGui::IsItemDeactivatedAfterEdit())
   {double next; if (endTick >= 0 && CinematicClock(endTick * interval, false, next, SceneCachePreviewActive())) {clip.End = next; changed = true;}}
+  if(advancedfx::TimelineTimebase().Mode==2) {
+   double beats=(clip.End-clip.Begin)/advancedfx::TimelineTimebase().Beat();
+   if(ImGui::InputDouble("Adjustment duration (beats)",&beats,0,0,"%.4f",ImGuiInputTextFlags_EnterReturnsTrue)) {clip.End=clip.Begin+beats*advancedfx::TimelineTimebase().Beat();changed=true;}
+   double bars=(clip.End-clip.Begin)/advancedfx::TimelineTimebase().Bar();
+   if(ImGui::InputDouble("Adjustment duration (bars)",&bars,0,0,"%.4f",ImGuiInputTextFlags_EnterReturnsTrue)) {clip.End=clip.Begin+bars*advancedfx::TimelineTimebase().Bar();changed=true;}
+  }
   ImGui::EndDisabled();
   ImGui::InputInt("Adjustment track (1-8)", &trackNumber);
   if (ImGui::IsItemDeactivatedAfterEdit()) {clip.Track = trackNumber >= 1 && trackNumber <= advancedfx::SequenceModifierClip::MaxTracks ? trackNumber - 1 : -1; changed = true;}
@@ -7704,7 +7719,7 @@ static void DrawCameraClipsPanel()
 								? "Sequence enabled; free camera temporarily overrides the view."
 								: "Sequence enabled; following the demo/cache clock.");
 	}
-	double now = EditingClientTime(g_MirvTime.GetTime()), demo = 0;
+	double demo = 0;
 	bool mapping = GetCurrentDemoTime(demo);
 	if (SceneCachePreviewActive())
 	{
@@ -7745,6 +7760,7 @@ static void DrawCameraClipsPanel()
 	static advancedfx::CameraClip loadedValue;
  static std::uint64_t gesture = 0;
  static int loadedTick = 0;
+ static double musicalDraftDemo = -1.;
  bool textEditing = false;
  if (!ImGui::IsMouseDown(0)) gesture = 0;
 	auto found =
@@ -7760,6 +7776,7 @@ static void DrawCameraClipsPanel()
 	{
 		loadedValue = *found;
 		loaded = g_SelectedCameraClip;
+        musicalDraftDemo = -1.;
   gesture = 0;
 		double clipDemo = 0;
 		CinematicClock(found->Time, true, clipDemo, SceneCachePreviewActive());
@@ -7781,6 +7798,7 @@ static void DrawCameraClipsPanel()
 	if(editing && ImGui::Button("New clip"))
 	{
 		g_SelectedCameraClip=loaded=~std::uint64_t(0);
+        musicalDraftDemo = -1.;
 		blend = transitionOffset = 0;
 		blendCurve = rotationCurve = fovCurve = 0;
 		freezeOutgoing = true;
@@ -7790,13 +7808,14 @@ static void DrawCameraClipsPanel()
 	}
 	if (ImGui::Button("New camera clip at playhead") && mapping)
 	{
-		double client = MirvCampathPreview_IsActive()
-							? MirvCampathPreview_GetTime() + g_Hook_VClient_RenderView.m_CamPath.GetOffset()
-							: now;
-		double playheadDemo = demo;
-		if (CinematicClock(client, true, playheadDemo, SceneCachePreviewActive()))
-		{
-			tick = (std::max)(0, int(llround(playheadDemo / interval)));
+        // The panel already resolved the exact active sequence/cached/campath clock.
+        const auto &grid=advancedfx::TimelineTimebase();
+        const bool musical=grid.Mode==2 && grid.Snap && !ImGui::GetIO().KeyShift;
+        const double playheadDemo=musical ? grid.SnapTime(demo) : demo;
+        if (std::isfinite(playheadDemo) && playheadDemo>=0 && playheadDemo/interval<=INT_MAX)
+        {
+            musicalDraftDemo=musical ? playheadDemo : -1.;
+            tick=AdjustmentTick(playheadDemo,interval);
 			g_SelectedCameraClip = loaded = ~std::uint64_t(0);
 			blend = transitionOffset = 0;
 			blendCurve = rotationCurve = fovCurve = 0;
@@ -7807,10 +7826,20 @@ static void DrawCameraClipsPanel()
 		}
 	}
 	FocusClipField(ClipInspectorFocus::CameraStart);
-	ImGui::InputInt("Start tick", &tick); textEditing |= ImGui::IsItemActive();
+	if(ImGui::InputInt("Start tick", &tick)) musicalDraftDemo=-1.;
+    textEditing |= ImGui::IsItemActive();
+    if(musicalDraftDemo>=0.) ImGui::TextDisabled("Exact snapped start: %.6f demo seconds",musicalDraftDemo);
 	tick = (std::max)(0, tick);
 	FocusClipField(ClipInspectorFocus::CameraTransition);
 	ImGui::InputDouble("Transition duration (s)", &blend, 0, 0, "%.3f"); textEditing |= ImGui::IsItemActive();
+    if(advancedfx::TimelineTimebase().Mode==2) {
+        double beats=blend/advancedfx::TimelineTimebase().Beat();
+        if(ImGui::InputDouble("Transition duration (beats)",&beats,0,0,"%.4f"))blend=beats*advancedfx::TimelineTimebase().Beat();
+        textEditing |= ImGui::IsItemActive();
+        double bars=blend/advancedfx::TimelineTimebase().Bar();
+        if(ImGui::InputDouble("Transition duration (bars)",&bars,0,0,"%.4f"))blend=bars*advancedfx::TimelineTimebase().Bar();
+        textEditing |= ImGui::IsItemActive();
+    }
 	ImGui::InputDouble("Transition offset from edit point (s)", &transitionOffset, 0, 0, "%.3f"); textEditing |= ImGui::IsItemActive();
 	if (ImGui::Button("Before edit")) transitionOffset = -blend;
 	ImGui::SameLine();
@@ -7883,7 +7912,7 @@ static void DrawCameraClipsPanel()
 		clip.Id = g_SelectedCameraClip;
   bool timeMapped = true;
   if (adding || tick != loadedTick)
-   timeMapped = CinematicClock(tick * interval, false, clip.Time, SceneCachePreviewActive());
+   timeMapped = CinematicClock(adding && musicalDraftDemo>=0. ? musicalDraftDemo : tick * interval, false, clip.Time, SceneCachePreviewActive());
 		clip.Blend = blend;
 		clip.TransitionOffset = transitionOffset;
 		clip.BlendCurve = blendCurve;
@@ -7917,6 +7946,7 @@ static void DrawCameraClipsPanel()
 			loaded = clip.Id;
    loadedValue = clip;
    loadedTick = tick;
+   musicalDraftDemo = -1.;
 			clipStatus = g_DocumentStatus = "Camera clip updated.";
 		}
 		else if (clipStatus.empty())
@@ -10347,12 +10377,43 @@ void Draw()
 				}
 				frameRequest = 0;
 			}
+            auto &timebase = advancedfx::TimelineTimebase();
+            if (ImGui::CollapsingHeader("Timeline timebase")) {
+                auto draft = timebase;
+                const char *modes[] = {"Demo ticks", "Seconds", "Bars & beats"};
+                ImGui::Combo("Timeline ruler", &draft.Mode, modes, 3);
+                if (draft.Mode == 2) {
+                    ImGui::InputDouble("Tempo (BPM)", &draft.BPM, 0, 0, "%.3f");
+                    ImGui::InputInt("Beats per bar", &draft.Numerator);
+                    const int den[] = {1,2,4,8,16}; const char *denNames[] = {"1","2","4","8","16"};
+                    int denIndex=0; for(int i=0;i<5;++i) if(den[i]==draft.Denominator) denIndex=i;
+                    if(ImGui::Combo("Beat note denominator",&denIndex,denNames,5))draft.Denominator=den[denIndex];
+                    const int divisions[]={1,2,4,8,16,32}; const char *names[]={"Whole","Half","Quarter","Eighth","Sixteenth","Thirty-second"};
+                    int division=0;for(int i=0;i<6;++i)if(divisions[i]==draft.Division)division=i;
+                    if(ImGui::Combo("Snap subdivision",&division,names,6))draft.Division=divisions[division];
+                    bool triplet=draft.Tuplet==3;if(ImGui::Checkbox("Triplets",&triplet))draft.Tuplet=triplet?3:1;
+                    ImGui::Checkbox("Musical snapping (Shift bypasses)",&draft.Snap);
+                    ImGui::InputDouble("Downbeat demo time (s)",&draft.Origin,0,0,"%.6f");
+                    if(ImGui::Button("Set bar 1 at playhead")) {
+                        double demoTime = double(s_seqFrame)*SceneTickInterval();
+                        if(SceneCachePreviewActive()) demoTime=g_SceneCursor;
+                        else if(MirvCam_SequencePreviewActive()) CinematicClock(MirvCam_SequencePreviewTime(),true,demoTime,false);
+                        else if(MirvCampathPreview_IsActive()) CinematicClock(MirvCampathPreview_GetTime()+g_Hook_VClient_RenderView.m_CamPath.GetOffset(),true,demoTime,false);
+                        draft.Origin=(std::max)(0.,demoTime);draft.OffsetMs=0;
+                    }
+                    ImGui::InputDouble("Downbeat offset (ms)",&draft.OffsetMs,0,0,"%.3f");
+                    ImGui::TextDisabled("BPM counts quarter notes. Grid density adapts to zoom; snapping does not.");
+                }
+                if(draft.Valid())timebase=draft;
+                else ImGui::TextDisabled("Invalid tempo, meter or offset; last valid settings retained.");
+            }
 			// Layout sizes similar to DX11
 			ImGuiStyle &st = ImGui::GetStyle();
 			float availY = ImGui::GetContentRegionAvail().y;
 			float btnRowH = ImGui::GetFrameHeight();
 			ImGuiNeoSequencerStyle &neo = ImGui::GetNeoSequencerStyle();
 			neo.TrackSeparators = neo.GroupBorders = neo.TreeGuides = true;
+            neo.Ruler=timebase; neo.RulerTickInterval=SceneTickInterval();
 			neo.DepthItemSpacing = 18;
 			float topBarH = neo.TopBarHeight > 0.0f
 								? neo.TopBarHeight
@@ -10702,6 +10763,17 @@ void Draw()
 									}
 								}
 							}
+                            // Snap the first moved key, keeping the entire selection's spacing intact.
+                            double musicalCorrection = 0;
+                            if (!ImGui::GetIO().KeyShift && advancedfx::TimelineTimebase().Mode == 2 && advancedfx::TimelineTimebase().Snap) {
+                                for (size_t i=0;i<s_cache.ticks.size();++i) if(s_cache.ticks[i]!=s_cache.originalTicks[i]) {
+                                    const double desired = s_cache.times[i] + (double(s_cache.ticks[i])-s_cache.originalTicks[i])*ipt + g_Hook_VClient_RenderView.m_CamPath.GetOffset();
+                                    double demoTime, client;
+                                    if(CinematicClock(desired,true,demoTime,SceneCachePreviewActive()) && CinematicClock(advancedfx::TimelineTimebase().SnapTime(demoTime),false,client,SceneCachePreviewActive())) musicalCorrection=client-desired;
+                                    break;
+                                }
+                            }
+                            auto retimed = [&](size_t i) {return s_cache.times[i]+(double(s_cache.ticks[i])-s_cache.originalTicks[i])*ipt+(s_cache.ticks[i]!=s_cache.originalTicks[i]?musicalCorrection:0.);};
 							// Convert ticks -> new times
 							struct TmpKey
 							{
@@ -10713,8 +10785,7 @@ void Draw()
 							for (size_t i = 0; i < s_cache.ticks.size(); ++i)
 							{
 								const double newRelTime =
-									s_cache.times[i] +
-									(double(s_cache.ticks[i]) - s_cache.originalTicks[i]) * ipt;
+									retimed(i);
 								newKeys.push_back({newRelTime, (int)i});
 							}
 							// Validate all arrivals before replacing the native map.
@@ -10723,7 +10794,7 @@ void Draw()
 
 							std::vector<double> arrivals;
 							for (size_t i = 0; i < s_cache.ticks.size(); ++i)
-								arrivals.push_back(s_cache.times[i] + (double(s_cache.ticks[i]) - s_cache.originalTicks[i]) * ipt);
+								arrivals.push_back(retimed(i));
 							if (!g_Hook_VClient_RenderView.m_CamPath.Retime(arrivals))
 							{
 								g_DocumentStatus = "Keys cannot share an arrival time or cross a hold release.";
@@ -10953,6 +11024,14 @@ void Draw()
 			}
 			ImGui::SameLine();
 			ImGui::Text("Start: %d  End: %d  Current: %d", (int)s_seqStart, (int)s_seqEnd, (int)s_seqFrame);
+            if(timebase.Mode==2) {
+                double demoTime=double(s_seqFrame)*SceneTickInterval();
+                if(SceneCachePreviewActive())demoTime=g_SceneCursor;
+                else if(MirvCam_SequencePreviewActive())CinematicClock(MirvCam_SequencePreviewTime(),true,demoTime,false);
+                else if(MirvCampathPreview_IsActive())CinematicClock(MirvCampathPreview_GetTime()+g_Hook_VClient_RenderView.m_CamPath.GetOffset(),true,demoTime,false);
+                char position[48];timebase.Position(demoTime,position,sizeof(position));
+                ImGui::Text("Music: %s | %+.3f s relative to bar 1",position,demoTime-timebase.Downbeat());
+            }
 			if (!SceneCachePreviewActive() && ImGui::SmallButton("Seek to preview"))
 				MirvCampathPreview_Seek();
 			ImGui::SameLine();

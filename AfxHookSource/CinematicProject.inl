@@ -228,7 +228,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	SyncRigLevel();
 	std::ostringstream out;
 	out.imbue(std::locale::classic());
-	out << std::setprecision(17) << "HLAE_CINEMATIC 10\n";
+	out << std::setprecision(17) << "HLAE_CINEMATIC 11\n";
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto state = paths.CaptureState();
 	out << state.Paths.size() << ' ' << state.Active << '\n';
@@ -282,6 +282,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
  for (const auto &m : g_SequenceModifiers)
   out << m.Id << ' ' << m.Definition << ' ' << m.Track << ' ' << m.Begin << ' ' << m.End << ' '
    << m.FadeIn << ' ' << m.FadeOut << ' ' << m.Influence << ' ' << m.Enabled << '\n';
+	if (!advancedfx::TimelineTimebase().Write(out)) return false;
 	out << "END\n";
 	return bool(out) && ProjectWrite(file, out.str());
 }
@@ -303,7 +304,7 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	size_t count;
 	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" ||
 		(version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 &&
-		 version != 7 && version != 8 && version != 9 && version != 10))
+		 version != 7 && version != 8 && version != 9 && version != 10 && version != 11))
 		return false;
 	CamPathCollection::State paths;
 	std::set<unsigned long long> pathIds, rigIds, clipIds;
@@ -447,6 +448,8 @@ bool MirvCam_LoadProject(const wchar_t *file)
   }
   std::sort(adjustments.begin(), adjustments.end(), advancedfx::SequenceModifierClip::Less);
  }
+ advancedfx::MusicalTimeline timebase;
+ if (version >= 11 && !advancedfx::MusicalTimeline::Read(in,timebase)) return false;
 	if (!(in >> magic) || magic != "END")
 		return false;
 	in >> std::ws;
@@ -468,6 +471,7 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	g_CameraRigs = std::move(rigs);
 	g_CameraRigName = selected;
 	g_CameraClips = std::move(clips);
+ advancedfx::TimelineTimebase() = timebase;
  g_SequenceModifiers = std::move(adjustments);
  for (const auto &m : g_SequenceModifiers)
   g_NextSequenceModifierId = (std::max)(g_NextSequenceModifierId, m.Id + 1);

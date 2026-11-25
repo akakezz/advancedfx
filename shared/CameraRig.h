@@ -1,5 +1,6 @@
 #pragma once
 #include "AfxMath.h"
+#include "MusicalTimeline.h"
 #include "CameraCollisionSettings.h"
 #include <optional>
 #include <array>
