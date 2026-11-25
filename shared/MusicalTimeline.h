@@ -2,7 +2,8 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdint>
-#include <cstdio>
+#include <charconv>
+#include <cstddef>
 #include <istream>
 #include <ostream>
 #include <vector>
@@ -27,12 +28,29 @@ struct MusicalTimeline {
  double Step() const {return Quarter()*4/Division*(Tuplet==3 ? 2.0/3 : 1.0);}
  double SnapTime(double t) const {return Mode==2 && Snap && Valid() && std::isfinite(t) ? (std::max)(0.,Downbeat()+std::round((t-Downbeat())/Step())*Step()) : t;}
  void Position(double t,char*buf,size_t n) const {
-  if (!Valid() || !std::isfinite(t) || std::abs(t)>1e9) {std::snprintf(buf,n,"--");return;}
-  const double b=(t-Downbeat())/Beat();
-  const auto beat=static_cast<long long>(std::floor(b+1e-9));
-  const auto bar=static_cast<long long>(std::floor(double(beat)/Numerator));
-  const auto within=beat-bar*Numerator;
-  std::snprintf(buf,n,"%lld.%lld",bar>=0?bar+1:bar,within+1);
+  if (!buf || !n) return;
+  // Source SDK headers can redefine snprintf as _snprintf_s. Format the
+  // integer ruler labels without printf macros, heap allocation or locale.
+  char label[48]; // two signed 64-bit integers and a separator fit.
+  char *end=label;
+  if (!Valid() || !std::isfinite(t) || std::abs(t)>1e9) {
+   *end++='-'; *end++='-';
+  } else {
+   const double b=(t-Downbeat())/Beat();
+   const auto beat=static_cast<long long>(std::floor(b+1e-9));
+   const auto bar=static_cast<long long>(std::floor(double(beat)/Numerator));
+   const auto within=beat-bar*Numerator;
+   const auto first=std::to_chars(label,label+sizeof(label)-1,bar>=0?bar+1:bar);
+   if (first.ec!=std::errc{}) {buf[0]='\0';return;}
+   end=first.ptr;
+   *end++='.';
+   const auto second=std::to_chars(end,label+sizeof(label),within+1);
+   if (second.ec!=std::errc{}) {buf[0]='\0';return;}
+   end=second.ptr;
+  }
+  const auto count=(std::min)(n-1,static_cast<size_t>(end-label));
+  std::copy_n(label,count,buf);
+  buf[count]='\0';
  }
  bool Write(std::ostream &out) const {if(!Valid())return false;out<<Mode<<' '<<BPM<<' '<<Origin<<' '<<OffsetMs<<' '<<Numerator<<' '<<Denominator<<' '<<Division<<' '<<Tuplet<<' '<<Snap<<'\n';return bool(out);}
  static bool Read(std::istream &in,MusicalTimeline &out) {MusicalTimeline next;if(!(in>>next.Mode>>next.BPM>>next.Origin>>next.OffsetMs>>next.Numerator>>next.Denominator>>next.Division>>next.Tuplet>>next.Snap)||!next.Valid())return false;out=next;return true;}

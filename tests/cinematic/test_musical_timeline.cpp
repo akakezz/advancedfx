@@ -1,4 +1,12 @@
+// Reproduce the SDK macro environment that MirvPgl.cpp inherits on Windows.
+#ifdef AFX_TEST_SDK_SNPRINTF_MACRO
+#include <cstdio>
+#define snprintf _snprintf_s
+#endif
 #include "shared/MusicalTimeline.h"
+#ifdef AFX_TEST_SDK_SNPRINTF_MACRO
+#undef snprintf
+#endif
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -13,6 +21,11 @@ int main(){
  assert(std::abs(m.Quarter()-.46875)<1e-14);
  for(int i=-1000;i<100000;++i){double t=m.Downbeat()+i*m.Step();assert(std::abs(m.SnapTime(t+0.1*m.Step())-t)<1e-9);}
  char label[48];m.Position(m.Downbeat(),label,sizeof label);assert(!strcmp(label,"1.1"));m.Position(m.Downbeat()+m.Bar()+m.Beat(),label,sizeof label);assert(!strcmp(label,"2.2"));m.Position(m.Downbeat()-m.Beat(),label,sizeof label);assert(!strcmp(label,"-1.4"));
+ char small[3]={'x','x','x'};m.Position(m.Downbeat(),small,sizeof small);assert(!strcmp(small,"1."));
+ char empty='x';m.Position(m.Downbeat(),&empty,1);assert(empty=='\0');
+ empty='x';m.Position(m.Downbeat(),&empty,0);assert(empty=='x');m.Position(m.Downbeat(),nullptr,0);
+ m.Position(std::numeric_limits<double>::quiet_NaN(),label,sizeof label);assert(!strcmp(label,"--"));
+ m.Position(m.Downbeat()+100000*m.Bar(),label,sizeof label);assert(!strcmp(label,"100001.1"));
  m.Numerator=7;m.Denominator=8;m.Division=16;m.Tuplet=3;assert(std::abs(m.Bar()-1.640625)<1e-14);assert(std::abs(m.Step()-.078125)<1e-14);
  assert(TimelineRulerStep(m,10000,8)==m.Step());assert(TimelineRulerStep(m,1,8)>=m.Bar());assert(m.Step()==.078125);
  m.Division=4; // quarter triplets do not divide the eighth-note beat in 7/8.
