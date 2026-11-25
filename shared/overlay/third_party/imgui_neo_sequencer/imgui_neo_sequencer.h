@@ -7,6 +7,7 @@
 
 #include "imgui.h"
 #include <vector>
+#include "../../../MusicalTimeline.h"
 
 typedef int ImGuiNeoSequencerFlags;
 typedef int ImGuiNeoSequencerCol;
@@ -73,6 +74,9 @@ enum ImGuiNeoSequencerCol_
 };
 
 struct ImGuiNeoSequencerStyle {
+    advancedfx::MusicalTimeline Ruler;
+    double RulerTickInterval = 0; // seconds per native tick
+
     float       SequencerRounding       = 2.5f;                 // Corner rounding around whole sequencer
     float       TopBarHeight            = 0.0f;                 // Value <= 0.0f = Height is calculated by FontSize + FramePadding.y * 2.0f
     bool        TopBarShowFrameLines    = true;                 // Show line for every frame in top bar

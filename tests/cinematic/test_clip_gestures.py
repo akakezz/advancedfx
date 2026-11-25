@@ -91,6 +91,12 @@ int main(){
  // Ctrl-drag is fade editing, not a move/duplicate. Shift bypasses snapping.
  frame(false,130,true,true,false,false,false,true);frame(false,145,true,false,false,false,false,true);frame(false,145,false,false,true,false,false,true);assert(adjustments.size()==1&&std::abs(adjustments[0].FadeIn-.45)<1e-9&&adjustments[0].Begin==a.Begin);adjustments={a};
  g_CommandSystem.markers={{250}};io.KeyShift=false;assert(std::abs(SnapClipDemoTime(2.46,0,1800,false,1)-2.5)<1e-9);io.KeyShift=true;assert(SnapClipDemoTime(2.46,0,1800,false,1)==2.46);
+ // The beat grid uses demo time, including a fractional downbeat and cached client offset.
+ auto &grid=advancedfx::TimelineTimebase();grid.Mode=2;grid.BPM=128;grid.Origin=.123;grid.Division=4;
+ io.KeyShift=false;assert(std::abs(SnapClipDemoTime(2.46,0,1800,false,1)-2.46675)<1e-9);
+ frame(false,180,true,true);frame(false,221,true);frame(false,221,false,false,true);
+ assert(std::abs(adjustments[0].Begin-(100+grid.SnapTime(1.41)))<1e-9&&std::abs(adjustments[0].End-adjustments[0].Begin-2)<1e-9);
+ adjustments={a};g_SelectedSequenceModifier=1;grid={};
  frame(false,180,false,false,false,false,false,false,false,true);assert(g_SelectedSequenceModifier==1&&!popup.empty());menu="Edit duration / end";frame(false,180);assert(g_ClipInspectorFocus==ClipInspectorFocus::AdjustmentEnd);FocusClipField(ClipInspectorFocus::AdjustmentEnd);assert(focusCount==1&&g_ClipInspectorFocus==ClipInspectorFocus::None);
  frame(false,180,false,false,false,false,false,false,false,true);menu="Disable effect";frame(false,180);assert(!adjustments[0].Enabled);frame(false,180,false,false,false,false,false,false,false,true);menu="Delete adjustment";frame(false,180);assert(adjustments.empty());
  CameraClip c;c.Id=1;c.Time=101;c.Target=5;c.Blend=.5;cameras={c};g_SelectedCameraClip=1;g_CommandSystem.markers.clear();

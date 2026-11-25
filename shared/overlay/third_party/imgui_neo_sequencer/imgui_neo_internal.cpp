@@ -6,6 +6,7 @@
 
 #include "imgui_neo_internal.h"
 #include "imgui_internal.h"
+#include "imgui_neo_sequencer.h"
 #include <cstdint>
 
 namespace ImGui {
@@ -39,6 +40,31 @@ namespace ImGui {
         const uint32_t viewEnd = endFrame + offsetFrame;
         const uint32_t viewStart = startFrame + offsetFrame;
 
+        const auto &neo = GetNeoSequencerStyle();
+        const auto &ruler = neo.Ruler;
+        const double ipt = neo.RulerTickInterval;
+        if (ruler.Mode != 0 && ruler.Valid() && std::isfinite(ipt) && ipt > 0 && drawFrameLines) {
+            const double width = GetPerFrameWidth(size.x, valuesWidth, endFrame, startFrame, zoom);
+            if (!(width > 0)) return;
+            const double pixelsPerSecond = width / ipt;
+            const double start = double(viewStart)*ipt;
+            const double end = start+(barArea.Max.x-barArea.Min.x)/pixelsPerSecond;
+            float lastLabel = -1e20f;
+            drawList->PushClipRect(barArea.Min,barArea.Max,true);
+            for(const auto &mark : advancedfx::TimelineRulerMarks(ruler,start,end,pixelsPerSecond,8.0)) {
+                const float x=barArea.Min.x+float((mark.Time-start)*pixelsPerSecond);
+                const bool major=mark.Kind==2;
+                drawList->AddLine({x,barArea.Max.y},{x,barArea.Max.y-barArea.GetHeight()*(major?1.f:mark.Kind==1?.65f:.35f)},major?IM_COL32_WHITE:IM_COL32(190,190,190,180));
+                if(drawFrameText && mark.Kind>0 && (major || x-lastLabel>70.f)) {
+                    char label[48];
+                    if(ruler.Mode==2) ruler.Position(mark.Time,label,sizeof(label));
+                    else snprintf(label,sizeof(label),"%.6gs",mark.Time);
+                    if(x>lastLabel+2.f){drawList->AddText({x+2,barArea.Min.y},IM_COL32_WHITE,label);lastLabel=x+CalcTextSize(label).x+4;}
+                }
+            }
+            drawList->PopClipRect();
+            return;
+        }
         if(drawFrameLines) {
             const auto count = (int32_t)((float)((viewEnd + 1) - viewStart) / zoom);
 
