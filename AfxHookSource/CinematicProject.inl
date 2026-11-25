@@ -228,7 +228,7 @@ bool MirvCam_SaveProject(const wchar_t *file)
 	SyncRigLevel();
 	std::ostringstream out;
 	out.imbue(std::locale::classic());
-	out << std::setprecision(17) << "HLAE_CINEMATIC 9\n";
+	out << std::setprecision(17) << "HLAE_CINEMATIC 10\n";
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
 	auto state = paths.CaptureState();
 	out << state.Paths.size() << ' ' << state.Active << '\n';
@@ -278,6 +278,10 @@ bool MirvCam_SaveProject(const wchar_t *file)
 			return false;
 		out << m.Id << ' ' << std::quoted(m.Name) << ' ' << std::quoted(xml) << '\n';
 	}
+ out << g_SequenceModifiers.size() << '\n';
+ for (const auto &m : g_SequenceModifiers)
+  out << m.Id << ' ' << m.Definition << ' ' << m.Track << ' ' << m.Begin << ' ' << m.End << ' '
+   << m.FadeIn << ' ' << m.FadeOut << ' ' << m.Influence << ' ' << m.Enabled << '\n';
 	out << "END\n";
 	return bool(out) && ProjectWrite(file, out.str());
 }
@@ -299,7 +303,7 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	size_t count;
 	if (!(in >> magic >> version) || magic != "HLAE_CINEMATIC" ||
 		(version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 &&
-		 version != 7 && version != 8 && version != 9))
+		 version != 7 && version != 8 && version != 9 && version != 10))
 		return false;
 	CamPathCollection::State paths;
 	std::set<unsigned long long> pathIds, rigIds, clipIds;
@@ -428,6 +432,21 @@ bool MirvCam_LoadProject(const wchar_t *file)
 		for (const auto &link : clip.Modifiers)
 			if (!modifierIds.count(link.Id))
 				return false;
+ std::vector<advancedfx::SequenceModifierClip> adjustments;
+ if (version >= 10)
+ {
+  std::set<std::uint64_t> adjustmentIds;
+  if (!(in >> count) || count > advancedfx::SequenceModifierClip::MaxClips) return false;
+  for (size_t i = 0; i < count; ++i)
+  {
+   advancedfx::SequenceModifierClip m;
+   if (!(in >> m.Id >> m.Definition >> m.Track >> m.Begin >> m.End >> m.FadeIn >> m.FadeOut >> m.Influence >> m.Enabled) ||
+    m.Id >= 0x7fffffffffffffffull || !m.Valid() || !modifierIds.count(m.Definition) || !adjustmentIds.insert(m.Id).second ||
+    std::any_of(adjustments.begin(), adjustments.end(), [&](const auto &other){return m.Overlaps(other);})) return false;
+   adjustments.push_back(m);
+  }
+  std::sort(adjustments.begin(), adjustments.end(), advancedfx::SequenceModifierClip::Less);
+ }
 	if (!(in >> magic) || magic != "END")
 		return false;
 	in >> std::ws;
@@ -449,6 +468,9 @@ bool MirvCam_LoadProject(const wchar_t *file)
 	g_CameraRigs = std::move(rigs);
 	g_CameraRigName = selected;
 	g_CameraClips = std::move(clips);
+ g_SequenceModifiers = std::move(adjustments);
+ for (const auto &m : g_SequenceModifiers)
+  g_NextSequenceModifierId = (std::max)(g_NextSequenceModifierId, m.Id + 1);
 	g_SequenceDemo = demo.empty() ? g_CameraDemoKey : demo;
 	g_SequenceLevel = g_LevelInitCount;
 	for (auto &r : g_CameraRigs)
@@ -542,6 +564,20 @@ bool MirvCam_Bake(const wchar_t *file, const char *source, double begin, double 
 				if (finish >= begin && finish <= end)
 					times.insert(finish);
 			}
+ // Preserve adjustment envelope boundaries and hard cuts even when the
+ // export sampling grid does not land exactly on them.
+ if (sequence)
+  for (const auto &m : g_SequenceModifiers)
+  {
+   for (double t : {m.Begin, m.Begin + m.FadeIn, m.End - m.FadeOut, m.End})
+    if (begin <= t && t <= end) times.insert(t);
+   for (double t : {m.Begin, m.End})
+    if (t > begin && t <= end)
+    {
+     const double previous = double(std::nextafter(float(t), -std::numeric_limits<float>::infinity()));
+     times.insert((std::max)(begin, t - (std::max)(1e-6, t - previous)));
+    }
+  }
 	// Preserve authored key/hold boundaries when routing path exports through
 	// the same sampler as camera sequences.
 	if (campath || sequence)

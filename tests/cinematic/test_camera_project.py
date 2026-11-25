@@ -67,6 +67,42 @@ int main(){
  assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(MirvCam_BakeStatus().find("from whole sequence")!=std::string::npos);assert(baked.Load(bake.c_str())&&baked.GetHold()&&std::abs(baked.Eval(.6).X-50.5)<.01);assert(MirvCam_BakeStatus().find("Sampled 2 of 2 sequence clips")!=std::string::npos);
  for(int curve=0;curve<3;++curve){next.BlendCurve=curve;assert(MirvCam_EditClip(next));g_CameraEvaluationTime=.55;advancedfx::CameraPose blendPose;assert(EvaluateSequence(.55,blendPose));const double u=.25,w=curve==1?u:curve==2?u*u*u*(u*(u*6-15)+10):u*u*(3-2*u);assert(std::abs(blendPose.Position[0]-(1+99*w))<1e-7);assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.05));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.55).X-blendPose.Position[0])<1e-6);}
  next.Blend=0;assert(MirvCam_EditClip(next));assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(baked.Load(bake.c_str())&&std::abs(baked.Eval(.499998).X-1)<.01&&std::abs(baked.Eval(.5).X-100)<.01);g_Hook_VClient_RenderView.LastCameraOrigin[0]=1;
+ // Independent adjustment clips use the post-transition pose, not a source-local pose.
+ {auto original=g_CameraClips[1];auto transition=original;transition.Blend=.2;transition.FreezeOutgoing=true;assert(MirvCam_EditClip(transition));
+  MirvCameraModifier shift;shift.Name="Adjustment offset";shift.Settings.Type=CamPath::ModifierType::Remap;shift.Settings.FadeIn=shift.Settings.FadeOut=0;shift.Settings.Amplitude[0]=1;shift.Settings.Offset=10;assert(MirvCam_SetModifier(shift));
+  auto scale=shift;scale.Id=0;scale.Name="Adjustment scale";scale.Settings.Offset=0;scale.Settings.Scale=2;assert(MirvCam_SetModifier(scale));
+  advancedfx::SequenceModifierClip a;a.Definition=shift.Id;a.Begin=.2;a.End=.9;assert(MirvCam_EditSequenceModifier(a,nullptr));
+  auto b=a;b.Id=~std::uint64_t(0);b.Definition=scale.Id;b.Track=1;assert(MirvCam_EditSequenceModifier(b,nullptr));
+  auto bad=b;bad.Id=~std::uint64_t(0);assert(!MirvCam_EditSequenceModifier(bad,nullptr));bad.Track=8;assert(!MirvCam_EditSequenceModifier(bad,nullptr));
+  bad.Track=2;bad.Begin=bad.End;assert(!MirvCam_EditSequenceModifier(bad,nullptr));
+  advancedfx::CameraPose p;auto evaluate=[&](double t){g_CameraEvaluationTime=t;assert(EvaluateSequence(t,p));return p.Position[0];};
+  assert(std::abs(evaluate(.1)-1)<1e-7);assert(std::abs(evaluate(.3)-22)<1e-7);
+  // The previous composite must stay unadjusted at a frozen transition boundary.
+  assert(std::abs(g_SequencePreviousPose.Position[0]-1)<1e-7);
+  assert(std::abs(evaluate(.6)-121)<1e-7);assert(std::abs(evaluate(.8)-220)<1e-7);assert(std::abs(evaluate(.9)-100)<1e-7);
+  // Scrubbing backward must not accumulate effects; moving the camera cut must not move either adjustment.
+  assert(std::abs(evaluate(.3)-22)<1e-7);auto moved=transition;moved.Time=.55;assert(MirvCam_EditClip(moved));assert(MirvCam_SequenceModifiers()[0]==a);assert(MirvCam_EditClip(transition));
+  // Adjacent clips share a track. A disabled clip does no work; fades affect only their own instance.
+  auto adjacent=a;adjacent.Id=~std::uint64_t(0);adjacent.Begin=.9;adjacent.End=1.1;adjacent.Enabled=false;assert(MirvCam_EditSequenceModifier(adjacent,nullptr));assert(std::abs(evaluate(1)-100)<1e-7);
+  auto faded=a;faded.FadeIn=.2;assert(MirvCam_EditSequenceModifier(faded,nullptr));assert(std::abs(evaluate(.3)-12)<1e-7);
+  assert(MirvCam_EditSequenceModifier(a,nullptr));
+  // Each live gesture takes one chronological history entry, while preserving immediate changes.
+  std::uint64_t gesture=0;auto adjusted=a;adjusted.Influence=.2;assert(MirvCam_EditSequenceModifier(adjusted,&gesture)&&gesture);const auto count=g_CameraUndo.size();adjusted.Influence=.6;assert(MirvCam_EditSequenceModifier(adjusted,&gesture)&&g_CameraUndo.size()==count&&MirvCam_HistoryIndex(false)==gesture);
+  assert(MirvCam_HistoryUndo(false)&&MirvCam_SequenceModifiers()[0]==a);assert(MirvCam_HistoryUndo(true)&&MirvCam_SequenceModifiers()[0]==adjusted);
+  assert(MirvCam_EditSequenceModifier(a,nullptr));
+  auto unique=a;assert(MirvCam_MakeSequenceModifierUnique(a.Id,unique)&&unique.Definition!=a.Definition);assert(MirvCam_HistoryUndo(false)&&MirvCam_SequenceModifiers()[0]==a);assert(MirvCam_HistoryUndo(true)&&MirvCam_SequenceModifiers()[0]==unique);assert(MirvCam_HistoryUndo(false));
+  // The whole sequence export uses the same adjustment stack, including hard range boundaries.
+  assert(MirvCam_Bake(bake.c_str(),"sequence",0,1,.1));assert(baked.Load(bake.c_str()));assert(std::abs(baked.Eval(.3).X-22)<1e-6&&std::abs(baked.Eval(.8).X-220)<1e-6&&std::abs(baked.Eval(.9).X-100)<1e-6);
+  const auto savedAdjustments=MirvCam_SequenceModifiers();assert(MirvCam_SaveProject(file.c_str())&&MirvCam_LoadProject(file.c_str()));assert(MirvCam_SequenceModifiers()==savedAdjustments);
+  // A v9 project has no adjustment section. Loading it retains the legacy links and clears independent adjustments.
+  std::ifstream in(std::filesystem::path(file),std::ios::binary);std::string v10((std::istreambuf_iterator<char>(in)),{});in.close();
+  {auto legacy=v10;auto pos=legacy.rfind("END\\n");assert(pos!=std::string::npos);for(size_t i=0;i<savedAdjustments.size()+1;++i)pos=legacy.rfind('\\n',pos-2)+1;legacy.erase(pos,legacy.rfind("END\\n")-pos);legacy.replace(0,18,"HLAE_CINEMATIC 9\\n");std::ofstream old(std::filesystem::path(file),std::ios::binary|std::ios::trunc);old<<legacy;old.close();assert(MirvCam_LoadProject(file.c_str())&&MirvCam_SequenceModifiers().empty());}
+  {std::ofstream restore(std::filesystem::path(file),std::ios::binary|std::ios::trunc);restore<<v10;restore.close();assert(MirvCam_LoadProject(file.c_str()));}
+  // Explicit legacy conversion is atomic and can be undone. Source deletion leaves adjustments independent.
+  auto base=g_CameraClips.front();advancedfx::CameraClipModifier legacy;legacy.Id=shift.Id;legacy.Begin=.05;legacy.End=.15;base.Modifiers={legacy};assert(MirvCam_EditClip(base));advancedfx::SequenceModifierClip converted;assert(MirvCam_ConvertClipModifier(base.Id,0,0,converted));assert(g_CameraClips.front().Modifiers.empty()&&std::abs(converted.Begin-(base.Time+legacy.Begin))<1e-9);assert(MirvCam_HistoryUndo(false)&&g_CameraClips.front().Modifiers==base.Modifiers);base.Modifiers.clear();assert(MirvCam_EditClip(base));
+  assert(MirvCam_RemoveClip(original.Id));assert(MirvCam_SequenceModifiers()==savedAdjustments);assert(MirvCam_HistoryUndo(false));
+  assert(MirvCam_RemoveModifier(shift.Id)&&MirvCam_SequenceModifiers().size()==1);assert(MirvCam_HistoryUndo(false)&&MirvCam_SequenceModifiers()==savedAdjustments);assert(MirvCam_RemoveModifier(shift.Id));assert(MirvCam_RemoveModifier(scale.Id));assert(MirvCam_SequenceModifiers().empty());assert(MirvCam_EditClip(original));
+ }
  // Exercise the actual mixed camera -> path -> camera export, including rotation and FOV.
  auto changedCamera=g_CameraRigs.at("B").Rig.Pose;changedCamera.Rotation=Afx::Math::Quaternion::FromQREulerAngles(Afx::Math::QREulerAngles::FromQEulerAngles({0,90,0}));changedCamera.Fov=110;assert(MirvCam_EditCamera(g_CameraRigs.at("B").Id,changedCamera));
  advancedfx::CameraClip pathClip;pathClip.Campath=true;pathClip.Target=g_Hook_VClient_RenderView.m_CamPaths.GetId(0);pathClip.Time=1.2;pathClip.Blend=.1;assert(MirvCam_EditClip(pathClip));advancedfx::CameraClip returnClip;returnClip.Target=g_CameraRigs.at("B").Id;returnClip.Time=1.8;returnClip.Blend=.2;assert(MirvCam_EditClip(returnClip));if(!MirvCam_Bake(bake.c_str(),"sequence",-1,2,.05)){std::cerr<<MirvCam_BakeStatus()<<"\\n";std::abort();}assert(baked.Load(bake.c_str()));assert(std::abs(baked.Eval(-.5).X-1)<.01&&std::abs(baked.Eval(1.4).X-1.4)<.01&&std::abs(baked.Eval(1.9).X-50.95)<.02);assert(std::abs(baked.Eval(2).GetEulerAngles().Yaw-90)<.01&&std::abs(baked.Eval(2).Fov-110)<.01);assert(MirvCam_BakeStatus().find("All sampled poses are identical")==std::string::npos);
