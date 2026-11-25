@@ -3130,7 +3130,7 @@ Duplicating this preset preserves its separate RGB-only options in the editor.
 Existing custom copies retain their own options and must be edited or copied again
 to pick up this change. The built-in name uses the new settings after restarting.
 
-The Recording tab contains a scrollable **FFmpeg log** with a **Clear log**
+The Recording tab contains a scrollable **Recording log / timings** with a **Clear log**
 button. It shows each output's expanded command, encoder stderr and exit code,
 labelled with the output path so simultaneous pass failures can be distinguished.
 New messages follow the bottom while you are already there; scrolling up preserves

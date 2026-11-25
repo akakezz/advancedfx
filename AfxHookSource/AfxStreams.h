@@ -3705,6 +3705,7 @@ private:
 #endif //#ifndef _WIN64
 
 	bool m_Recording;
+	std::chrono::steady_clock::time_point m_RecordWallStart{};
 	bool m_CamBvh;
 
 #ifndef _WIN64

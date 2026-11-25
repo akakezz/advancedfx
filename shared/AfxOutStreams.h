@@ -5,6 +5,8 @@
 #include "RefCountedThreadSafe.h"
 #include "TImageBuffer.h"
 #include "EasySampler.h"
+#include "RecordingTiming.h"
+#include "SamplerKernels.h"
 
 #include <mutex>
 #include <string>
@@ -261,7 +263,7 @@ public:
 
 		if (nullptr == pImageBuffer || *pImageBuffer->GetImageBufferFormat() != m_ImageFormat)
 				return false;
-		const unsigned char* pBuffer = static_cast<const unsigned char*>(pImageBuffer->GetImageBufferData());
+		RecordingTiming::Scope timing{m_SampleTime};
 
 		switch (m_ImageFormat.Format)
 		{
@@ -283,7 +285,8 @@ public:
 
 	// Implements IFramePrinter<bThreadSafe>:
 	virtual void PrintSampledFrame(advancedfx::TImageBuffer<bThreadSafe> * pImageBuffer) override{
-		m_OutVideoStream->SupplyImageBuffer(this, pImageBuffer);
+		RecordingTiming::Scope timing{m_OutputTime};
+		if (!m_OutVideoStream->SupplyImageBuffer(this, pImageBuffer)) ++m_OutputFailures;
 	}	
 
 protected:
@@ -303,9 +306,24 @@ protected:
 		};
 
 		if (m_OutVideoStream) m_OutVideoStream->Release();
+        if (m_SampleTime.Calls) {
+            char report[512];
+            const double sampleMs = m_SampleTime.Milliseconds();
+            const double outputMs = m_OutputTime.Milliseconds();
+            std::snprintf(report,sizeof(report),
+                "%dx%d format %u | %s CPU sampler | %llu inputs, %llu outputs (%llu failed)\n"
+                "Sampler work %.2f ms (%.3f ms/input); downstream submission %.2f ms; total supply %.2f ms.\n",
+                m_ImageFormat.Width,m_ImageFormat.Height,static_cast<unsigned>(m_ImageFormat.Format),
+                SamplerKernels::HasSimd ? "SSE2" : "scalar",
+                m_SampleTime.Calls,m_OutputTime.Calls,m_OutputFailures,
+                sampleMs-outputMs,(sampleMs-outputMs)/m_SampleTime.Calls,outputMs,sampleMs);
+            RecordingTiming::Report("Sampler timing",report);
+        }
 	}
 
 private:
+    RecordingTiming::Counter m_SampleTime, m_OutputTime;
+    unsigned long long m_OutputFailures=0;
 	union {
 		EasyByteSampler<bThreadSafe>* Byte;
 		EasyFloatSampler<bThreadSafe>* Float;

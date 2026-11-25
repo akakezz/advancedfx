@@ -65,7 +65,7 @@ int main(){
  auto readLog=[&]{logText.clear();assert(advancedfx::RecordingLog::Get().Read(revision,entries));for(const auto&e:entries){assert(e.Source=="take/players");logText+=e.Text;}};
  readLog();
  assert(logText.find("incompatible client key (21)")!=std::string::npos);
- assert(logText.find("FFmpeg exit code: 1")!=std::string::npos&&warnings.find("Recording > FFmpeg log")!=std::string::npos);
+ assert(logText.find("FFmpeg exit code: 1")!=std::string::npos&&warnings.find("Recording > Recording log / timings")!=std::string::npos);
  assert(!failed.m_Okay);
  const auto count=closed.size();failed.Close();assert(closed.size()==count);
  logText.clear();warnings.clear();exited=false;injectFailure=false;exitStatus=0;

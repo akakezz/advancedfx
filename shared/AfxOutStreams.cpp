@@ -462,7 +462,7 @@ void COutFFMPEGVideoStreamImpl::Close()
    if(GetExitCodeProcess(m_ProcessInfo.hProcess,&exitCode)){
     const std::string result="\r\nFFmpeg exit code: "+std::to_string(exitCode)+"\r\n";
     WriteEncoderLog(result.data(),DWORD(result.size()));
-    if(exitCode)advancedfx::Warning("FFmpeg failed (exit %lu) for %s; see Recording > FFmpeg log.\n",exitCode,m_EncoderLogSource.c_str());
+    if(exitCode)advancedfx::Warning("FFmpeg failed (exit %lu) for %s; see Recording > Recording log / timings.\n",exitCode,m_EncoderLogSource.c_str());
    }
   }
 		CloseHandle(m_ProcessInfo.hProcess);
