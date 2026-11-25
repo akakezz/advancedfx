@@ -13,6 +13,8 @@
 #include <iomanip>
 #include <locale>
 #include <functional>
+#include <queue>
+#include <set>
 #include <chrono>
 #include <atomic>
 #include <limits>
@@ -670,53 +672,137 @@ double CamPath::GetSpeed(double time)
 }
 
 std::vector<std::pair<double, CamPathValue>> CamPath::SampleInterval(double begin, double end,
-																	 double tolerance, size_t maxPoints)
+                                                                     double tolerance, size_t maxPoints)
 {
 	std::vector<std::pair<double, CamPathValue>> result;
 	if (!CanEval() || !std::isfinite(begin) || !std::isfinite(end) || end <= begin ||
 		!std::isfinite(end - begin) || !std::isfinite(tolerance) || tolerance <= 0 || maxPoints < 2 ||
 		maxPoints > 65536)
 		return result;
-	// Seed several subdivisions to catch symmetric loops; effects additionally
-	// bound temporal sampling so flat endpoint/midpoint tests cannot hide waves.
-	double seedCount = 8;
-	for (const auto &m : m_Modifiers)
-		if (m.Enabled && m.Begin < end && m.End > begin &&
-			(m.Amplitude[0] != 0 || m.Amplitude[1] != 0 || m.Amplitude[2] != 0))
-			seedCount = (std::max)(seedCount, std::ceil((end - begin) * ModifierSampleRate(m) * 8));
-	const size_t seeds = (size_t)(std::min)(double(maxPoints - 1), seedCount);
-	result.emplace_back(begin, Eval(begin));
-	auto error = [](const CamPathValue &a, const CamPathValue &b, const CamPathValue &v, double u)
-	{
-		const double x = v.X - (a.X + (b.X - a.X) * u), y = v.Y - (a.Y + (b.Y - a.Y) * u),
-					 z = v.Z - (a.Z + (b.Z - a.Z) * u);
-		return std::sqrt(x * x + y * y + z * z);
+
+	// Preserve modifier boundaries independently of the length of the enclosing key interval.
+	// Reserve part of the budget for error-driven refinement rather than exhausting it on a uniform grid.
+	std::set<double> critical{begin, end}, seeds;
+	auto add = [&](std::set<double> &times, double t) {
+		if (begin < t && t < end) times.insert(t);
 	};
-	std::function<void(double, const CamPathValue &, double, const CamPathValue &, size_t)> subdivide;
-	subdivide = [&](double a, const CamPathValue &va, double b, const CamPathValue &vb, size_t budget)
+	auto distance = [](const CamPathValue &a, const CamPathValue &b) {
+		const double x = a.X - b.X, y = a.Y - b.Y, z = a.Z - b.Z;
+		return std::sqrt(x*x + y*y + z*z);
+	};
+	for (auto key = m_Map.lower_bound(begin); key != m_Map.end() && key->first <= end; ++key)
 	{
-		if (budget > 1)
+		add(critical, key->first);
+		add(critical, key->first + key->second.HoldDuration);
+	}
+	for (size_t i = 1; i < 8; ++i) add(seeds, begin + (end - begin) * i / 8);
+	const size_t seedBudget = (std::max)(size_t(2), maxPoints / 2);
+	bool stepped = false;
+	for (const auto &m : m_Modifiers)
+	{
+		if (!m.Enabled || m.Strength == 0 || m.Begin > end || m.End < begin ||
+			(m.Amplitude[0] == 0 && m.Amplitude[1] == 0 && m.Amplitude[2] == 0)) continue;
+		const double a = (std::max)(begin, m.Begin), b = (std::min)(end, m.End);
+		add(critical, a); add(critical, b);
+		add(critical, m.Begin + m.FadeIn); add(critical, m.End - m.FadeOut);
+		for (const auto &key : m.Envelope) add(critical, m.Begin + (m.End - m.Begin) * key.Time);
+		// Include both sides of a zero-fade boundary, even at a key's arrival time.
+		if (m.FadeIn == 0 && m.Begin >= begin && m.Begin <= end)
 		{
-			const double mid = a + (b - a) * .5;
-			const auto vm = Eval(mid);
-			if (error(va, vb, vm, .5) > tolerance ||
-				error(va, vb, Eval(a + (b - a) * .25), .25) > tolerance ||
-				error(va, vb, Eval(a + (b - a) * .75), .75) > tolerance)
+			add(critical, std::nextafter(m.Begin, begin));
+			add(critical, std::nextafter(m.Begin, end));
+		}
+		if (m.FadeOut == 0 && m.End >= begin && m.End <= end)
+		{
+			add(critical, std::nextafter(m.End, begin));
+			add(critical, std::nextafter(m.End, end));
+		}
+		stepped |= m.Type == ModifierType::Stepped;
+		const double requested = std::ceil((b - a) * ModifierSampleRate(m) * 8);
+		const double cap = double((std::max)(size_t(8), seedBudget));
+		const size_t count = size_t(std::clamp(requested, 8.0, cap));
+		for (size_t i = 1; i < count; ++i)
+		{
+			// A saturated grid can land at the same phase of every oscillation.
+			// A deterministic offset avoids that alias without pretending the cap
+			// can resolve every cycle of an arbitrarily complex effect.
+			const double jitter = requested > cap ? .35 * std::sin(i * 2.399963229728653) : 0;
+			add(seeds, a + (b - a) * (i + jitter) / count);
+		}
+	}
+	if (stepped)
+	{
+		// The existing evaluator's stepped filter changes at its cached grid knots.
+		// Preserve the exact one-sided poses when those knots actually jump in space.
+		BuildModifierCurves();
+		for (auto it = std::upper_bound(m_ModifierTimes.begin(), m_ModifierTimes.end(), begin);
+			 it != m_ModifierTimes.end() && *it <= end; ++it)
+		{
+			const double before = std::nextafter(*it, begin);
+			if (distance(Eval(before), Eval(*it)) > 1e-5)
 			{
-				subdivide(a, va, mid, vm, budget / 2);
-				subdivide(mid, vm, b, vb, budget - budget / 2);
-				return;
+				add(critical, before); add(critical, *it);
 			}
 		}
-		result.emplace_back(b, vb);
-	};
-	for (size_t i = 0; i < seeds; ++i)
-	{
-		const auto a = result.back();
-		const double b = begin + (end - begin) * (i + 1) / seeds;
-		const size_t budget = (maxPoints - result.size()) / (seeds - i);
-		subdivide(a.first, a.second, b, Eval(b), budget);
 	}
+	// Bounded, deterministic reduction only when the requested detail exceeds the cap.
+	// Always keep both interval endpoints and prefer event knots over ordinary grid seeds.
+	auto take = [](const std::set<double> &source, size_t count, std::set<double> &dest) {
+		if (source.empty() || count == 0) return;
+		if (count >= source.size()) { dest.insert(source.begin(), source.end()); return; }
+		if (count == 1) { dest.insert(*std::next(source.begin(), source.size() / 2)); return; }
+		size_t index = 0, chosen = 0;
+		for (double t : source)
+		{
+			if (chosen < count && index == std::uint64_t(chosen) * (source.size() - 1) / (std::max)(size_t(1), count - 1))
+			{ dest.insert(t); ++chosen; }
+			++index;
+		}
+	};
+	std::set<double> times{begin, end};
+	critical.erase(begin); critical.erase(end);
+	take(critical, (std::min)(critical.size(), maxPoints - 2), times);
+	for (double t : times) seeds.erase(t);
+	if (times.size() < seedBudget) take(seeds, seedBudget - times.size(), times);
+	std::map<double, CamPathValue> samples;
+	for (double t : times) samples.emplace(t, Eval(t));
+
+	struct Candidate
+	{
+		double Error, Begin, End, Split;
+		CamPathValue Pose;
+		bool operator<(const Candidate &other) const { return Error < other.Error; }
+	};
+	std::priority_queue<Candidate> queue;
+	auto probe = [&](double a, const CamPathValue &va, double b, const CamPathValue &vb) {
+		Candidate worst{tolerance, a, b, a, va};
+		for (double u : {.25, .5, .75})
+		{
+			const double t = a + (b - a) * u;
+			if (!(a < t && t < b)) continue;
+			const auto v = Eval(t);
+			CamPathValue chord = va;
+			chord.X += (vb.X - va.X) * u; chord.Y += (vb.Y - va.Y) * u; chord.Z += (vb.Z - va.Z) * u;
+			const double error = distance(v, chord);
+			if (error > worst.Error) worst = {error, a, b, t, v};
+		}
+		if (worst.Split != a) queue.push(worst);
+	};
+	if (samples.size() < maxPoints)
+		for (auto a = samples.begin(), b = std::next(a); b != samples.end(); ++a, ++b)
+			probe(a->first, a->second, b->first, b->second);
+	while (samples.size() < maxPoints && !queue.empty())
+	{
+		const auto next = queue.top(); queue.pop();
+		const auto a = samples.find(next.Begin), b = samples.find(next.End);
+		const auto mid = samples.emplace(next.Split, next.Pose).first;
+		if (samples.size() < maxPoints)
+		{
+			probe(a->first, a->second, mid->first, mid->second);
+			probe(mid->first, mid->second, b->first, b->second);
+		}
+	}
+	result.assign(samples.begin(), samples.end());
 	return result;
 }
 
@@ -732,7 +818,7 @@ void CamPath::SetDistanceTimingPose(bool enabled)
 	if (m_DistanceTimingPose == enabled)
 		return;
 	m_DistanceTimingPose = enabled;
-	Changed(true, false, false);
+	Changed(true, false, HasPositionModifiers());
 }
 void CamPath::BuildArcs()
 {

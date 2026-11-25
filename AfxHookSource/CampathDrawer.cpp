@@ -46,7 +46,7 @@ const FLOAT c_CameraTrajectoryPixelWidth = 8.0f;
 const double c_CameraTrajectoryEpsilon = 1.0f;
 
 /// <remarks>Must be at least 2.</remarks>
-const size_t c_CameraTrajectoryMaxPointsPerInterval = 1024;
+const size_t c_CameraTrajectoryMaxPointsPerInterval = 8192;
 
 CCampathDrawer g_CampathDrawer;
 
@@ -58,7 +58,7 @@ struct AFXDRAWTEXTUREVERTEX
 	float    pos[3];
 	float    uv[2];
 };
-#define D3DFVF_AFXDRAWTEXTUREVERTEX (D3DFVF_XYZ|D3DFVF_TEX1|D3DFVF_TEXCOORDSIZE1(1))
+#define D3DFVF_AFXDRAWTEXTUREVERTEX (D3DFVF_XYZ|D3DFVF_TEX1)
 
 // World-position-aware label slots. Camera projection never determines stack order.
 // Three slots reserve one glyph row; a cluster can show up to 64 rows.
@@ -169,10 +169,11 @@ void CCampathDrawer::AutoPolyLineFlush()
 	m_Device->SetStreamSource(0, m_VertexBuffer, 0, sizeof(Vertex));
 
 	UINT startVertex = 0;
-	UINT primitiveCount = m_VertexBufferVertexCount -2;
+	UINT primitiveCount = m_VertexBufferVertexCount >= 4 ? m_VertexBufferVertexCount - 2 : 0;
 
 	// Draw lines:
-	m_Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, startVertex, primitiveCount);
+	if (primitiveCount)
+		m_Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, startVertex, primitiveCount);
 	startVertex += 2*(primitiveCount+1);
 
 	m_VertexBufferVertexCount = 0;
@@ -299,9 +300,11 @@ void CCampathDrawer::End() {
 #define ValToUCCondInv(value,invert) ((invert) ? 0xFF -(unsigned char)(value) : (unsigned char)(value) )
 
 CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, CamPath *path,
-                                                       const std::string &name, bool sceneOnly)
+                                                       const std::string &name, const CLessDynamicProperties &geometry,
+                                                       bool activePath, bool sceneOnly)
 {
 	SceneOnly = sceneOnly;
+	ActivePath = activePath;
 	if (path == &g_Hook_VClient_RenderView.m_CamPath)
 		SceneLines = AfxHookSource::CameraOverlay::SceneCacheLines();
 	m_CurTime = g_MirvTime.GetTime() - path->GetOffset();
@@ -425,10 +428,10 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 				   : -1;
 	};
 	size_t keyIndex = 0;
-	for (auto it = path->GetBegin(); !sceneOnly && it != path->GetEnd(); ++it, ++keyIndex)
+	for (auto it = geometry.GetKeyframesBegin(); !sceneOnly && it != geometry.GetKeyframesEnd(); ++it, ++keyIndex)
 	{
 		size_t digits = std::to_string(keyIndex).size();
-		IndexRows.push_back(place(it.GetValue(), 0, (float)digits * 0.5f));
+		IndexRows.push_back(place(it->GetValue(), 0, (float)digits * 0.5f));
 	}
 	// Capture glyph metrics and text on the engine thread. Queued render work retains
 	// only immutable values, never a pointer to an editable or deleted camera path.
@@ -533,11 +536,11 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 	if (path->GetSize())
 	{
 		if (drawer->m_DrawNames)
-			label(path->GetBegin().GetValue(), 3.2f, name);
-		for (auto it = path->GetBegin(); it != path->GetEnd(); ++it)
-			if (drawer->m_DrawHolds && it.GetValue().HoldDuration > 0)
+			label(geometry.GetKeyframesBegin()->GetValue(), 3.2f, name);
+		for (auto it = geometry.GetKeyframesBegin(); it != geometry.GetKeyframesEnd(); ++it)
+			if (drawer->m_DrawHolds && it->GetValue().HoldDuration > 0)
 			{
-				const double release = it.GetTime() + it.GetValue().HoldDuration + path->GetOffset();
+				const double release = it->GetTime() + it->GetValue().HoldDuration + path->GetOffset();
 				int tick = 0;
 				char text[128];
 				double demoTime = release;
@@ -547,7 +550,7 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 					snprintf(text, sizeof(text), "Hold -> tick %d (%.3f s)", tick, demoTime);
 				else
 					snprintf(text, sizeof(text), "Hold -> %.3f s", release);
-				label(it.GetValue(), 1.8f, text);
+				label(it->GetValue(), 1.8f, text);
 			}
 		if (drawer->m_DrawDurations && path->CanEval())
 		{
@@ -573,7 +576,7 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 	m_DrawKeyframeAxis = drawer->m_DrawKeyframeAxis;
 	m_DrawKeyframeCam = drawer->m_DrawKeyframeCam;
 
-	if (path->CanEval() && 2 <= path->GetSize())
+	if (activePath && m_InCampath && path->CanEval())
 	{
 		m_CurrentValue = path->Eval(m_CurTime);
 	}
@@ -587,14 +590,16 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer *d
 
 	for (CamPathIterator it = path->GetBegin(); it != path->GetEnd(); ++it)
 	{
-		m_Keyframes.emplace_back(it.GetTime(), it.GetValue());
+		m_Keyframes.emplace_back(it.GetTime(), path->EvaluateKeyframePose(it.GetTime(), it.GetValue()));
 		m_Selection[it.GetTime()] = it.GetValue().Selected;
 	}
 
+	m_HasPositionModifiers = path->HasSpatialModifiersForDrawing();
 	m_PositionRevision = path->GetPositionRevision();
 	m_Source = path;
 	if (previous && previous->m_Source == path && previous->m_PositionRevision == m_PositionRevision &&
-		previous->m_CampathCanEval == m_CampathCanEval)
+		previous->m_CampathCanEval == m_CampathCanEval &&
+		previous->m_HasPositionModifiers == m_HasPositionModifiers)
 	{
 		m_TrajectoryPoints = previous->m_TrajectoryPoints;
 		return;
@@ -602,19 +607,23 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer *d
 	auto trajectory = std::make_shared<std::list<CKeyframe>>();
 	m_TrajectoryPoints = trajectory;
 
-	if (m_CampathCanEval && 2 <= m_Keyframes.size())
+	if (m_CampathCanEval && !m_Keyframes.empty())
 	{
-		auto last = path->GetBegin(), it = last;
-		const size_t budget = (std::min)(c_CameraTrajectoryMaxPointsPerInterval,
-										 (std::max)(size_t(16), size_t(8192) / (m_Keyframes.size() - 1)));
-		for (++it; it != path->GetEnd(); ++it)
+		const size_t intervals = (std::max)(size_t(1), m_Keyframes.size() - 1 +
+			(m_Keyframes.back().GetValue().HoldDuration > 0 ? 1 : 0));
+		const size_t budget = (std::min)(m_HasPositionModifiers ? c_CameraTrajectoryMaxPointsPerInterval : size_t(1024),
+			 (std::max)(size_t(16), size_t(m_HasPositionModifiers ? 32768 : 8192) / intervals));
+		auto append = [&](double begin, double end)
 		{
-			const auto samples =
-				path->SampleInterval(last.GetTime(), it.GetTime(), c_CameraTrajectoryEpsilon * .5, budget);
-			if (samples.size() < 2)
+			const auto samples = path->SampleInterval(begin, end, c_CameraTrajectoryEpsilon * .5, budget);
+			if (samples.size() < 2) return;
+			// Modified paths retain temporal reversals and modifier event knots.
+			if (m_HasPositionModifiers)
 			{
-				last = it;
-				continue;
+				for (const auto &sample : samples)
+					if (trajectory->empty() || trajectory->back().GetTime() < sample.first)
+						trajectory->emplace_back(sample.first, sample.second);
+				return;
 			}
 			std::vector<TempPoint> points(samples.size());
 			for (size_t i = 0; i < samples.size(); ++i)
@@ -625,14 +634,15 @@ CCampathDrawer::CLessDynamicProperties::CLessDynamicProperties(CCampathDrawer *d
 				points[i].nextPt = i + 1 < points.size() ? &points[i + 1] : nullptr;
 			}
 			RamerDouglasPeucker(&points.front(), &points.back(), c_CameraTrajectoryEpsilon);
-			for (auto *point = &points.front(); point && point->nextPt; point = point->nextPt)
-				trajectory->emplace_back(point->t, samples[size_t(point - points.data())].second);
-			last = it;
-			auto next = it;
-			++next;
-			if (next == path->GetEnd())
-				trajectory->emplace_back(samples.back().first, samples.back().second);
-		}
+			for (auto *point = &points.front(); point; point = point->nextPt)
+				if (trajectory->empty() || trajectory->back().GetTime() < point->t)
+					trajectory->emplace_back(point->t, samples[size_t(point - points.data())].second);
+		};
+		for (auto last = m_Keyframes.begin(), it = std::next(last); it != m_Keyframes.end(); ++last, ++it)
+			append(last->GetTime(), it->GetTime());
+		// A modifier may move the camera during the final authored hold, including a one-key path.
+		if (m_HasPositionModifiers && m_Keyframes.back().GetValue().HoldDuration > 0)
+			append(m_Keyframes.back().GetTime(), path->GetUpperBound());
 	}
 }
 
@@ -663,11 +673,14 @@ void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
 			m_SceneProperties->AddRef();
 		}
 		MaterialSystem_ExecuteOnRenderThread(new CCampathDrawerFunctor(
-		    this, &g_Hook_VClient_RenderView.m_CamPath, "", m_SceneProperties, true));
+		    this, &g_Hook_VClient_RenderView.m_CamPath, "", m_SceneProperties, true, true));
 	}
 	if (!m_Draw)
 		return;
 
+	// Reserve the active path's label slots first, but draw it last so overlap
+	// with an inactive path cannot wash out its selection colors.
+	CCampathDrawerFunctor *activeDraw = nullptr;
 	if (paths.IsVisible(paths.GetActive()))
 	{
 		if (!m_LessDynamicProperties || m_PropertiesDirty)
@@ -680,9 +693,8 @@ void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
 				previous->Release();
 			m_PropertiesDirty = false;
 		}
-		MaterialSystem_ExecuteOnRenderThread(
-			new CCampathDrawerFunctor(this, &g_Hook_VClient_RenderView.m_CamPath,
-									  paths.GetName(paths.GetActive()), m_LessDynamicProperties));
+		activeDraw = new CCampathDrawerFunctor(this, &g_Hook_VClient_RenderView.m_CamPath,
+											  paths.GetName(paths.GetActive()), m_LessDynamicProperties);
 	}
 	const auto state = paths.CaptureState();
 	for (size_t i = 0; i < paths.GetCount(); ++i)
@@ -706,8 +718,9 @@ void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
 				found->State = state.Paths[i].Data;
 			}
 			MaterialSystem_ExecuteOnRenderThread(
-				new CCampathDrawerFunctor(this, path, paths.GetName(i), found->Properties));
+				new CCampathDrawerFunctor(this, path, paths.GetName(i), found->Properties, false));
 		}
+	if (activeDraw) MaterialSystem_ExecuteOnRenderThread(activeDraw);
 	for (auto it = m_OtherPaths.begin(); it != m_OtherPaths.end();)
 	{
 		bool exists = false;
@@ -774,6 +787,8 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 		bool campathCanEval = lessDynamicProperties->GetCampathCanEval();
 		bool campathEnabled = dynamicPorperties->GetCampathEnabled();
 		bool cameraMightBeSelected = false;
+		const bool activePath = dynamicPorperties->ActivePath;
+		const DWORD inactiveColor = D3DCOLOR_RGBA(150, 150, 150, 110);
 
 		int screenWidth = dynamicPorperties->GetScreenWidth();
 		int screenHeight = dynamicPorperties->GetScreenHeight();
@@ -858,7 +873,7 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 					m_Device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
 
 					m_Device->SetVertexShader(NULL);
-					m_Device->SetPixelShader(pixelShader);
+					m_Device->SetPixelShader(activePath ? pixelShader : nullptr);
 
 					m_Device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 					m_Device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
@@ -883,6 +898,19 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 					m_Device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
 					m_Device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
 
+					// Inactive text uses texture alpha with a neutral constant color.
+					if (!activePath)
+					{
+						m_Device->SetRenderState(D3DRS_TEXTUREFACTOR, inactiveColor);
+						m_Device->SetRenderState(D3DRS_LIGHTING, FALSE);
+						m_Device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+						m_Device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+						m_Device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TFACTOR);
+						m_Device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+						m_Device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
+						m_Device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+						m_Device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+					}
 					// texture:
 					m_Device->SetTexture(0, m_DigitsTexture);
 
@@ -907,7 +935,7 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 					const Vector3 & vvRight = dynamicPorperties->GetPlaneRight();
 					const Vector3 & vvUp = dynamicPorperties->GetPlaneUp();
 
-					for (auto it = lessDynamicProperties->GetKeyframesBegin(); it != lessDynamicProperties->GetKeyframesEnd(); it++)
+					for (auto it = lessDynamicProperties->GetKeyframesBegin(); drawKeyFrameIndex > 0 && it != lessDynamicProperties->GetKeyframesEnd(); it++)
 					{
 						const float indexRow = index < (int)dynamicPorperties->IndexRows.size()
 												   ? dynamicPorperties->IndexRows[index]
@@ -1039,94 +1067,27 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 			}
 			AutoSingleLineFlush();
 		}
-		// Draw trajectory:
-		if(2 <= lessDynamicProperties->GetKeyframesSize() && lessDynamicProperties->GetCampathCanEval())
+		// Draw trajectory. Independent segments keep tight modifier reversals from
+		// collapsing the connected-line miter; never bridge an actual instantaneous jump.
+		if (lessDynamicProperties->GetCampathCanEval())
 		{
-			newCScreenInfo[2] = c_CameraTrajectoryPixelWidth;
+			newCScreenInfo[2] = activePath ? c_CameraTrajectoryPixelWidth : c_CameraTrajectoryPixelWidth * .5f;
 			m_Device->SetVertexShaderConstantF(48, newCScreenInfo, 1);
-
-			AutoPolyLineStart();
-
-			auto itPts = lessDynamicProperties->GetTrajectoryPointsBegin();
-
-			auto itKeysLast = lessDynamicProperties->GetKeyframesBegin();
-			auto itKeysNext = itKeysLast;
-			++itKeysNext;
-
-			bool hasLastPt = false;
-			bool hasNextPt = false;
-			bool hasCurPt = false;
-			
-			double lastPtTime;
-			CamPathValue lastPtValue;
-			double curPtTime;
-			CamPathValue curPtValue;
-			double nextPtTime;
-			CamPathValue nextPtValue;
-
-			do
-			{
-				if(hasNextPt)
-				{
-					hasLastPt = true;
-					lastPtTime = curPtTime;
-					lastPtValue = curPtValue;
-
-					hasCurPt = true;
-					curPtTime = nextPtTime;
-					curPtValue = nextPtValue;
-
-					hasNextPt = false;
-				}
-				else
-				{
-					hasCurPt = true;
-					curPtTime = itPts->GetTime();
-					curPtValue = itPts->GetValue();
-					++itPts;
-				}
-
-				while(itKeysNext->GetTime() < curPtTime)
-				{
-					itKeysLast = itKeysNext;
-					++itKeysNext;
-				}
-
-				if(itPts != lessDynamicProperties->GetTrajectoryPointsEnd())
-				{
-					hasNextPt = true;
-					nextPtTime = itPts->GetTime();
-					nextPtValue = itPts->GetValue();
-					++itPts;
-				}
-				else
-				{
-					// current point is last point.
-					hasNextPt = false;
-					nextPtValue = curPtValue;
-				}
-
-				if(!hasLastPt)
-				{
-					// current point is first point.
-					lastPtValue = curPtValue;
-				}
-
-				// emit current point:
-				{
-					curPtValue.Selected = lessDynamicProperties->IsSelected(curPtTime);
-					double deltaTime = abs(curTime -curPtTime);
-
-					DWORD colour;
-
+			const auto end = lessDynamicProperties->GetTrajectoryPointsEnd();
+			auto it = lessDynamicProperties->GetTrajectoryPointsBegin();
+			auto colorAt = [&](double time) -> DWORD {
+				if (!activePath) return inactiveColor;
+				const bool selected = lessDynamicProperties->IsSelected(time);
+				const double deltaTime = std::abs(curTime - time);
+				DWORD colour;
 					// determine colour:
 					if(deltaTime < 1.0)
 					{
 						double t = (deltaTime -0.0)/1.0;
 						colour = D3DCOLOR_RGBA(
-							ValToUCCondInv(255.0*t, curPtValue.Selected),
-							ValToUCCondInv(255, curPtValue.Selected),
-							ValToUCCondInv(0, curPtValue.Selected),
+							ValToUCCondInv(255.0*t, selected),
+							ValToUCCondInv(255, selected),
+							ValToUCCondInv(0, selected),
 							(unsigned char)(127*(1.0-t))+128
 						);
 					}
@@ -1135,32 +1096,53 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 					{
 						double t = (deltaTime -1.0)/1.0;
 						colour = D3DCOLOR_RGBA(
-							ValToUCCondInv(255, curPtValue.Selected),
-							ValToUCCondInv(255.0*(1.0-t), curPtValue.Selected),
-							ValToUCCondInv(0, curPtValue.Selected),
+							ValToUCCondInv(255, selected),
+							ValToUCCondInv(255.0*(1.0-t), selected),
+							ValToUCCondInv(0, selected),
 							(unsigned char)(64*(1.0-t))+64
 						);
 					}
 					else
 					{
 						colour = D3DCOLOR_RGBA(
-							ValToUCCondInv(255, curPtValue.Selected),
-							ValToUCCondInv(0, curPtValue.Selected),
-							ValToUCCondInv(0, curPtValue.Selected),
+							ValToUCCondInv(255, selected),
+							ValToUCCondInv(0, selected),
+							ValToUCCondInv(0, selected),
 							64
 						);
 					}
 
-					AutoPolyLinePoint(
-						Vector3(lastPtValue.X,lastPtValue.Y,lastPtValue.Z)
-						, Vector3(curPtValue.X,curPtValue.Y,curPtValue.Z)
-						, colour
-						, Vector3(nextPtValue.X,nextPtValue.Y,nextPtValue.Z));
+				return colour;
+			};
+			auto pos = [](const CLessDynamicProperties::CKeyframe &p) {
+				const auto &v = p.GetValue();
+				return Vector3(v.X, v.Y, v.Z);
+			};
+			if (it != end && lessDynamicProperties->HasPositionModifiers())
+			{
+				for (auto next = std::next(it); next != end; ++it, ++next)
+				{
+					const auto a = pos(*it), b = pos(*next);
+					const double length = (b - a).Length();
+					if (!std::isfinite(length) || length <= 1e-8 ||
+						(std::nextafter(it->GetTime(), next->GetTime()) >= next->GetTime() && length > 1e-5))
+						continue;
+					AutoSingleLine(a, colorAt(it->GetTime()), b, colorAt(next->GetTime()));
 				}
+				AutoSingleLineFlush();
 			}
-			while(hasNextPt);
-
-			AutoPolyLineFlush();
+			else if (it != end && std::next(it) != end)
+			{
+				AutoPolyLineStart();
+				auto prev = it;
+				for (; it != end; ++it)
+				{
+					auto next = std::next(it);
+					AutoPolyLinePoint(pos(*prev), pos(*it), colorAt(it->GetTime()), pos(next == end ? *it : *next));
+					prev = it;
+				}
+				AutoPolyLineFlush();
+			}
 		}
 
 		// Draw keyframes:
@@ -1219,6 +1201,8 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 					);
 				}
 
+				if (!activePath) colour = inactiveColor;
+
 				if (dynamicPorperties->GetDrawKeyframeAxis())
 				{
 					// x / forward line:
@@ -1256,7 +1240,7 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 		}
 
 		// Draw wireframe camera:
-		if(dynamicPorperties->GetInCampath() && lessDynamicProperties->GetCampathCanEval())
+		if(activePath && dynamicPorperties->GetInCampath() && lessDynamicProperties->GetCampathCanEval())
 		{
 			DWORD colourCam = dynamicPorperties->GetCampathEnabled()
 				? D3DCOLOR_RGBA(

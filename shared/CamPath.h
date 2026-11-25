@@ -254,6 +254,16 @@ public:
 	/// Must not be called if CanEval() returns false!<br />
 	/// </remarks>
 	CamPathValue Eval(double t);
+	// Visualization only: preserve the authored key's metadata, not its unmodified pose.
+	CamPathValue EvaluateKeyframePose(double time, const CamPathValue &key)
+	{
+		if (!CanEval()) return key;
+		auto pose = Eval(time);
+		pose.Selected = key.Selected;
+		pose.HoldDuration = key.HoldDuration;
+		return pose;
+	}
+	bool HasSpatialModifiersForDrawing() const { return HasPositionModifiers(); }
 	CamPathValue EvalUnmodified(double time);
 
 	bool Save(wchar_t const * fileName);
