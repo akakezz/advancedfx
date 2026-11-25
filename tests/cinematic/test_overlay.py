@@ -133,6 +133,16 @@ void Mirv_Tf2_SceneRenderStatus(unsigned &pending,unsigned &peak){pending=peak=0
 enum class MirvOfSceneStage { Entities, Poses, Replay };
 // The headless harness has no native OF client or studio interfaces.
 const char *Mirv_Of_SceneCompatibilityIssue(MirvOfSceneStage){return "Native OF interfaces unavailable in headless test";}
+// Do not pretend that an unavailable native binary or studio interface is supported.
+bool Mirv_Of_SceneInterfacesSupported(bool){return false;}
+bool Mirv_Of_ScenePosesSupported(){return false;}
+void Mirv_Of_CollectSceneEntities(bool,bool,bool,bool,bool,bool,bool,bool,std::vector<MirvTf2SceneEntity>&out){out.clear();}
+void Mirv_Tf2_SceneBoneLines(const advancedfx::SceneCache::Entity&,const advancedfx::SceneCache::Entity*,std::vector<advancedfx::SceneCache::Line>&){/* No native model matrices in this fixture. */}
+struct MirvTf2SceneRenderDiagnostics {
+ unsigned Outstanding=0,Peak=0;
+ unsigned long long Submitted=0,CallbacksInvoked=0,CompletionSignaled=0,Retired=0;
+};
+MirvTf2SceneRenderDiagnostics Mirv_Tf2_SceneRenderDiagnostics(){return {};}
 
 constexpr int MIRV_TF2_MAX_BONES=256;
 struct MirvTf2BoneName_t{char name[64];int parent;};
@@ -222,6 +232,15 @@ bool Mirv_Tf2_TraceEntity(const double*,const double*,int&out){out=tracedEntity;
 using LONG=long;using PVOID=void*;constexpr LONG NO_ERROR=0;LONG povHookError=0;int povHookCommits=0;
 void*GetCurrentThread(){return nullptr;}LONG DetourTransactionBegin(){return povHookError;}LONG DetourUpdateThread(void*){return 0;}LONG DetourAttach(PVOID*,PVOID){return 0;}LONG DetourTransactionAbort(){return 0;}LONG DetourTransactionCommit(){++povHookCommits;return 0;}
 using UINT=unsigned int;using DWORD=unsigned long;using WPARAM=uintptr_t;using LPARAM=intptr_t;
+// The native OF pointer-validation path must fail closed in the headless process.
+using SIZE_T=size_t;
+struct MEMORY_BASIC_INFORMATION {void *AllocationBase=nullptr;DWORD State=0,Protect=0;};
+constexpr DWORD MEM_COMMIT=0x1000,PAGE_NOACCESS=0x01,PAGE_GUARD=0x100,
+ PAGE_EXECUTE=0x10,PAGE_EXECUTE_READ=0x20,PAGE_EXECUTE_READWRITE=0x40,PAGE_EXECUTE_WRITECOPY=0x80;
+void *GetModuleHandleW(const wchar_t*){return nullptr;}
+void *GetCurrentProcess(){return nullptr;}
+SIZE_T VirtualQuery(const void*,MEMORY_BASIC_INFORMATION*,SIZE_T){return 0;}
+bool ReadProcessMemory(void*,const void*,void*,SIZE_T,SIZE_T *read){if(read)*read=0;return false;}
 // Model the Explorer process boundary without ever starting a native process.
 struct STARTUPINFOW{DWORD cb=0;};
 struct PROCESS_INFORMATION{void *hProcess=nullptr,*hThread=nullptr;};
@@ -370,6 +389,8 @@ collision_stub=r"""
 std::vector<std::pair<void*,const char*>> collisionClasses;
 namespace SOURCESDK { namespace TF2 {using HTOOLHANDLE=size_t;constexpr HTOOLHANDLE HTOOLHANDLE_INVALID=0;struct IClientTools {
  void*GetLocalPlayer(){return (void*)1;}bool IsPlayer(void*p){return p==(void*)1||p==(void*)2;}
+ void*FirstEntity(){return collisionClasses.empty()?nullptr:collisionClasses.front().first;}
+ void*NextEntity(void*p){for(size_t i=0;i+1<collisionClasses.size();++i)if(collisionClasses[i].first==p)return collisionClasses[i+1].first;return nullptr;}
  int GetEntIndex(void*p){return int(size_t(p));}HTOOLHANDLE GetToolHandleForEntityByIndex(int i){return i;}
  HTOOLHANDLE AttachToEntity(void*p){return size_t(p);}void DetachFromEntity(void*){}
  const char*GetClassname(HTOOLHANDLE h){for(auto v:collisionClasses)if(size_t(v.first)==h)return v.second;return "prop_dynamic";}
@@ -1152,6 +1173,10 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  // Focus and device transitions gate native drawing without clearing CPU history.
  SceneCacheDevicePresent(true);SceneCacheFocus(true);SceneCacheFrame();SceneCacheFrame();check(SceneCanDrawModels(),"Stable focused device permits cached draws");
  auto retained=g_SceneCache.Count();SceneCacheFocus(false);check(!SceneCanDrawModels(),"Focus loss immediately suspends cached model submission");SceneCacheFrame();SceneCacheFocus(true);check(!SceneCanDrawModels(),"Focus return waits for engine warmup");SceneCacheFrame();check(!SceneCanDrawModels(),"First resumed frame cannot draw stale device state");SceneCacheFrame();check(SceneCanDrawModels(),"Second stable resumed frame permits models");
+ {const bool wasLegacy=g_OpenFortressLegacyMode;g_OpenFortressLegacyMode=true;
+ check(!SceneCanDrawModels()&&SceneCanDrawLines(),"Unavailable OF native replay blocks studio draws but permits cached lines");
+ check(!Mirv_Of_SceneInterfacesSupported(false)&&!Mirv_Of_ScenePosesSupported(),"Headless OF native compatibility fails closed");
+ g_OpenFortressLegacyMode=wasLegacy;}
  SceneCacheDevicePresent(false);check(!SceneCanDrawModels(),"Failed present/reset blocks cached submissions");SceneCacheFrame();SceneCacheDevicePresent(true);SceneCacheFrame();check(!SceneCanDrawModels(),"Successful present still waits for engine warmup");SceneCacheFrame();check(SceneCanDrawModels()&&g_SceneCache.Count()==retained,"Device recovery retains CPU cache and resumes safely");
  // The cleaned panel's actual controls: optional filter, unified transport and collapsed diagnostics.
  SceneClearHistory();SceneSelectPosePlayer(0);g_SceneRecord=false;g_SceneRangeEnabled=false;
