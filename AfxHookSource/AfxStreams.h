@@ -10,6 +10,7 @@
 #include "MaterialSystemHooks.h"
 #include "d3d9Hooks.h"
 #include "D3D9ImageBuffer.h"
+#include "GpuScreenCapture.h"
 
 
 #ifndef _WIN64
@@ -3490,6 +3491,8 @@ public:
 
 	const char *GetRecordScreenSettingsName() const;
 	bool SetRecordScreenSettings(const char *name);
+    bool GetGpuScreenCapture() const { return m_GpuScreenCaptureEnabled; }
+    bool SetGpuScreenCapture(bool enabled) { if(m_Recording) return false; m_GpuScreenCaptureEnabled=enabled; return true; }
 	bool GetRecordScreenEnabled() const
 	{
 		return m_RecordScreen && (m_Tf2SeparateConfigured ? m_Tf2FullReference.load() : m_RecordScreen->Enabled);
@@ -3824,6 +3827,8 @@ private:
 
 		virtual void OnCapture(IAfxD3D9CaptureBuffer * capture) {
 			std::unique_lock<std::mutex> lock(m_ProcessingThreadMutex);
+            // GPU readback buffers are independent; bound the CPU queue as well.
+            m_ProcessingThreadCv.wait(lock,[this]{return m_Captures.size()<4;});
 			if (capture) capture->AddRef();
 			m_Captures.push_back(capture);
 			m_ProcessingThreadCv.notify_one();
@@ -3876,6 +3881,12 @@ private:
 		advancedfx::StreamCaptureType m_CaptureType;
 	} * m_DrawingRecordScreen = nullptr;
  class CCaptureNode* m_DrawingCaptureNode = nullptr;
+ GpuScreenCapture *m_DrawingGpuCapture = nullptr;
+ advancedfx::COutVideoStreamCreator *m_DrawingPendingCreator = nullptr;
+ bool m_DrawingTryGpu = false;
+ std::atomic<bool> m_GpuScreenCaptureEnabled{false};
+ void DrawingThread_CreateScreenCapture(advancedfx::COutVideoStreamCreator *, bool gpu);
+ void DrawingThread_DeleteScreenCapture();
  std::atomic<unsigned> m_Tf2PassBackground{0xff00ff00u}; // Chroma green; isolated passes only.
  std::atomic<bool> m_Tf2PassAlpha{false};
  std::atomic<bool> m_Tf2SeparateConfigured{false}, m_Tf2FullReference{false};
@@ -3911,30 +3922,19 @@ private:
  };
 
 	class CCreateScreenCaptureNodeFunctor : public CMaterialSystemFunctor {
-	public:
-		CCreateScreenCaptureNodeFunctor(advancedfx::COutVideoStreamCreator* outVideoStreamCreator)
-		: m_OutVideoStreamCreator(outVideoStreamCreator) {
-		}
-
-		virtual void operator()() {
-			g_AfxStreams.m_DrawingCaptureNode = new CCaptureNode(
-				new CCaptureInputRenderTarget(),
-				new CDrawingRecordScreenOutput(m_OutVideoStreamCreator));
-			g_AfxStreams.m_DrawingCaptureNode->AddRef();
-		}
-
-	private:
-		advancedfx::COutVideoStreamCreator* m_OutVideoStreamCreator;
-	};
-
-	class CDeleteScreenCaptureNodeFunctor : public CMaterialSystemFunctor {
-	public:
-		virtual void operator()() {
-			g_AfxStreams.m_DrawingCaptureNode->GpuRelease();
-			g_AfxStreams.m_DrawingCaptureNode->Release();
-			g_AfxStreams.m_DrawingCaptureNode = nullptr;			
-		}
-	};
+    public:
+        CCreateScreenCaptureNodeFunctor(advancedfx::COutVideoStreamCreator* creator,bool gpu)
+            : m_OutVideoStreamCreator(creator), m_Gpu(gpu) { creator->AddRef(); }
+        ~CCreateScreenCaptureNodeFunctor() { m_OutVideoStreamCreator->Release(); }
+        void operator()() override { g_AfxStreams.DrawingThread_CreateScreenCapture(m_OutVideoStreamCreator,m_Gpu); }
+    private:
+        advancedfx::COutVideoStreamCreator* m_OutVideoStreamCreator;
+        bool m_Gpu;
+    };
+    class CDeleteScreenCaptureNodeFunctor : public CMaterialSystemFunctor {
+    public:
+        void operator()() override { g_AfxStreams.DrawingThread_DeleteScreenCapture(); }
+    };
 
 	class CQueueCaptureFunctor : public CMaterialSystemFunctor {
 	public:

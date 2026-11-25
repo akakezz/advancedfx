@@ -9079,6 +9079,11 @@ void Draw()
 				}
 				ImGui::TextDisabled("Includes built-in and custom mirv_streams settings. The menu always reads the active profile.");
 				DrawRecordingProfileEditor(Recording::CurrentProfile());
+                bool gpuCapture=Recording::GpuCaptureEnabled();
+                ImGui::BeginDisabled(Recording::IsActive() || Recording::SeparateConfigured());
+                if(ImGui::Checkbox("GPU capture (experimental)",&gpuCapture)) Recording::SetGpuCaptureEnabled(gpuCapture);
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("Screen color only; unsupported devices/profiles use CPU. See recording log.");
 
 				ImGui::Separator();
 				ImGui::BeginDisabled(Recording::IsActive() || !RecordingResolution::CanStart());

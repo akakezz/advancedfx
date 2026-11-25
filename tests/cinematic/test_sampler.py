@@ -3,7 +3,7 @@ from pathlib import Path
 import argparse, os, shutil, subprocess, tempfile
 p=argparse.ArgumentParser();p.add_argument('--build-dir',type=Path,default=Path(tempfile.gettempdir())/'hlae-sampler');p.add_argument('--sanitize',action='store_true');a=p.parse_args()
 r=Path(__file__).resolve().parents[2];out=a.build_dir.resolve();out.mkdir(parents=True,exist_ok=True);shared=out/'shared';shared.mkdir(exist_ok=True)
-for name in ['EasySampler.cpp','EasySampler.h','SamplerKernels.h','ImageFormat.h','TImageBuffer.h','TGrowingBufferPool.h','TRefCounted.h','GrowingBuffer.h','RecordingTiming.h','RecordingLog.h']:
+for name in ['EasySampler.cpp','EasySampler.h','GpuSamplerSchedule.h','SamplerKernels.h','ImageFormat.h','TImageBuffer.h','TGrowingBufferPool.h','TRefCounted.h','GrowingBuffer.h','RecordingTiming.h','RecordingLog.h']:
  shutil.copyfile(r/'shared'/name,shared/name)
 # Only adapt MSVC syntax and precompiled header; no changes to the sampler logic.
 h=shared/'EasySampler.h';h.write_text(h.read_text().replace('virtual void EasySamplerBase::','virtual void '));(shared/'stdafx.h').write_text('#include <cstddef>\n')

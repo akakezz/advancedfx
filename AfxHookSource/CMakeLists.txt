@@ -120,6 +120,7 @@ target_link_directories(AfxHookSource PRIVATE
 
 target_link_libraries(AfxHookSource PRIVATE
     gdi32
+    d3d11 dxgi d3dcompiler
     "${AFX_OPENEXR_LINK_LIBRARIES}"
 )
 
@@ -137,6 +138,10 @@ target_sources(AfxHookSource PRIVATE
     AfxShaders.cpp
     AfxShaders.h
     AfxStreams.cpp
+    GpuScreenCapture.cpp
+    GpuScreenCapture.h
+    ../shared/GpuSamplerSchedule.h
+    ../shared/GpuCaptureFifo.h
     Tf2RenderPass.h
     Tf2RenderPass.inl
     Tf2PovSpectate.inl

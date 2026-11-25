@@ -1,0 +1,13 @@
+# Experimental GPU screen capture
+
+Opt in before starting a take in Camera > Recording > **GPU capture (experimental)**, or use `mirv_streams record screen gpuCapture 1` (0 restores the default CPU path). This is a session setting, not a change to saved recording profiles. Start with a short color-only recording. The recording log reports which backend ran, fallback reasons, and GPU queue/wait/map/handoff timings.
+
+The backend supports normal screen recordings using a leaf FFmpeg or image-sequence profile, or one sampler wrapping such a profile. Separate render passes, interleaved/nested profiles, depth and matte remain on the existing CPU path. No automatic change to the game's graphics device, encoding profile or capture timing is made. Native D3D9Ex, a same-adapter D3D11 feature level 11_0 device, compatible BGRA shared textures and event queries are required. Targets above 10 million pixels remain on CPU for memory safety.
+
+Each input is copied into a three-slot D3D9Ex shared-texture ring. D3D9 event queries gate consumption by D3D11, and D3D11 completion queries gate reuse by D3D9. The sampler reuses EasySamplerBase for weights, shutter intervals, frame strength and output cadence. It accumulates gamma-encoded byte values in ping-pong FP32 textures; GPU floating-point implementation can differ from CPU by rounding. Regular recordings bypass accumulation. A separate three-slot staging ring delays CPU mapping until older output frames are ready. Final frames use the existing screen worker and selected downstream output. The worker queue is bounded, and take stop drains both GPU rings before joining the worker. No frames are invented, no sample weights are discarded, and no linear-light conversion is applied.
+
+Unsupported startup conditions automatically fall back before the first input sample. A device reset, resource or synchronization failure after activation logs an incomplete take rather than changing the timebase halfway through the recording. Stop and retry with GPU capture disabled (set GPU capture to 0). The GPU backend is intentionally off by default until native testing confirms behavior and throughput.
+
+## Validation
+
+`tests/cinematic/test_sampler.py` exercises the shared CPU and GPU scheduling logic with a CPU emulation of shader arithmetic, covering rectangle/trapezoid, several input/output rates, exposure and residual frame strength, and ring ordering. This is not a native GPU test. Test short regular and 20:1 sampler takes on the same demo interval with the same output profile, compare exact frame counts and image content, then compare elapsed times. Test MSAA, custom resolution, normal stop, repeated takes and device reset before wider rollout. No SourceDemoRender implementation code is included.
