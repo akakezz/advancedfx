@@ -3491,6 +3491,8 @@ public:
 
 	const char *GetRecordScreenSettingsName() const;
 	bool SetRecordScreenSettings(const char *name);
+    unsigned GetRecordingPreviewFps() const { return m_RecordingPreviewFps; }
+    bool SetRecordingPreviewFps(unsigned fps) { if(m_Recording || (fps!=0 && fps!=15 && fps!=30)) return false; m_RecordingPreviewFps=fps; return true; }
     bool GetGpuScreenCapture() const { return m_GpuScreenCaptureEnabled; }
     bool SetGpuScreenCapture(bool enabled) { if(m_Recording) return false; m_GpuScreenCaptureEnabled=enabled; return true; }
 	bool GetRecordScreenEnabled() const
@@ -3885,6 +3887,7 @@ private:
  advancedfx::COutVideoStreamCreator *m_DrawingPendingCreator = nullptr;
  bool m_DrawingTryGpu = false;
  std::atomic<bool> m_GpuScreenCaptureEnabled{false};
+ std::atomic<unsigned> m_RecordingPreviewFps{0};
  void DrawingThread_CreateScreenCapture(advancedfx::COutVideoStreamCreator *, bool gpu);
  void DrawingThread_DeleteScreenCapture();
  std::atomic<unsigned> m_Tf2PassBackground{0xff00ff00u}; // Chroma green; isolated passes only.
