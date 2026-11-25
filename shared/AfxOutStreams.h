@@ -12,6 +12,7 @@
 #include <string>
 #include <list>
 #include <map>
+#include <vector>
 #include <Windows.h>
 
 namespace advancedfx {
@@ -149,6 +150,10 @@ protected:
 
 private:
 	PROCESS_INFORMATION m_ProcessInfo;
+    std::vector<unsigned char> m_PackedFrame;
+    RecordingTiming::Counter m_EncoderWriteTime, m_EncoderPackTime;
+    unsigned long long m_EncoderFrames=0, m_EncoderFailures=0;
+    bool WritePackedFrame(const unsigned char* pBuffer);
 	bool m_TriedCreatePath = false;
 	bool m_SucceededCreatePath = false;
 	BOOL m_Okay = FALSE;

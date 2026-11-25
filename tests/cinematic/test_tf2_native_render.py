@@ -200,6 +200,10 @@ writer=r'''
 #include <list>
 #include <cassert>
 #include <iostream>
+#include "shared/RecordingTiming.h"
+#include <cstdarg>
+constexpr size_t _TRUNCATE=static_cast<size_t>(-1);
+int _snprintf_s(char* out,size_t size,size_t,const char* fmt,...) { va_list args; va_start(args,fmt); int n=std::vsnprintf(out,size,fmt,args); va_end(args); return n; }
 namespace advancedfx {
 class CRefCountedThreadSafe {std::atomic<int> Refs{0};public:void AddRef(){++Refs;}void Release(){if(!--Refs)delete this;}protected:virtual ~CRefCountedThreadSafe()=default;};
 struct Format{bool Alpha=false;};

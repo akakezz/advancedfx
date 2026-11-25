@@ -11,6 +11,7 @@ source=r'''
 #include <mutex>
 #include <condition_variable>
 #include <iostream>
+#include "shared/RecordingTiming.h"
 #define SUCCEEDED(x) ((x)>=0)
 constexpr int D3DPOOL_SYSTEMMEM=0;int liveSurfaces=0;
 struct IDirect3DSurface9{int Refs=1;IDirect3DSurface9(){++liveSurfaces;}~IDirect3DSurface9(){--liveSurfaces;}void AddRef(){++Refs;}void Release(){assert(Refs>0);if(!--Refs)delete this;}};
@@ -26,6 +27,7 @@ struct Pool {
   void Release()override{assert(Refs==2);Owner->ReturnOffscreen(this);CRefCountedThreadSafe::Release();}
  };
  std::mutex m_OffscreenSurfacesMutex;std::condition_variable m_OffscreenSurfacesCv;
+ advancedfx::RecordingTiming::Counter m_OffscreenWaitTiming;
  size_t m_NumOffscreenSurfaces=0;std::deque<CImageBufferWrapper*>m_OffscreenSurfaces;
  struct Desc{int Width=1920,Height=1080,Format=21;}m_SurfaceDesc;
  int Refs=1;void AddRef(){++Refs;}void Release(){--Refs;}
@@ -42,6 +44,6 @@ int main(){IDirect3DDevice9 device;
  std::cout<<"Production readback pool reuses two surfaces and releases all COM references across 100 takes\n";
 }
 '''
-f=a.build_dir/'capture.cpp';f.write_text(source);cmd=['g++','-std=c++17','-pthread','-O1','-g',str(f),'-o',str(a.build_dir/'capture')]
+f=a.build_dir/'capture.cpp';f.write_text(source);cmd=['g++','-std=c++17','-pthread','-O1','-g','-I'+str(r),str(f),'-o',str(a.build_dir/'capture')]
 if a.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
 subprocess.run(cmd,check=True);subprocess.run([str(a.build_dir/'capture')],env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'),check=True)

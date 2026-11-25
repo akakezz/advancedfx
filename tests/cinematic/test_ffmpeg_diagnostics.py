@@ -27,7 +27,8 @@ code = r'''
 #include <vector>
 #include <iostream>
 #include <thread>
-#include "shared/RecordingLog.h"
+#include "shared/RecordingTiming.h"
+namespace RecordingTiming = advancedfx::RecordingTiming;
 using advancedfx::RecordingLog;
 using DWORD=unsigned long;using BOOL=int;using HANDLE=void*;using CHAR=char;
 const HANDLE INVALID_HANDLE_VALUE=reinterpret_cast<HANDLE>(-1);
