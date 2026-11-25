@@ -37,6 +37,23 @@ public:
   if (revision==m_Revision) return false;
   entries.assign(m_Entries.begin(),m_Entries.end()); revision=m_Revision; return true;
  }
+ // Format a consistent UI snapshot, including entries outside the visible scroll area.
+ // Clipboard text is NUL-terminated, so represent unexpected embedded NULs visibly.
+ static std::string ClipboardText(const std::vector<Entry> &entries) {
+  std::string text, source;
+  auto append = [&text](const std::string &value) {
+   for (char c : value) { if (c == '\0') text += "\\0"; else text += c; }
+  };
+  for (const auto &entry : entries) {
+   if (source != entry.Source) {
+    source = entry.Source;
+    if (!source.empty()) { append(source); text += '\n'; }
+   }
+   append(entry.Text);
+   if (text.empty() || text.back() != '\n') text += '\n';
+  }
+  return text;
+ }
 private:
  std::mutex m_Mutex;
  std::deque<Entry> m_Entries;
