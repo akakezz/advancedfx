@@ -16,3 +16,41 @@ for name,extra in [('scalar',['-DAFX_SAMPLER_FORCE_SCALAR']),('simd',[])]:
  results.append(subprocess.check_output([str(exe)],text=True).strip())
 assert results[0]==results[1],results
 print('Sampler row and timeline equivalence passed; output hash',results[0])
+
+# MirvPgl includes SDK headers that may macro-map snprintf to _snprintf_s.
+# Compile the real report block with that macro and a stand-in for the Windows CRT.
+header=(r/'shared/AfxOutStreams.h').read_text()
+start=header.index('        if (m_SampleTime.Calls) {')
+end=header.index('\n        }',start)+len('\n        }')
+block=header[start:end]
+fixture=out/'sampler_report_macro.cpp'
+fixture.write_text(r'''
+#include <cassert>
+#include <cstdio>
+#include <cstdarg>
+#include <cstring>
+#include <cstddef>
+constexpr size_t _TRUNCATE = static_cast<size_t>(-1);
+int _snprintf_s(char* buf, size_t size, size_t count, const char* fmt, ...) {
+    assert(count==_TRUNCATE);
+    va_list args; va_start(args,fmt); int n=std::vsnprintf(buf,size,fmt,args); va_end(args); return n;
+}
+#define snprintf _snprintf_s
+namespace RecordingTiming {
+void Report(const char* source,const char* report) {
+    assert(std::strcmp(source,"Sampler timing")==0);
+    assert(std::strstr(report,"1920x1080 format 1 | SSE2 CPU sampler | 20 inputs, 1 outputs (0 failed)"));
+    assert(std::strstr(report,"Sampler work 30.00 ms (1.500 ms/input)"));
+}
+}
+namespace SamplerKernels { constexpr bool HasSimd=true; }
+int main() {
+    struct Counter { unsigned long long Calls; double ms; double Milliseconds() const { return ms; } };
+    Counter m_SampleTime{20,35}, m_OutputTime{1,5};
+    struct { int Width=1920,Height=1080,Format=1; } m_ImageFormat;
+    unsigned long long m_OutputFailures=0;
+''' + block + '\n}\n')
+exe=out/'sampler_report_macro'
+subprocess.run(['g++',*flags,str(fixture),'-o',str(exe)],check=True)
+subprocess.run([str(exe)],check=True)
+print('Sampler timing report compiles and formats correctly with the SDK snprintf macro')

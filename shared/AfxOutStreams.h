@@ -310,7 +310,8 @@ protected:
             char report[512];
             const double sampleMs = m_SampleTime.Milliseconds();
             const double outputMs = m_OutputTime.Milliseconds();
-            std::snprintf(report,sizeof(report),
+            // SDK headers can macro-map snprintf to _snprintf_s.
+            ::_snprintf_s(report,sizeof(report),_TRUNCATE,
                 "%dx%d format %u | %s CPU sampler | %llu inputs, %llu outputs (%llu failed)\n"
                 "Sampler work %.2f ms (%.3f ms/input); downstream submission %.2f ms; total supply %.2f ms.\n",
                 m_ImageFormat.Width,m_ImageFormat.Height,static_cast<unsigned>(m_ImageFormat.Format),
