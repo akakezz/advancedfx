@@ -8178,6 +8178,13 @@ static void DrawRecordingLog()
  static uint64_t revision=0;
  static std::vector<advancedfx::RecordingLog::Entry> entries;
  const bool changed=advancedfx::RecordingLog::Get().Read(revision,entries);
+ ImGui::SameLine();
+ ImGui::BeginDisabled(entries.empty());
+ if (ImGui::SmallButton("Copy log")) {
+  const auto text=advancedfx::RecordingLog::ClipboardText(entries);
+  ImGui::SetClipboardText(text.c_str());
+ }
+ ImGui::EndDisabled();
  if (ImGui::BeginChild("##ffmpeg_log",ImVec2(0,ImGui::GetTextLineHeightWithSpacing()*6),true,
                        ImGuiWindowFlags_HorizontalScrollbar)) {
   const bool atBottom=ImGui::GetScrollY()>=ImGui::GetScrollMaxY()-1;

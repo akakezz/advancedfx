@@ -19,8 +19,9 @@ and give RGBA its four-byte pixel stride.
    stopping, allow the capture and encoder workers to drain before reading
    the summaries. If the game is paused, allow rendering to resume so queued
    teardown can execute. Repeat three times and compare median wall time.
-3. Save the `Take timing`, `GPU capture timing`, `Sampler timing`, and FFmpeg
-   lines. Compare the same take with the preceding build if available.
+3. Click **Copy log** to copy all retained messages (including offscreen entries)
+   and their source headings to the clipboard. Compare the same take with the
+   preceding build if available.
 
 `Take timing` measures recording start through stop/queued teardown, not
 necessarily final worker completion. `GPU capture timing` measures capture

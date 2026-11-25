@@ -81,6 +81,19 @@ int main(){
  size_t bytes=0;for(const auto&e:entries){assert(e.Source.size()<=1024&&e.Text.size()<=16384);bytes+=e.Source.size()+e.Text.size();}
  assert(bytes<=advancedfx::RecordingLog::MaxBytes&&entries.size()<=advancedfx::RecordingLog::MaxEntries);
  advancedfx::RecordingLog::Get().Clear();assert(advancedfx::RecordingLog::Get().Read(revision,entries)&&entries.empty());
+ // The clipboard exports the complete retained snapshot, with source headings and
+ // unformatted message text, including entries outside the UI viewport.
+ auto &log=RecordingLog::Get();
+ log.Append("GPU capture timing","100% complete\n",14);
+ log.Append("GPU capture timing","next",4);
+ log.Append("Sampler timing","sample\r\n",8);
+ log.Append("Take timing","a\0b",3);
+ assert(log.Read(revision,entries));
+ assert(RecordingLog::ClipboardText(entries)=="GPU capture timing\n100% complete\nnext\nSampler timing\nsample\r\nTake timing\na\\0b\n");
+ const auto copied=RecordingLog::ClipboardText(entries);
+ log.Append("Take timing","late",4);
+ assert(log.Read(revision,entries)&&RecordingLog::ClipboardText(entries)==copied+"late\n");
+ log.Clear();assert(log.Read(revision,entries)&&RecordingLog::ClipboardText(entries).empty());
  std::cout<<"Production FFmpeg shutdown preserves late stderr, output path and exit code; successful/duplicate close stays clean\n";
 }
 '''
