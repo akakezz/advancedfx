@@ -104,3 +104,42 @@ restore materials, render native particle systems, or guarantee that off-screen
 collections have been simulated. Capture cost includes a separate native probe
 timer; model capture timer includes this cost too. Windows/in-game verification
 is required, particularly synchronization with the game's simulation jobs.
+
+
+## Phase 3: optional native appearance snapshots
+
+Same verified client.dll. In addition to position-only capture, the opt-in
+appearance mode copies the current 22 SDK-defined attribute slots in their
+original four-wide layout, including constant lanes and integer IDs. Null slots
+remain absent. Current collection time, copied definition name, and frame-local
+parent indices are retained for empty and nonempty nodes. Definition-name
+accessor at RVA 0x8e1530 reads collection +0x58 then definition +0x240; attribute
+copy helper at 0x8e35ed corroborates pointer table +0x2310 and stride table
++0x2510; creation-time initialization at 0x8e2646 reads collection +0x34.
+Extra code anchors gate appearance reads separately from position-only reads.
+
+Test:
+- mirv_cache clear
+- mirv_cache effects 0
+- mirv_cache particles 1
+- mirv_cache particles appearance 1
+- mirv_cache record 1
+- Play a short effect-heavy section, pause, mirv_cache record 0
+- mirv_cache particles status
+- mirv_cache preview 1; mirv_cache particles markers 1
+- mirv_cache particles styled 1
+- Scrub, compare with styled 0. Styled crosses use captured radius (clamped
+  for readability), tint and alpha times alpha2. They remain diagnostic geometry,
+  not camera-facing native particles. Missing attributes use the previous marker
+  fallback; a rejected position prevents incorrect attribute association.
+- Send status with per-attribute coverage and named collections.
+- Disable appearance capture with mirv_cache particles appearance 0.
+
+A separate per-frame 8 MiB packed-word cap and the existing 64 MiB rolling
+history bound memory. Appearance snapshots will retain fewer ticks than XYZ-only
+mode; measured capture cost includes all extra reads and allocation. Complete
+appearance means readable known slots, not full renderer/simulation state.
+No persistent engine pointer, initial-attribute buffers, renderer contexts,
+control point data, collection lifetime identity or native rendering is included.
+The original position-only mode and uniform markers remain default. No live
+simulation or rendering state is modified.

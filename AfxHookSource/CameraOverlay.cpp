@@ -68,6 +68,7 @@ static bool g_SceneRenderSnapshot = false, g_SceneSuppressLiveStudio = true;
 static bool g_SceneEffectsEnabled = false;
 static advancedfx::SceneEffects::Journal g_SceneEffects;
 static bool g_SceneNativeParticlesEnabled=false, g_SceneNativeParticleMarkers=false;
+static bool g_SceneNativeParticleAppearance=false, g_SceneNativeParticleStyled=false;
 static advancedfx::NativeParticles::History g_SceneNativeParticles;
 static double g_SceneNativeParticleMs=0, g_SceneNativeParticleTotalMs=0, g_SceneNativeParticlePeakMs=0;
 static std::size_t g_SceneNativeParticleSamples=0;
@@ -659,7 +660,7 @@ void SceneCacheFrame(bool capture)
 		    if (!g_SceneNativeParticles.Frames.empty() && tick<g_SceneNativeParticles.Frames.back().Tick)
 		        SceneClearNativeParticles();
 		    const auto begin=std::chrono::steady_clock::now();
-		    auto particles=Mirv_Tf2_CaptureNativeParticles(tick);
+		    auto particles=Mirv_Tf2_CaptureNativeParticles(tick,g_SceneNativeParticleAppearance);
 		    g_SceneNativeParticles.Append(std::move(particles));
 		    g_SceneNativeParticleMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
 		    g_SceneNativeParticleTotalMs+=g_SceneNativeParticleMs;
@@ -712,7 +713,7 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 	static std::shared_ptr<const advancedfx::SceneCache::Frame> last;
 	static advancedfx::SceneCache::DrawingOptions previous;
 	static std::uint64_t revision = ~0ull, particleRevision=~0ull;
-	static bool previousMarkers=false;
+	static bool previousMarkers=false, previousStyled=false;
 	static int previousParticleTick=-1;
 	static std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> lines;
 	const auto view = SceneCacheView();
@@ -727,20 +728,49 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 	const int particleTick=g_SceneNativeParticleMarkers?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):-1;
 	const auto particleRev=g_SceneNativeParticleMarkers?g_SceneNativeParticles.Revision:0;
 	if (last != view || !(previous == options) || revision != g_SceneCache.Revision() ||
-	    previousMarkers!=g_SceneNativeParticleMarkers || previousParticleTick!=particleTick || particleRevision!=particleRev)
+	    previousMarkers!=g_SceneNativeParticleMarkers || previousStyled!=g_SceneNativeParticleStyled || previousParticleTick!=particleTick || particleRevision!=particleRev)
 	{
 		last = view;
 		previous = options;
 		revision = g_SceneCache.Revision();
-		previousMarkers=g_SceneNativeParticleMarkers; previousParticleTick=particleTick; particleRevision=particleRev;
+		previousMarkers=g_SceneNativeParticleMarkers; previousStyled=g_SceneNativeParticleStyled; previousParticleTick=particleTick; particleRevision=particleRev;
 		auto result=g_SceneCache.Drawing(*view, options);
 		if (g_SceneNativeParticleMarkers) if (const auto *sample=g_SceneNativeParticles.At(particleTick)) {
 		    // A bounded diagnostic cross, not a textured particle or renderer.
 		    const std::size_t step=(std::max)(std::size_t(1),(sample->Points.size()+8191)/8192);
+		    std::size_t collection=0;
 		    for(std::size_t i=0;i<sample->Points.size();i+=step) {
+		        using namespace advancedfx::NativeParticles;
 		        const auto &p=sample->Points[i];
-		        result.push_back({{p[0]-1.5,p[1],p[2]},{p[0]+1.5,p[1],p[2]},4,220});
-		        result.push_back({{p[0],p[1],p[2]-1.5},{p[0],p[1],p[2]+1.5},4,220});
+		        float r=1.5f,a=220.0f/255;
+		        auto rgb=advancedfx::SceneCache::CategoryColor(4);
+		        bool custom=false;
+		        if(g_SceneNativeParticleStyled&&sample->Appearance) {
+		            while(collection<sample->Collections.size()&&
+		                  i>=std::size_t(sample->Collections[collection].PointStart)+sample->Collections[collection].PointCount) ++collection;
+		            if(collection<sample->Collections.size()) {
+		                const auto &c=sample->Collections[collection];
+		                // If position rejection changed indexing, do not associate wrong attributes.
+		                if(i>=c.PointStart&&c.PointCount==c.Active) {
+		                    const auto j=static_cast<unsigned>(i-c.PointStart);
+		                    float v=0, a2=1;
+		                    if(Float(*sample,c,Radius,j,0,v)&&v>=0) r=std::clamp(v,.35f,64.0f);
+		                    if(Float(*sample,c,Alpha,j,0,v)) {
+		                        Float(*sample,c,Alpha2,j,0,a2);
+		                        a=std::clamp(v,0.0f,1.0f)*std::clamp(a2,0.0f,1.0f);
+		                    }
+		                    float tint[3]{};
+		                    if(Float(*sample,c,Tint,j,0,tint[0])&&Float(*sample,c,Tint,j,1,tint[1])&&Float(*sample,c,Tint,j,2,tint[2])) {
+		                        for(unsigned k=0;k<3;++k) rgb[k]=static_cast<unsigned char>(255*std::clamp(tint[k],0.0f,1.0f)+.5f);
+		                        custom=true;
+		                    }
+		                }
+		            }
+		        }
+		        const auto alpha=static_cast<unsigned char>(255*a+.5f);
+		        if(!alpha) continue;
+		        result.push_back({{p[0]-r,p[1],p[2]},{p[0]+r,p[1],p[2]},4,alpha,custom,rgb});
+		        result.push_back({{p[0],p[1],p[2]-r},{p[0],p[1],p[2]+r},4,alpha,custom,rgb});
 		    }
 		}
 		lines = std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(std::move(result));
@@ -1592,6 +1622,7 @@ static bool g_SequencerNeedsRefresh = false;
 static void SceneNativeParticleStatus(int tick)
 {
     const auto &history=g_SceneNativeParticles;
+    advancedfx::Message("Native particle appearance capture %d, styled markers %d.\n",int(g_SceneNativeParticleAppearance),int(g_SceneNativeParticleStyled));
     advancedfx::Message("Native particles: enabled %d, markers %d; %zu frames, %.2f MiB; ticks %d .. %d; capture last %.3f ms, mean %.3f ms, peak %.3f ms.\n",
         int(g_SceneNativeParticlesEnabled),int(g_SceneNativeParticleMarkers),history.Frames.size(),history.Bytes/1048576.0,
         history.Frames.empty()?-1:history.Frames.front().Tick,history.Frames.empty()?-1:history.Frames.back().Tick,
@@ -1604,6 +1635,35 @@ static void SceneNativeParticleStatus(int tick)
     if(!f->Points.empty()) {
         const auto &p=f->Points.front();
         advancedfx::Message("Native particles first XYZ: %.3f %.3f %.3f\n",p[0],p[1],p[2]);
+    }
+    if(f->Appearance) {
+        using namespace advancedfx::NativeParticles;
+        std::array<std::size_t,Layout::AttributeCount> coverage{},varying{};
+        std::size_t nonempty=0,clocks=0;
+        for(const auto &c:f->Collections) {
+            clocks+=c.HasTime;
+            if(!c.Active) continue;
+            ++nonempty;
+            for(unsigned a=0;a<Layout::AttributeCount;++a) if(c.Mask&(1u<<a)) {
+                ++coverage[a]; if(c.Attributes[a].Stride) ++varying[a];
+            }
+        }
+        advancedfx::Message("Native particle attributes: %zu collection records, %zu named, %zu clocks, %zu nonempty; %.3f MiB packed words; %zu rejected appearance reads/layouts; complete %d.\n",
+            f->Collections.size(),f->NamedCollections,clocks,nonempty,f->Words.size()*sizeof(std::uint32_t)/1048576.0,f->AppearanceRejected,int(f->AppearanceComplete));
+        std::string line="Attribute coverage (collections captured/varying):";
+        for(unsigned a=0;a<Layout::AttributeCount;++a)
+            line+=" "+std::string(AttributeNames[a])+"="+std::to_string(coverage[a])+"/"+std::to_string(varying[a]);
+        advancedfx::Message("%s\n",line.c_str());
+        std::size_t shown=0;
+        for(const auto &c:f->Collections) {
+            if(!c.Active||shown++>=8) continue;
+            float radius=0,alpha=0,tint[3]{},rotation=0;
+            const bool radiusOk=Float(*f,c,Radius,0,0,radius), alphaOk=Float(*f,c,Alpha,0,0,alpha),
+                tintOk=Float(*f,c,Tint,0,0,tint[0])&&Float(*f,c,Tint,0,1,tint[1])&&Float(*f,c,Tint,0,2,tint[2]),
+                rotOk=Float(*f,c,Rotation,0,0,rotation);
+            advancedfx::Message("  %s; parent %d; particles %u; time %.3f; first radius %.3f (%d), alpha %.3f (%d), RGB %.3f %.3f %.3f (%d), rotation %.3f (%d).\n",
+                c.Name[0]?c.Name.data():"[unavailable]",c.Parent,c.Active,c.Time,radius,int(radiusOk),alpha,int(alphaOk),tint[0],tint[1],tint[2],int(tintOk),rotation,int(rotOk));
+        }
     }
 }
 void SceneCacheConsole(advancedfx::ICommandArgs *args)
@@ -1638,7 +1698,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        SceneNativeParticleStatus(value);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"markers")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleMarkers=value!=0;SceneNativeParticleStatus(-1);
-	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear> | at <tick> | markers <0|1> - TF2 x64 native XYZ experiment.\n");
+	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"appearance")&&parseInteger(3,value)&&(value==0||value==1)) {
+	        g_SceneNativeParticleAppearance=value!=0;SceneNativeParticleStatus(-1);
+	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"styled")&&parseInteger(3,value)&&(value==0||value==1)) {
+	        g_SceneNativeParticleStyled=value!=0;SceneNativeParticleStatus(-1);
+	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear> | at <tick> | <markers|appearance|styled> <0|1> - TF2 x64 native particle experiment.\n");
 	    return;
 	}
 	if (!_stricmp(op, "effects"))
@@ -1961,7 +2025,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
-		    "  mirv_cache particles <0|1|status|clear> | at <tick> | markers <0|1> - Native particle XYZ experiment.\n"
+		    "  mirv_cache particles <0|1|status|clear> | at <tick> | <markers|appearance|styled> <0|1> - Native particle experiment.\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");

@@ -37,7 +37,7 @@ preamble=r'''
 #include <codecvt>
 #include <locale>
 #include "AfxHookSource/CameraOverlay.h"
-advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick){advancedfx::NativeParticles::Frame f;f.Tick=tick;f.Complete=true;f.Points.push_back({1,2,3});return f;}
+advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick,bool appearance){advancedfx::NativeParticles::Frame f;f.Tick=tick;f.Complete=true;f.Points.push_back({1,2,3});return f;}
 #include "shared/PlayerRepair.h"
 void MirvFix_PlayerRepairNewDemo(const char*);
 void MirvFix_PlayerAngleTraceEnd();

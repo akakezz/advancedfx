@@ -300,6 +300,8 @@ public:
 		std::array<double, 3> A, B;
 		int Category;
 		unsigned char Alpha = 255;
+		bool HasCustomColor = false;
+		std::array<unsigned char,3> CustomColor{};
 	};
 	struct DrawingOptions
 	{

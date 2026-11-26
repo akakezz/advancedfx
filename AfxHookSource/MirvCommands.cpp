@@ -93,7 +93,7 @@ extern WrpVEngineClient * g_VEngineClient;
 
 HMODULE g_H_EngineDll = 0;
 
-advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick)
+advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, bool appearance)
 {
     using namespace advancedfx::NativeParticles;
     Frame failure; failure.Tick=tick;
@@ -128,7 +128,19 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick)
        !match(0x2d492a,{0x48,0x8b,0x99,0xb8,0x22,0x00,0x00,0x8b,0x79,0x38})||
        !match(0x9143a1,{0x4d,0x8b,0xba,0x10,0x23,0x00,0x00})||
        !match(0x914405,{0x49,0xf7,0xa2,0x10,0x25,0x00,0x00})) return failure;
-    return Capture(base,tick,read);
+    // Extra anchors corroborate the generic indexed attribute copy and the
+    // definition/name indirection in the exact supplied client binary.
+    if(appearance&&(!match(0x8e35ed,{0x4c,0x8d,0x91,0x10,0x23,0x00,0x00})||
+       !match(0x8e3600,{0x49,0x8b,0x82,0x00,0x02,0x00,0x00,0x48,0x83,0xf8,0x04})||
+       !match(0x8e1530,{0x48,0x8b,0x49,0x58,0x48,0x85,0xc9,0x74,0x0c})||
+       !match(0x8e1539,{0x48,0x81,0xc1,0x40,0x02,0x00,0x00})||
+       !match(0x8e2646,{0x8b,0x41,0x34,0x89,0x04,0x93}))) {
+        auto f=Capture(base,tick,read,false);
+        f.Appearance=true;f.AppearanceRejected=1;
+        f.Status+="; appearance layout guard failed";
+        return f;
+    }
+    return Capture(base,tick,read,appearance);
 #else
     return failure;
 #endif

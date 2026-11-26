@@ -10,7 +10,7 @@
 #include <shared/RecordingProfileInfo.h>
 namespace advancedfx { class ICommandArgs; }
 // Native engine-thread position snapshot, exact TF2 x64 build only.
-advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick);
+advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, bool appearance=false);
 namespace AfxHookSource
 {
 namespace CameraOverlay

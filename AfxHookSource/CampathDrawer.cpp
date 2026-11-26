@@ -1080,7 +1080,7 @@ void CCampathDrawer::OnPostRenderAllTools_DrawingThread(CDynamicProperties * dyn
 			m_Device->SetVertexShaderConstantF(48, newCScreenInfo, 1);
 			for (const auto &line : *dynamicPorperties->SceneLines)
 			{
-				const auto rgb = advancedfx::SceneCache::CategoryColor(line.Category);
+				const auto rgb = line.HasCustomColor ? line.CustomColor : advancedfx::SceneCache::CategoryColor(line.Category);
 				const auto color = D3DCOLOR_RGBA(rgb[0], rgb[1], rgb[2], line.Alpha);
 				AutoSingleLine(Vector3(line.A[0], line.A[1], line.A[2]), color,
 				               Vector3(line.B[0], line.B[1], line.B[2]), color);
