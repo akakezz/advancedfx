@@ -150,7 +150,7 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, boo
 
 // Read-only legacy emitter audit. The modern collection forest is separate
 // from the legacy indexed list, even though both share CParticleMgr.
-std::string Mirv_Tf2_InspectLegacyParticles()
+std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *snapshot)
 {
 #ifdef _WIN64
     using advancedfx::NativeParticles::Address;
@@ -181,6 +181,14 @@ std::string Mirv_Tf2_InspectLegacyParticles()
        !match(0x2dc02a,{0x48,0x89,0x5e,0x08})||
        !match(0x2dc075,{0x48,0x8d,0x05,0xc4,0x4f,0x88,0x00,0x48,0x89,0x06}))
         return "Legacy particle audit: unsupported client ABI.";
+    Address spark=0,glow=0;
+    if(snapshot&&(!match(0x2d4489,{0x49,0x8b,0x9e,0xb0,0x00,0x00,0x00})||
+       !match(0x2d4517,{0x48,0x89,0x6f,0x10,0x66,0xff,0x86,0x90,0x00,0x00,0x00})||
+       !match(0x1fa674,{0x48,0x89,0x05,0x35,0x7a,0xf2,0x00})||
+       !match(0x1fa699,{0x48,0x89,0x05,0xe8,0x72,0xe7,0x00})||
+       !match(0x2dcb10,{0x0f,0xb6,0x42,0x45,0xf3,0x0f,0x10,0x42,0x3c,0xf3,0x0f,0x5e,0x42,0x38})||
+       !get(base+0x11220b0,spark)||!get(base+0x1071988,glow)))
+        return "Legacy particle snapshot: material/particle ABI guard failed.";
     constexpr std::uint16_t invalid=0xffff;
     const Address manager=base+0x10f5020;
     std::uint32_t ready=0;
@@ -225,6 +233,11 @@ std::string Mirv_Tf2_InspectLegacyParticles()
                 validName=terminated&&!name.empty();
             }
             if(!validName){++unnamed;name="[unavailable]";}
+            if(snapshot&&name=="C_EntityDissolve") {
+                ++snapshot->Emitters;snapshot->Expected+=particles;
+                if(!advancedfx::LegacyParticles::CaptureBinding(binding,particles,spark,glow,read,*snapshot))
+                    ++snapshot->Rejected;
+            }
             // Prioritize the dissolve emitter even if many other emitters exist.
             if(simple<=64||name=="C_EntityDissolve")out<<"  ["<<index<<"] "<<name<<"; active "<<particles<<"\n";
         } else {
@@ -236,6 +249,7 @@ std::string Mirv_Tf2_InspectLegacyParticles()
     complete=complete&&visited.size()==count&&previous==tail&&
         get(manager+0x38,endNodes)&&endNodes==nodes&&get(manager+0x48,endHead)&&endHead==head&&
         get(manager+0x4a,endTail)&&endTail==tail&&get(manager+0x4e,endCount)&&endCount==count;
+    if(snapshot)snapshot->Complete=complete&&!unnamed&&!snapshot->Rejected&&snapshot->Particles.size()==snapshot->Expected;
     std::ostringstream report;
     report<<"Legacy particle audit: "<<visited.size()<<"/"<<count<<" list entries, "<<active
           <<" active particles; exact CSimpleEmitter "<<simple<<" ("<<simpleActive<<" active), other emitter types "

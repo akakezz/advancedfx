@@ -546,3 +546,40 @@ string xrefs, not verified callable entry addresses or decal list layouts.
 No shadow or decal hooks or cvar changes introduced in this phase.
 
 Windows compilation and in-game verification of the new audit remain needed.
+
+
+## Phase 11: dissolve legacy history (capture-only experiment)
+
+Runtime confirmation on 20c9cbf: tick 50, 16/16 legacy bindings, 975 total
+active, exact CSimpleEmitter 6 with 817 active. Four C_EntityDissolve
+emitters contain 235, 24, 26, 475 particles (760 total). Tick 199: 22/22
+bindings, 361 active, exact simple emitter 2 with 14 active, no dissolve
+emitters. Both complete, no unavailable simple names. This confirms the
+legacy dissolve path is active during the reported effect.
+
+Disassembly of client 0x2d43e0 corroborates eight hash buckets at binding
++0xb0, material group pointer +0, circular sentinel +8, hash next +0x30;
+particle prev/next +0/+8, subtexture +0x10; group pointer at subtexture +0x10
+corroborated by 0x2d4472; UV floats +0..+0xc correspond to SDK subtexture
+layout (runtime values still to verify). Position +0x18, velocity +0x28,
+roll +0x34, die/lifetime +0x38/+0x3c, RGB +0x40..42, alpha +0x43..44,
+size +0x45..46, flags byte +0x47 (SDK lead), roll delta +0x48. Dissolve
+renderer stores spark subtexture at global 0x11220b0 (0x1fa674) and
+combinemuzzle2 at 0x1071988 (0x1fa699); confirmed literal names at
+0xb0fc18/0xb0fc28. Match these pointers only during capture; persist only
+a value enum and UV, never a pointer. Other materials remain explicitly
+unknown. This is not a complete legacy material resolver.
+
+New opt-in commands: mirv_cache particles legacyCapture 1/0, legacyStatus,
+legacyAt <tick>. Start fresh history, enable legacyCapture 1 before scene
+recording, play across dissolve and stop recording. Inspect exact ticks
+before/during/after, including tick 50 and 199 if reproduced. Separate
+64 MiB payload / 32768 frame history, oldest-first eviction, no quantization,
+no interpolation, no new renderer. Zero-particle complete samples retained;
+failed binding walks or incomplete samples rejected, not mistaken for empty.
+Read-only exact CSimpleEmitter named C_EntityDissolve only; other legacy
+classes and simple emitters are deliberately excluded. Existing modern
+capture/render/isolation remain unchanged. The history is cleared with
+scene history, and on backward append; opt-in is session-local. Current
+capture uses the existing frame-end scene capture boundary; no native
+allocations or calls. Windows build, runtime checks and full tests pending.

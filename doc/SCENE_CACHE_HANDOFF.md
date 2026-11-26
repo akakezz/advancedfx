@@ -257,3 +257,15 @@ command requests a one-shot read-only inventory of the **actual live** demo
 at frame end (cached preview must be disabled). It is a diagnostic, not a
 legacy cache or replay implementation. No historical shadow/decal changes;
 Windows build and target runtime test pending.
+
+### Runtime confirmation and legacy capture-only experiment
+
+Tick 50 audit found four C_EntityDissolve emitters, 760 particles total
+(235/24/26/475); tick 199 found none. Both list walks complete. Phase 11
+adds opt-in exact-tick dissolve-only historical capture: `mirv_cache particles
+legacyCapture 1`, record actual demo, then `legacyStatus` or `legacyAt <tick>`
+under the same command prefix. The new 64 MiB history is separate and
+pointer-free; no legacy rendering or entity fade reproduction yet. Known
+spark/combinemuzzle2 material identities are tracked by verified handle
+comparisons; others reported unknown. Test before/during/after dissolve and
+compare capture counts with the live audit. No shadow/decal changes.

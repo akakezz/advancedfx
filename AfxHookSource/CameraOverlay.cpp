@@ -79,6 +79,9 @@ static double g_SceneNativeParticleMs=0, g_SceneNativeParticleTotalMs=0, g_Scene
 static std::size_t g_SceneNativeParticleSamples=0;
 static int g_SceneDetachedTick=-1, g_SceneDetachedIndex=-1;
 static bool g_SceneLegacyAuditPending=false;
+static bool g_SceneLegacyCapture=false;
+static advancedfx::LegacyParticles::History g_SceneLegacyHistory;
+static std::string g_SceneLegacyCaptureStatus="Not captured.";
 static std::string g_SceneDetachedStatus="Not run.";
 static unsigned long long g_SceneReplayCallbacks=0,g_SceneReplayAttempted=0,g_SceneReplaySubmitted=0,g_SceneReplayQueueSkips=0,g_SceneReplayOtherSkips=0;
 static int g_SceneReplayFrame=-1;
@@ -88,6 +91,7 @@ static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
     g_SceneLegacyAuditPending=false;
+    g_SceneLegacyHistory.Clear();g_SceneLegacyCaptureStatus="Not captured.";
     g_SceneParticleReplayResult={};g_SceneParticleReplayTick=-1;
     g_SceneNativeParticleMs=g_SceneNativeParticleTotalMs=g_SceneNativeParticlePeakMs=0;
 }
@@ -720,6 +724,12 @@ void SceneCacheFrame(bool capture)
 		    g_SceneNativeParticlePeakMs=(std::max)(g_SceneNativeParticlePeakMs,g_SceneNativeParticleMs);
 		    ++g_SceneNativeParticleSamples;
 		}
+        if(g_SceneLegacyCapture&&!g_ScenePreview) {
+            advancedfx::LegacyParticles::Frame legacy;legacy.Tick=tick;
+            g_SceneLegacyCaptureStatus=Mirv_Tf2_InspectLegacyParticles(&legacy);
+            if(!g_SceneLegacyHistory.Append(std::move(legacy)))
+                g_SceneLegacyCaptureStatus+="; historical sample rejected.";
+        }
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
@@ -1788,6 +1798,28 @@ static void SceneNativeParticleStatus(int tick)
 }
 // Read-only exact-tick inspection: retain original collection indices, including
 // empty parents, so a reported index can also be used by the detached probe.
+static void SceneLegacyParticleStatus(int tick)
+{
+    using namespace advancedfx::LegacyParticles;
+    const auto &history=g_SceneLegacyHistory;
+    advancedfx::Message("Legacy dissolve capture %d; %zu frames, %.2f MiB / 64 MiB payload; ticks %d .. %d; evicted %zu, rejected %zu.\n",
+        int(g_SceneLegacyCapture),history.Frames.size(),history.Bytes/1048576.0,
+        history.Frames.empty()?-1:history.Frames.front().Tick,history.Frames.empty()?-1:history.Frames.back().Tick,
+        history.Evicted,history.Rejected);
+    if(tick<0)return;
+    const auto *sample=history.At(tick);
+    if(!sample){advancedfx::Message("Legacy dissolve tick %d: no exact retained sample. Last capture: %s\n",tick,g_SceneLegacyCaptureStatus.c_str());return;}
+    std::size_t spark=0,glow=0;
+    for(const auto &p:sample->Particles){spark+=p.Texture==Material::Spark;glow+=p.Texture==Material::CombineMuzzle;}
+    advancedfx::Message("Legacy dissolve tick %d: %zu emitters, %zu expected, %zu captured; spark %zu, combinemuzzle2 %zu, unknown material %zu; complete %d.\n",
+        tick,sample->Emitters,sample->Expected,sample->Particles.size(),spark,glow,sample->UnknownMaterials,int(sample->Complete));
+    if(!sample->Particles.empty()){
+        const auto &p=sample->Particles.front();
+        advancedfx::Message("First XYZ %.3f %.3f %.3f; RGB %u %u %u; alpha %u -> %u; size %u -> %u; lifetime %.3f / %.3f; roll %.3f; UV %.3f %.3f %.3f %.3f.\n",
+            p.Position[0],p.Position[1],p.Position[2],unsigned(p.Color[0]),unsigned(p.Color[1]),unsigned(p.Color[2]),unsigned(p.StartAlpha),unsigned(p.EndAlpha),
+            unsigned(p.StartSize),unsigned(p.EndSize),p.Lifetime,p.DieTime,p.Roll,p.UV[0],p.UV[1],p.UV[2],p.UV[3]);
+    }
+}
 static void SceneNativeParticleList(int tick,std::size_t start,const char *filter)
 {
     const auto *f=g_SceneNativeParticles.At(tick);
@@ -1842,7 +1874,14 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"status")) {
 	        SceneNativeParticleStatus(g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneNativeParticles.Frames.empty()?-1:g_SceneNativeParticles.Frames.back().Tick);
-	    } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"legacy")) {
+	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyCapture")&&parseInteger(3,value)&&(value==0||value==1)) {
+            if(value&&!g_SceneLegacyCapture){g_SceneLegacyHistory.Clear();g_SceneLegacyCaptureStatus="Not captured.";}
+            g_SceneLegacyCapture=value!=0;SceneLegacyParticleStatus(-1);
+        } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"legacyStatus")) {
+            SceneLegacyParticleStatus(g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneLegacyHistory.Frames.empty()?-1:g_SceneLegacyHistory.Frames.back().Tick);
+        } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyAt")&&parseInteger(3,value)&&value>=0) {
+            SceneLegacyParticleStatus(value);
+        } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"legacy")) {
             if(g_ScenePreview)advancedfx::Message("Disable cached preview before auditing live legacy particles.\n");
             else {g_SceneLegacyAuditPending=true;advancedfx::Message("Legacy particle audit requested for next engine frame end.\n");}
         } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"clear")) {
@@ -1885,7 +1924,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        g_SceneNativeParticleAppearance=value!=0;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"styled")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleStyled=value!=0;SceneNativeParticleStatus(-1);
-	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear|legacy> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
+	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | legacyCapture <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
 	    return;
 	}
 	if (!_stricmp(op, "effects"))
@@ -2208,7 +2247,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
-		    "  mirv_cache particles <0|1|status|clear|legacy> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
+		    "  mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | legacyCapture <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
