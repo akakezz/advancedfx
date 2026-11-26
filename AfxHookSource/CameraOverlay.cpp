@@ -6787,7 +6787,7 @@ void SetCameraFrustums(bool enabled)
 bool CameraGuidesEnabled() { return g_CameraGuidesPublished.load(); }
 bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
 std::uint64_t TransitionGuideClip() { return g_TransitionGuidePublished.load(); }
-bool TransitionGuidesEnabled() { return g_TransitionGuidesPublished.load(); }
+bool TransitionGuidesEnabled() { return CameraGuidesEnabled() && g_TransitionGuidesPublished.load(); }
 static std::string CameraClipSourceName(bool campath, std::uint64_t target)
 {
 	if (campath)
@@ -7613,7 +7613,10 @@ static void DrawCameraClipsPanel()
 		"Enable the sequence to play these clips. Preview navigation is independent. You can use free camera "
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
 	ImGui::TextWrapped("Drag to move clips. Alt-drag duplicates; Shift bypasses snapping. Ctrl-drag transition edges or fade markers, including zero-duration markers. Right-click for clip options.");
+	ImGui::BeginDisabled(!g_ShowCameraGuides);
 	ImGui::Checkbox("Show transition guides in 3D", &g_ShowTransitionGuide);
+	ImGui::EndDisabled();
+	if (!g_ShowCameraGuides) DrawOverlayHint("Enable Show camera guides in Cameras > Display to draw transitions.");
 	DrawOverlayHint("Amber: transition. Cyan: selected transition. Labels mark the sampled start and end.");
 	DrawOverlayHint("Editor only; hidden during recording. Moving/aimed cameras need Scene Cache history for accurate guides.");
 	if (SceneCachePreviewActive())

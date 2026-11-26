@@ -323,6 +323,12 @@ struct CameraGuideLine
 {
 	std::array<double, 3> A, B;
 };
+struct CameraTransitionGuide
+{
+	std::uint64_t Id;
+	size_t Index;
+	std::vector<CameraGuideLine> Lines;
+};
 inline std::vector<CameraGuideLine> CameraCollisionGuideLines(const CameraInfo &camera)
 {
 	std::vector<CameraGuideLine> lines;

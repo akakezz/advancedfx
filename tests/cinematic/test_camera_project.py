@@ -171,6 +171,23 @@ int main(){
  assert(g_SequencePreviousTime==originalPreviousTime);
  assert(g_SequencePreviousPose.Position[0]==originalPreviousPose.Position[0]);
  assert(g_CameraRigs.at("B").LastWorld.Position[0]==originalRigState.Position[0]);
+ // The renderer builds at most one dirty guide per snapshot, then serves
+ // cached geometry even if the playhead or selected clip changes.
+ bool budget=true;
+ auto guides=MirvCam_CachedTransitionGuides(p.Id,budget);
+ assert(!budget&&guides.size()==1&&guides.front().Id==p.Id&&guides.front().Lines.size()==12);
+ for(int i=0;i<2;++i){budget=true;guides=MirvCam_CachedTransitionGuides(p.Id,budget);assert(!budget);}
+ budget=true;g_CameraEvaluationTime+=.123;guides=MirvCam_CachedTransitionGuides(q.Id,budget);
+ assert(budget&&guides.size()==3);
+ const auto oldOffset=path.GetOffset();assert(path.SetOffset(oldOffset+.1));
+ budget=true;guides=MirvCam_CachedTransitionGuides(p.Id,budget);assert(!budget&&guides.size()==1&&guides.front().Id==p.Id);
+ assert(std::abs(guides.front().Lines.back().B[0]-dashes.back().B[0])>.01);
+ assert(path.SetOffset(oldOffset));
+ budget=true;guides=MirvCam_CachedTransitionGuides(p.Id,budget);assert(!budget);
+ auto edited=p;edited.HandleOut[0]+=20;assert(MirvCam_EditClip(edited));
+ budget=true;guides=MirvCam_CachedTransitionGuides(p.Id,budget);assert(!budget&&guides.size()==1);
+ assert(MirvCam_HistoryUndo(false));
+ budget=true;guides=MirvCam_CachedTransitionGuides(p.Id,budget);assert(!budget&&guides.size()==1);
  assert(MirvCam_SaveProject(file.c_str()));assert(MirvCam_LoadProject(file.c_str()));
  assert(g_CameraClips[2].FreezeOutgoing&&g_CameraClips[2].CurvedPath&&
  std::abs(g_CameraClips[2].TransitionOffset+.3)<1e-9&&g_CameraClips[2].HandleOut[0]==12);
