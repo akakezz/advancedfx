@@ -12,6 +12,7 @@
 #include "../shared/AfxCommandLine.h"
 #include "addresses.h"
 #include "RenderView.h"
+#include "MirvCalcs.h"
 #include "RecordingResolution.h"
 #include <SourceInterfaces.h>
 #include "WrpVEngineClient.h"
