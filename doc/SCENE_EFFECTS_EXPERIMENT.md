@@ -639,3 +639,13 @@ disables all four. Legacy capture still requires opt-in before recording.
 exact-tick history independently, useful if textured replay fails. Turn
 markers off for visual comparisons. `visuals status` lists counts of known
 and nonneutral historical model modulation and up to eight changed models.
+
+Additional binary corroboration: r_drawparticles registration at 0x155bd/0x155c4
+initializes the ConVar object at 0x10f4840. Its parent pointer at +0x38
+(0x10f4878) and integer at parent +0x58 are checked by legacy binding DrawModel
+at 0x2d5720..0x2d572b. Existing scoped r_drawparticles isolation therefore
+also gates the normal legacy binding draw on this binary. The new direct
+legacy material draw bypasses that entry. No additional detour is needed.
+The capture loop copies a contiguous 0x4c particle and 0x18 subtexture
+record in two reads per particle, reducing per-attribute RPM calls. Unknown
+material/failed-binding counts are included in last capture diagnostics.

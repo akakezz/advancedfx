@@ -49,17 +49,22 @@ bool CaptureBinding(Address binding,unsigned expected,Address spark,Address glow
             const Address sentinel=group+8,first=next,last=prev;
             Address prior=sentinel;
             while(next!=sentinel) {
+                // Copy contiguous particle and subtexture records in two
+                // bounded reads, rather than one process-memory read per field.
+                std::array<unsigned char,0x4c> raw{};
+                std::array<unsigned char,0x18> tex{};
+                auto copy=[](const auto &bytes,std::size_t off,auto &v){std::memcpy(&v,bytes.data()+off,sizeof(v));};
                 Address back=0,forward=0,subtexture=0,subGroup=0;
-                if(local.size()>=expected||!particles.insert(next).second||
-                   !get(next,back)||back!=prior||!get(next+8,forward)||
-                   !get(next+0x10,subtexture)||!get(subtexture+0x10,subGroup)||
-                   subGroup!=materialGroup)return false;
+                if(local.size()>=expected||!particles.insert(next).second||!get(next,raw))return false;
+                copy(raw,0,back);copy(raw,8,forward);copy(raw,0x10,subtexture);
+                if(back!=prior||!get(subtexture,tex))return false;
+                copy(tex,0x10,subGroup);if(subGroup!=materialGroup)return false;
                 Particle p;p.NearClip=nearClip;p.FarClip=farClip;
-                if(!get(next+0x18,p.Position)||!get(next+0x28,p.Velocity)||
-                   !get(next+0x34,p.Roll)||!get(next+0x38,p.DieTime)||!get(next+0x3c,p.Lifetime)||
-                   !get(next+0x40,p.Color)||!get(next+0x43,p.StartAlpha)||!get(next+0x44,p.EndAlpha)||
-                   !get(next+0x45,p.StartSize)||!get(next+0x46,p.EndSize)||!get(next+0x47,p.Flags)||
-                   !get(next+0x48,p.RollDelta)||!get(subtexture,p.UV))return false;
+                copy(raw,0x18,p.Position);copy(raw,0x28,p.Velocity);
+                copy(raw,0x34,p.Roll);copy(raw,0x38,p.DieTime);copy(raw,0x3c,p.Lifetime);
+                copy(raw,0x40,p.Color);copy(raw,0x43,p.StartAlpha);copy(raw,0x44,p.EndAlpha);
+                copy(raw,0x45,p.StartSize);copy(raw,0x46,p.EndSize);copy(raw,0x47,p.Flags);
+                copy(raw,0x48,p.RollDelta);copy(tex,0,p.UV);
                 for(float v:p.Position)if(!std::isfinite(v))return false;
                 for(float v:p.Velocity)if(!std::isfinite(v))return false;
                 for(float v:p.UV)if(!std::isfinite(v))return false;

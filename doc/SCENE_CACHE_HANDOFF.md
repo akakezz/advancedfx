@@ -280,3 +280,11 @@ by default). The latter two are temporary isolation only. True historical
 shadow projection, decal lifecycle/replay, material overrides and legacy
 classes outside dissolve remain pending. New scratch native draw is not yet
 runtime verified; see Phase 12 and rollback/toggle instructions.
+
+For one-build testing: capture both modern and legacy particles, freeze/pause,
+select cached preview, set mat_queue_mode 0, then use `mirv_cache visuals batch 1`
+to enable the four new replay/isolation experiments. Enable the existing live
+particle isolation separately. Compare each switch independently at the same
+cursor; `batch 0` disables all four without recapture. Legacy diagnostic
+markers and exact-tick status help distinguish capture from render failures.
+The temporary shadow/decal gates do not replace historical reconstruction.

@@ -255,6 +255,9 @@ std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *
           <<" active particles; exact CSimpleEmitter "<<simple<<" ("<<simpleActive<<" active), other emitter types "
           <<unknown<<", unavailable simple names "<<unnamed<<"; complete "<<int(complete)<<".\n";
     if(simple>64)report<<"Showing first 64 simple emitters plus any additional C_EntityDissolve emitters.\n";
+    if(snapshot)report<<"Dissolve sample: "<<snapshot->Emitters<<" emitters, "<<snapshot->Expected<<" expected, "
+        <<snapshot->Particles.size()<<" copied, "<<snapshot->UnknownMaterials<<" unknown material, "
+        <<snapshot->Rejected<<" rejected bindings; complete "<<int(snapshot->Complete)<<".\n";
     report<<out.str();
     return report.str();
 #else

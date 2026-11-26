@@ -12,6 +12,7 @@ int main(){
     put(binding+0x140,16.f);put(binding+0x144,64.f);
     put(binding+0xb0,group);put(binding+0x90,std::uint16_t(1));
     put(group,mat);put(group+8,particle);put(group+16,particle);put(group+0x30,Address(0));
+    put(particle,std::array<unsigned char,0x4c>{});
     put(particle,sentinel);put(particle+8,sentinel);put(particle+0x10,sub);put(sub+0x10,mat);
     put(particle+0x18,std::array<float,3>{1,2,3});put(particle+0x28,std::array<float,3>{4,5,6});
     put(particle+0x34,30.f);put(particle+0x38,1.f);put(particle+0x3c,.2f);
