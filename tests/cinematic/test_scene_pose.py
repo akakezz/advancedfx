@@ -5,6 +5,7 @@ import argparse, os, subprocess, tempfile
 parser = argparse.ArgumentParser()
 parser.add_argument('--build-dir', type=Path, default=Path(tempfile.gettempdir()) / 'hlae-scene-pose-tests')
 parser.add_argument('--sanitize', action='store_true')
+parser.add_argument('--renderable-feasibility-only', action='store_true', help='Run capture, native model replay and enumeration fixtures only')
 parser.add_argument('--windows-abi-compiler', type=Path, help='Optional Zig compiler for real MSVC ABI probes')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[2]
@@ -421,6 +422,8 @@ if result.returncode:
 result = subprocess.run([str(out/'scene_entities_native')],capture_output=True,text=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
 print(result.stdout+result.stderr)
 if result.returncode: raise SystemExit(result.returncode)
+if args.renderable_feasibility_only:
+    raise SystemExit(0)
 # Exercise the actual dispatcher independently of Direct3D: scene fallbacks must
 # survive Show path being off or the active path being hidden, without duplication.
 drawer=(root/'AfxHookSource/CampathDrawer.cpp').read_text()

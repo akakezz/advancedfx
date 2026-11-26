@@ -1,7 +1,7 @@
 """Exercise native TF2 observer scopes and pass dispatch using the actual adapters."""
 from pathlib import Path
 import argparse, os, subprocess, tempfile
-p=argparse.ArgumentParser();p.add_argument('--build-dir',type=Path,default=Path(tempfile.gettempdir())/'hlae-tf2-render-tests');p.add_argument('--sanitize',action='store_true');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--build-dir',type=Path,default=Path(tempfile.gettempdir())/'hlae-tf2-render-tests');p.add_argument('--sanitize',action='store_true');p.add_argument('--scene-replay-only',action='store_true');a=p.parse_args()
 r=Path(__file__).resolve().parents[2];o=a.build_dir;o.mkdir(parents=True,exist_ok=True)
 sdk=(r/'deps/release/prop/AfxHookSource/SourceInterfaces.h').read_text();prefix=sdk.split('class IVEngineClient_013')[1].split('GetViewAngles')[0];assert prefix.count('virtual')-1==19, 'Review TF2 engine ABI before updating adapter fixtures'
 commands=(r/'AfxHookSource/MirvCommands.cpp').read_text();structs=commands[commands.index('struct Tf2FixRecvTable;'):commands.index('static_assert(sizeof(Tf2FixRecvProp)')]
@@ -433,6 +433,7 @@ int main(){
 }
 '''
 for name,source in [('pov',pov),('passes',render),('writer',writer),('capture',capture),('groups',groups)]:
+ if a.scene_replay_only and name not in ('passes','groups'): continue
  file=o/(name+'.cpp');file.write_text(source);cmd=['g++','-std=c++17','-O1','-g','-pthread','-I'+str(r),str(file),'-o',str(o/name)]
  if a.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
  q=subprocess.run(cmd,capture_output=True,text=True)
