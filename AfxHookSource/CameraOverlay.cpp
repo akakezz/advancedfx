@@ -67,6 +67,14 @@ static bool g_SceneRenderSnapshot = false, g_SceneSuppressLiveStudio = true;
 // Separate bounded event journal; no simulation or live-effect suppression yet.
 static bool g_SceneEffectsEnabled = false;
 static advancedfx::SceneEffects::Journal g_SceneEffects;
+static bool g_SceneNativeParticlesEnabled=false, g_SceneNativeParticleMarkers=false;
+static advancedfx::NativeParticles::History g_SceneNativeParticles;
+static double g_SceneNativeParticleMs=0, g_SceneNativeParticleTotalMs=0, g_SceneNativeParticlePeakMs=0;
+static std::size_t g_SceneNativeParticleSamples=0;
+static void SceneClearNativeParticles() {
+    g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
+    g_SceneNativeParticleMs=g_SceneNativeParticleTotalMs=g_SceneNativeParticlePeakMs=0;
+}
 static std::array<bool,6> g_SceneEffectsTraceAttempted{};
 static std::array<std::vector<std::uintptr_t>,6> g_SceneEffectsCallsites;
 static void SceneClearEffects() {
@@ -257,6 +265,7 @@ static void SceneClearHistory()
 	g_SceneSampleReady = false;
 	g_SceneCache.Clear();
 	SceneClearEffects();
+	SceneClearNativeParticles();
 	g_SceneDrawing.BoundEntities.clear();
 	g_SceneAuditFrame = -1; g_SceneAuditDraws.clear();
 	g_SceneAuditStatus = "No same-frame native model observation yet.";
@@ -646,6 +655,17 @@ void SceneCacheFrame(bool capture)
 			g_SceneAuditDraws.clear(); g_SceneAuditFrame = -1;
 		}
 		if (g_SceneEffectsEnabled) g_SceneEffects.Observe(tick);
+		if (g_SceneNativeParticlesEnabled && !g_ScenePreview) {
+		    if (!g_SceneNativeParticles.Frames.empty() && tick<g_SceneNativeParticles.Frames.back().Tick)
+		        SceneClearNativeParticles();
+		    const auto begin=std::chrono::steady_clock::now();
+		    auto particles=Mirv_Tf2_CaptureNativeParticles(tick);
+		    g_SceneNativeParticles.Append(std::move(particles));
+		    g_SceneNativeParticleMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+		    g_SceneNativeParticleTotalMs+=g_SceneNativeParticleMs;
+		    g_SceneNativeParticlePeakMs=(std::max)(g_SceneNativeParticlePeakMs,g_SceneNativeParticleMs);
+		    ++g_SceneNativeParticleSamples;
+		}
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
@@ -691,7 +711,9 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	static std::shared_ptr<const advancedfx::SceneCache::Frame> last;
 	static advancedfx::SceneCache::DrawingOptions previous;
-	static std::uint64_t revision = ~0ull;
+	static std::uint64_t revision = ~0ull, particleRevision=~0ull;
+	static bool previousMarkers=false;
+	static int previousParticleTick=-1;
 	static std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> lines;
 	const auto view = SceneCacheView();
 	if (!view || !SceneCanDrawModels())
@@ -702,13 +724,26 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 	}
 	auto options = g_SceneDrawing;
 	options.Meshes = g_SceneDrawModels.load();
-	if (last != view || !(previous == options) || revision != g_SceneCache.Revision())
+	const int particleTick=g_SceneNativeParticleMarkers?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):-1;
+	const auto particleRev=g_SceneNativeParticleMarkers?g_SceneNativeParticles.Revision:0;
+	if (last != view || !(previous == options) || revision != g_SceneCache.Revision() ||
+	    previousMarkers!=g_SceneNativeParticleMarkers || previousParticleTick!=particleTick || particleRevision!=particleRev)
 	{
 		last = view;
 		previous = options;
 		revision = g_SceneCache.Revision();
-		lines = std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(
-		    g_SceneCache.Drawing(*view, options));
+		previousMarkers=g_SceneNativeParticleMarkers; previousParticleTick=particleTick; particleRevision=particleRev;
+		auto result=g_SceneCache.Drawing(*view, options);
+		if (g_SceneNativeParticleMarkers) if (const auto *sample=g_SceneNativeParticles.At(particleTick)) {
+		    // A bounded diagnostic cross, not a textured particle or renderer.
+		    const std::size_t step=(std::max)(std::size_t(1),(sample->Points.size()+8191)/8192);
+		    for(std::size_t i=0;i<sample->Points.size();i+=step) {
+		        const auto &p=sample->Points[i];
+		        result.push_back({{p[0]-1.5,p[1],p[2]},{p[0]+1.5,p[1],p[2]},4,220});
+		        result.push_back({{p[0],p[1],p[2]-1.5},{p[0],p[1],p[2]+1.5},4,220});
+		    }
+		}
+		lines = std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(std::move(result));
 	}
 	return lines;
 }
@@ -1554,6 +1589,23 @@ static ImGuizmo::MODE g_GizmoMode = ImGuizmo::LOCAL;
 
 // Sequencer/curve editor shared state (parity with DX11)
 static bool g_SequencerNeedsRefresh = false;
+static void SceneNativeParticleStatus(int tick)
+{
+    const auto &history=g_SceneNativeParticles;
+    advancedfx::Message("Native particles: enabled %d, markers %d; %zu frames, %.2f MiB; ticks %d .. %d; capture last %.3f ms, mean %.3f ms, peak %.3f ms.\n",
+        int(g_SceneNativeParticlesEnabled),int(g_SceneNativeParticleMarkers),history.Frames.size(),history.Bytes/1048576.0,
+        history.Frames.empty()?-1:history.Frames.front().Tick,history.Frames.empty()?-1:history.Frames.back().Tick,
+        g_SceneNativeParticleMs,g_SceneNativeParticleSamples?g_SceneNativeParticleTotalMs/g_SceneNativeParticleSamples:0,g_SceneNativeParticlePeakMs);
+    if(tick<0) return;
+    const auto *f=history.At(tick);
+    if(!f){advancedfx::Message("Native particles tick %d: no exact retained sample.\n",tick);return;}
+    advancedfx::Message("Native particles tick %d: %zu root effects, %zu child collections, %zu active particles, %zu captured positions, %zu empty collections, %zu rejected reads/values; complete %d. %s\n",
+        tick,f->Roots,f->Children,f->Active,f->Points.size(),f->Empty,f->Rejected,int(f->Complete),f->Status.c_str());
+    if(!f->Points.empty()) {
+        const auto &p=f->Points.front();
+        advancedfx::Message("Native particles first XYZ: %.3f %.3f %.3f\n",p[0],p[1],p[2]);
+    }
+}
 void SceneCacheConsole(advancedfx::ICommandArgs *args)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
@@ -1572,6 +1624,23 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	auto integer = [&](int &value) { return args->ArgC() == 3 && parseInteger(2, value); };
 	int value = 0;
 	bool ok = false;
+	if (!_stricmp(op, "particles"))
+	{
+	    if(integer(value)&&(value==0||value==1)) {
+	        if(value&&!g_SceneNativeParticlesEnabled) SceneClearNativeParticles();
+	        g_SceneNativeParticlesEnabled=value!=0;
+	        SceneNativeParticleStatus(-1);
+	    } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"status")) {
+	        SceneNativeParticleStatus(g_ScenePreview?int(g_SequencerFrame):g_SceneNativeParticles.Frames.empty()?-1:g_SceneNativeParticles.Frames.back().Tick);
+	    } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"clear")) {
+	        SceneClearNativeParticles();SceneNativeParticleStatus(-1);
+	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"at")&&parseInteger(3,value)&&value>=0) {
+	        SceneNativeParticleStatus(value);
+	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"markers")&&parseInteger(3,value)&&(value==0||value==1)) {
+	        g_SceneNativeParticleMarkers=value!=0;SceneNativeParticleStatus(-1);
+	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear> | at <tick> | markers <0|1> - TF2 x64 native XYZ experiment.\n");
+	    return;
+	}
 	if (!_stricmp(op, "effects"))
 	{
 		if (integer(value) && (value == 0 || value == 1)) {
@@ -1892,6 +1961,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
+		    "  mirv_cache particles <0|1|status|clear> | at <tick> | markers <0|1> - Native particle XYZ experiment.\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
@@ -1926,6 +1996,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	if (g_SceneRenderSnapshot) advancedfx::Message("%s\n", g_SceneAuditStatus.c_str());
 	if (g_SceneEffectsEnabled || g_SceneEffects.First >= 0)
 		SceneEffectsStatus(g_ScenePreview ? int(g_SequencerFrame) : g_SceneEffects.Last, false);
+	if(g_SceneNativeParticlesEnabled||!g_SceneNativeParticles.Frames.empty())
+	    SceneNativeParticleStatus(g_ScenePreview?int(g_SequencerFrame):g_SceneNativeParticles.Frames.empty()?-1:g_SceneNativeParticles.Frames.back().Tick);
 	if (g_SceneRangeEnabled)
 		advancedfx::Message("Capture range: %d .. %d inclusive%s.\n", g_SceneRangeFirst, g_SceneRangeLast,
 		                    g_SceneRecord ? " (armed)" : " (stopped)");

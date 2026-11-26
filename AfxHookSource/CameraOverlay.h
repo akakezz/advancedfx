@@ -1,6 +1,7 @@
 #pragma once
 #include <shared/SceneCache.h>
 #include <shared/SceneEffects.h>
+#include <shared/NativeParticleSnapshot.h>
 #include <memory>
 #include <map>
 #include <functional>
@@ -8,6 +9,8 @@
 #include <vector>
 #include <shared/RecordingProfileInfo.h>
 namespace advancedfx { class ICommandArgs; }
+// Native engine-thread position snapshot, exact TF2 x64 build only.
+advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick);
 namespace AfxHookSource
 {
 namespace CameraOverlay

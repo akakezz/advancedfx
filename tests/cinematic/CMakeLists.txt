@@ -74,3 +74,7 @@ add_test(NAME campath_visualization COMMAND campath_visualization_tests)
 add_executable(effects_probe_tests effects_probe_test.cpp)
 target_include_directories(effects_probe_tests PRIVATE ../..)
 add_test(NAME effects_probe_core COMMAND effects_probe_tests)
+
+add_executable(native_particles_tests native_particles_test.cpp)
+target_include_directories(native_particles_tests PRIVATE ../..)
+add_test(NAME native_particles_core COMMAND native_particles_tests)

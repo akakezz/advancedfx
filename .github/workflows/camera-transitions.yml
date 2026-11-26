@@ -36,6 +36,9 @@ jobs:
           submodules: recursive
       - name: Check custom mode planning and fitted preview geometry
         run: python3 tests/cinematic/test_recording_resolution.py
+      - name: Check native particle position snapshot and bounded history
+        if: github.ref == 'refs/heads/feature/scene-cache-2'
+        run: c++ -std=c++17 -Wall -Wextra -I. tests/cinematic/native_particles_test.cpp -o /tmp/native-particle-tests && /tmp/native-particle-tests
       - name: Check bounded particle event journal and historical control points
         if: github.ref == 'refs/heads/feature/scene-cache-2'
         run: c++ -std=c++17 -Wall -Wextra -I. tests/cinematic/effects_probe_test.cpp -o /tmp/effects-probe-tests && /tmp/effects-probe-tests

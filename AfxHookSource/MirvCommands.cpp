@@ -93,6 +93,47 @@ extern WrpVEngineClient * g_VEngineClient;
 
 HMODULE g_H_EngineDll = 0;
 
+advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick)
+{
+    using namespace advancedfx::NativeParticles;
+    Frame failure; failure.Tick=tick;
+    failure.Status="Unsupported TF2 particle layout (exact x64 build required)";
+#ifdef _WIN64
+    if(g_SourceSdkVer!=SourceSdkVer_TF2) return failure;
+    HMODULE client=GetModuleHandleA("client.dll");
+    if(!client) return failure;
+    const Address base=reinterpret_cast<std::uintptr_t>(client);
+    auto read=[](Address a,void *out,std::size_t size) {
+        SIZE_T n=0;
+        return ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a)),out,size,&n)&&n==size;
+    };
+    // Read the loaded PE headers without dereferencing arbitrary memory.
+    IMAGE_DOS_HEADER dos{}; IMAGE_NT_HEADERS64 nt{};
+    if(!read(base,&dos,sizeof(dos))||dos.e_magic!=IMAGE_DOS_SIGNATURE||
+       dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+       !read(base+dos.e_lfanew,&nt,sizeof(nt))||nt.Signature!=IMAGE_NT_SIGNATURE||
+       nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||
+       nt.FileHeader.TimeDateStamp!=0x6ad26f17||nt.OptionalHeader.SizeOfImage!=0x133a000) return failure;
+    // Independent machine-code anchors: manager getter, list insertion,
+    // traversal, recursive count, and the sorting code's XYZ/stride loads.
+    auto match=[&](Address rva,std::initializer_list<unsigned char> expected) {
+        unsigned char data[32]{};
+        return expected.size()<=sizeof(data)&&read(base+rva,data,expected.size())&&
+            std::equal(expected.begin(),expected.end(),data);
+    };
+    if(!match(0x2d6e2d,{0x48,0x8d,0x05,0xec,0xe1,0xe1,0x00})||
+       !match(0x2d422a,{0x48,0x8b,0x41,0x60,0x48,0x8b,0xda,0x48,0x89,0x82,0xb8,0x27,0x00,0x00})||
+       !match(0x2d8b27,{0x49,0x8b,0x5f,0x60})||
+       !match(0x2d8b9b,{0x48,0x8b,0x9b,0xb8,0x27,0x00,0x00})||
+       !match(0x2d492a,{0x48,0x8b,0x99,0xb8,0x22,0x00,0x00,0x8b,0x79,0x38})||
+       !match(0x9143a1,{0x4d,0x8b,0xba,0x10,0x23,0x00,0x00})||
+       !match(0x914405,{0x49,0xf7,0xa2,0x10,0x25,0x00,0x00})) return failure;
+    return Capture(base,tick,read);
+#else
+    return failure;
+#endif
+}
+
 
 #if AFXSTREAMS_REFTRACKER
 

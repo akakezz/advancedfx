@@ -60,3 +60,47 @@ explicitly reported. These addresses can help locate the native particle paths i
 the exact tested binary. Please provide the new status output, including the
 compaction and client RVA lines. Stop recording before running status to freeze
 counts; report the client game/build if possible.
+
+
+## Phase 2: native position capture (exact supplied TF2 x64 build)
+
+PE timestamp 0x6ad26f17; SizeOfImage 0x133a000; SHA-256
+b6f45c74805edacf0cf61d965f658158fc22960f66d583ef3a6549eb56696b95.
+The module checks timestamp, image size, architecture and seven code anchors,
+not a full runtime file hash. Other builds fail closed.
+
+Disassembly: ParticleMgr getter RVA 0x2d6df0 returns static manager
+0x10f5020; initialization flag 0x10f51a0. AddEffect 0x2d4220 and
+UpdateNewEffects 0x2d8a00 corroborate manager +0x60 root head and
+root +0x27b8 next/+0x27c0 prev. Constructor 0x2d9d80 uses base
+collection +0x20 and root vtable 0xb60c70. Recursive count 0x2d4920
+reads collection +0x38 active, +0x22b8 child head, +0x2280 next child.
+GenerateSortedIndexList helper 0x914350 reads +0x2310 position base
+and +0x2510 float stride, then SIMD XYZ at +0/+16/+32 bytes.
+Destructor at 0x2da1fc converts client time to integer ID, confirming
+the event stream defect for this binary.
+
+Run a fresh short demo capture:
+- mirv_cache effects 0 (event recorder unnecessary)
+- mirv_agr enabled 0 (if not using AGR)
+- mirv_cache clear
+- mirv_cache particles 1
+- mirv_cache record 1
+- Play, then pause and mirv_cache record 0
+- mirv_cache particles status; mirv_cache particles at <tick>
+- mirv_cache preview 1; mirv_cache particles markers 1
+- Scrub with mirv_cache goto <tick>; compare diagnostic crosses.
+- mirv_cache particles markers 0 and mirv_cache particles 0 to disable.
+
+Position capture shares the existing engine-thread frame-end capture boundary,
+one snapshot per observed scene tick. It does not modify the native particle
+manager or require tool recording. Root vtable, link consistency, read success,
+count/stride bounds, traversal cycles/depth and finite positions are checked.
+No engine pointers survive a capture. The independent rolling position history
+is bounded to 64 MiB of frame/point payload and 4096 frames; a sample is exact
+tick only. The display draws at most 8192 crosses using existing scene guides.
+It does not suppress live particles, interpolate particles, retain identities,
+restore materials, render native particle systems, or guarantee that off-screen
+collections have been simulated. Capture cost includes a separate native probe
+timer; model capture timer includes this cost too. Windows/in-game verification
+is required, particularly synchronization with the game's simulation jobs.
