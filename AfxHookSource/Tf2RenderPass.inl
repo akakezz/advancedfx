@@ -32,6 +32,7 @@ static_assert(offsetof(Tf2ViewProjectionPrefix, Near) == 88, "TF2 projection ABI
 int g_Tf2CapturedFrame = -1;
 Tf2RenderPass g_Tf2ActivePass = Tf2RenderPass::Count;
 std::map<const void *, unsigned> g_Tf2RenderGroups;
+bool g_Tf2ReplayStudio = false;
 // Source SDK ModelRenderInfo_t prefix; the rest is forwarded untouched.
 struct Tf2ModelInfoPrefix {
  float Origin[3], Angles[3];
@@ -69,6 +70,7 @@ void __fastcall Tf2PassDrawModel(void *self,
  const auto &model = *static_cast<const Tf2ModelInfoPrefix *>(info);
  const auto found = g_Tf2RenderGroups.find(model.Renderable);
  const unsigned group = found == g_Tf2RenderGroups.end() ? 0 : found->second;
+ if (g_Tf2ReplayStudio && g_Tf2ActivePass == Tf2RenderPass::Count && (group & 8)) return;
  if (group & 4) return; // Native in-eye target/gear, including ordinary screen rendering.
  bool draw = true;
  if (g_Tf2ActivePass == Tf2RenderPass::World || isolate) {
@@ -113,14 +115,15 @@ void __fastcall Tf2PassRenderFrame(void *self,
  const bool outer = g_Tf2ActivePass == Tf2RenderPass::Count;
  struct GroupScope {
   bool Outer;
-  ~GroupScope() { if (Outer) g_Tf2RenderGroups.clear(); }
+  ~GroupScope() { if (Outer) { g_Tf2RenderGroups.clear(); g_Tf2ReplayStudio = false; } }
  } groupScope{outer};
  bool any = false;
  if (outer) {
   for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
    any |= g_AfxStreams.Tf2PassRecording(Tf2RenderPass(i));
   const int hidden = MirvPovSpectate_HiddenPlayer();
-  if (any || hidden) Mirv_Tf2_RenderGroups(g_Tf2RenderGroups, hidden);
+  g_Tf2ReplayStudio = !any && AfxHookSource::CameraOverlay::SceneCacheReplayActive();
+  if (any || hidden || g_Tf2ReplayStudio) Mirv_Tf2_RenderGroups(g_Tf2RenderGroups, hidden);
  }
  g_Tf2OriginalFrame(self,
 #ifndef _WIN64

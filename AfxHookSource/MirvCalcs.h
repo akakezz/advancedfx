@@ -487,7 +487,7 @@ IMirvVecAngCalc *Mirv_Tf2_RetargetCamera(IMirvVecAngCalc *calc, int entity, int 
 bool Mirv_Tf2_CameraBone(IMirvVecAngCalc *calc, int &index, std::string &name);
 // Engine-thread submission only: Source queues the draw; HLAE queues resource retirement.
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
- const advancedfx::SceneCache::Entity *owner = nullptr);
+ const advancedfx::SceneCache::Entity *owner = nullptr, bool textured = false);
 
 struct MirvTf2SceneEntity
 {
@@ -499,7 +499,7 @@ struct MirvTf2SceneEntity
 };
 // One tools-list traversal per observed tick, with serial-aware transient identities.
 void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs, bool buildings, bool props,
-	std::vector<MirvTf2SceneEntity> &out);
+	std::vector<MirvTf2SceneEntity> &out, bool generic = false);
 void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued references remain pinned.
 
 // Engine-thread polling; worker callbacks never call MDL/material APIs.

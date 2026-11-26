@@ -288,6 +288,8 @@ public:
 		double DemoTime = 0, ClientTime = 0;
 		std::vector<Entity> Entities;
 		std::vector<CameraSample> Cameras;
+		// Broad renderable snapshot, not a guarantee of complete coverage.
+		bool RenderSnapshot = false;
 	};
 
 	struct Line
@@ -569,6 +571,7 @@ public:
 			return false;
 		const double f = (time - left.DemoTime) / gap;
 		out.DemoTime = time;
+		out.RenderSnapshot = left.RenderSnapshot && right->RenderSnapshot;
 		out.ClientTime = left.ClientTime + f * (right->ClientTime - left.ClientTime);
 		for (const auto &a : left.Cameras)
 			for (const auto &b : right->Cameras)

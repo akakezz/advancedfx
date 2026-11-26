@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/cinematic-campath
+      - feature/scene-cache-2
     paths:
       - 'AfxHookSource/MirvCam.cpp'
       - 'AfxHookSource/CameraOverlay.cpp'
@@ -35,6 +36,9 @@ jobs:
           submodules: recursive
       - name: Check custom mode planning and fitted preview geometry
         run: python3 tests/cinematic/test_recording_resolution.py
+      - name: Check generic renderable capture and native replay fixtures
+        if: github.ref == 'refs/heads/feature/scene-cache-2'
+        run: python3 tests/cinematic/test_scene_pose.py --build-dir /tmp/hlae-scene-pose-tests
       - name: Check project persistence, overlapping transitions, Bezier and frozen poses
         run: python3 tests/cinematic/test_camera_project.py --build-dir /tmp/hlae-camera-transition-tests
 

@@ -11580,7 +11580,7 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 	return true;
 }
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
-                            const advancedfx::SceneCache::Entity *owner)
+                            const advancedfx::SceneCache::Entity *owner, bool textured)
 {
 	Mirv_Tf2_SceneRenderFrame();
 	if (g_SceneOutstanding.load() >= SceneMaxOutstanding)
@@ -11674,7 +11674,11 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		return false;
 	}
 	info.Body = pose->Body;
-	void *material = SceneCategoryMaterial(entity.Category);
+	// Neutral ambient is a feasibility aid, not historical lighting.
+	if (textured)
+		for (auto &face : info.AmbientCube)
+			for (float &channel : face) channel = .55f;
+	void *material = textured ? nullptr : SceneCategoryMaterial(entity.Category);
 	if (material)
 	{
 		SceneInterfaceCall<void>(material, 12);
@@ -11693,7 +11697,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 				SceneInterfaceCall<void, void *, int>(Studio, 33, Material, Type);
 		}
 	} restore{studio, overrideMaterial, overrideType, material != nullptr};
-	const int flags = 0x04 | 0x20 | (material ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
+	const int flags = 0x04 | 0x20 | (material || textured ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
 	resources->Submit();
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
@@ -11707,7 +11711,8 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached model cleanup callback could not be submitted.";
 		return false;
 	}
-	status = material ? "Drawing category-colored cached models."
+	status = textured ? "Drawing native textured cached models (neutral lighting)." :
+	         material ? "Drawing category-colored cached models."
 	                  : "Drawing default cached wireframe; category material requires VMaterialSystem082.";
 	return true;
 }
@@ -11786,7 +11791,7 @@ bool Mirv_Tf2_CalcCachedCamera(IMirvVecAngCalc *calc, const advancedfx::SceneCac
 // recorders to every projectile. Network class metadata is read through the
 // public IClientNetworkable::GetClientClass slot (2).
 void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs,
-                                   bool buildings, bool props, std::vector<MirvTf2SceneEntity> &out)
+                                   bool buildings, bool props, std::vector<MirvTf2SceneEntity> &out, bool generic)
 {
 	out.clear();
 	auto tools = CClientToolsTf2::Instance();
@@ -11866,6 +11871,14 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 				looseModel = !networked &&
 				             (category == MIRV_TF2_ENTITY_WEAPON || category == MIRV_TF2_ENTITY_COSMETIC);
 			}
+			// Admit unclassified model-bearing renderables without class-specific
+			// handling. Retain dormancy, visibility and identity checks.
+			auto modelInfo = generic ? Mirv_Tf2_GetModelInfo() : nullptr;
+			const auto model = generic ? renderable->GetModel() : nullptr;
+			const bool unclassified = generic && category == MIRV_TF2_ENTITY_OTHER && modelInfo && model &&
+				(modelInfo->GetModelType(model) == 1 || modelInfo->GetModelType(model) == 3);
+			if (!unclassified)
+			{
 			if (!networked && category != MIRV_TF2_ENTITY_RAGDOLL && category != MIRV_TF2_ENTITY_GIB &&
 			    category != MIRV_TF2_ENTITY_WEAPON && category != MIRV_TF2_ENTITY_COSMETIC &&
 			    category != MIRV_TF2_ENTITY_BUILDING && category != MIRV_TF2_ENTITY_PROP)
@@ -11925,6 +11938,7 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 				if (!((category == MIRV_TF2_ENTITY_WEAPON && weapons) ||
 				      (category == MIRV_TF2_ENTITY_COSMETIC && cosmetics)))
 					continue;
+			}
 			}
 			row.Snapshot.Identity = (std::uint64_t(1) << 63) | handle;
 			row.Snapshot.Category = category;
@@ -12074,6 +12088,10 @@ void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenP
     category == MIRV_TF2_ENTITY_COSMETIC || category == MIRV_TF2_ENTITY_RAGDOLL ||
     category == MIRV_TF2_ENTITY_GIB) ? 1 : 0;
   if (hiddenPlayer > 0 && iface->GetEntIndex(object) == hiddenPlayer) group |= 4;
+  // Bit 8 marks registered studio renderables, not world/brush geometry.
+  if (auto info = Mirv_Tf2_GetModelInfo())
+   if (auto model = renderable->GetModel())
+    if (iface->GetEntIndex(object) != 0 && info->GetModelType(model) == 3) group |= 8;
   unsigned parent = 0xffffffffu;
   if (auto network = unknown->GetClientNetworkable())
    Mirv_Tf2_SceneMoveParent(object, SceneInterfaceCall<const void *>(network, 2), parent);

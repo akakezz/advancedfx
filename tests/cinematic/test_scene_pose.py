@@ -22,7 +22,7 @@ preamble = r'''
 #include "shared/AfxMath.h"
 #include "AfxHookSource/MaterialSystemHooks.h"
 bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&,std::string&,void* = nullptr);
-bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr);
+bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr, bool = false);
 void Mirv_Tf2_SceneRenderFrame();
 #include <thread>
 #include <filesystem>
@@ -141,7 +141,8 @@ void Draw(void*,void*results,const SceneStudioInfo&info,SOURCESDK::matrix3x4_t*b
  assert(std::this_thread::get_id()==fixture.EngineThread);
  assert(results==nullptr&&info.Header==fixture.Header&&info.Hardware==&fixture&&info.Body==fixture.Body);
  assert(info.ClientEntity==nullptr&&info.Decals==nullptr&&info.ColorMeshes==nullptr&&info.Lod==0);
- assert(flex==nullptr&&delayed==nullptr&&flags==(0x04|0x20|(fixture.Override?0:0x80)));assert(fixture.Locks==1&&fixture.Refs>=1&&fixture.HeaderLocks==fixture.Refs);
+ const bool textured=info.AmbientCube[0][0]>.5f;
+ assert(flex==nullptr&&delayed==nullptr&&flags==(0x04|0x20|(fixture.Override||textured?0:0x80)));assert(fixture.Locks==1&&fixture.Refs>=1&&fixture.HeaderLocks==fixture.Refs);
  // Match Source's studio draw: ColorModulate replaces $color, even on
  // an override material, before the shader multiplies it by $color2.
  if(fixture.Override){auto&m=*static_cast<Fixture::Material*>(fixture.Override);m.Modulation={1,1,1};for(int i=0;i<3;++i)fixture.DrawColor[i]=m.Modulation[i]*m.Tint[i];}
@@ -207,6 +208,7 @@ int main(){
  entity.Category=1;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(1);assert(fixture.MaterialCount==2&&!fixture.Override&&fixture.Materials[1].Refs==2&&fixture.Materials[0].Color!=fixture.Materials[1].Color);
  Mirv_Tf2_ReleaseSceneMaterials();assert(fixture.Materials[0].Refs==0&&fixture.Materials[1].Refs==1);ConsumeRenderQueue();assert(fixture.Materials[1].Refs==0);
  fixture.MaterialInterface=false;assert(Mirv_Tf2_DrawScenePose(entity,status)&&!fixture.Override);ConsumeRenderQueue();fixture.MaterialInterface=true;
+ assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true)&&!fixture.Override&&status.find("native textured")!=std::string::npos);ConsumeRenderQueue();
  // A slow or discarded render queue retains ownership without unbounded growth.
  for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
  assert(!Mirv_Tf2_DrawScenePose(entity,status));unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);assert(pending==SceneMaxOutstanding&&peak==SceneMaxOutstanding);
@@ -320,9 +322,11 @@ bool Mirv_Tf2_ScenePlayerVisible(const void*object,const void*){auto*p=static_ca
 int Mirv_Tf2_GetMaxPlayers(){return 32;}
 bool Mirv_Tf2_GetPlayerInfo(int i,char*,int,int*u){for(auto*p:objects)if(p->Index==i){*u=p->User;return true;}return false;}
 template<typename R,typename...Args>R SceneInterfaceCall(void*p,size_t slot,Args...args){return reinterpret_cast<R(*)(void*,Args...)>((*static_cast<void***>(p))[slot])(p,args...);}
+void Mirv_Tf2_CollectSceneEntities(bool,bool,bool,bool,bool,bool,bool,std::vector<MirvTf2SceneEntity>&,bool=false);
 '''+calcs[calcs.index('std::uintptr_t Mirv_Tf2_AttachToolEntity('):calcs.index('int Mirv_Tf2_EntityAddress(')]+classifier+collector+r'''
 int main(){
  slots[2]=reinterpret_cast<void*>(Class);slots[8]=reinterpret_cast<void*>(Dormant);
+ {CMirvTf2ClientUnknown unknown;unknown.Player=false;unknown.Index=55;unknown.Handle=55;unknown.Net.Class.Name="CUnclassified";unknown.Render.ModelName="models/custom/unknown.mdl";unknown.Render.Origin[0]=-10000;objects={&unknown};std::vector<MirvTf2SceneEntity> generic;Mirv_Tf2_CollectSceneEntities(true,true,true,true,true,true,true,generic,true);assert(generic.size()==1&&generic.front().Snapshot.Origin[0]==-10000);unknown.Net.Dormant=true;Mirv_Tf2_CollectSceneEntities(true,true,true,true,true,true,true,generic,true);assert(generic.empty());}
  CMirvTf2ClientUnknown player,rocket;rocket.Index=40;rocket.Handle=(2<<12)|40;rocket.Player=false;objects={&player,&rocket};
  std::vector<MirvTf2SceneEntity> out;Mirv_Tf2_CollectSceneEntities(false,false,false,false,false,false,false,out);assert(out.size()==1&&out[0].Snapshot.Identity==42);
  Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,false,false,out);assert(out.size()==2&&out[1].Snapshot.Category==1);auto id=out[1].Snapshot.Identity;assert(id==((1ull<<63)|rocket.Handle));

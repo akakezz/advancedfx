@@ -27,6 +27,8 @@ void PreferencesFrame(); // Engine FRAME_START, including when the overlay is cl
 void Draw();
 void SceneCacheFrame(bool capture = true); // Capture at TF2 FRAME_RENDER_END; false only updates preview.
 void SceneCacheDrawModels();
+// Experimental replacement of registered live studio-model submissions only.
+bool SceneCacheReplayActive();
 std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines();
 void SceneCacheFocus(bool focused);
 void SceneCacheDevicePresent(bool success);

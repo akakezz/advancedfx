@@ -62,6 +62,8 @@ static std::atomic_bool g_Open{false}, g_MouseLook{false};
 static std::recursive_mutex g_SceneMutex;
 static advancedfx::SceneCache g_SceneCache;
 static bool g_SceneRecord = false, g_ScenePreview = false;
+// Session-local opt-in; diagnostic capture remains the default.
+static bool g_SceneRenderSnapshot = false;
 static double g_SceneCursor = 0;
 static bool g_SceneDrivingCamera = false;
 static bool g_ScenePlayerModels = false, g_ScenePlayerFilter = false;
@@ -257,6 +259,15 @@ std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView()
 	return std::atomic_load(&g_SceneView);
 }
 bool SceneCachePreviewActive() { std::lock_guard<std::recursive_mutex> lock(g_SceneMutex); return g_ScenePreview; }
+bool SceneCacheReplayActive()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (!g_SceneRenderSnapshot || !g_ScenePreview || !g_SceneDrawModels.load() || !SceneCanDrawModels()) return false;
+	const auto view = SceneCacheView();
+	return view && view->RenderSnapshot && std::any_of(view->Entities.begin(), view->Entities.end(), [](const auto &e){
+		return e.ModelPose && e.ModelPose->ModelInfo->WireEdges.empty();
+	});
+}
 void VisitCameraSceneFrames(
 	const std::function<void(const std::deque<advancedfx::SceneCache::Frame> &, std::uint64_t)> &visitor)
 {
@@ -396,7 +407,7 @@ void SceneCacheFrame(bool capture)
 		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 		return;
 	}
-	if (capture && g_SceneDeviceReady.load() && g_SceneRecord && !g_VEngineClient->IsSkippingDemo() &&
+	if (capture && g_SceneDeviceReady.load() && g_SceneRecord && !(g_SceneRenderSnapshot && g_ScenePreview) && !g_VEngineClient->IsSkippingDemo() &&
 	    GetCurrentDemoTick(tick) && GetCurrentDemoTime(time) && SceneCaptureTick(tick))
 	{
 		const auto captureStart = std::chrono::steady_clock::now();
@@ -407,14 +418,17 @@ void SceneCacheFrame(bool capture)
 		}
 		advancedfx::SceneCache::Frame frame;
 		frame.DemoTime = time;
+		frame.RenderSnapshot = g_SceneRenderSnapshot;
 		frame.ClientTime = g_MirvTime.GetTime();
 		if (auto globals = g_Hook_VClient_RenderView.GetGlobals())
 			MirvCam_CaptureCameras(frame.ClientTime, globals->framecount_get(),
 								   globals->absoluteframetime_get(), frame.Cameras);
 		size_t selectedSeen = 0;
 		std::vector<MirvTf2SceneEntity> entities;
-		Mirv_Tf2_CollectSceneEntities(g_SceneProjectiles, g_SceneWeapons, g_SceneCosmetics, g_SceneRagdolls,
-		                              g_SceneGibs, g_SceneBuildings, g_SceneProps, entities);
+		const bool broad = frame.RenderSnapshot;
+		Mirv_Tf2_CollectSceneEntities(broad || g_SceneProjectiles, broad || g_SceneWeapons, broad || g_SceneCosmetics,
+		                              broad || g_SceneRagdolls, broad || g_SceneGibs, broad || g_SceneBuildings,
+		                              broad || g_SceneProps, entities, broad);
 		unsigned int playerPoses = 0, projectilePoses = 0, weaponPoses = 0, cosmeticPoses = 0, failures = 0;
 		unsigned int ragdollPoses = 0, gibPoses = 0, buildingPoses = 0, propPoses = 0;
 		std::string lastIssue;
@@ -422,17 +436,17 @@ void SceneCacheFrame(bool capture)
 		{
 			auto &entity = row.Snapshot;
 			const bool player = entity.Category == MIRV_TF2_ENTITY_PLAYER;
-			const bool selected = player && ScenePlayerMatches(entity.Identity, row.Index);
+			const bool selected = player && (broad || ScenePlayerMatches(entity.Identity, row.Index));
 			selectedSeen += selected;
 			if (player && !selected)
 				continue; // A restrictive filter also excludes unselected player proxies.
 			const bool gear =
 			    entity.Category == MIRV_TF2_ENTITY_WEAPON || entity.Category == MIRV_TF2_ENTITY_COSMETIC;
-			if (gear && entity.OwnerIdentity && !(entity.OwnerIdentity >> 63) &&
+			if (!broad && gear && entity.OwnerIdentity && !(entity.OwnerIdentity >> 63) &&
 			    !ScenePlayerMatches(entity.OwnerIdentity))
 				continue;
 
-			if ((player && g_ScenePlayerModels && selected) ||
+			if (broad || (player && g_ScenePlayerModels && selected) ||
 			    (entity.Category == MIRV_TF2_ENTITY_PROJECTILE && g_SceneProjectiles) || gear ||
 			    (entity.Category == MIRV_TF2_ENTITY_RAGDOLL && g_SceneRagdolls) ||
 			    (entity.Category == MIRV_TF2_ENTITY_GIB && g_SceneGibs) ||
@@ -469,7 +483,7 @@ void SceneCacheFrame(bool capture)
 			}
 			frame.Entities.push_back(std::move(entity));
 		}
-		if (g_ScenePlayerModels || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneBuildings ||
+		if (broad || g_ScenePlayerModels || g_SceneProjectiles || g_SceneRagdolls || g_SceneGibs || g_SceneBuildings ||
 		    g_SceneProps || g_SceneWeapons || g_SceneCosmetics)
 		{
 			g_ScenePoseStatus =
@@ -479,10 +493,11 @@ void SceneCacheFrame(bool capture)
 			    std::to_string(ragdollPoses) + " ragdoll poses, " + std::to_string(gibPoses) +
 			    " gib poses, " + std::to_string(buildingPoses) + " building poses, " +
 			    std::to_string(propPoses) + " prop poses; " + std::to_string(failures) + " unavailable.";
+			if (broad) g_ScenePoseStatus += " Broad snapshot: " + std::to_string(entities.size()) + " registered renderables.";
 			if (!lastIssue.empty())
 				g_ScenePoseStatus += " " + lastIssue;
 		}
-		if (g_ScenePlayerFilter && g_ScenePlayerModels && selectedSeen < g_ScenePlayers.size())
+		if (!broad && g_ScenePlayerFilter && g_ScenePlayerModels && selectedSeen < g_ScenePlayers.size())
 			g_ScenePoseStatus += " " + std::to_string(selectedSeen) + "/" +
 			                     std::to_string(g_ScenePlayers.size()) + " selected players available.";
 		if (!g_SceneCache.Append(std::move(frame)))
@@ -579,6 +594,8 @@ void SceneCacheDrawModels()
 		return;
 	}
 	std::string status = "No cached model could be submitted.";
+	const bool textured = SceneCacheReplayActive();
+	unsigned submitted = 0, attempted = 0;
 	for (const auto &entity : view->Entities)
 	{
 		if (!g_SceneDrawModels.load() || !SceneCanDrawModels() || epoch != g_SceneDrawEpoch.load())
@@ -592,11 +609,12 @@ void SceneCacheDrawModels()
 			                           found->Identity == entity.OwnerIdentity
 			                       ? &*found
 			                       : nullptr;
-			Mirv_Tf2_DrawScenePose(entity, status, owner);
+			++attempted;
+			if (Mirv_Tf2_DrawScenePose(entity, status, owner, textured)) ++submitted;
 		}
 	}
 	if (epoch == g_SceneDrawEpoch.load())
-		SceneModelStatus(status);
+		SceneModelStatus(textured ? "Experimental replay: " + std::to_string(submitted) + "/" + std::to_string(attempted) + " studio submissions. " + status : status);
 }
 // Diagnostics report the actual sampled representation, not just the toggle.
 static std::string SceneAnimationSummary(const advancedfx::SceneCache::Entity &entity)
@@ -5909,7 +5927,14 @@ static void DrawSceneCacheMenu(int playhead)
 		                    g_SceneCache.Frames().back().DemoTime - g_SceneCache.Frames().front().DemoTime);
 	if (ImGui::CollapsingHeader("Capture", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::TextDisabled("Choose categories; checked colors match the preview.");
+		if (ImGui::Checkbox("Experimental full renderable capture / replay", &g_SceneRenderSnapshot))
+		{
+			++g_SceneDrawEpoch;
+			if (g_SceneRenderSnapshot) g_SceneDrawModels.store(true);
+		}
+		if (g_SceneRenderSnapshot)
+			DrawOverlayHint("Capture all available registered models in one demo pass. Category/player filters are bypassed. Preview uses native textures, neutral lighting and attempts to hide live studio models. Capture suspends while previewing. Record fresh history first.");
+		ImGui::TextDisabled(g_SceneRenderSnapshot ? "Category settings apply only to diagnostic capture." : "Choose categories; checked colors match the preview.");
 		if (ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
 		{
 			bool players = g_ScenePlayerModels;
@@ -6128,7 +6153,7 @@ static void DrawSceneCacheMenu(int playhead)
 			ImGui::TextWrapped("Trails show the retained movement before the cached cursor and fade with "
 			                   "age. Missing samples, teleports and identity changes break the trail.");
 		}
-		ImGui::TextDisabled("Visual preview only; live models remain visible.");
+		ImGui::TextDisabled(g_SceneRenderSnapshot ? "Experimental: live studio suppression is partial; brush, particle and other effects stay live." : "Visual preview only; live models remain visible.");
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Brush wireframes require readable BSP geometry. Bounds are independent of "
 			                  "Show path.\nParticles, audio and simulation are not cached.");
