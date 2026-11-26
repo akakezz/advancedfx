@@ -27,7 +27,7 @@ int main(){
     put(child+ChildNext,Address(0));put(coll+XyzStride,Address(99));auto invalid=Capture(base,12,read);check(!invalid.Complete&&invalid.Points.size()==2,"unexpected stride rejected");
     put(root,Address(0));check(!Capture(base,13,read).Complete,"root vtable guard");
     check(h.Append(f)&&!h.At(11),"backward tick resets history");
-    History small(f.Bytes()+8);check(small.Append(f)&&small.Append(newer)&&small.Frames.size()==1&&small.At(11),"rolling budget");
+    History small(4096);check(small.Append(f),"initial budget sample");small.SetBudget((std::max)(small.Bytes,HistoryStorage::Store(newer).BytesUsed()));check(small.Append(newer)&&small.Frames.size()==1&&small.At(11),"rolling budget");
     // Restore root list and positions; synthesize the indexed attribute arrays.
     put(root,base+RootVtable);put(coll+XyzStride,Address(12));
     constexpr Address def=0x50000000,name=0x51000000,radius=0x52000000,tint=0x53000000,ids=0x54000000;
@@ -86,10 +86,31 @@ int main(){
     check(app.Collections[0].Attributes[Tint].Start==app.Collections[1].Attributes[Tint].Start,"shared constant offsets remain readable");
     check(Float(app,app.Collections[1],Tint,1,1,v)&&v==.6f,"shared lane data unchanged");
     History resized(4096);check(resized.Append(f)&&resized.Append(newer),"budget fixture");
-    resized.SetBudget((std::max)(f.Bytes(),newer.Bytes()));
+    resized.SetBudget((std::max)(HistoryStorage::Store(f).BytesUsed(),HistoryStorage::Store(newer).BytesUsed()));
     check(resized.Frames.size()==1&&resized.At(11)&&resized.Evicted==1,"budget shrink evicts oldest");
     resized.SetBudget(4096);check(resized.Frames.size()==1&&resized.Evicted==1,"budget expansion cannot restore evicted frames");
     resized.SetBudget(0);check(resized.Frames.empty()&&resized.Bytes==0&&resized.Evicted==2,"budget stays bounded");
     check(!resized.Append(f)&&resized.Rejected==1,"oversized frame counted");
+    // Independent lossless storage, including non-finite integer bit patterns,
+    // names, hierarchy, signed zero, constant sharing and incomplete positions.
+    auto stored=HistoryStorage::Store(app);Frame restored;
+    check(HistoryStorage::Load(stored,restored),"decode appearance snapshot");
+    check(HistoryStorage::Pack(restored)==HistoryStorage::Pack(app)&&restored.Words==app.Words&&restored.Points==app.Points,"lossless appearance roundtrip");
+    check(Float(restored,restored.Collections[1],Tint,1,1,v)&&v==.6f,"restored shared attributes");
+    auto broken=partial;broken.Points[0][0]=-0.0f;
+    check(HistoryStorage::Load(HistoryStorage::Store(broken),restored)&&std::signbit(restored.Points[0][0]),"fallback points preserve bits");
+    History random(4096*4);check(random.Append(app)&&random.Append(rotation),"compressed appearance history");
+    check(random.At(23)&&random.At(20)&&random.At(20)->Words==app.Words&&random.At(23)->Words==rotation.Words,"reverse and repeated random access");
+    auto changed=rotation;changed.Words[0]^=1;
+    check(random.Append(changed)&&random.At(23)->Words==changed.Words,"same tick replacement invalidates decoded cache");
+    check(random.RawBytes>=random.Bytes,"synthetic snapshots reduced");
+    HistoryCodec::Bytes repeat(100000,42),decoded;
+    auto encoded=HistoryCodec::Encode(repeat);
+    check(encoded.size()<3000&&HistoryCodec::Decode(encoded,repeat.size(),decoded)&&decoded==repeat,"repeated run and overlapping match");
+    HistoryCodec::Bytes noise(20000);std::uint32_t rng=12345;
+    for(auto &b:noise){rng=rng*1664525u+1013904223u;b=static_cast<std::uint8_t>(rng>>24);}
+    check(HistoryCodec::Decode(HistoryCodec::Encode(noise),noise.size(),decoded)&&decoded==noise,"incompressible bytes roundtrip");
+    check(!HistoryCodec::Decode({128,0,0},4,decoded)&&!HistoryCodec::Decode({127,1},128,decoded),"malformed codec input rejected");
+    check(!HistoryCodec::Decode(encoded,repeat.size()-1,decoded),"decoded size bound");
     std::cout<<"Native particle snapshot tests passed\n";
 }

@@ -12,6 +12,7 @@
 #include <type_traits>
 #include <string>
 #include <vector>
+#include "ParticleHistoryCodec.h"
 
 // Read-only, exact-build TF2 x64 experiment. No native function calls, engine
 // writes or persistent engine pointers. Offsets verified in the supplied PE.
@@ -315,38 +316,196 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
     if(!plan.Error.empty()) plan.Copies.clear();
     return plan;
 }
+// Store explicit fields rather than C++ object representation/padding.
+// Byte-plane packing of 32-bit words improves matches among nearby floats
+// and repeated integer attributes, without changing a single bit.
+namespace HistoryStorage {
+using Bytes=HistoryCodec::Bytes;
+struct Writer {
+    Bytes Data;
+    void U(std::uint32_t v) {
+        for(unsigned k=0;k<4;++k) Data.push_back(static_cast<std::uint8_t>(v>>(8*k)));
+    }
+    void F(float v) {std::uint32_t b;std::memcpy(&b,&v,4);U(b);}
+    void Text(const char *s,std::size_t n) {
+        U(static_cast<std::uint32_t>(n));Data.insert(Data.end(),s,s+n);
+    }
+};
+struct Reader {
+    const Bytes &Data;std::size_t Pos=0;bool Ok=true;
+    std::uint32_t U() {
+        if(!Ok||Data.size()-Pos<4){Ok=false;return 0;}
+        std::uint32_t v=0;
+        for(unsigned k=0;k<4;++k) v|=std::uint32_t(Data[Pos++])<<(8*k);
+        return v;
+    }
+    float F(){const auto b=U();float v;std::memcpy(&v,&b,4);return v;}
+    bool Text(std::string &out,std::size_t max) {
+        const auto n=U();
+        if(!Ok||n>max||n>Data.size()-Pos){Ok=false;return false;}
+        out.assign(reinterpret_cast<const char*>(Data.data()+Pos),n);Pos+=n;return true;
+    }
+};
+inline Bytes Pack(const Frame &f) {
+    Writer w;
+    w.Data.reserve(f.Points.size()*12+f.Words.size()*4+f.Collections.size()*128+128);
+    w.U(static_cast<std::uint32_t>(f.Roots));w.U(static_cast<std::uint32_t>(f.Children));
+    w.U(static_cast<std::uint32_t>(f.Active));w.U(static_cast<std::uint32_t>(f.Empty));w.U(static_cast<std::uint32_t>(f.Rejected));
+    w.U((f.Complete?1u:0u)|(f.Appearance?2u:0u)|(f.AppearanceComplete?4u:0u));
+    w.U(static_cast<std::uint32_t>(f.AppearanceRejected));w.U(static_cast<std::uint32_t>(f.NamedCollections));
+    w.U(static_cast<std::uint32_t>(f.SharedConstantWords));
+    w.Text(f.Status.data(),f.Status.size());
+    w.U(static_cast<std::uint32_t>(f.Points.size()));
+    // If all positions can be reproduced bit-for-bit from the packed XYZ
+    // attribute, omit the second copy; otherwise keep the diagnostic points.
+    bool derive=f.Appearance&&f.Complete&&!f.Collections.empty();
+    std::size_t next=0;
+    if(derive) for(const auto &c:f.Collections) {
+        if(c.PointStart!=next||c.PointCount!=c.Active||next>f.Points.size()||c.Active>f.Points.size()-next){derive=false;break;}
+        for(unsigned i=0;i<c.Active&&derive;++i) for(unsigned k=0;k<3;++k) {
+            std::uint32_t b=0,p=0;std::memcpy(&p,&f.Points[next+i][k],4);
+            if(!Word(f,c,Position,i,k,b)||p!=b){derive=false;break;}
+        }
+        next+=c.Active;
+    }
+    derive=derive&&next==f.Points.size();
+    w.U(derive?1:0);
+    if(!derive) for(const auto &p:f.Points) for(float v:p) w.F(v);
+    w.U(static_cast<std::uint32_t>(f.Collections.size()));
+    for(const auto &c:f.Collections) {
+        w.U(static_cast<std::uint32_t>(c.Parent+1));w.U(c.Active);w.U(c.PointStart);w.U(c.PointCount);w.U(c.Mask);
+        w.F(c.Time);w.U(c.HasTime?1:0);
+        const auto end=std::find(c.Name.begin(),c.Name.end(),'\0');
+        w.Text(c.Name.data(),std::size_t(end-c.Name.begin()));
+        for(unsigned a=0;a<Layout::AttributeCount;++a) if(c.Mask&(1u<<a)) {
+            const auto &b=c.Attributes[a];w.U(b.Start);w.U(b.Count);w.U(b.Stride);
+        }
+    }
+    w.U(static_cast<std::uint32_t>(f.Words.size()));
+    for(unsigned k=0;k<4;++k) for(auto v:f.Words) w.Data.push_back(static_cast<std::uint8_t>(v>>(8*k)));
+    return std::move(w.Data);
+}
+inline bool Unpack(const Bytes &bytes,int tick,Frame &out) {
+    Reader r{bytes};Frame f;f.Tick=tick;
+    f.Roots=r.U();f.Children=r.U();f.Active=r.U();f.Empty=r.U();f.Rejected=r.U();
+    const auto flags=r.U();f.Complete=(flags&1)!=0;f.Appearance=(flags&2)!=0;f.AppearanceComplete=(flags&4)!=0;
+    f.AppearanceRejected=r.U();f.NamedCollections=r.U();f.SharedConstantWords=r.U();
+    if(!r.Text(f.Status,1024)) return false;
+    const auto points=r.U(),derive=r.U();
+    if(!r.Ok||points>Layout::MaxPoints||derive>1||(!derive&&std::size_t(points)*12>bytes.size()-r.Pos))return false;
+    f.Points.resize(points);
+    if(!derive) for(auto &p:f.Points) for(auto &v:p) v=r.F();
+    const auto collections=r.U();
+    if(!r.Ok||collections>Layout::MaxCollections||collections>(bytes.size()-r.Pos)/32)return false;
+    f.Collections.resize(collections);
+    for(std::size_t i=0;i<collections;++i) {
+        auto &c=f.Collections[i];const auto parent=r.U();
+        if(parent>i)return false;
+        c.Parent=static_cast<int>(parent)-1;c.Active=r.U();c.PointStart=r.U();c.PointCount=r.U();c.Mask=r.U();
+        c.Time=r.F();c.HasTime=r.U()!=0;std::string name;
+        if(!r.Text(name,c.Name.size()-1)||c.Active>Layout::MaxPerCollection||c.PointStart>points||c.PointCount>points-c.PointStart||
+           c.Mask>>Layout::AttributeCount)return false;
+        std::copy(name.begin(),name.end(),c.Name.begin());
+        for(unsigned a=0;a<Layout::AttributeCount;++a) if(c.Mask&(1u<<a)) {
+            auto &b=c.Attributes[a];b.Start=r.U();b.Count=r.U();const auto stride=r.U();
+            if(stride!=0&&stride!=4*Components(a))return false;
+            b.Stride=static_cast<std::uint8_t>(stride);
+        }
+    }
+    const auto words=r.U();
+    if(!r.Ok||words>Layout::WordLimit||std::size_t(words)*4!=bytes.size()-r.Pos)return false;
+    f.Words.resize(words);
+    for(unsigned k=0;k<4;++k) for(auto &v:f.Words)v|=std::uint32_t(bytes[r.Pos++])<<(8*k);
+    std::size_t next=0;
+    for(const auto &c:f.Collections) {
+        for(unsigned a=0;a<Layout::AttributeCount;++a) if(c.Mask&(1u<<a)) {
+            const auto &b=c.Attributes[a];
+            const auto expected=(b.Stride?(std::size_t(c.Active)+3)/4:1)*4*Components(a);
+            if(b.Start>words||b.Count>words-b.Start||b.Count!=expected)return false;
+        }
+        if(derive) {
+            if(c.PointStart!=next||c.PointCount!=c.Active||c.Active>points-next)return false;
+            for(unsigned i=0;i<c.Active;++i) for(unsigned k=0;k<3;++k) {
+                std::uint32_t b;
+                if(!Word(f,c,Position,i,k,b))return false;
+                std::memcpy(&f.Points[next+i][k],&b,4);
+            }
+            next+=c.Active;
+        }
+    }
+    if(derive&&next!=points)return false;
+    out=std::move(f);return true;
+}
+struct Stored {
+    int Tick=-1;
+    std::size_t RawBytes=0,PlainSize=0;
+    bool Compressed=false;
+    Bytes Data;
+    std::size_t BytesUsed()const{return sizeof(Stored)+Data.capacity();}
+};
+inline Stored Store(const Frame &f) {
+    Stored s;s.Tick=f.Tick;s.RawBytes=f.Bytes();
+    auto plain=Pack(f);s.PlainSize=plain.size();
+    auto compressed=HistoryCodec::Encode(plain);
+    s.Compressed=compressed.size()<plain.size();
+    const auto &source=s.Compressed?compressed:plain;
+    s.Data.assign(source.begin(),source.end());
+    return s;
+}
+inline bool Load(const Stored &s,Frame &f) {
+    // Bounded by the capture format's point/word/collection limits.
+    constexpr std::size_t MaxPlain=32u*1024u*1024u;
+    if(s.PlainSize>MaxPlain)return false;
+    if(!s.Compressed)return s.Data.size()==s.PlainSize&&Unpack(s.Data,s.Tick,f);
+    Bytes plain;
+    return HistoryCodec::Decode(s.Data,s.PlainSize,plain)&&Unpack(plain,s.Tick,f);
+}
+}
 class History {
 public:
     explicit History(std::size_t budget=512u*1024u*1024u):Budget(budget){}
-    void Clear(){Frames.clear();Bytes=0;Evicted=Rejected=0;++Revision;}
+    void Clear(){Frames.clear();Bytes=RawBytes=PlainBytes=0;Evicted=Rejected=0;Invalidate();++Revision;}
     std::size_t BudgetBytes() const {return Budget;}
-    void SetBudget(std::size_t budget) {Budget=budget;while(!Frames.empty()&&Bytes>Budget) Evict();++Revision;}
+    std::size_t DecodedBytes() const{return Decoded.Tick<0?0:Decoded.Bytes();}
+    void SetBudget(std::size_t budget) {Budget=budget;while(!Frames.empty()&&Bytes>Budget) Evict();Invalidate();++Revision;}
     bool Append(Frame f) {
         if(!Frames.empty()&&f.Tick<Frames.back().Tick) Clear();
-        if(f.Tick<0||f.Bytes()>Budget) {++Rejected;return false;}
-        if(!Frames.empty()&&Frames.back().Tick==f.Tick) {Bytes-=Frames.back().Bytes();Frames.pop_back();}
-        const auto n=f.Bytes();
+        if(f.Tick<0){++Rejected;return false;}
+        auto stored=HistoryStorage::Store(f);
+        const auto n=stored.BytesUsed();
+        if(n>Budget){++Rejected;return false;}
+        Invalidate();
+        if(!Frames.empty()&&Frames.back().Tick==f.Tick) {Subtract(Frames.back());Frames.pop_back();}
         while(!Frames.empty()&&(Bytes>Budget-n||Frames.size()>=32768)) Evict();
-        Frames.push_back(std::move(f));Bytes+=Frames.back().Bytes();++Revision;return true;
+        Bytes+=n;RawBytes+=stored.RawBytes;PlainBytes+=stored.PlainSize;
+        Frames.push_back(std::move(stored));++Revision;return true;
     }
+    // Returned sample is valid until the next different sample request or
+    // history mutation. All production consumers hold the scene mutex.
     const Frame *At(int tick) const {
-        auto it=std::lower_bound(Frames.begin(),Frames.end(),tick,[](const Frame &f,int t){return f.Tick<t;});
-        return it!=Frames.end()&&it->Tick==tick?&*it:nullptr;
+        auto it=std::lower_bound(Frames.begin(),Frames.end(),tick,[](const auto &f,int t){return f.Tick<t;});
+        return it!=Frames.end()&&it->Tick==tick?Read(*it):nullptr;
     }
-    // Causal fallback across at most two missing ticks. Never bridge eviction,
-    // extrapolate beyond the retained window, or use a future particle state.
     const Frame *ForPreview(int tick,int maxGap=2) const {
         if(Frames.empty()||tick<Frames.front().Tick||tick>Frames.back().Tick) return nullptr;
-        auto it=std::upper_bound(Frames.begin(),Frames.end(),tick,[](int t,const Frame &f){return t<f.Tick;});
-        if(it==Frames.begin()) return nullptr;
-        --it;
-        return tick-it->Tick<=maxGap?&*it:nullptr;
+        auto it=std::upper_bound(Frames.begin(),Frames.end(),tick,[](int t,const auto &f){return t<f.Tick;});
+        if(it==Frames.begin())return nullptr;
+        --it;return tick-it->Tick<=maxGap?Read(*it):nullptr;
     }
-    std::deque<Frame> Frames;
-    std::size_t Bytes=0,Evicted=0,Rejected=0;
+    std::deque<HistoryStorage::Stored> Frames;
+    std::size_t Bytes=0,RawBytes=0,PlainBytes=0,Evicted=0,Rejected=0;
     std::uint64_t Revision=0;
 private:
-    void Evict(){Bytes-=Frames.front().Bytes();Frames.pop_front();++Evicted;}
+    mutable Frame Decoded;
+    void Invalidate(){Decoded=Frame{};}
+    const Frame *Read(const HistoryStorage::Stored &s) const {
+        if(Decoded.Tick==s.Tick)return &Decoded;
+        Decoded=Frame{};
+        if(!HistoryStorage::Load(s,Decoded))return nullptr;
+        return &Decoded;
+    }
+    void Subtract(const HistoryStorage::Stored &s){Bytes-=s.BytesUsed();RawBytes-=s.RawBytes;PlainBytes-=s.PlainSize;}
+    void Evict(){Subtract(Frames.front());Frames.pop_front();++Evicted;}
     std::size_t Budget;
 };
 }} // namespace

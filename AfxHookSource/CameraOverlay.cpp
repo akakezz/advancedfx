@@ -1659,6 +1659,7 @@ static void SceneNativeParticleStatus(int tick)
         history.Frames.empty()?-1:history.Frames.front().Tick,history.Frames.empty()?-1:history.Frames.back().Tick,
         g_SceneNativeParticleMs,g_SceneNativeParticleSamples?g_SceneNativeParticleTotalMs/g_SceneNativeParticleSamples:0,g_SceneNativeParticlePeakMs);
     advancedfx::Message("Particle history budget %.0f MiB; evicted %zu frames, rejected %zu frames.\n",history.BudgetBytes()/1048576.0,history.Evicted,history.Rejected);
+    advancedfx::Message("Particle storage: %.2f MiB original snapshot payload, %.2f MiB packed before compression, %.2f MiB retained (%.2fx original/retained); decoded scratch %.2f MiB.\n",history.RawBytes/1048576.0,history.PlainBytes/1048576.0,history.Bytes/1048576.0,history.Bytes?double(history.RawBytes)/history.Bytes:0.0,history.DecodedBytes()/1048576.0);
     advancedfx::Message("Native detached probe: %s\n",g_SceneDetachedStatus.c_str());
     if(tick<0) return;
     const auto *preview=history.ForPreview(tick);

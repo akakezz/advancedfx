@@ -203,3 +203,27 @@ Use the same exact tick from particles at <tick>, stop recording and pause
 the live demo first. Reject empty/unnamed selections and report the exact
 selected tick, definition and active count. A zero-copy run is inconclusive,
 not verified restoration. No native drawing or live suppression added.
+
+
+## Phase 6: lossless independent particle history compression
+
+The nonempty detached restore succeeded (45 particles, 9 varying blocks
+and 13 matching constants); the expanded render retirement limit also
+eliminated measured queue skips in the tested scene. Leave native rendering
+and studio submission code unchanged in this storage iteration.
+
+History now stores explicit compact metadata, only present attribute
+descriptors, variable-length names, and byte-planed native attribute words.
+Position crosses are reconstructed from the packed XYZ when exact bitwise
+equivalence was verified during capture; otherwise original positions are
+retained. A small bounded match/literal codec compresses each snapshot
+independently; incompressible data uses raw packed bytes. No quantization,
+sampling reduction, attribute removal or dependence on previous ticks.
+One decoded sample is cached for repeated preview requests under the scene
+mutex. Stored frame capacity (including record metadata) is budgeted;
+decoded scratch and transient encoder memory are separate. Status reports
+original, packed and compressed retained payload and decoded scratch.
+Capture timing includes encoding; actual compression ratio/cost needs
+measurement on the same demo. Temporal cross-frame sharing remains future
+work. Repeat capture, random scrubbing, styled markers and the explicit
+nonempty prepare test to verify unchanged data after decoding.
