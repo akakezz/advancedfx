@@ -11875,7 +11875,7 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 				continue;
 			if ((gibs || weapons || cosmetics || buildings || props) && category == MIRV_TF2_ENTITY_OTHER)
 			{
-				category = Mirv_Tf2_ModelCategory(renderable, props);
+				category = Mirv_Tf2_ModelCategory(renderable, props && !generic);
 				looseModel = !networked &&
 				             (category == MIRV_TF2_ENTITY_WEAPON || category == MIRV_TF2_ENTITY_COSMETIC);
 			}
@@ -11974,7 +11974,8 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 		if (row.Snapshot.Category == MIRV_TF2_ENTITY_PLAYER ||
 		    row.Snapshot.Category == MIRV_TF2_ENTITY_RAGDOLL ||
 		    row.Snapshot.Category == MIRV_TF2_ENTITY_BUILDING ||
-		    row.Snapshot.Category == MIRV_TF2_ENTITY_PROP)
+		    row.Snapshot.Category == MIRV_TF2_ENTITY_PROP ||
+		    (generic && row.Snapshot.Category == MIRV_TF2_ENTITY_OTHER))
 		{
 			owners.push_back(row.Snapshot.Identity);
 			std::uint32_t handle = 0xffffffff;

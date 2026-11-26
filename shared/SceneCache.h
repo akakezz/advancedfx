@@ -629,7 +629,8 @@ public:
 		// floating at an independently interpolated position.
 		std::vector<std::uint64_t> owners;
 		for (const auto &entity : out.Entities)
-			if (entity.Category == 0 || entity.Category == 5 || entity.Category == 7 || entity.Category == 8)
+			if (entity.Category == 0 || entity.Category == 5 || entity.Category == 7 || entity.Category == 8 ||
+			    (out.RenderSnapshot && entity.Category == 4))
 				owners.push_back(entity.Identity);
 		const auto orphan = [&](const Entity &entity) {
 			return entity.OwnerIdentity &&

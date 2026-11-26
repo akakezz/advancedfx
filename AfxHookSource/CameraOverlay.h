@@ -30,6 +30,7 @@ void SceneCacheFrame(bool capture = true); // Capture at TF2 FRAME_RENDER_END; f
 void SceneCacheDrawModels();
 // Experimental replacement of registered live studio-model submissions only.
 bool SceneCacheReplayActive();
+bool SceneCacheSuppressLiveStudio();
 // Same-engine-frame observation only; no live pointer is kept in history.
 bool SceneCacheAuditActive();
 void SceneCachePublishModelAudit(int frame, std::map<const void *, int> submissions);

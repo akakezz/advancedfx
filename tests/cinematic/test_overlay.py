@@ -45,7 +45,7 @@ bool sceneEntityAvailable=false,scenePoseCaptureSuccess=true;int scenePoseCaptur
 std::shared_ptr<const advancedfx::SceneCache::Pose> sceneTestPose;std::shared_ptr<const advancedfx::SceneCache::Pose> sceneLastDrawn;
 bool Mirv_Tf2_GetSceneEntity(int,float*origin,float*angles,float*mins,float*maxs){for(int i=0;i<3;++i){origin[i]=angles[i]=mins[i]=0;maxs[i]=10;}return sceneEntityAvailable;}
 bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&entity,std::string&status,void*observedObject=nullptr){++scenePoseCaptures;if(!scenePoseCaptureSuccess){status="Pose unavailable";return false;}entity.ModelPose=sceneTestPose;status="Pose captured";return true;}
-bool sceneQueueAvailable=true,sceneQueueDeferred=false;std::vector<std::unique_ptr<CMaterialSystemFunctor>> sceneQueued;
+bool sceneQueueAvailable=true,sceneQueueDeferred=false;bool MaterialSystem_CanExecuteOnRenderThread(){return sceneQueueAvailable;}std::vector<std::unique_ptr<CMaterialSystemFunctor>> sceneQueued;
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&entity,std::string&status,const advancedfx::SceneCache::Entity*owner=nullptr,bool textured=false){if(!sceneQueueAvailable){status="Material-system render queue unavailable";return false;}++scenePoseDraws;sceneLastDrawn=entity.ModelPose;status="Pose drawn";return true;}
 bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor*functor){std::unique_ptr<CMaterialSystemFunctor>owned(functor);if(!sceneQueueAvailable)return false;if(sceneQueueDeferred)sceneQueued.push_back(std::move(owned));else (*owned)();return true;}
 bool testMuteArmed=false;bool MirvFix_ArmRecorderSoundMute(bool enabled){testMuteArmed=enabled;return true;}
@@ -1191,6 +1191,17 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  g_OverlayPreferencesReady=true;g_SavedTrailSeconds=g_SceneDrawing.TrailSeconds;g_OverlayPreferenceStamp=OverlayPreferenceStamp();ImGui::GetCurrentContext()->SettingsDirtyTimer=0;CheckOverlayPreferences();check(ImGui::GetCurrentContext()->SettingsDirtyTimer==0,"Idle preferences do not request repeated writes");g_SceneGibs=true;CheckOverlayPreferences();check(ImGui::GetCurrentContext()->SettingsDirtyTimer>0,"Preferences detect changes even with overlay closed");
  // Save-on-close uses the configured INI immediately instead of waiting for the timer.
  const auto preferenceFile=std::filesystem::temp_directory_path()/"hlae-overlay-preferences-test.ini";std::string preferencePath=preferenceFile.string();ImGui::GetIO().IniFilename=preferencePath.c_str();SetOpen(true);SetOpen(false);std::ifstream preferenceInput(preferenceFile);std::string preferenceContents((std::istreambuf_iterator<char>(preferenceInput)),{});preferenceInput.close();check(preferenceContents.find("CacheGibs=1")!=std::string::npos&&preferenceContents.find("FixRecorderMute=1")!=std::string::npos,"Closing the overlay saves cache and demo fixes immediately");ImGui::GetIO().IniFilename=nullptr;std::filesystem::remove(preferenceFile);g_OverlayPreferencesReady=false;
+ // Experimental snapshots bypass category filters and keep the ordinary one-pass transport.
+ SceneClearHistory();g_SceneRangeEnabled=false;g_ScenePreview=false;g_SceneRecord=true;g_SceneRenderSnapshot=true;g_SceneDrawModels=true;
+ sceneEntityAvailable=false;sceneExtraEntities.clear();MirvTf2SceneEntity broadModel;broadModel.Index=55;broadModel.Snapshot.Identity=(1ull<<63)|55;broadModel.Snapshot.Category=4;broadModel.ObservedRenderable=&broadModel;sceneExtraEntities.push_back(broadModel);
+ g_MirvTime.Time+=SceneTickInterval();SceneCachePublishModelAudit(1,{{&broadModel,1}});SceneCacheFrame();
+ check(g_SceneCache.Count()==1&&g_SceneCache.Frames().back().RenderSnapshot&&g_SceneCache.Frames().back().Entities.size()==1&&g_SceneCache.Frames().back().Entities[0].Skin==1,"Broad capture bypasses filters and retains observed skin");
+ g_ScenePreview=true;g_SceneCursor=g_SceneCache.Frames().back().DemoTime;SceneCacheFrame(false);
+ check(SceneCacheReplayActive()&&SceneCacheSuppressLiveStudio(),"A valid broad preview enables replacement");
+ g_SceneSuppressLiveStudio=false;check(SceneCacheReplayActive()&&!SceneCacheSuppressLiveStudio(),"Live isolation can be disabled while textured replay remains active");g_SceneSuppressLiveStudio=true;
+ g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(g_SceneCache.Count()==1,"Experimental capture suspends during cached preview");
+ sceneQueueAvailable=false;check(!SceneCacheSuppressLiveStudio(),"Unavailable render queue cannot suppress live models");sceneQueueAvailable=true;
+ g_SceneRecord=false;g_ScenePreview=false;g_SceneRenderSnapshot=false;SceneCacheFrame(false);check(!SceneCacheSuppressLiveStudio(),"Exiting preview restores native rendering");
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''

@@ -126,7 +126,7 @@ void __fastcall Tf2PassRenderFrame(void *self,
   for (unsigned i = 0; i < unsigned(Tf2RenderPass::Count); ++i)
    any |= g_AfxStreams.Tf2PassRecording(Tf2RenderPass(i));
   const int hidden = MirvPovSpectate_HiddenPlayer();
-  g_Tf2ReplayStudio = !any && AfxHookSource::CameraOverlay::SceneCacheReplayActive();
+  g_Tf2ReplayStudio = !any && Tf2RenderPassSupported() && AfxHookSource::CameraOverlay::SceneCacheSuppressLiveStudio();
   g_Tf2AuditActive = AfxHookSource::CameraOverlay::SceneCacheAuditActive();
   g_Tf2AuditModels.clear();
   if (any || hidden || g_Tf2ReplayStudio) Mirv_Tf2_RenderGroups(g_Tf2RenderGroups, hidden, g_Tf2ReplayStudio);

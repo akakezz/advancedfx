@@ -63,7 +63,7 @@ static std::recursive_mutex g_SceneMutex;
 static advancedfx::SceneCache g_SceneCache;
 static bool g_SceneRecord = false, g_ScenePreview = false;
 // Session-local opt-in; diagnostic capture remains the default.
-static bool g_SceneRenderSnapshot = false;
+static bool g_SceneRenderSnapshot = false, g_SceneSuppressLiveStudio = true;
 static int g_SceneAuditFrame = -1;
 static std::map<const void *, int> g_SceneAuditDraws;
 static std::string g_SceneAuditStatus = "No same-frame native model observation yet.";
@@ -278,11 +278,16 @@ void SceneCachePublishModelAudit(int frame, std::map<const void *, int> submissi
 bool SceneCacheReplayActive()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
-	if (!g_SceneRenderSnapshot || !g_ScenePreview || !g_SceneDrawModels.load() || !SceneCanDrawModels()) return false;
+	if (!g_SceneRenderSnapshot || !g_ScenePreview || !g_SceneDrawModels.load() || !SceneCanDrawModels() ||
+	    !MaterialSystem_CanExecuteOnRenderThread()) return false;
 	const auto view = SceneCacheView();
-	return view && view->RenderSnapshot && std::any_of(view->Entities.begin(), view->Entities.end(), [](const auto &e){
-		return e.ModelPose && e.ModelPose->ModelInfo->WireEdges.empty();
-	});
+	// A genuinely empty historical frame must not show actors from the future.
+	return view && view->RenderSnapshot;
+}
+bool SceneCacheSuppressLiveStudio()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	return g_SceneSuppressLiveStudio && SceneCacheReplayActive();
 }
 void VisitCameraSceneFrames(
 	const std::function<void(const std::deque<advancedfx::SceneCache::Frame> &, std::uint64_t)> &visitor)
@@ -6087,6 +6092,8 @@ static void DrawSceneCacheMenu(int playhead)
 	if (ImGui::CollapsingHeader("Preview", ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		DrawOverlayHint("Scrub cached history with the playhead or Right Ctrl + arrows / Home / End.");
+		if (g_SceneRenderSnapshot && ImGui::Checkbox("Suppress live studio models (experimental)", &g_SceneSuppressLiveStudio))
+			++g_SceneDrawEpoch;
 		if (ImGui::Checkbox("Smooth cached animation", &g_SceneSmoothAnimation))
 			SceneCacheFrame(false);
 		bool models = g_SceneDrawModels.load();
