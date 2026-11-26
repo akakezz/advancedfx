@@ -130,7 +130,9 @@ struct Streams {
 }g_AfxStreams;
 int player,gear,vm,prop;
 int hiddenPlayer=0;int MirvPovSpectate_HiddenPlayer(){return hiddenPlayer;}
-void Mirv_Tf2_RenderGroups(std::map<const void*,unsigned>&groups,int hidden){groups={{&player,1u|(hidden?4u:0u)},{&gear,1u|(hidden?4u:0u)},{&vm,2},{&prop,0}};}
+bool replay=false,audit=false;int auditFrame=-1;std::map<const void*,int> audited;
+namespace AfxHookSource{namespace CameraOverlay{bool SceneCacheReplayActive(){return replay;}bool SceneCacheAuditActive(){return audit;}void SceneCachePublishModelAudit(int f,std::map<const void*,int> s){auditFrame=f;audited=std::move(s);}}}
+void Mirv_Tf2_RenderGroups(std::map<const void*,unsigned>&groups,int hidden,bool mark){unsigned b=mark?8u:0u;groups={{&player,b|1u|(hidden?4u:0u)},{&gear,b|1u|(hidden?4u:0u)},{&vm,b|2u},{&prop,0}};}
 #include "AfxHookSource/Tf2RenderPass.inl"
 std::map<Tf2RenderPass,std::vector<const void*>> visible,depthDraws;std::map<Tf2RenderPass,int> hudByPass;
 int ordinaryFrames=0,renderCalls=0,hudWrites=0;
@@ -169,6 +171,11 @@ int main(){
  hiddenPlayer=2;FlushGpu();visible.clear();Tf2PassRenderFrame(&client,rect);FlushGpu();
  assert((visible[Tf2RenderPass::Count]==std::vector<const void*>{&vm,&prop}));assert(g_Tf2RenderGroups.empty());
  hiddenPlayer=0;
+ replay=true;visible.clear();depthDraws.clear();++globals.Count;Tf2PassRenderFrame(&client,rect);FlushGpu();
+ assert((visible[Tf2RenderPass::Count]==std::vector<const void*>{&prop}));assert(visible==depthDraws&&g_Tf2RenderGroups.empty()&&!g_Tf2ReplayStudio);
+ replay=false;audit=true;visible.clear();++globals.Count;Tf2PassRenderFrame(&client,rect);FlushGpu();
+ assert(auditFrame==globals.Count&&audited.size()==4&&audited.count(&player)&&audited.count(&prop));
+ assert(visible[Tf2RenderPass::Count].size()==4);audit=false;
  globals.Count++;g_AfxStreams.Recording=true;g_AfxStreams.Alpha=true;g_AfxStreams.Samples.clear();int calls=renderCalls;
  Tf2PassRenderFrame(&client,rect);FlushGpu();assert(renderCalls==calls+5);
  assert((g_AfxStreams.Samples==std::vector<int>{-1,0,0,0,-1}));assert(mask==15&&colorStack.empty());
@@ -396,6 +403,7 @@ void Mirv_Tf2_SceneMoveParent(void*p,const void*,unsigned&out){out=static_cast<C
 '''+label_category+model_category+r'''
 int Mirv_Tf2_ToolCategory(Iface*,void*p,int,bool player,bool scene){return Mirv_Tf2_LabelCategory(static_cast<CMirvTf2ClientUnknown*>(p)->Name,player,scene);}
 bool Mirv_Tf2_LabelDebris(CMirvTf2ClientUnknown*p){return p->Debris;}
+void Mirv_Tf2_RenderGroups(std::map<const void*,unsigned>&,int,bool=false);
 '''+group_method+r'''
 int main(){
  objects={
@@ -418,6 +426,7 @@ int main(){
  for(unsigned i=0;i<objects.size();++i){unsigned expected=i==7||i==8?2:i==9||i==10?0:1;assert(result[&objects[i].Renderable]==expected);}
  Mirv_Tf2_RenderGroups(result,2);assert(result[&objects[1].Renderable]==5&&result[&objects[11].Renderable]==5&&result[&objects[0].Renderable]==1);
  Mirv_Tf2_RenderGroups(result,1);assert(result[&objects[0].Renderable]==5&&result[&objects[7].Renderable]==6&&result[&objects[8].Renderable]==6&&result[&objects[12].Renderable]==5);
+ Mirv_Tf2_RenderGroups(result,0,true);for(const auto&row:result)assert(row.second&8);
  // Shared fallback keeps cosmetics classified as cosmetics even when they are debris.
  assert(Mirv_Tf2_ModelCategory(&objects[5].Renderable,false)==MIRV_TF2_ENTITY_COSMETIC);
  std::cout<<"Player pass includes loose weapons/cosmetics/ragdolls/gibs; decals and props remain world; viewmodels stay separate\n";

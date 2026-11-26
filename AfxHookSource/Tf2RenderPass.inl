@@ -32,12 +32,13 @@ static_assert(offsetof(Tf2ViewProjectionPrefix, Near) == 88, "TF2 projection ABI
 int g_Tf2CapturedFrame = -1;
 Tf2RenderPass g_Tf2ActivePass = Tf2RenderPass::Count;
 std::map<const void *, unsigned> g_Tf2RenderGroups;
-bool g_Tf2ReplayStudio = false;
+bool g_Tf2ReplayStudio = false, g_Tf2AuditActive = false;
+std::map<const void *, int> g_Tf2AuditModels;
 // Source SDK ModelRenderInfo_t prefix; the rest is forwarded untouched.
 struct Tf2ModelInfoPrefix {
  float Origin[3], Angles[3];
  const void *Renderable, *Model, *ModelToWorld, *LightingOffset, *LightingOrigin;
- int Flags, Entity;
+ int Flags, Entity, Skin;
 };
 static_assert(offsetof(Tf2ModelInfoPrefix, Renderable) == 24, "TF2 model info ABI");
 class Tf2PassState : public CMaterialSystemFunctor {
@@ -68,6 +69,9 @@ void __fastcall Tf2PassDrawModel(void *self,
 {
  bool isolate = g_Tf2ActivePass == Tf2RenderPass::Players || g_Tf2ActivePass == Tf2RenderPass::Viewmodel;
  const auto &model = *static_cast<const Tf2ModelInfoPrefix *>(info);
+ if (g_Tf2AuditActive && g_Tf2ActivePass == Tf2RenderPass::Count && model.Renderable &&
+     g_Tf2AuditModels.size() < 8192)
+  g_Tf2AuditModels[model.Renderable] = model.Skin;
  const auto found = g_Tf2RenderGroups.find(model.Renderable);
  const unsigned group = found == g_Tf2RenderGroups.end() ? 0 : found->second;
  if (g_Tf2ReplayStudio && g_Tf2ActivePass == Tf2RenderPass::Count && (group & 8)) return;
@@ -115,7 +119,7 @@ void __fastcall Tf2PassRenderFrame(void *self,
  const bool outer = g_Tf2ActivePass == Tf2RenderPass::Count;
  struct GroupScope {
   bool Outer;
-  ~GroupScope() { if (Outer) { g_Tf2RenderGroups.clear(); g_Tf2ReplayStudio = false; } }
+  ~GroupScope() { if (Outer) { g_Tf2RenderGroups.clear(); g_Tf2ReplayStudio = false; g_Tf2AuditActive = false; g_Tf2AuditModels.clear(); } }
  } groupScope{outer};
  bool any = false;
  if (outer) {
@@ -123,13 +127,20 @@ void __fastcall Tf2PassRenderFrame(void *self,
    any |= g_AfxStreams.Tf2PassRecording(Tf2RenderPass(i));
   const int hidden = MirvPovSpectate_HiddenPlayer();
   g_Tf2ReplayStudio = !any && AfxHookSource::CameraOverlay::SceneCacheReplayActive();
-  if (any || hidden || g_Tf2ReplayStudio) Mirv_Tf2_RenderGroups(g_Tf2RenderGroups, hidden);
+  g_Tf2AuditActive = AfxHookSource::CameraOverlay::SceneCacheAuditActive();
+  g_Tf2AuditModels.clear();
+  if (any || hidden || g_Tf2ReplayStudio) Mirv_Tf2_RenderGroups(g_Tf2RenderGroups, hidden, g_Tf2ReplayStudio);
  }
  g_Tf2OriginalFrame(self,
 #ifndef _WIN64
   edx,
 #endif
   rect);
+ if (outer && g_Tf2AuditActive) {
+  if (auto globals = g_Hook_VClient_RenderView.GetGlobals())
+   AfxHookSource::CameraOverlay::SceneCachePublishModelAudit(globals->framecount_get(), std::move(g_Tf2AuditModels));
+  g_Tf2AuditActive = false;
+ }
  // Normal TF2 frames enter View_Render, not the tools-only RenderView entry.
  // GetPlayerView copies Source SDK 2013's 200-byte CViewSetup into bounded,
  // generously sized aligned storage; it is forwarded opaquely, never cast to CS:GO.

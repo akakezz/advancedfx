@@ -1,6 +1,7 @@
 #pragma once
 #include <shared/SceneCache.h>
 #include <memory>
+#include <map>
 #include <functional>
 #include <string>
 #include <vector>
@@ -29,6 +30,9 @@ void SceneCacheFrame(bool capture = true); // Capture at TF2 FRAME_RENDER_END; f
 void SceneCacheDrawModels();
 // Experimental replacement of registered live studio-model submissions only.
 bool SceneCacheReplayActive();
+// Same-engine-frame observation only; no live pointer is kept in history.
+bool SceneCacheAuditActive();
+void SceneCachePublishModelAudit(int frame, std::map<const void *, int> submissions);
 std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines();
 void SceneCacheFocus(bool focused);
 void SceneCacheDevicePresent(bool success);

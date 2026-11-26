@@ -493,6 +493,7 @@ struct MirvTf2SceneEntity
 {
 	int Index = -1;
 	void *ObservedObject = nullptr; // Engine-thread capture only; never stored in history.
+	const void *ObservedRenderable = nullptr; // Same-frame audit comparison, never retained.
 	bool HasMoveParent = false;
 	std::uint32_t MoveParent = 0xffffffff; // Temporary attachment metadata, not history.
 	advancedfx::SceneCache::Entity Snapshot;

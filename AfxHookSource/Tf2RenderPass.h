@@ -15,4 +15,4 @@ void Tf2RenderPassInstallModel(void *model);
 void Tf2RenderPassInstallRenderView(void *render);
 // Engine-thread snapshot, reusing the entity tools list and category metadata.
 // Bits: player=1, viewmodel=2, hide in native in-eye observation=4.
-void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenPlayer = 0);
+void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenPlayer = 0, bool markStudio = false);

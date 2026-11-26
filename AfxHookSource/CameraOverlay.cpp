@@ -64,6 +64,9 @@ static advancedfx::SceneCache g_SceneCache;
 static bool g_SceneRecord = false, g_ScenePreview = false;
 // Session-local opt-in; diagnostic capture remains the default.
 static bool g_SceneRenderSnapshot = false;
+static int g_SceneAuditFrame = -1;
+static std::map<const void *, int> g_SceneAuditDraws;
+static std::string g_SceneAuditStatus = "No same-frame native model observation yet.";
 static double g_SceneCursor = 0;
 static bool g_SceneDrivingCamera = false;
 static bool g_ScenePlayerModels = false, g_ScenePlayerFilter = false;
@@ -245,6 +248,8 @@ static void SceneClearHistory()
 	g_SceneSampleReady = false;
 	g_SceneCache.Clear();
 	g_SceneDrawing.BoundEntities.clear();
+	g_SceneAuditFrame = -1; g_SceneAuditDraws.clear();
+	g_SceneAuditStatus = "No same-frame native model observation yet.";
 	g_ScenePoseCaptured = g_ScenePoseFailures = 0;
 	SceneResetProfile();
 	g_SceneLastTick = -1;
@@ -259,6 +264,17 @@ std::shared_ptr<const advancedfx::SceneCache::Frame> SceneCacheView()
 	return std::atomic_load(&g_SceneView);
 }
 bool SceneCachePreviewActive() { std::lock_guard<std::recursive_mutex> lock(g_SceneMutex); return g_ScenePreview; }
+bool SceneCacheAuditActive()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	return g_SceneRenderSnapshot && g_SceneRecord && !g_ScenePreview;
+}
+void SceneCachePublishModelAudit(int frame, std::map<const void *, int> submissions)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	g_SceneAuditFrame = frame;
+	g_SceneAuditDraws = std::move(submissions);
+}
 bool SceneCacheReplayActive()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
@@ -426,6 +442,9 @@ void SceneCacheFrame(bool capture)
 		size_t selectedSeen = 0;
 		std::vector<MirvTf2SceneEntity> entities;
 		const bool broad = frame.RenderSnapshot;
+		const auto globals = g_Hook_VClient_RenderView.GetGlobals();
+		const bool audit = broad && globals && g_SceneAuditFrame == globals->framecount_get();
+		size_t seen = 0, unseen = 0, matched = 0;
 		Mirv_Tf2_CollectSceneEntities(broad || g_SceneProjectiles, broad || g_SceneWeapons, broad || g_SceneCosmetics,
 		                              broad || g_SceneRagdolls, broad || g_SceneGibs, broad || g_SceneBuildings,
 		                              broad || g_SceneProps, entities, broad);
@@ -435,6 +454,8 @@ void SceneCacheFrame(bool capture)
 		for (auto &row : entities)
 		{
 			auto &entity = row.Snapshot;
+			const auto observed = audit ? g_SceneAuditDraws.find(row.ObservedRenderable) : g_SceneAuditDraws.end();
+			if (observed != g_SceneAuditDraws.end()) { entity.Skin = observed->second; ++matched; }
 			const bool player = entity.Category == MIRV_TF2_ENTITY_PLAYER;
 			const bool selected = player && (broad || ScenePlayerMatches(entity.Identity, row.Index));
 			selectedSeen += selected;
@@ -457,6 +478,8 @@ void SceneCacheFrame(bool capture)
 				if (Mirv_Tf2_CaptureScenePose(row.Index, entity, status, row.ObservedObject))
 				{
 					++g_ScenePoseCaptured;
+					if (audit && entity.ModelPose && entity.ModelPose->ModelInfo->WireEdges.empty())
+						(observed != g_SceneAuditDraws.end() ? seen : unseen)++;
 					if (player)
 						++playerPoses;
 					else if (entity.Category == MIRV_TF2_ENTITY_WEAPON)
@@ -500,6 +523,14 @@ void SceneCacheFrame(bool capture)
 		if (!broad && g_ScenePlayerFilter && g_ScenePlayerModels && selectedSeen < g_ScenePlayers.size())
 			g_ScenePoseStatus += " " + std::to_string(selectedSeen) + "/" +
 			                     std::to_string(g_ScenePlayers.size()) + " selected players available.";
+		if (broad)
+		{
+			g_SceneAuditStatus = audit ? "Native model audit: " + std::to_string(g_SceneAuditDraws.size()) +
+				" distinct observed submissions; " + std::to_string(matched) + " matched renderables; " +
+				std::to_string(seen) + " captured studio poses seen by hook, " + std::to_string(unseen) +
+				" not seen by hook (off-screen or other submission path)." : "No matching native view-frame audit; coverage unmeasured.";
+			g_SceneAuditDraws.clear(); g_SceneAuditFrame = -1;
+		}
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
@@ -1758,6 +1789,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	                    int(g_SceneCosmetics), int(g_SceneRagdolls), int(g_SceneGibs), int(g_SceneBuildings),
 	                    int(g_SceneProps), g_SceneSmoothAnimation ? "smooth" : "nearest",
 	                    g_ScenePoseStatus.c_str());
+	if (g_SceneRenderSnapshot) advancedfx::Message("%s\n", g_SceneAuditStatus.c_str());
 	if (g_SceneRangeEnabled)
 		advancedfx::Message("Capture range: %d .. %d inclusive%s.\n", g_SceneRangeFirst, g_SceneRangeLast,
 		                    g_SceneRecord ? " (armed)" : " (stopped)");
@@ -6193,6 +6225,7 @@ static void DrawSceneCacheMenu(int playhead)
 	if (ImGui::CollapsingHeader("Diagnostics"))
 	{
 		ImGui::Text("Pose captures: %llu | Unavailable: %llu", g_ScenePoseCaptured, g_ScenePoseFailures);
+		if (g_SceneRenderSnapshot) DrawOverlayHint(g_SceneAuditStatus.c_str());
 		ImGui::Text("Capture ms: last %.3f | mean %.3f | peak %.3f (%llu frames)", g_SceneCaptureMs,
 		            g_SceneCaptureFrames ? g_SceneCaptureTotalMs / g_SceneCaptureFrames : 0,
 		            g_SceneCapturePeakMs, g_SceneCaptureFrames);

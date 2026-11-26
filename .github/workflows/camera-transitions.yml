@@ -39,6 +39,9 @@ jobs:
       - name: Check generic renderable capture and native replay fixtures
         if: github.ref == 'refs/heads/feature/scene-cache-2'
         run: python3 tests/cinematic/test_scene_pose.py --build-dir /tmp/hlae-scene-pose-tests
+      - name: Check native render suppression and audit scopes
+        if: github.ref == 'refs/heads/feature/scene-cache-2'
+        run: python3 tests/cinematic/test_tf2_native_render.py --build-dir /tmp/hlae-native-replay-tests
       - name: Check project persistence, overlapping transitions, Bezier and frozen poses
         run: python3 tests/cinematic/test_camera_project.py --build-dir /tmp/hlae-camera-transition-tests
 

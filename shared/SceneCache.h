@@ -248,6 +248,7 @@ public:
 		                  // ragdoll=5, gib=6, building=7, prop=8.
 		float Origin[3]{}, Angles[3]{}, Mins[3]{}, Maxs[3]{};
 		std::shared_ptr<const Pose> ModelPose;
+		int Skin = -1; // Historical render submission, unknown when not observed.
 	};
 	static std::array<std::array<double, 3>, 8> BoundsCorners(const Entity &entity)
 	{
@@ -613,6 +614,7 @@ public:
 			if (distance > maxTravel * maxTravel)
 				continue;
 			Entity entity = a;
+			entity.Skin = f < .5 ? a.Skin : b->Skin;
 			entity.ModelPose = BlendPose(a.ModelPose, b->ModelPose, f, smoothAnimation);
 			for (int i = 0; i < 3; ++i)
 			{

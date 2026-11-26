@@ -141,7 +141,7 @@ void Draw(void*,void*results,const SceneStudioInfo&info,SOURCESDK::matrix3x4_t*b
  assert(std::this_thread::get_id()==fixture.EngineThread);
  assert(results==nullptr&&info.Header==fixture.Header&&info.Hardware==&fixture&&info.Body==fixture.Body);
  assert(info.ClientEntity==nullptr&&info.Decals==nullptr&&info.ColorMeshes==nullptr&&info.Lod==0);
- const bool textured=info.AmbientCube[0][0]>.5f;
+ const bool textured=info.AmbientCube[0][0]>.5f;if(textured)assert(info.Skin==1);
  assert(flex==nullptr&&delayed==nullptr&&flags==(0x04|0x20|(fixture.Override||textured?0:0x80)));assert(fixture.Locks==1&&fixture.Refs>=1&&fixture.HeaderLocks==fixture.Refs);
  // Match Source's studio draw: ColorModulate replaces $color, even on
  // an override material, before the shader multiplies it by $color2.
@@ -208,7 +208,7 @@ int main(){
  entity.Category=1;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(1);assert(fixture.MaterialCount==2&&!fixture.Override&&fixture.Materials[1].Refs==2&&fixture.Materials[0].Color!=fixture.Materials[1].Color);
  Mirv_Tf2_ReleaseSceneMaterials();assert(fixture.Materials[0].Refs==0&&fixture.Materials[1].Refs==1);ConsumeRenderQueue();assert(fixture.Materials[1].Refs==0);
  fixture.MaterialInterface=false;assert(Mirv_Tf2_DrawScenePose(entity,status)&&!fixture.Override);ConsumeRenderQueue();fixture.MaterialInterface=true;
- assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true)&&!fixture.Override&&status.find("native textured")!=std::string::npos);ConsumeRenderQueue();
+ fixture.Put(224,2);entity.Skin=1;assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true)&&!fixture.Override&&status.find("native textured")!=std::string::npos);ConsumeRenderQueue();entity.Skin=-1;
  // A slow or discarded render queue retains ownership without unbounded growth.
  for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
  assert(!Mirv_Tf2_DrawScenePose(entity,status));unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);assert(pending==SceneMaxOutstanding&&peak==SceneMaxOutstanding);
@@ -280,7 +280,7 @@ collector_source = r'''
 enum {MIRV_TF2_ENTITY_PLAYER,MIRV_TF2_ENTITY_PROJECTILE,MIRV_TF2_ENTITY_WEAPON,MIRV_TF2_ENTITY_COSMETIC,MIRV_TF2_ENTITY_OTHER,MIRV_TF2_ENTITY_RAGDOLL,MIRV_TF2_ENTITY_GIB,MIRV_TF2_ENTITY_BUILDING,MIRV_TF2_ENTITY_PROP};
 constexpr unsigned SOURCESDK_TF2_ENT_ENTRY_MASK=4095;
 namespace SOURCESDK {namespace TF2 {constexpr std::uintptr_t HTOOLHANDLE_INVALID=0;}}
-struct MirvTf2SceneEntity {int Index=-1;void*ObservedObject=nullptr;bool HasMoveParent=false;std::uint32_t MoveParent=0xffffffff;advancedfx::SceneCache::Entity Snapshot;};
+struct MirvTf2SceneEntity {int Index=-1;void*ObservedObject=nullptr;const void*ObservedRenderable=nullptr;bool HasMoveParent=false;std::uint32_t MoveParent=0xffffffff;advancedfx::SceneCache::Entity Snapshot;};
 struct ClassInfo {void*Create=nullptr,*Event=nullptr;const char*Name="CTFProjectile_Rocket";};
 struct Network {void**Vtable;bool Dormant=false;ClassInfo Class;};
 void*slots[9]{};
@@ -430,18 +430,18 @@ proxy_fixture=r'''
 #include <cassert>
 #include <string>
 #include <iostream>
-bool guideDrawing=false,recording=false;size_t cameraCount=1;size_t MirvCam_CameraCount(){return cameraCount;}
+bool guideDrawing=false,recording=false;size_t cameraCount=1;size_t MirvCam_CameraCount(){return cameraCount;}std::vector<int> MirvCam_Clips(){return {};}
 struct CamPath {};
 struct Paths {
  struct Entry{unsigned long long Id;std::shared_ptr<const int>Data;};struct State{std::vector<Entry>Paths;};
  CamPath Path[2];bool Visible[2]{true,false};size_t GetActive(){return 0;}size_t GetCount(){return 2;}bool IsVisible(size_t i){return Visible[i];}CamPath*GetPath(size_t i){return &Path[i];}std::string GetName(size_t){return "path";}State CaptureState(){return {{{1,{}},{2,{}}}};}
 };
 struct View {CamPath m_CamPath;Paths m_CamPaths;}g_Hook_VClient_RenderView;
-namespace AfxHookSource{namespace CameraOverlay{bool CameraGuidesEnabled(){return guideDrawing;}namespace Recording{bool IsActive(){return recording;}}std::shared_ptr<const advancedfx::SceneCache::Frame>view;bool bounds=false;std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> overrideLines;auto SceneCacheLines(){if(overrideLines)return overrideLines;if(!view||!bounds)return std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>>{};static advancedfx::SceneCache cache;advancedfx::SceneCache::DrawingOptions options;options.Bounds=bounds;options.Meshes=false;return std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(cache.Drawing(*view,options));}}}
+namespace AfxHookSource{namespace CameraOverlay{bool CameraGuidesEnabled(){return guideDrawing;}bool TransitionGuidesEnabled(){return false;}namespace Recording{bool IsActive(){return recording;}}std::shared_ptr<const advancedfx::SceneCache::Frame>view;bool bounds=false;std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> overrideLines;auto SceneCacheLines(){if(overrideLines)return overrideLines;if(!view||!bounds)return std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>>{};static advancedfx::SceneCache cache;advancedfx::SceneCache::DrawingOptions options;options.Bounds=bounds;options.Meshes=false;return std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(cache.Drawing(*view,options));}}}
 std::vector<int>g_WorldLabelCells;
 struct CCampathDrawer{
  struct CLessDynamicProperties{int Refs=0;CLessDynamicProperties(CCampathDrawer*,CamPath*,CLessDynamicProperties* = nullptr){}void AddRef(){++Refs;}void Release(){if(!--Refs)delete this;}};
- struct CCampathDrawerFunctor{bool SceneOnly;CLessDynamicProperties*Props;CCampathDrawerFunctor(CCampathDrawer*,CamPath*,const std::string&,CLessDynamicProperties*p,bool only=false):SceneOnly(only),Props(p){p->AddRef();}~CCampathDrawerFunctor(){Props->Release();}};
+ struct CCampathDrawerFunctor{bool SceneOnly;CLessDynamicProperties*Props;CCampathDrawerFunctor(CCampathDrawer*,CamPath*,const std::string&,CLessDynamicProperties*p,bool only=false,bool includeCamera=true):SceneOnly(only),Props(p){p->AddRef();}~CCampathDrawerFunctor(){Props->Release();}};
  struct CachedPath{unsigned long long Id;std::shared_ptr<const int>State;CLessDynamicProperties*Properties;};
  bool m_Draw=false,m_PropertiesDirty=true;CLessDynamicProperties*m_LessDynamicProperties=nullptr,*m_SceneProperties=nullptr;std::vector<CachedPath>m_OtherPaths;
  ~CCampathDrawer(){if(m_LessDynamicProperties)m_LessDynamicProperties->Release();if(m_SceneProperties)m_SceneProperties->Release();for(auto&p:m_OtherPaths)if(p.Properties)p.Properties->Release();}

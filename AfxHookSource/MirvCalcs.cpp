@@ -11674,6 +11674,13 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		return false;
 	}
 	info.Body = pose->Body;
+	// Validate historical skin against the SDK 2013 studio header's numskinfamilies.
+	if (textured && entity.Skin >= 0)
+	{
+		int families = 0;
+		std::memcpy(&families, static_cast<const unsigned char *>(info.Header) + 224, sizeof(families));
+		if (families > 0 && entity.Skin < families) info.Skin = entity.Skin;
+	}
 	// Neutral ambient is a feasibility aid, not historical lighting.
 	if (textured)
 		for (auto &face : info.AmbientCube)
@@ -11815,6 +11822,7 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 		MirvTf2SceneEntity row;
 		row.Index = index;
 		row.ObservedObject = object;
+		row.ObservedRenderable = renderable;
 		if (networked && index <= players && iface->IsPlayer(object))
 		{
 			const auto clientClass = SceneInterfaceCall<const void *>(networkable, 2);
@@ -12064,7 +12072,7 @@ void Mirv_Tf2_DebugEntityLabel(int address)
 }
 
 // Per-render snapshot: no engine entity pointers survive the synchronous pass batch.
-void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenPlayer)
+void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenPlayer, bool markStudio)
 {
  groups.clear();
  auto tools = CClientToolsTf2::Instance();
@@ -12089,7 +12097,7 @@ void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenP
     category == MIRV_TF2_ENTITY_GIB) ? 1 : 0;
   if (hiddenPlayer > 0 && iface->GetEntIndex(object) == hiddenPlayer) group |= 4;
   // Bit 8 marks registered studio renderables, not world/brush geometry.
-  if (auto info = Mirv_Tf2_GetModelInfo())
+  if (markStudio) if (auto info = Mirv_Tf2_GetModelInfo())
    if (auto model = renderable->GetModel())
     if (iface->GetEntIndex(object) != 0 && info->GetModelType(model) == 3) group |= 8;
   unsigned parent = 0xffffffffu;
