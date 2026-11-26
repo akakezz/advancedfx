@@ -6,6 +6,8 @@
 #include <deque>
 #include <map>
 #include <cstdint>
+#include <tuple>
+#include <limits>
 
 // Tool messages describe effect lifecycle/control points, NOT simulated particles.
 // Copy their transient state synchronously; never retain engine pointers.
@@ -15,7 +17,7 @@ struct Event {
     int Tick = -1, Id = -1, Point = -1, Object = -1;
     float ClientTime = 0;
     Kind Type = Kind::Count;
-    bool InfiniteOnly = false;
+    bool InfiniteOnly = false, SuspectDestroy = false;
     std::array<float,4> Value{};
     std::array<char,128> Name{};
 };
@@ -56,7 +58,16 @@ inline DecodeResult Decode(const char *name, const void *state, int tick, Event 
         for (std::size_t i=0;i+1<e.Name.size() && v.Name[i];++i) e.Name[i]=v.Name[i];
         break;
     }
-    case Kind::Destroy: {auto v=Wire::Read<Wire::Destroy>(state); e.Id=v.Id; e.ClientTime=v.Time; break;}
+    case Kind::Destroy: {
+        auto v=Wire::Read<Wire::Destroy>(state); e.Id=v.Id; e.ClientTime=v.Time;
+        // Public SDK destructor assigns curtime to the integer ID field. Never
+        // remove a potentially unrelated system on an ambiguous time-like ID.
+        const double time=v.Time;
+        if (std::isfinite(time) && time >= double((std::numeric_limits<int>::min)()) &&
+            time <= double((std::numeric_limits<int>::max)()))
+            e.SuspectDestroy=v.Id==static_cast<int>(time);
+        break;
+    }
     case Kind::Stop: {auto v=Wire::Read<Wire::Stop>(state); e.Id=v.Id; e.ClientTime=v.Time; e.InfiniteOnly=v.InfiniteOnly!=0; break;}
     case Kind::Object: {auto v=Wire::Read<Wire::Object>(state); e.Id=v.Id; e.ClientTime=v.Time; e.Point=v.Point; e.Object=v.Entity; break;}
     case Kind::Position: {auto v=Wire::Read<Wire::Position>(state); e.Id=v.Id; e.ClientTime=v.Time; e.Point=v.Point;
@@ -86,7 +97,7 @@ struct System {
 };
 struct Sample {
     std::map<int,System> Systems;
-    std::size_t UnknownUpdates=0, UnmatchedDestroys=0, RecreatedIds=0;
+    std::size_t UnknownUpdates=0, UnmatchedDestroys=0, RecreatedIds=0, SuspectDestroys=0;
     bool InWindow=false, Truncated=false, Interrupted=false;
 };
 class Journal {
@@ -94,8 +105,9 @@ public:
     static constexpr std::size_t DefaultLimit=131072;
     explicit Journal(std::size_t limit=DefaultLimit):Limit(limit){}
     void Clear() {
-        Events.clear(); Counts.fill(0); Dropped=Invalid=Unknown=0;
-        First=Last=FirstDrop=-1; Interrupted=false;
+        Events.clear(); Counts.fill(0); RawCounts.fill(0); Latest.clear();
+        Dropped=Invalid=Unknown=Unchanged=Coalesced=SuspectDestroys=Paused=0;
+        First=Last=FirstDrop=LastRetained=-1; Interrupted=false;
     }
     // A backward seek is a new history, never merge two different passes.
     void Observe(int tick) {
@@ -105,11 +117,33 @@ public:
         Last=tick;
     }
     void Interrupt() { if(First>=0) Interrupted=true; }
+    // Queries are end-of-tick, not sub-tick: repeated setters of the same
+    // attribute in one lifetime/tick can replace the earlier retained value.
+    // Never compact creation, destruction or emission messages.
     void Push(const Event &e) {
         if(e.Tick<0 || e.Type==Kind::Count) return;
         Observe(e.Tick);
+        const auto kind=static_cast<std::size_t>(e.Type);
+        ++RawCounts[kind];
+        if(e.SuspectDestroy) ++SuspectDestroys;
+        const bool control=e.Type==Kind::Object || e.Type==Kind::Position || e.Type==Kind::Orientation;
+        if(e.Type==Kind::Create || (e.Type==Kind::Destroy && !e.SuspectDestroy)) {
+            auto it=Latest.lower_bound({e.Id,-1,Kind::Create});
+            while(it!=Latest.end() && std::get<0>(it->first)==e.Id) it=Latest.erase(it);
+        }
+        const Key key{e.Id,e.Point,e.Type};
+        auto found=control?Latest.find(key):Latest.end();
+        if(found!=Latest.end()) {
+            const Event &prior=Events[found->second];
+            if(e.Object==prior.Object && e.Value==prior.Value) {++Unchanged; return;}
+            if(prior.Tick==e.Tick) {
+                Events[found->second]=e; ++Coalesced; return;
+            }
+        }
         if(Events.size()>=Limit) {if(FirstDrop<0) FirstDrop=e.Tick; ++Dropped; return;}
-        Events.push_back(e); ++Counts[static_cast<std::size_t>(e.Type)];
+        const auto index=Events.size();
+        Events.push_back(e); ++Counts[kind]; LastRetained=e.Tick;
+        if(control) Latest[key]=index;
     }
     void Note(DecodeResult result) {
         if(result==DecodeResult::Invalid) ++Invalid;
@@ -128,7 +162,8 @@ public:
                 System &system=s.Systems[e.Id]; system=System{};
                 system.Name=e.Name; system.Owner=e.Object; system.CreatedTick=e.Tick;
             } else if(e.Type==Kind::Destroy) {
-                if(found==s.Systems.end()) ++s.UnmatchedDestroys;
+                if(e.SuspectDestroy) { ++s.SuspectDestroys; if(found==s.Systems.end()) ++s.UnmatchedDestroys; }
+                else if(found==s.Systems.end()) ++s.UnmatchedDestroys;
                 else s.Systems.erase(found);
             } else if(found==s.Systems.end()) ++s.UnknownUpdates;
             else if(e.Type==Kind::Stop) {
@@ -143,11 +178,14 @@ public:
         return s;
     }
     std::deque<Event> Events;
-    std::array<std::size_t,static_cast<std::size_t>(Kind::Count)> Counts{};
-    std::size_t Dropped=0, Invalid=0, Unknown=0;
-    int First=-1, Last=-1, FirstDrop=-1;
+    std::array<std::size_t,static_cast<std::size_t>(Kind::Count)> Counts{}, RawCounts{};
+    std::size_t Dropped=0, Invalid=0, Unknown=0, Unchanged=0, Coalesced=0, SuspectDestroys=0, Paused=0;
+    int First=-1, Last=-1, FirstDrop=-1, LastRetained=-1;
     bool Interrupted=false;
 private:
+    using Key=std::tuple<int,int,Kind>;
+    // Entries only for retained setters; bounded by the journal capacity.
+    std::map<Key,std::size_t> Latest;
     std::size_t Limit;
 };
 }} // namespace advancedfx::SceneEffects

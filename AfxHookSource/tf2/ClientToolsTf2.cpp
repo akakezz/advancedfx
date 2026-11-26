@@ -90,8 +90,24 @@ void CClientToolsTf2::OnPostToolMessageTf2(SOURCESDK::TF2::HTOOLHANDLE hEntity, 
 	char const * msgName = msg->GetName();
 	// Particle messages deliberately use HTOOLHANDLE_INVALID in Source.
 	// Observe them before the AGR entity-only guard; never change forwarding.
-	if (msgName && !std::strncmp(msgName, "ParticleSystem_", 15))
-		AfxHookSource::CameraOverlay::SceneCacheParticleMessage(msgName, msg->GetPtr("state"));
+	if (msgName && !std::strncmp(msgName, "ParticleSystem_", 15)) {
+		const int kind = AfxHookSource::CameraOverlay::SceneCacheParticleMessage(msgName, msg->GetPtr("state"));
+		if (kind >= 0) {
+			// One stack audit per message type, never per particle update.
+			// Keep only offsets in the loaded client module, not process addresses.
+			std::vector<std::uintptr_t> rvas;
+			if (HMODULE client = GetModuleHandleA("client.dll")) {
+				void *frames[32] = {};
+				const auto count = CaptureStackBackTrace(0, 32, frames, nullptr);
+				for (unsigned i=0; i<count; ++i) {
+					MEMORY_BASIC_INFORMATION region{};
+					if (VirtualQuery(frames[i], &region, sizeof(region)) && region.AllocationBase == client)
+						rvas.push_back(reinterpret_cast<std::uintptr_t>(frames[i]) - reinterpret_cast<std::uintptr_t>(client));
+				}
+			}
+			AfxHookSource::CameraOverlay::SceneCacheParticleCallsites(kind, std::move(rvas));
+		}
+	}
 	if (hEntity == SOURCESDK::CSGO::HTOOLHANDLE_INVALID || !msgName) return;
 
 	if (!strcmp("entity_state", msgName))

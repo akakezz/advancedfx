@@ -38,3 +38,25 @@ If messages are absent, the next step is native collection-manager discovery
 in the actual client binary. If they are present, use the coverage results
 to guide that same investigation; replaying events alone will not guarantee
 exact random-access particle state.
+
+## Follow-up: compacted control-point traffic and native callsite audit
+
+The initial runtime probe received over two million events and filled the journal.
+Setter updates with identical values are omitted across ticks; changed setters in
+one tick are coalesced to their final value per ID/point/type within each lifetime.
+Creation, destruction and emission messages are never coalesced. Raw counts,
+paused messages, omitted repeats, replacements and first overflow tick are reported.
+A destruction ID equal to integer client time is ambiguous (the public SDK has
+that exact assignment); it is counted but does not erase a possibly unrelated
+system. A matching legitimate ID can also satisfy this heuristic; treat it as
+uncertain, not proof of a bug. Historical samples remain diagnostic, and a cap
+hit still marks all later samples incomplete. The journal is separate from the
+studio-pose budget, and its event payload excludes the bounded lookup index.
+
+The first decoded message of each type also records a short stack audit of return
+addresses inside client.dll as module-relative offsets. No native functions are
+called via these offsets, no engine pointers are retained, and an empty stack is
+explicitly reported. These addresses can help locate the native particle paths in
+the exact tested binary. Please provide the new status output, including the
+compaction and client RVA lines. Stop recording before running status to freeze
+counts; report the client game/build if possible.

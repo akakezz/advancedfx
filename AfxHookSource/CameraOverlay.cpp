@@ -67,6 +67,12 @@ static bool g_SceneRenderSnapshot = false, g_SceneSuppressLiveStudio = true;
 // Separate bounded event journal; no simulation or live-effect suppression yet.
 static bool g_SceneEffectsEnabled = false;
 static advancedfx::SceneEffects::Journal g_SceneEffects;
+static std::array<bool,6> g_SceneEffectsTraceAttempted{};
+static std::array<std::vector<std::uintptr_t>,6> g_SceneEffectsCallsites;
+static void SceneClearEffects() {
+    g_SceneEffects.Clear(); g_SceneEffectsTraceAttempted.fill(false);
+    for (auto &v:g_SceneEffectsCallsites) v.clear();
+}
 static int g_SceneAuditFrame = -1;
 static std::map<const void *, int> g_SceneAuditDraws;
 static std::string g_SceneAuditStatus = "No same-frame native model observation yet.";
@@ -250,7 +256,7 @@ static void SceneClearHistory()
 	++g_SceneDrawEpoch;
 	g_SceneSampleReady = false;
 	g_SceneCache.Clear();
-	g_SceneEffects.Clear();
+	SceneClearEffects();
 	g_SceneDrawing.BoundEntities.clear();
 	g_SceneAuditFrame = -1; g_SceneAuditDraws.clear();
 	g_SceneAuditStatus = "No same-frame native model observation yet.";
@@ -273,21 +279,36 @@ bool SceneCacheAuditActive()
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	return g_SceneRenderSnapshot && g_SceneRecord && !g_ScenePreview;
 }
-void SceneCacheParticleMessage(const char *name, const void *state)
+int SceneCacheParticleMessage(const char *name, const void *state)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	if (!g_SceneEffectsEnabled || !g_SceneRecord || g_ScenePreview || !g_VEngineClient ||
-	    !g_VEngineClient->IsPlayingDemo() || g_VEngineClient->IsDrawingLoadingImage()) return;
-	if (g_VEngineClient->IsSkippingDemo()) { g_SceneEffects.Interrupt(); return; }
+	    !g_VEngineClient->IsPlayingDemo() || g_VEngineClient->IsDrawingLoadingImage()) return -1;
+	if (g_VEngineClient->IsSkippingDemo()) { g_SceneEffects.Interrupt(); return -1; }
 	int tick;
 	if (!GetCurrentDemoTick(tick) || tick < 0 ||
-	    (g_SceneRangeEnabled && (tick < g_SceneRangeFirst || tick > g_SceneRangeLast))) return;
-	// Do not call SceneCaptureTick here: several updates can occur in a single tick.
+	    (g_SceneRangeEnabled && (tick < g_SceneRangeFirst || tick > g_SceneRangeLast))) return -1;
+	// Keep creation/destruction while paused, but ignore redundant setter traffic
+	// only through value compaction; genuine paused updates can affect the sample.
 	g_SceneEffects.Observe(tick);
 	advancedfx::SceneEffects::Event e;
 	auto result = advancedfx::SceneEffects::Decode(name, state, tick, e);
-	if (result == advancedfx::SceneEffects::DecodeResult::Valid) g_SceneEffects.Push(e);
-	else g_SceneEffects.Note(result);
+	if (result != advancedfx::SceneEffects::DecodeResult::Valid) {
+	    g_SceneEffects.Note(result); return -1;
+	}
+	if (g_VEngineClient->IsPaused()) ++g_SceneEffects.Paused;
+	g_SceneEffects.Push(e);
+	const auto kind=static_cast<unsigned>(e.Type);
+	if (kind>=g_SceneEffectsTraceAttempted.size() || g_SceneEffectsTraceAttempted[kind]) return -1;
+	g_SceneEffectsTraceAttempted[kind]=true;
+	return int(kind);
+}
+void SceneCacheParticleCallsites(int kind, std::vector<std::uintptr_t> rvas)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+    if (kind>=0 && static_cast<std::size_t>(kind)<g_SceneEffectsCallsites.size() &&
+        g_SceneEffectsTraceAttempted[kind])
+        g_SceneEffectsCallsites[kind]=std::move(rvas);
 }
 static void SceneEffectsStatus(int tick, bool detail)
 {
@@ -298,6 +319,22 @@ static void SceneEffectsStatus(int tick, bool detail)
 	    int(g_SceneEffectsEnabled), j.Events.size(), j.Events.size() * sizeof(advancedfx::SceneEffects::Event) / 1048576.0,
 	    j.First, j.Last, j.Counts[0], j.Counts[1], j.Counts[2], j.Counts[3], j.Counts[4], j.Counts[5],
 	    j.Invalid, j.Unknown, j.Dropped, int(j.Interrupted));
+	advancedfx::Message("Particle compaction: raw create %zu, destroy %zu, stop %zu, object %zu, position %zu, orientation %zu; "
+	    "unchanged %zu, same-tick replaced %zu, paused messages %zu; time-like destroy IDs %zu; "
+	    "last retained event tick %d, first overflow tick %d.\n", j.RawCounts[0], j.RawCounts[1], j.RawCounts[2],
+	    j.RawCounts[3], j.RawCounts[4], j.RawCounts[5], j.Unchanged, j.Coalesced, j.Paused, j.SuspectDestroys, j.LastRetained, j.FirstDrop);
+	static const char *names[]={"Create","Destroy","Stop","Object","Position","Orientation"};
+	for (std::size_t i=0;i<g_SceneEffectsCallsites.size();++i) if (g_SceneEffectsTraceAttempted[i]) {
+	    std::string line=std::string("Particle client return RVAs [")+names[i]+"]:";
+	    for (auto rva:g_SceneEffectsCallsites[i]) {
+	        static const char digits[]="0123456789abcdef";
+	        char buf[2*sizeof(rva)]; std::size_t n=0;
+	        do { buf[n++]=digits[rva & 15]; rva >>= 4; } while(rva);
+	        line+=" 0x"; while(n) line+=buf[--n];
+	    }
+	    if (g_SceneEffectsCallsites[i].empty()) line+=" none (stack unavailable)";
+	    advancedfx::Message("%s\n",line.c_str());
+	}
 	if (tick < 0) return;
 	const auto sample = j.At(tick);
 	if (!sample.InWindow) { advancedfx::Message("Particle tick %d outside observed window.\n", tick); return; }
@@ -307,9 +344,10 @@ static void SceneEffectsStatus(int tick, bool detail)
 	    for (const auto &p : row.second.Points) positioned += p.second.HasPosition;
 	}
 	advancedfx::Message("Particle tick %d: %zu reported systems, %zu emission stops, %zu control points (%zu positioned); "
-	    "%zu unknown updates, %zu unmatched destroys, %zu recreated IDs; truncated %d, interrupted %d. "
+	    "%zu retained unknown updates, %zu unmatched destroys, %zu recreated IDs; %zu ambiguous destroys; truncated %d, interrupted %d. "
 	    "These are event-derived states, not live particle counts.\n", tick, sample.Systems.size(), stopped, points, positioned,
-	    sample.UnknownUpdates, sample.UnmatchedDestroys, sample.RecreatedIds, int(sample.Truncated), int(sample.Interrupted));
+	    sample.UnknownUpdates, sample.UnmatchedDestroys, sample.RecreatedIds, sample.SuspectDestroys, int(sample.Truncated), int(sample.Interrupted));
+	if (sample.Truncated) advancedfx::Message("WARNING: requested tick is at/after first overflow; this is an incomplete event-derived sample, not current state.\n");
 	if (!detail) return;
 	std::size_t shown = 0;
 	for (const auto &row : sample.Systems) {
@@ -1537,7 +1575,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	if (!_stricmp(op, "effects"))
 	{
 		if (integer(value) && (value == 0 || value == 1)) {
-			if (value && !g_SceneEffectsEnabled) g_SceneEffects.Clear();
+			if (value && !g_SceneEffectsEnabled) SceneClearEffects();
 			g_SceneEffectsEnabled = value != 0;
 			if (value) advancedfx::Message("Particle event probe armed. Enable mirv_agr enabled 1 before loading the demo. "
 			    "Use a fresh uninterrupted cache recording; effects already active may be missing.\n");
@@ -1545,7 +1583,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		} else if (args->ArgC() == 3 && !_stricmp(args->ArgV(2), "status")) {
 			SceneEffectsStatus(g_SceneEffects.Last, false);
 		} else if (args->ArgC() == 3 && !_stricmp(args->ArgV(2), "clear")) {
-			g_SceneEffects.Clear(); SceneEffectsStatus(-1, false);
+			SceneClearEffects(); SceneEffectsStatus(-1, false);
 		} else if (args->ArgC() == 4 && !_stricmp(args->ArgV(2), "at") && parseInteger(3, value) && value >= 0) {
 			SceneEffectsStatus(value, true);
 		} else advancedfx::Message("mirv_cache effects <0|1|status|clear> | at <tick> - experimental particle event capture, no visual replay.\n");

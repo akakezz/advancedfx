@@ -30,7 +30,9 @@ void Draw();
 void SceneCacheFrame(bool capture = true); // Capture at TF2 FRAME_RENDER_END; false only updates preview.
 void SceneCacheDrawModels();
 // Synchronous native particle tool message capture; payload is copied immediately.
-void SceneCacheParticleMessage(const char *name, const void *state);
+// Return a message kind once per capture to request a lightweight client stack audit.
+int SceneCacheParticleMessage(const char *name, const void *state);
+void SceneCacheParticleCallsites(int kind, std::vector<std::uintptr_t> rvas);
 // Experimental replacement of registered live studio-model submissions only.
 bool SceneCacheReplayActive();
 bool SceneCacheSuppressLiveStudio();
