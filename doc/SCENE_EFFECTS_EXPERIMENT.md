@@ -716,3 +716,55 @@ bindings are optional and separately counted on failure. Sky singleton and
 unknown/derived vtables remain excluded. A 2048-particle combined cap still
 applies. The existing two material handles remain the dissolve fallback.
 No new renderer ABI is introduced. Changing legacyAll clears legacy history.
+
+
+## Phase 13B: historical surface experiments (not yet runtime validated)
+
+Opt in before scene recording: `mirv_cache surfaces capture 1`. Capture with
+mat_queue_mode 0 on the exact TF2 x64 build. Independent historical controls:
+`mirv_cache surfaces shadows 1`, `decals 1`, `batch 1/0`, `status`.
+64 MiB combined history, exact ticks, unchanged immutable surface vectors
+reused. Session world generation prevents replay into other map geometry.
+No effect on separate TF2 recording passes or advancing demo preview.
+
+Shadow manager: engine VEngineShadowMgr002 vtable 0x3959f0, CreateShadow slot
+0 (0x124900), DestroyShadow slot 1 (0x124b00), ProjectShadow slot 3
+(0x127de0), SetShadowTexCoord slot 9 (0x12c1b0), SetFalloffBias slot 15
+(0x12b7e0). ProjectShadow argument ABI follows SDK (origin, direction,
+world-to-shadow matrix, size, leaf count/list, height, falloff offset/amount,
+caster origin). Linked list manager +0x10 base, +0x18 capacity, +0x20 head,
++0x24 tail, +0x2c count, stride 0x160, links +0x150/+0x152, flags +0x88,
+bias +0x5c. Engine 0x12a8ff skips shadow decals when falloff bias ==255.
+Guarded observer detours install once on first capture; record subsequent
+native projection calls and erase on destroy, preserving unknown coverage.
+Initial static shadows without observed calls remain explicitly unobserved.
+Create temporary world-only native projected blobs using decals/simpleshadow
+and observed historical projection data; not historical bone silhouettes.
+If all captured projections known and allocated, temporarily gate existing
+live nonflashlight shadows via bias (intercept setter to preserve updates);
+otherwise keep live originals as partial overlay. Scope cleanup restores
+biases and destroys owned handles. Never disable r_shadows while drawing
+historical blobs; active historical replay overrides temporary hide toggle.
+No native shadow atlas or moving receiver reconstruction yet.
+
+Decals: engine slot table pointer 0x6a4e60, logical count 0x6a4e70, capacity
+0x6a4e68. World pointer 0x755738, surface array world+0xe8, count +0xd8,
+stride 64, decal head +0x10. Native create 0x117ab0, remove 0x11a580.
+Record fields: surface +0x10, material +0x18, position +0x24, optional axis
++0x30 (flag 0x80), scale +0x44, RGBA +0x54, slot +0x66, flags +0x68,
+name index +0x6a. Material GetName vtable slot zero corroborated at 0x11677c;
+0x11b326 reads decal alpha. Only ordinary non-fading world records; attached,
+displacement and dynamic/fading records skipped. Capture material name and
+placement as values; at preview match surviving marks by slot + surface +
+placement + name, temporarily apply historical alpha or zero for future-only
+marks. Restore after ordinary render if same record still present. No list
+unlinking, allocation or destruction; evicted/removed historical decals
+cannot yet be recreated. A zero alpha gate may not hide every material.
+This is historical surviving-mark visibility, not complete decal replay.
+
+Both experiments are opt-in, independent, and preserve previous hiding
+controls when no historical path is active. Native ABI/runtime correctness
+must be validated; diagnostics report observed/unobserved, projected count,
+matched/missing/unsupported marks and restoration warnings. Revert by
+surfaces batch 0; keep previously validated 54cd55f available. No Windows
+build or runtime validation performed for Phase 13.

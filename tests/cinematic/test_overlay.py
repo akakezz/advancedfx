@@ -43,6 +43,7 @@ std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &){return {}; }
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &){return {}; }
 bool sceneParticleIsolationReady=true;bool Mirv_Tf2_ParticleIsolationReady(){return sceneParticleIsolationReady;}
+advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){advancedfx::SceneSurfaces::Frame f;f.Tick=tick;return f;}void Mirv_Tf2_ResetSurfaces(){}unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame&,unsigned,std::string&){return 0;}std::string Mirv_Tf2_EndSurfaceReplay(){return {};}
 #include "shared/PlayerRepair.h"
 void MirvFix_PlayerRepairNewDemo(const char*);
 void MirvFix_PlayerAngleTraceEnd();

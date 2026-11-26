@@ -81,6 +81,9 @@ static int g_SceneDetachedTick=-1, g_SceneDetachedIndex=-1;
 static bool g_SceneLegacyAuditPending=false;
 static bool g_SceneLegacyCapture=false,g_SceneLegacyReplay=false,g_SceneLegacyAll=false;
 static bool g_SceneReplayModulation=false,g_SceneHideShadows=false,g_SceneHideDecals=false,g_SceneLegacyMarkers=false;
+static bool g_SceneSurfaceCapture=false,g_SceneHistoricalShadows=false,g_SceneHistoricalDecals=false;
+static advancedfx::SceneSurfaces::History g_SceneSurfaces;
+static std::string g_SceneHistoricalSurfaceStatus="Not evaluated.";
 static std::string g_SceneSurfaceStatus[2]={"Not evaluated.","Not evaluated."};
 static advancedfx::NativeParticles::ReplayResult g_SceneLegacyReplayResult;
 static int g_SceneLegacyReplayTick=-1;
@@ -96,6 +99,7 @@ static void SceneClearNativeParticles() {
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
     g_SceneLegacyAuditPending=false;
     g_SceneLegacyHistory.Clear();g_SceneLegacyCaptureStatus="Not captured.";
+    g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();g_SceneHistoricalSurfaceStatus="Not evaluated.";
     g_SceneLegacyReplayResult={};g_SceneLegacyReplayTick=-1;
     g_SceneParticleReplayResult={};g_SceneParticleReplayTick=-1;
     g_SceneNativeParticleMs=g_SceneNativeParticleTotalMs=g_SceneNativeParticlePeakMs=0;
@@ -735,6 +739,7 @@ void SceneCacheFrame(bool capture)
             if(!g_SceneLegacyHistory.Append(std::move(legacy)))
                 g_SceneLegacyCaptureStatus+="; historical sample rejected.";
         }
+        if(g_SceneSurfaceCapture&&!g_ScenePreview)g_SceneSurfaces.Append(Mirv_Tf2_CaptureSurfaces(tick));
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
@@ -877,6 +882,19 @@ void SceneCachePublishParticleIsolation(const char *status)
 {
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
     if(g_SceneParticleIsolationStatus!=status)g_SceneParticleIsolationStatus=status;
+}
+unsigned SceneCacheBeginHistoricalSurfaces(){
+    std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+    const unsigned requested=(g_SceneHistoricalShadows?1u:0u)|(g_SceneHistoricalDecals?2u:0u);
+    if(!requested||!SceneCacheReplayActive()||!Mirv_Tf2_ParticleIsolationReady())return 0;
+    const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
+    const auto *sample=g_SceneSurfaces.At(tick);
+    if(!sample){g_SceneHistoricalSurfaceStatus="No exact historical surface sample.";return 0;}
+    return Mirv_Tf2_BeginSurfaceReplay(*sample,requested,g_SceneHistoricalSurfaceStatus);
+}
+void SceneCacheEndHistoricalSurfaces(){
+    auto status=Mirv_Tf2_EndSurfaceReplay();
+    if(!status.empty()){std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);g_SceneHistoricalSurfaceStatus=std::move(status);}
 }
 unsigned SceneCacheLiveSurfaceIsolation()
 {
@@ -1922,6 +1940,19 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	auto integer = [&](int &value) { return args->ArgC() == 3 && parseInteger(2, value); };
 	int value = 0;
 	bool ok = false;
+    if(!_stricmp(op,"surfaces")){
+        if(args->ArgC()==4&&parseInteger(3,value)&&(value==0||value==1)){
+            if(!_stricmp(args->ArgV(2),"capture")){if(value&&!g_SceneSurfaceCapture){g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();}g_SceneSurfaceCapture=value!=0;}
+            else if(!_stricmp(args->ArgV(2),"shadows"))g_SceneHistoricalShadows=value!=0;
+            else if(!_stricmp(args->ArgV(2),"decals"))g_SceneHistoricalDecals=value!=0;
+            else if(!_stricmp(args->ArgV(2),"batch"))g_SceneHistoricalShadows=g_SceneHistoricalDecals=value!=0;
+        }
+        const int tick=g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneSurfaces.Frames.empty()?-1:g_SceneSurfaces.Frames.back().Tick;
+        advancedfx::Message("Historical surfaces capture %d, shadows %d, decals %d; %zu frames, %.2f MiB / 64 MiB; evicted %zu, rejected %zu. %s\n",int(g_SceneSurfaceCapture),int(g_SceneHistoricalShadows),int(g_SceneHistoricalDecals),g_SceneSurfaces.Frames.size(),g_SceneSurfaces.Bytes/1048576.0,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected,g_SceneHistoricalSurfaceStatus.c_str());
+        if(auto sample=g_SceneSurfaces.At(tick))advancedfx::Message("Surface tick %d: shadows ready %d, observed %zu, unobserved %zu; decals ready %d, ordinary world %zu, unsupported %zu.\n",tick,int(sample->ShadowsReady),sample->Shadows?sample->Shadows->size():0,sample->ShadowsUnobserved,int(sample->DecalsReady),sample->Decals?sample->Decals->size():0,sample->DecalsUnsupported);
+        else advancedfx::Message("Surface tick %d: no exact sample.\n",tick);
+        advancedfx::Message("mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n");return;
+    }
     if(!_stricmp(op,"visuals")) {
         if(args->ArgC()==4&&parseInteger(3,value)&&(value==0||value==1)) {
             if(!_stricmp(args->ArgV(2),"modulation"))g_SceneReplayModulation=value!=0;
@@ -2330,6 +2361,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers|legacyAll> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
+		    "  mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
@@ -6551,6 +6583,7 @@ static void DrawSceneCacheMenu(int playhead)
             g_SceneLegacyHistory.Clear();g_SceneLegacyCaptureStatus="Not captured.";
         }
 		if(g_SceneLegacyCapture&&ImGui::Checkbox("Include other exact simple emitters (experimental)",&g_SceneLegacyAll))g_SceneLegacyHistory.Clear();
+        if(ImGui::Checkbox("Capture shadow projections and world decals (experimental)",&g_SceneSurfaceCapture)&&g_SceneSurfaceCapture){g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();}
         ImGui::TextDisabled(g_SceneRenderSnapshot ? "Category settings apply only to diagnostic capture." : "Choose categories; checked colors match the preview.");
 		if (ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
 		{
@@ -6706,6 +6739,9 @@ static void DrawSceneCacheMenu(int playhead)
         ImGui::Checkbox("Replay captured model color and alpha (experimental)",&g_SceneReplayModulation);
         ImGui::Checkbox("Hide live shadows (temporary)",&g_SceneHideShadows);
         ImGui::Checkbox("Hide live world decals (temporary)",&g_SceneHideDecals);
+        ImGui::Checkbox("Historical projected blob shadows (experimental)",&g_SceneHistoricalShadows);
+        ImGui::Checkbox("Historical surviving world decals (experimental)",&g_SceneHistoricalDecals);
+        if(g_SceneHistoricalShadows||g_SceneHistoricalDecals)DrawOverlayHint(g_SceneHistoricalSurfaceStatus.c_str());
         if(g_SceneHideShadows||g_SceneHideDecals)DrawOverlayHint("Isolation only; historical shadows and decals are not reconstructed.");
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
 		if (g_SceneDrawing.Bounds && ImGui::TreeNode("Bounding box filters"))

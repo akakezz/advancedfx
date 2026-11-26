@@ -310,3 +310,11 @@ non-sky CSimpleEmitter bindings, registered material names and separate
 skipped additional-emitter counts. Existing dissolve-only default retained.
 Derived legacy renderer types still excluded. Record fresh history after
 changing the option.
+
+Phase 13B introduces independent historical surface capture and preview
+experiments: `mirv_cache surfaces capture 1`, record, then `surfaces batch 1`
+(or shadows/decals separately), `surfaces status`. Native projected blob
+shadows use observed historical projection calls, not true actor silhouettes;
+world decal visibility only applies to surviving ordinary marks. Missing
+projections, removed decals, dynamic fade, model decals and moving receivers
+remain limitations. See Phase 13B exact ABI notes and scope cleanup diagnostics.

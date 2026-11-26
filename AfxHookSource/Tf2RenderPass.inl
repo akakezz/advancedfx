@@ -179,7 +179,9 @@ void __fastcall Tf2PassRenderFrame(void *self,
   if (any || hidden || g_Tf2ReplayStudio) Mirv_Tf2_RenderGroups(g_Tf2RenderGroups, hidden, g_Tf2ReplayStudio);
  }
  {
-  const unsigned surfaceMask=outer&&!any&&Tf2RenderPassSupported()?AfxHookSource::CameraOverlay::SceneCacheLiveSurfaceIsolation():0;
+  struct HistoricalScope {bool Enabled;~HistoricalScope(){if(Enabled)AfxHookSource::CameraOverlay::SceneCacheEndHistoricalSurfaces();}} historical{outer&&!any&&Tf2RenderPassSupported()};
+  const unsigned historicalMask=historical.Enabled?AfxHookSource::CameraOverlay::SceneCacheBeginHistoricalSurfaces():0;
+  const unsigned surfaceMask=historical.Enabled?AfxHookSource::CameraOverlay::SceneCacheLiveSurfaceIsolation()&~historicalMask:0;
   Tf2SurfaceIsolationScope shadows("r_shadows",0,outer,(surfaceMask&1)!=0);
   Tf2SurfaceIsolationScope decals("r_drawdecals",1,outer,(surfaceMask&2)!=0);
   Tf2ParticleIsolationScope particles(outer,outer&&!any&&Tf2RenderPassSupported()&&

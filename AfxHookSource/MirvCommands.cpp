@@ -370,6 +370,8 @@ bool Mirv_Tf2_SceneDrawVisibility(const char *name,float &value,bool write)
 #endif
 }
 
+#include "Tf2SceneSurfaces.inl"
+
 // Synchronous legacy draw: construct only the scratch fields read by the
 // verified DrawMaterialParticles path. No manager registration, factory,
 // allocator, simulation, live list substitution or native destructor.

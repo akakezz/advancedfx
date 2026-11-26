@@ -3,6 +3,7 @@
 #include <shared/SceneEffects.h>
 #include <shared/NativeParticleSnapshot.h>
 #include <shared/LegacyParticleSnapshot.h>
+#include <shared/SceneSurfaceHistory.h>
 #include <memory>
 #include <map>
 #include <functional>
@@ -19,6 +20,10 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const a
 bool Mirv_Tf2_ParticleIsolationReady();
 bool Mirv_Tf2_LiveParticleVisibility(float &value, bool write);
 bool Mirv_Tf2_SceneDrawVisibility(const char *name,float &value,bool write);
+advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick);
+void Mirv_Tf2_ResetSurfaces();
+unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sample,unsigned requested,std::string &status);
+std::string Mirv_Tf2_EndSurfaceReplay();
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &frame);
 namespace AfxHookSource
 {
@@ -46,6 +51,8 @@ bool SceneCacheSuppressLiveParticles();
 void SceneCachePublishParticleIsolation(const char *status);
 unsigned SceneCacheLiveSurfaceIsolation(); // bit 1 shadows, bit 2 decals
 void SceneCachePublishSurfaceIsolation(unsigned index,const char *status);
+unsigned SceneCacheBeginHistoricalSurfaces();
+void SceneCacheEndHistoricalSurfaces();
 // Synchronous native particle tool message capture; payload is copied immediately.
 // Return a message kind once per capture to request a lightweight client stack audit.
 int SceneCacheParticleMessage(const char *name, const void *state);
