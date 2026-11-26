@@ -162,6 +162,10 @@ int main(){
  const auto originalPreviousPose=g_SequencePreviousPose;
  const auto dashes=MirvCam_TransitionGuideLines(p.Id);
  assert(dashes.size()==12);
+ // The last visible dash must reach the actual moving source at envelope end.
+ advancedfx::CameraPose endpoint;
+ assert(EvaluateClipSource(p,p.TransitionStart()+p.Blend,endpoint));
+ for(int axis=0;axis<3;++axis) assert(std::abs(dashes.back().B[axis]-endpoint.Position[axis])<1e-7);
  for(const auto &dash:dashes)for(int axis=0;axis<3;++axis)
   assert(std::isfinite(dash.A[axis])&&std::isfinite(dash.B[axis]));
  assert(g_SequencePreviousTime==originalPreviousTime);

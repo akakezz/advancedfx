@@ -512,18 +512,40 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 									   Vector3(line.B[0], line.B[1], line.B[2]), color});
 		}
 	}
-	// Selected cinematic transition: a thin dashed amber route distinguishes
-	// temporary camera blends from the solid classic campath trajectory.
-	// Captured as immutable line geometry on the engine thread, like other guides.
+	// Every incoming transition has a guide, independent of selection.
+	// Sample on the engine thread; queued drawing retains only geometry and labels.
 	if (path == &g_Hook_VClient_RenderView.m_CamPath &&
+		AfxHookSource::CameraOverlay::TransitionGuidesEnabled() &&
 		!AfxHookSource::CameraOverlay::Recording::IsActive())
 	{
-		const auto id = AfxHookSource::CameraOverlay::TransitionGuideClip();
-		if (id != ~std::uint64_t(0))
-			for (const auto &line : MirvCam_TransitionGuideLines(id))
+		const auto selected = AfxHookSource::CameraOverlay::TransitionGuideClip();
+		const auto clips = MirvCam_Clips();
+		for (size_t i = 1; i < clips.size(); ++i)
+		{
+			const auto &clip = clips[i];
+			if (clip.Blend <= 0) continue;
+			const auto lines = MirvCam_TransitionGuideLines(clip.Id);
+			if (lines.empty()) continue; // Unavailable historical coverage must not produce a fake route.
+			const auto color = clip.Id == selected ? D3DCOLOR_RGBA(75, 220, 255, 255)
+				: D3DCOLOR_RGBA(255, 176, 70, 215);
+			for (const auto &line : lines)
 				CameraLines.push_back({Vector3(line.A[0], line.A[1], line.A[2]),
-								   Vector3(line.B[0], line.B[1], line.B[2]),
-								   D3DCOLOR_RGBA(255, 176, 70, 235)});
+								   Vector3(line.B[0], line.B[1], line.B[2]), color});
+			auto endpoint = [&](const std::array<double, 3> &position, const char *suffix)
+			{
+				for (int axis = 0; axis < 3; ++axis)
+				{
+					auto a = position, b = position;
+					a[axis] -= 4; b[axis] += 4;
+					CameraLines.push_back({Vector3(a[0], a[1], a[2]), Vector3(b[0], b[1], b[2]), color});
+				}
+				CamPathValue anchor;
+				anchor.X = position[0]; anchor.Y = position[1]; anchor.Z = position[2];
+				label(anchor, 1.5f, "Transition " + std::to_string(i) + suffix, 10);
+			};
+			endpoint(lines.front().A, " start");
+			endpoint(lines.back().B, " end");
+		}
 	}
 	if (sceneOnly)
 	{
@@ -658,7 +680,7 @@ void CCampathDrawer::OnPostRenderAllTools_EngineThread() {
 	const bool sceneDrawing = scene && !scene->empty();
 	const bool cameraDrawing = !AfxHookSource::CameraOverlay::Recording::IsActive() &&
 		((AfxHookSource::CameraOverlay::CameraGuidesEnabled() && MirvCam_CameraCount() > 0) ||
-		 AfxHookSource::CameraOverlay::TransitionGuideClip() != ~std::uint64_t(0));
+		 (AfxHookSource::CameraOverlay::TransitionGuidesEnabled() && MirvCam_Clips().size() > 1));
 	if (!m_Draw && !sceneDrawing && !cameraDrawing)
 		return;
 

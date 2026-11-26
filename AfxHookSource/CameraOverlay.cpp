@@ -1436,6 +1436,7 @@ static void FocusClipField(ClipInspectorFocus field)
 }
 static bool g_ShowTransitionGuide = true;
 static std::atomic<std::uint64_t> g_TransitionGuidePublished{~std::uint64_t(0)};
+static std::atomic_bool g_TransitionGuidesPublished{true};
 static bool g_OpenCameraClips = false;
 static bool g_ShowCameraGuides = false, g_CameraFrustums = true, g_FocusCameras = false,
 			g_CamerasTabActive = false;
@@ -7028,6 +7029,7 @@ void SetCameraFrustums(bool enabled)
 bool CameraGuidesEnabled() { return g_CameraGuidesPublished.load(); }
 bool CameraFrustumsEnabled() { return g_CameraFrustumsPublished.load(); }
 std::uint64_t TransitionGuideClip() { return g_TransitionGuidePublished.load(); }
+bool TransitionGuidesEnabled() { return g_TransitionGuidesPublished.load(); }
 static std::string CameraClipSourceName(bool campath, std::uint64_t target)
 {
 	if (campath)
@@ -7724,7 +7726,8 @@ static void DrawCameraClipsPanel()
 		"Enable the sequence to play these clips. Preview navigation is independent. You can use free camera "
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
 	ImGui::TextWrapped("Drag to move clips. Alt-drag duplicates; Shift bypasses snapping. Ctrl-drag transition edges or fade markers, including zero-duration markers. Right-click for clip options.");
-	ImGui::Checkbox("Show selected transition path in 3D (dashed orange)", &g_ShowTransitionGuide);
+	ImGui::Checkbox("Show transition guides in 3D", &g_ShowTransitionGuide);
+	ImGui::TextWrapped("Amber: transition. Cyan: selected transition. Labels mark the sampled start and end.");
 	ImGui::TextDisabled("Editor only; hidden during recording. Moving/aimed cameras need Scene Cache history for an accurate 3D guide.");
 	if (SceneCachePreviewActive())
 		ImGui::TextWrapped("Recorded tracking preserves observed aiming. Without camera samples, aiming is "
@@ -9257,7 +9260,8 @@ void Draw()
 {
 	CheckOverlayPreferences();
 	g_CameraGuidesPublished.store(g_ShowCameraGuides);
-	g_TransitionGuidePublished.store(g_ShowTransitionGuide ? g_SelectedCameraClip : ~std::uint64_t(0));
+	g_TransitionGuidePublished.store(g_SelectedCameraClip);
+	g_TransitionGuidesPublished.store(g_ShowTransitionGuide);
 	g_CameraFrustumsPublished.store(g_CameraFrustums);
 	DrawPreviewHud();
 	PollTimelineIndex();

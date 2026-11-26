@@ -1778,7 +1778,8 @@ std::vector<advancedfx::CameraGuideLine> TransitionGuideLinesInternal(std::uint6
 	g_SequencePreviousTime = -std::numeric_limits<double>::infinity();
 	g_InspectingSequence = true;
 	g_CameraEvaluationFrame = -1;
-	constexpr int steps = 24;
+	// An odd interval count puts a dash at BOTH boundaries (12 dashes, 11 gaps).
+	constexpr int steps = 23;
 	std::array<advancedfx::CameraPose, steps + 1> samples{};
 	bool complete = true;
 	for (int i = 0; i <= steps; ++i)
