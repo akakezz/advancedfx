@@ -80,7 +80,7 @@ static std::size_t g_SceneNativeParticleSamples=0;
 static int g_SceneDetachedTick=-1, g_SceneDetachedIndex=-1;
 static bool g_SceneLegacyAuditPending=false;
 static bool g_SceneLegacyCapture=false,g_SceneLegacyReplay=false;
-static bool g_SceneReplayModulation=false,g_SceneHideShadows=false,g_SceneHideDecals=false;
+static bool g_SceneReplayModulation=false,g_SceneHideShadows=false,g_SceneHideDecals=false,g_SceneLegacyMarkers=false;
 static std::string g_SceneSurfaceStatus[2]={"Not evaluated.","Not evaluated."};
 static advancedfx::NativeParticles::ReplayResult g_SceneLegacyReplayResult;
 static int g_SceneLegacyReplayTick=-1;
@@ -781,7 +781,8 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 	static std::shared_ptr<const advancedfx::SceneCache::Frame> last;
 	static advancedfx::SceneCache::DrawingOptions previous;
 	static std::uint64_t revision = ~0ull, particleRevision=~0ull;
-	static bool previousMarkers=false, previousStyled=false;
+	static bool previousMarkers=false, previousStyled=false,previousLegacyMarkers=false;
+    static std::uint64_t legacyRevision=~0ull;
 	static int previousParticleTick=-1;
 	static std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> lines;
 	const auto view = SceneCacheView();
@@ -795,14 +796,19 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 	options.Meshes = g_SceneDrawModels.load();
 	const int particleTick=g_SceneNativeParticleMarkers?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):-1;
 	const auto particleRev=g_SceneNativeParticleMarkers?g_SceneNativeParticles.Revision:0;
+    const int legacyTick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
+    const auto legacyRev=g_SceneLegacyMarkers?g_SceneLegacyHistory.Revision:0;
+    static int previousLegacyTick=-1;
 	if (last != view || !(previous == options) || revision != g_SceneCache.Revision() ||
-	    previousMarkers!=g_SceneNativeParticleMarkers || previousStyled!=g_SceneNativeParticleStyled || previousParticleTick!=particleTick || particleRevision!=particleRev)
+	    previousMarkers!=g_SceneNativeParticleMarkers || previousStyled!=g_SceneNativeParticleStyled || previousParticleTick!=particleTick || particleRevision!=particleRev ||
+        previousLegacyMarkers!=g_SceneLegacyMarkers || legacyRevision!=legacyRev || (g_SceneLegacyMarkers&&previousLegacyTick!=legacyTick))
 	{
 		last = view;
 		previous = options;
 		revision = g_SceneCache.Revision();
 		previousMarkers=g_SceneNativeParticleMarkers; previousStyled=g_SceneNativeParticleStyled; previousParticleTick=particleTick; particleRevision=particleRev;
-		auto result=g_SceneCache.Drawing(*view, options);
+		previousLegacyMarkers=g_SceneLegacyMarkers;legacyRevision=legacyRev;previousLegacyTick=legacyTick;
+        auto result=g_SceneCache.Drawing(*view, options);
 		if (g_SceneNativeParticleMarkers) if (const auto *sample=g_SceneNativeParticles.ForPreview(particleTick)) {
 		    // A bounded diagnostic cross, not a textured particle or renderer.
 		    const std::size_t step=(std::max)(std::size_t(1),(sample->Points.size()+8191)/8192);
@@ -841,6 +847,16 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 		        result.push_back({{p[0],p[1],p[2]-r},{p[0],p[1],p[2]+r},4,alpha,custom,rgb});
 		    }
 		}
+        if(g_SceneLegacyMarkers)if(const auto *sample=g_SceneLegacyHistory.At(legacyTick)){
+            for(const auto &p:sample->Particles){
+                const float f=std::clamp(p.Lifetime/p.DieTime,0.f,1.f);
+                const float r=std::clamp(p.StartSize+(float(p.EndSize)-p.StartSize)*f,.35f,64.f);
+                const auto a=static_cast<unsigned char>(std::clamp(p.StartAlpha+(float(p.EndAlpha)-p.StartAlpha)*f,0.f,255.f));
+                const auto &v=p.Position;
+                if(a){result.push_back({{v[0]-r,v[1],v[2]},{v[0]+r,v[1],v[2]},4,a,true,p.Color});
+                      result.push_back({{v[0],v[1],v[2]-r},{v[0],v[1],v[2]+r},4,a,true,p.Color});}
+            }
+        }
 		lines = std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(std::move(result));
 	}
 	return lines;
@@ -923,12 +939,14 @@ void SceneCacheDrawModels()
 		return;
 	std::shared_ptr<const advancedfx::SceneCache::Frame> view;
 	unsigned long long epoch;
+    bool modulation=false;
 	{
 		// Read the frame and its invalidation epoch together. Release the lock
 		// before queueing: render-thread callbacks must never wait on UI state.
 		std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 		view = SceneCacheView();
 		epoch = g_SceneDrawEpoch.load();
+        modulation=g_SceneReplayModulation;
 	}
 	if (!view)
 		return;
@@ -962,7 +980,7 @@ void SceneCacheDrawModels()
 			                       ? &*found
 			                       : nullptr;
 			++attempted;
-			auto drawEntity=entity; if(!g_SceneReplayModulation)drawEntity.HasModulation=false;
+			auto drawEntity=entity; if(!modulation)drawEntity.HasModulation=false;
 			if (Mirv_Tf2_DrawScenePose(drawEntity, status, owner, textured)) ++submitted;
             else {lastFailure=status;if(status.find("queue is behind")!=std::string::npos) ++queueSkips;else ++otherSkips;}
 		}
@@ -1908,8 +1926,19 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
             if(!_stricmp(args->ArgV(2),"modulation"))g_SceneReplayModulation=value!=0;
             else if(!_stricmp(args->ArgV(2),"hideShadows"))g_SceneHideShadows=value!=0;
             else if(!_stricmp(args->ArgV(2),"hideDecals"))g_SceneHideDecals=value!=0;
+            else if(!_stricmp(args->ArgV(2),"batch")){g_SceneReplayModulation=g_SceneHideShadows=g_SceneHideDecals=g_SceneLegacyReplay=value!=0;g_SceneLegacyMarkers=false;}
         }
-        advancedfx::Message("mirv_cache visuals <modulation|hideShadows|hideDecals> <0|1>; or visuals status. Modulation %d; hide live shadows %d (%s); hide live decals %d (%s).\n",int(g_SceneReplayModulation),int(g_SceneHideShadows),g_SceneSurfaceStatus[0].c_str(),int(g_SceneHideDecals),g_SceneSurfaceStatus[1].c_str());
+        advancedfx::Message("mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1>; or visuals status. Modulation %d; hide live shadows %d (%s); hide live decals %d (%s).\n",int(g_SceneReplayModulation),int(g_SceneHideShadows),g_SceneSurfaceStatus[0].c_str(),int(g_SceneHideDecals),g_SceneSurfaceStatus[1].c_str());
+        if(auto view=SceneCacheView()){
+            std::size_t known=0,changed=0;
+            for(const auto &e:view->Entities)if(e.ModelPose&&e.HasModulation){
+                ++known;
+                if(e.Modulation!=std::array<float,4>{1,1,1,1}){
+                    if(changed++<8)advancedfx::Message("  model %s RGBA %.3f %.3f %.3f %.3f\n",e.ModelPose->ModelInfo->Name.c_str(),e.Modulation[0],e.Modulation[1],e.Modulation[2],e.Modulation[3]);
+                }
+            }
+            advancedfx::Message("Cached model modulation: %zu known, %zu nonneutral.\n",known,changed);
+        }
         return;
     }
 	if (!_stricmp(op, "particles"))
@@ -1924,6 +1953,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
             g_SceneLegacyCapture=value!=0;SceneLegacyParticleStatus(-1);
         } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyReplay")&&parseInteger(3,value)&&(value==0||value==1)) {
             g_SceneLegacyReplay=value!=0;g_SceneLegacyReplayResult={};g_SceneLegacyReplayTick=-1;SceneLegacyParticleStatus(-1);
+        } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyMarkers")&&parseInteger(3,value)&&(value==0||value==1)) {
+            g_SceneLegacyMarkers=value!=0;SceneLegacyParticleStatus(-1);
         } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"legacyStatus")) {
             SceneLegacyParticleStatus(g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneLegacyHistory.Frames.empty()?-1:g_SceneLegacyHistory.Frames.back().Tick);
         } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyAt")&&parseInteger(3,value)&&value>=0) {
@@ -1971,7 +2002,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        g_SceneNativeParticleAppearance=value!=0;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"styled")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleStyled=value!=0;SceneNativeParticleStatus(-1);
-	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
+	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
 	    return;
 	}
 	if (!_stricmp(op, "effects"))
@@ -2294,7 +2325,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
-		    "  mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
+		    "  mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
+		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
@@ -6665,6 +6697,7 @@ static void DrawSceneCacheMenu(int playhead)
 		    ImGui::Text("Native particle tick %d: %zu particles / %zu drawable collections; %zu rejected attempts",
 		        g_SceneParticleReplayTick,g_SceneParticleReplayResult.Particles,g_SceneParticleReplayResult.Nodes,g_SceneParticleReplayResult.Rejected);
 		}
+        ImGui::Checkbox("Legacy dissolve diagnostic markers",&g_SceneLegacyMarkers);
         ImGui::Checkbox("Replay captured model color and alpha (experimental)",&g_SceneReplayModulation);
         ImGui::Checkbox("Hide live shadows (temporary)",&g_SceneHideShadows);
         ImGui::Checkbox("Hide live world decals (temporary)",&g_SceneHideDecals);

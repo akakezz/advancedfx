@@ -631,3 +631,11 @@ in Capture and Preview. Use same recorded interval to compare all toggles;
 verify r_drawparticles, r_shadows and r_drawdecals restored on exit. Full
 Windows build and in-game validation outstanding. Portable fixture updated
 for near clip fields; mock tests not yet run in this commit.
+
+Batch convenience: `mirv_cache visuals batch 1` enables legacy textured
+replay, captured model modulation and both temporary isolation gates; `batch 0`
+disables all four. Legacy capture still requires opt-in before recording.
+`mirv_cache particles legacyMarkers 1` draws diagnostic crosses from the same
+exact-tick history independently, useful if textured replay fails. Turn
+markers off for visual comparisons. `visuals status` lists counts of known
+and nonneutral historical model modulation and up to eight changed models.

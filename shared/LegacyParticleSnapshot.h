@@ -88,8 +88,10 @@ public:
     explicit History(std::size_t budget=64u*1024u*1024u):Budget(budget){}
     std::deque<Frame> Frames;
     std::size_t Bytes=0,Evicted=0,Rejected=0;
-    void Clear(){Frames.clear();Bytes=Evicted=Rejected=0;}
+    std::uint64_t Revision=0;
+    void Clear(){Frames.clear();Bytes=Evicted=Rejected=0;++Revision;}
     bool Append(Frame frame) {
+        ++Revision;
         if(frame.Tick<0){++Rejected;return false;}
         if(!Frames.empty()&&frame.Tick<Frames.back().Tick)Clear();
         if(!Frames.empty()&&frame.Tick==Frames.back().Tick){Bytes-=Frames.back().Bytes();Frames.pop_back();}
