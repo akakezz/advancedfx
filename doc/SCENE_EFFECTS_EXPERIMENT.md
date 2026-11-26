@@ -770,3 +770,5 @@ surfaces batch 0; keep previously validated 54cd55f available. No Windows
 build or runtime validation performed for Phase 13.
 
 Review follow-up: projection observation armed only during live recording; cleanup uses module identity independent of demo transport state, handles destroyed by the engine are forgotten, transient decal draw flags excluded from identity, and immutable payload accounting uses reference counts rather than scanning history. Added portable history fixture.
+
+Portable surface history fixture passed locally using g++ C++17 with AddressSanitizer and UndefinedBehaviorSanitizer, covering unchanged payload sharing, budget eviction, exact tick lookup, world change, clearing, decal identity and shadow validation. Local source and fixture Git blob hashes match the committed versions. This does not validate native engine calls, rendering or Windows compilation. Full historical decals that no longer survive in the live scene and pose-accurate shadow silhouettes are not implemented.
