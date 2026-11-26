@@ -276,7 +276,7 @@ normally. Active counts are reset
 before native destruction. Status uses the same floor-tick selection as preview.
 
 
-## Phase 8: scoped live particle isolation (experimental, not yet validated in-game)
+## Phase 8: scoped live particle isolation (user-validated on 499fd28)
 
 Opt in via Preview > Native textured > Suppress live particles (experimental),
 or `mirv_cache particles isolate 1`. Default is off; this is not a persistent
@@ -303,9 +303,8 @@ Styled/uniform marker modes and Off do not isolate. No cache format change.
 
 This is a draw-cvar experiment, not a native collection deletion, simulation
 freeze, per-effect filter or additional binary detour. It may also hide legacy
-or skybox effects that are not reconstructed in the cache. It is not yet proven
-that r_drawparticles controls all live draws or that the direct native renderer
-bypasses the setting on this build. Even a complete sample can fail a native
+or skybox effects that are not reconstructed in the cache. The 499fd28 runtime test confirmed the direct native renderer remains visible
+with r_drawparticles both on and off. Coverage of every live draw is not proven. Even a complete sample can fail a native
 restore later in the render callback; some effects may therefore disappear.
 Keep the option off if comparison shows lost historical particles.
 
@@ -326,3 +325,63 @@ A standalone C++ mock of the scope passed ordinary restoration, nested scope,
 already-zero, refused setter, missing cvar, intervening edit, and restore failure
 cases. Full fixture execution, Windows compilation and runtime verification
 remain outstanding at the time of this change.
+
+
+## Phase 9: special-effect, shadow and decal coverage investigation
+
+User test of 499fd28: isolation works; at tick 2905 all 1941 recorded active
+particles were submitted across 37 trees, zero rejected attempts. The handoff
+records the full performance baseline. Screenshots show a missing bright
+energy/death effect and altered body shading (Engineer), a live-position shadow
+while a cached actor moves (Demoman), and user reports persistent live decals.
+The exact missing-effect tick and effect name have not been established.
+
+Read-only diagnostics added:
+- `mirv_cache particles list <tick> [start [filter]]`: exact appearance tick,
+  64 matching records per page, including empty parents, original indices,
+  counts, clocks, attribute masks. Prints next page command when needed.
+- `mirv_cache particles find <tick> <substring>`: case-insensitive name filter,
+  also includes empty parents and reports aggregate matching active count.
+Use these rather than assuming the first eight nonempty rows of status are the
+whole frame. An absent exact tick is not an empty sample. No cache format,
+rendering or isolation behavior changed.
+
+Public SDK leads (not verified offsets for the shipping client):
+- [TF ragdoll code](https://github.com/ValveSoftware/source-sdk-2013/blob/master/src/game/client/tf/c_tf_player.cpp)
+  starts named effects including electrocuted_red/blue, and can invoke
+  DissolveEntity and dissolve attached cosmetics. Do not assume the screenshot
+  is this exact effect. Search electrocut, dissolv, vapor, ash and related names.
+- [C_EntityDissolve](https://github.com/ValveSoftware/source-sdk-2013/blob/master/src/game/client/c_entitydissolve.cpp)
+  uses a CSimpleEmitter and SimpleParticle allocations for parts of its effect.
+  This is a potential older particle path outside our CNewParticleEffect forest.
+  Model fading/material overrides are separate from particle geometry. Inspect
+  captured definitions first, then verify actual target binary before extending
+  native layouts or hooks.
+- [Client shadow manager](https://github.com/ValveSoftware/source-sdk-2013/blob/master/src/game/client/clientshadowmgr.cpp)
+  builds shadow textures/projections from live renderables. Historical studio
+  submissions do not automatically replace those projections. Investigate
+  drawing from cached pose bones and historically correct projection, depth,
+  receiver and lifetime; do not attach cached actors to live shadow handles.
+- [IVModelRender](https://github.com/ValveSoftware/source-sdk-2013/blob/master/src/public/engine/ivmodelrender.h)
+  exposes separate shadow setup/draw and model decal APIs. World decals need
+  independent event/lifetime discovery, including pre-capture marks, seeks,
+  removals, static map decals and model-local attachments.
+
+Next manual probes, on a disposable demo with fixed cached cursor and camera:
+1. Compare the missing effect at the same real demo tick, with cache disabled,
+   and cached preview, with isolation on/off. Record exact tick; compare native,
+   styled markers, and collection listings. Test r_drawparticles 0 live to see
+   which portions use the live particle draw gate; restore original value.
+2. Query r_shadows, test 0, then restore original value. Observe whether the
+   detached shadow disappears and whether it returns. Do not change shadow
+   texture allocation settings yet. This is isolation only, not historical shadows.
+3. Query r_drawdecals (if registered) and r_drawmodeldecals, test separately at
+   zero and restore prior values. Confirm existing marks disappear and return.
+   Do not use r_cleardecals or modify decal budget/creation limits: those may
+   destroy or prevent data and invalidate the comparison.
+
+No automatic shadow/decal suppression or historical reconstruction added in
+this phase: draw-cvar availability and semantics on the exact build, and
+historical shadow/decal capture paths, still require verification. Prioritize
+true historical state, not simply hiding all shadows or marks. Preserve the
+working particle isolation baseline.

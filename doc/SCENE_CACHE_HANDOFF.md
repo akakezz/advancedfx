@@ -3,8 +3,8 @@
 Status: experimental TF2 x64 scene reconstruction for cinematic editing.
 Branch: `feature/scene-cache-2`. Known runtime baseline:
 [3a9b8fd](https://github.com/akakezz/advancedfx/commit/3a9b8fdaab9f9e5942224c141f420b299ae280b6)
-(paused/frozen eligibility patch). Isolation is a new, unvalidated experiment
-introduced by [0a4af0a](https://github.com/akakezz/advancedfx/commit/0a4af0a27631db0846c20b3ac5149b63f32cadba).
+(paused/frozen eligibility patch). Live-particle isolation was subsequently
+validated in the user's TF2 test of 499fd28; introduced by [0a4af0a](https://github.com/akakezz/advancedfx/commit/0a4af0a27631db0846c20b3ac5149b63f32cadba).
 Do not mistake the experimental branch for complete engine-state rewind.
 
 ## Goal and workflow
@@ -173,9 +173,9 @@ are harmless.
 - The new live-particle isolation is opt-in and based on scoped
   `r_drawparticles`. It is not an extra native detour, and does not delete
   live objects or stop simulation. It might hide uncached effect types, and
-  its actual interaction with direct native rendering needs in-game testing.
-  The fallback is the existing overlapping preview. See Phase 8 of the
-  research log. No proof of full live isolation yet.
+  the tester confirmed cached native particles are unaffected by r_drawparticles
+  in both states. The fallback is the existing overlapping preview. See Phase 8
+  of the research log. Coverage of other effect paths remains incomplete.
 - Separate TF2 capture passes are excluded from native particle replay and
   isolation. Queued rendering is not yet supported for native replay.
 - Gaps, evictions, unsupported client builds, brush geometry, off-screen
@@ -198,10 +198,28 @@ Run the native particle and overlay/TF2 render regression fixtures. They
 cover state transitions and resource/accounting invariants but cannot prove
 actual Direct3D rendering. A standalone mock of the new scope passed seven
 cases, including restore failure; full fixture suite, Windows build and
-in-game validation have not yet been performed for 0a4af0a.
+full regression execution remain unverified here. User-reported in-game
+validation of isolation succeeded on 499fd28; other transitions remain to test.
 
 Only after isolating the actual draw path should a maintainer consider a more
 targeted suppression hook, full native renderer fidelity, or queued-rendering
 support. Verify the relevant client code and lifetime first. Keep the
 compressed history lossless and report measured tradeoffs rather than reducing
 fidelity to fix unproven renderer bugs.
+
+## Runtime follow-up: successful isolation and next coverage gaps (2026-11-27)
+
+On 499fd28 the tester reported isolation working, r_drawparticles did not
+change historical native particle visibility whether on or off. Status:
+requested 1; live drawing disabled during ordinary render; restored. At exact
+tick 2905: 37/37 trees, 80 drawable nonempty collections, 1941 submitted and
+captured active particles, 0 rejected reads/layouts or replay attempts. 2663
+frames retained (ticks 6–2935), 234.06 MiB from 546.44 MiB original, 401.06 MiB
+packed, 2.33x ratio, 0 evictions/rejected frames, mean capture 2.360 ms,
+peak 7.494 ms. No assertion of full pixel fidelity.
+
+Three user-observed gaps: the Engineer's bright energy/death effect and body
+appearance were absent in cached replay; Demoman's shadow stayed at the live
+pose while historical geometry moved; explosion and blood decals stayed at
+live demo state. These are separate from the confirmed native collection
+isolation. See Phase 9 of the research log for diagnosis and next tests.

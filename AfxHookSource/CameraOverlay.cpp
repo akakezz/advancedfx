@@ -1775,6 +1775,37 @@ static void SceneNativeParticleStatus(int tick)
         }
     }
 }
+// Read-only exact-tick inspection: retain original collection indices, including
+// empty parents, so a reported index can also be used by the detached probe.
+static void SceneNativeParticleList(int tick,std::size_t start,const char *filter)
+{
+    const auto *f=g_SceneNativeParticles.At(tick);
+    if(!f||!f->Appearance) {
+        advancedfx::Message("Particle list: no exact retained appearance snapshot at tick %d.\n",tick);
+        return;
+    }
+    auto lower=[](std::string value) {
+        for(char &ch:value)ch=static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        return value;
+    };
+    const std::string needle=lower(filter?filter:"");
+    advancedfx::Message("Particle list tick %d: %zu collections, position complete %d, appearance complete %d; start index %zu, filter '%s'.\n",
+        tick,f->Collections.size(),int(f->Complete),int(f->AppearanceComplete),start,needle.c_str());
+    std::size_t matches=0,active=0,shown=0,next=f->Collections.size();
+    for(std::size_t i=0;i<f->Collections.size();++i) {
+        const auto &c=f->Collections[i];
+        const std::string name(c.Name.begin(),std::find(c.Name.begin(),c.Name.end(),'\0'));
+        if(!needle.empty()&&lower(name).find(needle)==std::string::npos)continue;
+        ++matches;active+=c.Active;
+        if(i<start)continue;
+        if(shown>=64){if(next==f->Collections.size())next=i;continue;}
+        ++shown;
+        advancedfx::Message("  [%zu] %s; parent %d; active %u; time %.3f (%d); mask 0x%08x\n",
+            i,name.empty()?"[unnamed]":name.c_str(),c.Parent,c.Active,c.Time,int(c.HasTime),c.Mask);
+    }
+    advancedfx::Message("Particle list: %zu matching collections, %zu active particles; %zu shown.\n",matches,active,shown);
+    if(next<f->Collections.size())advancedfx::Message("Next page: mirv_cache particles list %d %zu \"%s\"\n",tick,next,needle.c_str());
+}
 void SceneCacheConsole(advancedfx::ICommandArgs *args)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
@@ -1804,7 +1835,15 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        SceneClearNativeParticles();SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"at")&&parseInteger(3,value)&&value>=0) {
 	        SceneNativeParticleStatus(value);
-	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"budget")&&parseInteger(3,value)&&value>=64&&value<=2048) {
+	    } else if((args->ArgC()>=4&&args->ArgC()<=6)&&!_stricmp(args->ArgV(2),"list")&&parseInteger(3,value)&&value>=0) {
+            int start=0;
+            if(args->ArgC()>=5&&(!parseInteger(4,start)||start<0)) {
+                advancedfx::Message("Invalid collection start index.\n");return;
+            }
+            SceneNativeParticleList(value,static_cast<std::size_t>(start),args->ArgC()==6?args->ArgV(5):"");
+        } else if(args->ArgC()==5&&!_stricmp(args->ArgV(2),"find")&&parseInteger(3,value)&&value>=0) {
+            SceneNativeParticleList(value,0,args->ArgV(4));
+        } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"budget")&&parseInteger(3,value)&&value>=64&&value<=2048) {
             g_SceneNativeParticles.SetBudget(std::size_t(value)*1024u*1024u);
             SceneNativeParticleStatus(-1);
         } else if((args->ArgC()==4||args->ArgC()==5)&&!_stricmp(args->ArgV(2),"prepare")&&parseInteger(args->ArgC()-1,value)&&value>=0) {
@@ -1832,7 +1871,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        g_SceneNativeParticleAppearance=value!=0;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"styled")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleStyled=value!=0;SceneNativeParticleStatus(-1);
-	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear> | at <tick> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
+	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
 	    return;
 	}
 	if (!_stricmp(op, "effects"))
@@ -2155,7 +2194,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
-		    "  mirv_cache particles <0|1|status|clear> | at <tick> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
+		    "  mirv_cache particles <0|1|status|clear> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
