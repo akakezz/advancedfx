@@ -79,7 +79,7 @@ static double g_SceneNativeParticleMs=0, g_SceneNativeParticleTotalMs=0, g_Scene
 static std::size_t g_SceneNativeParticleSamples=0;
 static int g_SceneDetachedTick=-1, g_SceneDetachedIndex=-1;
 static bool g_SceneLegacyAuditPending=false;
-static bool g_SceneLegacyCapture=false,g_SceneLegacyReplay=false;
+static bool g_SceneLegacyCapture=false,g_SceneLegacyReplay=false,g_SceneLegacyAll=false;
 static bool g_SceneReplayModulation=false,g_SceneHideShadows=false,g_SceneHideDecals=false,g_SceneLegacyMarkers=false;
 static std::string g_SceneSurfaceStatus[2]={"Not evaluated.","Not evaluated."};
 static advancedfx::NativeParticles::ReplayResult g_SceneLegacyReplayResult;
@@ -731,7 +731,7 @@ void SceneCacheFrame(bool capture)
 		}
         if(g_SceneLegacyCapture&&!g_ScenePreview) {
             advancedfx::LegacyParticles::Frame legacy;legacy.Tick=tick;
-            g_SceneLegacyCaptureStatus=Mirv_Tf2_InspectLegacyParticles(&legacy);
+            g_SceneLegacyCaptureStatus=Mirv_Tf2_InspectLegacyParticles(&legacy,g_SceneLegacyAll);
             if(!g_SceneLegacyHistory.Append(std::move(legacy)))
                 g_SceneLegacyCaptureStatus+="; historical sample rejected.";
         }
@@ -1867,6 +1867,7 @@ static void SceneLegacyParticleStatus(int tick)
     for(const auto &p:sample->Particles){spark+=p.Texture==Material::Spark;glow+=p.Texture==Material::CombineMuzzle;}
     advancedfx::Message("Legacy dissolve tick %d: %zu emitters, %zu expected, %zu captured; spark %zu, combinemuzzle2 %zu, unknown material %zu; complete %d.\n",
         tick,sample->Emitters,sample->Expected,sample->Particles.size(),spark,glow,sample->UnknownMaterials,int(sample->Complete));
+    advancedfx::Message("Additional exact simple emitters %zu; skipped additional emitters %zu; registered material names %zu.\n",sample->OtherEmitters,sample->OtherRejected,sample->Materials.size());
     if(!sample->Particles.empty()){
         const auto &p=sample->Particles.front();
         advancedfx::Message("First XYZ %.3f %.3f %.3f; RGB %u %u %u; alpha %u -> %u; size %u -> %u; lifetime %.3f / %.3f; roll %.3f; UV %.3f %.3f %.3f %.3f.\n",
@@ -1951,6 +1952,9 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyCapture")&&parseInteger(3,value)&&(value==0||value==1)) {
             if(value&&!g_SceneLegacyCapture){g_SceneLegacyHistory.Clear();g_SceneLegacyCaptureStatus="Not captured.";}
             g_SceneLegacyCapture=value!=0;SceneLegacyParticleStatus(-1);
+        } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyAll")&&parseInteger(3,value)&&(value==0||value==1)) {
+            if(g_SceneLegacyAll!=(value!=0)){g_SceneLegacyAll=value!=0;g_SceneLegacyHistory.Clear();}
+            advancedfx::Message("Broader exact simple-emitter capture %d. Record fresh history.\n",int(g_SceneLegacyAll));
         } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyReplay")&&parseInteger(3,value)&&(value==0||value==1)) {
             g_SceneLegacyReplay=value!=0;g_SceneLegacyReplayResult={};g_SceneLegacyReplayTick=-1;SceneLegacyParticleStatus(-1);
         } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyMarkers")&&parseInteger(3,value)&&(value==0||value==1)) {
@@ -2002,7 +2006,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        g_SceneNativeParticleAppearance=value!=0;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"styled")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleStyled=value!=0;SceneNativeParticleStatus(-1);
-	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
+	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers|legacyAll> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
 	    return;
 	}
 	if (!_stricmp(op, "effects"))
@@ -2325,7 +2329,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
-		    "  mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
+		    "  mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers|legacyAll> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
@@ -6546,7 +6550,8 @@ static void DrawSceneCacheMenu(int playhead)
         if(ImGui::Checkbox("Capture legacy dissolve particles (experimental)",&g_SceneLegacyCapture)&&g_SceneLegacyCapture){
             g_SceneLegacyHistory.Clear();g_SceneLegacyCaptureStatus="Not captured.";
         }
-		ImGui::TextDisabled(g_SceneRenderSnapshot ? "Category settings apply only to diagnostic capture." : "Choose categories; checked colors match the preview.");
+		if(g_SceneLegacyCapture&&ImGui::Checkbox("Include other exact simple emitters (experimental)",&g_SceneLegacyAll))g_SceneLegacyHistory.Clear();
+        ImGui::TextDisabled(g_SceneRenderSnapshot ? "Category settings apply only to diagnostic capture." : "Choose categories; checked colors match the preview.");
 		if (ImGui::BeginTable("Scene capture categories", 2, ImGuiTableFlags_SizingStretchSame))
 		{
 			bool players = g_ScenePlayerModels;

@@ -5,19 +5,23 @@
 #include <cstring>
 #include <deque>
 #include <set>
+#include <map>
+#include <string>
+#include <iterator>
 #include <vector>
 #include <utility>
 #include <algorithm>
 
 namespace advancedfx { namespace LegacyParticles {
 using Address=std::uint64_t;
-enum class Material : unsigned char { Unknown, Spark, CombineMuzzle };
+enum class Material : unsigned char { Unknown, Spark, CombineMuzzle, Named };
 struct Particle {
     std::array<float,3> Position{},Velocity{};
     float Roll=0,DieTime=0,Lifetime=0,RollDelta=0,NearClip=16,FarClip=64;
     std::array<unsigned char,3> Color{};
     unsigned char StartAlpha=0,EndAlpha=0,StartSize=0,EndSize=0,Flags=0;
     Material Texture=Material::Unknown;
+    std::uint16_t MaterialIndex=0xffff;
     std::array<float,4> UV{};
 };
 struct Frame {
@@ -25,12 +29,14 @@ struct Frame {
     bool Complete=false;
     std::size_t Emitters=0,Expected=0,UnknownMaterials=0,Rejected=0;
     std::vector<Particle> Particles;
-    std::size_t Bytes() const {return sizeof(Frame)+Particles.capacity()*sizeof(Particle);}
+    std::vector<std::string> Materials;
+    std::size_t OtherEmitters=0,OtherRejected=0;
+    std::size_t Bytes() const {std::size_t n=sizeof(Frame)+Particles.capacity()*sizeof(Particle)+Materials.capacity()*sizeof(std::string);for(const auto &s:Materials)n+=s.capacity();return n;}
 };
 // Capture only the exact named CSimpleEmitter dissolve type, with the binding
 // layout checked by the caller. No addresses are returned or kept in history.
 template<class Reader>
-bool CaptureBinding(Address binding,unsigned expected,Address spark,Address glow,Reader read,Frame &frame) {
+bool CaptureBinding(Address binding,unsigned expected,Address spark,Address glow,Reader read,Frame &frame,const std::map<Address,std::string> *names=nullptr) {
     auto get=[&](Address a,auto &v){return a>=0x10000&&read(a,&v,sizeof(v));};
     if(expected>2048||frame.Particles.size()+expected>2048)return false;
     float nearClip=16,farClip=64;
@@ -38,6 +44,7 @@ bool CaptureBinding(Address binding,unsigned expected,Address spark,Address glow
     std::vector<Particle> local;local.reserve(expected);
     std::set<Address> materials,particles;
     std::size_t unknown=0;
+    auto materialNames=frame.Materials;
     for(unsigned bucket=0;bucket<8;++bucket) {
         Address group=0;
         if(!get(binding+0xb0+8*bucket,group))return false;
@@ -72,7 +79,15 @@ bool CaptureBinding(Address binding,unsigned expected,Address spark,Address glow
                    !std::isfinite(p.Lifetime)||p.DieTime<=0||p.Lifetime<0)return false;
                 if(spark&&subtexture==spark)p.Texture=Material::Spark;
                 else if(glow&&subtexture==glow)p.Texture=Material::CombineMuzzle;
-                else ++unknown;
+                else if(names) {
+                    auto found=names->find(subtexture);
+                    if(found!=names->end()) {
+                        auto it=std::find(materialNames.begin(),materialNames.end(),found->second);
+                        if(it==materialNames.end()&&materialNames.size()<1024){materialNames.push_back(found->second);it=std::prev(materialNames.end());}
+                        if(it!=materialNames.end()){p.Texture=Material::Named;p.MaterialIndex=static_cast<std::uint16_t>(it-materialNames.begin());}
+                    }
+                    if(p.Texture==Material::Unknown)++unknown;
+                } else ++unknown;
                 local.push_back(p);prior=next;next=forward;
             }
             Address checkFirst=0,checkLast=0,checkHash=0;
@@ -84,6 +99,7 @@ bool CaptureBinding(Address binding,unsigned expected,Address spark,Address glow
     }
     std::uint16_t count=0;
     if(local.size()!=expected||!get(binding+0x90,count)||count!=expected)return false;
+    frame.Materials=std::move(materialNames);
     frame.UnknownMaterials+=unknown;
     frame.Particles.insert(frame.Particles.end(),local.begin(),local.end());
     return true;

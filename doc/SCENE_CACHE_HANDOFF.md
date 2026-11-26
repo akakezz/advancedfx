@@ -304,3 +304,9 @@ not proof of arbitrary scene fidelity. Historical shadows and decals remain
 pending; nonunit model alpha is not established by this sample. Future work
 should batch related implementations and preserve independent runtime
 switches so one recording/build can test several features.
+
+Phase 13A adds opt-in `mirv_cache particles legacyAll 1` for other exact
+non-sky CSimpleEmitter bindings, registered material names and separate
+skipped additional-emitter counts. Existing dissolve-only default retained.
+Derived legacy renderer types still excluded. Record fresh history after
+changing the option.

@@ -150,7 +150,41 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, boo
 
 // Read-only legacy emitter audit. The modern collection forest is separate
 // from the legacy indexed list, even though both share CParticleMgr.
-std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *snapshot)
+#ifdef _WIN64
+// Native CParticleMgr material-name RB tree; do not insert during replay.
+template<class Read>
+static bool SceneLegacyMaterialNames(std::uint64_t base,Read read,std::map<std::uint64_t,std::string> &out)
+{
+    using A=std::uint64_t;
+    auto get=[&](A a,auto &v){return a>=0x10000&&read(a,&v,sizeof(v));};
+    const A manager=base+0x10f5020;
+    unsigned char anchor[15]{};
+    const unsigned char expected[]={0x48,0x89,0x44,0xe9,0x08,0x48,0x8b,0x44,0x24,0x38,0x48,0x89,0x44,0xe9,0x10};
+    if(!read(base+0x2d6877,anchor,sizeof(anchor))||!std::equal(std::begin(expected),std::end(expected),anchor))return false;
+    A nodes=0;int capacity=0;std::uint16_t root=0xffff,count=0;
+    if(!get(manager+0xf8,nodes)||!get(manager+0x100,capacity)||!get(manager+0x108,root)||!get(manager+0x10a,count)||
+       capacity<0||capacity>65536||count>4096||count>capacity||(count&&!nodes))return false;
+    std::vector<std::pair<std::uint16_t,std::uint16_t>> pending;
+    if(root!=0xffff)pending.push_back({root,0xffff});
+    std::set<std::uint16_t> visited;
+    std::map<A,std::string> result;
+    while(!pending.empty()){
+        const auto [i,parent]=pending.back();pending.pop_back();
+        if(i>=capacity||visited.size()>=count||!visited.insert(i).second)return false;
+        const A node=nodes+24*A(i);std::uint16_t left=0xffff,right=0xffff,up=0xffff;A name=0,sub=0;
+        if(!get(node,left)||!get(node+2,right)||!get(node+4,up)||up!=parent||!get(node+8,name)||!get(node+16,sub))return false;
+        if(left!=0xffff)pending.push_back({left,i});if(right!=0xffff)pending.push_back({right,i});
+        if(!name||!sub)continue;
+        std::string text;bool end=false;
+        for(unsigned n=0;n<260;++n){char ch=0;if(!get(name+n,ch))break;if(!ch){end=true;break;}if(static_cast<unsigned char>(ch)<32||static_cast<unsigned char>(ch)>126)break;text+=ch;}
+        if(end&&!text.empty())result.emplace(sub,std::move(text));
+    }
+    A nodesNow=0;std::uint16_t rootNow=0xffff,countNow=0;
+    if(visited.size()!=count||!get(manager+0xf8,nodesNow)||nodesNow!=nodes||!get(manager+0x108,rootNow)||rootNow!=root||!get(manager+0x10a,countNow)||countNow!=count)return false;
+    out=std::move(result);return true;
+}
+#endif
+std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *snapshot,bool allSimple)
 {
 #ifdef _WIN64
     using advancedfx::NativeParticles::Address;
@@ -200,9 +234,12 @@ std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *
        !get(manager+0x4a,tail)||!get(manager+0x4e,count)||capacity<0||capacity>65536||
        count>4096||count>capacity||(count&&nodes<0x10000))
         return "Legacy particle audit: invalid or unavailable manager list.";
+    std::map<Address,std::string> materialNames;
+    const bool named=snapshot&&allSimple&&SceneLegacyMaterialNames(base,read,materialNames);
     std::set<std::uint16_t> visited;
     std::set<Address> bindings;
     std::ostringstream out;
+    std::vector<std::pair<Address,unsigned>> otherSimple;
     std::size_t simple=0,unknown=0,active=0,simpleActive=0,unnamed=0;
     std::uint16_t previous=invalid,index=head;
     bool complete=true;
@@ -235,9 +272,10 @@ std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *
             if(!validName){++unnamed;name="[unavailable]";}
             if(snapshot&&name=="C_EntityDissolve") {
                 ++snapshot->Emitters;snapshot->Expected+=particles;
-                if(!advancedfx::LegacyParticles::CaptureBinding(binding,particles,spark,glow,read,*snapshot))
+                if(!advancedfx::LegacyParticles::CaptureBinding(binding,particles,spark,glow,read,*snapshot,named?&materialNames:nullptr))
                     ++snapshot->Rejected;
             }
+            else if(snapshot&&allSimple&&validName&&name.find("[sky]")==std::string::npos&&particles)otherSimple.push_back({binding,particles});
             // Prioritize the dissolve emitter even if many other emitters exist.
             if(simple<=64||name=="C_EntityDissolve")out<<"  ["<<index<<"] "<<name<<"; active "<<particles<<"\n";
         } else {
@@ -249,7 +287,13 @@ std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *
     complete=complete&&visited.size()==count&&previous==tail&&
         get(manager+0x38,endNodes)&&endNodes==nodes&&get(manager+0x48,endHead)&&endHead==head&&
         get(manager+0x4a,endTail)&&endTail==tail&&get(manager+0x4e,endCount)&&endCount==count;
-    if(snapshot)snapshot->Complete=complete&&!unnamed&&!snapshot->Rejected&&snapshot->Particles.size()==snapshot->Expected;
+    if(snapshot){
+        snapshot->Complete=complete&&!unnamed&&!snapshot->Rejected&&snapshot->Particles.size()==snapshot->Expected;
+        if(snapshot->Complete)for(const auto &[binding,particles]:otherSimple){
+            if(named&&advancedfx::LegacyParticles::CaptureBinding(binding,particles,spark,glow,read,*snapshot,&materialNames)){++snapshot->OtherEmitters;++snapshot->Emitters;snapshot->Expected+=particles;}
+            else ++snapshot->OtherRejected;
+        }
+    }
     std::ostringstream report;
     report<<"Legacy particle audit: "<<visited.size()<<"/"<<count<<" list entries, "<<active
           <<" active particles; exact CSimpleEmitter "<<simple<<" ("<<simpleActive<<" active), other emitter types "
@@ -369,11 +413,15 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
         return fail("Legacy manager or renderer unavailable.");
     struct Batch { Address Sub=0,Group=0;float Near=16,Far=64;std::vector<const Particle*> Items; };
     std::vector<Batch> batches;
+    std::map<Address,std::string> names;
+    if(!frame.Materials.empty())SceneLegacyMaterialNames(base,read,names);
     for(const auto &p:frame.Particles){
         if(p.Texture==Material::Unknown){++result.Rejected;continue;}
         Address sub=0,group=0,page=0,pageVt=0;std::array<float,4> uv{};
-        const Address field=base+(p.Texture==Material::Spark?0x11220b0:0x1071988);
-        if(!get(field,sub)||!sub||!get(sub,uv)||uv!=p.UV||!get(sub+0x10,group)||!get(group,page)||!get(page,pageVt)||!pageVt||
+        if(p.Texture==Material::Named){
+            if(p.MaterialIndex<frame.Materials.size())for(const auto &[address,name]:names)if(name==frame.Materials[p.MaterialIndex]){sub=address;break;}
+        } else {const Address field=base+(p.Texture==Material::Spark?0x11220b0:0x1071988);get(field,sub);}
+        if(!sub||!get(sub,uv)||uv!=p.UV||!get(sub+0x10,group)||!get(group,page)||!get(page,pageVt)||!pageVt||
            !std::isfinite(p.NearClip)||!std::isfinite(p.FarClip)||p.NearClip<0||p.FarClip<=p.NearClip){++result.Rejected;continue;}
         auto it=std::find_if(batches.begin(),batches.end(),[&](const Batch &b){return b.Sub==sub&&b.Near==p.NearClip&&b.Far==p.FarClip;});
         if(it==batches.end()){if(batches.size()>=64){++result.Rejected;continue;}batches.push_back({sub,group,p.NearClip,p.FarClip,{}});it=std::prev(batches.end());}

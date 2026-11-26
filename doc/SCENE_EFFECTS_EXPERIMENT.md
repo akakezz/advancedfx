@@ -700,3 +700,19 @@ state and dynamic lighting need broader validation/development. Preserve
 54cd55f as a user-validated experimental baseline. Continue in larger batches
 with independently togglable features, rather than requiring separate builds
 for every diagnostic discovery. No rendering changes in this follow-up.
+
+
+## Phase 13A: broader exact simple emitter coverage
+
+Opt in with `mirv_cache particles legacyAll 1` before capture; default remains
+dissolve only. The native GetPMaterial tree at manager +0xf8 (24-byte nodes,
+name +8, subtexture +16, root +0x108, count +0x10a) was corroborated via lookup
+0x2d6639..0x2d66e2 and insertion 0x2d6877. The bounded reader validates parent
+links, count and final root/header. Registered material names are copied to
+per-sample value tables; replay finds the current registered subtexture by
+name and checks UV, never loads a material or keeps a historical pointer.
+Dissolve bindings are processed first; additional exact CSimpleEmitter
+bindings are optional and separately counted on failure. Sky singleton and
+unknown/derived vtables remain excluded. A 2048-particle combined cap still
+applies. The existing two material handles remain the dissolve fallback.
+No new renderer ABI is introduced. Changing legacyAll clears legacy history.
