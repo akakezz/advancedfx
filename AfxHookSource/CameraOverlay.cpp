@@ -6633,22 +6633,35 @@ static int FreeModifierTrack(const advancedfx::SequenceModifierClip &clip,
 static void SelectSequenceModifier(const advancedfx::SequenceModifierClip &clip)
 {
  g_SelectedSequenceModifier = clip.Id;
- g_SelectedCameraClip = ~std::uint64_t(0);
+ // Keep the camera source selected: adjustment clips have independent properties.
  g_SelectedModifierDefinition = clip.Definition;
  g_FocusModifierLibrary = true;
  g_OpenCameraClips = true;
 }
-// Use identical decorative spans and endpoint markers for both modifier kinds.
-static void DrawClipModifierFades(int begin, int end, int in, int out)
+// Draw zero-duration fade handles too. Only Ctrl makes marker hit areas
+// interactive, so ordinary range drags and Alt-duplication are unchanged.
+static void DrawClipModifierFades(int begin, int end, int in, int out,
+ bool *inHovered = nullptr, bool *outHovered = nullptr, bool interactive = false)
 {
- if (in > begin) {
+ if (in > begin)
   ImGui::NeoTimelineSpan(begin, in, IM_COL32(230,190,255,100), "Fade in", nullptr, false, false, -1, false, false);
-  ImGui::NeoTimelineSpan(in, in, IM_COL32(240,210,255,255), "Fade in end", nullptr, false, false, -1, false, false);
- }
- if (out < end) {
+ if (out < end)
   ImGui::NeoTimelineSpan(out, end, IM_COL32(230,190,255,100), "Fade out", nullptr, false, false, -1, false, false);
-  ImGui::NeoTimelineSpan(out, out, IM_COL32(240,210,255,255), "Fade out start", nullptr, false, false, -1, false, false);
- }
+ ImGui::NeoTimelineSpan(in, in, IM_COL32(240,210,255,255), "Fade in end", inHovered, false, false, -1, false, interactive);
+ ImGui::NeoTimelineSpan(out, out, IM_COL32(240,210,255,255), "Fade out start", outHovered, false, false, -1, false, interactive);
+}
+static int PickClipModifierEdge(int mouse, int begin, int end, int in, int out,
+ int threshold, bool fades, bool inHovered, bool outHovered)
+{
+ if (fades && (inHovered || outHovered))
+  return inHovered && (!outHovered || std::abs(mouse-in) <= std::abs(mouse-out)) ? 2 : 3;
+ const int edges[] = {begin, end, in, out};
+ const int first = fades ? 2 : 0;
+ int result = -1, distance = threshold + 1;
+ for (int i = first; i < first + 2; ++i)
+  if (std::abs(mouse - edges[i]) < distance)
+  {distance = std::abs(mouse - edges[i]); result = i;}
+ return result;
 }
 // Snap in demo time, not client time: cached demo coverage may have a different offset.
 static double SnapClipDemoTime(double dest, int visibleStart, int visibleEnd, bool camera, std::uint64_t id)
@@ -6755,7 +6768,9 @@ static void DrawSequenceModifierTracks(const std::function<int(double)> &tick, i
    const bool selected = !ghost && clip.Id == g_SelectedSequenceModifier;
    const bool choose = ImGui::NeoTimelineSpan(begin, end, clip.Enabled ? IM_COL32(170, 115, 210, 200) : IM_COL32(95, 95, 95, 150),
     label.c_str(), &hovered, true, selected || ghost, -1, false, !ghost);
-   DrawClipModifierFades(begin, end, in, out);
+   bool inHovered = false, outHovered = false;
+   const bool editFades = !ghost && !g_LockKeyTimes && ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt;
+   DrawClipModifierFades(begin, end, in, out, &inHovered, &outHovered, editFades);
    if (!ghost) {
     ImGui::PushID(("adjustment_context_" + std::to_string(clip.Id)).c_str());
     if (!contextOpened && hovered && ImGui::IsMouseClicked(1)) { contextOpened = true; SelectSequenceModifier(clip); ImGui::NeoCancelSelection(); ImGui::OpenPopup("Clip options"); }
@@ -6768,7 +6783,7 @@ static void DrawSequenceModifierTracks(const std::function<int(double)> &tick, i
     }
     ImGui::PopID();
    }
-   if ((choose || (hovered && ImGui::IsMouseClicked(0))) && haveMouse)
+   if (!ghost && !dragging && (choose || ((hovered || inHovered || outHovered) && ImGui::IsMouseClicked(0))) && haveMouse)
    {
     SelectSequenceModifier(clip);
     if (!g_LockKeyTimes && (!ImGui::GetIO().KeyAlt || selected))
@@ -6776,11 +6791,10 @@ static void DrawSequenceModifierTracks(const std::function<int(double)> &tick, i
      original = pending = clip; dragging = true; mouseStart = mouseTick; edge = -1;
      duplicating = selected && ImGui::GetIO().KeyAlt;
      const int threshold = (std::max)(1, (visibleEnd - visibleStart) / 150);
-     const int edges[] = {begin,end,in,out};
-     const int first = ImGui::GetIO().KeyCtrl ? 2 : 0;
-     int distance = threshold + 1;
-     for (int i = first; !duplicating && i < first + 2; ++i)
-      if (std::abs(mouseTick - edges[i]) < distance) {distance = std::abs(mouseTick - edges[i]); edge = i;}
+     if (!duplicating)
+      edge = PickClipModifierEdge(mouseTick, begin, end, in, out, threshold, editFades, inHovered, outHovered);
+     // Ctrl without a fade handle must not accidentally move the adjustment.
+     if (editFades && edge < 0) dragging = false;
      ImGui::NeoCancelSelection();
     }
    }
@@ -6928,11 +6942,13 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		if (end < visibleStart || begin > visibleEnd)
 			continue;
 		const std::string caption = CameraClipSourceName(clip.Campath, clip.Target) +
-			" transition | Ctrl-drag to move; Ctrl-drag right edge to resize";
+			(begin == end ? " transition | Ctrl-drag marker to extend" :
+			 " transition | Ctrl-drag to move; Ctrl-drag right edge to resize");
 		// Default drags go to the camera clip. Only Ctrl+drag turns the
 		// overlaid transition into an interactive target. Keeping the span
 		// visible but inert avoids the lower clip's mouse events being stolen.
-		const bool editEnvelope = !g_LockKeyTimes && clip.Id != ~std::uint64_t(0) && ((ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt) || movingEnvelope == clip.Id);
+		const bool editEnvelope = !g_LockKeyTimes && clip.Id != ~std::uint64_t(0) && ((ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt &&
+			movingEnvelope == ~std::uint64_t(0)) || movingEnvelope == clip.Id);
 		const bool chose = ImGui::NeoTimelineSpan(begin, end, IM_COL32(55, 168, 236, 115),
 			caption.c_str(), nullptr, false, clip.Id == g_SelectedCameraClip, -1, true, editEnvelope);
 		if (chose && haveMouseTick)
@@ -6941,7 +6957,7 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 			movingEnvelope = clip.Id;
 			originalEnvelope = pendingEnvelope = clip;
 			envelopeMouse = mouseTick;
-			envelopeEdge = std::abs(mouseTick - end) <=
+			envelopeEdge = begin == end || std::abs(mouseTick - end) <=
 				(std::max)(2, (visibleEnd - visibleStart) / 180) ? 1 : 0;
 			g_SelectedCameraClip = clip.Id;
    g_SelectedSequenceModifier = ~std::uint64_t(0);
@@ -6986,25 +7002,29 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 				begin, end, link.Enabled ? IM_COL32(170, 115, 210, 200) : IM_COL32(95, 95, 95, 150),
 				definition == definitions.end() ? "Missing modifier" : definition->Name.c_str(), &hovered,
 				true);
-			DrawClipModifierFades(begin, end, in, out);
+			bool inHovered = false, outHovered = false;
+			const bool editFades = !g_LockKeyTimes && ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyAlt;
+			DrawClipModifierFades(begin, end, in, out, &inHovered, &outHovered, editFades);
 			ImGui::FrameIndexType mouse;
-			const bool haveMouse = ImGui::GetNeoTimelineMouseFrame(&mouse);
-			if (hovered && haveMouse && !g_LockKeyTimes && ImGui::IsMouseClicked(0))
+			const bool haveMouse = ImGui::GetNeoSequencerMouseFrame(&mouse, ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+			if ((hovered || inHovered || outHovered) && haveMouse && !g_LockKeyTimes &&
+				dragging == ~std::uint64_t(0) && ImGui::IsMouseClicked(0))
 			{
 				dragClip = dragOriginal = *selected;
 				dragging = selected->Id;
 				dragIndex = i;
 				dragMouse = mouse;
 				const int threshold = (std::max)(1, (visibleEnd - visibleStart) / 150);
-				const int edges[] = {begin, end, in, out};
-				dragEdge = -1;
-				int distance = threshold + 1;
-				for (int n = 0; n < 4; ++n)
-					if (std::abs(mouse - edges[n]) < distance)
-					{
-						distance = std::abs(mouse - edges[n]);
-						dragEdge = n;
-					}
+				dragEdge = PickClipModifierEdge(mouse, begin, end, in, out, threshold, editFades, inHovered, outHovered);
+				// Preserve direct dragging of existing, non-coincident legacy fade handles.
+				if (!editFades)
+				{
+					const int fadeEdge = PickClipModifierEdge(mouse, begin, end, in, out, threshold, true, false, false);
+					const int edges[] = {begin, end, in, out};
+					if (fadeEdge >= 0 && (dragEdge < 0 || std::abs(mouse - edges[fadeEdge]) < std::abs(mouse - edges[dragEdge])))
+						dragEdge = fadeEdge;
+				}
+				if (editFades && dragEdge < 0) dragging = ~std::uint64_t(0);
 				ImGui::NeoCancelSelection();
 			}
 			if (dragging == selected->Id && dragIndex == i && haveMouse && ImGui::IsMouseDown(0))
@@ -7042,8 +7062,8 @@ static void DrawCameraClipTrack(const std::function<int(double)> &tick, int visi
 		}
 		if (dragging != ~std::uint64_t(0) && !ImGui::IsMouseDown(0))
 		{
-			if (dragging == selected->Id)
-				MirvCam_EditClip(dragClip);
+			if (dragging == selected->Id && !(dragClip == dragOriginal) && !MirvCam_EditClip(dragClip))
+				g_DocumentStatus = "Modifier timing edit rejected; previous values retained.";
 			dragging = ~std::uint64_t(0);
 		}
 	}
@@ -7142,10 +7162,14 @@ static void DrawTransitionTrajectoryGraph(std::array<double, 3> &handleOut,
 static void DrawCameraModifierLibrary();
 static void DrawSequenceModifierPanel(bool mapping, double demo, double interval)
 {
- if (g_SelectedSequenceModifier != ~std::uint64_t(0)) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+ // Reveal on selection, but allow the user to collapse the section again.
+ static std::uint64_t lastRevealed = ~std::uint64_t(0);
+ if (g_SelectedSequenceModifier != lastRevealed && g_SelectedSequenceModifier != ~std::uint64_t(0))
+  ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+ lastRevealed = g_SelectedSequenceModifier;
  if (!ImGui::CollapsingHeader("Sequence modifier clips")) return;
  ImGui::PushID("sequence_modifier_panel");
- ImGui::TextWrapped("Adjustment clips affect the evaluated sequence, including transitions. Higher tracks apply last. Drag blocks or edges. Alt-drag a selected adjustment to duplicate; Shift bypasses snapping; Ctrl-drag edits fades.");
+ ImGui::TextWrapped("Adjustment clips affect the evaluated sequence, including transitions. Higher tracks apply last. Drag blocks or edges. Alt-drag a selected adjustment to duplicate; Shift bypasses snapping; Ctrl-drag fade markers (including zero duration).");
  const auto definitions = MirvCam_Modifiers();
  auto clips = MirvCam_SequenceModifiers();
  auto found = std::find_if(clips.begin(), clips.end(), [](const auto &c){return c.Id == g_SelectedSequenceModifier;});
@@ -7260,7 +7284,7 @@ static void DrawSequenceModifierPanel(bool mapping, double demo, double interval
   ImGui::SameLine();
   if (ImGui::Button("Use chosen effect") && definition != definitions.end())
   {clip.Definition = definition->Id; if (MirvCam_EditSequenceModifier(clip, nullptr)) g_FocusModifierLibrary = true;}
-  if (ImGui::Button("Return to camera clip properties")) g_SelectedSequenceModifier = ~std::uint64_t(0);
+  if (ImGui::Button("Deselect adjustment")) g_SelectedSequenceModifier = ~std::uint64_t(0);
  }
  ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
  ImGui::PopID();
@@ -7270,7 +7294,7 @@ static void DrawCameraClipsPanel()
 	ImGui::TextWrapped(
 		"Enable the sequence to play these clips. Preview navigation is independent. You can use free camera "
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
-	ImGui::TextDisabled("Drag clips to move. Alt-drag selected clips to duplicate; Shift bypasses snapping. Ctrl-drag blue transitions to move or resize. Right-click for clip options.");
+	ImGui::TextWrapped("Drag to move clips. Alt-drag duplicates; Shift bypasses snapping. Ctrl-drag transition edges or fade markers, including zero-duration markers. Right-click for clip options.");
 	ImGui::Checkbox("Show selected transition path in 3D (dashed orange)", &g_ShowTransitionGuide);
 	ImGui::TextDisabled("Editor only; hidden during recording. Moving/aimed cameras need Scene Cache history for an accurate 3D guide.");
 	if (SceneCachePreviewActive())
@@ -7311,13 +7335,7 @@ static void DrawCameraClipsPanel()
   if (CinematicClock(MirvCampathPreview_GetTime() + g_Hook_VClient_RenderView.m_CamPath.GetOffset(), true, mapped, SceneCachePreviewActive())) demo = mapped;
   else mapping = false;
  }
- const bool inspectingAdjustment = g_SelectedSequenceModifier != ~std::uint64_t(0);
- if (inspectingAdjustment)
- {
-  DrawSequenceModifierPanel(mapping, demo, interval);
-  DrawCameraModifierLibrary();
-  return;
- }
+ // Camera and adjustment inspectors remain available together.
 	auto clips = MirvCam_Clips();
 	static std::uint64_t loaded = ~std::uint64_t(0);
 	static int tick = 0;
@@ -7418,7 +7436,7 @@ static void DrawCameraClipsPanel()
 	ImGui::SameLine();
 	if (ImGui::Button("After edit")) transitionOffset = 0;
 	if (std::isfinite(blend) && std::isfinite(transitionOffset))
-		ImGui::TextDisabled("Envelope: %.3f - %.3f s (client time)",
+		ImGui::TextDisabled("Envelope: %.3f - %.3f s (demo time)",
 			(tick * interval) + transitionOffset, (tick * interval) + transitionOffset + blend);
 	const char *blendCurves[] = {"Smooth", "Linear", "Smoother"};
 	ImGui::Combo("Position easing", &blendCurve, blendCurves, 3);
@@ -7661,7 +7679,7 @@ static void DrawCameraClipsPanel()
 				break;
 		}
 		ImGui::TextDisabled(
-			"Legacy ranges follow their parent clip. Convert explicitly to affect the entire sequence; this may change transition behavior.");
+			"Legacy ranges follow their parent clip. Ctrl-drag fade markers, even at zero duration. Convert to affect the entire sequence; this may change transition behavior.");
 	}
 	ImGui::TextWrapped(
 		"Camera edit points and transition envelopes are independent. Envelopes may overlap: a later "
