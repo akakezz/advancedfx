@@ -39,6 +39,7 @@ preamble=r'''
 #include "AfxHookSource/CameraOverlay.h"
 advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick,bool appearance){advancedfx::NativeParticles::Frame f;f.Tick=tick;f.Complete=true;f.Points.push_back({1,2,3});return f;}
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &,std::size_t){return "fixture";}
+std::string Mirv_Tf2_InspectLegacyParticles(){return "legacy fixture";}
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &){return {}; }
 bool sceneParticleIsolationReady=true;bool Mirv_Tf2_ParticleIsolationReady(){return sceneParticleIsolationReady;}
 #include "shared/PlayerRepair.h"

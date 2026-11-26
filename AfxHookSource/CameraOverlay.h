@@ -11,6 +11,7 @@
 namespace advancedfx { class ICommandArgs; }
 // Native engine-thread position snapshot, exact TF2 x64 build only.
 advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, bool appearance=false);
+std::string Mirv_Tf2_InspectLegacyParticles();
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &frame, std::size_t collection);
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame);
 // Engine-thread preflight and registered TF2 particle visibility cvar access.

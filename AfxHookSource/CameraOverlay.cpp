@@ -78,6 +78,7 @@ static advancedfx::NativeParticles::History g_SceneNativeParticles;
 static double g_SceneNativeParticleMs=0, g_SceneNativeParticleTotalMs=0, g_SceneNativeParticlePeakMs=0;
 static std::size_t g_SceneNativeParticleSamples=0;
 static int g_SceneDetachedTick=-1, g_SceneDetachedIndex=-1;
+static bool g_SceneLegacyAuditPending=false;
 static std::string g_SceneDetachedStatus="Not run.";
 static unsigned long long g_SceneReplayCallbacks=0,g_SceneReplayAttempted=0,g_SceneReplaySubmitted=0,g_SceneReplayQueueSkips=0,g_SceneReplayOtherSkips=0;
 static int g_SceneReplayFrame=-1;
@@ -86,6 +87,7 @@ static std::string g_SceneReplayLastFailure;
 static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
+    g_SceneLegacyAuditPending=false;
     g_SceneParticleReplayResult={};g_SceneParticleReplayTick=-1;
     g_SceneNativeParticleMs=g_SceneNativeParticleTotalMs=g_SceneNativeParticlePeakMs=0;
 }
@@ -507,6 +509,15 @@ void SceneCacheFrame(bool capture)
 	if (capture)
 	{
 		Mirv_Tf2_SceneRenderFrame();
+        if(std::exchange(g_SceneLegacyAuditPending,false)) {
+            int liveTick=-1;
+            if(g_ScenePreview||!GetCurrentDemoTick(liveTick))
+                advancedfx::Message("Legacy particle audit cancelled: requires live demo view.\n");
+            else {
+                const auto audit=Mirv_Tf2_InspectLegacyParticles();
+                advancedfx::Message("Legacy particle audit at actual demo tick %d (not cached cursor):\n%s\n",liveTick,audit.c_str());
+            }
+        }
         if(g_SceneDetachedIndex>=0) {
             const int index=std::exchange(g_SceneDetachedIndex,-1);
             const int requested=std::exchange(g_SceneDetachedTick,-1);
@@ -1831,7 +1842,10 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"status")) {
 	        SceneNativeParticleStatus(g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneNativeParticles.Frames.empty()?-1:g_SceneNativeParticles.Frames.back().Tick);
-	    } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"clear")) {
+	    } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"legacy")) {
+            if(g_ScenePreview)advancedfx::Message("Disable cached preview before auditing live legacy particles.\n");
+            else {g_SceneLegacyAuditPending=true;advancedfx::Message("Legacy particle audit requested for next engine frame end.\n");}
+        } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"clear")) {
 	        SceneClearNativeParticles();SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"at")&&parseInteger(3,value)&&value>=0) {
 	        SceneNativeParticleStatus(value);
@@ -1871,7 +1885,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        g_SceneNativeParticleAppearance=value!=0;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"styled")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleStyled=value!=0;SceneNativeParticleStatus(-1);
-	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
+	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear|legacy> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
 	    return;
 	}
 	if (!_stricmp(op, "effects"))
@@ -2194,7 +2208,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
-		    "  mirv_cache particles <0|1|status|clear> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
+		    "  mirv_cache particles <0|1|status|clear|legacy> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");

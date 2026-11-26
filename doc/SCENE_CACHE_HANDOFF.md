@@ -246,3 +246,14 @@ The next native investigation needs the exact running x64 client.dll and
 engine.dll. Do not reuse old offsets or substitute public SDK layouts for the
 shipping binary. No additional rendering changes were made. Phase 9 in the
 research log records the more specific shadow and dissolve leads.
+
+### Exact-binary research follow-up
+
+Both supplied modules are PE32+ AMD64; client hash matches the existing guard
+baseline. Engine identity, verified legacy list fields, CSimpleEmitter factory
+and dissolve callsites, shadow manager vtable and decal string xrefs are
+recorded in Phase 10 of the research log. New `mirv_cache particles legacy`
+command requests a one-shot read-only inventory of the **actual live** demo
+at frame end (cached preview must be disabled). It is a diagnostic, not a
+legacy cache or replay implementation. No historical shadow/decal changes;
+Windows build and target runtime test pending.

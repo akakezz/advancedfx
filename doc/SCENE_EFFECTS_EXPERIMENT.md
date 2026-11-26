@@ -463,3 +463,86 @@ runtime test are not available in this working session. Verify their identity
 against the existing native guards and inspect the actual binary paths before
 adding hooks or guessed offsets. No capture/replay behavior was changed in
 this documentation update. Preserve 499fd28/5da6306 as a working baseline.
+
+
+## Phase 10: exact-binary legacy emitter discovery (2026-11-27)
+
+User supplied both x64 DLLs. Static PE/disassembly/RTTI inspection (no game
+execution):
+
+| Module | PE timestamp | SizeOfImage | SHA-256 |
+| --- | --- | --- | --- |
+| client.dll | 0x6ad26f17 | 0x133a000 | b6f45c74805edacf0cf61d965f658158fc22960f66d583ef3a6549eb56696b95 |
+| engine.dll | 0x6ac41507 | 0x822000 | 4802a74ce0abb1175851d00e37fc88609085a96238aa52ac0eb224ae4a08ec80 |
+
+Client hash exactly matches prior native particle research. All addresses
+below are RVAs, not absolute pointers. The inspected binaries use preferred
+image base 0x180000000; ASLR requires the actual loaded base.
+
+### Legacy particle discovery
+
+- C_EntityDissolve RTTI primary vtable 0xb0fc70; renderable secondary vtable
+  0xb10198 (subobject +8), slot 10 points to 0x1fa3b0. This routine tests
+  global frame time and resolves the parent before obtaining hitbox bones;
+  at 0x1fa506 it references the literal C_EntityDissolve and calls the named
+  CSimpleEmitter factory 0x2dc580 at 0x1fa514. The returned emitter is held
+  at complete dissolve object +0x810. At 0x1fa668 it references effects/spark
+  and resolves its material. Later calls at 0x1fa9e1 and 0x1fad6e go to the
+  legacy AddParticle wrapper 0x2dc240. This directly corroborates the SDK
+  dissolve implementation, but the user's particular effect still needs
+  runtime identification.
+- CSimpleEmitter factory 0x2dc580 allocates 0x158 bytes and calls constructor
+  0x2dc000. Constructor stores debug name at +8 (0x2dc02a), constructs binding
+  at +0x10, calls the existing ParticleMgr getter 0x2d6df0, then legacy
+  AddEffect 0x2d42d0; final CSimpleEmitter vtable is 0xb61040 (RTTI-confirmed).
+- Manager 0x10f5020, ready flag 0x10f51a0, vtable 0xb607b8. Legacy list
+  is at manager +0x38 (node memory), +0x40 allocated count (int), +0x48
+  head (u16), +0x4a tail, +0x4e live count. AddEffect at 0x2d42ee/0x2d42f8
+  stores sim/manager at binding +0x98/+0xa0; 0x2d4347 onwards links 16-byte
+  nodes (binding pointer +0, prev u16 +8, next u16 +10), increments count
+  at 0x2d4383, stores list index at binding +0x94. Index sentinel 0xffff.
+  Allocation routine 0x161740 uses list +8 capacity and 16-byte stride.
+  Binding active count is u16 +0x90 (getter 0x2d65f0, increment 0x2d451b).
+  These are independent of modern root head manager +0x60.
+- Legacy AddParticle wrapper 0x2dc240 calls binding allocator 0x2d43e0,
+  writes position +0x18/+0x1c/+0x20. Allocator links material sentinel
+  lists (binding hash +0xb0, material hash next +0x30, embedded sentinel
+  +8) and stores subtexture at particle +0x10. The simple emitter update
+  functions corroborate velocity +0x28, roll +0x34, die/lifetime +0x38/+0x3c,
+  size bytes +0x45/+0x46 and roll delta +0x48. Other fields and renderer
+  semantics still require independent verification before snapshot/replay.
+
+### New one-shot audit
+
+Disable cached preview, play/stop at the actual demo tick with the missing
+visual effect, then run `mirv_cache particles legacy`. It runs once at
+TF2 FRAME_RENDER_END and prints the actual tick, bounded legacy list counts
+and exact CSimpleEmitter names/active counts (including C_EntityDissolve).
+Try during the effect and just before/after. If paused/frozen frames do not
+show the emitter, step the real demo and retry; SDK dissolve drawing itself
+can depend on nonzero frame time. This audit is live only, not a new historical
+cache. Exact PE/anchor checks, safe reads, list index/ownership/backlink checks,
+count/cycle limits and final header recheck; no native calls or writes. Unknown
+vtable types are counted but their name/particle layouts are not assumed.
+A complete audit means the bounded binding-list traversal passed, not that
+all effects were captured or rendered. No new particle history or replay.
+
+### Shadow and decal native leads
+
+Client CClientShadowMgr RTTI vtable 0xb36880; slot 14 PreRender 0x24d290
+(string reference 0x24d2ad), slot 27 ComputeShadowTextures 0x2486f0
+(string reference 0x24870d). Texture path checks manager +0x118 and two
+cvar-like integer fields at 0x2487eb..0x24881a. UpdateBrushShadow string
+reference 0x24fb16 and AddShadowToReceiver references 0x2452f5/0x2454a1/
+0x2455d8 identify adjacent paths. These corroborate a native manager and
+pre-receiver texture path, not an established historical projection ABI.
+
+Engine r_drawdecals registration string RVA 0x395598 xref 0x8aed;
+r_drawmodeldecals string 0x3b8e10 xref 0x120ae; r_shadows string 0x368cc8
+xrefs 0x914e/0x6d11d/0x6d2f6. The R_DecalCreate null-surface diagnostic at
+0x395698 is referenced at 0x117ad2; R_DrawDecalsAll batch-overflow diagnostic
+at 0x3956c0 is referenced at 0x11b8cd and 0x11e318. These are diagnostic
+string xrefs, not verified callable entry addresses or decal list layouts.
+No shadow or decal hooks or cvar changes introduced in this phase.
+
+Windows compilation and in-game verification of the new audit remain needed.

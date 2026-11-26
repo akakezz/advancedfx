@@ -148,6 +148,106 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, boo
 #endif
 }
 
+// Read-only legacy emitter audit. The modern collection forest is separate
+// from the legacy indexed list, even though both share CParticleMgr.
+std::string Mirv_Tf2_InspectLegacyParticles()
+{
+#ifdef _WIN64
+    using advancedfx::NativeParticles::Address;
+    if(g_SourceSdkVer!=SourceSdkVer_TF2||!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||
+       g_VEngineClient->IsSkippingDemo()||g_VEngineClient->IsDrawingLoadingImage()||
+       MirvCampathPreview_IsSeeking())return "Legacy particle audit requires a loaded, non-seeking TF2 x64 demo.";
+    const auto client=GetModuleHandleA("client.dll");
+    if(!client)return "Legacy particle audit: client unavailable.";
+    const Address base=reinterpret_cast<std::uintptr_t>(client);
+    auto read=[](Address a,void *out,std::size_t n) {
+        SIZE_T got=0;return a>=0x10000&&ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a)),out,n,&got)&&got==n;
+    };
+    auto get=[&](Address a,auto &v){return read(a,&v,sizeof(v));};
+    auto match=[&](Address rva,std::initializer_list<unsigned char> expected) {
+        unsigned char actual[32]{};
+        return expected.size()<=sizeof(actual)&&read(base+rva,actual,expected.size())&&std::equal(expected.begin(),expected.end(),actual);
+    };
+    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
+    if(!get(base,dos)||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+       !get(base+dos.e_lfanew,nt)||nt.Signature!=IMAGE_NT_SIGNATURE||nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||
+       nt.FileHeader.TimeDateStamp!=0x6ad26f17||nt.OptionalHeader.SizeOfImage!=0x133a000||
+       !match(0x2d6e2d,{0x48,0x8d,0x05,0xec,0xe1,0xe1,0x00})||
+       !match(0x2d42ee,{0x4c,0x89,0x82,0x98,0x00,0x00,0x00})||
+       !match(0x2d42f8,{0x48,0x89,0x8a,0xa0,0x00,0x00,0x00})||
+       !match(0x2d4347,{0x48,0x8b,0x46,0x38,0x8b,0xd5,0x48,0x03,0xd2,0x66,0x44,0x89,0x7c,0xd0,0x0a})||
+       !match(0x2d4383,{0x66,0xff,0x46,0x4e,0x4c,0x89,0x2c,0xd0})||
+       !match(0x2d65f0,{0x0f,0xb7,0x81,0x90,0x00,0x00,0x00})||
+       !match(0x2dc02a,{0x48,0x89,0x5e,0x08})||
+       !match(0x2dc075,{0x48,0x8d,0x05,0xc4,0x4f,0x88,0x00,0x48,0x89,0x06}))
+        return "Legacy particle audit: unsupported client ABI.";
+    constexpr std::uint16_t invalid=0xffff;
+    const Address manager=base+0x10f5020;
+    std::uint32_t ready=0;
+    Address vt=0,nodes=0;
+    int capacity=0;
+    std::uint16_t head=invalid,tail=invalid,count=0;
+    if(!get(base+0x10f51a0,ready)||!(ready&1)||!get(manager,vt)||vt!=base+0xb607b8||
+       !get(manager+0x38,nodes)||!get(manager+0x40,capacity)||!get(manager+0x48,head)||
+       !get(manager+0x4a,tail)||!get(manager+0x4e,count)||capacity<0||capacity>65536||
+       count>4096||count>capacity||(count&&nodes<0x10000))
+        return "Legacy particle audit: invalid or unavailable manager list.";
+    std::set<std::uint16_t> visited;
+    std::set<Address> bindings;
+    std::ostringstream out;
+    std::size_t simple=0,unknown=0,active=0,simpleActive=0,unnamed=0;
+    std::uint16_t previous=invalid,index=head;
+    bool complete=true;
+    while(index!=invalid) {
+        if(index>=capacity||visited.size()>=count||!visited.insert(index).second){complete=false;break;}
+        const Address node=nodes+16*Address(index);
+        Address binding=0,sim=0,owner=0,simVt=0;
+        std::uint16_t prev=invalid,next=invalid,storedIndex=invalid,particles=0;
+        if(!get(node,binding)||!get(node+8,prev)||!get(node+10,next)||prev!=previous||
+           binding<0x10000||!bindings.insert(binding).second||!get(binding+0x94,storedIndex)||storedIndex!=index||
+           !get(binding+0xa0,owner)||owner!=manager||!get(binding+0x98,sim)||!get(binding+0x90,particles)||
+           !get(sim,simVt)){complete=false;break;}
+        active+=particles;
+        if(simVt==base+0xb61040&&binding==sim+0x10) {
+            ++simple;simpleActive+=particles;
+            Address namePtr=0;
+            std::string name;
+            bool validName=get(sim+8,namePtr)&&namePtr>=0x10000;
+            if(validName) {
+                bool terminated=false;
+                for(unsigned i=0;i<128;++i) {
+                    char ch=0;
+                    if(!get(namePtr+i,ch))break;
+                    if(!ch){terminated=true;break;}
+                    if(static_cast<unsigned char>(ch)<32||static_cast<unsigned char>(ch)>126)break;
+                    name+=ch;
+                }
+                validName=terminated&&!name.empty();
+            }
+            if(!validName){++unnamed;name="[unavailable]";}
+            // Prioritize the dissolve emitter even if many other emitters exist.
+            if(simple<=64||name=="C_EntityDissolve")out<<"  ["<<index<<"] "<<name<<"; active "<<particles<<"\n";
+        } else {
+            ++unknown; // Never assume a derived/unknown emitter has the simple ABI.
+        }
+        previous=index;index=next;
+    }
+    Address endNodes=0;std::uint16_t endHead=invalid,endTail=invalid,endCount=0;
+    complete=complete&&visited.size()==count&&previous==tail&&
+        get(manager+0x38,endNodes)&&endNodes==nodes&&get(manager+0x48,endHead)&&endHead==head&&
+        get(manager+0x4a,endTail)&&endTail==tail&&get(manager+0x4e,endCount)&&endCount==count;
+    std::ostringstream report;
+    report<<"Legacy particle audit: "<<visited.size()<<"/"<<count<<" list entries, "<<active
+          <<" active particles; exact CSimpleEmitter "<<simple<<" ("<<simpleActive<<" active), other emitter types "
+          <<unknown<<", unavailable simple names "<<unnamed<<"; complete "<<int(complete)<<".\n";
+    if(simple>64)report<<"Showing first 64 simple emitters plus any additional C_EntityDissolve emitters.\n";
+    report<<out.str();
+    return report.str();
+#else
+    return "Legacy particle audit requires TF2 x64.";
+#endif
+}
+
 // Isolation is an opt-in ordinary-view experiment. Do not change the cvar
 // unless the existing native replay path is eligible on the verified build.
 bool Mirv_Tf2_ParticleIsolationReady()
