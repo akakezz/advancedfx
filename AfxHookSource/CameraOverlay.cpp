@@ -70,6 +70,8 @@ static advancedfx::SceneEffects::Journal g_SceneEffects;
 static bool g_SceneNativeParticlesEnabled=false, g_SceneNativeParticleMarkers=false;
 static bool g_SceneNativeParticleAppearance=false, g_SceneNativeParticleStyled=false;
 static bool g_SceneNativeParticleReplay=false;
+static bool g_SceneSuppressLiveParticles=false; // opt-in, not persisted
+static std::string g_SceneParticleIsolationStatus="Not evaluated yet.";
 static advancedfx::NativeParticles::ReplayResult g_SceneParticleReplayResult;
 static int g_SceneParticleReplayTick=-1;
 static advancedfx::NativeParticles::History g_SceneNativeParticles;
@@ -816,6 +818,23 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 		lines = std::make_shared<const std::vector<advancedfx::SceneCache::Line>>(std::move(result));
 	}
 	return lines;
+}
+bool SceneCacheSuppressLiveParticles()
+{
+    std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+    if(!g_SceneSuppressLiveParticles||!g_ScenePreview||!g_SceneNativeParticleReplay||
+       !SceneCanDrawModels()||!SceneCacheView()||!Mirv_Tf2_ParticleIsolationReady())return false;
+    const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
+    const auto *sample=g_SceneNativeParticles.ForPreview(tick);
+    // An empty but complete historical sample is valid. Never hide live
+    // effects across a gap, partial position capture or incomplete appearance.
+    return sample&&sample->Complete&&sample->Appearance&&sample->AppearanceComplete&&
+           !sample->Rejected&&!sample->AppearanceRejected;
+}
+void SceneCachePublishParticleIsolation(const char *status)
+{
+    std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+    if(g_SceneParticleIsolationStatus!=status)g_SceneParticleIsolationStatus=status;
 }
 void SceneCacheDrawParticles()
 {
@@ -1703,6 +1722,7 @@ static void SceneNativeParticleStatus(int tick)
 {
     const auto &history=g_SceneNativeParticles;
     advancedfx::Message("Native particle appearance capture %d, styled markers %d, native replay %d.\n",int(g_SceneNativeParticleAppearance),int(g_SceneNativeParticleStyled),int(g_SceneNativeParticleReplay));
+    advancedfx::Message("Live particle isolation requested %d; last ordinary render: %s\n",int(g_SceneSuppressLiveParticles),g_SceneParticleIsolationStatus.c_str());
     const auto &replay=g_SceneParticleReplayResult;
     advancedfx::Message("Native particle replay tick %d: %zu attempts, %zu trees, %zu nonempty drawable collections, %zu submitted particles, %zu rejected attempts. %s\n",g_SceneParticleReplayTick,replay.Attempts,replay.Trees,replay.Nodes,replay.Particles,replay.Rejected,replay.Status.c_str());
     advancedfx::Message("Native particles: enabled %d, markers %d; %zu frames, %.2f MiB; ticks %d .. %d; capture last %.3f ms, mean %.3f ms, peak %.3f ms.\n",
@@ -1806,11 +1826,13 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        g_SceneNativeParticleMarkers=value!=0;if(value)g_SceneNativeParticleReplay=false;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"native")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        SceneParticlePreviewMode(value?1:0);SceneNativeParticleStatus(-1);
+	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"isolate")&&parseInteger(3,value)&&(value==0||value==1)) {
+	        g_SceneSuppressLiveParticles=value!=0;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"appearance")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleAppearance=value!=0;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"styled")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleStyled=value!=0;SceneNativeParticleStatus(-1);
-	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear> | at <tick> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled> <0|1> - TF2 x64 native particle experiment.\n");
+	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear> | at <tick> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
 	    return;
 	}
 	if (!_stricmp(op, "effects"))
@@ -2133,7 +2155,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
-		    "  mirv_cache particles <0|1|status|clear> | at <tick> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled> <0|1> - Native particle experiment.\n"
+		    "  mirv_cache particles <0|1|status|clear> | at <tick> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
@@ -6487,7 +6509,12 @@ static void DrawSceneCacheMenu(int playhead)
 		const char *particleModes[]={"Off","Native textured (experimental)","Styled diagnostic markers","Uniform diagnostic markers"};
 		if(ImGui::Combo("Cached particles",&particleMode,particleModes,4))SceneParticlePreviewMode(particleMode);
 		if(particleMode==1) {
-		    DrawOverlayHint("Native particle preview requires a paused or frozen demo (demo_timescale 0) and immediate rendering. Live particles are not automatically hidden.");
+		    DrawOverlayHint("Native particle preview requires a paused or frozen demo (demo_timescale 0) and immediate rendering.");
+		    ImGui::Checkbox("Suppress live particles (experimental)",&g_SceneSuppressLiveParticles);
+		    if(g_SceneSuppressLiveParticles) {
+		        DrawOverlayHint("Temporarily disables live particle drawing during covered native preview frames. Does not stop simulation; some effects may be missing. Disable to compare.");
+		        DrawOverlayHint(g_SceneParticleIsolationStatus.c_str());
+		    }
 		    if(ImGui::Button("Use immediate rendering (mat_queue_mode 0)"))Afx_ExecClientCmd("mat_queue_mode 0");
 		    if(ImGui::IsItemHovered())ImGui::SetTooltip("Changes the engine's global rendering setting. Restore your previous mat_queue_mode after testing.");
 		    if(!g_SceneParticleReplayResult.Status.empty())DrawOverlayHint(g_SceneParticleReplayResult.Status.c_str());
@@ -6582,7 +6609,7 @@ static void DrawSceneCacheMenu(int playhead)
 			ImGui::TextWrapped("Trails show the retained movement before the cached cursor and fade with "
 			                   "age. Missing samples, teleports and identity changes break the trail.");
 		}
-		ImGui::TextDisabled(g_SceneRenderSnapshot ? "Experimental: live studio suppression is partial; brush and other effects stay live. Live particles are not automatically hidden." : "Visual preview only; live models remain visible.");
+		ImGui::TextDisabled(g_SceneRenderSnapshot ? "Experimental: live studio and particle suppression are partial; brush and other effects stay live." : "Visual preview only; live models remain visible.");
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Brush wireframes require readable BSP geometry. Bounds are independent of "
 			                  "Show path.\nParticle snapshots are optional; audio and full simulation are not cached.");

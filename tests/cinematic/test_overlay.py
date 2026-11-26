@@ -40,6 +40,7 @@ preamble=r'''
 advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick,bool appearance){advancedfx::NativeParticles::Frame f;f.Tick=tick;f.Complete=true;f.Points.push_back({1,2,3});return f;}
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &,std::size_t){return "fixture";}
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &){return {}; }
+bool sceneParticleIsolationReady=true;bool Mirv_Tf2_ParticleIsolationReady(){return sceneParticleIsolationReady;}
 #include "shared/PlayerRepair.h"
 void MirvFix_PlayerRepairNewDemo(const char*);
 void MirvFix_PlayerAngleTraceEnd();
@@ -1114,6 +1115,16 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  sceneCommand({"mirv_cache","effects","1"});sceneCommand({"mirv_cache","particles","1"});check(g_SceneNativeParticlesEnabled&&g_SceneNativeParticleAppearance&&g_SceneNativeParticleReplay&&!g_SceneNativeParticleMarkers&&!g_SceneEffectsEnabled,"One particle command enables full capture and native replay");
  SceneParticlePreviewMode(2);check(g_SceneNativeParticleMarkers&&g_SceneNativeParticleStyled&&!g_SceneNativeParticleReplay,"Styled preview mode is exclusive");
  sceneCommand({"mirv_cache","particles","native","1"});check(g_SceneNativeParticleReplay&&!g_SceneNativeParticleMarkers,"Native preview mode is exclusive");
+ sceneCommand({"mirv_cache","particles","isolate","1"});check(g_SceneSuppressLiveParticles&&!SceneCacheSuppressLiveParticles(),"Isolation opt-in never hides live particles without cached preview coverage");
+ {using namespace advancedfx::NativeParticles;Frame p;p.Tick=20;p.Complete=p.Appearance=p.AppearanceComplete=true;g_SceneNativeParticles.Append(p);
+  g_ScenePreview=true;g_SceneCursor=20*SceneTickInterval()+1e-8;std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));
+  check(SceneCacheSuppressLiveParticles(),"Covered empty appearance snapshot is eligible for isolation");
+  sceneParticleIsolationReady=false;check(!SceneCacheSuppressLiveParticles(),"Unverified or advancing engine cannot isolate particles");sceneParticleIsolationReady=true;
+  SceneParticlePreviewMode(2);check(!SceneCacheSuppressLiveParticles(),"Diagnostic markers do not isolate live effects");SceneParticlePreviewMode(1);
+  g_SceneCursor=100*SceneTickInterval();check(!SceneCacheSuppressLiveParticles(),"Missing history never isolates live effects");
+  g_SceneCursor=20*SceneTickInterval()+1e-8;p.AppearanceComplete=false;g_SceneNativeParticles.Append(p);check(!SceneCacheSuppressLiveParticles(),"Partial appearance never isolates live effects");
+  g_ScenePreview=false;g_SceneNativeParticles.Clear();std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>{});}
+ sceneCommand({"mirv_cache","particles","isolate","0"});
  sceneCommand({"mirv_cache","particles","0"});check(!g_SceneNativeParticlesEnabled&&!g_SceneNativeParticleReplay&&!g_SceneNativeParticleMarkers,"One particle command disables capture and preview");
  std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));sceneCommand({"mirv_cache","models","0"});SceneCacheDrawModels();check(scenePoseDraws==1&&sceneQueued.empty(),"Disabled models create no rendering or resource work");
  sceneCommand({"mirv_cache","models","1"});sceneQueueAvailable=false;SceneCacheDrawModels();check(scenePoseDraws==1&&std::atomic_load(&g_SceneModelStatus)->find("queue unavailable")!=std::string::npos,"Unavailable render queue fails safely before studio submission");sceneQueueAvailable=true;

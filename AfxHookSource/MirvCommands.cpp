@@ -148,6 +148,63 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, boo
 #endif
 }
 
+// Isolation is an opt-in ordinary-view experiment. Do not change the cvar
+// unless the existing native replay path is eligible on the verified build.
+bool Mirv_Tf2_ParticleIsolationReady()
+{
+#ifdef _WIN64
+    if(g_SourceSdkVer!=SourceSdkVer_TF2||!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||
+       g_VEngineClient->IsSkippingDemo()||MirvCampathPreview_IsSeeking()||
+       g_VEngineClient->IsDrawingLoadingImage()||!MaterialSystem_IsImmediate())return false;
+    if(!g_VEngineClient->IsPaused()) {
+        auto *demo=g_VEngineClient->GetDemoInfoEx();
+        if(!demo||demo->GetDemoPlaybackTimeScale()!=0.0f)return false;
+    }
+    using advancedfx::NativeParticles::Address;
+    const auto client=GetModuleHandleA("client.dll");
+    if(!client)return false;
+    const Address base=reinterpret_cast<std::uintptr_t>(client);
+    auto read=[](Address a,void *out,std::size_t n) {
+        SIZE_T got=0;return ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a)),out,n,&got)&&got==n;
+    };
+    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
+    if(!read(base,&dos,sizeof(dos))||dos.e_magic!=IMAGE_DOS_SIGNATURE||
+       dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+       !read(base+dos.e_lfanew,&nt,sizeof(nt))||nt.Signature!=IMAGE_NT_SIGNATURE||
+       nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||nt.FileHeader.TimeDateStamp!=0x6ad26f17||
+       nt.OptionalHeader.SizeOfImage!=0x133a000)return false;
+    const unsigned char factory[]={0x48,0x89,0x5c,0x24,0x10,0x56,0x48,0x83,0xec,0x30};
+    const unsigned char renderer[]={0x48,0x89,0x6c,0x24,0x18,0x57,0x41,0x56,0x41,0x57};
+    unsigned char actual[10]{};
+    return read(base+0x8e0490,actual,sizeof(actual))&&std::equal(std::begin(factory),std::end(factory),actual)&&
+           read(base+0x8e4840,actual,sizeof(actual))&&std::equal(std::begin(renderer),std::end(renderer),actual);
+#else
+    return false;
+#endif
+}
+bool Mirv_Tf2_LiveParticleVisibility(float &value,bool write)
+{
+#ifdef _WIN64
+    if(g_SourceSdkVer!=SourceSdkVer_TF2)return false;
+    auto access=[&](auto *iface) {
+        if(!iface)return false;
+        auto *var=iface->FindVar("r_drawparticles");
+        if(!var)return false;
+        if(write) {
+            if(!std::isfinite(value))return false;
+            var->SetValue(value);
+            return var->GetFloat()==value;
+        }
+        value=var->GetFloat();return std::isfinite(value);
+    };
+    // TF2 uses the registered native cvar interface, not WrpConVarRef.
+    if(SOURCESDK::L4D2::g_pCVar)return access(SOURCESDK::L4D2::g_pCVar);
+    return access(SOURCESDK::CSS::g_pCVar);
+#else
+    return false;
+#endif
+}
+
 // Explicit one-shot, engine thread at FRAME_RENDER_END, while demo paused.
 // Factory-created collections link to their definition temporarily, but never
 // enter CParticleMgr's registered CNewParticleEffect list. Destroy immediately;

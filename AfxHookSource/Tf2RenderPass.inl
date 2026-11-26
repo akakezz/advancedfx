@@ -110,6 +110,34 @@ void __fastcall Tf2PassDrawModel(void *self,
  } else if (isolate) Tf2PassColor(2);
  if(holdout)Tf2PassColor(9);
 }
+// Keep the user cvar value outside the ordinary View_Render call. Do not
+// touch separate pass rendering or retain ownership across engine frames.
+struct Tf2ParticleIsolationScope {
+ bool Report=false,Own=false;
+ float Saved=0;
+ const char *Status="Inactive (off or preview not eligible).";
+ Tf2ParticleIsolationScope(bool report,bool eligible):Report(report) {
+  if(!eligible)return;
+  if(!Mirv_Tf2_LiveParticleVisibility(Saved,false)) {Status="r_drawparticles unavailable; live drawing unchanged.";return;}
+  if(Saved==0.0f) {Status="r_drawparticles already zero; no change.";return;}
+  float zero=0.0f;
+  Own=true; // Also attempt cleanup if the setter reports an uncertain result.
+  Status=Mirv_Tf2_LiveParticleVisibility(zero,true)?"Live drawing disabled during ordinary render; restored.":"Could not verify suppression.";
+ }
+ Tf2ParticleIsolationScope(const Tf2ParticleIsolationScope&)=delete;
+ Tf2ParticleIsolationScope& operator=(const Tf2ParticleIsolationScope&)=delete;
+ ~Tf2ParticleIsolationScope() {
+  if(Own) {
+   float current=0.0f;
+   const bool read=Mirv_Tf2_LiveParticleVisibility(current,false);
+   if(!read||current==0.0f) {
+    if(!Mirv_Tf2_LiveParticleVisibility(Saved,true))Status="WARNING: r_drawparticles restoration failed; check console cvar.";
+   } else if(current!=Saved)Status="r_drawparticles changed during frame; preserved current value.";
+   else Status="r_drawparticles unchanged or restored during frame.";
+  }
+  if(Report)AfxHookSource::CameraOverlay::SceneCachePublishParticleIsolation(Status);
+ }
+};
 void __fastcall Tf2PassRenderFrame(void *self,
 #ifndef _WIN64
  void *edx,
@@ -131,11 +159,15 @@ void __fastcall Tf2PassRenderFrame(void *self,
   g_Tf2AuditModels.clear();
   if (any || hidden || g_Tf2ReplayStudio) Mirv_Tf2_RenderGroups(g_Tf2RenderGroups, hidden, g_Tf2ReplayStudio);
  }
- g_Tf2OriginalFrame(self,
+ {
+  Tf2ParticleIsolationScope particles(outer,outer&&!any&&Tf2RenderPassSupported()&&
+      AfxHookSource::CameraOverlay::SceneCacheSuppressLiveParticles());
+  g_Tf2OriginalFrame(self,
 #ifndef _WIN64
-  edx,
+   edx,
 #endif
-  rect);
+   rect);
+ }
  if (outer && g_Tf2AuditActive) {
   if (auto globals = g_Hook_VClient_RenderView.GetGlobals())
    AfxHookSource::CameraOverlay::SceneCachePublishModelAudit(globals->framecount_get(), std::move(g_Tf2AuditModels));

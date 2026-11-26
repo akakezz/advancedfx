@@ -426,6 +426,7 @@ void OnAfter_CMaterialSystem_SwappBuffers() {
 
 SOURCESDK::CreateInterfaceFn g_AppSystemFactory = 0;
 
+#include "CameraOverlay.h"
 #include "Tf2RenderPass.inl"
 
 #ifndef _WIN64
