@@ -18,6 +18,8 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const a
 // Engine-thread preflight and registered TF2 particle visibility cvar access.
 bool Mirv_Tf2_ParticleIsolationReady();
 bool Mirv_Tf2_LiveParticleVisibility(float &value, bool write);
+bool Mirv_Tf2_SceneDrawVisibility(const char *name,float &value,bool write);
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &frame);
 namespace AfxHookSource
 {
 namespace CameraOverlay
@@ -42,6 +44,8 @@ void SceneCacheDrawModels();
 void SceneCacheDrawParticles();
 bool SceneCacheSuppressLiveParticles();
 void SceneCachePublishParticleIsolation(const char *status);
+unsigned SceneCacheLiveSurfaceIsolation(); // bit 1 shadows, bit 2 decals
+void SceneCachePublishSurfaceIsolation(unsigned index,const char *status);
 // Synchronous native particle tool message capture; payload is copied immediately.
 // Return a message kind once per capture to request a lightweight client stack audit.
 int SceneCacheParticleMessage(const char *name, const void *state);

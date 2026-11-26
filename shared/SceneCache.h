@@ -251,6 +251,8 @@ public:
 		enum class SkinSource : unsigned char { Unknown, Network, TeamFallback, Native };
 		int Skin = -1;
 		SkinSource SkinFrom = SkinSource::Unknown;
+        std::array<float,4> Modulation{1,1,1,1};
+        bool HasModulation=false;
 	};
 	static std::array<std::array<double, 3>, 8> BoundsCorners(const Entity &entity)
 	{
@@ -620,6 +622,8 @@ public:
 			Entity entity = a;
 			entity.Skin = f < .5 ? a.Skin : b->Skin;
 			entity.SkinFrom = f < .5 ? a.SkinFrom : b->SkinFrom;
+            entity.HasModulation=f<.5?a.HasModulation:b->HasModulation;
+            entity.Modulation=f<.5?a.Modulation:b->Modulation;
 			entity.ModelPose = BlendPose(a.ModelPose, b->ModelPose, f, smoothAnimation);
 			for (int i = 0; i < 3; ++i)
 			{

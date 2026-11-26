@@ -132,9 +132,10 @@ int player,gear,vm,prop;
 int hiddenPlayer=0;int MirvPovSpectate_HiddenPlayer(){return hiddenPlayer;}
 bool replay=false,audit=false,particleIsolation=false,particleWritable=true,particleAvailable=true;
 float particleVisibility=1;int particleWrites=0;std::string particleIsolationStatus;
+bool Mirv_Tf2_SceneDrawVisibility(const char*,float &,bool){return false;}
 bool Mirv_Tf2_LiveParticleVisibility(float &v,bool write){if(!particleAvailable)return false;if(write){++particleWrites;if(!particleWritable)return false;particleVisibility=v;}else v=particleVisibility;return true;}
 int auditFrame=-1;std::map<const void*,int> audited;
-namespace AfxHookSource{namespace CameraOverlay{bool SceneCacheSuppressLiveStudio(){return replay;}bool SceneCacheSuppressLiveParticles(){return particleIsolation;}void SceneCachePublishParticleIsolation(const char*s){particleIsolationStatus=s;}bool SceneCacheAuditActive(){return audit;}void SceneCachePublishModelAudit(int f,std::map<const void*,int> s){auditFrame=f;audited=std::move(s);}}}
+namespace AfxHookSource{namespace CameraOverlay{bool SceneCacheSuppressLiveStudio(){return replay;}bool SceneCacheSuppressLiveParticles(){return particleIsolation;}unsigned SceneCacheLiveSurfaceIsolation(){return 0;}void SceneCachePublishSurfaceIsolation(unsigned,const char*){}void SceneCachePublishParticleIsolation(const char*s){particleIsolationStatus=s;}bool SceneCacheAuditActive(){return audit;}void SceneCachePublishModelAudit(int f,std::map<const void*,int> s){auditFrame=f;audited=std::move(s);}}}
 void Mirv_Tf2_RenderGroups(std::map<const void*,unsigned>&groups,int hidden,bool mark){unsigned b=mark?8u:0u;groups={{&player,b|1u|(hidden?4u:0u)},{&gear,b|1u|(hidden?4u:0u)},{&vm,b|2u},{&prop,0}};}
 #include "AfxHookSource/Tf2RenderPass.inl"
 std::map<Tf2RenderPass,std::vector<const void*>> visible,depthDraws;std::map<Tf2RenderPass,int> hudByPass;

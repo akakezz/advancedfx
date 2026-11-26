@@ -298,11 +298,15 @@ bool Mirv_Tf2_ParticleIsolationReady()
 }
 bool Mirv_Tf2_LiveParticleVisibility(float &value,bool write)
 {
+    return Mirv_Tf2_SceneDrawVisibility("r_drawparticles",value,write);
+}
+bool Mirv_Tf2_SceneDrawVisibility(const char *name,float &value,bool write)
+{
 #ifdef _WIN64
     if(g_SourceSdkVer!=SourceSdkVer_TF2)return false;
     auto access=[&](auto *iface) {
         if(!iface)return false;
-        auto *var=iface->FindVar("r_drawparticles");
+        auto *var=iface->FindVar(name);
         if(!var)return false;
         if(write) {
             if(!std::isfinite(value))return false;
@@ -317,6 +321,133 @@ bool Mirv_Tf2_LiveParticleVisibility(float &value,bool write)
 #else
     return false;
 #endif
+}
+
+// Synchronous legacy draw: construct only the scratch fields read by the
+// verified DrawMaterialParticles path. No manager registration, factory,
+// allocator, simulation, live list substitution or native destructor.
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &frame)
+{
+    advancedfx::NativeParticles::ReplayResult result;
+#ifdef _WIN64
+    using namespace advancedfx::LegacyParticles;
+    auto fail=[&](const char *message){result.Status=message;return result;};
+    if(!frame.Complete||frame.Particles.size()>2048||!Mirv_Tf2_ParticleIsolationReady())
+        return fail("Legacy replay requires complete history, verified stationary TF2 x64 and immediate rendering.");
+    const auto client=GetModuleHandleA("client.dll");
+    if(!client)return fail("Legacy client unavailable.");
+    const Address base=reinterpret_cast<Address>(client),manager=base+0x10f5020;
+    auto read=[](Address a,void *out,std::size_t n){
+        SIZE_T got=0;return a>=0x10000&&ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(a),out,n,&got)&&got==n;
+    };
+    auto get=[&](Address a,auto &v){return read(a,&v,sizeof(v));};
+    auto match=[&](Address r,std::initializer_list<unsigned char> bytes){
+        unsigned char actual[32]{};return bytes.size()<=sizeof(actual)&&read(base+r,actual,bytes.size())&&std::equal(bytes.begin(),bytes.end(),actual);
+    };
+    int view=-1;
+    if(!get(base+0xfe77c0,view)||view!=0)return result;
+    result.MainView=true;
+    if(frame.Particles.empty())return fail("Complete empty legacy dissolve sample.");
+    if(!match(0x2d5250,{0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x55,0x57})||
+       !match(0x2d5344,{0x48,0x8b,0x8f,0x98,0x00,0x00,0x00})||
+       !match(0x2d53bd,{0x48,0x8b,0x01,0xff,0x50,0x30})||
+       !match(0x2d7f00,{0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10})||
+       !match(0x2dc6c0,{0x4c,0x8b,0xdc,0x49,0x89,0x6b,0x18,0x57})||
+       !match(0x2dc7d5,{0xf3,0x0f,0x10,0x8f,0x54,0x01,0x00,0x00})||
+       !match(0x1fa674,{0x48,0x89,0x05,0x35,0x7a,0xf2,0x00})||
+       !match(0x1fa699,{0x48,0x89,0x05,0xe8,0x72,0xe7,0x00})||
+       !match(0x2d57c8,{0xff,0x90,0xf0,0x00,0x00,0x00}))
+        return fail("Legacy native draw ABI guard failed.");
+    Address vt=0,materials=0,globalMaterials=0,renderSlot=0;
+    std::uint32_t ready=0;
+    if(!get(base+0x10f51a0,ready)||!(ready&1)||!get(manager,vt)||vt!=base+0xb607b8||
+       !get(manager+0x88,materials)||!materials||!get(base+0x1199678,globalMaterials)||materials!=globalMaterials||
+       !get(base+0xb61040+0x30,renderSlot)||renderSlot!=base+0x2dc6c0)
+        return fail("Legacy manager or renderer unavailable.");
+    struct Batch { Address Sub=0,Group=0;float Near=16,Far=64;std::vector<const Particle*> Items; };
+    std::vector<Batch> batches;
+    for(const auto &p:frame.Particles){
+        if(p.Texture==Material::Unknown){++result.Rejected;continue;}
+        Address sub=0,group=0,page=0,pageVt=0;std::array<float,4> uv{};
+        const Address field=base+(p.Texture==Material::Spark?0x11220b0:0x1071988);
+        if(!get(field,sub)||!sub||!get(sub,uv)||uv!=p.UV||!get(sub+0x10,group)||!get(group,page)||!get(page,pageVt)||!pageVt||
+           !std::isfinite(p.NearClip)||!std::isfinite(p.FarClip)||p.NearClip<0||p.FarClip<=p.NearClip){++result.Rejected;continue;}
+        auto it=std::find_if(batches.begin(),batches.end(),[&](const Batch &b){return b.Sub==sub&&b.Near==p.NearClip&&b.Far==p.FarClip;});
+        if(it==batches.end()){if(batches.size()>=64){++result.Rejected;continue;}batches.push_back({sub,group,p.NearClip,p.FarClip,{}});it=std::prev(batches.end());}
+        it->Items.push_back(&p);
+    }
+    if(batches.empty())return fail("No known valid legacy material batches at this tick.");
+    auto slot=[&](Address object,unsigned off)->Address{Address table=0,fn=0;return get(object,table)&&get(table+off,fn)?fn:0;};
+    using Getter=void*(*)(void*);using NoArg=void(*)(void*);using Mode=void(*)(void*,int);
+    using MatrixGet=void(*)(void*,int,float*);
+    const auto getter=slot(materials,0x310);
+    if(!getter)return fail("Legacy context getter unavailable.");
+    void *context=reinterpret_cast<Getter>(getter)(reinterpret_cast<void*>(materials));
+    if(!context)return fail("Legacy context unavailable.");
+    const Address ctx=reinterpret_cast<Address>(context);
+    struct Scope {
+        void *Ctx;NoArg Release=nullptr,End=nullptr,Pop=nullptr;Mode Select=nullptr;
+        bool Begun=false,Model=false,View=false;float *ManagerMatrix=nullptr;
+        std::array<float,16> Saved{};
+        ~Scope(){
+            if(ManagerMatrix)std::memcpy(ManagerMatrix,Saved.data(),sizeof(Saved));
+            if(View){Select(Ctx,0);Pop(Ctx);}
+            if(Model){Select(Ctx,10);Pop(Ctx);}
+            if(Begun)End(Ctx);
+            if(Release)Release(Ctx);
+        }
+    } scope{context};
+    scope.Release=reinterpret_cast<NoArg>(slot(ctx,8));
+    const auto begin=reinterpret_cast<NoArg>(slot(ctx,0x10));
+    scope.End=reinterpret_cast<NoArg>(slot(ctx,0x18));scope.Select=reinterpret_cast<Mode>(slot(ctx,0xa0));
+    const auto push=reinterpret_cast<NoArg>(slot(ctx,0xa8));scope.Pop=reinterpret_cast<NoArg>(slot(ctx,0xb0));
+    const auto identity=reinterpret_cast<NoArg>(slot(ctx,0xf8));
+    const auto getMatrix=reinterpret_cast<MatrixGet>(slot(ctx,0xf0));
+    if(!scope.Release||!begin||!scope.End||!scope.Select||!push||!scope.Pop||!identity||!getMatrix)
+        return fail("Legacy context methods unavailable.");
+    if(!get(manager+0x90,scope.Saved))return fail("Legacy modelview unavailable.");
+    begin(context);scope.Begun=true;
+    std::array<float,16> matrix{};getMatrix(context,0,matrix.data());
+    for(float v:matrix)if(!std::isfinite(v))return fail("Legacy view matrix invalid.");
+    // World-space particles: native simple renderer transforms them to view
+    // space itself. Preserve the live manager matrix and both context stacks.
+    scope.ManagerMatrix=reinterpret_cast<float*>(manager+0x90);
+    std::memcpy(scope.ManagerMatrix,matrix.data(),sizeof(matrix));
+    scope.Select(context,10);push(context);scope.Model=true;identity(context);
+    scope.Select(context,0);push(context);scope.View=true;identity(context);
+    using Draw=int(*)(void*,bool,void*,float,bool);
+    const auto draw=reinterpret_cast<Draw>(base+0x2d5250);
+    auto put=[](unsigned char *bytes,std::size_t offset,const auto &v){std::memcpy(bytes+offset,&v,sizeof(v));};
+    struct alignas(16) ScratchParticle {unsigned char Data[0x60]{};};
+    for(const auto &batch:batches){
+        ++result.Attempts;
+        alignas(16) unsigned char emitter[0x158]{},material[0x38]{};
+        auto *binding=emitter+0x10;
+        std::vector<ScratchParticle> scratch(batch.Items.size());
+        const Address emitterAddress=reinterpret_cast<Address>(emitter),sentinel=reinterpret_cast<Address>(material+8);
+        put(emitter,0,base+0xb61040);put(emitter,0x150,batch.Near);put(emitter,0x154,batch.Far);
+        put(binding,0x98,emitterAddress);put(binding,0xa0,manager);
+        put(binding,0x90,static_cast<std::uint16_t>(scratch.size()));
+        put(material,0,batch.Group);put(material,8,reinterpret_cast<Address>(scratch.back().Data));
+        put(material,16,reinterpret_cast<Address>(scratch.front().Data));
+        for(std::size_t i=0;i<scratch.size();++i){
+            auto *dst=scratch[i].Data;const auto &p=*batch.Items[i];
+            put(dst,0,i?reinterpret_cast<Address>(scratch[i-1].Data):sentinel);
+            put(dst,8,i+1<scratch.size()?reinterpret_cast<Address>(scratch[i+1].Data):sentinel);
+            put(dst,0x10,batch.Sub);put(dst,0x18,p.Position);put(dst,0x28,p.Velocity);
+            put(dst,0x34,p.Roll);put(dst,0x38,p.DieTime);put(dst,0x3c,p.Lifetime);put(dst,0x40,p.Color);
+            put(dst,0x43,p.StartAlpha);put(dst,0x44,p.EndAlpha);put(dst,0x45,p.StartSize);
+            put(dst,0x46,p.EndSize);put(dst,0x47,p.Flags);put(dst,0x48,p.RollDelta);
+        }
+        const int submitted=draw(binding,false,material,0.0f,false);
+        if(submitted==int(scratch.size())){++result.Trees;++result.Nodes;result.Particles+=scratch.size();}
+        else ++result.Rejected;
+    }
+    result.Status="Experimental legacy native material submissions (not pixel coverage).";
+#else
+    result.Status="Legacy replay requires TF2 x64.";
+#endif
+    return result;
 }
 
 // Explicit one-shot, engine thread at FRAME_RENDER_END, while demo paused.

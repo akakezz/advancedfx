@@ -9,6 +9,7 @@ int main(){
     auto read=[&](Address a,void *out,std::size_t n){auto *p=static_cast<unsigned char*>(out);for(std::size_t i=0;i<n;++i){auto it=memory.find(a+i);if(it==memory.end())return false;p[i]=it->second;}return true;};
     constexpr Address binding=0x10000,group=0x20000,sentinel=group+8,particle=0x30000,sub=0x40000,mat=0x50000;
     for(unsigned i=0;i<8;++i)put(binding+0xb0+8*i,Address(0));
+    put(binding+0x140,16.f);put(binding+0x144,64.f);
     put(binding+0xb0,group);put(binding+0x90,std::uint16_t(1));
     put(group,mat);put(group+8,particle);put(group+16,particle);put(group+0x30,Address(0));
     put(particle,sentinel);put(particle+8,sentinel);put(particle+0x10,sub);put(sub+0x10,mat);

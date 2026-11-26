@@ -138,6 +138,25 @@ struct Tf2ParticleIsolationScope {
   if(Report)AfxHookSource::CameraOverlay::SceneCachePublishParticleIsolation(Status);
  }
 };
+struct Tf2SurfaceIsolationScope {
+ const char *Name;unsigned Index;bool Report=false,Own=false;float Saved=0;
+ const char *Status="Inactive (off or preview not eligible).";
+ Tf2SurfaceIsolationScope(const char *name,unsigned index,bool report,bool enabled):Name(name),Index(index),Report(report){
+  if(!enabled)return;
+  if(!Mirv_Tf2_SceneDrawVisibility(Name,Saved,false)){Status="Draw cvar unavailable.";return;}
+  if(Saved==0){Status="Already disabled; unchanged.";return;}
+  float zero=0;Own=true;
+  Status=Mirv_Tf2_SceneDrawVisibility(Name,zero,true)?"Live drawing hidden during ordinary render; restored.":"Suppression not verified.";
+ }
+ Tf2SurfaceIsolationScope(const Tf2SurfaceIsolationScope&)=delete;
+ ~Tf2SurfaceIsolationScope(){
+  if(Own){float current=0;const bool read=Mirv_Tf2_SceneDrawVisibility(Name,current,false);
+   if(!read||current==0){if(!Mirv_Tf2_SceneDrawVisibility(Name,Saved,true))Status="WARNING: restoration failed; check cvar.";}
+   else Status="Current nonzero cvar preserved.";
+  }
+  if(Report)AfxHookSource::CameraOverlay::SceneCachePublishSurfaceIsolation(Index,Status);
+ }
+};
 void __fastcall Tf2PassRenderFrame(void *self,
 #ifndef _WIN64
  void *edx,
@@ -160,6 +179,9 @@ void __fastcall Tf2PassRenderFrame(void *self,
   if (any || hidden || g_Tf2ReplayStudio) Mirv_Tf2_RenderGroups(g_Tf2RenderGroups, hidden, g_Tf2ReplayStudio);
  }
  {
+  const unsigned surfaceMask=outer&&!any&&Tf2RenderPassSupported()?AfxHookSource::CameraOverlay::SceneCacheLiveSurfaceIsolation():0;
+  Tf2SurfaceIsolationScope shadows("r_shadows",0,outer,(surfaceMask&1)!=0);
+  Tf2SurfaceIsolationScope decals("r_drawdecals",1,outer,(surfaceMask&2)!=0);
   Tf2ParticleIsolationScope particles(outer,outer&&!any&&Tf2RenderPassSupported()&&
       AfxHookSource::CameraOverlay::SceneCacheSuppressLiveParticles());
   g_Tf2OriginalFrame(self,

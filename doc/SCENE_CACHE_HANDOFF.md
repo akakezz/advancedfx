@@ -269,3 +269,14 @@ pointer-free; no legacy rendering or entity fade reproduction yet. Known
 spark/combinemuzzle2 material identities are tracked by verified handle
 comparisons; others reported unknown. Test before/during/after dissolve and
 compare capture counts with the live audit. No shadow/decal changes.
+
+### Batched visual experiment
+
+Phase 12 adds optional native textured legacy dissolve replay, cached model
+RGB/alpha modulation and scoped live shadow/decal hiding. Capture once with
+legacyCapture 1; enable legacyReplay 1, visuals modulation 1, visuals
+hideShadows 1, visuals hideDecals 1 independently (all rendering options off
+by default). The latter two are temporary isolation only. True historical
+shadow projection, decal lifecycle/replay, material overrides and legacy
+classes outside dissolve remain pending. New scratch native draw is not yet
+runtime verified; see Phase 12 and rollback/toggle instructions.

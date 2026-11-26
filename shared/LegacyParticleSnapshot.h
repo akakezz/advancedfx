@@ -14,7 +14,7 @@ using Address=std::uint64_t;
 enum class Material : unsigned char { Unknown, Spark, CombineMuzzle };
 struct Particle {
     std::array<float,3> Position{},Velocity{};
-    float Roll=0,DieTime=0,Lifetime=0,RollDelta=0;
+    float Roll=0,DieTime=0,Lifetime=0,RollDelta=0,NearClip=16,FarClip=64;
     std::array<unsigned char,3> Color{};
     unsigned char StartAlpha=0,EndAlpha=0,StartSize=0,EndSize=0,Flags=0;
     Material Texture=Material::Unknown;
@@ -33,6 +33,8 @@ template<class Reader>
 bool CaptureBinding(Address binding,unsigned expected,Address spark,Address glow,Reader read,Frame &frame) {
     auto get=[&](Address a,auto &v){return a>=0x10000&&read(a,&v,sizeof(v));};
     if(expected>2048||frame.Particles.size()+expected>2048)return false;
+    float nearClip=16,farClip=64;
+    if(!get(binding+0x140,nearClip)||!get(binding+0x144,farClip)||!std::isfinite(nearClip)||!std::isfinite(farClip)||nearClip<0||farClip<=nearClip)return false;
     std::vector<Particle> local;local.reserve(expected);
     std::set<Address> materials,particles;
     std::size_t unknown=0;
@@ -52,7 +54,7 @@ bool CaptureBinding(Address binding,unsigned expected,Address spark,Address glow
                    !get(next,back)||back!=prior||!get(next+8,forward)||
                    !get(next+0x10,subtexture)||!get(subtexture+0x10,subGroup)||
                    subGroup!=materialGroup)return false;
-                Particle p;
+                Particle p;p.NearClip=nearClip;p.FarClip=farClip;
                 if(!get(next+0x18,p.Position)||!get(next+0x28,p.Velocity)||
                    !get(next+0x34,p.Roll)||!get(next+0x38,p.DieTime)||!get(next+0x3c,p.Lifetime)||
                    !get(next+0x40,p.Color)||!get(next+0x43,p.StartAlpha)||!get(next+0x44,p.EndAlpha)||

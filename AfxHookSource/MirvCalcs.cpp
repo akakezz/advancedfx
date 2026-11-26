@@ -10936,13 +10936,13 @@ struct SceneStudioScope
 	void *Studio;
 	SceneStudioState Previous;
 	bool Active;
-	SceneStudioScope(void *studio, const SceneStudioInfo &info, bool textured)
+	SceneStudioScope(void *studio, const SceneStudioInfo &info, bool textured,const advancedfx::SceneCache::Entity &entity)
 		: Studio(studio), Previous(g_SceneStudioState), Active(textured && g_SceneStudioStateInstalled)
 	{
 		if (!Active) return;
 		const float white[3]{1,1,1};
-		SceneInterfaceCall<void, const float *>(Studio, 27, white);
-		SceneInterfaceCall<void, float>(Studio, 28, 1.f);
+        SceneInterfaceCall<void, const float *>(Studio, 27, entity.HasModulation?entity.Modulation.data():white);
+        SceneInterfaceCall<void, float>(Studio, 28, entity.HasModulation?entity.Modulation[3]:1.f);
 		SceneInterfaceCall<void, const float *>(Studio, 17, &info.AmbientCube[0][0]);
 		SceneInterfaceCall<void, int, const float *>(Studio, 18, 0, &info.LightDescriptors[0][0]);
 	}
@@ -11580,6 +11580,12 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 	auto pose = std::make_shared<Cache::Pose>();
 	pose->ModelInfo = metadata;
 	pose->Body = renderable->GetBody();
+    // Public renderable slots 13/14: observed fade alpha and RGB. Do not
+    // invoke ComputeFxBlend (would advance or alter live entity state).
+    float color[3]{1,1,1};renderable->GetColorModulation(color);
+    const int alpha=renderable->GetFxBlend();
+    entity.HasModulation=alpha>=0&&alpha<=255&&std::all_of(color,color+3,[](float v){return std::isfinite(v)&&v>=0&&v<=1;});
+    if(entity.HasModulation)entity.Modulation={color[0],color[1],color[2],alpha/255.f};
 	// Use the existing Source/AGR transform helpers. Unused bones are identity,
 	// exactly as in AGR; SetupBones fills the bones used by the studio renderer.
 	alignas(16) SOURCESDK::matrix3x4_t bones[MIRV_TF2_MAX_BONES]{};
@@ -11750,7 +11756,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	} restore{studio, overrideMaterial, overrideType, material != nullptr};
 	const int flags = 0x04 | 0x20 | (material || textured ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
-	SceneStudioScope studioScope(studio, info, textured);
+	SceneStudioScope studioScope(studio, info, textured,entity);
 	resources->Submit();
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
 	                   const SOURCESDK::Vector &, int>(studio, 29, nullptr, info, matrices, nullptr, nullptr,

@@ -583,3 +583,51 @@ capture/render/isolation remain unchanged. The history is cleared with
 scene history, and on backward append; opt-in is session-local. Current
 capture uses the existing frame-end scene capture boundary; no native
 allocations or calls. Windows build, runtime checks and full tests pending.
+
+
+## Phase 12: batched visual reconstruction test
+
+User requested fewer compile/test cycles. This batch adds independent opt-in
+legacy native material drawing, model RGB/fade replay, and temporary live
+shadow/world decal hiding. All rendering options default off. Legacy capture
+is still explicit. One recording can exercise all options; no recapture is
+needed when toggling replay or isolation. Re-record for new capture fields.
+
+Legacy draw: exact CSimpleEmitter RenderParticles 0x2dc6c0 and native
+DrawMaterialParticles 0x2d5250, StartDrawMaterialParticles 0x2d7f00 verified
+by static disassembly. The native draw uses binding +0x98 sim, +0xa0 manager,
++0x90 active count; constructs its iterator and mesh builder internally.
+The new immediate, main-view, stationary-only experiment uses temporary
+scratch emitter/binding, material sentinel and circular particle list in
+HLAE-owned memory, no factory/registration, no simulation or native allocation
+of particle objects. Native mesh submission does allocate internal draw buffers.
+Near/far clip copied from emitter +0x150/154 (binding +0x140/144); material
+handles resolved from the current level and UV must match history. Unknown
+materials skipped. Save/restore live manager modelview at +0x90 and both
+context matrix stacks. Native code uses view-space coordinates, near fade,
+color, alpha, size and roll. Global particle drawn statistics may change.
+Scratch layout and native draw are experimental, not runtime proven; use
+legacyReplay 0 immediately if artifacts/crashes occur. No persistent native
+pointers in history. No guarantee of correct cross-material sort or lighting.
+
+Capture model RGB and existing fade alpha via public renderable slots 14/13;
+never call ComputeFxBlend. SDK and client base entity vtable corroborate
+these getters (0x1e18b0 and 0x1e1e20). Capture alongside skin, choose nearest
+sample in interpolated views; opt-in scoped studio modulation restores prior
+state after submission. Not material overrides, render modes or correct
+translucent sorting. No additional historical illumination.
+
+Scoped r_shadows and r_drawdecals use the validated cvar interface and
+restore original values at ordinary view exit, not separate passes. Only
+when broad cached model replay eligible and exact stationary immediate TF2
+preflight passes. They hide live artifacts, not generate historical shadows
+or decals. Model decals untouched. Historical projection and decal creation/
+removal discovery still pending; do not mistake hiding for reconstruction.
+
+Commands: mirv_cache particles legacyCapture 1; legacyReplay 1/0;
+legacyStatus; legacyAt <tick>. mirv_cache visuals modulation 1/0;
+hideShadows 1/0; hideDecals 1/0; visuals status. Corresponding checkboxes
+in Capture and Preview. Use same recorded interval to compare all toggles;
+verify r_drawparticles, r_shadows and r_drawdecals restored on exit. Full
+Windows build and in-game validation outstanding. Portable fixture updated
+for near clip fields; mock tests not yet run in this commit.
