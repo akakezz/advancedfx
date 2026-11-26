@@ -385,3 +385,81 @@ this phase: draw-cvar availability and semantics on the exact build, and
 historical shadow/decal capture paths, still require verification. Prioritize
 true historical state, not simply hiding all shadows or marks. Preserve the
 working particle isolation baseline.
+
+### Follow-up: verified draw gates and exact-tick collection list
+
+On the diagnostic build 5da6306, the user reported the following:
+
+| Probe | Observation |
+| --- | --- |
+| particles list 34, Engineer disintegration visible in original scene | 46 collections, 1010 active, position complete 1, appearance complete 1; no identifiable dissolve/electrocution definition |
+| r_shadows 0, then 1 | misplaced shadow hidden, then reappeared at the live demo position |
+| r_drawdecals 0, then enabled | observed decals hidden, then restored |
+| r_drawmodeldecals 0 | no visible model decal difference reported |
+
+The full tick-34 inventory contained doublejump, rocket/pipe trails and
+muzzles, dispenser healing, teleporter rings/discs/glows, recent-teleport
+particles, sapper sparks, and gutter drips. The active sample is not empty
+and the known collection capture did not flag an incomplete read. Absence of
+an identifiable name is not proof of a legacy effect: names can be indirect,
+timing can differ, or the effect may not register in the traversed list.
+Compare exact neighboring samples and the live effect with r_drawparticles
+0/1 (restore original cvar). Do not infer a capture failure from a successful
+submission counter or assume this identifies a particular weapon.
+
+#### Stronger SDK evidence for the dissolve hypothesis
+
+The public SDK C_TFRagdoll::DissolveEntity in c_tf_player.cpp creates a
+C_EntityDissolve, configures effect color and fade intervals, and can dissolve
+attached cosmetics. C_EntityDissolve::ClientThink in c_entitydissolve.cpp
+sets parent render mode to kRenderTransColor and changes RGB/alpha using
+fade functions. Its DrawModel checks frame time/readiness, resolves parent
+hitbox-to-world matrices, computes view-dependent skew and emits legacy
+SimpleParticle sparks/glows via CSimpleEmitter. This provides a plausible
+explanation for BOTH the missing energy particles and the different body
+color in the screenshot. It is an SDK lead, not a verified identification of
+the exact screenshot effect or the shipping TF2 x64 ABI. Do not call DrawModel
+on a live dissolver at an arbitrary cached tick: it can allocate particles
+and consult current time, view and live parent bones.
+
+Our SceneCache::Entity currently retains skin but not render RGBA/mode, and
+Mirv_Tf2_DrawScenePose submits studio geometry using neutral lighting and
+NO_FLEXES/NO_SHADOWS. Investigate a read-only audit of actual historical
+render modulation/mode, independent of the legacy emitter inventory. If
+verified, capture visual state with stable owner identity, then reproduce it
+with scoped studio state and correct opaque/translucent ordering. A legacy
+emitter snapshot would need its own validated layout, materials, size,
+color, alpha, orientation, lifetime and renderer behavior; do not force it
+into NativeParticleSnapshot's CNewParticleEffect layout.
+
+#### Historical shadows: separate projection and silhouette problems
+
+The SDK clientshadowmgr.cpp builds a visible shadow list, allocates shadow
+texture atlas space, projects through the engine shadow manager and draws
+silhouettes via IVModelRender::DrawModelShadowSetup/DrawModelShadow.
+The latter accepts custom bones at setup, but this changes only the caster
+silhouette and does not by itself update the world-space projection, atlas
+allocation, clipping or receiver list. The current cached model draw is late
+in PostRenderAllTools and explicitly uses NO_SHADOWS. Do not remove that flag
+as a proposed fix or redirect live shadow handles to historical bones without
+owning their projection/lifetime. Historical shadow replay needs a verified
+pre-receiver render boundary and independent historical caster/projection
+state, plus retirement/restoration when coverage, focus, preview or seek
+state changes. Test first with one moving caster and a static receiver, then
+attachments, multiple views, empty frames and moving receivers. r_shadows is
+a confirmed reversible comparison tool, not a completed feature.
+
+#### Decals
+
+r_drawdecals is now a confirmed reversible gate for the observed marks.
+Continue with read-only discovery of engine-side world decal creation,
+placement, lifetime, removal/eviction and surface association, including
+preexisting marks at capture start. Do not clear or recreate marks in the
+live engine just to implement backwards scrubbing. Model decal suppression
+is not established by the inconclusive r_drawmodeldecals test.
+
+Next blocker: the exact TF2 x64 client.dll and engine.dll used in the current
+runtime test are not available in this working session. Verify their identity
+against the existing native guards and inspect the actual binary paths before
+adding hooks or guessed offsets. No capture/replay behavior was changed in
+this documentation update. Preserve 499fd28/5da6306 as a working baseline.

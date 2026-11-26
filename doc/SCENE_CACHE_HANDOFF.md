@@ -223,3 +223,26 @@ appearance were absent in cached replay; Demoman's shadow stayed at the live
 pose while historical geometry moved; explosion and blood decals stayed at
 live demo state. These are separate from the confirmed native collection
 isolation. See Phase 9 of the research log for diagnosis and next tests.
+
+### Confirmed diagnostic follow-up (after 5da6306)
+
+The tester listed the entire exact particle sample at Engineer disintegration
+tick 34: 46 named collection records, 1010 active particles, both position and
+appearance complete. No identifiable dissolve/electrocution collection was in
+the list (other effects included rocket and pipe trails, teleporter/dispenser,
+sapper sparks and gutter drips). This supports, but does not prove, a separate
+legacy emitter path. Check adjacent exact ticks and the live draw gate before
+concluding a particular implementation is absent. A complete sample describes
+only the traversed native collection system.
+
+- r_shadows 0 hides the misplaced shadows; restoring 1 restores them at the
+  original live pose. This verifies a reversible draw gate, not cached shadows.
+- r_drawdecals 0 hides the observed decals; restoring the previous enabled
+  setting restores the marks. Existing live decals survive the comparison.
+- r_drawmodeldecals 0 had no visible effect in the tester's scene. Model decal
+  control remains unverified, not disproved.
+
+The next native investigation needs the exact running x64 client.dll and
+engine.dll. Do not reuse old offsets or substitute public SDK layouts for the
+shipping binary. No additional rendering changes were made. Phase 9 in the
+research log records the more specific shadow and dissolve leads.
