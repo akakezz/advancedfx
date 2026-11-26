@@ -6487,7 +6487,7 @@ static void DrawSceneCacheMenu(int playhead)
 		const char *particleModes[]={"Off","Native textured (experimental)","Styled diagnostic markers","Uniform diagnostic markers"};
 		if(ImGui::Combo("Cached particles",&particleMode,particleModes,4))SceneParticlePreviewMode(particleMode);
 		if(particleMode==1) {
-		    DrawOverlayHint("Native particle preview requires a paused live demo and immediate rendering. Live particles are not automatically hidden.");
+		    DrawOverlayHint("Native particle preview requires a paused or frozen demo (demo_timescale 0) and immediate rendering. Live particles are not automatically hidden.");
 		    if(ImGui::Button("Use immediate rendering (mat_queue_mode 0)"))Afx_ExecClientCmd("mat_queue_mode 0");
 		    if(ImGui::IsItemHovered())ImGui::SetTooltip("Changes the engine's global rendering setting. Restore your previous mat_queue_mode after testing.");
 		    if(!g_SceneParticleReplayResult.Status.empty())DrawOverlayHint(g_SceneParticleReplayResult.Status.c_str());

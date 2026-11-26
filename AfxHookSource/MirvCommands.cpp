@@ -162,9 +162,15 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
     auto fail=[&](const char *why){result.Status=why;return result;};
 #ifdef _WIN64
     if(g_SourceSdkVer!=SourceSdkVer_TF2||!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||
-       g_VEngineClient->IsSkippingDemo()||g_VEngineClient->IsDrawingLoadingImage())
-        return fail("Native particles require a loaded TF2 x64 demo");
-    if(!g_VEngineClient->IsPaused())return fail(draw?"Native particle preview requires paused underlying demo":"Detached probe requires paused TF2 x64 demo");
+       g_VEngineClient->IsSkippingDemo()||MirvCampathPreview_IsSeeking()||g_VEngineClient->IsDrawingLoadingImage())
+        return fail("Native particles require a loaded TF2 x64 demo (not seeking)");
+    if(!g_VEngineClient->IsPaused()) {
+        // Overlay Freeze uses demo_timescale 0;demo_resume. Only allow this
+        // exact stationary playback state for preview; keep the probe paused.
+        auto *demo=g_VEngineClient->GetDemoInfoEx();
+        if(!draw||!demo||demo->GetDemoPlaybackTimeScale()!=0.0f)
+            return fail(draw?"Native particle preview requires paused or frozen underlying demo":"Detached probe requires paused TF2 x64 demo");
+    }
     if(!frame.Complete||!frame.Appearance)return fail("Native particles require a complete position and appearance snapshot");
     if(!draw&&(probeIndex>=frame.Collections.size()||!frame.Collections[probeIndex].Name[0]||!frame.Collections[probeIndex].Active))
         return fail("Detached probe requires a named nonempty collection");

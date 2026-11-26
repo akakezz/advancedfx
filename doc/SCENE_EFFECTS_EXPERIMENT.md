@@ -236,8 +236,9 @@ or simply mirv_cache particles 1. This also enables appearance capture,
 disables the earlier event probe, and selects native textured preview.
 Preview > Cached particles selects native, styled or uniform markers, or off.
 Memory > Particle budget MiB sets the existing history limit.
-No AGR recording required. Record fresh history, pause live demo, enable cached
-preview, and scrub normally. Native replay currently needs immediate material
+No AGR recording required. Record fresh history, pause or freeze the live demo
+(overlay Freeze / demo_timescale 0), enable cached preview, and scrub normally.
+The explicit detached probe still requires demo pause; both paths reject seeks. Native replay currently needs immediate material
 rendering: use the explicit overlay button or mat_queue_mode 0 once (restore
 your original setting afterwards). No automatic global cvar modifications.
 Live particles are not suppressed yet; optional r_drawparticles 0 may help
