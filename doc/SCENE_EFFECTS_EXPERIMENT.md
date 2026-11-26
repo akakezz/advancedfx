@@ -649,3 +649,9 @@ legacy material draw bypasses that entry. No additional detour is needed.
 The capture loop copies a contiguous 0x4c particle and 0x18 subtexture
 record in two reads per particle, reducing per-attribute RPM calls. Unknown
 material/failed-binding counts are included in last capture diagnostics.
+
+Portable test result: the exact Git blob versions of shared/LegacyParticleSnapshot.h
+(8cd2bb5) and tests/cinematic/legacy_particles_test.cpp (b8d7031) were copied
+locally, compiled with g++ C++17 -Wall -Wextra -pedantic and ASan/UBSan, and
+executed successfully. This validates the synthetic linked-list reader and
+history fixture only. Full adapter fixtures and Windows/in-game build not run.
