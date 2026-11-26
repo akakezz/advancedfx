@@ -8,6 +8,8 @@
 #include <cstring>
 #include <limits>
 #include <set>
+#include <map>
+#include <type_traits>
 #include <string>
 #include <vector>
 
@@ -60,7 +62,7 @@ struct Frame {
     std::string Status;
     std::vector<Point> Points;
     bool Appearance=false, AppearanceComplete=false;
-    std::size_t AppearanceRejected=0, NamedCollections=0;
+    std::size_t AppearanceRejected=0, NamedCollections=0, SharedConstantWords=0;
     std::vector<Collection> Collections;
     std::vector<std::uint32_t> Words;
     std::size_t Bytes() const {return sizeof(Frame)+Points.capacity()*sizeof(Point)+Status.capacity()+
@@ -97,6 +99,9 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
     f.Complete=true; f.AppearanceComplete=appearance;
     std::set<Address> roots, collections;
     std::vector<float> packed;
+    // Intern identical constant SIMD blocks within a snapshot. Keys include
+    // width and all lane bits; varying blocks are kept independent.
+    std::map<std::array<std::uint32_t,13>,std::uint32_t> constants;
     auto bad=[&](){++f.Rejected;f.Complete=false;};
     auto appearanceBad=[&](){++f.AppearanceRejected;f.AppearanceComplete=false;};
     auto copyAppearance=[&](Address c,Collection &item) {
@@ -129,6 +134,23 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
             if(!ptr) {if(stride) appearanceBad();continue;}
             if(ptr<0x10000||(stride!=0&&stride!=width)) {appearanceBad();continue;}
             const auto words=(stride?(std::size_t(item.Active)+3)/4:1)*width;
+            if(!stride) {
+                std::array<std::uint32_t,13> key{};
+                key[0]=static_cast<std::uint32_t>(words);
+                if(!read(ptr,key.data()+1,words*sizeof(std::uint32_t))) {appearanceBad();continue;}
+                auto found=constants.find(key);
+                std::uint32_t start=0;
+                if(found!=constants.end()) {start=found->second;f.SharedConstantWords+=words;}
+                else {
+                    if(words>WordLimit-f.Words.size()) {appearanceBad();continue;}
+                    start=static_cast<std::uint32_t>(f.Words.size());
+                    f.Words.insert(f.Words.end(),key.begin()+1,key.begin()+1+words);
+                    constants.emplace(key,start);
+                }
+                item.Attributes[a]={start,static_cast<std::uint32_t>(words),0};
+                item.Mask|=1u<<a;
+                continue;
+            }
             if(words>WordLimit-f.Words.size()) {appearanceBad();continue;}
             const auto start=f.Words.size();
             f.Words.resize(start+words);
@@ -196,6 +218,17 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
         previous=root;root=next;
     }
     if(!f.Complete) f.AppearanceComplete=false;
+    // The geometrically growing capture buffers can retain almost twice
+    // their useful payload. Tighten large excess capacities before history.
+    if(appearance) {
+        auto compact=[](auto &v) {
+            if(v.capacity()>v.size()+v.size()/8+64) {
+                using V=std::decay_t<decltype(v)>;
+                V(v.begin(),v.end()).swap(v);
+            }
+        };
+        compact(f.Points);compact(f.Collections);compact(f.Words);
+    }
     f.Status=f.Complete?"Native position snapshot":"Incomplete native position snapshot";
     return f;
 }
@@ -284,14 +317,16 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
 }
 class History {
 public:
-    explicit History(std::size_t budget=64u*1024u*1024u):Budget(budget){}
-    void Clear(){Frames.clear();Bytes=0;++Revision;}
+    explicit History(std::size_t budget=512u*1024u*1024u):Budget(budget){}
+    void Clear(){Frames.clear();Bytes=0;Evicted=Rejected=0;++Revision;}
+    std::size_t BudgetBytes() const {return Budget;}
+    void SetBudget(std::size_t budget) {Budget=budget;while(!Frames.empty()&&Bytes>Budget) Evict();++Revision;}
     bool Append(Frame f) {
         if(!Frames.empty()&&f.Tick<Frames.back().Tick) Clear();
-        if(f.Tick<0||f.Bytes()>Budget) return false;
+        if(f.Tick<0||f.Bytes()>Budget) {++Rejected;return false;}
         if(!Frames.empty()&&Frames.back().Tick==f.Tick) {Bytes-=Frames.back().Bytes();Frames.pop_back();}
         const auto n=f.Bytes();
-        while(!Frames.empty()&&(Bytes>Budget-n||Frames.size()>=4096)) {Bytes-=Frames.front().Bytes();Frames.pop_front();}
+        while(!Frames.empty()&&(Bytes>Budget-n||Frames.size()>=32768)) Evict();
         Frames.push_back(std::move(f));Bytes+=Frames.back().Bytes();++Revision;return true;
     }
     const Frame *At(int tick) const {
@@ -308,9 +343,10 @@ public:
         return tick-it->Tick<=maxGap?&*it:nullptr;
     }
     std::deque<Frame> Frames;
-    std::size_t Bytes=0;
+    std::size_t Bytes=0,Evicted=0,Rejected=0;
     std::uint64_t Revision=0;
 private:
+    void Evict(){Bytes-=Frames.front().Bytes();Frames.pop_front();++Evicted;}
     std::size_t Budget;
 };
 }} // namespace

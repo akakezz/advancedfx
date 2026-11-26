@@ -176,3 +176,30 @@ contexts, live particle suppression or native draw are changed. Recursive
 renderer identified at 0x8e4840 but queued lifetime still unverified.
 Native allocation itself may have engine side effects or fail; test on a
 disposable paused demo session first. This is not visual replay.
+
+
+## Phase 5: queue headroom and longer particle history
+
+Runtime reported 67,106 queue-limit skips, zero other skips, two callbacks
+per engine frame, 512 pending. Increase bounded studio retirement limit to
+2048, retaining the existing completion-based resource ownership. This is
+headroom, not a proof that duplicate views or live overlap are resolved.
+Retest the same frozen gib-heavy scene and inspect replay audit deltas.
+For an independent diagnostic, compare normal queued rendering with
+mat_queue_mode 0 (restore original setting afterwards). Do not change
+the user's engine queue mode automatically.
+
+Particle history default budget is 512 MiB, configurable with
+mirv_cache particles budget <64..2048> (MiB), and a 32768 frame hard limit.
+Budget changes affect current history immediately; increasing it cannot
+recover previously evicted samples. Exact duplicate constant attribute
+blocks are shared within each frame, and excessive vector capacity trimmed
+before retaining appearance snapshots. Raw bits and varying blocks remain
+unchanged. Eviction and rejection counts are displayed. Model and particle
+history are still separate; they can retain different intervals.
+
+The one-shot probe now accepts mirv_cache particles prepare <tick> <index>.
+Use the same exact tick from particles at <tick>, stop recording and pause
+the live demo first. Reject empty/unnamed selections and report the exact
+selected tick, definition and active count. A zero-copy run is inconclusive,
+not verified restoration. No native drawing or live suppression added.

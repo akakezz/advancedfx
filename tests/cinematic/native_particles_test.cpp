@@ -82,5 +82,14 @@ int main(){
     check(plan.Error.empty()&&plan.Nodes==1&&plan.Particles==5&&plan.Copies.size()==3&&plan.Constants==1,"validated detached copy plan");
     dp[Radius]+=4;put(detached+Xyz,dp);
     check(!PlanDetached(simple,0,detached,read).Error.empty()&&PlanDetached(simple,0,detached,read).Copies.empty(),"wrong allocation address fails closed");
+    check(app.SharedConstantWords>=12,"identical constant tint shared between collections");
+    check(app.Collections[0].Attributes[Tint].Start==app.Collections[1].Attributes[Tint].Start,"shared constant offsets remain readable");
+    check(Float(app,app.Collections[1],Tint,1,1,v)&&v==.6f,"shared lane data unchanged");
+    History resized(4096);check(resized.Append(f)&&resized.Append(newer),"budget fixture");
+    resized.SetBudget((std::max)(f.Bytes(),newer.Bytes()));
+    check(resized.Frames.size()==1&&resized.At(11)&&resized.Evicted==1,"budget shrink evicts oldest");
+    resized.SetBudget(4096);check(resized.Frames.size()==1&&resized.Evicted==1,"budget expansion cannot restore evicted frames");
+    resized.SetBudget(0);check(resized.Frames.empty()&&resized.Bytes==0&&resized.Evicted==2,"budget stays bounded");
+    check(!resized.Append(f)&&resized.Rejected==1,"oversized frame counted");
     std::cout<<"Native particle snapshot tests passed\n";
 }

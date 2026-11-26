@@ -158,8 +158,8 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
     if(g_SourceSdkVer!=SourceSdkVer_TF2||!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||
        !g_VEngineClient->IsPaused()||g_VEngineClient->IsSkippingDemo()||g_VEngineClient->IsDrawingLoadingImage())
         return "Detached probe requires paused TF2 x64 demo";
-    if(!frame.Appearance||index>=frame.Collections.size()||!frame.Collections[index].Name[0])
-        return "Detached probe requires a named recorded collection";
+    if(!frame.Complete||!frame.Appearance||index>=frame.Collections.size()||!frame.Collections[index].Name[0]||!frame.Collections[index].Active)
+        return "Detached probe requires a complete snapshot and named nonempty recorded collection";
     HMODULE client=GetModuleHandleA("client.dll");
     if(!client) return "Detached probe client unavailable";
     const Address base=reinterpret_cast<std::uintptr_t>(client);
@@ -217,7 +217,7 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
                 if(!read(op.Destination,verify.data(),n)||!std::equal(verify.begin(),verify.end(),frame.Words.begin()+op.Start)) {ok=false;break;}
                 ++copied;
             }
-            result=std::string(ok?"Detached attribute copy verified":"Detached attribute copy failed")+
+            result=std::string(ok&&copied?"Detached attribute copy verified":ok?"Detached probe inconclusive (no varying blocks copied)":"Detached attribute copy failed")+
                 "; nodes "+std::to_string(plan.Nodes)+", historical particles "+std::to_string(plan.Particles)+
                 ", varying blocks copied "+std::to_string(copied)+"/"+std::to_string(plan.Copies.size())+
                 ", constants compared "+std::to_string(plan.Constants)+", differing "+std::to_string(plan.ConstantDifferences)+

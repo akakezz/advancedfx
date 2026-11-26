@@ -487,6 +487,7 @@ void SceneCacheFrame(bool capture)
             const int requested=std::exchange(g_SceneDetachedTick,-1);
             const auto *sample=g_SceneNativeParticles.At(requested);
             g_SceneDetachedStatus=g_SceneRecord?"Stop cache recording before preparing a detached collection.":sample?Mirv_Tf2_ProbeDetachedParticles(*sample,static_cast<std::size_t>(index)):"Requested sample no longer retained.";
+            g_SceneDetachedStatus="Tick "+std::to_string(requested)+", collection "+std::to_string(index)+": "+g_SceneDetachedStatus;
             advancedfx::Message("Native detached probe: %s\n",g_SceneDetachedStatus.c_str());
         }
 		const auto epoch = g_SceneLifecycleEpoch.load();
@@ -1657,6 +1658,7 @@ static void SceneNativeParticleStatus(int tick)
         int(g_SceneNativeParticlesEnabled),int(g_SceneNativeParticleMarkers),history.Frames.size(),history.Bytes/1048576.0,
         history.Frames.empty()?-1:history.Frames.front().Tick,history.Frames.empty()?-1:history.Frames.back().Tick,
         g_SceneNativeParticleMs,g_SceneNativeParticleSamples?g_SceneNativeParticleTotalMs/g_SceneNativeParticleSamples:0,g_SceneNativeParticlePeakMs);
+    advancedfx::Message("Particle history budget %.0f MiB; evicted %zu frames, rejected %zu frames.\n",history.BudgetBytes()/1048576.0,history.Evicted,history.Rejected);
     advancedfx::Message("Native detached probe: %s\n",g_SceneDetachedStatus.c_str());
     if(tick<0) return;
     const auto *preview=history.ForPreview(tick);
@@ -1683,6 +1685,7 @@ static void SceneNativeParticleStatus(int tick)
         }
         advancedfx::Message("Native particle attributes: %zu collection records, %zu named, %zu clocks, %zu nonempty; %.3f MiB packed words; %zu rejected appearance reads/layouts; complete %d.\n",
             f->Collections.size(),f->NamedCollections,clocks,nonempty,f->Words.size()*sizeof(std::uint32_t)/1048576.0,f->AppearanceRejected,int(f->AppearanceComplete));
+        advancedfx::Message("Shared constant attribute words: %zu (%.2f KiB saved in this sample).\n",f->SharedConstantWords,f->SharedConstantWords*4/1024.0);
         std::string line="Attribute coverage (collections captured/varying):";
         for(unsigned a=0;a<Layout::AttributeCount;++a)
             line+=" "+std::string(AttributeNames[a])+"="+std::to_string(coverage[a])+"/"+std::to_string(varying[a]);
@@ -1730,20 +1733,31 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        SceneClearNativeParticles();SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"at")&&parseInteger(3,value)&&value>=0) {
 	        SceneNativeParticleStatus(value);
-	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"prepare")&&parseInteger(3,value)&&value>=0) {
-            const int tick=g_ScenePreview?int(g_SequencerFrame):g_SceneNativeParticles.Frames.empty()?-1:g_SceneNativeParticles.Frames.back().Tick;
+	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"budget")&&parseInteger(3,value)&&value>=64&&value<=2048) {
+            g_SceneNativeParticles.SetBudget(std::size_t(value)*1024u*1024u);
+            SceneNativeParticleStatus(-1);
+        } else if((args->ArgC()==4||args->ArgC()==5)&&!_stricmp(args->ArgV(2),"prepare")&&parseInteger(args->ArgC()-1,value)&&value>=0) {
+            int tick=g_ScenePreview?int(g_SequencerFrame):g_SceneNativeParticles.Frames.empty()?-1:g_SceneNativeParticles.Frames.back().Tick;
+            if(args->ArgC()==5&&(!parseInteger(3,tick)||tick<0)) {
+                advancedfx::Message("Invalid explicit particle tick.\n");return;
+            }
             const auto *sample=g_SceneNativeParticles.At(tick);
             if(g_SceneRecord||!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||!g_VEngineClient->IsPaused()||g_VEngineClient->IsSkippingDemo()||
                !sample||!sample->Appearance||static_cast<std::size_t>(value)>=sample->Collections.size())
                 advancedfx::Message("Detached probe rejected: stop cache recording, pause demo, and choose a named collection from an exact cached appearance tick.\n");
-            else {g_SceneDetachedTick=tick;g_SceneDetachedIndex=value;g_SceneDetachedStatus="Requested for next engine frame end.";}
+            else if(!sample->Collections[value].Active||!sample->Collections[value].Name[0])
+                advancedfx::Message("Detached probe rejected: tick %d collection %d is empty or unnamed. Use particles at %d to select a nonempty entry.\n",tick,value,tick);
+            else {
+                g_SceneDetachedTick=tick;g_SceneDetachedIndex=value;g_SceneDetachedStatus="Requested for next engine frame end.";
+                advancedfx::Message("Detached probe scheduled: tick %d collection %d (%s), %u historical particles.\n",tick,value,sample->Collections[value].Name.data(),sample->Collections[value].Active);
+            }
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"markers")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleMarkers=value!=0;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"appearance")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleAppearance=value!=0;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"styled")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleStyled=value!=0;SceneNativeParticleStatus(-1);
-	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear> | at <tick> | prepare <collection index> | <markers|appearance|styled> <0|1> - TF2 x64 native particle experiment.\n");
+	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear> | at <tick> | prepare [tick] <collection index> | budget <MiB:64..2048> | <markers|appearance|styled> <0|1> - TF2 x64 native particle experiment.\n");
 	    return;
 	}
 	if (!_stricmp(op, "effects"))
@@ -2066,7 +2080,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
-		    "  mirv_cache particles <0|1|status|clear> | at <tick> | prepare <collection index> | <markers|appearance|styled> <0|1> - Native particle experiment.\n"
+		    "  mirv_cache particles <0|1|status|clear> | at <tick> | prepare [tick] <collection index> | budget <MiB:64..2048> | <markers|appearance|styled> <0|1> - Native particle experiment.\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");

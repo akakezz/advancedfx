@@ -11080,7 +11080,9 @@ struct SceneRetirement
 };
 static std::atomic<SceneRetirement *> g_SceneCompleted{nullptr};
 static std::atomic<unsigned> g_SceneOutstanding{0}, g_SceneOutstandingPeak{0};
-static constexpr unsigned SceneMaxOutstanding = 512;
+// Two tool callbacks and multiple queued frames may be outstanding at once.
+// Keep a hard bound, but allow headroom for broad scenes and gib bursts.
+static constexpr unsigned SceneMaxOutstanding = 2048;
 static void SceneReleaseResources(SceneRetirement *data)
 {
 	if (data->HeaderLocked)
