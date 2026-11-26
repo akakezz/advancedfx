@@ -133,6 +133,8 @@ bool MirvCam_AimCommand(advancedfx::ICommandArgs *args, void (*command)(advanced
 std::vector<advancedfx::CameraClip> MirvCam_Clips();
 // Engine-thread visualization only: no changes to the active camera state.
 std::vector<advancedfx::CameraGuideLine> MirvCam_TransitionGuideLines(std::uint64_t clipId);
+// Renderer-only memoized geometry. A miss consumes the caller's build budget.
+std::vector<advancedfx::CameraTransitionGuide> MirvCam_CachedTransitionGuides(std::uint64_t selected, bool &allowBuild);
 bool MirvCam_EditClip(advancedfx::CameraClip &clip);
 bool MirvCam_EditClipLive(advancedfx::CameraClip &clip, std::uint64_t *gesture);
 std::vector<advancedfx::SequenceModifierClip> MirvCam_SequenceModifiers();

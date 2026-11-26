@@ -631,6 +631,8 @@ std::vector<std::uint64_t> g_CameraUndoIndices, g_CameraRedoIndices;
 std::uint64_t g_CameraRedoGeneration = 0;
 unsigned g_CameraEditDepth = 0;
 unsigned long long g_CameraCaptureRevision = 0;
+// Monotonic even for coalesced live edits and undo/redo.
+std::uint64_t g_TransitionGuideEditRevision = 0;
 NamedCameraRig CloneCameraDefinition(const NamedCameraRig &source)
 {
 	auto result = source;
@@ -743,6 +745,7 @@ class CameraEditTransaction
 		if (!Owner || (CaptureRevision == g_CameraCaptureRevision && !AimChanged() &&
 					   SameCameraDefinitions(Before.Cameras, g_CameraRigs)))
 			return;
+		++g_TransitionGuideEditRevision;
 		for (auto &entry : g_CameraRigs)
 		{
 			auto before = std::find_if(Before.Cameras.begin(), Before.Cameras.end(),
@@ -2321,6 +2324,121 @@ std::vector<advancedfx::CameraGuideLine> MirvCam_TransitionGuideLines(std::uint6
 {
 	return TransitionGuideLinesInternal(clipId);
 }
+// Geometry is a function of authored definitions, paths and historical scene
+// data, not the current playhead, selection or render frame. Keep only line
+// geometry (including empty/failed results); never retain cloned engine rigs.
+std::vector<advancedfx::CameraTransitionGuide> MirvCam_CachedTransitionGuides(std::uint64_t selected, bool &allowBuild)
+{
+	std::lock_guard<std::recursive_mutex> lock(g_CameraMutex);
+	if (g_BakingCamera) return {};
+	struct PathStamp
+	{
+		std::uint64_t Id, Revision;
+		const void *Identity;
+		double Offset;
+		bool operator==(const PathStamp &o) const
+		{ return Id == o.Id && Revision == o.Revision && Identity == o.Identity && Offset == o.Offset; }
+	};
+	struct Entry
+	{
+		bool Historical = false, Ready = false;
+		std::vector<advancedfx::CameraGuideLine> Lines;
+	};
+	struct Cache
+	{
+		std::uint64_t Edit = ~std::uint64_t(0), Capture = ~std::uint64_t(0), Scene = ~std::uint64_t(0);
+		int Level = -1, Width = 0, Height = 0;
+		bool Preview = false;
+		std::string Demo;
+		std::vector<PathStamp> Paths;
+		std::vector<advancedfx::CameraClip> Clips;
+		std::vector<Entry> Entries;
+		size_t Next = 1;
+	};
+	static Cache cache;
+	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
+	std::vector<PathStamp> stamps;
+	// Only source paths in the sequence matter; key selection does not change geometry.
+	for (size_t i = 0; i < paths.GetCount(); ++i)
+	{
+		const auto id = paths.GetId(i);
+		if (std::none_of(g_CameraClips.begin(), g_CameraClips.end(),
+			[&](const auto &c){ return c.Campath && c.Target == id; })) continue;
+		if (auto path = paths.GetPath(i))
+			stamps.push_back({id, path->GetGeometryRevision(), path, path->GetOffset()});
+	}
+	const bool preview = AfxHookSource::CameraOverlay::SceneCachePreviewActive();
+	const bool changed = cache.Edit != g_TransitionGuideEditRevision || cache.Capture != g_CameraCaptureRevision ||
+		cache.Level != g_LevelInitCount || cache.Demo != g_CameraDemoKey || cache.Preview != preview ||
+		cache.Width != g_Hook_VClient_RenderView.LastWidth || cache.Height != g_Hook_VClient_RenderView.LastHeight ||
+		cache.Paths != stamps || cache.Clips != g_CameraClips;
+	if (changed)
+	{
+		cache.Edit = g_TransitionGuideEditRevision; cache.Capture = g_CameraCaptureRevision;
+		cache.Level = g_LevelInitCount; cache.Demo = g_CameraDemoKey; cache.Preview = preview;
+		cache.Width = g_Hook_VClient_RenderView.LastWidth; cache.Height = g_Hook_VClient_RenderView.LastHeight;
+		cache.Paths = std::move(stamps); cache.Clips = g_CameraClips;
+		cache.Entries.assign(cache.Clips.size(), {});
+		cache.Next = 1;
+		bool historical = preview;
+		for (size_t i = 0; i < cache.Clips.size(); ++i)
+		{
+			const auto &clip = cache.Clips[i];
+			if (!clip.Campath)
+			{
+				auto rig = FindRig(std::to_string(clip.Target));
+				if (rig != g_CameraRigs.end())
+					historical |= rig->second.Rig.Attached || bool(rig->second.AimTarget) ||
+						(rig->second.Aim && (rig->second.Aim->Active || rig->second.Aim->SoftDeactivate));
+			}
+			cache.Entries[i].Historical = historical;
+			cache.Entries[i].Ready = !i || clip.Blend <= 0;
+		}
+	}
+	if (std::any_of(cache.Entries.begin(), cache.Entries.end(), [](const auto &e){ return e.Historical; }))
+	{
+		std::uint64_t revision = 0;
+		AfxHookSource::CameraOverlay::VisitCameraSceneFrames([&](const auto &, std::uint64_t value){ revision = value; });
+		if (cache.Scene != revision)
+		{
+			cache.Scene = revision;
+			for (size_t i = 1; i < cache.Entries.size(); ++i)
+				if (cache.Entries[i].Historical && cache.Clips[i].Blend > 0)
+				{
+					cache.Entries[i].Ready = false;
+					cache.Entries[i].Lines.clear();
+				}
+		}
+	}
+	// At most one expensive evaluation per drawing snapshot. Prefer the
+	// selected transition on authored edits; otherwise rotate to avoid starvation.
+	if (allowBuild && cache.Entries.size() > 1)
+	{
+		size_t build = 0;
+		if (changed)
+			for (size_t i = 1; i < cache.Entries.size(); ++i)
+				if (!cache.Entries[i].Ready && cache.Clips[i].Id == selected) { build = i; break; }
+		if (!build)
+			for (size_t n = 0; n < cache.Entries.size() - 1; ++n)
+			{
+				const size_t i = 1 + (cache.Next - 1 + n) % (cache.Entries.size() - 1);
+				if (!cache.Entries[i].Ready) { build = i; break; }
+			}
+		if (build)
+		{
+			allowBuild = false;
+			auto &entry = cache.Entries[build];
+			entry.Lines = TransitionGuideLinesInternal(cache.Clips[build].Id);
+			entry.Ready = true;
+			cache.Next = 1 + build % (cache.Entries.size() - 1);
+		}
+	}
+	std::vector<advancedfx::CameraTransitionGuide> result;
+	for (size_t i = 1; i < cache.Entries.size(); ++i)
+		if (cache.Entries[i].Ready && !cache.Entries[i].Lines.empty())
+			result.push_back({cache.Clips[i].Id, i, cache.Entries[i].Lines});
+	return result;
+}
 void MirvCam_CaptureCameras(double time, int frame, double step,
 							std::vector<advancedfx::SceneCache::CameraSample> &samples)
 {
@@ -2783,6 +2901,7 @@ bool MirvCam_HistoryUndo(bool redo)
 	g_LegacyCameraName.clear();
 	g_EditingCameraName.clear();
 	ClearCameraBlend();
+	++g_TransitionGuideEditRevision;
 	g_CameraRigs = std::move(state.Cameras);
 	g_CameraClips = std::move(state.Clips);
 	g_SequenceDemo = state.Demo;

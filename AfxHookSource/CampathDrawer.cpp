@@ -519,14 +519,12 @@ CCampathDrawer::CDynamicProperties::CDynamicProperties(CCampathDrawer *drawer, C
 		!AfxHookSource::CameraOverlay::Recording::IsActive())
 	{
 		const auto selected = AfxHookSource::CameraOverlay::TransitionGuideClip();
-		const auto clips = MirvCam_Clips();
-		for (size_t i = 1; i < clips.size(); ++i)
+		bool allowBuild = true;
+		for (const auto &guide : MirvCam_CachedTransitionGuides(selected, allowBuild))
 		{
-			const auto &clip = clips[i];
-			if (clip.Blend <= 0) continue;
-			const auto lines = MirvCam_TransitionGuideLines(clip.Id);
-			if (lines.empty()) continue; // Unavailable historical coverage must not produce a fake route.
-			const auto color = clip.Id == selected ? D3DCOLOR_RGBA(75, 220, 255, 255)
+			const auto &lines = guide.Lines;
+			const auto i = guide.Index;
+			const auto color = guide.Id == selected ? D3DCOLOR_RGBA(75, 220, 255, 255)
 				: D3DCOLOR_RGBA(255, 176, 70, 215);
 			for (const auto &line : lines)
 				CameraLines.push_back({Vector3(line.A[0], line.A[1], line.A[2]),
