@@ -171,6 +171,20 @@ static bool SceneSelectPosePlayer(int index)
 	return true;
 }
 static ImGui::FrameIndexType g_SequencerFrame = 0;
+// Session-local demo tick work range. Video/playback uses [In, Out); cache
+// capture includes the Out sample so a cached loop can interpolate to it.
+static int g_WorkIn = -1, g_WorkOut = -1;
+static bool g_WorkLoop = false;
+static double g_WorkLoopFirst = 0, g_WorkLoopLast = 0;
+static std::uint64_t g_WorkLoopRevision = 0;
+enum class WorkTransport { Idle, Playback, Armed, Starting, Recording };
+static WorkTransport g_WorkTransport = WorkTransport::Idle;
+static bool g_WorkDispatching = false;
+static int g_WorkPreviousTick = -1;
+static std::chrono::steady_clock::time_point g_WorkStartDeadline;
+static std::string g_WorkStatus;
+static bool WorkRangeValid() { return g_WorkIn >= 0 && g_WorkOut > g_WorkIn; }
+static bool WorkRangeBusy() { return g_WorkTransport != WorkTransport::Idle || g_WorkLoop; }
 static int g_SceneLastTick = -1;
 static bool g_SceneRangeEnabled = false;
 static int g_SceneRangeFirst = 0, g_SceneRangeLast = 660;
@@ -210,6 +224,33 @@ static double SceneTickInterval();
 static void ScenePreviewTick(int tick);
 static void ScenePreviewTime(double time);
 
+// Check the actual recorded clock, including internal gaps. A first sample
+// within the In tick is acceptable; Out needs coverage for interpolation.
+static bool WorkCacheBounds(double &first, double &last)
+{
+	const auto &frames = g_SceneCache.Frames();
+	const double interval = SceneTickInterval();
+	if (!WorkRangeValid() || frames.empty() || !std::isfinite(interval) || interval <= 0) return false;
+	first = g_WorkIn * interval; last = g_WorkOut * interval;
+	if (frames.front().DemoTime >= first + interval || frames.back().DemoTime < last - 1e-9) return false;
+	first = (std::max)(first, frames.front().DemoTime);
+	last = (std::min)(last, frames.back().DemoTime);
+	if (!(last > first)) return false;
+	auto it = std::lower_bound(frames.begin(), frames.end(), first,
+		[](const auto &frame, double time){ return frame.DemoTime < time; });
+	if (it != frames.begin()) --it;
+	for (auto next = std::next(it); next != frames.end() && it->DemoTime < last; ++it, ++next)
+		if (next->DemoTime > first && next->DemoTime - it->DemoTime > .1) return false;
+	return true;
+}
+static double WorkWrapTime(double time, double first, double last)
+{
+	const double length = last - first;
+	if (time >= first && time < last) return time;
+	double offset = std::fmod(time - first, length);
+	return first + (offset < 0 ? offset + length : offset);
+}
+
 static std::shared_ptr<const advancedfx::SceneCache::Frame> g_SceneView;
 static bool g_SceneSampleReady = false, g_SceneSampleSmooth = false, g_SceneSamplePreview = false;
 static std::uint64_t g_SceneSampleRevision = 0;
@@ -225,6 +266,8 @@ static void SceneClearHistory()
 	SceneResetProfile();
 	g_SceneLastTick = -1;
 	g_SceneScrubRate = 0;
+	if (g_WorkLoop) g_WorkStatus = "Cached loop stopped: cache cleared.";
+	g_WorkLoop = false;
 	std::atomic_store(&g_SceneModelStatus, std::shared_ptr<const std::string>{});
 	std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 }
@@ -336,6 +379,22 @@ void SceneCacheFrame(bool capture)
 		auto now = std::chrono::steady_clock::now();
 		double elapsed = std::chrono::duration<double>(now - g_SceneScrubLast).count();
 		g_SceneScrubLast = now;
+		if (g_WorkLoop)
+		{
+			if (!g_ScenePreview || !g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+				g_VEngineClient->IsDrawingLoadingImage())
+				g_WorkLoop = false;
+			else if (g_WorkLoopRevision != g_SceneCache.Revision())
+			{
+				g_WorkLoop = WorkCacheBounds(g_WorkLoopFirst, g_WorkLoopLast);
+				g_WorkLoopRevision = g_SceneCache.Revision();
+			}
+			if (g_WorkLoop)
+				ScenePreviewTime(WorkWrapTime(g_SceneCursor + std::clamp(elapsed, 0.0, .1),
+					g_WorkLoopFirst, g_WorkLoopLast));
+			else
+				g_WorkStatus = "Cached loop stopped: preview or coverage changed.";
+		}
 		if (g_ScenePreview && g_SceneScrubRate && !g_SceneCache.Frames().empty() && g_VEngineClient &&
 		    g_VEngineClient->IsPlayingDemo() && !g_VEngineClient->IsDrawingLoadingImage())
 		{
@@ -358,6 +417,7 @@ void SceneCacheFrame(bool capture)
 		g_SceneSampleReady = false;
 		g_ScenePreview = false;
 		g_SceneScrubRate = 0;
+		g_WorkLoop = false;
 		std::atomic_store(&g_SceneView, std::shared_ptr<const advancedfx::SceneCache::Frame>{});
 		return;
 	}
@@ -847,6 +907,7 @@ void SceneCacheFollowCameraTime(double clientTime)
 	const auto current = SceneCacheView();
 	if (current && current->ClientTime == clientTime)
 		return;
+	if (g_WorkLoop) { g_WorkLoop = false; g_WorkStatus = "Cached loop paused."; }
 	const auto *nearest = &frames.front();
 	double demoTime = 0;
 	bool mapped = false;
@@ -884,6 +945,7 @@ void SceneCacheStopScrub()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	g_SceneScrubRate = 0;
+	if (g_WorkLoop) { g_WorkLoop = false; g_WorkStatus = "Cached loop paused."; }
 }
 bool SceneCacheNavigationKey(unsigned int key, bool down)
 {
@@ -1319,10 +1381,17 @@ static inline void Afx_GotoDemoTick(int tick)
 	MirvCampathPreview_SeekTick(tick);
 }
 
+static void StopWorkTransport(bool pause, const char *status);
 namespace Recording
 {
 bool Toggle()
 {
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (!g_WorkDispatching && g_WorkTransport != WorkTransport::Idle)
+	{
+		StopWorkTransport(true, "Range stopped by recording toggle.");
+		return true;
+	}
 	if (!g_VEngineClient)
 		return false;
 	if (IsActive())
@@ -1398,6 +1467,107 @@ bool HandleHotkey(unsigned int key)
 	return true;
 }
 } // namespace Recording
+
+static void StopWorkTransport(bool pause, const char *status)
+{
+	const bool ownedRecording = g_WorkTransport == WorkTransport::Starting ||
+		g_WorkTransport == WorkTransport::Recording;
+	g_WorkTransport = WorkTransport::Idle;
+	g_WorkPreviousTick = -1;
+	g_WorkStatus = status;
+	// An explicit end also cancels a start command that has not become active yet.
+	if (ownedRecording)
+		Afx_ExecClientCmd(pause ? "mirv_streams record end; host_framerate 0; demo_pause"
+			: "mirv_streams record end; host_framerate 0");
+	else if (pause) Afx_ExecClientCmd("demo_pause");
+}
+static bool StartWorkTransport(bool record)
+{
+	int tick = -1;
+	if (WorkRangeBusy() || !WorkRangeValid() || g_ScenePreview || Recording::IsActive() ||
+		!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() || g_VEngineClient->IsDrawingLoadingImage() ||
+		g_VEngineClient->IsSkippingDemo() || MirvCampathPreview_IsSeeking() || !GetCurrentDemoTick(tick) ||
+		tick > g_WorkIn)
+	{
+		g_WorkStatus = "Use actual demo playback, seek to or before In, and finish any active recording or seek.";
+		return false;
+	}
+	if (auto *demo = g_VEngineClient->GetDemoInfoEx())
+		if (demo->GetDemoPlaybackTotalTicks() > 0 && g_WorkOut > demo->GetDemoPlaybackTotalTicks())
+		{
+			g_WorkStatus = "Out is beyond the demo.";
+			return false;
+		}
+	if (record && !RecordingResolution::CanStart())
+	{
+		g_WorkStatus = "Recording resolution is not verified.";
+		return false;
+	}
+	g_WorkTransport = record ? WorkTransport::Armed : WorkTransport::Playback;
+	g_WorkPreviousTick = tick;
+	g_WorkStatus = record ? "Recording armed: waiting for In." : "Playing actual demo to Out.";
+	Afx_ExecClientCmd("demo_timescale 1; demo_resume");
+	return true;
+}
+// Engine FRAME_START, even with the overlay closed. Never seek implicitly;
+// abort on a demo change or discontinuous backwards playback.
+static void WorkTransportFrame()
+{
+	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+	if (g_WorkTransport == WorkTransport::Idle) return;
+	int tick = -1;
+	if (!g_VEngineClient || !g_VEngineClient->IsPlayingDemo() ||
+		g_VEngineClient->IsDrawingLoadingImage() || g_VEngineClient->IsSkippingDemo() ||
+		MirvCampathPreview_IsSeeking() || g_ScenePreview || !GetCurrentDemoTick(tick) ||
+		tick < g_WorkPreviousTick)
+	{
+		StopWorkTransport(false, "Range cancelled: demo or playback clock changed.");
+		return;
+	}
+	g_WorkPreviousTick = tick;
+	if ((g_WorkTransport == WorkTransport::Playback || g_WorkTransport == WorkTransport::Armed) &&
+		Recording::IsActive())
+	{
+		g_WorkTransport = WorkTransport::Idle;
+		g_WorkStatus = "Range cancelled: another recording started.";
+		return;
+	}
+	if (g_WorkTransport == WorkTransport::Recording && !Recording::IsActive())
+	{
+		g_WorkTransport = WorkTransport::Idle;
+		g_WorkStatus = "Range recording stopped manually.";
+		return;
+	}
+	if (tick >= g_WorkOut)
+	{
+		StopWorkTransport(true, g_WorkTransport == WorkTransport::Armed
+			? "Out reached before recording could start." : "Out reached; range finished.");
+		return;
+	}
+	if (g_WorkTransport == WorkTransport::Armed && tick >= g_WorkIn && !g_VEngineClient->IsPaused())
+	{
+		g_WorkDispatching = true;
+		const bool started = Recording::Toggle();
+		g_WorkDispatching = false;
+		if (started)
+		{
+			g_WorkTransport = WorkTransport::Starting;
+			g_WorkStartDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			g_WorkStatus = "Starting range recording...";
+		}
+		else StopWorkTransport(true, "Range recording could not start.");
+	}
+	if (g_WorkTransport == WorkTransport::Starting)
+	{
+		if (Recording::IsActive())
+		{
+			g_WorkTransport = WorkTransport::Recording;
+			g_WorkStatus = "Recording selected range.";
+		}
+		else if (std::chrono::steady_clock::now() >= g_WorkStartDeadline)
+			StopWorkTransport(true, "Recording did not become active; range cancelled.");
+	}
+}
 
 static inline const char *AfxStreams_GetRecordNameUtf8()
 {
@@ -1529,7 +1699,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		{
 			++g_SceneDrawEpoch;
 			g_ScenePreview = false;
-			g_SceneScrubRate = 0;
+			SceneCacheStopScrub();
 			SceneCacheFrame(false);
 			ok = true;
 		}
@@ -1548,11 +1718,12 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	{
 		if (!value)
 		{
-			g_SceneScrubRate = 0;
+			SceneCacheStopScrub();
 			ok = true;
 		}
 		else if (g_ScenePreview && !g_SceneCache.Frames().empty())
 		{
+			g_WorkLoop = false;
 			g_SceneScrubRate = value;
 			g_SceneScrubLast = std::chrono::steady_clock::now();
 			ok = true;
@@ -1571,6 +1742,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 			if (target >= first && target <= last)
 			{
 				g_SceneScrubRate = 0;
+				g_WorkLoop = false;
 				g_ScenePreview = true;
 				ScenePreviewTick(int(target));
 				g_SequencerNeedsRefresh = true;
@@ -2153,6 +2325,7 @@ void PreferencesFrame()
 {
 	if (g_RecordTogglePending.exchange(false))
 		Recording::Toggle();
+	WorkTransportFrame();
 	if (!g_OverlayPreferencesReady)
 		return;
 	CheckOverlayPreferences();
@@ -5174,6 +5347,11 @@ void NotifyDemoPlaybackFile(const char *file)
 	if (file && *file)
 	{
 		CancelCommandMarkerDrag();
+		if (g_WorkTransport != WorkTransport::Idle)
+			StopWorkTransport(false, "Range cleared: new demo.");
+		g_WorkIn = g_WorkOut = -1;
+		g_WorkLoop = false;
+		g_WorkStatus.clear();
 		SceneClearHistory();
 		if (g_SceneRangeEnabled)
 			g_SceneRecord = false;
@@ -7050,6 +7228,135 @@ static int AdjustmentTick(double seconds, double interval)
  if (!std::isfinite(seconds) || !std::isfinite(interval) || interval <= 0) return 0;
  return int(std::llround(std::clamp(seconds / interval, 0.0, double(INT_MAX - 1))));
 }
+// This row is intentionally separate from source and adjustment tracks.
+// A point marker retains a usable hit area at every zoom level.
+static void DrawWorkRangeTrack(int total)
+{
+	if (!ImGui::BeginNeoTimelineEx("Work range", nullptr, ImGuiNeoTimelineFlags_None)) return;
+	static int edge = 0, startIn = -1, startOut = -1, pending = -1, mouseStart = 0;
+	int mouse = 0;
+	const bool haveMouse = ImGui::GetNeoSequencerMouseFrame(&mouse, ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+	const bool editable = !WorkRangeBusy() && !g_LockKeyTimes;
+	if (edge)
+	{
+		if (!editable || startIn != g_WorkIn || startOut != g_WorkOut || ImGui::IsKeyPressed(ImGuiKey_Escape))
+			edge = 0;
+		else if (ImGui::IsMouseReleased(0))
+		{
+			if (edge == 1) g_WorkIn = pending; else g_WorkOut = pending;
+			edge = 0;
+		}
+		else if (!ImGui::IsMouseDown(0)) edge = 0;
+		else if (haveMouse)
+		{
+			const auto base = edge == 1 ? startIn : startOut;
+			const auto lo = edge == 2 && startIn >= 0 ? startIn + 1 : 0;
+			const auto hi = edge == 1 && startOut >= 0 ? startOut - 1 : total;
+			if (lo <= hi)
+				pending = int(std::clamp(std::int64_t(base) + mouse - mouseStart,
+					std::int64_t(lo), std::int64_t(hi)));
+			ImGui::NeoCancelSelection();
+		}
+	}
+	const int in = edge == 1 ? pending : g_WorkIn, out = edge == 2 ? pending : g_WorkOut;
+	if (in >= 0 && out > in)
+		ImGui::NeoTimelineSpan(in, out, IM_COL32(80,180,165,100), "Selected range", nullptr, true, false, -1, false, false);
+	bool inHovered = false, outHovered = false;
+	if (in >= 0)
+		ImGui::NeoTimelineSpan(in, in, IM_COL32(100,235,170,255), "In (drag to edit)", &inHovered, false, false, -1, false, editable);
+	if (out >= 0)
+		ImGui::NeoTimelineSpan(out, out, IM_COL32(255,185,85,255), "Out (drag to edit)", &outHovered, false, false, -1, false, editable);
+	if (!edge && editable && haveMouse && ImGui::IsMouseClicked(0) && (inHovered || outHovered))
+	{
+		edge = inHovered && (!outHovered || std::abs(mouse-in) <= std::abs(mouse-out)) ? 1 : 2;
+		startIn = g_WorkIn; startOut = g_WorkOut; mouseStart = mouse;
+		pending = edge == 1 ? startIn : startOut;
+		ImGui::NeoCancelSelection();
+	}
+	ImGui::EndNeoTimeLine();
+}
+
+static void DrawWorkRangeControls(int playhead, int total)
+{
+	ImGui::PushID("sequencer_work_range");
+	ImGui::BeginDisabled(WorkRangeBusy() || g_LockKeyTimes);
+	if (ImGui::Button("Set in"))
+	{
+		g_WorkIn = std::clamp(playhead, 0, total);
+		if (g_WorkOut <= g_WorkIn) g_WorkOut = -1;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Set out"))
+	{
+		g_WorkOut = std::clamp(playhead, 0, total);
+		if (g_WorkIn >= g_WorkOut) g_WorkIn = -1;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Clear range")) { g_WorkIn = g_WorkOut = -1; g_WorkStatus.clear(); }
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ImGui::Button("Range actions")) ImGui::OpenPopup("range_actions");
+	if (ImGui::BeginPopup("range_actions"))
+	{
+		ImGui::BeginDisabled(WorkRangeBusy() || g_LockKeyTimes);
+		ImGui::InputInt("In tick", &g_WorkIn);
+		ImGui::InputInt("Out tick", &g_WorkOut);
+		if (!WorkRangeBusy() && !g_LockKeyTimes)
+		{
+			g_WorkIn = std::clamp(g_WorkIn, -1, total);
+			g_WorkOut = std::clamp(g_WorkOut, -1, total);
+		}
+		ImGui::EndDisabled();
+		ImGui::TextWrapped("Set In/Out at the playhead or drag the work-range markers. Video records from In to before Out.");
+		ImGui::BeginDisabled(!WorkRangeValid() || WorkRangeBusy() || Recording::IsActive());
+		if (ImGui::Button("Seek actual demo to In")) Afx_GotoDemoTick(g_WorkIn);
+		ImGui::BeginDisabled(g_ScenePreview);
+		if (ImGui::Button("Play to Out")) StartWorkTransport(false);
+		if (ImGui::Button("Record In to Out")) StartWorkTransport(true);
+		ImGui::EndDisabled();
+		ImGui::TextWrapped("Actual demo: seek to In or earlier, then play/record. Playback resumes at normal speed and pauses at Out.");
+		ImGui::BeginDisabled(g_SceneRecord);
+		if (ImGui::Button("Use range for cache capture"))
+		{
+			g_SceneRangeFirst = g_WorkIn; g_SceneRangeLast = g_WorkOut; g_SceneRangeEnabled = true;
+			g_WorkStatus = "Cache capture range set (includes Out); arm capture in Scene Cache.";
+		}
+		ImGui::EndDisabled();
+		ImGui::BeginDisabled(!g_ScenePreview);
+		if (ImGui::Button("Play cached loop"))
+		{
+			if (WorkCacheBounds(g_WorkLoopFirst, g_WorkLoopLast) && g_VEngineClient && g_VEngineClient->IsPlayingDemo())
+			{
+				g_SceneScrubRate = 0;
+				g_WorkLoopRevision = g_SceneCache.Revision();
+				g_WorkLoop = true;
+				g_SceneScrubLast = std::chrono::steady_clock::now();
+				ScenePreviewTime(g_WorkLoopFirst);
+				g_WorkStatus = "Looping cached range. Manual scrubbing pauses the loop.";
+			}
+			else g_WorkStatus = "Cached loop requires continuous recorded coverage from In through Out.";
+		}
+		ImGui::EndDisabled();
+		ImGui::EndDisabled();
+		ImGui::TextWrapped("Cached playback does not seek or record the actual demo.");
+		ImGui::EndPopup();
+	}
+	if (WorkRangeBusy())
+	{
+		ImGui::SameLine();
+		if (ImGui::Button("Stop range"))
+		{
+			if (g_WorkLoop) SceneCacheStopScrub();
+			else StopWorkTransport(true, "Range stopped.");
+		}
+	}
+	if (WorkRangeValid()) ImGui::TextDisabled("In %d | Out %d | %.3f s", g_WorkIn, g_WorkOut,
+		(double(g_WorkOut) - g_WorkIn) * SceneTickInterval());
+	else ImGui::TextDisabled("Set In and Out (Out must follow In).");
+	if (!g_WorkStatus.empty()) ImGui::TextWrapped("%s", g_WorkStatus.c_str());
+	ImGui::PopID();
+}
+
 static int FreeModifierTrack(const advancedfx::SequenceModifierClip &clip,
  const std::vector<advancedfx::SequenceModifierClip> &clips)
 {
@@ -7728,7 +8035,7 @@ static void DrawCameraClipsPanel()
 	ImGui::TextWrapped("Drag to move clips. Alt-drag duplicates; Shift bypasses snapping. Ctrl-drag transition edges or fade markers, including zero-duration markers. Right-click for clip options.");
 	ImGui::Checkbox("Show transition guides in 3D", &g_ShowTransitionGuide);
 	ImGui::TextWrapped("Amber: transition. Cyan: selected transition. Labels mark the sampled start and end.");
-	ImGui::TextDisabled("Editor only; hidden during recording. Moving/aimed cameras need Scene Cache history for an accurate 3D guide.");
+	ImGui::TextWrapped("Editor only; hidden during recording. Moving/aimed cameras need Scene Cache history for accurate guides.");
 	if (SceneCachePreviewActive())
 		ImGui::TextWrapped("Recorded tracking preserves observed aiming. Without camera samples, aiming is "
 						   "unsmoothed. Re-record after editing a camera. Targets must be "
@@ -10056,13 +10363,13 @@ void Draw()
 							Recording::SetProfile(name.c_str());
 					ImGui::EndCombo();
 				}
-				ImGui::TextDisabled("Includes built-in and custom mirv_streams settings. The menu always reads the active profile.");
+				ImGui::TextWrapped("Includes built-in and custom mirv_streams settings. The menu always reads the active profile.");
 				DrawRecordingProfileEditor(Recording::CurrentProfile());
                 bool gpuCapture=Recording::GpuCaptureEnabled();
                 ImGui::BeginDisabled(Recording::IsActive() || Recording::SeparateConfigured());
                 if(ImGui::Checkbox("GPU capture (experimental)",&gpuCapture)) Recording::SetGpuCaptureEnabled(gpuCapture);
                 ImGui::EndDisabled();
-                ImGui::TextDisabled("Screen color only; unsupported devices/profiles use CPU. See recording log.");
+                ImGui::TextWrapped("Screen color only; unsupported devices/profiles use CPU. See recording log.");
 
 				ImGui::Separator();
 				ImGui::BeginDisabled(Recording::IsActive() || !RecordingResolution::CanStart());
@@ -10199,7 +10506,7 @@ void Draw()
 				std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 				++g_SceneDrawEpoch;
 				g_ScenePreview = cached;
-				g_SceneScrubRate=0;
+				SceneCacheStopScrub();
 				g_SequencerNeedsRefresh = true;
 				if (cached && !g_SceneCache.Frames().empty())
 					s_seqFrame = int(std::floor(g_SceneCache.Frames().back().DemoTime/SceneTickInterval()));
@@ -10295,6 +10602,7 @@ void Draw()
 			s_seqEnd = demoTotalTicks > 0 ? demoTotalTicks
 										 : (std::max)(s_seqEnd, (std::max)(1, curDemoTick));
 
+			DrawWorkRangeControls(s_seqFrame, s_seqEnd);
 			const auto clipsForView = MirvCam_Clips();
    const auto modifiersForView = MirvCam_SequenceModifiers();
 			if (ImGui::Button("Tracks"))
@@ -10454,7 +10762,7 @@ void Draw()
      if (std::any_of(modifiersForView.begin(), modifiersForView.end(), [&](const auto &m){return m.Track == track;})) ++adjustmentRows;
    if (g_AdjustmentDuplicateDrag && adjustmentRows > 0 && adjustmentRows < advancedfx::SequenceModifierClip::MaxTracks) ++adjustmentRows;
 			const float rows =
-				float(adjustmentRows + modifierRows + (pathRows > 1 ? 1 + (g_SequencerPathsOpen ? pathRows : 0) : pathRows) +
+				float(1 + adjustmentRows + modifierRows + (pathRows > 1 ? 1 + (g_SequencerPathsOpen ? pathRows : 0) : pathRows) +
 					  int(SequencerTrackVisible(1, haveAuthoredPaths)) +
 					  int(!clipsForView.empty() && SequencerTrackVisible(2, true)) +
 					  int(SequencerTrackVisible(3, !g_SceneCache.Frames().empty())) +
@@ -10509,6 +10817,7 @@ void Draw()
 					}
 					if (g_CancelGesture)
 						ImGui::NeoCancelSelection();
+					DrawWorkRangeTrack(s_seqEnd);
 					auto &document = g_Hook_VClient_RenderView.m_CamPaths;
 					size_t choosePath = document.GetCount();
 					// Cache (ticks <-> times <-> values)
@@ -11165,7 +11474,10 @@ void Draw()
 			if (SceneCachePreviewActive())
 			{
 				if (pointerMoved && !fractionalPointerHandled)
+				{
+					SceneCacheStopScrub();
 					ScenePreviewTick(s_seqFrame);
+				}
 				ImGui::TextDisabled("Cached tick %.3f | Actual demo tick %d",
 				                    g_SceneCursor / SceneTickInterval(), curDemoTick);
 				if (!SceneCacheView())

@@ -1185,6 +1185,25 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  sceneCommand({"mirv_cache","range","105","104"});check(g_SceneRangeFirst==100&&g_SceneRangeLast==102,"Invalid range leaves previous configuration intact");sceneCommand({"mirv_cache","range","-1","104"});check(g_SceneRangeFirst==100,"Negative range is rejected");
  sceneCommand({"mirv_cache","clear"});sceneCommand({"mirv_cache","range","110","112"});sceneCommand({"mirv_cache","record","1"});cacheCaptureAtTick(110);cacheCaptureAtTick(114);check(!g_SceneRecord&&g_SceneCache.Count()==1,"Skipping past end stops capture without fabricating missing samples");
  sceneCommand({"mirv_cache","range","off"});sceneCommand({"mirv_cache","record","1"});cacheCaptureAtTick(115);check(g_SceneRecord&&g_SceneCache.Count()==2,"Unbounded recording remains available");sceneCommand({"mirv_cache","range","120","122"});NotifyDemoPlaybackFile("range-other.dem");check(!g_SceneRangeEnabled&&!g_SceneRecord&&!g_SceneCaptureFrames,"New demo clears its old capture range and profile");
+ // Work range is session-local, starts video at the observed In boundary, and stops at Out.
+ check(g_WorkIn==-1&&g_WorkOut==-1&&!g_WorkLoop,"New demo clears work range");
+ {const auto oldTime=g_MirvTime.Time;const bool oldAutoClose=g_RecordAutoClose;
+ g_RecordAutoClose=false;g_WorkIn=100;g_WorkOut=104;g_ScenePreview=false;testRecording=false;
+ g_CampathSeekTarget=-1;engine.Paused=false;engine.Skipping=false;engine.Loading=false;
+ g_MirvTime.Time=99.1/66;check(StartWorkTransport(true)&&g_WorkTransport==WorkTransport::Armed,"Range recording arms before In");
+ auto beforeStart=commands.size();WorkTransportFrame();check(commands.size()==beforeStart,"Range recording waits before In");
+ g_MirvTime.Time=100.1/66;WorkTransportFrame();check(g_WorkTransport==WorkTransport::Starting&&commands.back().find("mirv_streams record start")!=std::string::npos,"Range starts recorder at In");
+ testRecording=true;WorkTransportFrame();check(g_WorkTransport==WorkTransport::Recording,"Range observes active recorder");
+ g_MirvTime.Time=104.1/66;WorkTransportFrame();check(g_WorkTransport==WorkTransport::Idle&&commands.back().find("mirv_streams record end")!=std::string::npos,"Range stops recorder at Out");
+ testRecording=false;g_MirvTime.Time=99.1/66;check(StartWorkTransport(false),"Range playback arms");g_MirvTime.Time=104.1/66;WorkTransportFrame();check(g_WorkTransport==WorkTransport::Idle&&commands.back()=="demo_pause","Range playback pauses at Out");
+ check(!StartWorkTransport(true),"Range cannot start after In without explicit seek");
+ g_SceneCache.Clear();for(int t=100;t<=104;++t){advancedfx::SceneCache::Frame f;f.DemoTime=t*SceneTickInterval();f.ClientTime=f.DemoTime+10;g_SceneCache.Append(f);}
+ check(WorkCacheBounds(g_WorkLoopFirst,g_WorkLoopLast),"Cached loop requires both endpoints");
+ check(std::abs(WorkWrapTime(g_WorkLoopLast+.01,g_WorkLoopFirst,g_WorkLoopLast)-(g_WorkLoopFirst+.01))<1e-9,"Cached loop wraps overflow to In");
+ g_ScenePreview=true;g_WorkLoop=true;g_WorkLoopRevision=g_SceneCache.Revision();g_SceneCursor=g_WorkLoopLast-.01;g_SceneScrubLast=std::chrono::steady_clock::now()-std::chrono::milliseconds(50);
+ auto beforeLoop=commands.size();SceneCacheFrame();check(g_WorkLoop&&g_SceneCursor>=g_WorkLoopFirst&&g_SceneCursor<g_WorkLoopLast&&commands.size()==beforeLoop,"Cached loop wraps without native commands");
+ SceneCacheStopScrub();check(!g_WorkLoop,"Manual scrub pauses cached loop");
+ g_ScenePreview=false;g_SceneCache.Clear();g_WorkIn=g_WorkOut=-1;g_WorkStatus.clear();g_MirvTime.Time=oldTime;g_RecordAutoClose=oldAutoClose;}
  // Idle sampling preserves the immutable published frame instead of reallocating every frame.
  g_SceneCache.Clear();advancedfx::SceneCache::Frame idle;idle.DemoTime=1;idle.ClientTime=1;g_SceneCache.Append(idle);g_ScenePreview=true;g_SceneCursor=1;SceneCacheFrame(false);auto published=SceneCacheView();SceneCacheFrame(false);check(published&&SceneCacheView()==published,"Idle cached preview reuses its published sample");
  g_SceneCache.Clear();idle.ClientTime=2;g_SceneCache.Append(idle);SceneCacheFrame(false);check(SceneCacheView()!=published&&SceneCacheView()->ClientTime==2,"Cache revision invalidates a sample at the same cursor");published=SceneCacheView();g_SceneSmoothAnimation=!g_SceneSmoothAnimation;SceneCacheFrame(false);check(SceneCacheView()!=published,"Animation mode invalidates idle sample");g_ScenePreview=false;SceneCacheFrame(false);check(!SceneCacheView(),"Disabling preview clears the memoized sample");
