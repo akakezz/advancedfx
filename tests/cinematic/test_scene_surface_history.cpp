@@ -1,0 +1,19 @@
+#include "../../shared/SceneSurfaceHistory.h"
+#include <cassert>
+using namespace advancedfx::SceneSurfaces;
+int main(){
+    Frame f;f.Tick=1;f.World=1;f.DecalsReady=true;
+    Decal d;d.Material="decals/test";d.Alpha=123;
+    f.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{d});
+    History h;assert(h.Append(f));auto bytes=h.Bytes;
+    f.Tick=2;f.Decals=std::make_shared<const std::vector<Decal>>(*f.Decals);
+    assert(h.Append(f));assert(h.Bytes==bytes+sizeof(Frame));assert(h.At(1)->Decals==h.At(2)->Decals);
+    d.Alpha=0;assert(d.Same(f.Decals->front()));assert(!(d==f.Decals->front()));
+    f.Tick=3;f.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{d});
+    assert(h.Append(f));assert(h.Bytes>bytes+2*sizeof(Frame));assert(!h.At(4));
+    History small(bytes+sizeof(Frame));f.Tick=1;assert(small.Append(f));f.Tick=2;assert(small.Append(f));f.Tick=3;assert(small.Append(f));assert(small.Frames.size()==2);assert(small.Evicted==1);assert(small.Bytes==bytes+sizeof(Frame));
+    f.World=2;f.Tick=1;assert(h.Append(f));assert(h.Frames.size()==1);
+    h.Clear();assert(!h.Bytes&&!h.At(1));
+    Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
+    sh.Leaves.push_back(-1);assert(!sh.Valid());
+}

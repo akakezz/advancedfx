@@ -768,3 +768,5 @@ must be validated; diagnostics report observed/unobserved, projected count,
 matched/missing/unsupported marks and restoration warnings. Revert by
 surfaces batch 0; keep previously validated 54cd55f available. No Windows
 build or runtime validation performed for Phase 13.
+
+Review follow-up: projection observation armed only during live recording; cleanup uses module identity independent of demo transport state, handles destroyed by the engine are forgotten, transient decal draw flags excluded from identity, and immutable payload accounting uses reference counts rather than scanning history. Added portable history fixture.

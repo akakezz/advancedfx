@@ -13,15 +13,18 @@ template<class T> static bool SurfaceGet(SurfaceAddress a,T &v){return SurfaceRe
 static bool SurfaceMatch(SurfaceAddress base,SurfaceAddress r,std::initializer_list<unsigned char> bytes){
     unsigned char data[32]{};return bytes.size()<=sizeof(data)&&SurfaceRead(base+r,data,bytes.size())&&std::equal(bytes.begin(),bytes.end(),data);
 }
-static SurfaceAddress SurfaceEngine(){
-    if(g_SourceSdkVer!=SourceSdkVer_TF2||!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||
-       g_VEngineClient->IsSkippingDemo()||g_VEngineClient->IsDrawingLoadingImage()||MirvCampathPreview_IsSeeking())return 0;
+static SurfaceAddress SurfaceEngineModule(){
     const auto base=reinterpret_cast<SurfaceAddress>(GetModuleHandleA("engine.dll"));
     IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
     if(!base||!SurfaceGet(base,dos)||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
        !SurfaceGet(base+dos.e_lfanew,nt)||nt.Signature!=IMAGE_NT_SIGNATURE||nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||
        nt.FileHeader.TimeDateStamp!=0x6ac41507||nt.OptionalHeader.SizeOfImage!=0x822000)return 0;
     return base;
+}
+static SurfaceAddress SurfaceEngine(){
+    if(g_SourceSdkVer!=SourceSdkVer_TF2||!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||
+       g_VEngineClient->IsSkippingDemo()||g_VEngineClient->IsDrawingLoadingImage()||MirvCampathPreview_IsSeeking())return 0;
+    return SurfaceEngineModule();
 }
 static bool SurfaceMaterialName(SurfaceAddress material,std::string &name){
     SurfaceAddress table=0,fn=0;
@@ -72,6 +75,7 @@ static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::ve
         std::memcpy(v.Placement.data(),raw.data()+0x24,12);
         if(v.Flags&0x80)std::memcpy(v.Placement.data()+3,raw.data()+0x30,12);
         get(0x44,v.Placement[6]);get(0x54,v.Color);get(0x57,v.Alpha);
+        v.Flags&=0x0081; // avoid transient draw/clip flags in historical identity
         auto found=materials.find(material);
         if(found==materials.end()){
             std::string name;if(!SurfaceMaterialName(material,name)){++unsupported;continue;}
@@ -95,7 +99,7 @@ static ProjectFn g_SurfaceProject=nullptr;
 static DestroyFn g_SurfaceDestroy=nullptr;
 static BiasFn g_SurfaceBias=nullptr;
 static DWORD g_SurfaceThread=0;
-static bool g_SurfaceHooks=false,g_SurfaceOwn=false,g_SurfaceReplayActive=false;
+static bool g_SurfaceHooks=false,g_SurfaceOwn=false,g_SurfaceReplayActive=false,g_SurfaceCaptureArmed=false;
 static std::map<ShadowHandle,Shadow> g_SurfaceObserved;
 static std::map<ShadowHandle,unsigned char> g_SurfaceSavedBias;
 static std::vector<ShadowHandle> g_SurfaceOwned;
@@ -120,7 +124,7 @@ static bool ShadowSlots(void *manager,std::vector<ShadowSlot> &out){
 }
 static void SurfaceProjectHook(void *self,ShadowHandle handle,const float *origin,const float *dir,const float *matrix,const float *size,int count,const int *leaves,float height,float offset,float amount,const float *caster){
     g_SurfaceProject(self,handle,origin,dir,matrix,size,count,leaves,height,offset,amount,caster);
-    if(g_SurfaceOwn||GetCurrentThreadId()!=g_SurfaceThread||self!=g_SurfaceShadowManager)return;
+    if(GetCurrentThreadId()!=g_SurfaceThread||g_SurfaceOwn||g_SurfaceReplayActive||!g_SurfaceCaptureArmed||self!=g_SurfaceShadowManager)return;
     auto base=SurfaceEngine();NativeWorld world;
     if(!base||!SurfaceWorld(base,world)){g_SurfaceObserved.clear();return;}
     if(!SurfaceSameWorld(world,g_SurfaceWorld)){g_SurfaceWorld=world;++g_SurfaceGeneration;g_SurfaceObserved.clear();}
@@ -136,7 +140,7 @@ static void SurfaceProjectHook(void *self,ShadowHandle handle,const float *origi
     g_SurfaceObserved[handle]=std::move(s);
 }
 static void SurfaceDestroyHook(void *self,ShadowHandle handle){
-    if(!g_SurfaceOwn&&GetCurrentThreadId()==g_SurfaceThread&&self==g_SurfaceShadowManager){g_SurfaceObserved.erase(handle);g_SurfaceSavedBias.erase(handle);}
+    if(!g_SurfaceOwn&&GetCurrentThreadId()==g_SurfaceThread&&self==g_SurfaceShadowManager){g_SurfaceObserved.erase(handle);g_SurfaceSavedBias.erase(handle);g_SurfaceOwned.erase(std::remove(g_SurfaceOwned.begin(),g_SurfaceOwned.end(),handle),g_SurfaceOwned.end());}
     g_SurfaceDestroy(self,handle);
 }
 static void SurfaceBiasHook(void *self,ShadowHandle handle,unsigned char bias){
@@ -209,6 +213,12 @@ advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){
 #endif
     return sample;
 }
+void Mirv_Tf2_SetSurfaceObservation(bool armed){
+#ifdef _WIN64
+    if(!armed&&g_SurfaceCaptureArmed)g_SurfaceObserved.clear();
+    g_SurfaceCaptureArmed=armed;
+#endif
+}
 void Mirv_Tf2_ResetSurfaces(){
 #ifdef _WIN64
     if(!g_SurfaceReplayActive){g_SurfaceObserved.clear();g_SurfaceWorld={};++g_SurfaceGeneration;}
@@ -271,7 +281,7 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
 std::string Mirv_Tf2_EndSurfaceReplay(){
 #ifdef _WIN64
     if(!g_SurfaceReplayActive)return {};
-    std::size_t failed=0;const auto base=SurfaceEngine();NativeWorld world;
+    std::size_t failed=0;const auto base=SurfaceEngineModule();NativeWorld world;
     if(base&&SurfaceWorld(base,world)&&SurfaceSameWorld(world,g_SurfaceWorld)){
         if(!g_SurfaceDecalRestore.empty()){
             std::vector<LiveDecal> current;std::size_t unsupported=0;

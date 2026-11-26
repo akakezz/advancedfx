@@ -522,6 +522,7 @@ void SceneCacheFrame(bool capture)
 	if (capture)
 	{
 		Mirv_Tf2_SceneRenderFrame();
+        Mirv_Tf2_SetSurfaceObservation(g_SceneSurfaceCapture&&g_SceneRecord&&!g_ScenePreview&&g_VEngineClient&&g_VEngineClient->IsPlayingDemo()&&!g_VEngineClient->IsSkippingDemo()&&!g_VEngineClient->IsDrawingLoadingImage());
         if(std::exchange(g_SceneLegacyAuditPending,false)) {
             int liveTick=-1;
             if(g_ScenePreview||!GetCurrentDemoTick(liveTick))
@@ -602,6 +603,7 @@ void SceneCacheFrame(bool capture)
 		const auto captureStart = std::chrono::steady_clock::now();
 		if (g_SceneLastTick >= 0 && tick < g_SceneLastTick)
 		{
+            g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();
 			++g_SceneDrawEpoch;
 			SceneResetProfile();
 		}

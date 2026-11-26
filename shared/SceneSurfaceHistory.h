@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <map>
 #include <string>
 #include <vector>
 #include <type_traits>
@@ -52,21 +53,27 @@ class History {
     std::size_t Budget;
     static std::size_t Cost(const std::vector<Decal> &v){std::size_t n=sizeof(v)+v.capacity()*sizeof(Decal);for(const auto &d:v)n+=d.Material.capacity();return n;}
     static std::size_t Cost(const std::vector<Shadow> &v){std::size_t n=sizeof(v)+v.capacity()*sizeof(Shadow);for(const auto &s:v)n+=s.Leaves.capacity()*sizeof(int);return n;}
-    template<class T> bool Unique(const std::shared_ptr<const std::vector<T>> &p)const{
-        if(!p)return false;
-        for(const auto &f:Frames){
-            if constexpr(std::is_same_v<T,Decal>){if(f.Decals==p)return false;}
-            else {if(f.Shadows==p)return false;}
-        }
-        return true;
+    std::map<const void*,std::size_t> Refs;
+    template<class T> std::size_t ExtraVector(const std::shared_ptr<const std::vector<T>> &p)const{
+        return p&&!Refs.count(p.get())?Cost(*p):0;
     }
-    std::size_t Extra(const Frame &f)const{return sizeof(Frame)+(Unique(f.Decals)?Cost(*f.Decals):0)+(Unique(f.Shadows)?Cost(*f.Shadows):0);}
-    void Drop(bool front){Frame f=front?std::move(Frames.front()):std::move(Frames.back());if(front)Frames.pop_front();else Frames.pop_back();Bytes-=Extra(f);}
+    template<class T> void AddVector(const std::shared_ptr<const std::vector<T>> &p){
+        if(p){auto &n=Refs[p.get()];if(!n++)Bytes+=Cost(*p);}
+    }
+    template<class T> void DropVector(const std::shared_ptr<const std::vector<T>> &p){
+        if(p){auto it=Refs.find(p.get());if(it!=Refs.end()&&!--it->second){Bytes-=Cost(*p);Refs.erase(it);}}
+    }
+    std::size_t Extra(const Frame &f)const{return sizeof(Frame)+ExtraVector(f.Decals)+ExtraVector(f.Shadows);}
+    void Drop(bool front){
+        Frame f=front?std::move(Frames.front()):std::move(Frames.back());
+        if(front)Frames.pop_front();else Frames.pop_back();
+        Bytes-=sizeof(Frame);DropVector(f.Decals);DropVector(f.Shadows);
+    }
 public:
     explicit History(std::size_t budget=64u*1024u*1024u):Budget(budget){}
     std::deque<Frame> Frames;
     std::size_t Bytes=0,Evicted=0,Rejected=0;
-    void Clear(){Frames.clear();Bytes=Evicted=Rejected=0;}
+    void Clear(){Frames.clear();Refs.clear();Bytes=Evicted=Rejected=0;}
     bool Append(Frame f){
         if(f.Tick<0){++Rejected;return false;}
         if(!Frames.empty()&&(f.World!=Frames.back().World||f.Tick<Frames.back().Tick))Clear();
@@ -79,7 +86,7 @@ public:
         }
         if(sizeof(Frame)+(f.Decals?Cost(*f.Decals):0)+(f.Shadows?Cost(*f.Shadows):0)>Budget){++Rejected;return false;}
         while(!Frames.empty()&&(Bytes>Budget-Extra(f)||Frames.size()>=32768)){Drop(true);++Evicted;}
-        Bytes+=Extra(f);Frames.push_back(std::move(f));return true;
+        Bytes+=sizeof(Frame);AddVector(f.Decals);AddVector(f.Shadows);Frames.push_back(std::move(f));return true;
     }
     const Frame *At(int tick)const{
         auto it=std::lower_bound(Frames.begin(),Frames.end(),tick,[](const Frame &f,int t){return f.Tick<t;});
