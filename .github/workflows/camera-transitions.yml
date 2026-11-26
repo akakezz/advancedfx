@@ -36,6 +36,9 @@ jobs:
           submodules: recursive
       - name: Check custom mode planning and fitted preview geometry
         run: python3 tests/cinematic/test_recording_resolution.py
+      - name: Check bounded particle event journal and historical control points
+        if: github.ref == 'refs/heads/feature/scene-cache-2'
+        run: c++ -std=c++17 -Wall -Wextra -I. tests/cinematic/effects_probe_test.cpp -o /tmp/effects-probe-tests && /tmp/effects-probe-tests
       - name: Check generic renderable capture and native replay fixtures
         if: github.ref == 'refs/heads/feature/scene-cache-2'
         run: python3 tests/cinematic/test_scene_pose.py --renderable-feasibility-only --build-dir /tmp/hlae-scene-pose-tests

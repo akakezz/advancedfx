@@ -1,5 +1,6 @@
 #pragma once
 #include <shared/SceneCache.h>
+#include <shared/SceneEffects.h>
 #include <memory>
 #include <map>
 #include <functional>
@@ -28,6 +29,8 @@ void PreferencesFrame(); // Engine FRAME_START, including when the overlay is cl
 void Draw();
 void SceneCacheFrame(bool capture = true); // Capture at TF2 FRAME_RENDER_END; false only updates preview.
 void SceneCacheDrawModels();
+// Synchronous native particle tool message capture; payload is copied immediately.
+void SceneCacheParticleMessage(const char *name, const void *state);
 // Experimental replacement of registered live studio-model submissions only.
 bool SceneCacheReplayActive();
 bool SceneCacheSuppressLiveStudio();

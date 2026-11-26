@@ -1,6 +1,8 @@
 #include "stdafx.h"
 
 #include "ClientToolsTf2.h"
+#include "../CameraOverlay.h"
+#include <cstring>
 
 #include "addresses.h"
 #include "RenderView.h"
@@ -84,10 +86,13 @@ void CClientToolsTf2::OnPostToolMessage(void * hEntity, void * msg)
 
 void CClientToolsTf2::OnPostToolMessageTf2(SOURCESDK::TF2::HTOOLHANDLE hEntity, SOURCESDK::TF2::KeyValues * msg)
 {
-	if (!(hEntity != SOURCESDK::CSGO::HTOOLHANDLE_INVALID && msg))
-		return;
-
+	if (!msg) return;
 	char const * msgName = msg->GetName();
+	// Particle messages deliberately use HTOOLHANDLE_INVALID in Source.
+	// Observe them before the AGR entity-only guard; never change forwarding.
+	if (msgName && !std::strncmp(msgName, "ParticleSystem_", 15))
+		AfxHookSource::CameraOverlay::SceneCacheParticleMessage(msgName, msg->GetPtr("state"));
+	if (hEntity == SOURCESDK::CSGO::HTOOLHANDLE_INVALID || !msgName) return;
 
 	if (!strcmp("entity_state", msgName))
 	{

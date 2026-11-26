@@ -70,3 +70,7 @@ else()
     target_compile_options(campath_visualization_tests PRIVATE /UNDEBUG)
 endif()
 add_test(NAME campath_visualization COMMAND campath_visualization_tests)
+
+add_executable(effects_probe_tests effects_probe_test.cpp)
+target_include_directories(effects_probe_tests PRIVATE ../..)
+add_test(NAME effects_probe_core COMMAND effects_probe_tests)
