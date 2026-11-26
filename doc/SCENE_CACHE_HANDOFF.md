@@ -278,8 +278,8 @@ legacyCapture 1; enable legacyReplay 1, visuals modulation 1, visuals
 hideShadows 1, visuals hideDecals 1 independently (all rendering options off
 by default). The latter two are temporary isolation only. True historical
 shadow projection, decal lifecycle/replay, material overrides and legacy
-classes outside dissolve remain pending. New scratch native draw is not yet
-runtime verified; see Phase 12 and rollback/toggle instructions.
+classes outside dissolve remain pending. New scratch native draw was subsequently user-validated on 54cd55f;
+see Phase 12 and rollback/toggle instructions.
 
 For one-build testing: capture both modern and legacy particles, freeze/pause,
 select cached preview, set mat_queue_mode 0, then use `mirv_cache visuals batch 1`
@@ -288,3 +288,19 @@ particle isolation separately. Compare each switch independently at the same
 cursor; `batch 0` disables all four without recapture. Legacy diagnostic
 markers and exact-tick status help distinguish capture from render failures.
 The temporary shadow/decal gates do not replace historical reconstruction.
+
+### Validated batched baseline (54cd55f)
+
+User-reported successful Windows/TF2 run with all four batch features and
+live particle isolation enabled. At exact cached tick 43: 1264 modern and
+796 legacy particle submissions (622 spark, 174 combinemuzzle2), zero
+reported rejections, 163/163 studio submissions. Engineer and three cosmetics
+share historical RGB modulation 0.141/0.212/0.259, alpha 1. All three live draw
+gates report suppression/restoration success. 515 frames retain 112.58 MiB
+combined model/modern/legacy payload, including 8.75 MiB legacy history;
+outer capture mean 6.033 ms. See Phase 12 runtime validation for complete
+measurements and limitations. This is a new known-good experimental baseline,
+not proof of arbitrary scene fidelity. Historical shadows and decals remain
+pending; nonunit model alpha is not established by this sample. Future work
+should batch related implementations and preserve independent runtime
+switches so one recording/build can test several features.

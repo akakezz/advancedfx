@@ -655,3 +655,48 @@ Portable test result: the exact Git blob versions of shared/LegacyParticleSnapsh
 locally, compiled with g++ C++17 -Wall -Wextra -pedantic and ASan/UBSan, and
 executed successfully. This validates the synthetic linked-list reader and
 history fixture only. Full adapter fixtures and Windows/in-game build not run.
+
+### Phase 12 runtime validation — 54cd55f
+
+User reports the batched build works as intended. Status captured in active
+preview at exact cached tick 43, with scene recording requested but suspended
+by preview. Last captured live tick 741; do not confuse that pose/audit report
+with the historical cursor. All three histories retain 515 frames over ticks
+5..741 (gaps possible).
+
+| Metric | Observed |
+| --- | --- |
+| Model history payload | 42.37 MiB |
+| Modern particle payload | 61.46 MiB (149.27 MiB original, 103.41 MiB packed, 2.43x original/retained) |
+| Legacy dissolve payload | 8.75 MiB / 64 MiB |
+| Combined retained payload | 112.58 MiB (not total process RAM) |
+| Outer capture mean / peak | 6.033 / 11.007 ms |
+| Modern particle capture mean / peak | 3.654 / 7.275 ms |
+| Modern exact sample | 1264 captured positions and submitted particles, 21/21 successful tree attempts, 52 drawable nonempty collections, complete position and appearance, zero rejected reads/layouts |
+| Legacy exact sample | Four dissolve emitters, 796 expected/captured/submitted, 622 spark, 174 combinemuzzle2, zero unknown materials or rejected submissions, complete 1 |
+| History evictions / rejected frames | Zero for both particle histories |
+| Studio replay at cursor | 163/163 submissions |
+| Cumulative studio audit | 9562 callbacks, 1556280 attempted/submitted, zero queue/other skips, pending 0, peak 1, max 2 callbacks per engine frame |
+
+All three scoped visibility gates reported disabled during ordinary render and
+restored: r_drawparticles, r_shadows, r_drawdecals. This is initial in-game
+validation of legacy textured replay alongside modern replay, historical
+model RGB modulation, and reversible shadow/decal isolation. At tick 43 all
+163 cached studio models have known modulation; four nonneutral models are
+the Engineer and three attached cosmetics (Special Eyes, Endothermic Exowear,
+Nerd Hair), each RGBA 0.141 0.212 0.259 1.000. Sample confirms historical RGB
+on the body and gear; it does not independently verify nonunit alpha replay
+or correct translucent ordering. First legacy particle RGB 87/132/161,
+alpha 255->0, size 5->0, lifetime 0/0.414, roll 243, UV
+0.016/0.008/0.984/0.992. Submission counters are not pixel fidelity measures.
+
+Remaining: last live capture reports 83171 captured / 19570 unavailable pose
+attempts cumulatively, one unavailable brush mesh, and 90 of 162 captured
+studio poses not observed by the native audit hook at tick 741. Two callbacks
+per frame still occur. No claim of full scene coverage. The shadow/decal
+controls only hide current live effects; historical reconstruction remains
+unimplemented. Other legacy emitter types, nonunit entity alpha, material
+state and dynamic lighting need broader validation/development. Preserve
+54cd55f as a user-validated experimental baseline. Continue in larger batches
+with independently togglable features, rather than requiring separate builds
+for every diagnostic discovery. No rendering changes in this follow-up.
