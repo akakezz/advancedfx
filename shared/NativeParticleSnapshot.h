@@ -33,8 +33,9 @@ enum Attribute : unsigned { Position=0, Life=1, Previous=2, Radius=3, Rotation=4
     ParticleId=11, Yaw=12, Sequence2=13, HitboxIndex=14, HitboxRelative=15,
     Alpha2=16, TraceP0=17, TraceP1=18, TraceHitT=19, TraceNormal=20, ControlPointIndex=21 };
 inline unsigned Components(unsigned a) {
-    return a==Position||a==Previous||a==Tint||a==HitboxRelative||a==TraceP0||
-           a==TraceP1||a==TraceNormal ? 3u:1u;
+    // Actual x64 allocation mask, verified at RVA 0x8e2b70. SDK names
+    // are descriptive only where this build differs (rotation and trace normal).
+    return a<32 && (0x68055u & (1u<<a)) ? 3u:1u;
 }
 inline constexpr const char *AttributeNames[Layout::AttributeCount]={
     "xyz","life","prev_xyz","radius","rotation","rotation_speed","tint","alpha",
@@ -198,6 +199,89 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
     f.Status=f.Complete?"Native position snapshot":"Incomplete native position snapshot";
     return f;
 }
+// A dry-run copy plan for a newly created detached collection. No writes until
+// every selected node and buffer is validated. Only varying owned buffers
+// are copied; constants are compared, not written. No active count is changed.
+struct CopyOp {
+    Address Destination=0;
+    std::uint32_t Start=0,Count=0;
+};
+struct RestorePlan {
+    std::vector<CopyOp> Copies;
+    std::size_t Nodes=0,Particles=0,Constants=0,ConstantDifferences=0,Missing=0;
+    std::string Error;
+};
+template<class Reader>
+RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader read) {
+    using namespace Layout;
+    RestorePlan plan;
+    auto get=[&](Address a,auto &v){return a>=0x10000&&read(a,&v,sizeof(v));};
+    auto fail=[&](const char *why){if(plan.Error.empty()) plan.Error=why;};
+    if(!f.Complete||!f.Appearance||index>=f.Collections.size()||!root) {fail("No recorded appearance collection");return plan;}
+    std::set<Address> visited;
+    auto walk=[&](auto &&self,std::size_t i,Address c,unsigned depth)->void {
+        if(!plan.Error.empty()) return;
+        if(!c||depth>32||!visited.insert(c).second||visited.size()>MaxCollections) {fail("Detached hierarchy invalid");return;}
+        const auto &old=f.Collections[i];
+        Address def=0,name=0,child=0;
+        int active=0,capacity=0,maxAllowed=0;
+        if(!get(c+Definition,def)||!def||!get(def+DefinitionName,name)||!name||
+           !get(c+Active,active)||active!=0||!get(c+0x60,capacity)||!get(c+0x64,maxAllowed)||
+           maxAllowed<0||maxAllowed>5000||capacity<maxAllowed||capacity>5008||
+           old.Active>static_cast<unsigned>(maxAllowed)||!get(c+ChildHead,child)) {
+            fail("Detached collection capacity/state mismatch");return;
+        }
+        if(!old.Name[0]) {fail("Recorded definition unavailable");return;}
+        for(std::size_t k=0;k<old.Name.size();++k) {
+            char ch=0;
+            if(!get(name+k,ch)||ch!=old.Name[k]) {fail("Detached definition name mismatch");return;}
+            if(!ch) break;
+        }
+        ++plan.Nodes;plan.Particles+=old.Active;
+        if(old.Active) {
+            std::array<Address,32> ptr{},stride{};
+            Address memory=0;
+            if(!get(c+Xyz,ptr)||!get(c+XyzStride,stride)||!get(c+0x22e8,memory)||memory<0x10000) {
+                fail("Detached attribute table unavailable");return;
+            }
+            Address next=(memory+15)&~Address(15);
+            // Allocation lays out each varying attribute consecutively, using
+            // padded capacity and the binary's component mask. Verify all slots,
+            // including undocumented slots, before accepting any write.
+            for(unsigned a=0;a<32;++a) {
+                const auto width=4u*Components(a);
+                if(stride[a]) {
+                    if(stride[a]!=width||ptr[a]!=next) {fail("Detached varying buffer layout mismatch");return;}
+                    next+=Address(capacity)*Components(a)*sizeof(std::uint32_t);
+                }
+                if(a>=AttributeCount) continue;
+                if(!(old.Mask&(1u<<a))) {++plan.Missing;continue;}
+                const auto &b=old.Attributes[a];
+                const auto words=(stride[a]?(std::size_t(old.Active)+3)/4:1)*width;
+                if(!ptr[a]||b.Stride!=stride[a]||b.Count!=words||
+                   std::size_t(b.Start)>f.Words.size()||words>f.Words.size()-b.Start) {
+                    fail("Recorded and detached attribute layouts differ");return;
+                }
+                if(stride[a]) plan.Copies.push_back({ptr[a],b.Start,b.Count});
+                else {
+                    std::array<std::uint32_t,12> current{};
+                    if(!read(ptr[a],current.data(),words*sizeof(std::uint32_t))) {fail("Detached constant unreadable");return;}
+                    ++plan.Constants;
+                    if(!std::equal(current.begin(),current.begin()+words,f.Words.begin()+b.Start)) ++plan.ConstantDifferences;
+                }
+            }
+        }
+        for(std::size_t j=i+1;j<f.Collections.size();++j) if(f.Collections[j].Parent==static_cast<int>(i)) {
+            Address next=0;
+            if(!child||!get(child+ChildNext,next)) {fail("Detached child missing");return;}
+            self(self,j,child,depth+1);child=next;
+        }
+        if(child) fail("Detached definition has additional children");
+    };
+    walk(walk,index,root,0);
+    if(!plan.Error.empty()) plan.Copies.clear();
+    return plan;
+}
 class History {
 public:
     explicit History(std::size_t budget=64u*1024u*1024u):Budget(budget){}
@@ -213,6 +297,15 @@ public:
     const Frame *At(int tick) const {
         auto it=std::lower_bound(Frames.begin(),Frames.end(),tick,[](const Frame &f,int t){return f.Tick<t;});
         return it!=Frames.end()&&it->Tick==tick?&*it:nullptr;
+    }
+    // Causal fallback across at most two missing ticks. Never bridge eviction,
+    // extrapolate beyond the retained window, or use a future particle state.
+    const Frame *ForPreview(int tick,int maxGap=2) const {
+        if(Frames.empty()||tick<Frames.front().Tick||tick>Frames.back().Tick) return nullptr;
+        auto it=std::upper_bound(Frames.begin(),Frames.end(),tick,[](int t,const Frame &f){return t<f.Tick;});
+        if(it==Frames.begin()) return nullptr;
+        --it;
+        return tick-it->Tick<=maxGap?&*it:nullptr;
     }
     std::deque<Frame> Frames;
     std::size_t Bytes=0;

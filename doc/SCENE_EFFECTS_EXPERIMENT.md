@@ -143,3 +143,36 @@ No persistent engine pointer, initial-attribute buffers, renderer contexts,
 control point data, collection lifetime identity or native rendering is included.
 The original position-only mode and uniform markers remain default. No live
 simulation or rendering state is modified.
+
+
+## Phase 4: detached allocation dry run and playback investigation
+
+Actual TF2 x64 allocator component mask 0x68055 at 0x8e2b70 differs
+from the SDK: rotation has three lanes, trace_normal slot has one.
+Capture the raw native width, not the public SDK width.
+
+Particle marker preview now holds the preceding recorded sample across
+at most two absent ticks within retained coverage; it never extrapolates
+outside that coverage or selects a future sample. Exact status/at queries
+remain exact and also show the resolved preview tick. This can remove
+short gaps but cannot restore evicted history. Replay audit counts model
+submissions, queue-limit skips, other failures and maximum callbacks per
+engine frame. Readiness fields are atomic. No claim that the video proves
+queue saturation, duplicate views or a cache gap.
+
+Experimental one-shot: pause the underlying demo, stop cache recording,
+select an exact retained appearance tick and run mirv_cache particles status.
+Choose a numbered nonempty collection, preferably a simple leaf, then
+mirv_cache particles prepare <index>. It executes at the next FRAME_RENDER_END.
+Read the native detached probe line in console or status. Factory 0x8e0490,
+manager pointer 0x10067e0, destructor 0x8de590, aligned delete 0x8decd0.
+Exact build and code anchors required. The native factory temporarily links
+the collection to its definition; this is NOT a live CNewParticleEffect.
+Validate matching definition tree, zero active particles, native capacity and
+sequential varying allocations. Copy only validated varying blocks into the
+fresh native memory, read back, compare constants without writing them, and
+destroy immediately. No active counts, clocks, control points, renderer
+contexts, live particle suppression or native draw are changed. Recursive
+renderer identified at 0x8e4840 but queued lifetime still unverified.
+Native allocation itself may have engine side effects or fail; test on a
+disposable paused demo session first. This is not visual replay.

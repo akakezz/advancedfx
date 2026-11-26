@@ -11,6 +11,7 @@
 namespace advancedfx { class ICommandArgs; }
 // Native engine-thread position snapshot, exact TF2 x64 build only.
 advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, bool appearance=false);
+std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &frame, std::size_t collection);
 namespace AfxHookSource
 {
 namespace CameraOverlay

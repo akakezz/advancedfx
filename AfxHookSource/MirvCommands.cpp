@@ -134,7 +134,8 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, boo
        !match(0x8e3600,{0x49,0x8b,0x82,0x00,0x02,0x00,0x00,0x48,0x83,0xf8,0x04})||
        !match(0x8e1530,{0x48,0x8b,0x49,0x58,0x48,0x85,0xc9,0x74,0x0c})||
        !match(0x8e1539,{0x48,0x81,0xc1,0x40,0x02,0x00,0x00})||
-       !match(0x8e2646,{0x8b,0x41,0x34,0x89,0x04,0x93}))) {
+       !match(0x8e2646,{0x8b,0x41,0x34,0x89,0x04,0x93})||
+       !match(0x8e2b70,{0xf7,0xc2,0x55,0x80,0x06,0x00}))) {
         auto f=Capture(base,tick,read,false);
         f.Appearance=true;f.AppearanceRejected=1;
         f.Status+="; appearance layout guard failed";
@@ -143,6 +144,92 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, boo
     return Capture(base,tick,read,appearance);
 #else
     return failure;
+#endif
+}
+
+// Explicit one-shot, engine thread at FRAME_RENDER_END, while demo paused.
+// Factory-created collections link to their definition temporarily, but never
+// enter CParticleMgr's registered CNewParticleEffect list. Destroy immediately;
+// no draw calls or pointers are queued.
+std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &frame,std::size_t index)
+{
+#ifdef _WIN64
+    using namespace advancedfx::NativeParticles;
+    if(g_SourceSdkVer!=SourceSdkVer_TF2||!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||
+       !g_VEngineClient->IsPaused()||g_VEngineClient->IsSkippingDemo()||g_VEngineClient->IsDrawingLoadingImage())
+        return "Detached probe requires paused TF2 x64 demo";
+    if(!frame.Appearance||index>=frame.Collections.size()||!frame.Collections[index].Name[0])
+        return "Detached probe requires a named recorded collection";
+    HMODULE client=GetModuleHandleA("client.dll");
+    if(!client) return "Detached probe client unavailable";
+    const Address base=reinterpret_cast<std::uintptr_t>(client);
+    auto read=[](Address a,void *out,std::size_t n) {
+        SIZE_T got=0;return ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a)),out,n,&got)&&got==n;
+    };
+    auto match=[&](Address rva,std::initializer_list<unsigned char> bytes) {
+        unsigned char actual[32]{};
+        return bytes.size()<=sizeof(actual)&&read(base+rva,actual,bytes.size())&&std::equal(bytes.begin(),bytes.end(),actual);
+    };
+    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
+    if(!read(base,&dos,sizeof(dos))||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+       !read(base+dos.e_lfanew,&nt,sizeof(nt))||nt.Signature!=IMAGE_NT_SIGNATURE||
+       nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||nt.FileHeader.TimeDateStamp!=0x6ad26f17||
+       nt.OptionalHeader.SizeOfImage!=0x133a000||
+       !match(0x8e0490,{0x48,0x89,0x5c,0x24,0x10,0x56,0x48,0x83,0xec,0x30})||
+       !match(0x8e04bf,{0x48,0x8b,0x89,0xe0,0x00,0x00,0x00})||
+       !match(0x8e052c,{0xe8,0x8f,0x11,0x00,0x00})||
+       !match(0x8de590,{0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10})||
+       !match(0x8decd0,{0x48,0x8b,0xd1,0x48,0x85,0xc9,0x74,0x19})||
+       !match(0x8e2b70,{0xf7,0xc2,0x55,0x80,0x06,0x00})||
+       !match(0x8e2aea,{0x89,0x41,0x60})||
+       !match(0x8e2c4f,{0x4c,0x89,0x80,0x00,0xff,0xff,0xff}))
+        return "Detached factory ABI guard failed";
+    Address manager=0,dict=0,headBefore=0;
+    if(!read(base+0x10067e0,&manager,sizeof(manager))||manager<0x10000||
+       !read(manager+0xe0,&dict,sizeof(dict))||dict<0x10000||
+       !read(base+Layout::Manager+Layout::RootHead,&headBefore,sizeof(headBefore)))
+        return "Detached particle manager unavailable";
+    using Factory=void *(*)(void *,const char *,float,int);
+    using Destroy=void (*)(void *);
+    const auto make=reinterpret_cast<Factory>(base+0x8e0490);
+    const auto destruct=reinterpret_cast<Destroy>(base+0x8de590);
+    const auto freeMemory=reinterpret_cast<Destroy>(base+0x8decd0);
+    void *object=make(reinterpret_cast<void*>(manager),frame.Collections[index].Name.data(),0.0f,1);
+    if(!object) return "Detached native factory returned null";
+    std::string result;
+    {
+        struct Owner {void *Object;Destroy Destructor,Free;~Owner(){Destructor(Object);Free(Object);}} owner{object,destruct,freeMemory};
+        Address headDuring=0;
+        RestorePlan plan;
+        if(!read(base+Layout::Manager+Layout::RootHead,&headDuring,sizeof(headDuring))||headDuring!=headBefore)
+            plan.Error="Registered effect list changed during factory call";
+        else plan=PlanDetached(frame,index,reinterpret_cast<Address>(object),read);
+        if(!plan.Error.empty()) result="Detached factory created collection; copy plan rejected: "+plan.Error;
+        else {
+            std::size_t copied=0;
+            std::vector<std::uint32_t> verify;
+            bool ok=true;
+            for(const auto &op:plan.Copies) {
+                SIZE_T wrote=0;
+                const auto n=std::size_t(op.Count)*sizeof(std::uint32_t);
+                if(!WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(op.Destination),frame.Words.data()+op.Start,n,&wrote)||wrote!=n) {ok=false;break;}
+                verify.resize(op.Count);
+                if(!read(op.Destination,verify.data(),n)||!std::equal(verify.begin(),verify.end(),frame.Words.begin()+op.Start)) {ok=false;break;}
+                ++copied;
+            }
+            result=std::string(ok?"Detached attribute copy verified":"Detached attribute copy failed")+
+                "; nodes "+std::to_string(plan.Nodes)+", historical particles "+std::to_string(plan.Particles)+
+                ", varying blocks copied "+std::to_string(copied)+"/"+std::to_string(plan.Copies.size())+
+                ", constants compared "+std::to_string(plan.Constants)+", differing "+std::to_string(plan.ConstantDifferences)+
+                ", missing slots "+std::to_string(plan.Missing)+". No active counts changed; no native draw.";
+        }
+    }
+    Address headAfter=0;
+    result+=read(base+Layout::Manager+Layout::RootHead,&headAfter,sizeof(headAfter))&&headBefore==headAfter?
+        " Destroyed; registered effect list head unchanged.":" Destroyed; WARNING: registered effect list head changed.";
+    return result;
+#else
+    return "Detached probe requires exact TF2 x64 build";
 #endif
 }
 

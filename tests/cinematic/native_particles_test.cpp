@@ -60,5 +60,27 @@ int main(){
     check(partial.Complete&&!partial.AppearanceComplete&&partial.AppearanceRejected&&partial.Points.size()==7,"appearance failure preserves positions");
     auto old=Capture(base,22,read,false);check(old.Complete&&!old.Appearance&&old.Collections.empty()&&old.Words.empty(),"position-only fallback stays opt-in");
     check(app.Bytes()>old.Bytes(),"appearance included in rolling payload budget");
+    check(Components(Rotation)==3&&Components(TraceNormal)==1,"native component mask");
+    constexpr Address rot=0x55000000;
+    pointers[Rotation]=rot;strides[Rotation]=12;put(rot,p);
+    strides[Position]=12;strides[Radius]=4;put(coll+Xyz,pointers);put(coll+XyzStride,strides);
+    auto rotation=Capture(base,23,read,true);
+    check(rotation.AppearanceComplete&&Float(rotation,rotation.Collections[0],Rotation,4,2,v)&&v==500,"three-component rotation storage");
+    History gaps(4096);auto g=f;g.Tick=30;check(gaps.Append(g),"first sample");g.Tick=33;check(gaps.Append(g),"second sample");
+    check(gaps.ForPreview(31)->Tick==30&&gaps.ForPreview(32)->Tick==30&&gaps.ForPreview(33)->Tick==33,"causal short gap hold");
+    check(!gaps.ForPreview(29)&&!gaps.ForPreview(34)&&!gaps.ForPreview(32,1),"never extrapolate or bridge long gap");
+    // A single detached node with sequential owned varying allocations.
+    constexpr Address detached=0x60000000,mem=0x61000000;
+    auto simple=app;simple.Collections.resize(1);auto &c=simple.Collections[0];
+    put(detached+Definition,def);put(detached+Active,0);put(detached+0x60,12);put(detached+0x64,8);
+    put(detached+ChildHead,Address(0));put(detached+0x22e8,mem);
+    std::array<Address,32> dp{},ds{};dp[Position]=mem;ds[Position]=12;
+    dp[Radius]=mem+12*3*4;ds[Radius]=4;
+    dp[Tint]=tint;dp[ParticleId]=dp[Radius]+12*4;ds[ParticleId]=4;
+    put(detached+Xyz,dp);put(detached+XyzStride,ds);
+    auto plan=PlanDetached(simple,0,detached,read);
+    check(plan.Error.empty()&&plan.Nodes==1&&plan.Particles==5&&plan.Copies.size()==3&&plan.Constants==1,"validated detached copy plan");
+    dp[Radius]+=4;put(detached+Xyz,dp);
+    check(!PlanDetached(simple,0,detached,read).Error.empty()&&PlanDetached(simple,0,detached,read).Copies.empty(),"wrong allocation address fails closed");
     std::cout<<"Native particle snapshot tests passed\n";
 }

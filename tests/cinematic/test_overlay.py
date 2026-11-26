@@ -38,6 +38,7 @@ preamble=r'''
 #include <locale>
 #include "AfxHookSource/CameraOverlay.h"
 advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick,bool appearance){advancedfx::NativeParticles::Frame f;f.Tick=tick;f.Complete=true;f.Points.push_back({1,2,3});return f;}
+std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &,std::size_t){return "fixture";}
 #include "shared/PlayerRepair.h"
 void MirvFix_PlayerRepairNewDemo(const char*);
 void MirvFix_PlayerAngleTraceEnd();
