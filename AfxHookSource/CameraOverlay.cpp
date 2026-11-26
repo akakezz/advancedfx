@@ -49,6 +49,15 @@ namespace AfxHookSource
 {
 namespace CameraOverlay
 {
+// Informative text keeps the muted visual hierarchy but wraps in narrow panels.
+static void DrawOverlayHint(const char *text)
+{
+	ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+	ImGui::PushTextWrapPos(0.0f);
+	ImGui::TextUnformatted(text);
+	ImGui::PopTextWrapPos();
+	ImGui::PopStyleColor();
+}
 static std::atomic_bool g_Open{false}, g_MouseLook{false};
 static std::recursive_mutex g_SceneMutex;
 static advancedfx::SceneCache g_SceneCache;
@@ -2554,7 +2563,7 @@ static void DrawDocumentControls()
 	ImGui::Text("Playback: %s%s",
 				winner < paths.GetCount() ? paths.GetName(winner).c_str() : "No eligible path",
 				g_Hook_VClient_RenderView.m_CamPath.Enabled_get() ? "" : " (disabled)");
-	ImGui::TextDisabled("Latest start wins overlaps. Duplicates start disabled. Marked paths exclude "
+	DrawOverlayHint("Latest start wins overlaps. Duplicates start disabled. Marked paths exclude "
 						"unmarked paths. Visibility only affects drawing.");
 	if (!g_DocumentStatus.empty())
 		ImGui::TextWrapped("%s", g_DocumentStatus.c_str());
@@ -2696,7 +2705,7 @@ static void DrawKeyInspector()
 				path.SetTangentMode((CamPath::Channel)ch, true, true, CamPath::TM_AUTO);
 				path.SetTangentWeight((CamPath::Channel)ch, true, true, 1, 1);
 			}
-	ImGui::TextDisabled("Graph: right-click a channel checkbox to focus; drag keys; Shift locks an axis; Alt "
+	DrawOverlayHint("Graph: right-click a channel checkbox to focus; drag keys; Shift locks an axis; Alt "
 						"snaps time to ticks. Handles: Shift changes weight; Alt breaks alignment.");
 }
 static void DrawSpeedProfile(CamPath &path)
@@ -3164,7 +3173,7 @@ static void DrawModifierControls(CamPath &path)
 		else
 			g_DocumentStatus = "Choose a finite range with begin before end.";
 	}
-	ImGui::TextDisabled("Presets add editable settings to the stack; existing modifiers are retained.");
+	DrawOverlayHint("Presets add editable settings to the stack; existing modifiers are retained.");
 	const std::string addLabel =
 		std::string("Add ") + CamPath::ModifierTypeName((CamPath::ModifierType)newType) + " to range";
 	if (ImGui::Button(addLabel.c_str()))
@@ -3503,7 +3512,7 @@ static void DrawInterpolationSettings(CamPath &path)
 				  bool(v.TRxModeIn || v.TRxModeOut);
 	}
 	ImGui::Text("Automatic channels: %u | Manual channels: %u", (unsigned)(total - manual), (unsigned)manual);
-	ImGui::TextDisabled("Authored / baked tangents survive profile changes unless reset to Auto.");
+	DrawOverlayHint("Authored / baked tangents survive profile changes unless reset to Auto.");
 	ImGui::BeginDisabled(!manual);
 	if (ImGui::Button("Reset whole path to Auto"))
 	{
@@ -3586,7 +3595,7 @@ static void DrawObserving()
 		}
 	}
 	ImGui::SameLine();
-	ImGui::TextDisabled("Aim the camera first; trace selects the entity at the center of the view.");
+	DrawOverlayHint("Aim the camera first; trace selects the entity at the center of the view.");
 	if (!traceStatus.empty())
 		ImGui::TextWrapped("%s", traceStatus.c_str());
 	static float offset[3] = {0, 0, 0};
@@ -3672,7 +3681,7 @@ static void DrawObserving()
 				}
 			ImGui::EndCombo();
 		}
-		ImGui::TextDisabled("World keeps the camera heading and offset direction. Mode applies on attachment.");
+		DrawOverlayHint("World keeps the camera heading and offset direction. Mode applies on attachment.");
 		if (ImGui::Button("Attach selected"))
 		{
 			char cmd[256];
@@ -3863,9 +3872,9 @@ static void DrawCurveEditor()
 		ImGui::SameLine();
 		if (ImGui::Button("Delete selected keys"))
 			g_Hook_VClient_RenderView.m_CamPath.DeleteSelected();
-		ImGui::TextDisabled("Wheel: zoom time | Ctrl+wheel: zoom values | MMB: pan | Shift+handle: selected "
+		DrawOverlayHint("Wheel: zoom time | Ctrl+wheel: zoom values | MMB: pan | Shift+handle: selected "
 							"handles | Esc: cancel drag");
-		ImGui::TextDisabled("Time axis: demo tick / path seconds. Circles: Auto. Squares: Manual / baked.");
+		DrawOverlayHint("Time axis: demo tick / path seconds. Circles: Auto. Squares: Manual / baked.");
 
 		SyncGraphSelection(g_Hook_VClient_RenderView.m_CamPath);
 		// Keep cache fresh (standalone)
@@ -5782,7 +5791,7 @@ static void DrawPlayerRepairEditor(int playhead)
 		model.Undo(true);
 	UpdatePlayerRepairReports();
 	if (!model.GetEdits().Ranges.empty())
-		ImGui::TextDisabled("Amber spans are blocked or partly blocked; hover for anchor details.");
+		DrawOverlayHint("Amber spans are blocked or partly blocked; hover for anchor details.");
 	for (size_t i = 0; i < model.GetEdits().Ranges.size(); ++i)
 	{
 		const auto &r = model.GetEdits().Ranges[i];
@@ -6016,11 +6025,11 @@ static void DrawSceneCacheMenu(int playhead)
 		ImGui::SameLine();
 		if (ImGui::Button("Clear history"))
 			SceneClearHistory();
-		ImGui::TextDisabled("Play the actual demo forward to capture. Settings affect future frames.");
+		DrawOverlayHint("Play the actual demo forward to capture. Settings affect future frames.");
 	}
 	if (ImGui::CollapsingHeader("Preview", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		ImGui::TextDisabled("Scrub cached history with the playhead or Right Ctrl + arrows / Home / End.");
+		DrawOverlayHint("Scrub cached history with the playhead or Right Ctrl + arrows / Home / End.");
 		if (ImGui::Checkbox("Smooth cached animation", &g_SceneSmoothAnimation))
 			SceneCacheFrame(false);
 		bool models = g_SceneDrawModels.load();
@@ -6150,7 +6159,7 @@ static void DrawSceneCacheMenu(int playhead)
 					ImGui::Text("Range payload estimate: %.2f MiB",
 					            (double(g_SceneRangeLast) - g_SceneRangeFirst + 1) * SceneTickInterval() *
 					                growth / 1048576.0);
-				ImGui::TextDisabled("Estimate from observed capture; scene activity changes memory needs.");
+				DrawOverlayHint("Estimate from observed capture; scene activity changes memory needs.");
 			}
 		}
 		else
@@ -6678,7 +6687,7 @@ static void DrawSequencerDetails(int playhead)
 			Afx_GotoDemoTick(EventSeekTick(state.SelectedTick));
 		ImGui::EndDisabled();
 		if (!state.Index.File.empty() && !TimelineMatchesDemo())
-			ImGui::TextDisabled("Seeking requires a playing demo with the indexed map and tick count.");
+			DrawOverlayHint("Seeking requires a playing demo with the indexed map and tick count.");
 		if (state.SelectedTick >= 0)
 		{
 			ImGui::Text("All events at tick %d (%.3f s)", state.SelectedTick,
@@ -6885,7 +6894,7 @@ static void DrawWorkRangeControls(int playhead, int total)
 		if (ImGui::Button("Play to Out")) StartWorkTransport(false);
 		if (ImGui::Button("Record In to Out")) StartWorkTransport(true);
 		ImGui::EndDisabled();
-		ImGui::TextWrapped("Actual demo: seek to In or earlier, then play/record. Playback resumes at normal speed and pauses at Out.");
+		DrawOverlayHint("Actual demo: seek to In or earlier, then play/record. Playback resumes at normal speed and pauses at Out.");
 		ImGui::BeginDisabled(g_SceneRecord);
 		if (ImGui::Button("Use range for cache capture"))
 		{
@@ -6909,7 +6918,7 @@ static void DrawWorkRangeControls(int playhead, int total)
 		}
 		ImGui::EndDisabled();
 		ImGui::EndDisabled();
-		ImGui::TextWrapped("Cached playback does not seek or record the actual demo.");
+		DrawOverlayHint("Cached playback does not seek or record the actual demo.");
 		ImGui::EndPopup();
 	}
 	if (WorkRangeBusy())
@@ -7605,8 +7614,8 @@ static void DrawCameraClipsPanel()
 		"to edit shots while playback stays enabled. Cached preview supplies the scene and clock.");
 	ImGui::TextWrapped("Drag to move clips. Alt-drag duplicates; Shift bypasses snapping. Ctrl-drag transition edges or fade markers, including zero-duration markers. Right-click for clip options.");
 	ImGui::Checkbox("Show transition guides in 3D", &g_ShowTransitionGuide);
-	ImGui::TextWrapped("Amber: transition. Cyan: selected transition. Labels mark the sampled start and end.");
-	ImGui::TextWrapped("Editor only; hidden during recording. Moving/aimed cameras need Scene Cache history for accurate guides.");
+	DrawOverlayHint("Amber: transition. Cyan: selected transition. Labels mark the sampled start and end.");
+	DrawOverlayHint("Editor only; hidden during recording. Moving/aimed cameras need Scene Cache history for accurate guides.");
 	if (SceneCachePreviewActive())
 		ImGui::TextWrapped("Recorded tracking preserves observed aiming. Without camera samples, aiming is "
 						   "unsmoothed. Re-record after editing a camera. Targets must be "
@@ -8283,7 +8292,7 @@ static void DrawCamerasTab()
 		observed = selected;
 	}
 	if (cameras.empty())
-		ImGui::TextDisabled("No cameras yet. Add one here, or use mirv_cam attach in live playback.");
+		DrawOverlayHint("No cameras yet. Add one here, or use mirv_cam attach in live playback.");
 	if (ImGui::BeginChild("##camera_list", ImVec2(0, 120), true))
 	{
 		for (const auto &camera : cameras)
@@ -8496,7 +8505,7 @@ static void DrawCamerasTab()
 					ImGui::PopID();
 				}
 			}
-			ImGui::TextDisabled("Legacy links are retained for project compatibility. New effects belong to "
+			DrawOverlayHint("Legacy links are retained for project compatibility. New effects belong to "
 								"clips. These links affect camera preview and "
 								"sequence playback; free-camera editing shows the base pose.");
 		}
@@ -9010,10 +9019,10 @@ static void DrawRecordingProfileEditor(const std::string &selected)
   }
 		if (!editable) ImGui::EndDisabled();
 		draft.FfmpegOptions = ffmpegOptions;
-		ImGui::TextDisabled("Use HLAE's {QUOTE} / {AFX_STREAM_PATH} variables; applies to future takes.");
+		DrawOverlayHint("Use HLAE's {QUOTE} / {AFX_STREAM_PATH} variables; applies to future takes.");
 	}
 	else
-		ImGui::TextDisabled("This profile type is not editable here. Use mirv_streams settings edit.");
+		DrawOverlayHint("This profile type is not editable here. Use mirv_streams settings edit.");
 
 	if (supported && !current.Protected)
 	{
@@ -9038,7 +9047,7 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 	if (supported)
 	{
 		ImGui::Separator();
-		ImGui::TextDisabled("Built-in profiles cannot be modified. Duplicate one to make an editable copy.");
+		DrawOverlayHint("Built-in profiles cannot be modified. Duplicate one to make an editable copy.");
 		ImGui::SetNextItemWidth(220);
 		ImGui::InputText("New profile name", copyName, sizeof(copyName));
 		if (recording) ImGui::BeginDisabled();
@@ -9080,7 +9089,7 @@ static void DrawRecordingProfileEditor(const std::string &selected)
 	}
 	if (!status.empty())
 		ImGui::TextWrapped("%s", status.c_str());
-	ImGui::TextDisabled("Custom profiles exist only in this session; recreate them in autoexec.cfg to persist.");
+	DrawOverlayHint("Custom profiles exist only in this session; recreate them in autoexec.cfg to persist.");
 }
 
 void Draw()
@@ -9362,7 +9371,7 @@ void Draw()
 				if (ImGui::Checkbox("Campath collision", &collision.Campath))
 					Afx_ExecClientCmd(collision.Campath ? "mirv_cam collision campath 1" : "mirv_cam collision campath 0");
 				DrawSharedCollisionOptions();
-				ImGui::TextDisabled("Campaths return gradually after blocking. Speed 0 removes the cap; half-life 0 removes damping.");
+				DrawOverlayHint("Campaths return gradually after blocking. Speed 0 removes the cap; half-life 0 removes damping.");
 				if (ImGui::Button("Reset collision history"))
 					Afx_ExecClientCmd("mirv_cam collision reset");
 				ImGui::TextWrapped("TF2/TF2C only; all collision switches default off. Uses solid map/prop geometry and optional player hulls, not visible meshes or particles. The local player can be included independently. Campath correction changes framing without editing the path. Start in clear space; deeply embedded cameras may need collision disabled to escape. Clearance is a cube around the camera, not a guarantee against near-plane clipping.");
@@ -9698,7 +9707,7 @@ void Draw()
 				changed |= ImGui::Checkbox("Stop recording when opening menu", &g_RecordAutoStopOnOpen);
 				if (changed)
 					ImGui::MarkIniSettingsDirty();
-				ImGui::TextDisabled("Recording uses the screen stream and encoder settings already configured below.");
+				DrawOverlayHint("Recording uses the screen stream and encoder settings already configured below.");
 			}
 
 			if (ImGui::CollapsingHeader("Recording resolution", ImGuiTreeNodeFlags_DefaultOpen))
@@ -9750,7 +9759,7 @@ void Draw()
 				if (!valid && state.MaxWidth > 0)
 					ImGui::TextDisabled("Requested size is outside the supported dimension or GPU limit.");
 				ImGui::TextWrapped("%s", state.Message.c_str());
-				ImGui::TextDisabled("Preview scaling affects presentation only, not the recorded render target.");
+				DrawOverlayHint("Preview scaling affects presentation only, not the recorded render target.");
 			}
 
 			// Common HUD toggles
@@ -10180,7 +10189,7 @@ void Draw()
                         draft.Origin=(std::max)(0.,demoTime);draft.OffsetMs=0;
                     }
                     ImGui::InputDouble("Downbeat offset (ms)",&draft.OffsetMs,0,0,"%.3f");
-                    ImGui::TextDisabled("BPM counts quarter notes. Grid density adapts to zoom; snapping does not.");
+                    DrawOverlayHint("BPM counts quarter notes. Grid density adapts to zoom; snapping does not.");
                 }
                 if(draft.Valid())timebase=draft;
                 else ImGui::TextDisabled("Invalid tempo, meter or offset; last valid settings retained.");
@@ -10765,7 +10774,7 @@ void Draw()
 				s_fitTimeline = true;
 			ImGui::SameLine();
 			ImGui::TextDisabled("View %d - %d | Wheel: zoom | MMB / Shift+wheel: pan", visibleStart, visibleEnd);
-			ImGui::TextDisabled("Retiming keeps Auto handles automatic and rescales Free handles. Classic scalar curves convert when using editable Euler.");
+			DrawOverlayHint("Retiming keeps Auto handles automatic and rescales Free handles. Classic scalar curves convert when using editable Euler.");
 			// Controls row
 			if (ImGui::SmallButton("Play"))
 			{
