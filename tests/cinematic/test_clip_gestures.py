@@ -44,7 +44,7 @@ namespace ImGui {
  bool BeginNeoGroup(const char *label,bool*){row=label;return false;}
  void EndNeoTimeLine(){}void EndNeoGroup(){}void NeoCancelSelection(){}void MarkIniSettingsDirty(){}
  void SetKeyboardFocusHere(){++focusCount;}
- bool NeoTimelineSpan(int a,int b,unsigned,const char*caption=nullptr,bool*hover=nullptr,bool=false,bool=false,int=-1,bool=false,bool interactive=true){spans.push_back({a,b,caption?caption:"",interactive});const bool hit=interactive&&row==mouseRow&&tick>=a&&tick<b;if(hover)*hover=hit;return hit&&click;}
+ bool NeoTimelineSpan(int a,int b,unsigned,const char*caption=nullptr,bool*hover=nullptr,bool=false,bool=false,int=-1,bool=false,bool interactive=true){spans.push_back({a,b,caption?caption:"",interactive});const bool hit=interactive&&row==mouseRow&&(a==b?std::abs(tick-a)<=2:tick>=a&&tick<b);if(hover)*hover=hit;return hit&&click;}
  void PushID(const char*id){ids.emplace_back(id);}void PopID(){ids.pop_back();}
  void OpenPopup(const char*){popup=ids.back();}bool BeginPopup(const char*){return popup==ids.back();}
  bool MenuItem(const char*label){if(menu==label){menu.clear();popup.clear();return true;}return false;}
@@ -90,6 +90,14 @@ int main(){
  adjustments={a};g_SelectedSequenceModifier=1;frame(false,180,true,true,false,true);frame(false,240,true,false,false,true,true);frame(false,240,true,false,false,true,true,false,true);frame(false,240,false,false,true);assert(adjustments.size()==1&&adjustments[0]==a);
  // Ctrl-drag is fade editing, not a move/duplicate. Shift bypasses snapping.
  frame(false,130,true,true,false,false,false,true);frame(false,145,true,false,false,false,false,true);frame(false,145,false,false,true,false,false,true);assert(adjustments.size()==1&&std::abs(adjustments[0].FadeIn-.45)<1e-9&&adjustments[0].Begin==a.Begin);adjustments={a};
+ // Both zero-duration handles are draggable, including the right edge outside the block.
+ auto zero=a;zero.FadeIn=zero.FadeOut=0;adjustments={zero};g_SelectedCameraClip=77;g_SelectedSequenceModifier=1;
+ frame(false,100,true,true,false,false,false,true);frame(false,115,true,false,false,false,false,true);frame(false,115,false,false,true,false,false,true);
+ assert(std::abs(adjustments[0].FadeIn-.15)<1e-9&&adjustments[0].Begin==a.Begin&&g_SelectedCameraClip==77);
+ frame(false,300,true,true,false,false,false,true);frame(false,280,true,false,false,false,false,true);frame(false,280,false,false,true,false,false,true);
+ assert(std::abs(adjustments[0].FadeOut-.2)<1e-9&&adjustments[0].End==a.End&&g_SelectedCameraClip==77);
+ auto beforeNoHandle=adjustments[0];frame(false,200,true,true,false,false,false,true);frame(false,220,true,false,false,false,false,true);frame(false,220,false,false,true,false,false,true);assert(adjustments[0]==beforeNoHandle);
+ adjustments={a};
  g_CommandSystem.markers={{250}};io.KeyShift=false;assert(std::abs(SnapClipDemoTime(2.46,0,1800,false,1)-2.5)<1e-9);io.KeyShift=true;assert(SnapClipDemoTime(2.46,0,1800,false,1)==2.46);
  // The beat grid uses demo time, including a fractional downbeat and cached client offset.
  auto &grid=advancedfx::TimelineTimebase();grid.Mode=2;grid.BPM=128;grid.Origin=.123;grid.Division=4;
@@ -103,6 +111,8 @@ int main(){
  frame(true,200,true,true,false,true);frame(true,250,true,false,false,true,true);assert(cameras.size()==1&&cameras[0]==c);frame(true,250,false,false,true,true,true);assert(cameras.size()==2&&cameras[0]==c&&std::abs(cameras[1].Time-101.5)<1e-9&&cameras[1].Target==5&&cameras[1].Blend==.5);
  // Ctrl-drag the second clip's transition edge without moving its edit point.
  frame(true,198,true,true,false,false,false,true);frame(true,218,true,false,false,false,false,true);frame(true,218,false,false,true,false,false,true);assert(std::abs(cameras[1].Time-101.5)<1e-9&&std::abs(cameras[1].Blend-.7)<1e-9);
+ auto noBlend=cameras[1];noBlend.Blend=0;assert(MirvCam_EditClip(noBlend));
+ frame(true,150,true,true,false,false,false,true);frame(true,170,true,false,false,false,false,true);frame(true,170,false,false,true,false,false,true);assert(std::abs(cameras[1].Blend-.2)<1e-9&&std::abs(cameras[1].Time-101.5)<1e-9);
  frame(true,200,false,false,false,false,false,false,false,true);assert(!popup.empty());menu="Edit transition duration";frame(true,200);assert(g_ClipInspectorFocus==ClipInspectorFocus::CameraTransition);FocusClipField(ClipInspectorFocus::CameraTransition);assert(focusCount==2);
  frame(true,200,false,false,false,false,false,false,false,true);menu="Delete camera clip";frame(true,200);assert(cameras.size()==1);
  std::cout<<"Clip gestures, cancellation, shared fades, snapping and context dispatch passed\n";
