@@ -1,4 +1,8 @@
-# Scene Cache 2: particle event feasibility (phase 1)
+# Scene Cache 2: particle capture and replay research
+
+Read [SCENE_CACHE_HANDOFF.md](SCENE_CACHE_HANDOFF.md) first for the current workflow, measured baseline, limitations and next tests. The phases below preserve historical findings; their older defaults and instructions describe the implementation at that time.
+
+## Phase 1: particle event feasibility
 
 This opt-in, read-only probe records the public Source SDK 2013 particle tool
 messages before the AGR entity-handle guard. It does not yet capture individual
@@ -241,8 +245,8 @@ No AGR recording required. Record fresh history, pause or freeze the live demo
 The explicit detached probe still requires demo pause; both paths reject seeks. Native replay currently needs immediate material
 rendering: use the explicit overlay button or mat_queue_mode 0 once (restore
 your original setting afterwards). No automatic global cvar modifications.
-Live particles are not suppressed yet; optional r_drawparticles 0 may help
-isolate the test; restore r_drawparticles 1 afterwards if it was enabled.
+At this phase live particles were not suppressed. See phase 8 for the
+optional scoped isolation experiment; preserve the user's original cvar value.
 
 Every nonempty recorded root subtree is attempted at the existing main-view
 PostRenderAllTools callback. Separate TF2 render passes are excluded. Native
@@ -266,6 +270,59 @@ queued resource lifetimes are established. Native particles may appear
 incorrectly or fail to render; use styled markers to compare. No automatic
 live suppression or per-effect categorization. Test with a disposable demo.
 
-Native draw requires the underlying demo to remain paused; the cached scene's
-independent clock can still play or scrub normally. Active counts are reset
+Native draw requires the underlying demo to remain paused or frozen at exactly
+zero demo timescale; the cached scene's independent clock can still play or scrub
+normally. Active counts are reset
 before native destruction. Status uses the same floor-tick selection as preview.
+
+
+## Phase 8: scoped live particle isolation (experimental, not yet validated in-game)
+
+Opt in via Preview > Native textured > Suppress live particles (experimental),
+or `mirv_cache particles isolate 1`. Default is off; this is not a persistent
+preference. `isolate 0` restores ordinary overlapping preview behavior.
+
+The existing TF2 View_Render wrapper (Tf2RenderPass.inl) brackets only the
+ordinary render invocation. Read the registered TF2 `r_drawparticles` cvar,
+set it to zero for the invocation, verify the write, then restore the exact
+saved numeric value on scope exit. The cvar is never intentionally held across
+frames. If it was already zero, no writes are necessary. If another component
+changes it to a different nonzero value during rendering, preserve that change.
+If restoration fails, status warns the user to check the cvar manually.
+Do not change mat_queue_mode automatically. Separate TF2 recording passes and
+normal demo playback must remain unaffected by this option.
+
+Eligibility: native textured preview enabled, scene view available, focus/device
+ready, a complete retained position AND appearance sample resolved using the same
+bounded prior-tick policy as replay, and the exact verified TF2 x64 module (PE
+identity plus factory/renderer entry anchors). Require paused or zero-timescale
+playback, no load/seek/skip, and immediate material rendering. The existing deeper
+native replay guards remain unchanged. Missing or partial capture keeps live
+particles visible; a genuinely empty complete sample is eligible for isolation.
+Styled/uniform marker modes and Off do not isolate. No cache format change.
+
+This is a draw-cvar experiment, not a native collection deletion, simulation
+freeze, per-effect filter or additional binary detour. It may also hide legacy
+or skybox effects that are not reconstructed in the cache. It is not yet proven
+that r_drawparticles controls all live draws or that the direct native renderer
+bypasses the setting on this build. Even a complete sample can fail a native
+restore later in the render callback; some effects may therefore disappear.
+Keep the option off if comparison shows lost historical particles.
+
+Validation: test both Pause and Freeze, stationary tick and backward/forward
+scrubbing, complete empty frames, missing coverage, switching particle modes,
+leaving preview, seeking, focus changes, capture and separate recording passes.
+Compare isolation on/off at the same camera/cursor with visibly different live
+and historical effects. Query `r_drawparticles` before/after and confirm its
+previous value is restored; `mirv_cache particles status` reports requested
+isolation and last ordinary-render outcome. Do not interpret cvar success or
+native submission counts as pixel coverage. Report new artifacts before tuning
+restoration rules; the previous intermittent large wedges are no longer
+reproducible as of the 3a9b8fd test and were not specifically fixed.
+
+Regression fixtures exercise eligibility and scoped cvar behavior in
+`tests/cinematic/test_overlay.py` and `tests/cinematic/test_tf2_native_render.py`.
+A standalone C++ mock of the scope passed ordinary restoration, nested scope,
+already-zero, refused setter, missing cvar, intervening edit, and restore failure
+cases. Full fixture execution, Windows compilation and runtime verification
+remain outstanding at the time of this change.

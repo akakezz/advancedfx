@@ -1555,6 +1555,13 @@ continues with the overlay closed. Pause/freeze actual demo playback, enable
 The Scene Cache track shows recorded coverage and gaps; its gray marker shows
 actual demo position independently of the cached playhead.
 
+For the experimental TF2 x64 broad textured model and native particle preview,
+see [Scene Cache handoff and current workflow](SCENE_CACHE_HANDOFF.md) and the
+[particle research log](SCENE_EFFECTS_EXPERIMENT.md). These describe the newer
+branch-specific features, separate particle memory budget, verified build guards,
+and optional live particle isolation; the earlier wireframe workflow below is
+still useful for diagnosis.
+
 Enable **Show path** and keep the active path visible for cyan player boxes and
 yellow heading lines drawn by the classic renderer. Cached wireframe
 poses use the engine's studio renderer and do not require **Show path**. Live
