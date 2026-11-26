@@ -227,3 +227,44 @@ Capture timing includes encoding; actual compression ratio/cost needs
 measurement on the same demo. Temporal cross-frame sharing remains future
 work. Repeat capture, random scrubbing, styled markers and the explicit
 nonempty prepare test to verify unchanged data after decoding.
+
+
+## Phase 7: scene-wide native particle replay
+
+Opt in with Scene Cache > Capture > Capture particles (TF2 x64 experiment),
+or simply mirv_cache particles 1. This also enables appearance capture,
+disables the earlier event probe, and selects native textured preview.
+Preview > Cached particles selects native, styled or uniform markers, or off.
+Memory > Particle budget MiB sets the existing history limit.
+No AGR recording required. Record fresh history, pause live demo, enable cached
+preview, and scrub normally. Native replay currently needs immediate material
+rendering: use the explicit overlay button or mat_queue_mode 0 once (restore
+your original setting afterwards). No automatic global cvar modifications.
+Live particles are not suppressed yet; optional r_drawparticles 0 may help
+isolate the test; restore r_drawparticles 1 afterwards if it was enabled.
+
+Every nonempty recorded root subtree is attempted at the existing main-view
+PostRenderAllTools callback. Separate TF2 render passes are excluded. Native
+SetupCurrentView stores view ID at 0xfe77c0 (guard at 0x34c926); only view 0
+is rendered. Verified factory, owned varying attributes, matching constants,
+active count +0x38, padded count +0x30 and scalar/SIMD collection clocks
++0x34/+0x20; native renderer 0x8e4840 with current material context and identity
+model matrix. If a recorded root cannot be restored, try its child subtrees
+without double-rendering successful trees. If a definition has no material
+and recursive render would skip descendants, render reachable child branches
+independently. Fresh collections are destroyed within the same synchronous
+callback; no simulation advance, queued native pointer retention or live list
+insertion. Capture and compression remain unchanged.
+
+This is experimental rendering: counters are submissions, not confirmed
+pixels. Missing/mismatched attributes reject a subtree; initial attributes,
+control points, renderer-specific context, dynamic lights, sorting across
+collections and historical texture/material state are not restored. Native
+draw can have engine side effects. Immediate-mode guard is required until
+queued resource lifetimes are established. Native particles may appear
+incorrectly or fail to render; use styled markers to compare. No automatic
+live suppression or per-effect categorization. Test with a disposable demo.
+
+Native draw requires the underlying demo to remain paused; the cached scene's
+independent clock can still play or scrub normally. Active counts are reset
+before native destruction. Status uses the same floor-tick selection as preview.

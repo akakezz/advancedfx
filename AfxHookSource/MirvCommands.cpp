@@ -22,6 +22,7 @@ extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 
 #include "AfxStreams.h"
 #include "CameraOverlay.h"
+#include "MaterialSystemHooks.h"
 #include "MirvCam.h"
 #include "CampathDrawer.h"
 #include "Gui.h"
@@ -151,17 +152,24 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, boo
 // Factory-created collections link to their definition temporarily, but never
 // enter CParticleMgr's registered CNewParticleEffect list. Destroy immediately;
 // no draw calls or pointers are queued.
-std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &frame,std::size_t index)
+// Native particle replay uses the same verified factory and allocations as
+// the successful dry run. No engine pointers are retained between callbacks.
+static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
+    const advancedfx::NativeParticles::Frame &frame,std::size_t probeIndex,bool draw)
 {
-#ifdef _WIN64
     using namespace advancedfx::NativeParticles;
+    ReplayResult result;
+    auto fail=[&](const char *why){result.Status=why;return result;};
+#ifdef _WIN64
     if(g_SourceSdkVer!=SourceSdkVer_TF2||!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||
-       !g_VEngineClient->IsPaused()||g_VEngineClient->IsSkippingDemo()||g_VEngineClient->IsDrawingLoadingImage())
-        return "Detached probe requires paused TF2 x64 demo";
-    if(!frame.Complete||!frame.Appearance||index>=frame.Collections.size()||!frame.Collections[index].Name[0]||!frame.Collections[index].Active)
-        return "Detached probe requires a complete snapshot and named nonempty recorded collection";
+       g_VEngineClient->IsSkippingDemo()||g_VEngineClient->IsDrawingLoadingImage())
+        return fail("Native particles require a loaded TF2 x64 demo");
+    if(!g_VEngineClient->IsPaused())return fail(draw?"Native particle preview requires paused underlying demo":"Detached probe requires paused TF2 x64 demo");
+    if(!frame.Complete||!frame.Appearance)return fail("Native particles require a complete position and appearance snapshot");
+    if(!draw&&(probeIndex>=frame.Collections.size()||!frame.Collections[probeIndex].Name[0]||!frame.Collections[probeIndex].Active))
+        return fail("Detached probe requires a named nonempty collection");
     HMODULE client=GetModuleHandleA("client.dll");
-    if(!client) return "Detached probe client unavailable";
+    if(!client) return fail("Detached probe client unavailable");
     const Address base=reinterpret_cast<std::uintptr_t>(client);
     auto read=[](Address a,void *out,std::size_t n) {
         SIZE_T got=0;return ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(static_cast<std::uintptr_t>(a)),out,n,&got)&&got==n;
@@ -183,54 +191,197 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
        !match(0x8e2b70,{0xf7,0xc2,0x55,0x80,0x06,0x00})||
        !match(0x8e2aea,{0x89,0x41,0x60})||
        !match(0x8e2c4f,{0x4c,0x89,0x80,0x00,0xff,0xff,0xff}))
-        return "Detached factory ABI guard failed";
+        return fail("Detached factory ABI guard failed");
     Address manager=0,dict=0,headBefore=0;
     if(!read(base+0x10067e0,&manager,sizeof(manager))||manager<0x10000||
        !read(manager+0xe0,&dict,sizeof(dict))||dict<0x10000||
        !read(base+Layout::Manager+Layout::RootHead,&headBefore,sizeof(headBefore)))
-        return "Detached particle manager unavailable";
+        return fail("Detached particle manager unavailable");
     using Factory=void *(*)(void *,const char *,float,int);
     using Destroy=void (*)(void *);
     const auto make=reinterpret_cast<Factory>(base+0x8e0490);
     const auto destruct=reinterpret_cast<Destroy>(base+0x8de590);
     const auto freeMemory=reinterpret_cast<Destroy>(base+0x8decd0);
-    void *object=make(reinterpret_cast<void*>(manager),frame.Collections[index].Name.data(),0.0f,1);
-    if(!object) return "Detached native factory returned null";
-    std::string result;
-    {
-        struct Owner {void *Object;Destroy Destructor,Free;~Owner(){Destructor(Object);Free(Object);}} owner{object,destruct,freeMemory};
-        Address headDuring=0;
-        RestorePlan plan;
-        if(!read(base+Layout::Manager+Layout::RootHead,&headDuring,sizeof(headDuring))||headDuring!=headBefore)
-            plan.Error="Registered effect list changed during factory call";
-        else plan=PlanDetached(frame,index,reinterpret_cast<Address>(object),read);
-        if(!plan.Error.empty()) result="Detached factory created collection; copy plan rejected: "+plan.Error;
-        else {
-            std::size_t copied=0;
-            std::vector<std::uint32_t> verify;
-            bool ok=true;
-            for(const auto &op:plan.Copies) {
-                SIZE_T wrote=0;
-                const auto n=std::size_t(op.Count)*sizeof(std::uint32_t);
-                if(!WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(op.Destination),frame.Words.data()+op.Start,n,&wrote)||wrote!=n) {ok=false;break;}
-                verify.resize(op.Count);
-                if(!read(op.Destination,verify.data(),n)||!std::equal(verify.begin(),verify.end(),frame.Words.begin()+op.Start)) {ok=false;break;}
-                ++copied;
-            }
-            result=std::string(ok&&copied?"Detached attribute copy verified":ok?"Detached probe inconclusive (no varying blocks copied)":"Detached attribute copy failed")+
-                "; nodes "+std::to_string(plan.Nodes)+", historical particles "+std::to_string(plan.Particles)+
-                ", varying blocks copied "+std::to_string(copied)+"/"+std::to_string(plan.Copies.size())+
-                ", constants compared "+std::to_string(plan.Constants)+", differing "+std::to_string(plan.ConstantDifferences)+
-                ", missing slots "+std::to_string(plan.Missing)+". No active counts changed; no native draw.";
-        }
+
+    using Render=void(*)(void *,void *,bool,void *);
+    auto render=reinterpret_cast<Render>(base+0x8e4840);
+    auto write=[](Address a,const void *data,std::size_t n) {
+        SIZE_T wrote=0;return WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(a),data,n,&wrote)&&wrote==n;
+    };
+    void *context=nullptr;
+    // Vtable calls match the engine's own DrawModel path at 0x2dadaa,
+    // 0x2daf75..0x2dafda and 0x2db04b..0x2db05a.
+    using NoArg=void(*)(void *);
+    using IntArg=void(*)(void *,int);
+    using GetContext=void*(*)(void *);
+    auto slot=[&](void *obj,std::size_t offset)->Address{
+        Address vt=0,fn=0;
+        if(!obj||!read(reinterpret_cast<Address>(obj),&vt,sizeof(vt))||!vt||!read(vt+offset,&fn,sizeof(fn))||!fn)return 0;
+        MEMORY_BASIC_INFORMATION info{};
+        if(!VirtualQuery(reinterpret_cast<void*>(fn),&info,sizeof(info))||info.State!=MEM_COMMIT||
+           !(info.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))||
+           (info.Protect&PAGE_GUARD))return 0;
+        return fn;
+    };
+    struct ContextOwner {
+        void *Object=nullptr;NoArg End=nullptr,Release=nullptr,Pop=nullptr;IntArg Mode=nullptr;
+        bool Begun=false,Pushed=false;
+        ~ContextOwner(){if(Pushed){Mode(Object,10);Pop(Object);}if(Begun)End(Object);if(Object&&Release)Release(Object);}
+    } ctx;
+    if(draw) {
+        // SetupCurrentView stores the view ID at 0xfe77c0. Only VIEW_MAIN=0.
+        if(!match(0x34c926,{0x89,0x2d,0x94,0xae,0xc9,0x00})||
+           !match(0x34c97e,{0x83,0xfd,0x01,0xba,0x0a,0x00,0x00,0x00})||
+           !match(0x8e4840,{0x48,0x89,0x6c,0x24,0x18,0x57,0x41,0x56,0x41,0x57})||
+           !match(0x8e48a9,{0x83,0x7f,0x38,0x00})||
+           !match(0x8e4938,{0x41,0xff,0x52,0x48})||
+           !match(0x8df741,{0x41,0x89,0x5f,0x38})||
+           !match(0x8df75a,{0xc1,0xf8,0x02,0x41,0x89,0x47,0x30})||
+           !match(0x8e1bd7,{0x0f,0x11,0x43,0x20,0xf3,0x0f,0x11,0x73,0x34})||
+           !match(0x2dadaa,{0x48,0x8b,0x0d,0xc7,0xe8,0xeb,0x00})||
+           !match(0x2dadbc,{0xff,0x90,0x10,0x03,0x00,0x00})||
+           !match(0x2daf80,{0xff,0x90,0xa0,0x00,0x00,0x00})||
+           !match(0x2daf98,{0xff,0x90,0xf8,0x00,0x00,0x00})||
+           !match(0x2dafd4,{0xff,0x90,0xb0,0x00,0x00,0x00}))
+            return fail("Native renderer ABI guard failed");
+        int view=-1;
+        if(!read(base+0xfe77c0,&view,sizeof(view))||view!=0)return result; // not the main view
+        result.MainView=true;
+        if(!MaterialSystem_IsImmediate())return fail("Native particles need immediate rendering (mat_queue_mode 0)");
+        Address materials=0;
+        if(!read(base+0x1199678,&materials,sizeof(materials))||!materials)return fail("Native material system unavailable");
+        const auto getter=slot(reinterpret_cast<void*>(materials),0x310);
+        if(!getter)return fail("Native render context getter unavailable");
+        context=reinterpret_cast<GetContext>(getter)(reinterpret_cast<void*>(materials));
+        if(!context)return fail("Native render context unavailable");
+        ctx.Object=context;
+        ctx.Release=reinterpret_cast<NoArg>(slot(context,0x08));
+        const auto begin=reinterpret_cast<NoArg>(slot(context,0x10));
+        ctx.End=reinterpret_cast<NoArg>(slot(context,0x18));
+        ctx.Mode=reinterpret_cast<IntArg>(slot(context,0xa0));
+        const auto push=reinterpret_cast<NoArg>(slot(context,0xa8));
+        ctx.Pop=reinterpret_cast<NoArg>(slot(context,0xb0));
+        const auto identity=reinterpret_cast<NoArg>(slot(context,0xf8));
+        if(!ctx.Release||!begin||!ctx.End||!ctx.Mode||!push||!ctx.Pop||!identity)
+            return fail("Native render context methods unavailable");
+        begin(context);ctx.Begun=true;
+        ctx.Mode(context,10);push(context);ctx.Pushed=true;identity(context);
     }
-    Address headAfter=0;
-    result+=read(base+Layout::Manager+Layout::RootHead,&headAfter,sizeof(headAfter))&&headBefore==headAfter?
-        " Destroyed; registered effect list head unchanged.":" Destroyed; WARNING: registered effect list head changed.";
+    std::string firstFailure;
+    bool listChanged=false;
+    auto attempt=[&](std::size_t index,std::size_t)->bool {
+        if(listChanged)return false;
+        ++result.Attempts;
+        const auto &old=frame.Collections[index];
+        auto reject=[&](const std::string &why){++result.Rejected;if(firstFailure.empty())firstFailure=std::string(old.Name.data())+": "+why;return false;};
+        if(!old.Name[0])return reject("unnamed definition");
+        void *object=make(reinterpret_cast<void*>(manager),old.Name.data(),0.0f,1);
+        if(!object)return reject("factory returned null");
+        bool ok=false;
+        {
+            struct Owner {void *Object;Destroy Destructor,Free;~Owner(){Destructor(Object);Free(Object);}} owner{object,destruct,freeMemory};
+            Address headDuring=0;
+            RestorePlan plan;
+            if(!read(base+Layout::Manager+Layout::RootHead,&headDuring,sizeof(headDuring))||headDuring!=headBefore) {
+                listChanged=true;plan.Error="registered effect list changed during factory call";
+            } else plan=PlanDetached(frame,index,reinterpret_cast<Address>(object),read);
+            if(!plan.Error.empty())reject(plan.Error);
+            else if(draw&&(plan.Missing||plan.ConstantDifferences))reject("missing attributes or differing shared constants");
+            else {
+                std::size_t copied=0;std::vector<std::uint32_t> verify;bool copyOk=true;
+                for(const auto &op:plan.Copies) {
+                    const auto n=std::size_t(op.Count)*sizeof(std::uint32_t);
+                    if(!write(op.Destination,frame.Words.data()+op.Start,n)){copyOk=false;break;}
+                    if(!draw) {
+                        verify.resize(op.Count);
+                        if(!read(op.Destination,verify.data(),n)||!std::equal(verify.begin(),verify.end(),frame.Words.begin()+op.Start)){copyOk=false;break;}
+                    }
+                    ++copied;
+                }
+                if(!copyOk)reject("attribute copy failed");
+                else if(!draw) {
+                    result.Status=std::string(copied?"Detached attribute copy verified":"Detached probe inconclusive (no varying blocks copied)")+
+                        "; nodes "+std::to_string(plan.Nodes)+", historical particles "+std::to_string(plan.Particles)+
+                        ", varying blocks copied "+std::to_string(copied)+"/"+std::to_string(plan.Copies.size())+
+                        ", constants compared "+std::to_string(plan.Constants)+", differing "+std::to_string(plan.ConstantDifferences)+
+                        ", missing slots "+std::to_string(plan.Missing)+". No active counts changed; no native draw.";
+                    ok=true;
+                } else {
+                    // Validate all render gates before activating anything. A
+                    // parent with no material short-circuits recursive Render;
+                    // submit renderable descendants below those gates separately.
+                    std::vector<bool> gate(frame.Collections.size()),bound(frame.Collections.size());
+                    bool valid=true;
+                    for(const auto &binding:plan.Bindings) {
+                        const auto &c=frame.Collections[binding.Recorded];
+                        Address definition=0,material=0;unsigned char flag=0;
+                        if(!c.HasTime||!std::isfinite(c.Time)||
+                           !read(binding.Native+Layout::Definition,&definition,sizeof(definition))||!definition||
+                           !read(definition+0x3fa,&flag,1)||!read(definition+0x148,&material,sizeof(material))) {valid=false;break;}
+                        gate[binding.Recorded]=(flag&1)&&material;
+                        bound[binding.Recorded]=true;
+                    }
+                    // Always return active counters to their factory state before destruction.
+                    // No queued consumers are permitted in this experimental path.
+                    struct ResetActive {
+                        const RestorePlan &Plan;decltype(write) &Write;
+                        ~ResetActive(){const int zero=0;for(const auto &b:Plan.Bindings){Write(b.Native+Layout::Active,&zero,sizeof(zero));Write(b.Native+0x30,&zero,sizeof(zero));}}
+                    } reset{plan,write};
+                    if(valid)for(const auto &binding:plan.Bindings) {
+                        const auto &c=frame.Collections[binding.Recorded];
+                        const int active=static_cast<int>(c.Active),padded=(active+3)/4;
+                        const std::array<float,4> clock{c.Time,c.Time,c.Time,c.Time};
+                        if(!write(binding.Native+0x20,clock.data(),sizeof(clock))||
+                           !write(binding.Native+Layout::Clock,&c.Time,sizeof(c.Time))||
+                           !write(binding.Native+0x30,&padded,sizeof(padded))||
+                           !write(binding.Native+Layout::Active,&active,sizeof(active))) {valid=false;break;}
+                    }
+                    if(!valid)reject("native activation validation/write failed");
+                    else {
+                        std::size_t nodes=0,particles=0;
+                        for(const auto &binding:plan.Bindings) {
+                            const auto i=binding.Recorded;
+                            if(!gate[i])continue;
+                            const auto &c=frame.Collections[i];
+                            if(c.Parent<0||!bound[c.Parent]||!gate[c.Parent]) {
+                                ctx.Mode(context,10);identity(context);
+                                render(reinterpret_cast<void*>(binding.Native),context,false,nullptr);
+                            }
+                            if(c.Active){++nodes;particles+=c.Active;}
+                        }
+                        ++result.Trees;result.Nodes+=nodes;result.Particles+=particles;ok=true;
+                    }
+                }
+            }
+        }
+        Address headAfter=0;
+        if(!read(base+Layout::Manager+Layout::RootHead,&headAfter,sizeof(headAfter))||headAfter!=headBefore) {
+            listChanged=true;reject("registered effect list head changed");ok=false;
+        }
+        if(!draw)result.Status+=(listChanged?" Destroyed; WARNING: registered effect list head changed.":" Destroyed; registered effect list head unchanged.");
+        return ok;
+    };
+    if(draw) {
+        ReplayForest(frame,attempt);
+        result.Status="Native particle submissions (not pixel coverage)";
+        if(listChanged)result.Status+="; WARNING: registered list changed; stopped";
+        if(!firstFailure.empty())result.Status+="; first rejected tree: "+firstFailure;
+    } else {
+        if(!attempt(probeIndex,frame.Collections[probeIndex].Active)&&!firstFailure.empty())
+            result.Status=firstFailure+result.Status;
+    }
     return result;
 #else
-    return "Detached probe requires exact TF2 x64 build";
+    return fail("Native particles require exact TF2 x64 build");
 #endif
+}
+std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &frame,std::size_t index)
+{
+    return SceneNativeParticleOperation(frame,index,false).Status;
+}
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame)
+{
+    return SceneNativeParticleOperation(frame,0,true);
 }
 
 

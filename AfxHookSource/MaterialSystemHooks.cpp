@@ -101,6 +101,12 @@ bool MaterialSystem_CanExecuteOnRenderThread() {
     return g_SourceSdkVer == SourceSdkVer_CSSV34;
 }
 
+bool MaterialSystem_IsImmediate() {
+    return g_pMaterialSystem && AFXADDR_GET(materialsystem_GetRenderCallQueue) &&
+        g_Old_CMaterialSystem_GetRenderCallQueue &&
+        !g_Old_CMaterialSystem_GetRenderCallQueue(g_pMaterialSystem,0);
+}
+
 bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor * pFunctor) {
     if(g_pMaterialSystem && AFXADDR_GET(materialsystem_GetRenderCallQueue)) {
         if(3 == AFXADDR_GET(materialsystem_CFunctor_vtable_size)) {

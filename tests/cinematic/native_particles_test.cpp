@@ -112,5 +112,13 @@ int main(){
     check(HistoryCodec::Decode(HistoryCodec::Encode(noise),noise.size(),decoded)&&decoded==noise,"incompressible bytes roundtrip");
     check(!HistoryCodec::Decode({128,0,0},4,decoded)&&!HistoryCodec::Decode({127,1},128,decoded),"malformed codec input rejected");
     check(!HistoryCodec::Decode(encoded,repeat.size()-1,decoded),"decoded size bound");
+    check(plan.Bindings.size()==1&&plan.Bindings[0].Native==detached&&plan.Bindings[0].Recorded==0,"native activation binding");
+    Frame forest;forest.Collections.resize(7);
+    forest.Collections[0].Parent=-1;forest.Collections[1].Parent=0;forest.Collections[2].Parent=1;
+    forest.Collections[3].Parent=0;forest.Collections[4].Parent=-1;forest.Collections[5].Parent=4;forest.Collections[6].Parent=-1;
+    forest.Collections[2].Active=4;forest.Collections[3].Active=8;forest.Collections[4].Active=3;
+    std::vector<std::size_t> visited;
+    ReplayForest(forest,[&](std::size_t i,std::size_t active){visited.push_back(i);check(active>0,"empty branches skipped");return i!=0;});
+    check(visited==std::vector<std::size_t>{0,1,3,4},"root success avoids duplicates; root failure falls back to child subtrees");
     std::cout<<"Native particle snapshot tests passed\n";
 }

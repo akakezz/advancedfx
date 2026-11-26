@@ -39,6 +39,7 @@ preamble=r'''
 #include "AfxHookSource/CameraOverlay.h"
 advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick,bool appearance){advancedfx::NativeParticles::Frame f;f.Tick=tick;f.Complete=true;f.Points.push_back({1,2,3});return f;}
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &,std::size_t){return "fixture";}
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &){return {}; }
 #include "shared/PlayerRepair.h"
 void MirvFix_PlayerRepairNewDemo(const char*);
 void MirvFix_PlayerAngleTraceEnd();
@@ -1110,6 +1111,10 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  auto renderFrame=std::make_shared<advancedfx::SceneCache::Frame>();advancedfx::SceneCache::Entity rendered;rendered.Identity=42;rendered.ModelPose=sceneTestPose;renderFrame->Entities.push_back(rendered);std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));
  sceneQueueDeferred=true;SceneCacheDrawModels();check(scenePoseDraws==1&&sceneQueued.empty()&&sceneLastDrawn==sceneTestPose,"Studio front-end submission runs on the engine caller, not a render-worker functor");
  sceneCommand({"mirv_cache","clear"});SceneCacheDrawModels();check(scenePoseDraws==1,"Clearing history prevents further model submissions");
+ sceneCommand({"mirv_cache","effects","1"});sceneCommand({"mirv_cache","particles","1"});check(g_SceneNativeParticlesEnabled&&g_SceneNativeParticleAppearance&&g_SceneNativeParticleReplay&&!g_SceneNativeParticleMarkers&&!g_SceneEffectsEnabled,"One particle command enables full capture and native replay");
+ SceneParticlePreviewMode(2);check(g_SceneNativeParticleMarkers&&g_SceneNativeParticleStyled&&!g_SceneNativeParticleReplay,"Styled preview mode is exclusive");
+ sceneCommand({"mirv_cache","particles","native","1"});check(g_SceneNativeParticleReplay&&!g_SceneNativeParticleMarkers,"Native preview mode is exclusive");
+ sceneCommand({"mirv_cache","particles","0"});check(!g_SceneNativeParticlesEnabled&&!g_SceneNativeParticleReplay&&!g_SceneNativeParticleMarkers,"One particle command disables capture and preview");
  std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));sceneCommand({"mirv_cache","models","0"});SceneCacheDrawModels();check(scenePoseDraws==1&&sceneQueued.empty(),"Disabled models create no rendering or resource work");
  sceneCommand({"mirv_cache","models","1"});sceneQueueAvailable=false;SceneCacheDrawModels();check(scenePoseDraws==1&&std::atomic_load(&g_SceneModelStatus)->find("queue unavailable")!=std::string::npos,"Unavailable render queue fails safely before studio submission");sceneQueueAvailable=true;
  NotifyDemoPlaybackFile("pose-restart.dem");SceneCacheDrawModels();check(scenePoseDraws==1&&!g_ScenePlayerModels&&!g_ScenePlayerFilter&&!SceneCacheView(),"Demo restart clears the old player and prevents further old-scene submissions");

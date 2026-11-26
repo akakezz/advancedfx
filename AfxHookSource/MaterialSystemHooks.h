@@ -8,6 +8,8 @@ public:
 
 // Query before submitting engine work that needs an ordered cleanup callback.
 bool MaterialSystem_CanExecuteOnRenderThread();
+// True only when a verified material system has no deferred render queue.
+bool MaterialSystem_IsImmediate();
 
 bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor * functor);
 

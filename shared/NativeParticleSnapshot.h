@@ -240,8 +240,10 @@ struct CopyOp {
     Address Destination=0;
     std::uint32_t Start=0,Count=0;
 };
+struct RestoreBinding {Address Native=0;std::size_t Recorded=0;};
 struct RestorePlan {
     std::vector<CopyOp> Copies;
+    std::vector<RestoreBinding> Bindings;
     std::size_t Nodes=0,Particles=0,Constants=0,ConstantDifferences=0,Missing=0;
     std::string Error;
 };
@@ -271,7 +273,7 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
             if(!get(name+k,ch)||ch!=old.Name[k]) {fail("Detached definition name mismatch");return;}
             if(!ch) break;
         }
-        ++plan.Nodes;plan.Particles+=old.Active;
+        ++plan.Nodes;plan.Particles+=old.Active;plan.Bindings.push_back({c,i});
         if(old.Active) {
             std::array<Address,32> ptr{},stride{};
             Address memory=0;
@@ -313,7 +315,7 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
         if(child) fail("Detached definition has additional children");
     };
     walk(walk,index,root,0);
-    if(!plan.Error.empty()) plan.Copies.clear();
+    if(!plan.Error.empty()) {plan.Copies.clear();plan.Bindings.clear();}
     return plan;
 }
 // Store explicit fields rather than C++ object representation/padding.
@@ -461,6 +463,37 @@ inline bool Load(const Stored &s,Frame &f) {
     return HistoryCodec::Decode(s.Data,s.PlainSize,plain)&&Unpack(plain,s.Tick,f);
 }
 }
+// A root-first fallback traversal. Successful attempts own their entire
+// subtree; failed attempts descend to children without double-submitting.
+template<class Attempt>
+void ReplayForest(const Frame &f,Attempt attempt) {
+    if(f.Collections.size()>Layout::MaxCollections)return;
+    std::vector<std::vector<std::size_t>> children(f.Collections.size());
+    std::vector<std::size_t> roots;
+    for(std::size_t i=0;i<f.Collections.size();++i) {
+        const auto parent=f.Collections[i].Parent;
+        if(parent==-1)roots.push_back(i);
+        else if(parent>=0&&static_cast<std::size_t>(parent)<i)children[parent].push_back(i);
+        else return;
+    }
+    std::vector<std::size_t> active(f.Collections.size());
+    for(std::size_t i=f.Collections.size();i--;) {
+        active[i]+=f.Collections[i].Active;
+        const auto parent=f.Collections[i].Parent;
+        if(parent>=0)active[parent]+=active[i];
+    }
+    auto walk=[&](auto &&self,std::size_t i,unsigned depth)->void {
+        if(depth>32||!active[i])return;
+        if(attempt(i,active[i]))return;
+        for(auto c:children[i])self(self,c,depth+1);
+    };
+    for(auto i:roots)walk(walk,i,0);
+}
+struct ReplayResult {
+    bool MainView=false;
+    std::size_t Attempts=0,Trees=0,Nodes=0,Particles=0,Rejected=0;
+    std::string Status;
+};
 class History {
 public:
     explicit History(std::size_t budget=512u*1024u*1024u):Budget(budget){}

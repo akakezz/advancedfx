@@ -12,6 +12,7 @@ namespace advancedfx { class ICommandArgs; }
 // Native engine-thread position snapshot, exact TF2 x64 build only.
 advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, bool appearance=false);
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &frame, std::size_t collection);
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame);
 namespace AfxHookSource
 {
 namespace CameraOverlay
@@ -33,6 +34,7 @@ void PreferencesFrame(); // Engine FRAME_START, including when the overlay is cl
 void Draw();
 void SceneCacheFrame(bool capture = true); // Capture at TF2 FRAME_RENDER_END; false only updates preview.
 void SceneCacheDrawModels();
+void SceneCacheDrawParticles();
 // Synchronous native particle tool message capture; payload is copied immediately.
 // Return a message kind once per capture to request a lightweight client stack audit.
 int SceneCacheParticleMessage(const char *name, const void *state);

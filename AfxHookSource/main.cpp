@@ -300,6 +300,9 @@ public:
 		// Warning: This can be called multiple times during a frame (i.e. for skybox view and normal world view)!
 
 		AfxHookSource::CameraOverlay::SceneCacheDrawModels();
+        bool particlePassRecording=false;
+        for(unsigned i=0;i<unsigned(Tf2RenderPass::Count);++i)particlePassRecording|=g_AfxStreams.Tf2PassRecording(Tf2RenderPass(i));
+        if(!particlePassRecording)AfxHookSource::CameraOverlay::SceneCacheDrawParticles();
 		g_CampathDrawer.OnPostRenderAllTools_EngineThread();
 		g_EntityIndexDrawer.OnPostRenderAllTools_EngineThread();
 		g_Engine_ClientEngineTools->PostRenderAllTools();
