@@ -2059,7 +2059,9 @@ std::vector<advancedfx::CameraTransitionGuide> MirvCam_CachedTransitionGuides(st
 		std::vector<PathStamp> Paths;
 		std::vector<advancedfx::CameraClip> Clips;
 		std::vector<Entry> Entries;
-		size_t Next = 1;
+		size_t Next = 1, SceneCount = 0;
+		double SceneFirstDemo = 0, SceneLastClient = 0;
+		bool SceneSorted = false;
 	};
 	static Cache cache;
 	auto &paths = g_Hook_VClient_RenderView.m_CamPaths;
@@ -2103,18 +2105,44 @@ std::vector<advancedfx::CameraTransitionGuide> MirvCam_CachedTransitionGuides(st
 	}
 	if (std::any_of(cache.Entries.begin(), cache.Entries.end(), [](const auto &e){ return e.Historical; }))
 	{
-		std::uint64_t revision = 0;
-		AfxHookSource::CameraOverlay::VisitCameraSceneFrames([&](const auto &, std::uint64_t value){ revision = value; });
-		if (cache.Scene != revision)
+		AfxHookSource::CameraOverlay::VisitCameraSceneFrames([&](const auto &frames, std::uint64_t revision)
 		{
-			cache.Scene = revision;
+			if (cache.Scene == revision) return;
+			// Append-only capture cannot change samples strictly before its old
+			// tail. Verify the same prefix and strictly increasing new client times.
+			// Clear, trim, seek, or other changes invalidate historical geometry.
+			bool append = cache.SceneSorted && cache.SceneCount && frames.size() > cache.SceneCount &&
+				revision > cache.Scene && revision - cache.Scene == frames.size() - cache.SceneCount &&
+				frames.front().DemoTime == cache.SceneFirstDemo &&
+				frames[cache.SceneCount - 1].ClientTime == cache.SceneLastClient;
+			if (append)
+				for (size_t i = cache.SceneCount; i < frames.size(); ++i)
+					if (!(frames[i].ClientTime > frames[i - 1].ClientTime + 1e-6))
+					{ append = false; break; }
+			const double last = frames.empty() ? 0 : frames.back().ClientTime;
 			for (size_t i = 1; i < cache.Entries.size(); ++i)
-				if (cache.Entries[i].Historical && cache.Clips[i].Blend > 0)
+			{
+				auto &entry = cache.Entries[i];
+				if (!entry.Historical || !entry.Ready || cache.Clips[i].Blend <= 0) continue;
+				if (append)
 				{
-					cache.Entries[i].Ready = false;
-					cache.Entries[i].Lines.clear();
+					const double end = cache.Clips[i].TransitionStart() + cache.Clips[i].Blend;
+					// Recovery can inspect candidates up to time + 1e-6.
+					if (end + 1e-6 <= cache.SceneLastClient) continue;
+					// A previously unavailable future envelope cannot become
+					// complete until its endpoint enters recorded coverage.
+					if (entry.Lines.empty() && end > last) continue;
 				}
-		}
+				entry.Ready = false;
+				entry.Lines.clear();
+			}
+			cache.Scene = revision;
+			cache.SceneCount = frames.size();
+			cache.SceneFirstDemo = frames.empty() ? 0 : frames.front().DemoTime;
+			cache.SceneLastClient = last;
+			cache.SceneSorted = append || std::is_sorted(frames.begin(), frames.end(),
+				[](const auto &a, const auto &b){ return a.ClientTime < b.ClientTime; });
+		});
 	}
 	// At most one expensive evaluation per drawing snapshot. Prefer the
 	// selected transition on authored edits; otherwise rotate to avoid starvation.

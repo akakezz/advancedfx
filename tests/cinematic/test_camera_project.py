@@ -188,6 +188,17 @@ int main(){
  budget=true;guides=MirvCam_CachedTransitionGuides(p.Id,budget);assert(!budget&&guides.size()==1);
  assert(MirvCam_HistoryUndo(false));
  budget=true;guides=MirvCam_CachedTransitionGuides(p.Id,budget);assert(!budget&&guides.size()==1);
+ // A growing scene cache must not recalculate already covered transitions.
+ auto oldFrames=cameraFrames;auto oldFrame=cachedFrame;
+ cameraFrames.clear();for(int i=0;i<=4;++i){advancedfx::SceneCache::Frame f;f.DemoTime=f.ClientTime=i;cameraFrames.push_back(f);}
+ ++cameraFramesRevision;cached=true;cachedFrame=std::make_shared<advancedfx::SceneCache::Frame>();
+ for(int i=0;i<3;++i){budget=true;guides=MirvCam_CachedTransitionGuides(p.Id,budget);assert(!budget);}
+ assert(guides.size()==3);
+ auto appended=cameraFrames.back();appended.DemoTime=appended.ClientTime=5;cameraFrames.push_back(appended);++cameraFramesRevision;
+ budget=true;guides=MirvCam_CachedTransitionGuides(p.Id,budget);assert(budget&&guides.size()==3);
+ cameraFrames.clear();cachedFrame.reset();++cameraFramesRevision;
+ budget=true;guides=MirvCam_CachedTransitionGuides(p.Id,budget);assert(!budget&&guides.empty());
+ cameraFrames=std::move(oldFrames);cachedFrame=oldFrame;cached=false;++cameraFramesRevision;
  assert(MirvCam_SaveProject(file.c_str()));assert(MirvCam_LoadProject(file.c_str()));
  assert(g_CameraClips[2].FreezeOutgoing&&g_CameraClips[2].CurvedPath&&
  std::abs(g_CameraClips[2].TransitionOffset+.3)<1e-9&&g_CameraClips[2].HandleOut[0]==12);
