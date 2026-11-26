@@ -212,6 +212,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
     // Vtable calls match the engine's own DrawModel path at 0x2dadaa,
     // 0x2daf75..0x2dafda and 0x2db04b..0x2db05a.
     using NoArg=void(*)(void *);
+    NoArg identity=nullptr;
     using IntArg=void(*)(void *,int);
     using GetContext=void*(*)(void *);
     auto slot=[&](void *obj,std::size_t offset)->Address{
@@ -261,7 +262,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         ctx.Mode=reinterpret_cast<IntArg>(slot(context,0xa0));
         const auto push=reinterpret_cast<NoArg>(slot(context,0xa8));
         ctx.Pop=reinterpret_cast<NoArg>(slot(context,0xb0));
-        const auto identity=reinterpret_cast<NoArg>(slot(context,0xf8));
+        identity=reinterpret_cast<NoArg>(slot(context,0xf8));
         if(!ctx.Release||!begin||!ctx.End||!ctx.Mode||!push||!ctx.Pop||!identity)
             return fail("Native render context methods unavailable");
         begin(context);ctx.Begun=true;
