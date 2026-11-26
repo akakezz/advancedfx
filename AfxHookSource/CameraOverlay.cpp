@@ -449,18 +449,22 @@ void SceneCacheFrame(bool capture)
 		const bool broad = frame.RenderSnapshot;
 		const auto globals = g_Hook_VClient_RenderView.GetGlobals();
 		const bool audit = broad && globals && g_SceneAuditFrame == globals->framecount_get();
-		size_t seen = 0, unseen = 0, matched = 0;
+		size_t seen = 0, unseen = 0, matched = 0, nativeSkins = 0, networkSkins = 0, teamSkins = 0, unknownSkins = 0;
 		Mirv_Tf2_CollectSceneEntities(broad || g_SceneProjectiles, broad || g_SceneWeapons, broad || g_SceneCosmetics,
 		                              broad || g_SceneRagdolls, broad || g_SceneGibs, broad || g_SceneBuildings,
 		                              broad || g_SceneProps, entities, broad);
 		unsigned int playerPoses = 0, projectilePoses = 0, weaponPoses = 0, cosmeticPoses = 0, failures = 0;
-		unsigned int ragdollPoses = 0, gibPoses = 0, buildingPoses = 0, propPoses = 0;
+		unsigned int ragdollPoses = 0, gibPoses = 0, buildingPoses = 0, propPoses = 0, otherPoses = 0;
 		std::string lastIssue;
 		for (auto &row : entities)
 		{
 			auto &entity = row.Snapshot;
 			const auto observed = audit ? g_SceneAuditDraws.find(row.ObservedRenderable) : g_SceneAuditDraws.end();
-			if (observed != g_SceneAuditDraws.end()) { entity.Skin = observed->second; ++matched; }
+			if (observed != g_SceneAuditDraws.end())
+			{
+				++matched;
+				if (observed->second >= 0) { entity.Skin = observed->second; entity.SkinFrom = advancedfx::SceneCache::Entity::SkinSource::Native; }
+			}
 			const bool player = entity.Category == MIRV_TF2_ENTITY_PLAYER;
 			const bool selected = player && (broad || ScenePlayerMatches(entity.Identity, row.Index));
 			selectedSeen += selected;
@@ -483,8 +487,17 @@ void SceneCacheFrame(bool capture)
 				if (Mirv_Tf2_CaptureScenePose(row.Index, entity, status, row.ObservedObject))
 				{
 					++g_ScenePoseCaptured;
-					if (audit && entity.ModelPose && entity.ModelPose->ModelInfo->WireEdges.empty())
-						(observed != g_SceneAuditDraws.end() ? seen : unseen)++;
+					if (broad && entity.ModelPose && entity.ModelPose->ModelInfo->WireEdges.empty())
+					{
+						if (audit) (observed != g_SceneAuditDraws.end() ? seen : unseen)++;
+						using Source = advancedfx::SceneCache::Entity::SkinSource;
+						switch (entity.SkinFrom) {
+						case Source::Native: ++nativeSkins; break;
+						case Source::Network: ++networkSkins; break;
+						case Source::TeamFallback: ++teamSkins; break;
+						default: ++unknownSkins; break;
+						}
+					}
 					if (player)
 						++playerPoses;
 					else if (entity.Category == MIRV_TF2_ENTITY_WEAPON)
@@ -499,8 +512,9 @@ void SceneCacheFrame(bool capture)
 						++buildingPoses;
 					else if (entity.Category == MIRV_TF2_ENTITY_PROP)
 						++propPoses;
-					else
+					else if (entity.Category == MIRV_TF2_ENTITY_PROJECTILE)
 						++projectilePoses;
+					else ++otherPoses;
 				}
 				else
 				{
@@ -520,7 +534,7 @@ void SceneCacheFrame(bool capture)
 			    " weapon poses, " + std::to_string(cosmeticPoses) + " cosmetic poses, " +
 			    std::to_string(ragdollPoses) + " ragdoll poses, " + std::to_string(gibPoses) +
 			    " gib poses, " + std::to_string(buildingPoses) + " building poses, " +
-			    std::to_string(propPoses) + " prop poses; " + std::to_string(failures) + " unavailable.";
+			    std::to_string(propPoses) + " prop poses, " + std::to_string(otherPoses) + " other poses; " + std::to_string(failures) + " unavailable.";
 			if (broad) g_ScenePoseStatus += " Broad snapshot: " + std::to_string(entities.size()) + " registered renderables.";
 			if (!lastIssue.empty())
 				g_ScenePoseStatus += " " + lastIssue;
@@ -534,6 +548,9 @@ void SceneCacheFrame(bool capture)
 				" distinct observed submissions; " + std::to_string(matched) + " matched renderables; " +
 				std::to_string(seen) + " captured studio poses seen by hook, " + std::to_string(unseen) +
 				" not seen by hook (off-screen or other submission path)." : "No matching native view-frame audit; coverage unmeasured.";
+			g_SceneAuditStatus += " Skins: " + std::to_string(nativeSkins) + " native, " +
+				std::to_string(networkSkins) + " network, " + std::to_string(teamSkins) + " team fallback, " +
+				std::to_string(unknownSkins) + " unknown.";
 			g_SceneAuditDraws.clear(); g_SceneAuditFrame = -1;
 		}
 		if (!g_SceneCache.Append(std::move(frame)))

@@ -10914,6 +10914,48 @@ static_assert(sizeof(SOURCESDK::matrix3x4_t) == sizeof(advancedfx::SceneCache::M
 static_assert(sizeof(SceneStudioInfo) == (sizeof(void *) == 8 ? 496 : 468), "TF2 DrawModelInfo ABI");
 static_assert(offsetof(SceneStudioInfo, Lod) == (sizeof(void *) == 8 ? 48 : 28), "TF2 model LOD ABI");
 static_assert(offsetof(SceneStudioInfo, LightCount) == (sizeof(void *) == 8 ? 140 : 112), "TF2 light ABI");
+// The direct studio frontend inherits global modulation/lighting from prior
+// draws. Observe setters and restore their last values on this caller thread;
+// no live material or entity pointers are saved. SDK 2013 VStudioRender025.
+struct SceneStudioState
+{
+	float Color[3]{1,1,1}, Alpha = 1;
+	float Ambient3[18]{}, Ambient4[24]{};
+	int AmbientSlot = 17, LightCount = 0;
+	float Lights[4][22]{};
+	SceneStudioState()
+	{
+		std::fill(Ambient3, Ambient3 + 18, .55f);
+		for (int i=0; i<6; ++i) { for (int j=0; j<3; ++j) Ambient4[4*i+j]=.55f; Ambient4[4*i+3]=1; }
+	}
+};
+static thread_local SceneStudioState g_SceneStudioState;
+static bool g_SceneStudioStateInstalled = false;
+struct SceneStudioScope
+{
+	void *Studio;
+	SceneStudioState Previous;
+	bool Active;
+	SceneStudioScope(void *studio, const SceneStudioInfo &info, bool textured)
+		: Studio(studio), Previous(g_SceneStudioState), Active(textured && g_SceneStudioStateInstalled)
+	{
+		if (!Active) return;
+		const float white[3]{1,1,1};
+		SceneInterfaceCall<void, const float *>(Studio, 27, white);
+		SceneInterfaceCall<void, float>(Studio, 28, 1.f);
+		SceneInterfaceCall<void, const float *>(Studio, 17, &info.AmbientCube[0][0]);
+		SceneInterfaceCall<void, int, const float *>(Studio, 18, 0, &info.LightDescriptors[0][0]);
+	}
+	~SceneStudioScope()
+	{
+		if (!Active) return;
+		SceneInterfaceCall<void, const float *>(Studio, 27, Previous.Color);
+		SceneInterfaceCall<void, float>(Studio, 28, Previous.Alpha);
+		SceneInterfaceCall<void, const float *>(Studio, Previous.AmbientSlot,
+			Previous.AmbientSlot == 16 ? Previous.Ambient4 : Previous.Ambient3);
+		SceneInterfaceCall<void, int, const float *>(Studio, 18, Previous.LightCount, &Previous.Lights[0][0]);
+	}
+};
 // Private, immutable materials avoid mutating the engine's shared debug
 // wireframe material or its color modulation. 082 is the verified TF2 ABI;
 // older engines retain the default studio wireframe and colored proxy bounds.
@@ -11706,6 +11748,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	} restore{studio, overrideMaterial, overrideType, material != nullptr};
 	const int flags = 0x04 | 0x20 | (material || textured ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
+	SceneStudioScope studioScope(studio, info, textured);
 	resources->Submit();
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
 	                   const SOURCESDK::Vector &, int>(studio, 29, nullptr, info, matrices, nullptr, nullptr,
@@ -11718,7 +11761,8 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached model cleanup callback could not be submitted.";
 		return false;
 	}
-	status = textured ? "Drawing native textured cached models (neutral lighting)." :
+	status = textured ? (studioScope.Active ? "Drawing native textured cached models (isolated neutral lighting)." :
+	         "Drawing native textured cached models (studio state hooks unavailable).") :
 	         material ? "Drawing category-colored cached models."
 	                  : "Drawing default cached wireframe; category material requires VMaterialSystem082.";
 	return true;
@@ -11765,6 +11809,66 @@ static bool SceneCachedBoneFrame(const advancedfx::SceneCache::Entity &entity,
 	return true;
 }
 // End selected-player scene-pose prototype.
+
+namespace
+{
+#ifdef _WIN64
+#define SCENE_STUDIO_EDX
+#define SCENE_STUDIO_PASS
+#else
+#define SCENE_STUDIO_EDX void *edx,
+#define SCENE_STUDIO_PASS edx,
+#endif
+using SceneStudioVectorFn = void (__fastcall *)(void *, SCENE_STUDIO_EDX const float *);
+using SceneStudioAlphaFn = void (__fastcall *)(void *, SCENE_STUDIO_EDX float);
+using SceneStudioLightsFn = void (__fastcall *)(void *, SCENE_STUDIO_EDX int, const float *);
+SceneStudioVectorFn g_SceneOriginalColor = nullptr, g_SceneOriginalAmbient3 = nullptr, g_SceneOriginalAmbient4 = nullptr;
+SceneStudioAlphaFn g_SceneOriginalAlpha = nullptr;
+SceneStudioLightsFn g_SceneOriginalLights = nullptr;
+void __fastcall SceneStudioColor(void *self, SCENE_STUDIO_EDX const float *v)
+{
+	if (v) std::memcpy(g_SceneStudioState.Color, v, sizeof(g_SceneStudioState.Color));
+	g_SceneOriginalColor(self, SCENE_STUDIO_PASS v);
+}
+void __fastcall SceneStudioAlpha(void *self, SCENE_STUDIO_EDX float v)
+{
+	g_SceneStudioState.Alpha = v;
+	g_SceneOriginalAlpha(self, SCENE_STUDIO_PASS v);
+}
+void __fastcall SceneStudioAmbient3(void *self, SCENE_STUDIO_EDX const float *v)
+{
+	if (v) { std::memcpy(g_SceneStudioState.Ambient3, v, sizeof(g_SceneStudioState.Ambient3)); g_SceneStudioState.AmbientSlot = 17; }
+	g_SceneOriginalAmbient3(self, SCENE_STUDIO_PASS v);
+}
+void __fastcall SceneStudioAmbient4(void *self, SCENE_STUDIO_EDX const float *v)
+{
+	if (v) { std::memcpy(g_SceneStudioState.Ambient4, v, sizeof(g_SceneStudioState.Ambient4)); g_SceneStudioState.AmbientSlot = 16; }
+	g_SceneOriginalAmbient4(self, SCENE_STUDIO_PASS v);
+}
+void __fastcall SceneStudioLights(void *self, SCENE_STUDIO_EDX int count, const float *v)
+{
+	if (count >= 0 && count <= 4 && (!count || v))
+	{
+		g_SceneStudioState.LightCount = count;
+		if (count) std::memcpy(g_SceneStudioState.Lights, v, size_t(count) * sizeof(g_SceneStudioState.Lights[0]));
+	}
+	g_SceneOriginalLights(self, SCENE_STUDIO_PASS count, v);
+}
+#undef SCENE_STUDIO_EDX
+#undef SCENE_STUDIO_PASS
+}
+void Mirv_Tf2_InstallSceneStudioState(void *studio)
+{
+	if (!studio || g_SceneOriginalColor) return;
+	auto table = *static_cast<void ***>(studio);
+	bool ok = true;
+	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[27]), reinterpret_cast<PVOID>(SceneStudioColor), reinterpret_cast<PVOID *>(&g_SceneOriginalColor));
+	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[28]), reinterpret_cast<PVOID>(SceneStudioAlpha), reinterpret_cast<PVOID *>(&g_SceneOriginalAlpha));
+	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[17]), reinterpret_cast<PVOID>(SceneStudioAmbient3), reinterpret_cast<PVOID *>(&g_SceneOriginalAmbient3));
+	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[16]), reinterpret_cast<PVOID>(SceneStudioAmbient4), reinterpret_cast<PVOID *>(&g_SceneOriginalAmbient4));
+	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[18]), reinterpret_cast<PVOID>(SceneStudioLights), reinterpret_cast<PVOID *>(&g_SceneOriginalLights));
+	g_SceneStudioStateInstalled = ok;
+}
 
 IMirvVecAngCalc *Mirv_Tf2_RetargetCamera(IMirvVecAngCalc *calc, int entity, int bone, int mode)
 {
@@ -11823,6 +11927,11 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 		row.Index = index;
 		row.ObservedObject = object;
 		row.ObservedRenderable = renderable;
+		if (generic && networkable)
+		{
+			Mirv_Tf2_SceneSkinTeam(object, SceneInterfaceCall<const void *>(networkable, 2), row.Snapshot.Skin, row.Team);
+			if (row.Snapshot.Skin >= 0) row.Snapshot.SkinFrom = advancedfx::SceneCache::Entity::SkinSource::Network;
+		}
 		if (networked && index <= players && iface->IsPlayer(object))
 		{
 			const auto clientClass = SceneInterfaceCall<const void *>(networkable, 2);
@@ -12001,6 +12110,34 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 		       !std::binary_search(owners.begin(), owners.end(), row.Snapshot.OwnerIdentity);
 	};
 	out.erase(std::remove_if(out.begin(), out.end(), orphan), out.end());
+	if (generic)
+	{
+		// GetSkin is virtual in game classes and can derive ordinary team skins
+		// without updating m_nSkin. Prefer real native submissions later; this
+		// fallback only supplies ordinary RED/BLU variants, not special skins.
+		std::map<std::uint64_t, int> teams;
+		for (const auto &row : out)
+			if (row.Team == 2 || row.Team == 3) teams.emplace(row.Snapshot.Identity, row.Team);
+		for (auto &row : out)
+		{
+			auto &e = row.Snapshot;
+			const bool gear = e.Category == MIRV_TF2_ENTITY_WEAPON || e.Category == MIRV_TF2_ENTITY_COSMETIC;
+			int team = row.Team;
+			if (gear && e.OwnerIdentity)
+				if (auto owner = teams.find(e.OwnerIdentity); owner != teams.end()) team = owner->second;
+			if ((e.Category == MIRV_TF2_ENTITY_PLAYER || gear) && e.Skin <= 1 && (team == 2 || team == 3))
+			{
+				e.Skin = team - 2;
+				e.SkinFrom = advancedfx::SceneCache::Entity::SkinSource::TeamFallback;
+			}
+			else if (e.Skin < 0 && (e.Category == MIRV_TF2_ENTITY_RAGDOLL || e.Category == MIRV_TF2_ENTITY_GIB ||
+				e.Category == MIRV_TF2_ENTITY_BUILDING) && (team == 2 || team == 3))
+			{
+				e.Skin = team - 2;
+				e.SkinFrom = advancedfx::SceneCache::Entity::SkinSource::TeamFallback;
+			}
+		}
+	}
 }
 // End scene entity enumeration.
 

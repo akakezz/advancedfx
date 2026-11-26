@@ -459,6 +459,7 @@ void MySetup(SOURCESDK::CreateInterfaceFn appSystemFactory, WrpGlobals *pGlobals
   if (g_SourceSdkVer == SourceSdkVer_TF2 || g_SourceSdkVer == SourceSdkVer_TF2Classified)
   {
    Tf2RenderPassInstallModel(appSystemFactory("VEngineModel016", nullptr));
+   Mirv_Tf2_InstallSceneStudioState(appSystemFactory("VStudioRender025", nullptr));
    Tf2RenderPassInstallRenderView(appSystemFactory("VEngineRenderView014", nullptr));
   }
 

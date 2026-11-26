@@ -5129,7 +5129,7 @@ namespace
 {
 struct ScenePlayerFields
 {
-	int Life = -1, Effects = -1, Team = -1, MoveParent = -1, CollisionGroup = -1;
+	int Life = -1, Effects = -1, Team = -1, MoveParent = -1, CollisionGroup = -1, Skin = -1;
 };
 static std::map<const Tf2FixRecvTable *, ScenePlayerFields> g_ScenePlayerFields;
 static ScenePlayerFields SceneFindPlayerFields(const Tf2FixRecvTable *table)
@@ -5157,6 +5157,8 @@ static ScenePlayerFields SceneFindPlayerFields(const Tf2FixRecvTable *table)
 				fields.Effects = offset + prop.Offset;
 			if (fields.Team < 0 && !std::strcmp(prop.Name, "m_iTeamNum"))
 				fields.Team = offset + prop.Offset;
+			if (fields.Skin < 0 && !std::strcmp(prop.Name, "m_nSkin"))
+				fields.Skin = offset + prop.Offset;
 			if (fields.CollisionGroup < 0 && !std::strcmp(prop.Name, "m_CollisionGroup"))
 				fields.CollisionGroup = offset + prop.Offset;
 			if (fields.MoveParent < 0 && !std::strcmp(prop.Name, "moveparent"))
@@ -5180,6 +5182,19 @@ static const ScenePlayerFields &SceneFieldsForTable(const Tf2FixRecvTable *table
 		found = g_ScenePlayerFields.emplace(table, SceneFindPlayerFields(table)).first;
 	}
 	return found->second;
+}
+void Mirv_Tf2_SceneSkinTeam(const void *object, const void *clientClass, int &skin, int &team)
+{
+	skin = team = -1;
+	if (!object || !clientClass) return;
+	const auto table = static_cast<const Tf2FixClientClass *>(clientClass)->Table;
+	if (!table) return;
+	const auto &fields = SceneFieldsForTable(table);
+	const auto bytes = static_cast<const unsigned char *>(object);
+	if (fields.Skin >= 0) std::memcpy(&skin, bytes + fields.Skin, sizeof(skin));
+	if (fields.Team >= 0) std::memcpy(&team, bytes + fields.Team, sizeof(team));
+	if (skin < 0 || skin > 32767) skin = -1;
+	if (team != 2 && team != 3) team = -1;
 }
 bool Mirv_Tf2_SceneEntityVisible(const void *object, const void *clientClass)
 {

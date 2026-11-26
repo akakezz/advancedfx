@@ -107,6 +107,11 @@ void ConsumeRenderQueue(bool drain=true,bool discard=false){std::thread worker([
 '''
 fixtures = r'''
 namespace {
+void StudioColor(void*,const float*v){std::memcpy(g_SceneStudioState.Color,v,3*sizeof(float));}
+void StudioAlpha(void*,float v){g_SceneStudioState.Alpha=v;}
+void StudioAmbient3(void*,const float*v){std::memcpy(g_SceneStudioState.Ambient3,v,18*sizeof(float));g_SceneStudioState.AmbientSlot=17;}
+void StudioAmbient4(void*,const float*v){std::memcpy(g_SceneStudioState.Ambient4,v,24*sizeof(float));g_SceneStudioState.AmbientSlot=16;}
+void StudioLights(void*,int n,const float*v){g_SceneStudioState.LightCount=n;if(n)std::memcpy(g_SceneStudioState.Lights,v,n*sizeof(g_SceneStudioState.Lights[0]));}
 void SetOverride(void*,void*material,int type){assert(std::this_thread::get_id()==fixture.EngineThread);fixture.Override=material;fixture.OverrideType=type;}
 void MaterialInc(void*p){++static_cast<Fixture::Material*>(p)->Refs;}
 void MaterialDec(void*p){assert(std::this_thread::get_id()==fixture.EngineThread);auto&m=*static_cast<Fixture::Material*>(p);assert(m.Refs>0);--m.Refs;}
@@ -142,7 +147,7 @@ void Draw(void*,void*results,const SceneStudioInfo&info,SOURCESDK::matrix3x4_t*b
  assert(std::this_thread::get_id()==fixture.EngineThread);
  assert(results==nullptr&&info.Header==fixture.Header&&info.Hardware==&fixture&&info.Body==fixture.Body);
  assert(info.ClientEntity==nullptr&&info.Decals==nullptr&&info.ColorMeshes==nullptr&&info.Lod==0);
- const bool textured=info.AmbientCube[0][0]>.5f;if(textured)assert(info.Skin==1);
+ const bool textured=info.AmbientCube[0][0]>.5f;if(textured){assert(info.Skin==1);assert(g_SceneStudioState.Alpha==1&&g_SceneStudioState.Color[0]==1&&g_SceneStudioState.Ambient3[0]==.55f&&g_SceneStudioState.LightCount==0);}
  assert(flex==nullptr&&delayed==nullptr&&flags==(0x04|0x20|(fixture.Override||textured?0:0x80)));assert(fixture.Locks==1&&fixture.Refs>=1&&fixture.HeaderLocks==fixture.Refs);
  // Match Source's studio draw: ColorModulate replaces $color, even on
  // an override material, before the shader multiplies it by $color2.
@@ -167,7 +172,7 @@ struct BrushFileSystemFixture : SceneBaseFileSystem
 };
 int main(){
  Slot(fixture.MaterialSystemSlots,70,CreateMaterial);Slot(fixture.MaterialSlots,12,MaterialInc);Slot(fixture.MaterialSlots,13,MaterialDec);Slot(fixture.MaterialSlots,42,MaterialError);Slot(fixture.StudioSlots,33,SetOverride);
- Slot(fixture.NetworkSlots,8,Dormant);Slot(fixture.StudioSlots,47,Override);Slot(fixture.StudioSlots,22,Allocate);Slot(fixture.StudioSlots,23,Unlock);Slot(fixture.StudioSlots,29,Draw);
+ Slot(fixture.NetworkSlots,8,Dormant);Slot(fixture.StudioSlots,47,Override);Slot(fixture.StudioSlots,22,Allocate);Slot(fixture.StudioSlots,23,Unlock);Slot(fixture.StudioSlots,29,Draw);Slot(fixture.StudioSlots,27,StudioColor);Slot(fixture.StudioSlots,28,StudioAlpha);Slot(fixture.StudioSlots,17,StudioAmbient3);Slot(fixture.StudioSlots,16,StudioAmbient4);Slot(fixture.StudioSlots,18,StudioLights);
  Slot(fixture.CacheSlots,6,Find);Slot(fixture.CacheSlots,8,Release);Slot(fixture.CacheSlots,40,Header);Slot(fixture.CacheSlots,41,UnlockHeader);Slot(fixture.CacheSlots,11,Hardware);Slot(fixture.CacheSlots,20,Error);Slot(fixture.CacheSlots,25,Begin);Slot(fixture.CacheSlots,26,End);
  fixture.InitHeader();for(int i=0;i<2;++i){for(int a=0;a<3;++a){fixture.Observed[i][a][a]=2;fixture.Observed[i][a][3]=fixture.Origin[a];}fixture.Observed[i][0][3]+=10+i;}
  BrushFileSystemFixture vertexFs;auto&vertexFixture=vertexFs.Data;fixture.FileSystem=&vertexFs;
@@ -209,7 +214,10 @@ int main(){
  entity.Category=1;assert(Mirv_Tf2_DrawScenePose(entity,status));expectColor(1);assert(fixture.MaterialCount==2&&!fixture.Override&&fixture.Materials[1].Refs==2&&fixture.Materials[0].Color!=fixture.Materials[1].Color);
  Mirv_Tf2_ReleaseSceneMaterials();assert(fixture.Materials[0].Refs==0&&fixture.Materials[1].Refs==1);ConsumeRenderQueue();assert(fixture.Materials[1].Refs==0);
  fixture.MaterialInterface=false;assert(Mirv_Tf2_DrawScenePose(entity,status)&&!fixture.Override);ConsumeRenderQueue();fixture.MaterialInterface=true;
- fixture.Put(224,2);entity.Skin=1;assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true)&&!fixture.Override&&status.find("native textured")!=std::string::npos);ConsumeRenderQueue();entity.Skin=-1;
+ fixture.Put(224,2);entity.Skin=1;g_SceneStudioStateInstalled=true;g_SceneStudioState.Color[0]=.2f;g_SceneStudioState.Alpha=.3f;g_SceneStudioState.AmbientSlot=16;g_SceneStudioState.Ambient4[0]=.12f;g_SceneStudioState.LightCount=1;g_SceneStudioState.Lights[0][0]=.7f;
+ assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true)&&!fixture.Override&&status.find("isolated neutral lighting")!=std::string::npos);
+ assert(g_SceneStudioState.Color[0]==.2f&&g_SceneStudioState.Alpha==.3f&&g_SceneStudioState.AmbientSlot==16&&g_SceneStudioState.Ambient4[0]==.12f&&g_SceneStudioState.LightCount==1&&g_SceneStudioState.Lights[0][0]==.7f);
+ ConsumeRenderQueue();entity.Skin=-1;g_SceneStudioStateInstalled=false;
  // A slow or discarded render queue retains ownership without unbounded growth.
  for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
  assert(!Mirv_Tf2_DrawScenePose(entity,status));unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);assert(pending==SceneMaxOutstanding&&peak==SceneMaxOutstanding);
@@ -281,7 +289,7 @@ collector_source = r'''
 enum {MIRV_TF2_ENTITY_PLAYER,MIRV_TF2_ENTITY_PROJECTILE,MIRV_TF2_ENTITY_WEAPON,MIRV_TF2_ENTITY_COSMETIC,MIRV_TF2_ENTITY_OTHER,MIRV_TF2_ENTITY_RAGDOLL,MIRV_TF2_ENTITY_GIB,MIRV_TF2_ENTITY_BUILDING,MIRV_TF2_ENTITY_PROP};
 constexpr unsigned SOURCESDK_TF2_ENT_ENTRY_MASK=4095;
 namespace SOURCESDK {namespace TF2 {constexpr std::uintptr_t HTOOLHANDLE_INVALID=0;}}
-struct MirvTf2SceneEntity {int Index=-1;void*ObservedObject=nullptr;const void*ObservedRenderable=nullptr;bool HasMoveParent=false;std::uint32_t MoveParent=0xffffffff;advancedfx::SceneCache::Entity Snapshot;};
+struct MirvTf2SceneEntity {int Index=-1;void*ObservedObject=nullptr;const void*ObservedRenderable=nullptr;int Team=-1;bool HasMoveParent=false;std::uint32_t MoveParent=0xffffffff;advancedfx::SceneCache::Entity Snapshot;};
 struct ClassInfo {void*Create=nullptr,*Event=nullptr;const char*Name="CTFProjectile_Rocket";};
 struct Network {void**Vtable;bool Dormant=false;ClassInfo Class;};
 void*slots[9]{};
@@ -302,7 +310,7 @@ static std::vector<unsigned char> BrushFixture()
 }
 
 struct CMirvTf2ClientRenderable {const char*ModelName="models/props/crate.mdl";const void*GetModel(){return ModelName;}bool Visible=true;float Origin[3]{},Angles[3]{};bool ShouldDraw(){return Visible;}const void*GetRenderOrigin(){return Origin;}const void*GetRenderAngles(){return Angles;}void GetRenderBounds(float*a,float*b){for(int i=0;i<3;++i){a[i]=-1;b[i]=1;}};};
-struct CMirvTf2ClientUnknown {int Index=1,User=42,ViewWeapon=0;bool Player=true,ToolAttached=false,HasNetwork=true,Alive=true,NoDraw=false,ParentKnown=false;std::uint32_t MoveParent=0xffffffff;const char*ToolClass=nullptr;CMirvTf2ClientUnknown*Owner=nullptr;std::uint32_t Handle=1;Network Net{slots};CMirvTf2ClientRenderable Render;void*GetClientNetworkable(){return HasNetwork?&Net:nullptr;}auto*GetClientRenderable(){return &Render;}const void*GetRefEHandle(){return &Handle;}};
+struct CMirvTf2ClientUnknown {int Index=1,User=42,ViewWeapon=0,Skin=-1,Team=-1;bool Player=true,ToolAttached=false,HasNetwork=true,Alive=true,NoDraw=false,ParentKnown=false;std::uint32_t MoveParent=0xffffffff;const char*ToolClass=nullptr;CMirvTf2ClientUnknown*Owner=nullptr;std::uint32_t Handle=1;Network Net{slots};CMirvTf2ClientRenderable Render;void*GetClientNetworkable(){return HasNetwork?&Net:nullptr;}auto*GetClientRenderable(){return &Render;}const void*GetRefEHandle(){return &Handle;}};
 std::vector<CMirvTf2ClientUnknown*> objects;
 struct Tools {void*FirstEntity(){return objects.empty()?nullptr:objects[0];}void*NextEntity(void*p){auto it=std::find(objects.begin(),objects.end(),p);return it==objects.end()||++it==objects.end()?nullptr:*it;}int GetEntIndex(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Index;}bool IsPlayer(void*p){return static_cast<CMirvTf2ClientUnknown*>(p)->Player;}
  int Attaches=0,Detaches=0;
@@ -317,6 +325,7 @@ struct Tools {void*FirstEntity(){return objects.empty()?nullptr:objects[0];}void
 namespace SOURCESDK {namespace TF2 {using IClientTools=::Tools;using EntitySearchResult=void*;}}
 struct CClientToolsTf2 {static CClientToolsTf2*Instance(){static CClientToolsTf2 i;return &i;}Tools*GetClientTools(){return &tools;}};
 struct ModelInfo{int GetModelType(const void*model){auto n=static_cast<const char*>(model);return n[0]=='*'?1:strstr(n,".vmt")?2:3;}const char*GetModelName(const void*model){return static_cast<const char*>(model);}} modelInfo;ModelInfo*Mirv_Tf2_GetModelInfo(){return &modelInfo;}
+void Mirv_Tf2_SceneSkinTeam(const void*object,const void*,int&skin,int&team){auto*p=static_cast<const CMirvTf2ClientUnknown*>(object);skin=p->Skin;team=p->Team;}
 bool Mirv_Tf2_SceneEntityVisible(const void*object,const void*){return !static_cast<const CMirvTf2ClientUnknown*>(object)->NoDraw;}
 bool Mirv_Tf2_SceneMoveParent(const void*object,const void*,std::uint32_t&parent){auto*p=static_cast<const CMirvTf2ClientUnknown*>(object);parent=p->MoveParent;return p->ParentKnown;}
 bool Mirv_Tf2_ScenePlayerVisible(const void*object,const void*){auto*p=static_cast<const CMirvTf2ClientUnknown*>(object);return p->Alive&&!p->NoDraw;}
@@ -328,7 +337,8 @@ void Mirv_Tf2_CollectSceneEntities(bool,bool,bool,bool,bool,bool,bool,std::vecto
 int main(){
  slots[2]=reinterpret_cast<void*>(Class);slots[8]=reinterpret_cast<void*>(Dormant);
  {CMirvTf2ClientUnknown unknown;unknown.Player=false;unknown.Index=55;unknown.Handle=55;unknown.Net.Class.Name="CUnclassified";unknown.Render.ModelName="models/custom/unknown.mdl";unknown.Render.Origin[0]=-10000;objects={&unknown};std::vector<MirvTf2SceneEntity> generic;Mirv_Tf2_CollectSceneEntities(true,true,true,true,true,true,true,generic,true);assert(generic.size()==1&&generic.front().Snapshot.Category==4&&generic.front().Snapshot.Origin[0]==-10000);unknown.Net.Dormant=true;Mirv_Tf2_CollectSceneEntities(true,true,true,true,true,true,true,generic,true);assert(generic.empty());}
- CMirvTf2ClientUnknown player,rocket;rocket.Index=40;rocket.Handle=(2<<12)|40;rocket.Player=false;objects={&player,&rocket};
+ CMirvTf2ClientUnknown player,rocket;player.Team=3;player.Skin=0;rocket.Index=40;rocket.Handle=(2<<12)|40;rocket.Player=false;objects={&player,&rocket};
+ {std::vector<MirvTf2SceneEntity> broad;Mirv_Tf2_CollectSceneEntities(true,true,true,true,true,true,true,broad,true);assert(broad.front().Snapshot.Skin==1&&broad.front().Snapshot.SkinFrom==advancedfx::SceneCache::Entity::SkinSource::TeamFallback);player.Skin=5;Mirv_Tf2_CollectSceneEntities(true,true,true,true,true,true,true,broad,true);assert(broad.front().Snapshot.Skin==5);player.Skin=0;}
  std::vector<MirvTf2SceneEntity> out;Mirv_Tf2_CollectSceneEntities(false,false,false,false,false,false,false,out);assert(out.size()==1&&out[0].Snapshot.Identity==42);
  Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,false,false,out);assert(out.size()==2&&out[1].Snapshot.Category==1);auto id=out[1].Snapshot.Identity;assert(id==((1ull<<63)|rocket.Handle));
  rocket.Handle=(3<<12)|40;Mirv_Tf2_CollectSceneEntities(true,false,false,false,false,false,false,out);assert(out.size()==2&&id!=out[1].Snapshot.Identity);

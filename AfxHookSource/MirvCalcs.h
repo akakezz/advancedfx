@@ -469,6 +469,7 @@ bool Mirv_Tf2_GetSceneEntity(int index, float origin[3], float angles[3], float 
 bool Mirv_Tf2_SceneDebris(const void *object, const void *clientClass);
 bool Mirv_Tf2_ScenePlayerVisible(const void *object, const void *clientClass);
 bool Mirv_Tf2_SceneEntityVisible(const void *object, const void *clientClass);
+void Mirv_Tf2_SceneSkinTeam(const void *object, const void *clientClass, int &skin, int &team);
 bool Mirv_Tf2_SceneMoveParent(const void *object, const void *clientClass, std::uint32_t &parent);
 // Opt-in scene-pose capture, including observed client-only debris. Does not change AGR recording mode.
 // The cache owns immutable value data only; engine pointers are resolved for each draw.
@@ -494,6 +495,7 @@ struct MirvTf2SceneEntity
 	int Index = -1;
 	void *ObservedObject = nullptr; // Engine-thread capture only; never stored in history.
 	const void *ObservedRenderable = nullptr; // Same-frame audit comparison, never retained.
+	int Team = -1; // Transient capture metadata.
 	bool HasMoveParent = false;
 	std::uint32_t MoveParent = 0xffffffff; // Temporary attachment metadata, not history.
 	advancedfx::SceneCache::Entity Snapshot;
@@ -501,6 +503,7 @@ struct MirvTf2SceneEntity
 // One tools-list traversal per observed tick, with serial-aware transient identities.
 void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs, bool buildings, bool props,
 	std::vector<MirvTf2SceneEntity> &out, bool generic = false);
+void Mirv_Tf2_InstallSceneStudioState(void *studio);
 void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued references remain pinned.
 
 // Engine-thread polling; worker callbacks never call MDL/material APIs.
