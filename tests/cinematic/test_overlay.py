@@ -1236,6 +1236,13 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  check(g_SceneCache.Count()==1&&g_SceneCache.Frames().back().RenderSnapshot&&g_SceneCache.Frames().back().Entities.size()==1&&g_SceneCache.Frames().back().Entities[0].Skin==1,"Broad capture bypasses filters and retains observed skin");
  g_ScenePreview=true;g_SceneCursor=g_SceneCache.Frames().back().DemoTime;SceneCacheFrame(false);
  check(SceneCacheReplayActive()&&SceneCacheSuppressLiveStudio(),"A valid broad preview enables replacement");
+ {const bool record=g_SceneRecord,main=g_SceneMainViewOnly,cull=g_ScenePreviewCull,native=g_SceneNativeParticleReplay,legacy=g_SceneLegacyReplay,markers=g_SceneNativeParticleMarkers,legacyMarkers=g_SceneLegacyMarkers;const double cursor=g_SceneCursor;
+  auto &b=g_SceneBench;b={};b.Active=true;b.Record=record;b.Preview=true;b.Models=true;b.MainOnly=main;b.Cull=cull;b.Native=native;b.Legacy=legacy;b.Markers=markers;b.LegacyMarkers=legacyMarkers;b.Cursor=cursor;b.Late=cursor;b.OriginalSequencer=int(g_SequencerFrame);
+  SceneBenchApply(0,std::chrono::steady_clock::now());check(!g_ScenePreview&&!g_SceneRecord,"Benchmark baseline preserves history and stops capture");
+  SceneBenchApply(3,std::chrono::steady_clock::now());check(g_ScenePreview&&g_SceneMainViewOnly&&g_ScenePreviewCull&&g_SceneDrawModels,"Benchmark applies optimized replay");
+  SceneBenchApply(4,std::chrono::steady_clock::now());check(!g_SceneNativeParticleReplay&&!g_SceneLegacyReplay,"Benchmark isolates particle cost");
+  SceneBenchStop("fixture complete");SceneCacheFrame(false);check(!b.Active&&g_SceneRecord==record&&g_ScenePreview&&g_SceneMainViewOnly==main&&g_ScenePreviewCull==cull&&g_SceneNativeParticleReplay==native&&g_SceneCursor==cursor,"Benchmark restores original scene settings");
+ }
  {auto e=SceneCacheView()->Entities.front();e.Category=4;e.OwnerIdentity=0;e.Mins[0]=e.Mins[1]=e.Mins[2]=-8;e.Maxs[0]=e.Maxs[1]=e.Maxs[2]=8;
   float matrix[4][4]={{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,1,0}};
   e.Origin[0]=0;e.Origin[1]=0;e.Origin[2]=1000;check(!advancedfx::SceneCache::OutsidePreviewFrustum(e,matrix),"Visible historical model kept");
