@@ -1360,6 +1360,18 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   check(!g_SceneRecord&&!g_ScenePreview&&!g_SceneHideShadows&&!g_SceneHideDecals&&!g_SceneCache.Count()&&benchQueueMode==0,"Setup leaves transport, queue cvar, empty history and blanket surface isolation unchanged");
   g_SceneBench.Active=true;check(SceneValidationSetup()!=nullptr&&g_SceneBench.Active,"Setup does not cancel benchmark");
   const auto report=SceneValidationReport();check(report.find("Benchmark active 1")!=std::string::npos&&g_SceneBench.Active,"Report does not cancel benchmark");g_SceneBench.Active=false;}
+ // Exercise the actual capture coordinator without a native demo.
+ {SceneClearHistory();advancedfx::SceneCache::Frame take;take.DemoTime=take.ClientTime=10;
+  check(SceneCommitCaptureFrame(take,100),"Old model take retained");g_SceneLastTick=100;
+  advancedfx::NativeParticles::Frame modern;modern.Tick=100;modern.Complete=modern.Appearance=modern.AppearanceComplete=true;
+  advancedfx::LegacyParticles::Frame legacy;legacy.Tick=100;legacy.Complete=true;
+  advancedfx::SceneSurfaces::Frame surface;surface.Tick=100;surface.World=1;surface.DecalsReady=true;surface.Decals=std::make_shared<const std::vector<advancedfx::SceneSurfaces::Decal>>();
+  check(g_SceneNativeParticles.Append(modern)&&g_SceneLegacyHistory.Append(legacy)&&g_SceneSurfaces.Append(surface),"Old effect take retained");
+  const auto oldRevision=g_SceneCache.Revision();take.DemoTime=5;take.Entities.resize(1);
+  check(!SceneCommitCaptureFrame(take,50)&&g_SceneCaptureResetPending&&g_SceneCache.Revision()==oldRevision&&g_SceneNativeParticles.Frames.size()==1&&g_SceneLegacyHistory.Frames.size()==1&&g_SceneSurfaces.Frames.size()==1,"Rejected backward model sample preserves all histories");
+  g_SceneLastTick=50;take.DemoTime=11;take.Entities.clear();
+  check(SceneCommitCaptureFrame(take,110)&&!g_SceneCaptureResetPending&&g_SceneCache.Count()==1&&g_SceneCache.Frames().front().DemoTime==11&&g_SceneNativeParticles.Frames.empty()&&g_SceneLegacyHistory.Frames.empty()&&g_SceneSurfaces.Frames.empty(),"Accepted new take beyond old endpoint resets all histories together");
+  SceneClearHistory();}
  ImGui::DestroyContext();std::cout<<checks<<" headless Paper overlay checks passed\n";
  }catch(const std::exception&e){std::cerr<<"After "<<checks<<" UI checks: "<<e.what()<<"\n";return 1;}}
 '''

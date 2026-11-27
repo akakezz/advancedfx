@@ -288,6 +288,7 @@ static std::string g_WorkStatus;
 static bool WorkRangeValid() { return g_WorkIn >= 0 && g_WorkOut > g_WorkIn; }
 static bool WorkRangeBusy() { return g_WorkTransport != WorkTransport::Idle || g_WorkLoop; }
 static int g_SceneLastTick = -1;
+static bool g_SceneCaptureResetPending=false;
 static bool g_SceneRangeEnabled = false;
 static int g_SceneRangeFirst = 0, g_SceneRangeLast = 660;
 static unsigned long long g_SceneCaptureFrames = 0;
@@ -357,6 +358,22 @@ static std::shared_ptr<const advancedfx::SceneCache::Frame> g_SceneView;
 static bool g_SceneSampleReady = false, g_SceneSampleSmooth = false, g_SceneSamplePreview = false;
 static std::uint64_t g_SceneSampleRevision = 0;
 static double g_SceneSampleCursor = 0;
+// Commit the model timeline first. A rejected transition cannot clear the
+// other histories or allow later samples to accidentally join the old take.
+static bool SceneCommitCaptureFrame(advancedfx::SceneCache::Frame frame,int tick){
+    const bool reset=g_SceneCaptureResetPending||(g_SceneLastTick>=0&&tick<g_SceneLastTick)||
+        (!g_SceneCache.Frames().empty()&&frame.DemoTime<g_SceneCache.Frames().back().DemoTime);
+    if(!g_SceneCache.Append(std::move(frame),reset)){
+        g_SceneCaptureResetPending=reset;
+        return false;
+    }
+    if(reset){
+        SceneClearEffects();SceneClearNativeParticles();
+        ++g_SceneDrawEpoch;g_SceneSampleReady=false;SceneResetProfile();
+    }
+    g_SceneCaptureResetPending=false;
+    return true;
+}
 // Single-run benchmark: engine-frame wall time, not GPU timestamps.
  // All mode changes are temporary; recording and demo transport are untouched.
 struct SceneBenchState {
@@ -655,7 +672,7 @@ static void SceneClearHistory()
     g_SceneReplayFrame=-1;g_SceneReplayFrameCallbacks=g_SceneReplayMaxCallbacks=0;g_SceneReplayLastFailure.clear();
 	g_ScenePoseCaptured = g_ScenePoseFailures = 0;
 	SceneResetProfile();
-	g_SceneLastTick = -1;
+	g_SceneLastTick = -1;g_SceneCaptureResetPending=false;
 	g_ScenePerf={};
 	g_SceneScrubRate = 0;
 	if (g_WorkLoop) g_WorkStatus = "Cached loop stopped: cache cleared.";
@@ -949,12 +966,6 @@ void SceneCacheFrame(bool capture)
 	    GetCurrentDemoTick(tick) && GetCurrentDemoTime(time) && SceneCaptureTick(tick))
 	{
 		const auto captureStart = std::chrono::steady_clock::now();
-		if (g_SceneLastTick >= 0 && tick < g_SceneLastTick)
-		{
-            g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();
-			++g_SceneDrawEpoch;
-			SceneResetProfile();
-		}
 		advancedfx::SceneCache::Frame frame;
 		frame.DemoTime = time;
 		frame.RenderSnapshot = g_SceneRenderSnapshot;
@@ -1083,10 +1094,15 @@ void SceneCacheFrame(bool capture)
 			g_SceneAuditDraws.clear(); g_SceneAuditFrame = -1;
             Mirv_Tf2_BeginSceneLightingAudit(false);
 		}
+		const bool modelAccepted=SceneCommitCaptureFrame(std::move(frame),tick);
+        if(!modelAccepted)g_ScenePoseStatus=g_SceneCaptureResetPending?
+            "New take rejected; previous model/effect histories preserved. Waiting for a valid new take.":
+            "Scene frame rejected (invalid data or payload budget too small).";
+        // Ordinary forward coverage remains independent, but never mix
+        // samples from a rejected new take with the retained old interval.
+        if(!g_SceneCaptureResetPending){
 		if (g_SceneEffectsEnabled) g_SceneEffects.Observe(tick);
 		if (g_SceneNativeParticlesEnabled && !g_ScenePreview) {
-		    if (!g_SceneNativeParticles.Frames.empty() && tick<g_SceneNativeParticles.Frames.back().Tick)
-		        SceneClearNativeParticles();
 		    const auto begin=std::chrono::steady_clock::now();
 		    auto particles=Mirv_Tf2_CaptureNativeParticles(tick,g_SceneNativeParticleAppearance);
 		    g_SceneNativeParticles.Append(std::move(particles));
@@ -1108,8 +1124,7 @@ void SceneCacheFrame(bool capture)
             g_SceneSurfaces.Append(Mirv_Tf2_CaptureSurfaces(tick));
             g_ScenePerf.SurfaceCapture.Add(begin,tick);
         }
-		if (!g_SceneCache.Append(std::move(frame)))
-			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
+        }
 		g_SceneLastTick = tick;
 		g_SceneCaptureMs =
 		    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - captureStart)
@@ -2426,7 +2441,7 @@ static std::string SceneValidationReport(){
     out<<"; stationary eligibility "<<Mirv_Tf2_SceneStationaryReady()<<"\n";
     const int tick=g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):
         g_SceneCache.Frames().empty()?-1:int(std::floor(g_SceneCache.Frames().back().DemoTime/SceneTickInterval()+1e-9));
-    out<<"Requested cached tick "<<tick<<"\n";
+    out<<"Requested cached tick "<<tick<<"; pending new take "<<g_SceneCaptureResetPending<<"\n";
     out<<"Settings: broad "<<g_SceneRenderSnapshot<<", models "<<g_SceneDrawModels.load()<<", studio suppression "<<g_SceneSuppressLiveStudio
        <<", modulation "<<g_SceneReplayModulation<<", lighting capture/replay "<<g_SceneLightingCapture<<"/"<<g_SceneReplayLighting
        <<", modern capture/replay/isolate "<<g_SceneNativeParticlesEnabled<<"/"<<g_SceneNativeParticleReplay<<"/"<<g_SceneSuppressLiveParticles

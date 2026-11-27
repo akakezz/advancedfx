@@ -247,6 +247,15 @@ int main()
  cameraCache.SetLimit(0);
  assert(cameraCache.Count() == 0 && cameraCache.Bytes() == 0);
 
+ // Explicit new take is transactional even when a failed earlier capture
+ // means its accepted time is now beyond the old interval.
+ Cache take;Cache::Frame t0;t0.DemoTime=t0.ClientTime=20;
+ assert(take.Append(t0));const auto priorTakeBytes=take.Bytes();const auto priorRevision=take.Revision();
+ auto invalidTake=t0;invalidTake.DemoTime=21;invalidTake.Entities.resize(1);
+ assert(!take.Append(invalidTake,true)&&take.Count()==1&&take.Bytes()==priorTakeBytes&&take.Revision()==priorRevision);
+ t0.DemoTime=21;assert(take.Append(t0,true)&&take.Count()==1&&take.Frames().front().DemoTime==21);
+ assert(!take.Append(t0)&&take.Append(t0,true)&&take.Count()==1);
+
  // Cached availability is evaluated at the requested timestamp, not at
  // the last frame visited by the user while scrubbing. Death/disappearance
  // must not be hidden by an earlier successful camera sample.

@@ -562,7 +562,7 @@ public:
 	{
 		return m_Frames;
 	}
-	bool Append(Frame frame)
+	bool Append(Frame frame,bool newTake=false)
 	{
 		if (!std::isfinite(frame.DemoTime) || !std::isfinite(frame.ClientTime))
 			return false;
@@ -597,8 +597,8 @@ public:
 				return false;
 		// A valid backward sample starts a new observed interval. Reject an
         // oversized one before clearing the existing take.
-        const bool backward=!m_Frames.empty()&&frame.DemoTime<m_Frames.back().DemoTime;
-		if (!m_Frames.empty() && frame.DemoTime == m_Frames.back().DemoTime)
+        const bool backward=newTake||(!m_Frames.empty()&&frame.DemoTime<m_Frames.back().DemoTime);
+		if (!backward && !m_Frames.empty() && frame.DemoTime == m_Frames.back().DemoTime)
 			return false;
 		// Share only exactly equal recorded poses from the same stable entity/owner.
 		// No quantization: small animation changes must remain observable.
