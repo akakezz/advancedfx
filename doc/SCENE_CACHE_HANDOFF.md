@@ -522,3 +522,7 @@ Use verified native context snapshot before textured replay; decline setter chan
 ### Phase 30A — projected shadow atlas metadata
 
 Exact client build: 0x24c190 initializes the material pair `decals/rendershadow` (0x24c1ba) and `decals/rendermodelshadow` (0x24c1f3), then initializes `_rt_Shadows` (0x24c20e), 1024 by 1024 (0x24c21e, 0x24c244), through texture reference at +0x60. Preserve bounded historical UV rectangles only for this verified name pair, separately from simple shadows and other unknown textures. Atlas classification and UV participate in existing history equality; replay deliberately uses the full simple blob rather than sampling stale live atlas contents. Report counts atlas coordinates separately from reconstructed silhouettes. No texture pixels or native texture pointers are retained; exact-tick GPU capture, texture lifetime and private atlas binding remain unresolved.
+
+### Phase 30B — optional lossless shadow atlas history
+
+Added bounded 1024×1024 four-channel atlas codec (run/literal words, exact decode, reject oversize or malformed); immutable payload follows the exact shadow sample, never a native texture. Optional 16 MiB atlas-only budget drops oldest atlas payloads without evicting projection/decal samples. 2 MiB compressed per-image cap; adjacent identical images share storage; no borrowing stale pixel data for newly captured projections. No native capture or atlas rendering in this commit. Portable codec/history regression fixtures.

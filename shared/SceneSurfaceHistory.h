@@ -269,6 +269,64 @@ struct DecalCoverage {
             ", material unavailable "+std::to_string(Material)+", invalid fade "+std::to_string(FadeInvalid);
     }
 };
+// Lossless, bounded storage for the verified 1024x1024 D3D9 atlas.
+// Preserve all four channels, including alpha. A run token has bit 31 set;
+// otherwise the token is the length of the following literal span.
+struct ShadowAtlasImage {
+    static constexpr unsigned Width=1024,Height=1024,Pixels=Width*Height;
+    static constexpr std::size_t MaxWords=512*1024; // at most 2 MiB per sample
+    enum class Format : unsigned char { Unknown,Argb,Xrgb };
+    Format PixelFormat=Format::Unknown;
+    std::vector<std::uint32_t> Words;
+    std::size_t Bytes()const{return sizeof(*this)+Words.capacity()*sizeof(std::uint32_t);}
+    bool operator==(const ShadowAtlasImage &o)const{return PixelFormat==o.PixelFormat&&Words==o.Words;}
+    bool Valid()const{
+        if((PixelFormat!=Format::Argb&&PixelFormat!=Format::Xrgb)||Words.empty()||Words.size()>MaxWords)return false;
+        std::size_t pos=0,count=0;
+        while(pos<Words.size()){
+            const auto token=Words[pos++];const auto n=token&0x7fffffffu;
+            if(!n||n>Pixels-count)return false;
+            const std::size_t payload=token&0x80000000u?1:n;
+            if(payload>Words.size()-pos)return false;
+            pos+=payload;count+=n;
+        }
+        return count==Pixels;
+    }
+    static bool Encode(const std::vector<std::uint32_t> &pixels,Format format,ShadowAtlasImage &out){
+        if(pixels.size()!=Pixels||(format!=Format::Argb&&format!=Format::Xrgb))return false;
+        ShadowAtlasImage next;next.PixelFormat=format;
+        auto run=[&](std::size_t at){std::size_t n=1;while(at+n<pixels.size()&&pixels[at+n]==pixels[at])++n;return n;};
+        std::size_t pos=0;
+        while(pos<pixels.size()){
+            const auto n=run(pos);
+            if(n>=3){
+                if(next.Words.size()>MaxWords-2)return false;
+                next.Words.push_back(0x80000000u|static_cast<std::uint32_t>(n));next.Words.push_back(pixels[pos]);pos+=n;
+            }else{
+                const auto begin=pos;pos+=n;
+                while(pos<pixels.size()){
+                    const auto m=run(pos);if(m>=3)break;
+                    pos+=m;if(pos-begin>=MaxWords)return false;
+                }
+                const auto count=pos-begin;
+                if(count>=MaxWords||next.Words.size()>MaxWords-1-count)return false;
+                next.Words.push_back(static_cast<std::uint32_t>(count));
+                next.Words.insert(next.Words.end(),pixels.begin()+begin,pixels.begin()+pos);
+            }
+        }
+        next.Words.shrink_to_fit();out=std::move(next);return true;
+    }
+    bool Decode(std::vector<std::uint32_t> &out)const{
+        if(!Valid())return false;
+        std::vector<std::uint32_t> next;next.reserve(Pixels);
+        for(std::size_t pos=0;pos<Words.size();){
+            const auto token=Words[pos++];const auto n=token&0x7fffffffu;
+            if(token&0x80000000u)next.insert(next.end(),n,Words[pos++]);
+            else{next.insert(next.end(),Words.begin()+pos,Words.begin()+pos+n);pos+=n;}
+        }
+        out=std::move(next);return true;
+    }
+};
 struct Frame {
     int Tick=-1;
     std::uint64_t World=0; // session generation, never a native pointer
@@ -284,6 +342,7 @@ struct Frame {
         return UncertainDecalSlots&&std::binary_search(UncertainDecalSlots->begin(),UncertainDecalSlots->end(),slot);
     }
     std::shared_ptr<const std::vector<Shadow>> Shadows;
+    std::shared_ptr<const ShadowAtlasImage> Atlas; // optional exact shadow-sample pixels, never a native texture
 };
 // Surface systems can be captured independently. Empty ready vectors are
 // authoritative; unavailable systems may fall back only within the tick bound.
@@ -293,7 +352,22 @@ struct PreviewSample {
     explicit operator bool()const{return ShadowTick>=0||DecalTick>=0;}
 };
 class History {
-    std::size_t Budget;
+    std::size_t Budget,AtlasBudget;
+    std::map<const ShadowAtlasImage*,std::size_t> AtlasRefs;
+    void DropAtlas(Frame &f){
+        if(!f.Atlas)return;auto it=AtlasRefs.find(f.Atlas.get());
+        if(it!=AtlasRefs.end()&&!--it->second){AtlasBytes-=f.Atlas->Bytes();AtlasRefs.erase(it);}
+        f.Atlas.reset();
+    }
+    void AddAtlas(Frame &f){
+        if(!f.Atlas)return;
+        const auto bytes=f.Atlas->Bytes();if(bytes>AtlasBudget){f.Atlas.reset();return;}
+        if(!AtlasRefs.count(f.Atlas.get())){
+            for(auto &old:Frames){if(AtlasBytes<=AtlasBudget-bytes)break;DropAtlas(old);}
+            if(AtlasBytes>AtlasBudget-bytes){f.Atlas.reset();return;}
+        }
+        auto &n=AtlasRefs[f.Atlas.get()];if(!n++)AtlasBytes+=bytes;
+    }
     static std::size_t Cost(const std::vector<Decal> &v){std::size_t n=sizeof(v)+v.capacity()*sizeof(Decal);for(const auto &d:v)n+=d.Material.capacity();return n;}
     static std::size_t Cost(const std::vector<Shadow> &v){return sizeof(v)+v.capacity()*sizeof(Shadow);}
     static std::size_t Cost(const std::vector<int> &v){return sizeof(v)+v.capacity()*sizeof(int);}
@@ -334,13 +408,13 @@ class History {
     void Drop(bool front){
         Frame f=front?std::move(Frames.front()):std::move(Frames.back());
         if(front)Frames.pop_front();else Frames.pop_back();
-        Bytes-=sizeof(Frame);DropVector(f.Decals);DropVector(f.Shadows);DropVector(f.UncertainDecalSlots);
+        Bytes-=sizeof(Frame);DropVector(f.Decals);DropVector(f.Shadows);DropVector(f.UncertainDecalSlots);DropAtlas(f);
     }
 public:
-    explicit History(std::size_t budget=64u*1024u*1024u):Budget(budget){}
+    explicit History(std::size_t budget=64u*1024u*1024u,std::size_t atlasBudget=16u*1024u*1024u):Budget(budget),AtlasBudget(atlasBudget){}
     std::deque<Frame> Frames;
-    std::size_t Bytes=0,Evicted=0,Rejected=0;
-    void Clear(){Frames.clear();Refs.clear();Bytes=Evicted=Rejected=0;}
+    std::size_t Bytes=0,AtlasBytes=0,Evicted=0,Rejected=0;
+    void Clear(){Frames.clear();Refs.clear();AtlasRefs.clear();Bytes=AtlasBytes=Evicted=Rejected=0;}
     bool Append(Frame f){
         // A failed/unsupported capture (often World==0) must not erase a
         // valid history or replace a good sample at the same tick.
@@ -351,7 +425,8 @@ public:
         f.ShadowsReady=f.ShadowsReady&&bool(f.Shadows);
         if(!f.DecalsReady){f.Decals.reset();f.UncertainDecalSlots.reset();}
         if(f.UncertainDecalSlots&&(!std::is_sorted(f.UncertainDecalSlots->begin(),f.UncertainDecalSlots->end())||f.UncertainDecalSlots->size()>8192)){++Rejected;return false;}
-        if(!f.ShadowsReady)f.Shadows.reset();
+        if(!f.ShadowsReady){f.Shadows.reset();f.Atlas.reset();}
+        if(f.Atlas&&(!f.Atlas->Valid()||!std::any_of(f.Shadows->begin(),f.Shadows->end(),[](const Shadow &s){return s.HasAtlasRect();})))f.Atlas.reset();
         if(f.Tick<0||!f.World||(!f.DecalsReady&&!f.ShadowsReady)){++Rejected;return false;}
         if(!Frames.empty()&&f.Tick==Frames.back().Tick&&f.World==Frames.back().World){
             const auto &last=Frames.back();
@@ -360,7 +435,7 @@ public:
                 f.DecalsUnsupported=last.DecalsUnsupported;f.UnsupportedDecals=last.UnsupportedDecals;f.UncertainDecalSlots=last.UncertainDecalSlots;
             }
             if(!f.ShadowsReady&&last.ShadowsReady&&last.Shadows){
-                f.ShadowsReady=true;f.Shadows=last.Shadows;f.ShadowsUnobserved=last.ShadowsUnobserved;
+                f.ShadowsReady=true;f.Shadows=last.Shadows;f.ShadowsUnobserved=last.ShadowsUnobserved;f.Atlas=last.Atlas;
             }
         }
         if(sizeof(Frame)+ExtraVector(f.Decals,true)+ExtraVector(f.Shadows,true)+ExtraVector(f.UncertainDecalSlots,true)>Budget){++Rejected;return false;}
@@ -370,10 +445,11 @@ public:
             const auto &last=Frames.back();
             if(f.Decals&&last.Decals&&*f.Decals==*last.Decals)f.Decals=last.Decals;
             if(f.Shadows&&last.Shadows&&*f.Shadows==*last.Shadows)f.Shadows=last.Shadows;
+            if(f.Atlas&&last.Atlas&&*f.Atlas==*last.Atlas)f.Atlas=last.Atlas;
             if(f.UncertainDecalSlots&&last.UncertainDecalSlots&&*f.UncertainDecalSlots==*last.UncertainDecalSlots)f.UncertainDecalSlots=last.UncertainDecalSlots;
         }
         while(!Frames.empty()&&(Bytes>Budget-Extra(f)||Frames.size()>=32768)){Drop(true);++Evicted;}
-        Bytes+=sizeof(Frame);AddVector(f.Decals);AddVector(f.Shadows);AddVector(f.UncertainDecalSlots);Frames.push_back(std::move(f));return true;
+        Bytes+=sizeof(Frame);AddVector(f.Decals);AddVector(f.Shadows);AddVector(f.UncertainDecalSlots);AddAtlas(f);Frames.push_back(std::move(f));return true;
     }
     // Same bounded, causal sample policy as modern particle history.
     const Frame *ForPreview(int tick,int maxGap=2) const {
@@ -393,7 +469,7 @@ public:
             if(it->World!=result.Value.World||static_cast<std::int64_t>(tick)-it->Tick>maxGap)break;
             if(result.ShadowTick<0&&it->ShadowsReady&&it->Shadows){
                 result.ShadowTick=it->Tick;result.Value.ShadowsReady=true;
-                result.Value.Shadows=it->Shadows;result.Value.ShadowsUnobserved=it->ShadowsUnobserved;
+                result.Value.Shadows=it->Shadows;result.Value.ShadowsUnobserved=it->ShadowsUnobserved;result.Value.Atlas=it->Atlas;
             }
             if(result.DecalTick<0&&it->DecalsReady&&it->Decals){
                 result.DecalTick=it->Tick;result.Value.DecalsReady=true;

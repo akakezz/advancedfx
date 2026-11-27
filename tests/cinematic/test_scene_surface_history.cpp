@@ -158,6 +158,29 @@ int main(){
     const std::array<float,4> full{0,0,1,1};
     assert(!(other==sh)&&!other.HasSimpleTexture()&&other.ReplayTextureRect()==full);
     auto atlas=sh;atlas.Texture=ShadowTexture::Atlas;
+    // Atlas pixel history is optional, lossless and independently budgeted.
+    std::vector<std::uint32_t> pixels(ShadowAtlasImage::Pixels,0xffaabbccu);
+    pixels[0]=0x11223344u;pixels[1]=0x55667788u;pixels[100]=0x00abcdefu;
+    ShadowAtlasImage encoded;assert(ShadowAtlasImage::Encode(pixels,ShadowAtlasImage::Format::Argb,encoded)&&encoded.Valid());
+    std::vector<std::uint32_t> decoded;assert(encoded.Decode(decoded)&&decoded==pixels);
+    auto corrupt=encoded;corrupt.Words.back()=0; // color words may be zero
+    corrupt.Words[0]=0;assert(!corrupt.Valid()&&!corrupt.Decode(decoded)&&decoded==pixels);
+    auto tooLarge=pixels;for(std::size_t i=0;i<tooLarge.size();++i)tooLarge[i]=std::uint32_t(i);
+    assert(!ShadowAtlasImage::Encode(tooLarge,ShadowAtlasImage::Format::Argb,encoded)&&encoded.Valid());
+    auto image=std::make_shared<const ShadowAtlasImage>(encoded);
+    Frame atlasFrame;atlasFrame.Tick=10;atlasFrame.World=99;atlasFrame.ShadowsReady=true;
+    atlasFrame.Shadows=std::make_shared<const std::vector<Shadow>>(std::vector<Shadow>{atlas});atlasFrame.Atlas=image;
+    History atlasHistory(64*1024,image->Bytes());
+    assert(atlasHistory.Append(atlasFrame)&&atlasHistory.AtlasBytes==image->Bytes());
+    atlasFrame.Tick=11;atlasFrame.Atlas=std::make_shared<const ShadowAtlasImage>(encoded);
+    assert(atlasHistory.Append(atlasFrame)&&atlasHistory.Frames.front().Atlas==atlasHistory.Frames.back().Atlas);
+    pixels[0]++;ShadowAtlasImage newer;assert(ShadowAtlasImage::Encode(pixels,ShadowAtlasImage::Format::Argb,newer));
+    atlasFrame.Tick=12;atlasFrame.Atlas=std::make_shared<const ShadowAtlasImage>(newer);
+    assert(atlasHistory.Append(atlasFrame)&&atlasHistory.Frames.size()==3&&!atlasHistory.Frames.front().Atlas);
+    assert(atlasHistory.ResolvePreview(12).Value.Atlas&&atlasHistory.ResolvePreview(10).Value.ShadowsReady);
+    atlasFrame.Tick=13;atlasFrame.Atlas.reset();assert(atlasHistory.Append(atlasFrame)&&!atlasHistory.ResolvePreview(13).Value.Atlas);
+    atlasHistory.Clear();assert(atlasHistory.AtlasBytes==0&&atlasHistory.Bytes==0);
+
     assert(atlas.HasAtlasRect()&&!atlas.HasSimpleTexture()&&!(atlas==sh)&&atlas.ReplayTextureRect()==full);
     auto moved=atlas;moved.UV[0]=0;assert(!(moved==atlas));
     moved=atlas;moved.UV[2]=NAN;assert(!moved.HasAtlasRect()&&moved.ReplayTextureRect()==full);
