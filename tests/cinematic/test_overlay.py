@@ -40,7 +40,7 @@ preamble=r'''
 advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick,bool appearance){advancedfx::NativeParticles::Frame f;f.Tick=tick;f.Complete=true;f.Points.push_back({1,2,3});return f;}
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &,std::size_t){return "fixture";}
 std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *snapshot,bool){if(snapshot)snapshot->Complete=true;return "legacy fixture";}
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &,bool,bool,bool){return {}; }
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &,bool,bool,bool,const advancedfx::NativeParticles::ReplayPreparation *){return {}; }
 int sceneLegacyDraws=0,sceneLegacyQueuedDraws=0;
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &,bool allowQueued){++sceneLegacyDraws;if(allowQueued)++sceneLegacyQueuedDraws;return {}; }
 int sceneNativeView=-1;int Mirv_Tf2_SceneRenderViewId(){return sceneNativeView;}
@@ -1134,10 +1134,12 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   g_ScenePreview=true;g_SceneCursor=20*SceneTickInterval()+1e-8;std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));
   const bool savedLegacy=g_SceneLegacyReplay;g_SceneLegacyReplay=false;
    check(SceneCacheSuppressLiveParticles(),"Covered empty appearance snapshot is eligible for isolation");
+   auto initialPrepared=g_SceneParticlePrepared;
+   check(SceneCacheSuppressLiveParticles()&&g_SceneParticlePrepared==initialPrepared,"Repeated isolation reuses immutable recorded preparation");
    g_SceneIsolationFailed.Mark(g_SceneNativeParticles.Revision,20);
    check(!SceneCacheSuppressLiveParticles(),"Known failed submission leaves live particles visible");
    check(g_SceneNativeParticles.At(19)!=nullptr,"Diagnostic lookup changes decoded sample");
-   check(!SceneCacheSuppressLiveParticles(),"Diagnostic decode does not forget native failure");
+   check(!SceneCacheSuppressLiveParticles()&&g_SceneParticlePrepared!=initialPrepared,"Diagnostic decode invalidates preparation, not the recorded failure");
    g_SceneCursor=19*SceneTickInterval()+1e-8;check(SceneCacheSuppressLiveParticles(),"Failure is limited to its recorded tick");
    g_SceneCursor=20*SceneTickInterval()+1e-8;check(!SceneCacheSuppressLiveParticles(),"Scrub back preserves native failure");
    g_SceneNativeParticles.Append(p);check(SceneCacheSuppressLiveParticles(),"Same-tick replacement invalidates failure revision");

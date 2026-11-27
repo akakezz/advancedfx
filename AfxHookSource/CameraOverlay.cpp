@@ -79,8 +79,15 @@ static std::string g_SceneParticleIsolationStatus="Not evaluated yet.";
 static advancedfx::NativeParticles::ReplayResult g_SceneParticleReplayResult;
 static int g_SceneParticleReplayTick=-1;
 static advancedfx::NativeParticles::History g_SceneNativeParticles;
-// Weak leases identify the immutable decoded sample, not a reusable tick.
-static std::weak_ptr<const advancedfx::NativeParticles::Frame> g_SceneIsolationChecked;
+// Derived recorded-only replay metadata is reused while the same decoded
+// lease is active. Native factory, allocation and renderer checks stay live.
+static std::shared_ptr<const advancedfx::NativeParticles::ReplayPreparation> g_SceneParticlePrepared;
+static auto ScenePrepareParticles(const std::shared_ptr<const advancedfx::NativeParticles::Frame> &sample){
+    if(!sample)return std::shared_ptr<const advancedfx::NativeParticles::ReplayPreparation>{};
+    if(!g_SceneParticlePrepared||!g_SceneParticlePrepared->Matches(*sample))
+        g_SceneParticlePrepared=std::make_shared<const advancedfx::NativeParticles::ReplayPreparation>(sample);
+    return g_SceneParticlePrepared;
+}
 // The decoded cache has only one entry. A diagnostic lookup or cursor move
 // must not erase a known submission failure for an unchanged history.
 struct SceneParticleFailureHistory {
@@ -95,7 +102,6 @@ struct SceneParticleFailureHistory {
     }
 };
 static SceneParticleFailureHistory g_SceneIsolationFailed;
-static bool g_SceneIsolationRecordedReady=false;
 static std::string g_SceneIsolationEligibility="Not evaluated.";
 static double g_SceneNativeParticleMs=0, g_SceneNativeParticleTotalMs=0, g_SceneNativeParticlePeakMs=0;
 static std::size_t g_SceneNativeParticleSamples=0;
@@ -161,7 +167,7 @@ static bool g_SceneFastParticleWrites=true; // verified detached allocations onl
 static bool g_SceneFastParticleReads=true; // verified detached validation only
 static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
-    g_SceneIsolationChecked.reset();g_SceneIsolationFailed.Reset();g_SceneIsolationRecordedReady=false;g_SceneIsolationEligibility="Not evaluated.";
+    g_SceneParticlePrepared.reset();g_SceneIsolationFailed.Reset();g_SceneIsolationEligibility="Not evaluated.";
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
     g_SceneLegacyAuditPending=false;
     g_SceneLegacyHistory.Clear();g_SceneLegacyIsolationFailed.Reset();g_SceneLegacyCaptureStatus="Not captured.";
@@ -1282,11 +1288,7 @@ bool SceneCacheSuppressLiveParticles()
     const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
     const auto sample=g_SceneNativeParticles.ShareForPreview(tick);
     if(!sample)return deny("No retained modern particle sample.");
-    if(g_SceneIsolationChecked.lock()!=sample){
-        g_SceneIsolationRecordedReady=advancedfx::NativeParticles::RecordedIsolationReady(*sample);
-        g_SceneIsolationChecked=sample;
-    }
-    if(!g_SceneIsolationRecordedReady)return deny("Recorded modern prerequisites incomplete; live effects retained.");
+    if(!ScenePrepareParticles(sample)->IsolationReady())return deny("Recorded modern prerequisites incomplete; live effects retained.");
     // Keep intentional benchmark ablations independent of previous phase outcomes.
     if(!g_SceneBench.Active&&g_SceneIsolationFailed.Contains(g_SceneNativeParticles.Revision,sample->Tick))
         return deny("Previous native submission for this retained sample was incomplete; live effects retained.");
@@ -1377,6 +1379,7 @@ void SceneCacheDrawParticles()
     // Main-view guard inside the native path. No persistent native objects,
     // and no native drawing in ordinary live demo playback.
     std::shared_ptr<const advancedfx::NativeParticles::Frame> sample;
+    std::shared_ptr<const advancedfx::NativeParticles::ReplayPreparation> prepared;
     unsigned long long epoch=0;
     std::uint64_t revision=0;
     bool fastMemory=false,fastReads=false,auditRenderers=false;
@@ -1393,6 +1396,7 @@ void SceneCacheDrawParticles()
         }
         const auto begin=std::chrono::steady_clock::now();
         sample=g_SceneNativeParticles.ShareForPreview(tick);
+        if(sample&&sample->Appearance)prepared=ScenePrepareParticles(sample);
         g_ScenePerf.ParticleAcquire.Add(begin,tick);
         if(!sample||!sample->Appearance) {
             g_SceneParticleReplayTick=tick;g_SceneParticleReplayResult={};
@@ -1404,7 +1408,7 @@ void SceneCacheDrawParticles()
         if(auditRenderers)g_SceneBench.Audited=true;
     }
     const auto begin=std::chrono::steady_clock::now();
-    auto result=Mirv_Tf2_RenderNativeParticles(*sample,fastMemory,fastReads,auditRenderers);
+    auto result=Mirv_Tf2_RenderNativeParticles(*sample,fastMemory,fastReads,auditRenderers,prepared.get());
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
     if(auditRenderers&&g_SceneBench.Active){
         for(auto target:result.RendererTargets)if(g_SceneBench.RendererTargets.size()<256)g_SceneBench.RendererTargets.insert(target);
@@ -2653,7 +2657,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         advancedfx::Message("Model residency %d; %u/256 retained asset references; %llu reuse hits, %llu additions (session). Studio batching %d, queued batching %d.\n",int(g_SceneKeepAssets),resident,hits,adds,int(g_SceneBatchStudio),int(g_SceneBatchQueued));
         advancedfx::Message("Preview frustum cull %d, actor-group cull %d; rejected model submissions %llu (actor group %llu).\n",int(g_ScenePreviewCull),int(g_SceneActorCull),g_ScenePerf.ModelsCulled,g_ScenePerf.ActorsCulled);
         advancedfx::Message("Main-only studio %d; verified non-main skips: studio %llu, particles %llu. Last studio failure tick %d, asset %s.\n",int(g_SceneMainViewOnly),g_ScenePerf.NonMainModelSkipped,g_ScenePerf.NonMainParticleSkipped,g_ScenePerf.LastModelFailureTick,g_ScenePerf.LastModelFailureAsset.empty()?"none":g_ScenePerf.LastModelFailureAsset.c_str());
-        g_ScenePerf.ParticleAcquire.Print("Particle snapshot lookup/decode");
+        g_ScenePerf.ParticleAcquire.Print("Particle snapshot lookup/decode/preparation");
         g_ScenePerf.ParticleDraw.Print("Native particle replay (all eligible callbacks)");
         g_ScenePerf.LegacyDraw.Print("Legacy replay");
         g_ScenePerf.SurfaceBegin.Print("Surface replay setup");

@@ -720,7 +720,7 @@ struct SceneDetachedRegion {
 // Native particle replay uses the same verified factory and allocations as
 // the successful dry run. No engine pointers are retained between callbacks.
 static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
-    const advancedfx::NativeParticles::Frame &frame,std::size_t probeIndex,bool draw,bool fastMemory=false,bool fastReads=false,bool auditRenderers=false)
+    const advancedfx::NativeParticles::Frame &frame,std::size_t probeIndex,bool draw,bool fastMemory=false,bool fastReads=false,bool auditRenderers=false,const advancedfx::NativeParticles::ReplayPreparation *prepared=nullptr)
 {
     using namespace advancedfx::NativeParticles;
     ReplayResult result;
@@ -862,10 +862,17 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         begin(context);ctx.Begun=true;
         ctx.Mode(context,10);push(context);ctx.Pushed=true;identity(context);
     }
-    ChildIndex children;
-    if(!BuildChildIndex(frame,children))return fail("Recorded particle hierarchy invalid");
-    std::vector<ReplayPrerequisite> prerequisites;
-    if(draw&&!BuildReplayPrerequisites(frame,prerequisites))return fail("Recorded particle replay prerequisites invalid");
+    ChildIndex localChildren;
+    std::vector<ReplayPrerequisite> localPrerequisites;
+    if(prepared&&(!draw||!prepared->Matches(frame)))prepared=nullptr;
+    if(prepared){
+        if(!prepared->Valid())return fail("Recorded particle replay prerequisites invalid");
+    }else{
+        if(!BuildChildIndex(frame,localChildren))return fail("Recorded particle hierarchy invalid");
+        if(draw&&!BuildReplayPrerequisites(frame,localPrerequisites))return fail("Recorded particle replay prerequisites invalid");
+    }
+    const auto &children=prepared?prepared->Children():localChildren;
+    const auto &prerequisites=prepared?prepared->Prerequisites():localPrerequisites;
     // Scratch is shared across attempts. A generation marker distinguishes
     // bindings belonging to this tree from earlier successful/fallback trees.
     std::vector<unsigned char> gate(draw?frame.Collections.size():0);
@@ -1025,7 +1032,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         return ok;
     };
     if(draw) {
-        ReplayForest(frame,attempt,&children);
+        if(prepared)prepared->Walk(frame,attempt);else ReplayForest(frame,attempt,&children);
         result.Status="Native particle submissions (not pixel coverage); factories avoided by recorded preflight "+std::to_string(result.PreflightRejected);
         if(listChanged)result.Status+="; WARNING: native lifecycle guard stopped replay";
         if(!firstFailure.empty())result.Status+="; first rejected tree: "+firstFailure;
@@ -1046,9 +1053,9 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
 {
     return SceneNativeParticleOperation(frame,index,false).Status;
 }
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame,bool fastMemory,bool fastReads,bool auditRenderers)
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame,bool fastMemory,bool fastReads,bool auditRenderers,const advancedfx::NativeParticles::ReplayPreparation *prepared)
 {
-    return SceneNativeParticleOperation(frame,0,true,fastMemory,fastReads,auditRenderers);
+    return SceneNativeParticleOperation(frame,0,true,fastMemory,fastReads,auditRenderers,prepared);
 }
 
 

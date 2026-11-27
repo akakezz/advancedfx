@@ -332,10 +332,8 @@ inline bool BuildReplayPrerequisites(const Frame &f,std::vector<ReplayPrerequisi
     return true;
 }
 // Capture completeness alone does not authorize blanket live isolation.
-inline bool RecordedIsolationReady(const Frame &f){
-    if(!f.Complete||!f.Appearance||!f.AppearanceComplete||f.Rejected||f.AppearanceRejected)return false;
-    std::vector<ReplayPrerequisite> why;
-    if(!BuildReplayPrerequisites(f,why))return false;
+inline bool RecordedIsolationReadyWithPrerequisites(const Frame &f,const std::vector<ReplayPrerequisite> &why){
+    if(!f.Complete||!f.Appearance||!f.AppearanceComplete||f.Rejected||f.AppearanceRejected||why.size()!=f.Collections.size())return false;
     std::vector<bool> active(f.Collections.size());
     std::size_t count=0;
     for(std::size_t i=f.Collections.size();i--;){
@@ -346,6 +344,55 @@ inline bool RecordedIsolationReady(const Frame &f){
     }
     return count==f.Active&&count==f.Points.size();
 }
+inline bool RecordedIsolationReady(const Frame &f){
+    std::vector<ReplayPrerequisite> why;
+    return BuildReplayPrerequisites(f,why)&&RecordedIsolationReadyWithPrerequisites(f,why);
+}
+inline std::vector<std::size_t> ReplaySubtreeCounts(const Frame &f){
+    std::vector<std::size_t> active(f.Collections.size());
+    for(std::size_t i=f.Collections.size();i--;){
+        active[i]+=f.Collections[i].Active;
+        const auto parent=f.Collections[i].Parent;
+        if(parent>=0)active[parent]+=active[i];
+    }
+    return active;
+}
+template<class Attempt>
+void WalkReplayForest(const Frame &f,const ChildIndex &children,const std::vector<std::size_t> &active,Attempt attempt){
+    auto walk=[&](auto &&self,std::size_t i,unsigned depth)->void {
+        if(depth>32||!active[i])return;
+        if(attempt(i,active[i]))return;
+        for(auto c:children[i])self(self,c,depth+1);
+    };
+    for(std::size_t i=0;i<f.Collections.size();++i)if(f.Collections[i].Parent==-1)walk(walk,i,0);
+}
+// Only derived data from a single immutable decoded lease. No engine pointers,
+// native resources, or native gate results are cached. Never keep the lease
+// alive just for this preparation (large appearance buffers remain evictable).
+class ReplayPreparation {
+public:
+    explicit ReplayPreparation(const std::shared_ptr<const Frame> &sample):Source(sample){
+        if(!sample||!BuildChildIndex(*sample,Children_)||!BuildReplayPrerequisites(*sample,Prerequisites_))return;
+        Active_=ReplaySubtreeCounts(*sample);
+        IsolationReady_=RecordedIsolationReadyWithPrerequisites(*sample,Prerequisites_);
+        Valid_=true;
+    }
+    bool Matches(const Frame &f)const{return Source.lock().get()==&f;}
+    bool Valid()const{return Valid_;}
+    bool IsolationReady()const{return Valid_&&IsolationReady_;}
+    const ChildIndex &Children()const{return Children_;}
+    const std::vector<ReplayPrerequisite> &Prerequisites()const{return Prerequisites_;}
+    template<class Attempt>
+    void Walk(const Frame &f,Attempt attempt)const{
+        if(Valid_&&Matches(f))WalkReplayForest(f,Children_,Active_,attempt);
+    }
+private:
+    std::weak_ptr<const Frame> Source;
+    ChildIndex Children_;
+    std::vector<ReplayPrerequisite> Prerequisites_;
+    std::vector<std::size_t> Active_;
+    bool Valid_=false,IsolationReady_=false;
+};
 template<class Reader>
 RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader read,const ChildIndex *prepared=nullptr) {
     using namespace Layout;
@@ -617,18 +664,7 @@ void ReplayForest(const Frame &f,Attempt attempt,const ChildIndex *prepared=null
         }
     }
     if(actualEdges!=expectedEdges)return;
-    std::vector<std::size_t> active(f.Collections.size());
-    for(std::size_t i=f.Collections.size();i--;) {
-        active[i]+=f.Collections[i].Active;
-        const auto parent=f.Collections[i].Parent;
-        if(parent>=0)active[parent]+=active[i];
-    }
-    auto walk=[&](auto &&self,std::size_t i,unsigned depth)->void {
-        if(depth>32||!active[i])return;
-        if(attempt(i,active[i]))return;
-        for(auto c:children[i])self(self,c,depth+1);
-    };
-    for(std::size_t i=0;i<f.Collections.size();++i)if(f.Collections[i].Parent==-1)walk(walk,i,0);
+    WalkReplayForest(f,children,ReplaySubtreeCounts(f),attempt);
 }
 struct ReplayResult {
     bool MainView=false;
