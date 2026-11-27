@@ -157,6 +157,10 @@ int main(){
     auto other=sh;other.Texture=ShadowTexture::Other;
     const std::array<float,4> full{0,0,1,1};
     assert(!(other==sh)&&!other.HasSimpleTexture()&&other.ReplayTextureRect()==full);
+    auto atlas=sh;atlas.Texture=ShadowTexture::Atlas;
+    assert(atlas.HasAtlasRect()&&!atlas.HasSimpleTexture()&&!(atlas==sh)&&atlas.ReplayTextureRect()==full);
+    auto moved=atlas;moved.UV[0]=0;assert(!(moved==atlas));
+    moved=atlas;moved.UV[2]=NAN;assert(!moved.HasAtlasRect()&&moved.ReplayTextureRect()==full);
     other=sh;other.UV[2]=NAN;assert(!other.HasSimpleTexture()&&other.ReplayTextureRect()==full);
     other=sh;other.UV[2]=1;assert(!other.HasSimpleTexture());
     std::array<float,12> normals{1,0,0,0,1,0,0,0,1,-1,0,0};

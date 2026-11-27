@@ -181,9 +181,9 @@ bool ResolveWorldReceivers(std::uint64_t list,int group,std::uint64_t surfaces,s
     if(!header(poolAddress,afterPool)||!header(groupAddress,afterBuckets)||!equal(pool,afterPool)||!equal(buckets,afterBuckets))return false;
     visible.swap(result);return true;
 }
-// The projected-shadow atlas itself is not historical. Only a verified
-// simple material pair can use the original texture rectangle directly.
-enum class ShadowTexture { Unknown, Simple, Other };
+// Atlas coordinates are historical metadata, not historical texture pixels.
+// Only the verified simple material pair can use its original rectangle today.
+enum class ShadowTexture { Unknown, Simple, Other, Atlas };
 inline bool ValidShadowTextureRect(const std::array<float,4> &r){
     return std::all_of(r.begin(),r.end(),[](float x){return std::isfinite(x)&&x>=0&&x<=1;})&&
         r[2]>0&&r[3]>0&&r[0]+r[2]<=1.0001f&&r[1]+r[3]<=1.0001f;
@@ -197,6 +197,7 @@ struct Shadow {
     ShadowTexture Texture=ShadowTexture::Unknown;
     std::array<float,4> UV{0,0,1,1};
     bool HasSimpleTexture()const{return Texture==ShadowTexture::Simple&&ValidShadowTextureRect(UV);}
+    bool HasAtlasRect()const{return Texture==ShadowTexture::Atlas&&ValidShadowTextureRect(UV);}
     std::array<float,4> ReplayTextureRect()const{return HasSimpleTexture()?UV:std::array<float,4>{0,0,1,1};}
     // Engine projected shadows support four additional world-space planes.
     // Only initialized entries are retained; a known empty list is distinct

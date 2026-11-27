@@ -860,6 +860,8 @@ advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){
                     if(!worldName.empty()&&!modelName.empty()){
                         if(worldName=="decals/simpleshadow"&&modelName=="decals/simpleshadow"){
                             if(ValidShadowTextureRect(s.UV)){projection.Texture=ShadowTexture::Simple;projection.UV=s.UV;}
+                        }else if(worldName=="decals/rendershadow"&&modelName=="decals/rendermodelshadow"){
+                            if(ValidShadowTextureRect(s.UV)){projection.Texture=ShadowTexture::Atlas;projection.UV=s.UV;}
                         }else projection.Texture=ShadowTexture::Other;
                     }
                 }
@@ -904,7 +906,7 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
             auto vt=*reinterpret_cast<void***>(g_SurfaceShadowManager);
             auto create=reinterpret_cast<CreateFn>(vt[0]);auto tex=reinterpret_cast<TexFn>(vt[9]);
             auto clearClip=reinterpret_cast<ClearClipFn>(vt[12]);auto addClip=reinterpret_cast<AddClipFn>(vt[13]);
-            std::size_t simple=0,other=0,unknown=0,clipPlanes=0,clipUnknown=0;
+            std::size_t simple=0,atlas=0,other=0,unknown=0,clipPlanes=0,clipUnknown=0;
             g_SurfaceOwn=true;
             for(const auto &s:*sample.Shadows){
                 if(!s.Valid())continue;
@@ -914,6 +916,7 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
                 const auto uv=s.ReplayTextureRect();
                 tex(g_SurfaceShadowManager,handle,uv[0],uv[1],uv[2],uv[3]);
                 if(s.HasSimpleTexture())++simple;
+                else if(s.HasAtlasRect())++atlas;
                 else if(s.Texture==ShadowTexture::Other)++other;
                 else ++unknown;
                 g_SurfaceProject(g_SurfaceShadowManager,handle,s.Origin.data(),s.Direction.data(),s.Matrix.data(),s.Size.data(),static_cast<int>(s.Leaves->size()),s.Leaves->data(),s.Height,s.FalloffOffset,s.FalloffAmount,s.Caster.data());
@@ -931,7 +934,7 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
                 for(const auto &s:slots)if(!(s.Flags&6)&&s.Bias!=255){g_SurfaceSavedBias[s.Handle]=s.Bias;g_SurfaceBias(g_SurfaceShadowManager,s.Handle,255);}
             }
             if(replace||!g_SurfaceOwned.empty())active|=1;
-            report<<"Historical projected blobs "<<g_SurfaceOwned.size()<<"/"<<sample.Shadows->size()<<"; simple texture rect "<<simple<<"; non-simple approximations "<<other<<"; unknown appearance approximations "<<unknown<<"; restored clip planes "<<clipPlanes<<"; unknown clip coverage "<<clipUnknown<<"; unobserved "<<sample.ShadowsUnobserved<<"; live bias gates "<<g_SurfaceSavedBias.size()<<"; "<<(replace?"replacement":"partial overlay")<<". ";
+            report<<"Historical projected blobs "<<g_SurfaceOwned.size()<<"/"<<sample.Shadows->size()<<"; simple texture rect "<<simple<<"; atlas rectangles (pixels not retained; blob fallback) "<<atlas<<"; non-simple approximations "<<other<<"; unknown appearance approximations "<<unknown<<"; restored clip planes "<<clipPlanes<<"; unknown clip coverage "<<clipUnknown<<"; unobserved "<<sample.ShadowsUnobserved<<"; live bias gates "<<g_SurfaceSavedBias.size()<<"; "<<(replace?"replacement":"partial overlay")<<". ";
         }else report<<"Shadow material, manager, or r_shadows unavailable. ";
     }
     if(requested&2){
