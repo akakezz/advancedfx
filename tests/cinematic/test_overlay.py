@@ -1140,6 +1140,9 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
    g_SceneLegacyReplay=true;check(!SceneCacheSuppressLiveParticles(),"Requested legacy replay without history prevents hiding");
    advancedfx::LegacyParticles::Frame legacy;legacy.Tick=20;legacy.Complete=true;
    check(g_SceneLegacyHistory.Append(legacy)&&SceneCacheSuppressLiveParticles(),"Complete empty legacy sample permits isolation");
+   g_SceneLegacyIsolationFailed=g_SceneLegacyHistory.ShareForPreview(20);
+   check(!SceneCacheSuppressLiveParticles(),"Known failed legacy submission prevents isolation");
+   check(g_SceneLegacyHistory.Append(legacy)&&SceneCacheSuppressLiveParticles(),"Replacement legacy lease invalidates failure");
    g_SceneLegacyHistory.Clear();g_SceneLegacyReplay=false;
    auto bad=p;bad.Active=1;bad.Points.resize(1);bad.Collections.resize(1);bad.Collections[0].Active=1;
    g_SceneNativeParticles.Append(bad);check(!SceneCacheSuppressLiveParticles(),"Capture flag alone cannot authorize incompatible replay");
@@ -1367,6 +1370,11 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   advancedfx::LegacyParticles::Frame legacy;legacy.Tick=100;legacy.Complete=true;
   advancedfx::SceneSurfaces::Frame surface;surface.Tick=100;surface.World=1;surface.DecalsReady=true;surface.Decals=std::make_shared<const std::vector<advancedfx::SceneSurfaces::Decal>>();
   check(g_SceneNativeParticles.Append(modern)&&g_SceneLegacyHistory.Append(legacy)&&g_SceneSurfaces.Append(surface),"Old effect take retained");
+  const bool savedEffects=g_SceneEffectsEnabled,savedRecord=g_SceneRecord;const auto savedTime=g_MirvTime.Time;
+  g_SceneEffectsEnabled=g_SceneRecord=true;g_SceneEffects.Observe(100);
+  g_MirvTime.Time=50.1/66;
+  check(SceneCacheParticleMessage("ParticleSystem_Create",nullptr)==-1&&g_SceneCaptureResetPending&&g_SceneEffects.Last==100,"Backward diagnostic callback preserves previous journal");
+  g_SceneEffectsEnabled=savedEffects;g_SceneRecord=savedRecord;g_MirvTime.Time=savedTime;
   const auto oldRevision=g_SceneCache.Revision();take.DemoTime=5;take.Entities.resize(1);
   check(!SceneCommitCaptureFrame(take,50)&&g_SceneCaptureResetPending&&g_SceneCache.Revision()==oldRevision&&g_SceneNativeParticles.Frames.size()==1&&g_SceneLegacyHistory.Frames.size()==1&&g_SceneSurfaces.Frames.size()==1,"Rejected backward model sample preserves all histories");
   g_SceneLastTick=50;take.DemoTime=11;take.Entities.clear();

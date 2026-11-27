@@ -98,6 +98,7 @@ static std::string g_SceneSurfaceStatus[2]={"Not evaluated.","Not evaluated."};
 static advancedfx::NativeParticles::ReplayResult g_SceneLegacyReplayResult;
 static int g_SceneLegacyReplayTick=-1;
 static advancedfx::LegacyParticles::History g_SceneLegacyHistory;
+static std::weak_ptr<const advancedfx::LegacyParticles::Frame> g_SceneLegacyIsolationFailed;
 static std::string g_SceneLegacyCaptureStatus="Not captured.";
 static std::string g_SceneDetachedStatus="Not run.";
 static unsigned long long g_SceneReplayCallbacks=0,g_SceneReplayAttempted=0,g_SceneReplaySubmitted=0,g_SceneReplayQueueSkips=0,g_SceneReplayOtherSkips=0;
@@ -149,7 +150,7 @@ static void SceneClearNativeParticles() {
     g_SceneIsolationChecked.reset();g_SceneIsolationFailed.reset();g_SceneIsolationRecordedReady=false;g_SceneIsolationEligibility="Not evaluated.";
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
     g_SceneLegacyAuditPending=false;
-    g_SceneLegacyHistory.Clear();g_SceneLegacyCaptureStatus="Not captured.";
+    g_SceneLegacyHistory.Clear();g_SceneLegacyIsolationFailed.reset();g_SceneLegacyCaptureStatus="Not captured.";
     g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();g_SceneHistoricalSurfaceStatus="Not evaluated.";
     g_SceneLegacyReplayResult={};g_SceneLegacyReplayTick=-1;
     g_SceneParticleReplayResult={};g_SceneParticleReplayTick=-1;
@@ -703,6 +704,12 @@ int SceneCacheParticleMessage(const char *name, const void *state)
 	int tick;
 	if (!GetCurrentDemoTick(tick) || tick < 0 ||
 	    (g_SceneRangeEnabled && (tick < g_SceneRangeFirst || tick > g_SceneRangeLast))) return -1;
+	// Events may precede model acceptance. Keep pending-take messages out
+    // of the old diagnostic journal; resume at the first accepted frame.
+    if(g_SceneCaptureResetPending||(g_SceneLastTick>=0&&tick<g_SceneLastTick)||
+       (g_SceneEffects.Last>=0&&tick<g_SceneEffects.Last)){
+        g_SceneCaptureResetPending=true;return -1;
+    }
 	// Keep creation/destruction while paused, but ignore redundant setter traffic
 	// only through value compaction; genuine paused updates can affect the sample.
 	g_SceneEffects.Observe(tick);
@@ -1273,6 +1280,8 @@ bool SceneCacheSuppressLiveParticles()
         const auto legacy=g_SceneLegacyHistory.ShareForPreview(tick);
         if(!legacy||!legacy->Complete||legacy->Rejected||legacy->OtherRejected||legacy->UnknownMaterials||legacy->Expected!=legacy->Particles.size())
             return deny("Requested legacy replay has incomplete recorded coverage; live effects retained.");
+        if(g_SceneLegacyIsolationFailed.lock()==legacy)
+            return deny("Previous legacy submission for this sample was incomplete; live effects retained.");
     }
     g_SceneIsolationEligibility="Recorded prerequisites satisfied (not pixel coverage).";
     return true;
@@ -1334,7 +1343,11 @@ static void SceneCacheDrawLegacyParticles()
     g_ScenePerf.LegacyDraw.Add(begin,sample->Tick);
     g_ScenePerf.LegacyRejected+=result.Rejected;
     if(!result.MainView&&result.Status.empty())return;
-    if(epoch==g_SceneDrawEpoch.load()&&g_SceneLegacyReplay){g_SceneLegacyReplayTick=sample->Tick;g_SceneLegacyReplayResult=std::move(result);}
+    if(epoch==g_SceneDrawEpoch.load()&&g_SceneLegacyReplay){
+        if(!g_SceneBench.Active&&(!result.MainView||result.Rejected||result.CleanupFailures||result.Particles!=sample->Particles.size()))
+            g_SceneLegacyIsolationFailed=sample;
+        g_SceneLegacyReplayTick=sample->Tick;g_SceneLegacyReplayResult=std::move(result);
+    }
 }
 void SceneCacheDrawParticles()
 {
@@ -2693,7 +2706,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	    } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"status")) {
 	        SceneNativeParticleStatus(g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneNativeParticles.Frames.empty()?-1:g_SceneNativeParticles.Frames.back().Tick);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyCapture")&&parseInteger(3,value)&&(value==0||value==1)) {
-            if(value&&!g_SceneLegacyCapture){g_SceneLegacyHistory.Clear();g_SceneLegacyCaptureStatus="Not captured.";}
+            if(value&&!g_SceneLegacyCapture){g_SceneLegacyHistory.Clear();g_SceneLegacyIsolationFailed.reset();g_SceneLegacyCaptureStatus="Not captured.";}
             g_SceneLegacyCapture=value!=0;SceneLegacyParticleStatus(-1);
         } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyAll")&&parseInteger(3,value)&&(value==0||value==1)) {
             if(g_SceneLegacyAll!=(value!=0)){g_SceneLegacyAll=value!=0;g_SceneLegacyHistory.Clear();}
@@ -7297,7 +7310,7 @@ static void DrawSceneCacheMenu(int playhead)
 		if(ImGui::Checkbox("Capture particles (TF2 x64 experiment)",&particles))SceneParticleCaptureEnabled(particles);
 		if(particles)DrawOverlayHint("Captures particle appearance automatically. Historical native preview uses the setting in Preview; record fresh history.");
         if(ImGui::Checkbox("Capture legacy dissolve particles (experimental)",&g_SceneLegacyCapture)&&g_SceneLegacyCapture){
-            g_SceneLegacyHistory.Clear();g_SceneLegacyCaptureStatus="Not captured.";
+            g_SceneLegacyHistory.Clear();g_SceneLegacyIsolationFailed.reset();g_SceneLegacyCaptureStatus="Not captured.";
         }
 		if(g_SceneLegacyCapture&&ImGui::Checkbox("Include other exact simple emitters (experimental)",&g_SceneLegacyAll))g_SceneLegacyHistory.Clear();
         if(ImGui::Checkbox("Capture shadow projections and world decals (experimental)",&g_SceneSurfaceCapture)&&g_SceneSurfaceCapture){g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();}
