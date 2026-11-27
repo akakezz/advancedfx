@@ -1541,7 +1541,7 @@ void SceneCacheDrawModels()
         }
     }
 	if (epoch == g_SceneDrawEpoch.load())
-		SceneModelStatus(textured ? "Experimental replay: " + std::to_string(submitted) + "/" + std::to_string(attempted) + " studio submissions; rigid decal batches "+std::to_string(stages.DecalBatchesSubmitted)+"/"+std::to_string(stages.DecalBatchesRequested)+". " + status : status);
+		SceneModelStatus(textured ? "Experimental replay: " + std::to_string(submitted) + "/" + std::to_string(attempted) + " studio submissions; model decal batches "+std::to_string(stages.DecalBatchesSubmitted)+"/"+std::to_string(stages.DecalBatchesRequested)+". " + status : status);
 }
 // Diagnostics report the actual sampled representation, not just the toggle.
 static std::string SceneAnimationSummary(const advancedfx::SceneCache::Entity &entity)
@@ -2500,18 +2500,19 @@ static std::string SceneValidationReport(){
     history("Legacy",g_SceneLegacyHistory.Frames,g_SceneLegacyHistory.Bytes,g_SceneLegacyHistory.Evicted,g_SceneLegacyHistory.Rejected);
     history("Surfaces",g_SceneSurfaces.Frames,g_SceneSurfaces.Bytes,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected);
     if(auto view=SceneCacheView()){
-        std::size_t studio=0,brush=0,missing=0,lit=0,local=0,modulated=0,decalKnown=0,decalModels=0,decalBatches=0,decalVertices=0,decalIndices=0,decalGeometry=0,decalGeometryBytes=0;
+        std::size_t studio=0,brush=0,missing=0,lit=0,local=0,modulated=0,decalKnown=0,decalModels=0,decalBatches=0,decalVertices=0,decalIndices=0,decalGeometry=0,decalGeometryBytes=0,decalSkinBatches=0;
         for(const auto &e:view->Entities){
             if(!e.ModelPose){++missing;continue;}
             if(!e.ModelPose->ModelInfo->WireEdges.empty()){++brush;continue;}
             ++studio;if(e.ModelLighting){++lit;local+=e.ModelLighting->Count;}modulated+=e.HasModulation;
             if(e.ModelDecals.Known()){++decalKnown;decalModels+=e.ModelDecals.Batches!=0;decalBatches+=e.ModelDecals.Batches;decalVertices+=e.ModelDecals.Vertices;decalIndices+=e.ModelDecals.Indices;}
-            if(e.ModelDecalData){++decalGeometry;decalGeometryBytes+=e.ModelDecalData->Bytes();}
+            if(e.ModelDecalData){++decalGeometry;decalGeometryBytes+=e.ModelDecalData->Bytes();
+                for(const auto &batch:e.ModelDecalData->Batches)decalSkinBatches+=!batch.Skin.empty();}
         }
         out<<"Published model sample: tick "<<view->DemoTime/SceneTickInterval()<<"; studio "<<studio<<", brush wire "<<brush<<", missing pose "<<missing<<", lit "<<lit<<", local lights "<<local<<", known modulation "<<modulated<<"\n";
-        out<<"Studio decal inventory (capture only): known models "<<decalKnown<<"/"<<studio<<", affected "<<decalModels<<", batches "<<decalBatches<<", vertices "<<decalVertices<<", indices "<<decalIndices<<", geometry models "<<decalGeometry<<", geometry bytes "<<decalGeometryBytes<<"\n";
+        out<<"Studio decal inventory (capture only): known models "<<decalKnown<<"/"<<studio<<", affected "<<decalModels<<", batches "<<decalBatches<<", vertices "<<decalVertices<<", indices "<<decalIndices<<", geometry models "<<decalGeometry<<", geometry bytes "<<decalGeometryBytes<<", directly skinnable batches "<<decalSkinBatches<<"\n";
     }else out<<"Published model sample: unavailable\n";
-    out<<"Studio decal replay (rigid immediate only): submitted "<<g_ScenePerf.StudioStages.DecalBatchesSubmitted<<"/"<<g_ScenePerf.StudioStages.DecalBatchesRequested<<" material batches\n";
+    out<<"Studio decal replay (rigid/direct-skinned immediate only): submitted "<<g_ScenePerf.StudioStages.DecalBatchesSubmitted<<"/"<<g_ScenePerf.StudioStages.DecalBatchesRequested<<" material batches\n";
     if(auto p=g_SceneNativeParticles.ShareForPreview(tick))
         out<<"Modern sample: "<<p->Tick<<", complete "<<p->Complete<<", appearance complete "<<p->AppearanceComplete<<", collections "<<p->Collections.size()<<", active "<<p->Active<<", rejected "<<p->Rejected<<", appearance rejected "<<p->AppearanceRejected<<"\n";
     else out<<"Modern sample: unavailable\n";

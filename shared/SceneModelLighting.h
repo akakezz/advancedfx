@@ -377,6 +377,10 @@ struct RigidDecalScratch {
 inline bool RigidDecalReplayEligible(const ModelDecalCoverage &coverage,int actualLod,int bones,int flexes,bool immediate,bool staticLighting){
     return immediate&&!staticLighting&&coverage.Known()&&coverage.Batches&&coverage.Lod==actualLod&&bones==1&&flexes==0;
 }
+inline bool SkinnedDecalReplayEligible(const ModelDecalCoverage &coverage,int actualLod,int bones,int flexes,bool immediate,bool staticLighting){
+    return immediate&&!staticLighting&&coverage.Known()&&coverage.Batches&&coverage.Lod==actualLod&&
+        bones>1&&bones<=128&&flexes>=0&&flexes<=1024;
+}
 struct Key {
     std::uint32_t Checksum=0;
     int Skin=-1,Body=-1;

@@ -57,3 +57,5 @@ mirv_cache preview 0 and mirv_cache record 0. Restore your original
 mat_queue_mode manually if necessary; check queue restoration warnings.
 Do not clear retained history just to diagnose a visual error. If the game
 crashes, revert to the backed-up DLL and matching resources.
+
+Studio model decals are experimental in the same historical decal toggle. Capture uses the existing model-lighting audit (enabled by setup). Check the report's inventory/geometry/directly skinnable counts and requested/submitted native material batches. Include a model with attached marks and scrub across creation/removal; move the camera. Single-bone rigid and directly mapped animated base-pose geometry are supported only in immediate mode; flex morph history, unsupported generated vertices, missing materials, LOD mismatch and queued model decal replay are not implemented. No submission count certifies visual coverage.

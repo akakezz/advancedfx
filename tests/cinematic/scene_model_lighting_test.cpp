@@ -63,6 +63,10 @@ int main(){
     assert(!RigidDecalReplayEligible(cov,1,1,0,true,false)&&!RigidDecalReplayEligible(cov,0,2,0,true,false));
     assert(!RigidDecalReplayEligible(cov,0,1,1,true,false)&&!RigidDecalReplayEligible(cov,0,1,0,false,false));
     assert(!RigidDecalReplayEligible(cov,0,1,0,true,true));
+    assert(SkinnedDecalReplayEligible(cov,0,2,0,true,false));
+    assert(SkinnedDecalReplayEligible(cov,0,128,20,true,false)); // base mesh, NO_FLEXES
+    assert(!SkinnedDecalReplayEligible(cov,0,129,0,true,false)&&!SkinnedDecalReplayEligible(cov,0,2,0,false,false));
+    assert(!SkinnedDecalReplayEligible(cov,1,2,0,true,false)&&!SkinnedDecalReplayEligible(cov,0,2,0,true,true));
     RigidDecalScratch scratch;assert(scratch.Build(batch));scratch.Bind(0x12345);
     ModelDecalBatch reconstructed;
     const auto localRead=[](std::uint64_t ptr,void *out,std::size_t n){std::memcpy(out,reinterpret_cast<const void*>(static_cast<std::uintptr_t>(ptr)),n);return true;};

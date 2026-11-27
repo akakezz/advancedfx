@@ -10922,23 +10922,23 @@ static_assert(offsetof(SceneStudioInfo, Lod) == (sizeof(void *) == 8 ? 48 : 28),
 static_assert(offsetof(SceneStudioInfo, LightCount) == (sizeof(void *) == 8 ? 140 : 112), "TF2 light ABI");
 #if defined(_WIN64) && defined(_WIN32)
 static bool SceneInstallModelDecalObservation();
-struct SceneRigidDecalRequest {
+struct SceneDecalReplayRequest {
     const advancedfx::SceneCache::Entity &Entity;
     const SceneStudioInfo &Info;
     std::size_t Submitted=0;
     bool Consumed=false;
 };
-static thread_local SceneRigidDecalRequest *g_SceneRigidDecalRequest=nullptr;
-struct SceneRigidDecalScope {
-    SceneRigidDecalRequest Request;
-    SceneRigidDecalRequest *Previous;
-    SceneRigidDecalScope(const advancedfx::SceneCache::Entity &entity,const SceneStudioInfo &info,bool textured)
-        :Request{entity,info},Previous(g_SceneRigidDecalRequest){
-        g_SceneRigidDecalRequest=nullptr;
+static thread_local SceneDecalReplayRequest *g_SceneDecalReplayRequest=nullptr;
+struct SceneDecalReplayScope {
+    SceneDecalReplayRequest Request;
+    SceneDecalReplayRequest *Previous;
+    SceneDecalReplayScope(const advancedfx::SceneCache::Entity &entity,const SceneStudioInfo &info,bool textured)
+        :Request{entity,info},Previous(g_SceneDecalReplayRequest){
+        g_SceneDecalReplayRequest=nullptr;
         if(textured&&entity.ModelDecalData&&entity.ModelDecals.Known()&&entity.ModelDecals.Batches&&
-           MaterialSystem_IsImmediate()&&SceneInstallModelDecalObservation())g_SceneRigidDecalRequest=&Request;
+           MaterialSystem_IsImmediate()&&SceneInstallModelDecalObservation())g_SceneDecalReplayRequest=&Request;
     }
-    ~SceneRigidDecalScope(){g_SceneRigidDecalRequest=Previous;}
+    ~SceneDecalReplayScope(){g_SceneDecalReplayRequest=Previous;}
 };
 #endif
 // The direct studio frontend inherits global modulation/lighting from prior
@@ -12018,7 +12018,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
     timer.Next(Timing::Draw);
 #if defined(_WIN64) && defined(_WIN32)
     {
-    SceneRigidDecalScope decalScope(entity,info,textured);
+    SceneDecalReplayScope decalScope(entity,info,textured);
     if(timings&&textured&&entity.ModelDecalData)timings->DecalBatchesRequested+=entity.ModelDecals.Batches;
 #endif
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
@@ -12193,10 +12193,64 @@ static bool SceneModelDecalMaterialName(std::uint64_t material,std::string &name
     for(unsigned i=0;i<256;++i){char c=0;if(!SceneLightingRead(reinterpret_cast<std::uintptr_t>(ptr)+i,c))return false;if(!c)return !name.empty();if(static_cast<unsigned char>(c)<32||static_cast<unsigned char>(c)>126)return false;name+=c;}
     return false;
 }
-// A separately guarded, immediate-only rigid draw. Reproduce only the
-// single-bone setup at 7b70..7ba9; never allocate, fabricate or alter a
-// registered native decal handle or write the renderer's material pool.
+// Separately guarded immediate-only historical material batches. Rigid
+// uses native local vertices; animated batches are evaluated in software
+// from owned sources and the current cached model's native pose matrices.
+// Never allocate/fabricate a registered decal handle or modify its pool.
 #if defined(_WIN32)
+using SceneDecalMultiWriter=bool(*)(void*,void*,void*,void*);
+using SceneDecalFlexWriter=bool(*)(void*,void*,void*,void*,void*,void*);
+using SceneDecalRigidWriter=void(*)(void*,void*,void*);
+static SceneDecalMultiWriter g_SceneDecalMultiOriginal=nullptr;
+static SceneDecalFlexWriter g_SceneDecalFlexOriginal=nullptr;
+static bool g_SceneDecalWritersInstalled=false;
+static std::uintptr_t g_SceneDecalWriterBase=0;
+struct ScenePrivateDecalWriter {
+    void *Renderer,*Context,*Record,*Header;
+    bool Called=false;
+};
+static thread_local ScenePrivateDecalWriter *g_ScenePrivateDecalWriter=nullptr;
+static bool ScenePrivateDecalWrite(ScenePrivateDecalWriter &request,std::uintptr_t caller,std::uintptr_t expected,
+                                   void *renderer,void *builder,void *header){
+    if(request.Called||caller!=expected||renderer!=request.Renderer||header!=request.Header||!builder||
+       GetCurrentThreadId()!=g_SceneDecalThread||!MaterialSystem_IsImmediate())return false;
+    reinterpret_cast<SceneDecalRigidWriter>(g_SceneDecalWriterBase+0x96c0)(renderer,builder,request.Record);
+    request.Called=true;return true;
+}
+static bool SceneDecalMultiWriterHook(void *renderer,void *builder,void *record,void *header){
+    auto *request=g_ScenePrivateDecalWriter;
+    if(request&&record==request->Record)
+        return ScenePrivateDecalWrite(*request,reinterpret_cast<std::uintptr_t>(_ReturnAddress()),
+            g_SceneDecalWriterBase+0x8020,renderer,builder,header);
+    return g_SceneDecalMultiOriginal(renderer,builder,record,header);
+}
+static bool SceneDecalFlexWriterHook(void *renderer,void *context,void *builder,void *record,void *header,void *palette){
+    auto *request=g_ScenePrivateDecalWriter;
+    if(request&&record==request->Record){
+        if(palette||context!=request->Context)return false;
+        return ScenePrivateDecalWrite(*request,reinterpret_cast<std::uintptr_t>(_ReturnAddress()),
+            g_SceneDecalWriterBase+0x800e,renderer,builder,header);
+    }
+    return g_SceneDecalFlexOriginal(renderer,context,builder,record,header,palette);
+}
+static bool SceneInstallPrivateDecalWriters(std::uintptr_t base){
+    if(g_SceneDecalWritersInstalled)return g_SceneDecalWriterBase==base&&GetCurrentThreadId()==g_SceneDecalThread;
+    if(!base||GetCurrentThreadId()!=g_SceneDecalThread||!MaterialSystem_IsImmediate()||
+       !SceneLightingMatch(base,0x8180,{0x48,0x8b,0xc4,0x48,0x89,0x58,0x08,0x4c,0x89,0x48,0x20,0x4c,0x89,0x40,0x18})||
+       !SceneLightingMatch(base,0x8aa0,{0x4c,0x89,0x4c,0x24,0x20,0x48,0x89,0x54,0x24,0x10,0x56,0x57,0x41,0x55})||
+       !SceneLightingMatch(base,0x801b,{0xe8,0x60,0x01,0,0,0x84,0xc0})||
+       !SceneLightingMatch(base,0x8009,{0xe8,0x92,0x0a,0,0,0x0f,0xb6,0xd8})||
+       !SceneLightingMatch(base,0x96c0,{0x40,0x53,0x56,0x41,0x57,0x48,0x83,0xec,0x20,0x41,0x0f,0xb7,0x40,0x38}))return false;
+    g_SceneDecalMultiOriginal=reinterpret_cast<SceneDecalMultiWriter>(base+0x8180);
+    g_SceneDecalFlexOriginal=reinterpret_cast<SceneDecalFlexWriter>(base+0x8aa0);
+    if(DetourTransactionBegin()!=NO_ERROR)return false;
+    LONG error=DetourUpdateThread(GetCurrentThread());
+    if(error==NO_ERROR)error=DetourAttach(reinterpret_cast<PVOID*>(&g_SceneDecalMultiOriginal),reinterpret_cast<PVOID>(SceneDecalMultiWriterHook));
+    if(error==NO_ERROR)error=DetourAttach(reinterpret_cast<PVOID*>(&g_SceneDecalFlexOriginal),reinterpret_cast<PVOID>(SceneDecalFlexWriterHook));
+    if(error!=NO_ERROR){DetourTransactionAbort();return false;}
+    if(DetourTransactionCommit()!=NO_ERROR)return false;
+    g_SceneDecalWriterBase=base;g_SceneDecalWritersInstalled=true;return true;
+}
 static bool SceneRigidDecalMaterialReady(std::uintptr_t material,std::uintptr_t msBase,const std::string &expected){
     std::string actual;
     if(!SceneModelDecalMaterialName(material,actual)||actual!=expected)return false;
@@ -12211,29 +12265,31 @@ static bool SceneRigidDecalMaterialReady(std::uintptr_t material,std::uintptr_t 
         SceneLightingRead(real+0x28,flags)&&(flags&2)&&SceneLightingRead(real+0x40,proxies)&&proxies==0&&
         SceneLightingRead(msBase+0xf2538,error)&&error&&real!=error&&material!=error;
 }
-static void SceneDrawRigidDecals(SceneRigidDecalRequest &request,void *renderer,const SceneStudioInfo &info,int lod,int body){
+static void SceneDrawHistoricalModelDecals(SceneDecalReplayRequest &request,void *renderer,const SceneStudioInfo &info,int lod,int body){
     using namespace advancedfx::SceneLighting;
     const auto base=g_SceneDecalBase;
     const auto &entity=request.Entity;
     if(!entity.ModelDecalData||!entity.ModelDecalData->Valid(entity.ModelDecals)||
        info.Header!=request.Info.Header||info.Hardware!=request.Info.Hardware||info.Skin!=request.Info.Skin||
-       info.Body!=request.Info.Body||body!=info.Body||info.ClientEntity||info.Decals||
+       info.Body!=request.Info.Body||body!=info.Body||entity.Skin!=info.Skin||!entity.ModelPose||
+       entity.ModelPose->Body!=info.Body||info.ClientEntity||info.Decals||
        !info.Header||!info.Hardware||!MaterialSystem_IsImmediate()||Mirv_Tf2_SceneRenderViewId()!=0)return;
     const auto header=reinterpret_cast<std::uintptr_t>(info.Header),r=reinterpret_cast<std::uintptr_t>(renderer);
     void *nativeRenderer=nullptr,*currentHeader=nullptr;
     std::uintptr_t config=0,matrix=0,system=0,vt=0;
     unsigned char config25=0,config38=0;
     int bones=0,flexes=0,hardwareLods=0;
-    std::array<float,12> transform{};
     if(!SceneLightingRead(base+0x96348,nativeRenderer)||nativeRenderer!=renderer||
        !SceneLightingRead(r+0x110,currentHeader)||currentHeader!=info.Header||
        !SceneLightingRead(header+0x9c,bones)||!SceneLightingRead(header+0x104,flexes)||
-       !RigidDecalReplayEligible(entity.ModelDecals,lod,bones,flexes,true,info.StaticLighting)||
-       !SceneLightingRead(reinterpret_cast<std::uintptr_t>(info.Hardware)+4,hardwareLods)||lod>=hardwareLods||hardwareLods>32||
+       bones<1||bones>128||static_cast<std::size_t>(bones)!=entity.ModelPose->Bones.size()||
+       !SceneLightingRead(reinterpret_cast<std::uintptr_t>(info.Hardware)+4,hardwareLods)||lod<0||lod>=hardwareLods||hardwareLods>32||
        !SceneLightingRead(r+8,config)||!config||!SceneLightingRead(config+0x25,config25)||(config25&0x20)||
-       !SceneLightingRead(config+0x38,config38)||(config38&4)||
-       !SceneLightingRead(r+0xf0,matrix)||!SceneLightingRead(matrix,transform)||
-       !std::all_of(transform.begin(),transform.end(),[](float f){return std::isfinite(f);})||
+       !SceneLightingRead(config+0x38,config38)||
+       !SceneLightingRead(r+0xf0,matrix)||!matrix||
+       // No hardware/morph palette is supplied to the private batch.
+       !SceneLightingMatch(base,0x7d6b,{0xf6,0x40,0x38,0x04,0x4c,0x0f,0x45,0xa5,0x70,0x02,0,0})||
+       !SceneLightingMatch(base,0x7c7b,{0xff,0x90,0xf8,0,0,0})||
        !SceneLightingMatch(base,0x7b70,{0x8b,0x90,0x9c,0,0,0,0x83,0xfa,0x01})||
        !SceneLightingMatch(base,0x7ba3,{0xff,0x90,0xb8,0,0,0})||
        !SceneLightingMatch(base,0x7d20,{0x48,0x8b,0xc4,0x4c,0x89,0x48,0x20,0x55,0x56,0x41,0x55,0x41,0x56,0x41,0x57})||
@@ -12241,6 +12297,16 @@ static void SceneDrawRigidDecals(SceneRigidDecalRequest &request,void *renderer,
        !SceneLightingMatch(base,0x7fdf,{0xe8,0xdc,0x16,0,0})||
        !SceneLightingMatch(base,0x9700,{0x48,0x8b,0x8b,0x60,0x02,0,0,0x0f,0xb7,0xf8})||
        !SceneLightingMatch(base,0x80b1,{0x03,0x7c,0xca,0x04,0x44,0x0f,0xb7,0x5c,0xca,0x16}))return;
+    const bool rigid=RigidDecalReplayEligible(entity.ModelDecals,lod,bones,flexes,true,info.StaticLighting);
+    const bool skinned=SkinnedDecalReplayEligible(entity.ModelDecals,lod,bones,flexes,true,info.StaticLighting);
+    if(!rigid&&!skinned)return;
+    if(skinned&&!SceneInstallPrivateDecalWriters(base))return;
+    // Native 0x51c60 already combined historical bone-to-world with
+    // pose-to-bone. Copy the exact output, not live entity matrices.
+    std::vector<std::array<float,12>> transforms(bones);
+    SIZE_T got=0;const auto bytes=transforms.size()*sizeof(transforms[0]);
+    if(!ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(matrix),transforms.data(),bytes,&got)||got!=bytes)return;
+    for(const auto &m:transforms)for(float f:m)if(!std::isfinite(f))return;
     const auto msBase=reinterpret_cast<std::uintptr_t>(GetModuleHandleA("materialsystem.dll"));
     IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
     if(!msBase||!SceneLightingRead(msBase,dos)||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
@@ -12251,7 +12317,7 @@ static void SceneDrawRigidDecals(SceneRigidDecalRequest &request,void *renderer,
         for(auto entry:expected){std::uintptr_t fn=0;if(!SceneLightingRead(table+entry.first,fn)||fn!=msBase+entry.second)return false;}return true;
     };
     if(!slots(vt,{{0x238,0x15720},{0x310,0x16c20}})||
-       !slots(msBase+0xbcab0,{{8,0x1ac20},{0x10,0x2fdd0},{0x18,0x32320},{0x48,0x2ffa0},{0xa0,0x33b20},{0xb8,0x33810},{0x1a8,0x35950},{0x1c0,0x32710},{0x498,0x6f30}})||
+       !slots(msBase+0xbcab0,{{8,0x1ac20},{0x10,0x2fdd0},{0x18,0x32320},{0x48,0x2ffa0},{0xa0,0x33b20},{0xb8,0x33810},{0xf8,0x33750},{0x1a8,0x35950},{0x1c0,0x32710},{0x498,0x6f30}})||
        !SceneLightingMatch(msBase,0x6f30,{0x33,0xc0,0xc3})||
        !SceneLightingMatch(msBase,0x16c64,{0xff,0x10})||
        !SceneLightingMatch(msBase,0x33816,{0x0f,0x10,0x02,0x48,0x8b,0xd9}))return;
@@ -12270,36 +12336,49 @@ static void SceneDrawRigidDecals(SceneRigidDecalRequest &request,void *renderer,
         Prepared entry;
         entry.Material=SceneInterfaceCall<void*,const char*,const char*,bool,const char*>(reinterpret_cast<void*>(system),0x238/8,
             batch.Material.c_str(),"Decal textures",false,nullptr);
-        if(!entry.Material||!SceneRigidDecalMaterialReady(reinterpret_cast<std::uintptr_t>(entry.Material),msBase,batch.Material)||
-           !entry.Scratch.Build(batch))return;
+        if(!entry.Material||!SceneRigidDecalMaterialReady(reinterpret_cast<std::uintptr_t>(entry.Material),msBase,batch.Material))return;
+        ModelDecalBatch posed;
+        if(skinned){
+            if(!SkinModelDecalBatch(batch,transforms.data(),bones,posed)||!entry.Scratch.Build(posed))return;
+        }else if(!entry.Scratch.Build(batch))return;
         prepared.push_back(std::move(entry));
     }
     SceneInterfaceCall<void>(context,2);scope.Begun=true;
-    SceneInterfaceCall<void,int>(context,0x1a8/8,1);
+    SceneInterfaceCall<void,int>(context,0x1a8/8,rigid?1:0);
     SceneInterfaceCall<void,int>(context,0xa0/8,10);
-    SceneInterfaceCall<void,const float*>(context,0xb8/8,transform.data());
+    if(rigid)SceneInterfaceCall<void,const float*>(context,0xb8/8,transforms[0].data());
+    else SceneInterfaceCall<void>(context,0xf8/8); // software world-space path
     using Draw=void(*)(void*,void*,void*,void*,void*);
     auto draw=reinterpret_cast<Draw>(base+0x7d20);
     for(auto &entry:prepared){
         entry.Scratch.Bind(reinterpret_cast<std::uintptr_t>(entry.Material));
-        draw(renderer,context,entry.Scratch.Record.data(),info.Header,nullptr);
+        if(skinned){
+            ScenePrivateDecalWriter writer{renderer,context,entry.Scratch.Record.data(),info.Header};
+            struct WriterScope {
+                ScenePrivateDecalWriter *Previous;
+                explicit WriterScope(ScenePrivateDecalWriter *value):Previous(g_ScenePrivateDecalWriter){g_ScenePrivateDecalWriter=value;}
+                ~WriterScope(){g_ScenePrivateDecalWriter=Previous;}
+            } writeScope(&writer);
+            draw(renderer,context,entry.Scratch.Record.data(),info.Header,nullptr);
+            if(!writer.Called)break;
+        }else draw(renderer,context,entry.Scratch.Record.data(),info.Header,nullptr);
         ++request.Submitted;
     }
-    // The native caller at 51d36..51d4d resets model matrix mode/stack.
-    // We leave the exact same state as its ordinary single-bone decal pass.
+    // Native caller at 51d36..51d4d resets model matrix mode/stack.
+    // Leave the same matrix state as the ordinary rigid/software decal path.
 }
 #endif
 static void SceneObserveModelDecals(void *renderer,const SceneStudioInfo *info,int lod,int body){
     const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
 #if defined(_WIN32)
-    if(auto *request=g_SceneRigidDecalRequest){
+    if(auto *request=g_SceneDecalReplayRequest){
         SceneStudioInfo copy{};
         if(!request->Consumed&&GetCurrentThreadId()==g_SceneDecalThread&&caller==g_SceneDecalBase+0x51cfd&&
            SceneLightingRead(reinterpret_cast<std::uintptr_t>(info),copy)&&copy.Header==request->Info.Header&&
            copy.Hardware==request->Info.Hardware&&!copy.ClientEntity&&!copy.Decals){
             request->Consumed=true;
             g_SceneOriginalDecals(renderer,info,lod,body);
-            SceneDrawRigidDecals(*request,renderer,copy,lod,body);
+            SceneDrawHistoricalModelDecals(*request,renderer,copy,lod,body);
             return;
         }
     }

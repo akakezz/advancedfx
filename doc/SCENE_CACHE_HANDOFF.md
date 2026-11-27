@@ -510,3 +510,7 @@ Historical decals setting now enables captured rigid, single-bone, no-flex model
 ### Phase 29B — direct animated decal skinning inputs
 
 Capture resident fat source vertex positions/normals, validated weights/bone indices for directly mapped model decal vertices after the original immediate draw. Keep no studio pointers; reject malformed/unsupported batches independently of raw geometry. Model decal geometry memory accounting now includes optional skin source arrays. Portable fixture checks exact MDL ranges, invalid selectors/bones, weighted pose-to-world, normal offset and UV/index preservation. Animated native submission still pending.
+
+### Phase 29C — limited animated historical model decal rendering
+
+Owned source vertices can now be software-skinned against the actual historical pose-to-world array and submitted via the native immediate dynamic mesh. Exact private-record writer detours bypass only native multi/flex vertex-cache lookup for our own already evaluated vertices. Live model rendering unchanged. Requires all batches directly skinnable, matching selected LOD/skin/body and ordinary proxy-free material. Flex weights are not restored (base mesh only), no generated/clipped-vertex reconstruction or queued path. Validation report shows directly skinnable captured batches and total requested/submitted model decal batches. Runtime and Windows validation pending.
