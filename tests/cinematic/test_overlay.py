@@ -40,7 +40,7 @@ preamble=r'''
 advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick,bool appearance){advancedfx::NativeParticles::Frame f;f.Tick=tick;f.Complete=true;f.Points.push_back({1,2,3});return f;}
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &,std::size_t){return "fixture";}
 std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *snapshot,bool){if(snapshot)snapshot->Complete=true;return "legacy fixture";}
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &,bool,bool){return {}; }
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &,bool,bool,bool){return {}; }
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &){return {}; }
 int sceneNativeView=-1;int Mirv_Tf2_SceneRenderViewId(){return sceneNativeView;}
 bool Mirv_Tf2_SceneMainProjection(float (&matrix)[4][4]){return false;}

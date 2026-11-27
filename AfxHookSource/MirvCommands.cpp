@@ -588,7 +588,7 @@ struct SceneDetachedRegion {
 // Native particle replay uses the same verified factory and allocations as
 // the successful dry run. No engine pointers are retained between callbacks.
 static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
-    const advancedfx::NativeParticles::Frame &frame,std::size_t probeIndex,bool draw,bool fastMemory=false,bool fastReads=false)
+    const advancedfx::NativeParticles::Frame &frame,std::size_t probeIndex,bool draw,bool fastMemory=false,bool fastReads=false,bool auditRenderers=false)
 {
     using namespace advancedfx::NativeParticles;
     ReplayResult result;
@@ -737,6 +737,8 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
     std::vector<unsigned char> gate(draw?frame.Collections.size():0);
     std::vector<std::size_t> bound(draw?frame.Collections.size():0);
     std::string firstFailure;
+    std::set<Address> auditedDefinitions;
+    std::set<std::uint32_t> rendererTargets,postTargets;
     bool listChanged=false;
     auto attempt=[&](std::size_t index,std::size_t)->bool {
         if(listChanged)return false;
@@ -802,6 +804,29 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                            !readDetached(definition+0x3fa,&flag,1)||!readDetached(definition+0x148,&material,sizeof(material))) {valid=false;break;}
                         gate[binding.Recorded]=(flag&1)&&material;
                         bound[binding.Recorded]=generation;
+                        // Optional warm-up audit, never call unknown functions.
+                        // Verified collection Render dispatch: def+0x268 array,
+                        // def+0x278 count, renderer vtable+0x48; post at +0x2788.
+                        if(auditRenderers&&auditedDefinitions.size()<512&&auditedDefinitions.insert(definition).second){
+                            int count=0;Address array=0;
+                            if(readDetached(definition+0x278,&count,sizeof(count))&&count>=0&&count<=128&&
+                               readDetached(definition+0x268,&array,sizeof(array))&&(!count||array)){
+                                for(int j=0;j<count;++j){
+                                    Address object=0,table=0,target=0;
+                                    if(readDetached(array+j*sizeof(Address),&object,sizeof(object))&&object&&
+                                       readDetached(object,&table,sizeof(table))&&table&&readDetached(table+0x48,&target,sizeof(target))&&
+                                       target>=base&&target-base<nt.OptionalHeader.SizeOfImage&&rendererTargets.size()<256)
+                                        rendererTargets.insert(static_cast<std::uint32_t>(target-base));
+                                }
+                            }
+                        }
+                        if(auditRenderers){
+                            Address object=0,table=0,target=0;
+                            if(readDetached(binding.Native+0x2788,&object,sizeof(object))&&object&&
+                               readDetached(object,&table,sizeof(table))&&table&&readDetached(table+0x40,&target,sizeof(target))&&
+                               target>=base&&target-base<nt.OptionalHeader.SizeOfImage&&postTargets.size()<256)
+                                postTargets.insert(static_cast<std::uint32_t>(target-base));
+                        }
                     }
                     result.GateMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-gateStart).count();
                     // Always return active counters to their factory state before destruction.
@@ -857,6 +882,10 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         result.Status="Native particle submissions (not pixel coverage)";
         if(listChanged)result.Status+="; WARNING: native lifecycle guard stopped replay";
         if(!firstFailure.empty())result.Status+="; first rejected tree: "+firstFailure;
+        if(auditRenderers){
+            result.RendererTargets.assign(rendererTargets.begin(),rendererTargets.end());
+            result.PostRenderTargets.assign(postTargets.begin(),postTargets.end());
+        }
     } else {
         if(!attempt(probeIndex,frame.Collections[probeIndex].Active)&&!firstFailure.empty())
             result.Status=firstFailure+result.Status;
@@ -870,9 +899,9 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
 {
     return SceneNativeParticleOperation(frame,index,false).Status;
 }
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame,bool fastMemory,bool fastReads)
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame,bool fastMemory,bool fastReads,bool auditRenderers)
 {
-    return SceneNativeParticleOperation(frame,0,true,fastMemory,fastReads);
+    return SceneNativeParticleOperation(frame,0,true,fastMemory,fastReads,auditRenderers);
 }
 
 

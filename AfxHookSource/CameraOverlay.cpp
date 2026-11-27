@@ -357,6 +357,8 @@ struct SceneBenchState {
     bool AutoQueue=false,Switching=false,SwitchWritten=false;
     int Suite=0,OriginalQueue=0,OwnedQueue=0,TargetQueue=0;
     std::vector<double> FrameMs;
+    bool Audited=false;
+    std::set<std::uint32_t> RendererTargets,PostRenderTargets;
     std::chrono::steady_clock::time_point PreviousRender;
     int Phase=0,Frames=0,OriginalSequencer=0;
     unsigned long long RenderCallbacks=0;
@@ -403,7 +405,7 @@ static const char *SceneBenchLabel(int phase){
     return names[phase];
 }
 static void SceneBenchApply(int phase,std::chrono::steady_clock::time_point now){
-    auto &b=g_SceneBench;b.Phase=phase;b.Measuring=false;b.Frames=0;b.Start=now;b.LastRender=now;b.PreviousRender=now;b.FrameMs.clear();
+    auto &b=g_SceneBench;b.Phase=phase;b.Measuring=false;b.Frames=0;b.Start=now;b.LastRender=now;b.PreviousRender=now;b.FrameMs.clear();b.Audited=false;
     g_SceneRecord=false;g_ScenePreview=phase!=0;g_SceneDrawModels=b.ModelsOnly||phase!=5;
     g_SceneActorCull=phase+1==SceneBenchPhaseCount();
     if(b.ModelsOnly){
@@ -437,6 +439,13 @@ static void SceneBenchStop(const char *reason){
     g_SceneCursor=b.Cursor;g_SequencerFrame=b.OriginalSequencer;
     g_SceneSampleReady=false;++g_SceneDrawEpoch;
     g_SceneBenchReport+=reason;g_SceneBenchReport+="\n";
+    auto appendTargets=[&](const char *label,const std::set<std::uint32_t>& targets){
+        g_SceneBenchReport+=label;char value[24]{};
+        for(auto rva:targets){std::snprintf(value,sizeof(value)," 0x%x",unsigned(rva));g_SceneBenchReport+=value;}
+        g_SceneBenchReport+="\n";
+    };
+    appendTargets("Observed client renderer targets (warm-up, not exhaustive):",b.RendererTargets);
+    appendTargets("Observed client post-render targets (warm-up, not exhaustive):",b.PostRenderTargets);
     if(b.AutoQueue&&b.OwnedQueue!=b.OriginalQueue){
         g_SceneBenchRestoreQueue=true;g_SceneBenchRestoreValue=b.OriginalQueue;g_SceneBenchExpectedQueue=b.OwnedQueue;
         g_SceneBenchReport+="Queue cvar restoration pending at engine FRAME_START.\n";
@@ -1242,7 +1251,7 @@ void SceneCacheDrawParticles()
     // and no native drawing in ordinary live demo playback.
     std::shared_ptr<const advancedfx::NativeParticles::Frame> sample;
     unsigned long long epoch=0;
-    bool fastMemory=false,fastReads=false;
+    bool fastMemory=false,fastReads=false,auditRenderers=false;
     {
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
         if(!g_ScenePreview||!g_SceneNativeParticleReplay||!SceneCanDrawModels()||!SceneCacheView())return;
@@ -1256,10 +1265,16 @@ void SceneCacheDrawParticles()
             return;
         }
         epoch=g_SceneDrawEpoch.load();fastMemory=g_SceneFastParticleWrites;fastReads=g_SceneFastParticleReads;
+        auditRenderers=g_SceneBench.Active&&!g_SceneBench.Measuring&&!g_SceneBench.Audited&&!g_SceneBench.ModelsOnly;
+        if(auditRenderers)g_SceneBench.Audited=true;
     }
     const auto begin=std::chrono::steady_clock::now();
-    auto result=Mirv_Tf2_RenderNativeParticles(*sample,fastMemory,fastReads);
+    auto result=Mirv_Tf2_RenderNativeParticles(*sample,fastMemory,fastReads,auditRenderers);
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+    if(auditRenderers&&g_SceneBench.Active){
+        for(auto target:result.RendererTargets)if(g_SceneBench.RendererTargets.size()<256)g_SceneBench.RendererTargets.insert(target);
+        for(auto target:result.PostRenderTargets)if(g_SceneBench.PostRenderTargets.size()<256)g_SceneBench.PostRenderTargets.insert(target);
+    }
     g_ScenePerf.ParticleDraw.Add(begin,sample->Tick);
     g_ScenePerf.ParticleMain+=result.MainView;
     if(result.MainView)g_ScenePerf.MainParticleDraw.Add(begin,sample->Tick);
