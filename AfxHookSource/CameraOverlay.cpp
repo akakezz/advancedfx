@@ -931,26 +931,26 @@ void SceneCacheDrawParticles()
     SceneCacheDrawLegacyParticles();
     // Main-view guard inside the native path. No persistent native objects,
     // and no native drawing in ordinary live demo playback.
-    advancedfx::NativeParticles::Frame sample;
+    std::shared_ptr<const advancedfx::NativeParticles::Frame> sample;
     unsigned long long epoch=0;
     {
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
         if(!g_ScenePreview||!g_SceneNativeParticleReplay||!SceneCanDrawModels()||!SceneCacheView())return;
         const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
-        const auto *f=g_SceneNativeParticles.ForPreview(tick);
-        if(!f||!f->Appearance) {
+        sample=g_SceneNativeParticles.ShareForPreview(tick);
+        if(!sample||!sample->Appearance) {
             g_SceneParticleReplayTick=tick;g_SceneParticleReplayResult={};
             g_SceneParticleReplayResult.Status="No retained appearance sample at cursor";
             return;
         }
-        sample=*f;epoch=g_SceneDrawEpoch.load();
+        epoch=g_SceneDrawEpoch.load();
     }
-    auto result=Mirv_Tf2_RenderNativeParticles(sample);
+    auto result=Mirv_Tf2_RenderNativeParticles(*sample);
     // Non-main callbacks must not overwrite the last main-view diagnostic.
     if(!result.MainView&&result.Status.empty())return;
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
     if(epoch==g_SceneDrawEpoch.load()&&g_SceneNativeParticleReplay) {
-        g_SceneParticleReplayTick=sample.Tick;g_SceneParticleReplayResult=std::move(result);
+        g_SceneParticleReplayTick=sample->Tick;g_SceneParticleReplayResult=std::move(result);
     }
 }
 void SceneCacheDrawModels()

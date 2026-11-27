@@ -9,6 +9,7 @@
 #include <limits>
 #include <set>
 #include <map>
+#include <memory>
 #include <type_traits>
 #include <string>
 #include <vector>
@@ -499,7 +500,7 @@ public:
     explicit History(std::size_t budget=512u*1024u*1024u):Budget(budget){}
     void Clear(){Frames.clear();Bytes=RawBytes=PlainBytes=0;Evicted=Rejected=0;Invalidate();++Revision;}
     std::size_t BudgetBytes() const {return Budget;}
-    std::size_t DecodedBytes() const{return Decoded.Tick<0?0:Decoded.Bytes();}
+    std::size_t DecodedBytes() const{return Decoded?Decoded->Bytes():0;}
     void SetBudget(std::size_t budget) {Budget=budget;while(!Frames.empty()&&Bytes>Budget) Evict();Invalidate();++Revision;}
     bool Append(Frame f) {
         if(!Frames.empty()&&f.Tick<Frames.back().Tick) Clear();
@@ -520,23 +521,29 @@ public:
         return it!=Frames.end()&&it->Tick==tick?Read(*it):nullptr;
     }
     const Frame *ForPreview(int tick,int maxGap=2) const {
+        return ShareForPreview(tick,maxGap).get();
+    }
+    // Immutable owning lease survives later decode, replacement and clear.
+    // Obtain under the caller's history mutex.
+    std::shared_ptr<const Frame> ShareForPreview(int tick,int maxGap=2) const {
         if(Frames.empty()||tick<Frames.front().Tick||tick>Frames.back().Tick) return nullptr;
         auto it=std::upper_bound(Frames.begin(),Frames.end(),tick,[](int t,const auto &f){return t<f.Tick;});
         if(it==Frames.begin())return nullptr;
-        --it;return tick-it->Tick<=maxGap?Read(*it):nullptr;
+        --it;return tick-it->Tick<=maxGap?ReadShared(*it):nullptr;
     }
     std::deque<HistoryStorage::Stored> Frames;
     std::size_t Bytes=0,RawBytes=0,PlainBytes=0,Evicted=0,Rejected=0;
     std::uint64_t Revision=0;
 private:
-    mutable Frame Decoded;
-    void Invalidate(){Decoded=Frame{};}
-    const Frame *Read(const HistoryStorage::Stored &s) const {
-        if(Decoded.Tick==s.Tick)return &Decoded;
-        Decoded=Frame{};
-        if(!HistoryStorage::Load(s,Decoded))return nullptr;
-        return &Decoded;
+    mutable std::shared_ptr<const Frame> Decoded;
+    void Invalidate(){Decoded.reset();}
+    std::shared_ptr<const Frame> ReadShared(const HistoryStorage::Stored &s) const {
+        if(Decoded&&Decoded->Tick==s.Tick)return Decoded;
+        auto next=std::make_shared<Frame>();
+        if(!HistoryStorage::Load(s,*next)){Decoded.reset();return {};}
+        Decoded=std::move(next);return Decoded;
     }
+    const Frame *Read(const HistoryStorage::Stored &s) const {return ReadShared(s).get();}
     void Subtract(const HistoryStorage::Stored &s){Bytes-=s.BytesUsed();RawBytes-=s.RawBytes;PlainBytes-=s.PlainSize;}
     void Evict(){Subtract(Frames.front());Frames.pop_front();++Evicted;}
     std::size_t Budget;

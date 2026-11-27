@@ -101,9 +101,15 @@ int main(){
     check(HistoryStorage::Load(HistoryStorage::Store(broken),restored)&&std::signbit(restored.Points[0][0]),"fallback points preserve bits");
     History random(4096*4);check(random.Append(app)&&random.Append(rotation),"compressed appearance history");
     check(random.At(23)&&random.At(20)&&random.At(20)->Words==app.Words&&random.At(23)->Words==rotation.Words,"reverse and repeated random access");
+    auto leased=random.ShareForPreview(23);
+    check(leased&&leased.get()==random.ShareForPreview(23).get(),"stationary preview reuses immutable decoded storage");
+    check(random.ShareForPreview(22)->Tick==20&&leased->Words==rotation.Words,"lease survives different tick decoding");
     auto changed=rotation;changed.Words[0]^=1;
     check(random.Append(changed)&&random.At(23)->Words==changed.Words,"same tick replacement invalidates decoded cache");
     check(random.RawBytes>=random.Bytes,"synthetic snapshots reduced");
+    check(leased->Words==rotation.Words&&random.ShareForPreview(23).get()!=leased.get(),"lease survives replacement at same tick");
+    random.Clear();
+    check(!random.ShareForPreview(23)&&random.DecodedBytes()==0&&leased->Words==rotation.Words,"lease survives clear without stale lookup");
     HistoryCodec::Bytes repeat(100000,42),decoded;
     auto encoded=HistoryCodec::Encode(repeat);
     check(encoded.size()<3000&&HistoryCodec::Decode(encoded,repeat.size(),decoded)&&decoded==repeat,"repeated run and overlapping match");
