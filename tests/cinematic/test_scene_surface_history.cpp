@@ -163,8 +163,8 @@ int main(){
     pixels[0]=0x11223344u;pixels[1]=0x55667788u;pixels[100]=0x00abcdefu;
     ShadowAtlasImage encoded;assert(ShadowAtlasImage::Encode(pixels,ShadowAtlasImage::Format::Argb,encoded)&&encoded.Valid());
     std::vector<std::uint32_t> decoded;assert(encoded.Decode(decoded)&&decoded==pixels);
-    auto corrupt=encoded;corrupt.Words.back()=0; // color words may be zero
-    corrupt.Words[0]=0;assert(!corrupt.Valid()&&!corrupt.Decode(decoded)&&decoded==pixels);
+    auto corruptAtlas=encoded;corruptAtlas.Words.back()=0; // color words may be zero
+    corruptAtlas.Words[0]=0;assert(!corruptAtlas.Valid()&&!corruptAtlas.Decode(decoded)&&decoded==pixels);
     auto tooLarge=pixels;for(std::size_t i=0;i<tooLarge.size();++i)tooLarge[i]=std::uint32_t(i);
     assert(!ShadowAtlasImage::Encode(tooLarge,ShadowAtlasImage::Format::Argb,encoded)&&encoded.Valid());
     auto image=std::make_shared<const ShadowAtlasImage>(encoded);
