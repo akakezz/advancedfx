@@ -802,3 +802,13 @@ restoration writes. Nonzero historical alpha changes are not reproduced;
 removed decals and unsupported types remain out of scope. Status now reports
 actual skipped geometry calls, per-subsystem ready-frame counts, nonempty
 decal frames and native read failure stage. Native tests pending.
+
+Verification: copied the exact committed surface history header (blob
+5c1a5bb) and fixture (8494ddb), confirmed both Git hashes locally, compiled
+with g++ C++17 -Wall -Wextra -pedantic and ASan/UBSan, and ran successfully.
+All six new decal geometry entry/callsite anchors and four existing decal
+capture anchors match the supplied engine binary byte-for-byte. The legacy
+gap fixture is added but not executed in this follow-up; native detour,
+Windows build and in-game behavior remain untested. Test with the temporary
+hideShadows/hideDecals controls off first, to distinguish historical replay
+from whole-system fallback hiding, and with r_shadows/r_drawdecals enabled.

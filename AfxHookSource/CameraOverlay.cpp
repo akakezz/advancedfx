@@ -1883,7 +1883,7 @@ static void SceneLegacyParticleStatus(int tick,bool previewSample=false)
     if(tick<0)return;
     const auto *sample=previewSample?history.ForPreview(tick):history.At(tick);
     if(previewSample)advancedfx::Message("Legacy preview requested tick %d; resolved tick %d (bounded prior sample).\n",tick,sample?sample->Tick:-1);
-    if(!sample){advancedfx::Message("Legacy dissolve tick %d: no exact retained sample. Last capture: %s\n",tick,g_SceneLegacyCaptureStatus.c_str());return;}
+    if(!sample){advancedfx::Message("Legacy dissolve tick %d: %s. Last capture: %s\n",tick,previewSample?"no bounded prior sample":"no exact retained sample",g_SceneLegacyCaptureStatus.c_str());return;}
     std::size_t spark=0,glow=0;
     for(const auto &p:sample->Particles){spark+=p.Texture==Material::Spark;glow+=p.Texture==Material::CombineMuzzle;}
     advancedfx::Message("Legacy dissolve tick %d: %zu emitters, %zu expected, %zu captured; spark %zu, combinemuzzle2 %zu, unknown material %zu; complete %d.\n",
