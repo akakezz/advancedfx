@@ -121,6 +121,7 @@ struct ScenePerfCounters {
     double ParticleFactoryMs=0,ParticlePlanMs=0,ParticleCopyMs=0,ParticleRenderMs=0,ParticleDestroyMs=0;
     double ParticleGateMs=0,ParticleActivationMs=0,ParticleResetMs=0;
     unsigned long long FastWrites=0,SystemWrites=0,WriteFaults=0,CleanupFailures=0;
+    unsigned long long FastReads=0,SystemReads=0,ReadFaults=0;
     int LastParticleFailureTick=-1;
     std::string LastParticleFailure;
 };
@@ -130,6 +131,7 @@ static bool g_ScenePreviewCull=false; // opt-in until animated bounds/edge cover
 static bool g_SceneKeepAssets=true; // bounded preview-only references
 static bool g_SceneBatchStudio=true; // immediate mode only, reversible
 static bool g_SceneFastParticleWrites=true; // verified detached allocations only
+static bool g_SceneFastParticleReads=true; // verified detached validation only
 static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
@@ -348,7 +350,7 @@ struct SceneBenchState {
     bool Active=false, Measuring=false;
     int Phase=0,Frames=0,OriginalSequencer=0;
     unsigned long long RenderCallbacks=0;
-    bool Record=false,Preview=false,Models=false,MainOnly=false,Cull=false,Native=false,Legacy=false,Markers=false,LegacyMarkers=false,Residency=false,FastWrites=false,BatchStudio=false;
+    bool Record=false,Preview=false,Models=false,MainOnly=false,Cull=false,Native=false,Legacy=false,Markers=false,LegacyMarkers=false,Residency=false,FastWrites=false,BatchStudio=false,FastReads=false;
     double Cursor=0,Late=0;
     std::chrono::steady_clock::time_point Start,LastRender;
     ScenePerfCounters Before;
@@ -357,7 +359,7 @@ struct SceneBenchState {
 static SceneBenchState g_SceneBench;
 static std::string g_SceneBenchReport;
 static const char *SceneBenchLabel(int phase){
-    static const char *names[]={"Live baseline","Full cached preview","Main view only","Main + cull","Main + cull, historical particles off","Historical models and surfaces off","Optimized at latest tick","Earlier tick, previous memory path","Earlier tick, both optimizations","Earlier tick, residency only","Earlier tick, fast writes only","Earlier tick, batching off (both memory optimizations)","Earlier tick, batching on (repeat both)"};
+    static const char *names[]={"Live baseline","Full cached preview","Main view only","Main + cull","Main + cull, historical particles off","Historical models and surfaces off","Optimized at latest tick","Earlier tick, previous memory path","Earlier tick, both optimizations","Earlier tick, residency only","Earlier tick, fast writes only","Earlier tick, batching off (both memory optimizations)","Earlier tick, batching on (repeat both)","Earlier tick, guarded reads off"};
     return names[phase];
 }
 static void SceneBenchApply(int phase,std::chrono::steady_clock::time_point now){
@@ -366,6 +368,7 @@ static void SceneBenchApply(int phase,std::chrono::steady_clock::time_point now)
     g_SceneMainViewOnly=phase>=2;g_ScenePreviewCull=phase>=3;
     g_SceneKeepAssets=phase!=7&&phase!=10;g_SceneFastParticleWrites=phase!=7&&phase!=9;
     g_SceneBatchStudio=phase!=11;
+    g_SceneFastParticleReads=phase!=13;
     g_SceneNativeParticleReplay=b.Native&&phase!=4;
     g_SceneLegacyReplay=b.Legacy&&phase!=4;
     g_SceneNativeParticleMarkers=false;g_SceneLegacyMarkers=false;
@@ -377,7 +380,7 @@ static void SceneBenchStop(const char *reason){
     auto &b=g_SceneBench;if(!b.Active)return;b.Active=false;
     g_SceneRecord=b.Record;g_ScenePreview=b.Preview;g_SceneDrawModels=b.Models;
     g_SceneMainViewOnly=b.MainOnly;g_ScenePreviewCull=b.Cull;
-    g_SceneKeepAssets=b.Residency;g_SceneFastParticleWrites=b.FastWrites;g_SceneBatchStudio=b.BatchStudio;
+    g_SceneKeepAssets=b.Residency;g_SceneFastParticleWrites=b.FastWrites;g_SceneBatchStudio=b.BatchStudio;g_SceneFastParticleReads=b.FastReads;
     g_SceneNativeParticleReplay=b.Native;g_SceneLegacyReplay=b.Legacy;
     g_SceneNativeParticleMarkers=b.Markers;g_SceneLegacyMarkers=b.LegacyMarkers;
     g_SceneCursor=b.Cursor;g_SequencerFrame=b.OriginalSequencer;
@@ -410,7 +413,7 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
         ms(g_ScenePerf.SurfaceBegin,b.Before.SurfaceBegin)+ms(g_ScenePerf.SurfaceEnd,b.Before.SurfaceEnd),
         double(g_SceneReplaySubmitted-b.Submissions)/b.Frames,double(g_ScenePerf.ModelsCulled-b.Before.ModelsCulled)/b.Frames);
     g_SceneBenchReport+=line;
-    advancedfx::Message("[Scene bench %d/13] %s",b.Phase+1,line);
+    advancedfx::Message("[Scene bench %d/14] %s",b.Phase+1,line);
     if(b.Phase!=0){
         auto delta=[&](double end,double begin){return (end-begin)/b.Frames;};
         unsigned resident=0;unsigned long long hits=0,adds=0;Mirv_Tf2_SceneAssetStatus(resident,hits,adds);
@@ -424,6 +427,9 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
         std::snprintf(line,sizeof(line),"  Particle extra stages ms/frame: gates %.2f, activation %.2f, active reset %.2f\n",
             delta(g_ScenePerf.ParticleGateMs,b.Before.ParticleGateMs),delta(g_ScenePerf.ParticleActivationMs,b.Before.ParticleActivationMs),delta(g_ScenePerf.ParticleResetMs,b.Before.ParticleResetMs));
         g_SceneBenchReport+=line;
+        std::snprintf(line,sizeof(line),"  Detached validation reads: direct %llu, system %llu, faults %llu\n",
+            g_ScenePerf.FastReads-b.Before.FastReads,g_ScenePerf.SystemReads-b.Before.SystemReads,g_ScenePerf.ReadFaults-b.Before.ReadFaults);
+        g_SceneBenchReport+=line;
         using T=advancedfx::SceneCache::ReplayTimings;
         const auto &a=g_ScenePerf.StudioStages.Ms;const auto &z=b.Before.StudioStages.Ms;
         std::snprintf(line,sizeof(line),"  Studio stages ms/frame: preflight/retire %.2f, asset %.2f, bones %.2f, state %.2f, draw %.2f, enqueue/restore %.2f\n",
@@ -431,7 +437,7 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
             delta(a[T::State],z[T::State]),delta(a[T::Draw],z[T::Draw]),delta(a[T::Retirement],z[T::Retirement]));
         g_SceneBenchReport+=line;
     }
-    if(b.Phase==12)SceneBenchStop("Benchmark complete; original settings restored.");
+    if(b.Phase==13)SceneBenchStop("Benchmark complete; original settings restored.");
     else SceneBenchApply(b.Phase+1,now);
 }
 void SceneCacheBenchmarkRenderEnd(){
@@ -1097,7 +1103,7 @@ void SceneCacheDrawParticles()
     // and no native drawing in ordinary live demo playback.
     std::shared_ptr<const advancedfx::NativeParticles::Frame> sample;
     unsigned long long epoch=0;
-    bool fastMemory=false;
+    bool fastMemory=false,fastReads=false;
     {
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
         if(!g_ScenePreview||!g_SceneNativeParticleReplay||!SceneCanDrawModels()||!SceneCacheView())return;
@@ -1110,10 +1116,10 @@ void SceneCacheDrawParticles()
             g_SceneParticleReplayResult.Status="No retained appearance sample at cursor";
             return;
         }
-        epoch=g_SceneDrawEpoch.load();fastMemory=g_SceneFastParticleWrites;
+        epoch=g_SceneDrawEpoch.load();fastMemory=g_SceneFastParticleWrites;fastReads=g_SceneFastParticleReads;
     }
     const auto begin=std::chrono::steady_clock::now();
-    auto result=Mirv_Tf2_RenderNativeParticles(*sample,fastMemory);
+    auto result=Mirv_Tf2_RenderNativeParticles(*sample,fastMemory,fastReads);
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
     g_ScenePerf.ParticleDraw.Add(begin,sample->Tick);
     g_ScenePerf.ParticleMain+=result.MainView;
@@ -1123,6 +1129,7 @@ void SceneCacheDrawParticles()
     g_ScenePerf.ParticleRenderMs+=result.RenderMs;g_ScenePerf.ParticleDestroyMs+=result.DestroyMs;
     g_ScenePerf.ParticleGateMs+=result.GateMs;g_ScenePerf.ParticleActivationMs+=result.ActivationMs;g_ScenePerf.ParticleResetMs+=result.ResetMs;
     g_ScenePerf.FastWrites+=result.FastWrites;g_ScenePerf.SystemWrites+=result.SystemWrites;g_ScenePerf.WriteFaults+=result.WriteFaults;g_ScenePerf.CleanupFailures+=result.CleanupFailures;
+    g_ScenePerf.FastReads+=result.FastReads;g_ScenePerf.SystemReads+=result.SystemReads;g_ScenePerf.ReadFaults+=result.ReadFaults;
     if(result.Rejected||(!result.MainView&&!result.Status.empty())){
         g_ScenePerf.LastParticleFailureTick=sample->Tick;
         g_ScenePerf.LastParticleFailure=result.Status;
@@ -2165,7 +2172,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
                     auto &b=g_SceneBench;
                     const double idle=std::chrono::duration<double>(std::chrono::steady_clock::now()-b.LastRender).count();
                     if(idle>10.0){SceneBenchStop("Benchmark cancelled: no ordinary render callback for ten seconds.");SceneCacheFrame(false);}
-                    else advancedfx::Message("Benchmark phase %d/13 (%s), %s, %d measured renders, %llu total render callbacks.\n",
+                    else advancedfx::Message("Benchmark phase %d/14 (%s), %s, %d measured renders, %llu total render callbacks.\n",
                         b.Phase+1,SceneBenchLabel(b.Phase),b.Measuring?"measuring":"warming up",b.Frames,b.RenderCallbacks);
                 }
                 if(g_SceneBenchReport.empty())advancedfx::Message("No benchmark report yet.\n");
@@ -2183,7 +2190,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
             }
             auto &b=g_SceneBench;b={};b.Active=true;b.Record=g_SceneRecord;b.Preview=g_ScenePreview;b.Models=g_SceneDrawModels;
             b.MainOnly=g_SceneMainViewOnly;b.Cull=g_ScenePreviewCull;b.Native=g_SceneNativeParticleReplay;b.Legacy=g_SceneLegacyReplay;
-            b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;
+            b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;
             b.Markers=g_SceneNativeParticleMarkers;b.LegacyMarkers=g_SceneLegacyMarkers;b.Cursor=g_SceneCursor;
             b.Late=g_SceneCache.Frames().back().DemoTime;b.OriginalSequencer=int(g_SequencerFrame);
             g_SceneBenchReport="Scene cache benchmark (engine wall time, CPU subsystem totals/frame; camera must remain fixed; requested live model/particle isolation retained where eligible in isolation modes; live surfaces may return; memory tests are sequential, not cold-cache controlled).\n";
@@ -2196,8 +2203,9 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"cull")&&parseInteger(3,value)&&(value==0||value==1))g_ScenePreviewCull=value!=0;
         else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"residency")&&parseInteger(3,value)&&(value==0||value==1))g_SceneKeepAssets=value!=0;
         else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"fastWrites")&&parseInteger(3,value)&&(value==0||value==1))g_SceneFastParticleWrites=value!=0;
+        else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"fastReads")&&parseInteger(3,value)&&(value==0||value==1))g_SceneFastParticleReads=value!=0;
         else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"batchStudio")&&parseInteger(3,value)&&(value==0||value==1))g_SceneBatchStudio=value!=0;
-        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|fastWrites <0|1>|batchStudio <0|1>]\n");return;}
+        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|fastWrites <0|1>|fastReads <0|1>|batchStudio <0|1>]\n");return;}
         advancedfx::Message("Scene cache CPU timing (not GPU completion), cursor %.3f ticks; capture %d, preview %d.\n",g_SceneCursor/SceneTickInterval(),int(g_SceneRecord),int(g_ScenePreview));
         g_ScenePerf.Sample.Print("Historical model sampling");
         g_ScenePerf.ModelDraw.Print("Studio replay submission");
@@ -2213,6 +2221,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
             int(g_SceneFastParticleWrites),g_ScenePerf.FastWrites,g_ScenePerf.SystemWrites,g_ScenePerf.WriteFaults,g_ScenePerf.CleanupFailures);
         advancedfx::Message("Native particle extra CPU mean/main view: gates %.3f, activation %.3f, active reset %.3f ms.\n",
             g_ScenePerf.ParticleGateMs/views,g_ScenePerf.ParticleActivationMs/views,g_ScenePerf.ParticleResetMs/views);
+        advancedfx::Message("Detached validation fast reads %d: %llu direct, %llu system, %llu faults.\n",int(g_SceneFastParticleReads),g_ScenePerf.FastReads,g_ScenePerf.SystemReads,g_ScenePerf.ReadFaults);
         unsigned resident=0;unsigned long long hits=0,adds=0;Mirv_Tf2_SceneAssetStatus(resident,hits,adds);
         advancedfx::Message("Model residency %d; %u/256 retained asset references; %llu reuse hits, %llu additions (session). Immediate studio batching %d.\n",int(g_SceneKeepAssets),resident,hits,adds,int(g_SceneBatchStudio));
         advancedfx::Message("Preview frustum cull %d; rejected model submissions %llu.\n",int(g_ScenePreviewCull),g_ScenePerf.ModelsCulled);
@@ -2657,7 +2666,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
-		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|fastWrites <0|1>|batchStudio <0|1>|bench [report|cancel]] - CPU replay timings and failure diagnostics.\n"
+		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|fastWrites <0|1>|fastReads <0|1>|batchStudio <0|1>|bench [report|cancel]] - CPU replay timings and failure diagnostics.\n"
             "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;

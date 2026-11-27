@@ -554,7 +554,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
 
 // Explicit one-shot, engine thread at FRAME_RENDER_END, while demo paused.
 #if defined(_WIN64) && defined(_MSC_VER)
-// Local writes only to verified, freshly allocated detached collections.
+// Guarded local transfers only during verified, freshly allocated detached replay.
 // No C++ objects with destructors in this SEH function.
 static bool SceneCopyDetachedMemory(void *to,const void *from,std::size_t size)
 {
@@ -562,16 +562,19 @@ static bool SceneCopyDetachedMemory(void *to,const void *from,std::size_t size)
     __except(GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION||GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR?
              EXCEPTION_EXECUTE_HANDLER:EXCEPTION_CONTINUE_SEARCH){return false;}
 }
-struct SceneDetachedWriteRegion {
+struct SceneDetachedRegion {
     std::uintptr_t Begin=0,End=0;
-    bool Allows(std::uintptr_t address,std::size_t size){
+    bool Allows(std::uintptr_t address,std::size_t size,bool writable){
         if(!size||address<0x10000||size>UINTPTR_MAX-address)return false;
         if(address>=Begin&&address+size<=End)return true;
         MEMORY_BASIC_INFORMATION info{};
         if(!VirtualQuery(reinterpret_cast<void*>(address),&info,sizeof(info))||info.State!=MEM_COMMIT||
            (info.Protect&(PAGE_GUARD|PAGE_NOACCESS)))return false;
         const auto protection=info.Protect&0xff;
-        if(protection!=PAGE_READWRITE&&protection!=PAGE_EXECUTE_READWRITE)return false;
+        if(writable){
+            if(protection!=PAGE_READWRITE&&protection!=PAGE_EXECUTE_READWRITE)return false;
+        }else if(protection!=PAGE_READONLY&&protection!=PAGE_READWRITE&&protection!=PAGE_WRITECOPY&&
+                 protection!=PAGE_EXECUTE_READ&&protection!=PAGE_EXECUTE_READWRITE&&protection!=PAGE_EXECUTE_WRITECOPY)return false;
         const auto begin=reinterpret_cast<std::uintptr_t>(info.BaseAddress);
         if(info.RegionSize>UINTPTR_MAX-begin)return false;
         Begin=begin;End=begin+info.RegionSize;
@@ -585,7 +588,7 @@ struct SceneDetachedWriteRegion {
 // Native particle replay uses the same verified factory and allocations as
 // the successful dry run. No engine pointers are retained between callbacks.
 static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
-    const advancedfx::NativeParticles::Frame &frame,std::size_t probeIndex,bool draw,bool fastMemory=false)
+    const advancedfx::NativeParticles::Frame &frame,std::size_t probeIndex,bool draw,bool fastMemory=false,bool fastReads=false)
 {
     using namespace advancedfx::NativeParticles;
     ReplayResult result;
@@ -642,17 +645,30 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
     using Render=void(*)(void *,void *,bool,void *);
     auto render=reinterpret_cast<Render>(base+0x8e4840);
 #ifdef _MSC_VER
-    SceneDetachedWriteRegion region;
+    SceneDetachedRegion region,readRegion;
 #endif
     auto write=[&](Address a,const void *data,std::size_t n) {
 #ifdef _MSC_VER
-        if(draw&&fastMemory&&region.Allows(static_cast<std::uintptr_t>(a),n)){
+        if(draw&&fastMemory&&region.Allows(static_cast<std::uintptr_t>(a),n,true)){
             if(SceneCopyDetachedMemory(reinterpret_cast<void*>(a),data,n)){++result.FastWrites;return true;}
             ++result.WriteFaults;region={}; // revalidate, then use original system write fallback
         }
 #endif
         ++result.SystemWrites;
         SIZE_T wrote=0;return WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(a),data,n,&wrote)&&wrote==n;
+    };
+    // Use only after exact factory/renderer ABI guards have passed, inside the
+    // lifetime of a fresh detached tree. Never accelerate module guards,
+    // manager-list checks or render-context/vtable discovery.
+    auto readDetached=[&](Address a,void *out,std::size_t n){
+#ifdef _MSC_VER
+        if(draw&&fastReads&&readRegion.Allows(static_cast<std::uintptr_t>(a),n,false)){
+            if(SceneCopyDetachedMemory(out,reinterpret_cast<const void*>(a),n)){++result.FastReads;return true;}
+            ++result.ReadFaults;readRegion={};
+        }
+#endif
+        ++result.SystemReads;
+        return read(a,out,n);
     };
     void *context=nullptr;
     // Vtable calls match the engine's own DrawModel path at 0x2dadaa,
@@ -729,7 +745,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         auto reject=[&](const std::string &why){++result.Rejected;if(firstFailure.empty())firstFailure=std::string(old.Name.data())+": "+why;return false;};
         if(!old.Name[0])return reject("unnamed definition");
 #ifdef _MSC_VER
-        region={}; // never reuse page permissions across native allocations
+        region={};readRegion={}; // never reuse page permissions across native allocations
 #endif
         const auto factoryStart=std::chrono::steady_clock::now();
         void *object=make(reinterpret_cast<void*>(manager),old.Name.data(),0.0f,1);
@@ -746,7 +762,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
             RestorePlan plan;
             if(!read(base+Layout::Manager+Layout::RootHead,&headDuring,sizeof(headDuring))||headDuring!=headBefore) {
                 listChanged=true;plan.Error="registered effect list changed during factory call";
-            } else plan=PlanDetached(frame,index,reinterpret_cast<Address>(object),read,&children);
+            } else plan=PlanDetached(frame,index,reinterpret_cast<Address>(object),readDetached,&children);
             result.PlanMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-planStart).count();
             if(!plan.Error.empty())reject(plan.Error);
             else if(draw&&(plan.Missing||plan.ConstantDifferences))reject("missing attributes or differing shared constants");
@@ -782,8 +798,8 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                         const auto &c=frame.Collections[binding.Recorded];
                         Address definition=0,material=0;unsigned char flag=0;
                         if(!c.HasTime||!std::isfinite(c.Time)||
-                           !read(binding.Native+Layout::Definition,&definition,sizeof(definition))||!definition||
-                           !read(definition+0x3fa,&flag,1)||!read(definition+0x148,&material,sizeof(material))) {valid=false;break;}
+                           !readDetached(binding.Native+Layout::Definition,&definition,sizeof(definition))||!definition||
+                           !readDetached(definition+0x3fa,&flag,1)||!readDetached(definition+0x148,&material,sizeof(material))) {valid=false;break;}
                         gate[binding.Recorded]=(flag&1)&&material;
                         bound[binding.Recorded]=generation;
                     }
@@ -854,9 +870,9 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
 {
     return SceneNativeParticleOperation(frame,index,false).Status;
 }
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame,bool fastMemory)
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame,bool fastMemory,bool fastReads)
 {
-    return SceneNativeParticleOperation(frame,0,true,fastMemory);
+    return SceneNativeParticleOperation(frame,0,true,fastMemory,fastReads);
 }
 
 

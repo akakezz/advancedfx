@@ -529,6 +529,7 @@ struct ReplayResult {
     std::string Status;
     double FactoryMs=0,PlanMs=0,CopyMs=0,RenderMs=0,DestroyMs=0,GateMs=0,ActivationMs=0,ResetMs=0;
     std::size_t FastWrites=0,SystemWrites=0,WriteFaults=0,CleanupFailures=0;
+    std::size_t FastReads=0,SystemReads=0,ReadFaults=0;
 };
 class History {
 public:
