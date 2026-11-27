@@ -411,6 +411,58 @@ bool Mirv_Tf2_SceneDrawVisibility(const char *name,float &value,bool write)
 
 #include "Tf2SceneSurfaces.inl"
 
+#ifdef _WIN64
+namespace {
+// The exact C_SimpleEmitter::RenderParticles calls the global particle
+// manager getter, then reads its world-to-view matrix. Never replace the
+// actual manager or mutate its matrix during the queued experiment.
+using SceneLegacyManagerGetter=void*(*)();
+static SceneLegacyManagerGetter g_SceneLegacyOriginalManager=nullptr;
+static std::uintptr_t g_SceneLegacyManagerBase=0;
+static DWORD g_SceneLegacyManagerThread=0;
+static thread_local void *g_SceneLegacyPrivateManager=nullptr;
+static thread_local std::size_t g_SceneLegacyMatrixReads=0;
+struct alignas(16) SceneLegacyMatrixScratch {
+    std::array<unsigned char,0x90> Prefix{};
+    std::array<float,16> Matrix{};
+};
+static_assert(offsetof(SceneLegacyMatrixScratch,Matrix)==0x90,"legacy modelview field");
+static void *SceneLegacyManagerHook(){
+    if(g_SceneLegacyPrivateManager&&GetCurrentThreadId()==g_SceneLegacyManagerThread&&
+       reinterpret_cast<std::uintptr_t>(_ReturnAddress())==g_SceneLegacyManagerBase+0x2dc755){
+        ++g_SceneLegacyMatrixReads;return g_SceneLegacyPrivateManager;
+    }
+    return g_SceneLegacyOriginalManager();
+}
+static bool SceneLegacyInstallManagerGetter(std::uintptr_t base){
+    if(g_SceneLegacyOriginalManager)return base==g_SceneLegacyManagerBase&&GetCurrentThreadId()==g_SceneLegacyManagerThread;
+    // Install only in the verified immediate context, not while the
+    // material worker could be consuming a queued frame.
+    if(!MaterialSystem_IsImmediate()||
+       !SurfaceMatch(base,0x2d6df0,{0x40,0x53,0x48,0x83,0xec,0x20,0x8b,0x05,0xa4,0xe3,0xe1,0,0xa8,0x01,0x75,0x2d})||
+       !SurfaceMatch(base,0x2d6e2d,{0x48,0x8d,0x05,0xec,0xe1,0xe1,0,0x48,0x83,0xc4,0x20,0x5b,0xc3})||
+       !SurfaceMatch(base,0x2dc750,{0xe8,0x9b,0xa6,0xff,0xff,0xf3,0x0f,0x10,0x76,0x18,0x48,0x05,0x90,0,0,0})||
+       !SurfaceMatch(base,0x2dc776,{0xf3,0x0f,0x59,0x48,0x08,0x45,0x0f,0x57,0xd2,0xf3,0x0f,0x59,0x70,0x20}))return false;
+    g_SceneLegacyOriginalManager=reinterpret_cast<SceneLegacyManagerGetter>(base+0x2d6df0);
+    if(DetourTransactionBegin()!=NO_ERROR){g_SceneLegacyOriginalManager=nullptr;return false;}
+    LONG err=DetourUpdateThread(GetCurrentThread());
+    if(err==NO_ERROR)err=DetourAttach(reinterpret_cast<PVOID*>(&g_SceneLegacyOriginalManager),reinterpret_cast<PVOID>(SceneLegacyManagerHook));
+    if(err!=NO_ERROR){DetourTransactionAbort();g_SceneLegacyOriginalManager=nullptr;return false;}
+    if(DetourTransactionCommit()!=NO_ERROR){g_SceneLegacyOriginalManager=nullptr;return false;}
+    g_SceneLegacyManagerBase=base;g_SceneLegacyManagerThread=GetCurrentThreadId();return true;
+}
+struct SceneLegacyPrivateMatrixScope {
+    void *Previous=nullptr;
+    explicit SceneLegacyPrivateMatrixScope(SceneLegacyMatrixScratch *matrix):Previous(g_SceneLegacyPrivateManager){
+        g_SceneLegacyPrivateManager=matrix;
+    }
+    ~SceneLegacyPrivateMatrixScope(){g_SceneLegacyPrivateManager=Previous;}
+    SceneLegacyPrivateMatrixScope(const SceneLegacyPrivateMatrixScope&)=delete;
+    SceneLegacyPrivateMatrixScope& operator=(const SceneLegacyPrivateMatrixScope&)=delete;
+};
+}
+#endif
+
 // Synchronous legacy draw: construct only the scratch fields read by the
 // verified DrawMaterialParticles path. No manager registration, factory,
 // allocator, simulation, live list substitution or native destructor.
@@ -465,6 +517,8 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
        !get(manager+0x88,materials)||!materials||!get(base+0x1199678,globalMaterials)||materials!=globalMaterials||
        !get(base+0xb61040+0x30,renderSlot)||renderSlot!=base+0x2dc6c0)
         return fail("Legacy manager or renderer unavailable.");
+    const bool privateMatrix=allowQueued&&SceneLegacyInstallManagerGetter(static_cast<std::uintptr_t>(base));
+    if(queued&&!privateMatrix)return fail("Queued legacy private matrix observer unavailable; first enable replay in immediate mode.");
     Address materialBase=0,queuedMesh=0;
     auto queuedMatch=[&](Address r,std::initializer_list<unsigned char> bytes){
         unsigned char actual[32]{};
@@ -511,7 +565,8 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
                 if(p.MaterialIndex<frame.Materials.size())for(const auto &[address,name]:names)if(name==frame.Materials[p.MaterialIndex]){r.Sub=address;break;}
             } else {const Address field=base+(p.Texture==Material::Spark?0x11220b0:0x1071988);get(field,r.Sub);}
             Address page=0,pageVt=0;
-            r.Valid=r.Sub&&get(r.Sub,r.UV)&&get(r.Sub+0x10,r.Group)&&get(r.Group,page)&&get(page,pageVt)&&pageVt;
+            r.Valid=r.Sub&&get(r.Sub,r.UV)&&get(r.Sub+0x10,r.Group)&&get(r.Group,page)&&get(page,pageVt)&&pageVt&&
+                (!queued||SurfaceQueuedMaterialReady(page));
         }
         const auto sub=r.Sub,group=r.Group;
         if(!r.Valid||r.UV!=p.UV||
@@ -569,14 +624,18 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
             get(queuedMesh+0x70,vertexOverride)&&!vertexOverride&&get(queuedMesh+0x78,indexOverride)&&!indexOverride;
     };
     if(!meshIdle())return fail("Queued legacy mesh is already in use; left native state unchanged.");
-    if(!get(manager+0x90,scope.Saved))return fail("Legacy modelview unavailable.");
+    if(!privateMatrix&&!get(manager+0x90,scope.Saved))return fail("Legacy modelview unavailable.");
     begin(context);scope.Begun=true;
     std::array<float,16> matrix{};getMatrix(context,0,matrix.data());
     for(float v:matrix)if(!std::isfinite(v))return fail("Legacy view matrix invalid.");
     // World-space particles: native simple renderer transforms them to view
-    // space itself. Preserve the live manager matrix and both context stacks.
-    scope.ManagerMatrix=reinterpret_cast<float*>(manager+0x90);
-    std::memcpy(scope.ManagerMatrix,matrix.data(),sizeof(matrix));
+    // space itself. Queued replay must use a callsite-scoped private matrix.
+    // Preserve the established immediate-only fallback if installation fails.
+    SceneLegacyMatrixScratch matrixScratch;matrixScratch.Matrix=matrix;
+    if(!privateMatrix){
+        scope.ManagerMatrix=reinterpret_cast<float*>(manager+0x90);
+        std::memcpy(scope.ManagerMatrix,matrix.data(),sizeof(matrix));
+    }
     scope.Select(context,10);push(context);scope.Model=true;identity(context);
     scope.Select(context,0);push(context);scope.View=true;identity(context);
     using Draw=int(*)(void*,bool,void*,float,bool);
@@ -604,12 +663,20 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
             put(dst,0x43,p.StartAlpha);put(dst,0x44,p.EndAlpha);put(dst,0x45,p.StartSize);
             put(dst,0x46,p.EndSize);put(dst,0x47,p.Flags);put(dst,0x48,p.RollDelta);
         }
-        const int submitted=draw(binding,false,material,0.0f,false);
+        const auto matrixReadsBefore=g_SceneLegacyMatrixReads;
+        int submitted=0;
+        {
+            SceneLegacyPrivateMatrixScope matrixScope(privateMatrix?&matrixScratch:nullptr);
+            submitted=draw(binding,false,material,0.0f,false);
+        }
+        if(privateMatrix&&g_SceneLegacyMatrixReads-matrixReadsBefore!=scratch.size()){
+            ++result.Rejected;result.Status="Legacy private matrix coverage mismatch; stopped further submissions.";break;
+        }
         if(submitted==int(scratch.size())){++result.Trees;++result.Nodes;result.Particles+=scratch.size();}
         else ++result.Rejected;
     }
     if(result.Status.empty())result.Status=queued?
-        "Experimental queued legacy spark/muzzle mesh submissions (live effects retained, not pixel coverage).":
+        "Experimental queued legacy spark/muzzle mesh submissions with private view matrix (live effects retained, not pixel coverage).":
         "Experimental legacy native material submissions (not pixel coverage).";
 #else
     result.Status="Legacy replay requires TF2 x64.";

@@ -312,6 +312,11 @@ static bool SurfaceGatherRead(SurfaceAddress address,SurfaceGatherVector &v){
 }
 static bool SurfaceQueuedLiveIdentity(const LiveDecal &live){
     const auto address=live.Object;
+    SurfaceAddress table=0,actual=0;int count=0;
+    // A readable old allocation is not proof that it is still a live slot.
+    if(!address||!SurfaceGet(g_SurfaceDecalBase+0x6a4e60,table)||!table||
+       !SurfaceGet(g_SurfaceDecalBase+0x6a4e70,count)||count<0||count>8192||
+       live.Value.Slot>=count||!SurfaceGet(table+SurfaceAddress(live.Value.Slot)*8,actual)||actual!=address)return false;
     DecalObservation o;o.Object=address;o.Surface=live.Surface;o.Material=live.Material;
     if(!SurfaceGet(address,o.Raw))return false;
     SurfaceAddress attachment=0,receiver=0,material=0;std::uint16_t flags=0;
@@ -566,15 +571,25 @@ static bool SurfaceQueuedMaterialReady(SurfaceAddress material){
 // legacy emitter path. The engine direct decal draw binds a page/material,
 // locks a dynamic mesh, fills vertices and indices, unlocks and draws it.
 // All historical bytes are consumed before returning to our caller.
-static bool SurfaceQueuedDirectReady(SurfaceAddress engine,void *context){
-    if(!SurfaceQueuedContext(context)||!MaterialSystem_CanExecuteOnRenderThread()||MaterialSystem_IsImmediate())return false;
-    const auto base=reinterpret_cast<SurfaceAddress>(GetModuleHandleA("materialsystem.dll"));
+static bool SurfaceQueuedMeshIdle(SurfaceAddress base,void *context){
     const auto ctx=reinterpret_cast<SurfaceAddress>(context);
-    SurfaceAddress mesh=0,vt=0,owner=0,vertices=0,indices=0,vo=0,io=0,fn=0;
+    SurfaceAddress ctxVt=0,mesh=0,vt=0,owner=0,vertices=0,indices=0,vo=0,io=0;
+    return base&&SurfaceGet(ctx,ctxVt)&&ctxVt==base+0xb6c28&&
+        SurfaceGet(ctx+0x310,mesh)&&mesh&&SurfaceGet(mesh,vt)&&vt==base+0xbb7d0&&
+        SurfaceGet(mesh+0x28,owner)&&owner==ctx&&SurfaceGet(mesh+0x50,vertices)&&!vertices&&
+        SurfaceGet(mesh+0x58,indices)&&!indices&&SurfaceGet(mesh+0x70,vo)&&!vo&&SurfaceGet(mesh+0x78,io)&&!io;
+}
+static bool SurfaceQueuedDebugMaterialOff(SurfaceAddress engine){
     SurfaceAddress debug1=0,debug2=0;int d1=-1,d2=-1;
-    // Never enter the direct routine's alternate debug-material path.
-    if(!SurfaceGet(engine+0x731d68,debug1)||!SurfaceGet(debug1+0x58,d1)||d1||
-       !SurfaceGet(engine+0x6a0678,debug2)||!SurfaceGet(debug2+0x58,d2)||d2)return false;
+    // The native alternate material is selected only when BOTH are nonzero.
+    return SurfaceGet(engine+0x731d68,debug1)&&SurfaceGet(debug1+0x58,d1)&&
+        SurfaceGet(engine+0x6a0678,debug2)&&SurfaceGet(debug2+0x58,d2)&&!(d1&&d2);
+}
+static bool SurfaceQueuedDirectReady(SurfaceAddress engine,void *context){
+    if(!SurfaceQueuedContext(context)||!MaterialSystem_CanExecuteOnRenderThread()||MaterialSystem_IsImmediate()||
+       !SurfaceQueuedDebugMaterialOff(engine))return false;
+    const auto base=reinterpret_cast<SurfaceAddress>(GetModuleHandleA("materialsystem.dll"));
+    SurfaceAddress fn=0;
     if(!SurfaceMatch(engine,0x11e765,{0x41,0xff,0x50,0x50})||
        !SurfaceMatch(engine,0x11e79d,{0x41,0xff,0x92,0xc0,0x01,0,0})||
        !SurfaceMatch(engine,0x11e847,{0xff,0x90,0x90,0,0,0})||
@@ -592,11 +607,9 @@ static bool SurfaceQueuedDirectReady(SurfaceAddress engine,void *context){
        !SurfaceMatch(base,0x2df88,{0x48,0xc7,0x43,0x50,0,0,0,0,0x48,0xc7,0x43,0x58,0,0,0,0}))return false;
     const std::pair<unsigned,SurfaceAddress> contextMethods[]={{8,0x1ac20},{0x10,0x2a940},{0x18,0x2ba90},{0x48,0x2a9d0},{0x50,0x11a70},{0x1c0,0x2c4c0}};
     for(const auto &m:contextMethods)if(!SurfaceGet(base+0xb6c28+m.first,fn)||fn!=base+m.second)return false;
-    if(!SurfaceGet(ctx+0x310,mesh)||!mesh||!SurfaceGet(mesh,vt)||vt!=base+0xbb7d0||
-       !SurfaceGet(mesh+0x28,owner)||owner!=ctx||!SurfaceGet(mesh+0x50,vertices)||vertices||
-       !SurfaceGet(mesh+0x58,indices)||indices||!SurfaceGet(mesh+0x70,vo)||vo||!SurfaceGet(mesh+0x78,io)||io)return false;
+    if(!SurfaceQueuedMeshIdle(base,context))return false;
     const std::pair<unsigned,SurfaceAddress> methods[]={{0x58,0x2eac0},{0x68,0x2b510},{0x90,0x2cd30},{0xa8,0x2edf0},{0xc8,0x2ce20}};
-    for(const auto &m:methods)if(!SurfaceGet(vt+m.first,fn)||fn!=base+m.second)return false;
+    for(const auto &m:methods)if(!SurfaceGet(base+0xbb7d0+m.first,fn)||fn!=base+m.second)return false;
     return true;
 }
 static void SurfacePreparePendingDecals(SurfaceAddress base,void *context,int group,float blend,std::vector<PreparedDecal> &prepared,bool queued=false){
@@ -654,6 +667,7 @@ static void SurfaceDrawPreparedDecals(SurfaceAddress base,void *context,float bl
         g_SurfaceDecalsRejected+=prepared.size();return;
     }
     const auto draw=reinterpret_cast<DecalDrawFn>(base+0x11e6c0);
+    const auto materialBase=queued?reinterpret_cast<SurfaceAddress>(GetModuleHandleA("materialsystem.dll")):0;
     for(const auto &item:prepared){
         const auto &pending=*item.Pending;const auto &d=pending.Value;
         if(queued){
@@ -661,7 +675,7 @@ static void SurfaceDrawPreparedDecals(SurfaceAddress base,void *context,float bl
             if(pending.LiveObject||witness==g_SurfaceQueuedMaterials.end()||
                witness->second.Material!=reinterpret_cast<SurfaceAddress>(item.Material)||
                !SurfaceQueuedLiveIdentity(witness->second)||!SurfaceQueuedMaterialReady(witness->second.Material)||
-               !SurfaceQueuedDirectReady(base,context)){++g_SurfaceDecalsRejected;continue;}
+               !SurfaceQueuedDebugMaterialOff(base)||!SurfaceQueuedMeshIdle(materialBase,context)){++g_SurfaceDecalsRejected;continue;}
         }
         if(!ShouldSubmitDetached(pending.LiveObject!=0,pending.LiveVisible,item.Suppressed)){
             ++g_SurfaceOpacityNotObserved;continue;
