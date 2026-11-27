@@ -1240,7 +1240,7 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  g_ScenePreview=true;g_SceneCursor=g_SceneCache.Frames().back().DemoTime;SceneCacheFrame(false);
  check(SceneCacheReplayActive()&&SceneCacheSuppressLiveStudio(),"A valid broad preview enables replacement");
  {const bool record=g_SceneRecord,main=g_SceneMainViewOnly,cull=g_ScenePreviewCull,native=g_SceneNativeParticleReplay,legacy=g_SceneLegacyReplay,markers=g_SceneNativeParticleMarkers,legacyMarkers=g_SceneLegacyMarkers;const double cursor=g_SceneCursor;
-  auto &b=g_SceneBench;b={};b.Active=true;b.Record=record;b.Preview=true;b.Models=true;b.MainOnly=main;b.Cull=cull;b.Native=native;b.Legacy=legacy;b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;b.BatchQueued=g_SceneBatchQueued;b.ActorCull=g_SceneActorCull;b.Immediate=MaterialSystem_IsImmediate();b.Markers=markers;b.LegacyMarkers=legacyMarkers;b.Cursor=cursor;b.Late=cursor;b.OriginalSequencer=int(g_SequencerFrame);
+  auto &b=g_SceneBench;b={};b.Active=true;b.Record=record;b.Preview=true;b.Models=true;b.MainOnly=main;b.Cull=cull;b.Native=native;b.Legacy=legacy;b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;b.BatchQueued=g_SceneBatchQueued;b.ActorCull=g_SceneActorCull;b.Immediate=MaterialSystem_IsImmediate();b.Shadows=g_SceneHistoricalShadows;b.Decals=g_SceneHistoricalDecals;b.HideShadows=g_SceneHideShadows;b.HideDecals=g_SceneHideDecals;b.Markers=markers;b.LegacyMarkers=legacyMarkers;b.Cursor=cursor;b.Late=cursor;b.OriginalSequencer=int(g_SequencerFrame);
   const auto benchStart=std::chrono::steady_clock::now();
   SceneBenchApply(0,benchStart);check(!g_ScenePreview&&!g_SceneRecord,"Benchmark baseline preserves history and stops capture");
   SceneBenchFrame(benchStart+std::chrono::milliseconds(600));
@@ -1255,6 +1255,10 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   SceneBenchApply(9,std::chrono::steady_clock::now());check(g_SceneKeepAssets&&!g_SceneFastParticleWrites,"Benchmark isolates residency");SceneBenchApply(10,std::chrono::steady_clock::now());check(!g_SceneKeepAssets&&g_SceneFastParticleWrites,"Benchmark isolates fast writes");
   SceneBenchApply(11,std::chrono::steady_clock::now());check(!g_SceneBatchStudio&&g_SceneKeepAssets&&g_SceneFastParticleWrites,"Benchmark isolates studio batching");SceneBenchApply(12,std::chrono::steady_clock::now());check(g_SceneBatchStudio,"Benchmark repeats batched mode");
   SceneBenchApply(13,std::chrono::steady_clock::now());check(!g_SceneFastParticleReads&&g_SceneFastParticleWrites&&g_SceneBatchStudio,"Benchmark isolates guarded reads");
+  SceneBenchApply(14,std::chrono::steady_clock::now());check(!g_SceneNativeParticleReplay&&g_SceneLegacyReplay==legacy,"Benchmark isolates modern particles");
+  SceneBenchApply(15,std::chrono::steady_clock::now());check(g_SceneNativeParticleReplay==native&&!g_SceneLegacyReplay,"Benchmark isolates legacy particles");
+  SceneBenchApply(16,std::chrono::steady_clock::now());check(!g_SceneHistoricalShadows&&!g_SceneHistoricalDecals&&!g_SceneHideShadows&&!g_SceneHideDecals,"Benchmark isolates historical surfaces");
+  SceneBenchApply(17,std::chrono::steady_clock::now());check(SceneBenchPhaseCount()==18&&g_SceneActorCull,"Full suite includes actor group comparison");
   SceneBenchStop("fixture complete");SceneCacheFrame(false);check(!b.Active&&g_SceneRecord==record&&g_ScenePreview&&g_SceneMainViewOnly==main&&g_ScenePreviewCull==cull&&g_SceneNativeParticleReplay==native&&g_SceneCursor==cursor,"Benchmark restores original scene settings");
   const bool wasPaused=engine.Paused,wasDeferred=sceneQueueDeferred;
   engine.Paused=true;sceneQueueDeferred=true;

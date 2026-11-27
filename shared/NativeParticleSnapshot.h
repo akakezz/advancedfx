@@ -241,7 +241,14 @@ struct CopyOp {
     Address Destination=0;
     std::uint32_t Start=0,Count=0;
 };
-struct RestoreBinding {Address Native=0;std::size_t Recorded=0;};
+struct RestoreBinding {Address Native=0;std::size_t Recorded=0;Address Definition=0;};
+// Exact adjacent native clock/active-block fields at +0x20..+0x37.
+// The active count at +0x38 is deliberately committed separately, last.
+inline std::array<std::uint32_t,6> ActivationPrefix(float time,int active){
+    std::array<std::uint32_t,6> words{};std::uint32_t bits=0;std::memcpy(&bits,&time,sizeof(bits));
+    words[0]=words[1]=words[2]=words[3]=words[5]=bits;
+    words[4]=static_cast<std::uint32_t>((active+3)/4);return words;
+}
 struct RestorePlan {
     std::vector<CopyOp> Copies;
     std::vector<RestoreBinding> Bindings;
@@ -303,7 +310,7 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
         if(!read(name,actual.data(),length)||!std::equal(actual.begin(),actual.begin()+length,old.Name.begin())){
             fail("Detached definition name mismatch");return;
         }
-        ++plan.Nodes;plan.Particles+=old.Active;plan.Bindings.push_back({c,i});
+        ++plan.Nodes;plan.Particles+=old.Active;plan.Bindings.push_back({c,i,def});
         if(old.Active) {
             std::array<Address,32> ptr{},stride{};
             Address memory=0;

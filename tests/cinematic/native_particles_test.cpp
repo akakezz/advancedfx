@@ -129,7 +129,9 @@ int main(){
     check(HistoryCodec::Decode(HistoryCodec::Encode(noise),noise.size(),decoded)&&decoded==noise,"incompressible bytes roundtrip");
     check(!HistoryCodec::Decode({128,0,0},4,decoded)&&!HistoryCodec::Decode({127,1},128,decoded),"malformed codec input rejected");
     check(!HistoryCodec::Decode(encoded,repeat.size()-1,decoded),"decoded size bound");
-    check(plan.Bindings.size()==1&&plan.Bindings[0].Native==detached&&plan.Bindings[0].Recorded==0,"native activation binding");
+    check(plan.Bindings.size()==1&&plan.Bindings[0].Native==detached&&plan.Bindings[0].Recorded==0&&plan.Bindings[0].Definition==def,"native activation binding");
+    auto prefix=ActivationPrefix(1.25f,5);float clock=0;std::memcpy(&clock,&prefix[5],sizeof(clock));
+    check(clock==1.25f&&prefix[0]==prefix[5]&&prefix[1]==prefix[5]&&prefix[2]==prefix[5]&&prefix[3]==prefix[5]&&prefix[4]==2,"activation prefix preserves all clock/count fields");
     Frame forest;forest.Collections.resize(7);
     forest.Collections[0].Parent=-1;forest.Collections[1].Parent=0;forest.Collections[2].Parent=1;
     forest.Collections[3].Parent=0;forest.Collections[4].Parent=-1;forest.Collections[5].Parent=4;forest.Collections[6].Parent=-1;

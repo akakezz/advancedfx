@@ -798,9 +798,9 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                     bool valid=true;
                     for(const auto &binding:plan.Bindings) {
                         const auto &c=frame.Collections[binding.Recorded];
-                        Address definition=0,material=0;unsigned char flag=0;
-                        if(!c.HasTime||!std::isfinite(c.Time)||
-                           !readDetached(binding.Native+Layout::Definition,&definition,sizeof(definition))||!definition||
+                        const Address definition=binding.Definition;
+                        Address material=0;unsigned char flag=0;
+                        if(!c.HasTime||!std::isfinite(c.Time)||!definition||
                            !readDetached(definition+0x3fa,&flag,1)||!readDetached(definition+0x148,&material,sizeof(material))) {valid=false;break;}
                         gate[binding.Recorded]=(flag&1)&&material;
                         bound[binding.Recorded]=generation;
@@ -833,7 +833,8 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                     // No queued consumers are permitted in this experimental path.
                     struct ResetActive {
                         const RestorePlan &Plan;decltype(write) &Write;std::size_t &Failures;double &Ms;
-                        ~ResetActive(){const auto start=std::chrono::steady_clock::now();const int zero=0;for(const auto &b:Plan.Bindings){
+                        std::size_t Touched=0;
+                        ~ResetActive(){const auto start=std::chrono::steady_clock::now();const int zero=0;for(std::size_t i=0;i<Touched;++i){const auto &b=Plan.Bindings[i];
                             if(!Write(b.Native+Layout::Active,&zero,sizeof(zero)))++Failures;
                             if(!Write(b.Native+0x30,&zero,sizeof(zero)))++Failures;
                         }Ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}
@@ -842,11 +843,19 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                     if(valid)for(const auto &binding:plan.Bindings) {
                         const auto &c=frame.Collections[binding.Recorded];
                         const int active=static_cast<int>(c.Active),padded=(active+3)/4;
-                        const std::array<float,4> clock{c.Time,c.Time,c.Time,c.Time};
-                        if(!write(binding.Native+0x20,clock.data(),sizeof(clock))||
-                           !write(binding.Native+Layout::Clock,&c.Time,sizeof(c.Time))||
-                           !write(binding.Native+0x30,&padded,sizeof(padded))||
-                           !write(binding.Native+Layout::Active,&active,sizeof(active))) {valid=false;break;}
+                        ++reset.Touched; // include a partially written binding
+                        bool prefixOk=false;
+                        if(fastMemory){
+                            const auto prefix=ActivationPrefix(c.Time,active);
+                            prefixOk=write(binding.Native+0x20,prefix.data(),sizeof(prefix));
+                        }
+                        if(!prefixOk){
+                            const std::array<float,4> clock{c.Time,c.Time,c.Time,c.Time};
+                            prefixOk=write(binding.Native+0x20,clock.data(),sizeof(clock))&&
+                                write(binding.Native+Layout::Clock,&c.Time,sizeof(c.Time))&&
+                                write(binding.Native+0x30,&padded,sizeof(padded));
+                        }
+                        if(!prefixOk||!write(binding.Native+Layout::Active,&active,sizeof(active))) {valid=false;break;}
                     }
                     result.ActivationMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-activationStart).count();
                     if(!valid)reject("native activation validation/write failed");
