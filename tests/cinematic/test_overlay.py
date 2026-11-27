@@ -1184,7 +1184,20 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  // The cleaned panel's actual controls: optional filter, unified transport and collapsed diagnostics.
  SceneClearHistory();SceneSelectPosePlayer(0);g_SceneRecord=false;g_SceneRangeEnabled=false;
  auto menuFrame=[&](ImVec2 mouse=ImVec2(-100,-100),bool down=false){auto&io=ImGui::GetIO();io.DeltaTime=1.f/60;io.MousePos=mouse;io.MouseDown[0]=down;io.MouseDown[1]=io.MouseDown[2]=false;io.KeyCtrl=io.KeyShift=io.KeyAlt=io.KeySuper=false;widgets.clear();ImGui::NewFrame();ImGui::SetNextWindowPos({10,10});ImGui::SetNextWindowSize({1000,900});ImGui::Begin("Scene cache settings test",nullptr,ImGuiWindowFlags_NoSavedSettings);DrawSceneCacheMenu(100);ImGui::End();ImGui::Render();};
- auto menuClick=[&](const char*label){check(widgets.count(label),(std::string("Scene cache menu control exists: ")+label).c_str());auto box=widgets.at(label);ImVec2 center=(box.Min+box.Max)*.5f;menuFrame(center);menuFrame(center,true);menuFrame(center);menuFrame();};
+ // The settings panel can be taller than the viewport. Reveal a real widget
+ // before injecting mouse events, as a user would scroll to it.
+ auto menuReveal=[&](const char*label){
+  menuFrame();check(widgets.count(label),(std::string("Scene cache menu control exists: ")+label).c_str());
+  auto *window=ImGui::FindWindowByName("Scene cache settings test");
+  auto box=widgets.at(label);ImVec2 center=(box.Min+box.Max)*.5f;
+  if(center.y<window->InnerClipRect.Min.y||center.y>=window->InnerClipRect.Max.y){
+   ImGui::SetScrollY(window,window->Scroll.y+center.y-(window->InnerRect.Min.y+window->InnerRect.Max.y)*.5f);
+   menuFrame();menuFrame();box=widgets.at(label);center=(box.Min+box.Max)*.5f;
+  }
+  check(window->InnerClipRect.Contains(center),(std::string("Scene cache menu control visible: ")+label).c_str());
+  return center;
+ };
+ auto menuClick=[&](const char*label){ImVec2 center=menuReveal(label);menuFrame(center);menuFrame(center,true);menuFrame(center);menuFrame();};
  menuFrame();menuFrame();check(widgets.count("Capture")&&widgets.count("Preview")&&widgets.count("Memory")&&widgets.count("Diagnostics"),"Scene cache settings are organized into four sections");check(!widgets.count("Scene budget MiB")&&!widgets.count("Player scope")&&!widgets.count("Record range"),"Memory/filter details start collapsed and duplicate record action is removed");
  menuClick("Player models");check(g_ScenePlayerModels&&!g_ScenePlayerFilter,"Enabling Players defaults to all players");menuClick("Player filter (optional)");menuClick("Only selected players");menuClick("Scout (1)");check(g_ScenePlayerModels&&g_ScenePlayerFilter&&g_ScenePlayers.size()==1&&g_ScenePlayers.at(repairTestUser).Index==1,"Optional filter selects a stable player identity");repairTestMaxPlayers=2;menuFrame();menuClick("Medic (2)");check(g_ScenePlayers.size()==2,"Multi-select UI retains the previously checked player");menuClick("Clear selection");check(g_ScenePlayers.empty()&&g_ScenePlayerFilter,"Clearing the UI selection keeps an empty restrictive filter");menuClick("Select shown");check(g_ScenePlayers.size()==2,"Select shown selects all visible rows");menuClick("Invert shown");check(g_ScenePlayers.empty(),"Invert shown toggles every displayed row");menuClick("Scout (1)");repairTestMaxPlayers=1;
  menuClick("Player models");check(!g_ScenePlayerModels&&g_ScenePlayers.size()==1,"Player capture can be disabled while preserving a held-gear filter");

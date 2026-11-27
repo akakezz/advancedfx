@@ -452,10 +452,12 @@ int main(){
 }
 '''
 # Run the standalone history fixtures in CI as part of scene replay checks.
-history_fixtures=[('legacy_particles', (r/'tests/cinematic/legacy_particles_test.cpp').read_text()), ('surface_history', (r/'tests/cinematic/test_scene_surface_history.cpp').read_text())]
+history_fixtures=[('legacy_particles', r/'tests/cinematic/legacy_particles_test.cpp'), ('surface_history', r/'tests/cinematic/test_scene_surface_history.cpp')]
 for name,source in history_fixtures+[('pov',pov),('passes',render),('writer',writer),('capture',capture),('groups',groups)]:
  if a.scene_replay_only and name not in ('passes','groups','legacy_particles','surface_history'): continue
- file=o/(name+'.cpp');file.write_text(source);cmd=['g++','-std=c++17','-O1','-g','-pthread','-I'+str(r),str(file),'-o',str(o/name)]
+ if isinstance(source,Path): file=source
+ else: file=o/(name+'.cpp');file.write_text(source)
+ cmd=['g++','-std=c++17','-O1','-g','-pthread','-I'+str(r),str(file),'-o',str(o/name)]
  if a.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
  q=subprocess.run(cmd,capture_output=True,text=True)
  if q.returncode:print(q.stderr);raise SystemExit(q.returncode)
