@@ -31,6 +31,7 @@ public:
     struct ReplayTimings {
         enum Stage { Preflight, Asset, Bones, State, Draw, Retirement, Count };
         std::array<double,Count> Ms{};
+        std::uint64_t DecalBatchesRequested=0,DecalBatchesSubmitted=0;
     };
 	struct Model
 	{

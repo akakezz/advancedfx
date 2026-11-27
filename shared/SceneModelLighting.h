@@ -218,6 +218,50 @@ bool CaptureModelDecalBatch(ReadBytes read,MaterialName name,const std::array<un
     if(head!=0xffff||previous!=DecalField<std::uint16_t>(record,0x62)||base!=next.Vertices.size()||offset!=indices.size())return false;
     out=std::move(next);return true;
 }
+// Private native draw-batch storage, never a registered studio decal list.
+// Only the rigid/no-flex writer is authorized to consume this representation.
+// Flattened historical indices become one native segment, with its base zero.
+struct RigidDecalScratch {
+    std::vector<std::array<unsigned char,0x30>> Vertices;
+    std::vector<std::uint16_t> Indices;
+    std::array<unsigned char,0x18> Segment{};
+    std::array<unsigned char,0x80> Record{};
+    template<std::size_t N,class T> static void Put(std::array<unsigned char,N> &bytes,std::size_t offset,const T &value){
+        std::memcpy(bytes.data()+offset,&value,sizeof(value));
+    }
+    bool Build(const ModelDecalBatch &batch){
+        if(batch.Vertices.empty()||batch.Vertices.size()>4096||batch.Indices.empty()||batch.Indices.size()>12288||batch.Indices.size()%3)return false;
+        for(const auto &v:batch.Vertices)for(float f:v.Values)if(!std::isfinite(f))return false;
+        for(auto i:batch.Indices)if(i>=batch.Vertices.size())return false;
+        Vertices.assign(batch.Vertices.size(),{});Indices=batch.Indices;
+        for(unsigned i=0;i<Vertices.size();++i){
+            auto &v=Vertices[i];const auto &src=batch.Vertices[i];
+            std::memcpy(v.data(),src.Values.data(),32);
+            std::memcpy(v.data()+0x20,src.Selectors.data(),12);
+            Put(v,0x2c,std::uint16_t(i?i-1:0xffff));
+            Put(v,0x2e,std::uint16_t(i+1<Vertices.size()?i+1:0xffff));
+        }
+        Segment={};Put(Segment,0,int(Indices.size()));Put(Segment,4,int(Vertices.size()));
+        Put(Segment,0x14,std::uint16_t(0xffff));Put(Segment,0x16,std::uint16_t(0xffff));
+        return true;
+    }
+    // Bind addresses only after final placement, immediately before the
+    // synchronous native material-batch call. No queued use or retention.
+    void Bind(std::uint64_t material){
+        Record={};
+        Put(Record,0,material);Put(Record,8,std::uint64_t(reinterpret_cast<std::uintptr_t>(Indices.data())));
+        Put(Record,0x10,int(Indices.size()));Put(Record,0x18,int(Indices.size()));
+        Put(Record,0x28,std::uint64_t(reinterpret_cast<std::uintptr_t>(Vertices.data())));
+        Put(Record,0x30,int(Vertices.size()));Put(Record,0x38,std::uint16_t(0));
+        Put(Record,0x3a,std::uint16_t(Vertices.size()-1));Put(Record,0x3e,std::uint16_t(Vertices.size()));
+        Put(Record,0x50,std::uint64_t(reinterpret_cast<std::uintptr_t>(&Segment)));
+        Put(Record,0x58,int(1));Put(Record,0x60,std::uint16_t(0));Put(Record,0x62,std::uint16_t(0));
+        Put(Record,0x66,std::uint16_t(1));Put(Record,0x7a,std::uint16_t(0xffff));
+    }
+};
+inline bool RigidDecalReplayEligible(const ModelDecalCoverage &coverage,int actualLod,int bones,int flexes,bool immediate,bool staticLighting){
+    return immediate&&!staticLighting&&coverage.Known()&&coverage.Batches&&coverage.Lod==actualLod&&bones==1&&flexes==0;
+}
 struct Key {
     std::uint32_t Checksum=0;
     int Skin=-1,Body=-1;

@@ -502,3 +502,7 @@ Added portable bounded decoder for actual studio material vertex and segment lis
 ### Phase 28D — budgeted studio decal geometry history
 
 Immediate main-view observer now captures validated position/normal/UV, native model selectors, material names and flattened triangle indices. Restricts material names to exact-build CMaterial (or its queue-friendly wrapper), rejects unknown types and malformed/oversized records. Per-model 256 KiB, per-audit 4 MiB, existing scene cache payload budget; equal consecutive immutable geometry shares storage, trimmed with the last frame reference. Optional geometry is dropped before it could reject a fitting frame. Counts remain useful when geometry cannot be captured. Consolidated report distinguishes geometry coverage from inventory. No native replay enabled, and native performance/coverage still need the eventual consolidated test.
+
+### Phase 29A — limited immediate historical rigid model decals
+
+Historical decals setting now enables captured rigid, single-bone, no-flex model geometry on the exact captured LOD. Uses native material-batch draw within cached model's native decal callback, no registered decal handle or pool changes. Reports requested/submitted material batches; multi-bone, flex, queued, alternate configs and missing material remain unsupported. No in-game validation yet.

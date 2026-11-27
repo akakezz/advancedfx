@@ -59,6 +59,17 @@ int main(){
     assert((batch.Indices==std::vector<std::uint16_t>{0,1,2,3,4,5}));
     ModelDecalGeometry geometry;geometry.Batches.push_back(batch);ModelDecalCoverage cov;cov.Lod=0;cov.Batches=1;cov.Vertices=6;cov.Indices=6;
     assert(geometry.Valid(cov));
+    assert(RigidDecalReplayEligible(cov,0,1,0,true,false));
+    assert(!RigidDecalReplayEligible(cov,1,1,0,true,false)&&!RigidDecalReplayEligible(cov,0,2,0,true,false));
+    assert(!RigidDecalReplayEligible(cov,0,1,1,true,false)&&!RigidDecalReplayEligible(cov,0,1,0,false,false));
+    assert(!RigidDecalReplayEligible(cov,0,1,0,true,true));
+    RigidDecalScratch scratch;assert(scratch.Build(batch));scratch.Bind(0x12345);
+    ModelDecalBatch reconstructed;
+    const auto localRead=[](std::uint64_t ptr,void *out,std::size_t n){std::memcpy(out,reinterpret_cast<const void*>(static_cast<std::uintptr_t>(ptr)),n);return true;};
+    const auto localName=[](std::uint64_t ptr,std::string &out){if(ptr!=0x12345)return false;out="decals/test";return true;};
+    assert(CaptureModelDecalBatch(localRead,localName,scratch.Record,reconstructed)&&reconstructed==batch);
+    assert(DecalField<std::uint16_t>(scratch.Segment,0x16)==0xffff);
+    auto invalidBatch=batch;invalidBatch.Indices[0]=65535;assert(!scratch.Build(invalidBatch));
     put(id+8,std::uint16_t(3));assert(!CaptureModelDecalBatch(readBytes,name,record,batch)&&batch==geometry.Batches[0]);
     put(id+8,std::uint16_t(1));put(vd+0x2e,std::uint16_t(5));assert(!CaptureModelDecalBatch(readBytes,name,record,batch));
     Descriptor raw{};raw[0]=1;SetWord(raw,1,2);SetWord(raw,4,100);SetWord(raw,10,20);SetWord(raw,12,1);raw[19]=9;

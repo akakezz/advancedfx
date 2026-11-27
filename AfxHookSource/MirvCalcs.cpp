@@ -10920,6 +10920,27 @@ static_assert(sizeof(SOURCESDK::matrix3x4_t) == sizeof(advancedfx::SceneCache::M
 static_assert(sizeof(SceneStudioInfo) == (sizeof(void *) == 8 ? 496 : 468), "TF2 DrawModelInfo ABI");
 static_assert(offsetof(SceneStudioInfo, Lod) == (sizeof(void *) == 8 ? 48 : 28), "TF2 model LOD ABI");
 static_assert(offsetof(SceneStudioInfo, LightCount) == (sizeof(void *) == 8 ? 140 : 112), "TF2 light ABI");
+#if defined(_WIN64) && defined(_WIN32)
+static bool SceneInstallModelDecalObservation();
+struct SceneRigidDecalRequest {
+    const advancedfx::SceneCache::Entity &Entity;
+    const SceneStudioInfo &Info;
+    std::size_t Submitted=0;
+    bool Consumed=false;
+};
+static thread_local SceneRigidDecalRequest *g_SceneRigidDecalRequest=nullptr;
+struct SceneRigidDecalScope {
+    SceneRigidDecalRequest Request;
+    SceneRigidDecalRequest *Previous;
+    SceneRigidDecalScope(const advancedfx::SceneCache::Entity &entity,const SceneStudioInfo &info,bool textured)
+        :Request{entity,info},Previous(g_SceneRigidDecalRequest){
+        g_SceneRigidDecalRequest=nullptr;
+        if(textured&&entity.ModelDecalData&&entity.ModelDecals.Known()&&entity.ModelDecals.Batches&&
+           MaterialSystem_IsImmediate()&&SceneInstallModelDecalObservation())g_SceneRigidDecalRequest=&Request;
+    }
+    ~SceneRigidDecalScope(){g_SceneRigidDecalRequest=Previous;}
+};
+#endif
 // The direct studio frontend inherits global modulation/lighting from prior
 // draws. Observe setters and restore their last values on this caller thread;
 // no live material or entity pointers are saved. SDK 2013 VStudioRender025.
@@ -11995,9 +12016,18 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
     }
 	if(resources)resources->Submit();
     timer.Next(Timing::Draw);
+#if defined(_WIN64) && defined(_WIN32)
+    {
+    SceneRigidDecalScope decalScope(entity,info,textured);
+    if(timings&&textured&&entity.ModelDecalData)timings->DecalBatchesRequested+=entity.ModelDecals.Batches;
+#endif
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
 	                   const SOURCESDK::Vector &, int>(studio, 29, nullptr, info, matrices, nullptr, nullptr,
 	                                                   origin, flags);
+#if defined(_WIN64) && defined(_WIN32)
+    if(timings)timings->DecalBatchesSubmitted+=decalScope.Request.Submitted;
+    }
+#endif
     timer.Next(Timing::Retirement);
 	// The capability check above and this enqueue run on the same engine thread;
 	// the material-system hook remains stable for this submission. The helper
@@ -12163,8 +12193,117 @@ static bool SceneModelDecalMaterialName(std::uint64_t material,std::string &name
     for(unsigned i=0;i<256;++i){char c=0;if(!SceneLightingRead(reinterpret_cast<std::uintptr_t>(ptr)+i,c))return false;if(!c)return !name.empty();if(static_cast<unsigned char>(c)<32||static_cast<unsigned char>(c)>126)return false;name+=c;}
     return false;
 }
+// A separately guarded, immediate-only rigid draw. Reproduce only the
+// single-bone setup at 7b70..7ba9; never allocate, fabricate or alter a
+// registered native decal handle or write the renderer's material pool.
+#if defined(_WIN32)
+static bool SceneRigidDecalMaterialReady(std::uintptr_t material,std::uintptr_t msBase,const std::string &expected){
+    std::string actual;
+    if(!SceneModelDecalMaterialName(material,actual)||actual!=expected)return false;
+    std::uintptr_t vt=0,real=material,error=0,fn=0;
+    if(!SceneLightingRead(real,vt))return false;
+    if(vt==msBase+0xb4ba0){if(!SceneLightingRead(real+8,real)||!SceneLightingRead(real,vt))return false;}
+    unsigned char flags=0;int proxies=-1;
+    return vt==msBase+0xb4ec0&&SceneLightingRead(vt+0xa8,fn)&&fn==msBase+0x79f0&&
+        SceneLightingMatch(msBase,0x7a12,{0x83,0x7b,0x40,0,0,0x0f,0x9f,0xc0})&&
+        SceneLightingRead(vt+0x1c0,fn)&&fn==msBase+0x82d0&&
+        SceneLightingMatch(msBase,0x82d0,{0x0f,0xb6,0x41,0x28,0xd0,0xe8,0x24,0x01,0xc3})&&
+        SceneLightingRead(real+0x28,flags)&&(flags&2)&&SceneLightingRead(real+0x40,proxies)&&proxies==0&&
+        SceneLightingRead(msBase+0xf2538,error)&&error&&real!=error&&material!=error;
+}
+static void SceneDrawRigidDecals(SceneRigidDecalRequest &request,void *renderer,const SceneStudioInfo &info,int lod,int body){
+    using namespace advancedfx::SceneLighting;
+    const auto base=g_SceneDecalBase;
+    const auto &entity=request.Entity;
+    if(!entity.ModelDecalData||!entity.ModelDecalData->Valid(entity.ModelDecals)||
+       info.Header!=request.Info.Header||info.Hardware!=request.Info.Hardware||info.Skin!=request.Info.Skin||
+       info.Body!=request.Info.Body||body!=info.Body||info.ClientEntity||info.Decals||
+       !info.Header||!info.Hardware||!MaterialSystem_IsImmediate()||Mirv_Tf2_SceneRenderViewId()!=0)return;
+    const auto header=reinterpret_cast<std::uintptr_t>(info.Header),r=reinterpret_cast<std::uintptr_t>(renderer);
+    void *nativeRenderer=nullptr,*currentHeader=nullptr;
+    std::uintptr_t config=0,matrix=0,system=0,vt=0;
+    unsigned char config25=0,config38=0;
+    int bones=0,flexes=0,hardwareLods=0;
+    std::array<float,12> transform{};
+    if(!SceneLightingRead(base+0x96348,nativeRenderer)||nativeRenderer!=renderer||
+       !SceneLightingRead(r+0x110,currentHeader)||currentHeader!=info.Header||
+       !SceneLightingRead(header+0x9c,bones)||!SceneLightingRead(header+0x104,flexes)||
+       !RigidDecalReplayEligible(entity.ModelDecals,lod,bones,flexes,true,info.StaticLighting)||
+       !SceneLightingRead(reinterpret_cast<std::uintptr_t>(info.Hardware)+4,hardwareLods)||lod>=hardwareLods||hardwareLods>32||
+       !SceneLightingRead(r+8,config)||!config||!SceneLightingRead(config+0x25,config25)||(config25&0x20)||
+       !SceneLightingRead(config+0x38,config38)||(config38&4)||
+       !SceneLightingRead(r+0xf0,matrix)||!SceneLightingRead(matrix,transform)||
+       !std::all_of(transform.begin(),transform.end(),[](float f){return std::isfinite(f);})||
+       !SceneLightingMatch(base,0x7b70,{0x8b,0x90,0x9c,0,0,0,0x83,0xfa,0x01})||
+       !SceneLightingMatch(base,0x7ba3,{0xff,0x90,0xb8,0,0,0})||
+       !SceneLightingMatch(base,0x7d20,{0x48,0x8b,0xc4,0x4c,0x89,0x48,0x20,0x55,0x56,0x41,0x55,0x41,0x56,0x41,0x57})||
+       !SceneLightingMatch(base,0x7faf,{0x83,0xb8,0x9c,0,0,0,0x01,0x8b,0x88,0x04,0x01,0,0})||
+       !SceneLightingMatch(base,0x7fdf,{0xe8,0xdc,0x16,0,0})||
+       !SceneLightingMatch(base,0x9700,{0x48,0x8b,0x8b,0x60,0x02,0,0,0x0f,0xb7,0xf8})||
+       !SceneLightingMatch(base,0x80b1,{0x03,0x7c,0xca,0x04,0x44,0x0f,0xb7,0x5c,0xca,0x16}))return;
+    const auto msBase=reinterpret_cast<std::uintptr_t>(GetModuleHandleA("materialsystem.dll"));
+    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
+    if(!msBase||!SceneLightingRead(msBase,dos)||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+       !SceneLightingRead(msBase+dos.e_lfanew,nt)||nt.Signature!=IMAGE_NT_SIGNATURE||nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||
+       nt.FileHeader.TimeDateStamp!=0x6ac56a08||nt.OptionalHeader.SizeOfImage!=0x141000||
+       !SceneLightingRead(base+0x416798,system)||!system||!SceneLightingRead(system,vt)||vt!=msBase+0xb7470)return;
+    auto slots=[&](std::uintptr_t table,std::initializer_list<std::pair<unsigned,std::uintptr_t>> expected){
+        for(auto entry:expected){std::uintptr_t fn=0;if(!SceneLightingRead(table+entry.first,fn)||fn!=msBase+entry.second)return false;}return true;
+    };
+    if(!slots(vt,{{0x238,0x15720},{0x310,0x16c20}})||
+       !slots(msBase+0xbcab0,{{8,0x1ac20},{0x10,0x2fdd0},{0x18,0x32320},{0x48,0x2ffa0},{0xa0,0x33b20},{0xb8,0x33810},{0x1a8,0x35950},{0x1c0,0x32710},{0x498,0x6f30}})||
+       !SceneLightingMatch(msBase,0x6f30,{0x33,0xc0,0xc3})||
+       !SceneLightingMatch(msBase,0x16c64,{0xff,0x10})||
+       !SceneLightingMatch(msBase,0x33816,{0x0f,0x10,0x02,0x48,0x8b,0xd9}))return;
+    auto *context=SceneInterfaceCall<void*>(reinterpret_cast<void*>(system),0x310/8);
+    if(!context)return;
+    struct ContextScope {
+        void *Context;bool Begun=false;
+        ~ContextScope(){if(Begun)SceneInterfaceCall<void>(Context,3);SceneInterfaceCall<void>(Context,1);}
+    } scope{context};
+    if(!SceneLightingRead(reinterpret_cast<std::uintptr_t>(context),vt)||vt!=msBase+0xbcab0||
+       SceneInterfaceCall<void*>(context,0x498/8))return;
+    // Preflight every material and private batch before changing matrix state.
+    struct Prepared {void *Material=nullptr;RigidDecalScratch Scratch;};
+    std::vector<Prepared> prepared;prepared.reserve(entity.ModelDecalData->Batches.size());
+    for(const auto &batch:entity.ModelDecalData->Batches){
+        Prepared entry;
+        entry.Material=SceneInterfaceCall<void*,const char*,const char*,bool,const char*>(reinterpret_cast<void*>(system),0x238/8,
+            batch.Material.c_str(),"Decal textures",false,nullptr);
+        if(!entry.Material||!SceneRigidDecalMaterialReady(reinterpret_cast<std::uintptr_t>(entry.Material),msBase,batch.Material)||
+           !entry.Scratch.Build(batch))return;
+        prepared.push_back(std::move(entry));
+    }
+    SceneInterfaceCall<void>(context,2);scope.Begun=true;
+    SceneInterfaceCall<void,int>(context,0x1a8/8,1);
+    SceneInterfaceCall<void,int>(context,0xa0/8,10);
+    SceneInterfaceCall<void,const float*>(context,0xb8/8,transform.data());
+    using Draw=void(*)(void*,void*,void*,void*,void*);
+    auto draw=reinterpret_cast<Draw>(base+0x7d20);
+    for(auto &entry:prepared){
+        entry.Scratch.Bind(reinterpret_cast<std::uintptr_t>(entry.Material));
+        draw(renderer,context,entry.Scratch.Record.data(),info.Header,nullptr);
+        ++request.Submitted;
+    }
+    // The native caller at 51d36..51d4d resets model matrix mode/stack.
+    // We leave the exact same state as its ordinary single-bone decal pass.
+}
+#endif
 static void SceneObserveModelDecals(void *renderer,const SceneStudioInfo *info,int lod,int body){
     const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+#if defined(_WIN32)
+    if(auto *request=g_SceneRigidDecalRequest){
+        SceneStudioInfo copy{};
+        if(!request->Consumed&&GetCurrentThreadId()==g_SceneDecalThread&&caller==g_SceneDecalBase+0x51cfd&&
+           SceneLightingRead(reinterpret_cast<std::uintptr_t>(info),copy)&&copy.Header==request->Info.Header&&
+           copy.Hardware==request->Info.Hardware&&!copy.ClientEntity&&!copy.Decals){
+            request->Consumed=true;
+            g_SceneOriginalDecals(renderer,info,lod,body);
+            SceneDrawRigidDecals(*request,renderer,copy,lod,body);
+            return;
+        }
+    }
+#endif
     if(g_SceneDecalArmed&&GetCurrentThreadId()==g_SceneDecalThread&&caller==g_SceneDecalBase+0x51cfd&&
        MaterialSystem_IsImmediate()&&Mirv_Tf2_SceneRenderViewId()==0){
         SceneStudioInfo copy{};

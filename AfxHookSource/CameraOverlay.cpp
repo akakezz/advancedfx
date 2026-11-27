@@ -1441,14 +1441,14 @@ void SceneCacheDrawModels()
 		return;
 	std::shared_ptr<const advancedfx::SceneCache::Frame> view;
 	unsigned long long epoch;
-    bool modulation=false,lighting=false;
+    bool modulation=false,lighting=false,modelDecals=false;
 	{
 		// Read the frame and its invalidation epoch together. Release the lock
 		// before queueing: render-thread callbacks must never wait on UI state.
 		std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 		view = SceneCacheView();
 		epoch = g_SceneDrawEpoch.load();
-        modulation=g_SceneReplayModulation;lighting=g_SceneReplayLighting;
+        modulation=g_SceneReplayModulation;lighting=g_SceneReplayLighting;modelDecals=g_SceneHistoricalDecals;
 	}
 	if (!view)
 		return;
@@ -1505,12 +1505,14 @@ void SceneCacheDrawModels()
             ++attempted;
             const auto *drawEntity=&entity;
             advancedfx::SceneCache::Entity unmodulated;
-            if((!modulation&&entity.HasModulation)||(!lighting&&entity.ModelLighting)){
-                unmodulated=entity;if(!modulation)unmodulated.HasModulation=false;if(!lighting)unmodulated.ModelLighting.reset();drawEntity=&unmodulated;
+            if((!modulation&&entity.HasModulation)||(!lighting&&entity.ModelLighting)||(!modelDecals&&entity.ModelDecalData)){
+                unmodulated=entity;if(!modulation)unmodulated.HasModulation=false;if(!lighting)unmodulated.ModelLighting.reset();
+                if(!modelDecals)unmodulated.ModelDecalData.reset();drawEntity=&unmodulated;
             }
             advancedfx::SceneCache::ReplayTimings modelStages;
             if (Mirv_Tf2_DrawScenePose(*drawEntity, status, owner, textured, view,&modelStages)) ++submitted;
             else {lastFailure=status;lastFailureAsset=entity.ModelPose->ModelInfo->Name;if(status.find("queue is behind")!=std::string::npos) ++queueSkips;else ++otherSkips;}
+            stages.DecalBatchesRequested+=modelStages.DecalBatchesRequested;stages.DecalBatchesSubmitted+=modelStages.DecalBatchesSubmitted;
             double total=0;
             for(std::size_t i=0;i<modelStages.Ms.size();++i){stages.Ms[i]+=modelStages.Ms[i];total+=modelStages.Ms[i];}
             if(total>slowest){slowest=total;slowAsset=&entity.ModelPose->ModelInfo->Name;}
@@ -1524,6 +1526,7 @@ void SceneCacheDrawModels()
         const int tick=int(std::floor(view->DemoTime/SceneTickInterval()+1e-9));
         g_ScenePerf.ModelDraw.Add(begin,tick);
         for(std::size_t i=0;i<stages.Ms.size();++i)g_ScenePerf.StudioStages.Ms[i]+=stages.Ms[i];
+        g_ScenePerf.StudioStages.DecalBatchesRequested+=stages.DecalBatchesRequested;g_ScenePerf.StudioStages.DecalBatchesSubmitted+=stages.DecalBatchesSubmitted;
         if(slowAsset&&slowest>g_ScenePerf.SlowestModelMs){g_ScenePerf.SlowestModelMs=slowest;g_ScenePerf.SlowestModelAsset=*slowAsset;g_ScenePerf.SlowestModelTick=tick;}
         (nativeView==0?g_ScenePerf.MainModelDraw:nativeView>0?g_ScenePerf.OtherModelDraw:g_ScenePerf.UnknownModelDraw).Add(begin,tick);
         if(!lastFailure.empty()){g_ScenePerf.LastModelFailureTick=tick;g_ScenePerf.LastModelFailureAsset=lastFailureAsset;}
@@ -1538,7 +1541,7 @@ void SceneCacheDrawModels()
         }
     }
 	if (epoch == g_SceneDrawEpoch.load())
-		SceneModelStatus(textured ? "Experimental replay: " + std::to_string(submitted) + "/" + std::to_string(attempted) + " studio submissions. " + status : status);
+		SceneModelStatus(textured ? "Experimental replay: " + std::to_string(submitted) + "/" + std::to_string(attempted) + " studio submissions; rigid decal batches "+std::to_string(stages.DecalBatchesSubmitted)+"/"+std::to_string(stages.DecalBatchesRequested)+". " + status : status);
 }
 // Diagnostics report the actual sampled representation, not just the toggle.
 static std::string SceneAnimationSummary(const advancedfx::SceneCache::Entity &entity)
@@ -2508,6 +2511,7 @@ static std::string SceneValidationReport(){
         out<<"Published model sample: tick "<<view->DemoTime/SceneTickInterval()<<"; studio "<<studio<<", brush wire "<<brush<<", missing pose "<<missing<<", lit "<<lit<<", local lights "<<local<<", known modulation "<<modulated<<"\n";
         out<<"Studio decal inventory (capture only): known models "<<decalKnown<<"/"<<studio<<", affected "<<decalModels<<", batches "<<decalBatches<<", vertices "<<decalVertices<<", indices "<<decalIndices<<", geometry models "<<decalGeometry<<", geometry bytes "<<decalGeometryBytes<<"\n";
     }else out<<"Published model sample: unavailable\n";
+    out<<"Studio decal replay (rigid immediate only): submitted "<<g_ScenePerf.StudioStages.DecalBatchesSubmitted<<"/"<<g_ScenePerf.StudioStages.DecalBatchesRequested<<" material batches\n";
     if(auto p=g_SceneNativeParticles.ShareForPreview(tick))
         out<<"Modern sample: "<<p->Tick<<", complete "<<p->Complete<<", appearance complete "<<p->AppearanceComplete<<", collections "<<p->Collections.size()<<", active "<<p->Active<<", rejected "<<p->Rejected<<", appearance rejected "<<p->AppearanceRejected<<"\n";
     else out<<"Modern sample: unavailable\n";
