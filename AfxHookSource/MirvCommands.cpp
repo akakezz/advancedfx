@@ -158,14 +158,19 @@ template<class Read>
 static bool SceneLegacyMaterialNames(std::uint64_t base,Read read,std::map<std::uint64_t,std::string> &out)
 {
     using A=std::uint64_t;
+    using namespace advancedfx::LegacyParticles;
     auto get=[&](A a,auto &v){return a>=0x10000&&read(a,&v,sizeof(v));};
     const A manager=base+0x10f5020;
     unsigned char anchor[15]{};
     const unsigned char expected[]={0x48,0x89,0x44,0xe9,0x08,0x48,0x8b,0x44,0x24,0x38,0x48,0x89,0x44,0xe9,0x10};
-    if(!read(base+0x2d6877,anchor,sizeof(anchor))||!std::equal(std::begin(expected),std::end(expected),anchor))return false;
+    const unsigned char lookup[]={0x48,0x8b,0x54,0xda,0x10};
+    unsigned char lookupActual[5]{};
+    if(!read(base+0x2d6877,anchor,sizeof(anchor))||!std::equal(std::begin(expected),std::end(expected),anchor)||
+       !read(base+0x2d66cc,lookupActual,sizeof(lookupActual))||!std::equal(lookupActual,lookupActual+sizeof(lookupActual),lookup))return false;
     A nodes=0;int capacity=0;std::uint16_t root=0xffff,count=0;
     if(!get(manager+0xf8,nodes)||!get(manager+0x100,capacity)||!get(manager+0x108,root)||!get(manager+0x10a,count)||
-       capacity<0||capacity>65536||count>4096||count>capacity||(count&&!nodes))return false;
+       capacity<0||capacity>65536||count>4096||count>capacity||
+       (count&&(nodes<0x10000||nodes>(std::numeric_limits<A>::max)()-24*A(capacity))))return false;
     std::vector<std::pair<std::uint16_t,std::uint16_t>> pending;
     if(root!=0xffff)pending.push_back({root,0xffff});
     std::set<std::uint16_t> visited;
@@ -173,16 +178,16 @@ static bool SceneLegacyMaterialNames(std::uint64_t base,Read read,std::map<std::
     while(!pending.empty()){
         const auto [i,parent]=pending.back();pending.pop_back();
         if(i>=capacity||visited.size()>=count||!visited.insert(i).second)return false;
-        const A node=nodes+24*A(i);std::uint16_t left=0xffff,right=0xffff,up=0xffff;A name=0,sub=0;
-        if(!get(node,left)||!get(node+2,right)||!get(node+4,up)||up!=parent||!get(node+8,name)||!get(node+16,sub))return false;
-        if(left!=0xffff)pending.push_back({left,i});if(right!=0xffff)pending.push_back({right,i});
-        if(!name||!sub)continue;
-        std::string text;bool end=false;
-        for(unsigned n=0;n<260;++n){char ch=0;if(!get(name+n,ch))break;if(!ch){end=true;break;}if(static_cast<unsigned char>(ch)<32||static_cast<unsigned char>(ch)>126)break;text+=ch;}
-        if(end&&!text.empty())result.emplace(sub,std::move(text));
+        MaterialNameNode node;
+        if(!ReadMaterialNameNode(nodes+24*A(i),read,node)||node.Parent!=parent)return false;
+        if(node.Left!=0xffff)pending.push_back({node.Left,i});if(node.Right!=0xffff)pending.push_back({node.Right,i});
+        if(!node.Name||!node.Subtexture)continue;
+        std::string text;
+        if(ReadPrintableName(node.Name,260,read,text))result.emplace(node.Subtexture,std::move(text));
     }
-    A nodesNow=0;std::uint16_t rootNow=0xffff,countNow=0;
-    if(visited.size()!=count||!get(manager+0xf8,nodesNow)||nodesNow!=nodes||!get(manager+0x108,rootNow)||rootNow!=root||!get(manager+0x10a,countNow)||countNow!=count)return false;
+    A nodesNow=0;int capacityNow=0;std::uint16_t rootNow=0xffff,countNow=0;
+    if(visited.size()!=count||!get(manager+0xf8,nodesNow)||nodesNow!=nodes||!get(manager+0x100,capacityNow)||capacityNow!=capacity||
+       !get(manager+0x108,rootNow)||rootNow!=root||!get(manager+0x10a,countNow)||countNow!=count)return false;
     out=std::move(result);return true;
 }
 #endif
@@ -259,18 +264,7 @@ std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *
             ++simple;simpleActive+=particles;
             Address namePtr=0;
             std::string name;
-            bool validName=get(sim+8,namePtr)&&namePtr>=0x10000;
-            if(validName) {
-                bool terminated=false;
-                for(unsigned i=0;i<128;++i) {
-                    char ch=0;
-                    if(!get(namePtr+i,ch))break;
-                    if(!ch){terminated=true;break;}
-                    if(static_cast<unsigned char>(ch)<32||static_cast<unsigned char>(ch)>126)break;
-                    name+=ch;
-                }
-                validName=terminated&&!name.empty();
-            }
+            const bool validName=get(sim+8,namePtr)&&advancedfx::LegacyParticles::ReadPrintableName(namePtr,128,read,name);
             if(!validName){++unnamed;name="[unavailable]";}
             if(snapshot&&name=="C_EntityDissolve") {
                 ++snapshot->Emitters;snapshot->Expected+=particles;

@@ -12,9 +12,48 @@
 #include <vector>
 #include <utility>
 #include <algorithm>
+#include <limits>
 
 namespace advancedfx { namespace LegacyParticles {
 using Address=std::uint64_t;
+// Bounded name reads for the live legacy dictionary and emitter audit.
+// Narrow fallback accepts a valid terminator immediately before an
+// unreadable page without requiring the entire trailing chunk.
+template<class Reader>
+bool ReadPrintableName(Address address,unsigned limit,Reader read,std::string &out){
+    out.clear();
+    if(address<0x10000||!limit||limit>260||address>(std::numeric_limits<Address>::max)()-limit)return false;
+    std::string value;
+    for(unsigned i=0;i<limit;){
+        char bytes[32]{};
+        unsigned n=(std::min)(unsigned(sizeof(bytes)),limit-i);
+        if(!read(address+i,bytes,n)){n=1;if(!read(address+i,bytes,n))return false;}
+        for(unsigned j=0;j<n;++j){
+            const auto ch=static_cast<unsigned char>(bytes[j]);
+            if(!ch){if(value.empty())return false;out=std::move(value);return true;}
+            if(ch<32||ch>126)return false;
+            value+=bytes[j];
+        }
+        i+=n;
+    }
+    return false;
+}
+struct MaterialNameNode {
+    std::uint16_t Left=0xffff,Right=0xffff,Parent=0xffff;
+    Address Name=0,Subtexture=0;
+};
+template<class Reader>
+bool ReadMaterialNameNode(Address address,Reader read,MaterialNameNode &out){
+    if(address<0x10000||address>(std::numeric_limits<Address>::max)()-24)return false;
+    std::array<unsigned char,24> raw{};
+    MaterialNameNode node;
+    if(read(address,raw.data(),raw.size())){
+        auto field=[&](unsigned offset,auto &v){std::memcpy(&v,raw.data()+offset,sizeof(v));};
+        field(0,node.Left);field(2,node.Right);field(4,node.Parent);field(8,node.Name);field(16,node.Subtexture);
+    }else if(!read(address,&node.Left,2)||!read(address+2,&node.Right,2)||!read(address+4,&node.Parent,2)||
+             !read(address+8,&node.Name,8)||!read(address+16,&node.Subtexture,8))return false;
+    out=node;return true;
+}
 enum class Material : unsigned char { Unknown, Spark, CombineMuzzle, Named };
 // Current-view dictionary only. A name with multiple native subtextures
 // is not sufficient identity for an exact historical lookup.

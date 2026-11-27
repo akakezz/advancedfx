@@ -17,6 +17,30 @@ int main(){
     auto put=[&](Address a,const auto &v){const auto *p=reinterpret_cast<const unsigned char*>(&v);for(std::size_t i=0;i<sizeof(v);++i)memory[a+i]=p[i];};
     auto read=[&](Address a,void *out,std::size_t n){auto *p=static_cast<unsigned char*>(out);for(std::size_t i=0;i<n;++i){auto it=memory.find(a+i);if(it==memory.end())return false;p[i]=it->second;}return true;};
     constexpr Address binding=0x10000,group=0x20000,sentinel=group+8,particle=0x30000,sub=0x40000,mat=0x50000;
+    constexpr Address nameAddress=0x60000,nodeAddress=0x70000;
+    std::string name;
+    std::array<char,32> nameBytes{};std::memcpy(nameBytes.data(),"particle/spark",14);
+    put(nameAddress,nameBytes);
+    unsigned readCalls=0;
+    auto counted=[&](Address a,void *out,std::size_t n){++readCalls;return read(a,out,n);};
+    assert(ReadPrintableName(nameAddress,128,counted,name)&&name=="particle/spark"&&readCalls==1);
+    // NUL at the readable boundary: bulk fails, narrow read succeeds.
+    put(nameAddress+64,std::array<char,4>{'a','b','c','\0'});
+    assert(ReadPrintableName(nameAddress+64,128,read,name)&&name=="abc");
+    put(nameAddress+80,std::array<char,3>{'a','\x01','\0'});
+    assert(!ReadPrintableName(nameAddress+80,128,read,name)&&name.empty());
+    put(nameAddress+96,std::array<char,4>{'a','b','c','d'});
+    assert(!ReadPrintableName(nameAddress+96,4,read,name)&&name.empty());
+    assert(!ReadPrintableName((std::numeric_limits<Address>::max)()-3,128,read,name));
+    put(nodeAddress,std::uint16_t(2));put(nodeAddress+2,std::uint16_t(3));put(nodeAddress+4,std::uint16_t(1));
+    put(nodeAddress+8,nameAddress);put(nodeAddress+16,sub);
+    MaterialNameNode materialNode;
+    assert(ReadMaterialNameNode(nodeAddress,read,materialNode)&&materialNode.Left==2&&materialNode.Right==3&&materialNode.Parent==1&&materialNode.Name==nameAddress&&materialNode.Subtexture==sub);
+    // Only padding was missing above. Once available, one read is enough.
+    put(nodeAddress+6,std::uint16_t(0));readCalls=0;
+    assert(ReadMaterialNameNode(nodeAddress,counted,materialNode)&&readCalls==1);
+    memory.erase(nodeAddress+16);
+    assert(!ReadMaterialNameNode(nodeAddress,read,materialNode));
     for(unsigned i=0;i<8;++i)put(binding+0xb0+8*i,Address(0));
     put(binding+0x140,16.f);put(binding+0x144,64.f);
     put(binding+0xb0,group);put(binding+0x90,std::uint16_t(1));
