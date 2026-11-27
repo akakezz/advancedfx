@@ -80,7 +80,21 @@ static advancedfx::NativeParticles::ReplayResult g_SceneParticleReplayResult;
 static int g_SceneParticleReplayTick=-1;
 static advancedfx::NativeParticles::History g_SceneNativeParticles;
 // Weak leases identify the immutable decoded sample, not a reusable tick.
-static std::weak_ptr<const advancedfx::NativeParticles::Frame> g_SceneIsolationChecked,g_SceneIsolationFailed;
+static std::weak_ptr<const advancedfx::NativeParticles::Frame> g_SceneIsolationChecked;
+// The decoded cache has only one entry. A diagnostic lookup or cursor move
+// must not erase a known submission failure for an unchanged history.
+struct SceneParticleFailureHistory {
+    std::uint64_t Revision=0;
+    std::set<int> Ticks;
+    void Reset(){Ticks.clear();Revision=0;}
+    bool Contains(std::uint64_t revision,int tick)const{return Revision==revision&&Ticks.count(tick)!=0;}
+    void Mark(std::uint64_t revision,int tick){
+        if(Revision!=revision){Ticks.clear();Revision=revision;}
+        // At most one entry per retained history tick (32768).
+        Ticks.insert(tick);
+    }
+};
+static SceneParticleFailureHistory g_SceneIsolationFailed;
 static bool g_SceneIsolationRecordedReady=false;
 static std::string g_SceneIsolationEligibility="Not evaluated.";
 static double g_SceneNativeParticleMs=0, g_SceneNativeParticleTotalMs=0, g_SceneNativeParticlePeakMs=0;
@@ -98,7 +112,7 @@ static std::string g_SceneSurfaceStatus[2]={"Not evaluated.","Not evaluated."};
 static advancedfx::NativeParticles::ReplayResult g_SceneLegacyReplayResult;
 static int g_SceneLegacyReplayTick=-1;
 static advancedfx::LegacyParticles::History g_SceneLegacyHistory;
-static std::weak_ptr<const advancedfx::LegacyParticles::Frame> g_SceneLegacyIsolationFailed;
+static SceneParticleFailureHistory g_SceneLegacyIsolationFailed;
 static std::string g_SceneLegacyCaptureStatus="Not captured.";
 static std::string g_SceneDetachedStatus="Not run.";
 static unsigned long long g_SceneReplayCallbacks=0,g_SceneReplayAttempted=0,g_SceneReplaySubmitted=0,g_SceneReplayQueueSkips=0,g_SceneReplayOtherSkips=0;
@@ -147,10 +161,10 @@ static bool g_SceneFastParticleWrites=true; // verified detached allocations onl
 static bool g_SceneFastParticleReads=true; // verified detached validation only
 static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
-    g_SceneIsolationChecked.reset();g_SceneIsolationFailed.reset();g_SceneIsolationRecordedReady=false;g_SceneIsolationEligibility="Not evaluated.";
+    g_SceneIsolationChecked.reset();g_SceneIsolationFailed.Reset();g_SceneIsolationRecordedReady=false;g_SceneIsolationEligibility="Not evaluated.";
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
     g_SceneLegacyAuditPending=false;
-    g_SceneLegacyHistory.Clear();g_SceneLegacyIsolationFailed.reset();g_SceneLegacyCaptureStatus="Not captured.";
+    g_SceneLegacyHistory.Clear();g_SceneLegacyIsolationFailed.Reset();g_SceneLegacyCaptureStatus="Not captured.";
     g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();g_SceneHistoricalSurfaceStatus="Not evaluated.";
     g_SceneLegacyReplayResult={};g_SceneLegacyReplayTick=-1;
     g_SceneParticleReplayResult={};g_SceneParticleReplayTick=-1;
@@ -1274,13 +1288,13 @@ bool SceneCacheSuppressLiveParticles()
     }
     if(!g_SceneIsolationRecordedReady)return deny("Recorded modern prerequisites incomplete; live effects retained.");
     // Keep intentional benchmark ablations independent of previous phase outcomes.
-    if(!g_SceneBench.Active&&g_SceneIsolationFailed.lock()==sample)
-        return deny("Previous native submission for this decoded sample was incomplete; live effects retained.");
+    if(!g_SceneBench.Active&&g_SceneIsolationFailed.Contains(g_SceneNativeParticles.Revision,sample->Tick))
+        return deny("Previous native submission for this retained sample was incomplete; live effects retained.");
     if(!g_SceneBench.Active&&g_SceneLegacyReplay){
         const auto legacy=g_SceneLegacyHistory.ShareForPreview(tick);
         if(!legacy||!legacy->Complete||legacy->Rejected||legacy->OtherRejected||legacy->UnknownMaterials||legacy->Expected!=legacy->Particles.size())
             return deny("Requested legacy replay has incomplete recorded coverage; live effects retained.");
-        if(g_SceneLegacyIsolationFailed.lock()==legacy)
+        if(g_SceneLegacyIsolationFailed.Contains(g_SceneLegacyHistory.Revision,legacy->Tick))
             return deny("Previous legacy submission for this sample was incomplete; live effects retained.");
     }
     g_SceneIsolationEligibility="Recorded prerequisites satisfied (not pixel coverage).";
@@ -1323,19 +1337,21 @@ static void SceneCacheDrawLegacyParticles()
 {
     std::shared_ptr<const advancedfx::LegacyParticles::Frame> sample;
     unsigned long long epoch=0;
-    bool allowQueued=false;
+    bool allowQueued=false, immediate=false;
+    std::uint64_t revision=0;
     {
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
         // Phase 14 disables modern replay only, not its legacy companion.
         const bool legacyOnlyBench=g_SceneBench.Active&&!g_SceneBench.ModelsOnly&&g_SceneBench.Phase==14&&g_SceneBench.Native;
         allowQueued=g_SceneBench.Active?g_SceneBench.LegacyQueued:g_SceneLegacyQueued;
-        const bool queued=!MaterialSystem_IsImmediate();
+        immediate=MaterialSystem_IsImmediate();
+        const bool queued=!immediate;
         if(!g_SceneLegacyReplay||!g_ScenePreview||(!g_SceneNativeParticleReplay&&!legacyOnlyBench&&!(queued&&allowQueued))||!SceneCanDrawModels()||!SceneCacheView())return;
         if(queued&&!allowQueued)return;
         const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
         sample=g_SceneLegacyHistory.ShareForPreview(tick);
         if(!sample){g_SceneLegacyReplayTick=tick;g_SceneLegacyReplayResult={};g_SceneLegacyReplayResult.Status="No retained legacy sample within two prior ticks.";return;}
-        epoch=g_SceneDrawEpoch.load();
+        epoch=g_SceneDrawEpoch.load();revision=g_SceneLegacyHistory.Revision;
     }
     const auto begin=std::chrono::steady_clock::now();
     auto result=Mirv_Tf2_RenderLegacyParticles(*sample,allowQueued);
@@ -1343,9 +1359,11 @@ static void SceneCacheDrawLegacyParticles()
     g_ScenePerf.LegacyDraw.Add(begin,sample->Tick);
     g_ScenePerf.LegacyRejected+=result.Rejected;
     if(!result.MainView&&result.Status.empty())return;
-    if(epoch==g_SceneDrawEpoch.load()&&g_SceneLegacyReplay){
-        if(!g_SceneBench.Active&&(!result.MainView||result.Rejected||result.CleanupFailures||result.Particles!=sample->Particles.size()))
-            g_SceneLegacyIsolationFailed=sample;
+    if(epoch==g_SceneDrawEpoch.load()&&revision==g_SceneLegacyHistory.Revision&&g_SceneLegacyReplay){
+        // Queued legacy is an intentionally partial overlay, not evidence
+        // about immediate-mode blanket isolation.
+        if(immediate&&!g_SceneBench.Active&&(!result.MainView||result.Rejected||result.CleanupFailures||result.Particles!=sample->Particles.size()))
+            g_SceneLegacyIsolationFailed.Mark(revision,sample->Tick);
         g_SceneLegacyReplayTick=sample->Tick;g_SceneLegacyReplayResult=std::move(result);
     }
 }
@@ -1360,6 +1378,7 @@ void SceneCacheDrawParticles()
     // and no native drawing in ordinary live demo playback.
     std::shared_ptr<const advancedfx::NativeParticles::Frame> sample;
     unsigned long long epoch=0;
+    std::uint64_t revision=0;
     bool fastMemory=false,fastReads=false,auditRenderers=false;
     {
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
@@ -1380,7 +1399,7 @@ void SceneCacheDrawParticles()
             g_SceneParticleReplayResult.Status="No retained appearance sample at cursor";
             return;
         }
-        epoch=g_SceneDrawEpoch.load();fastMemory=g_SceneFastParticleWrites;fastReads=g_SceneFastParticleReads;
+        epoch=g_SceneDrawEpoch.load();revision=g_SceneNativeParticles.Revision;fastMemory=g_SceneFastParticleWrites;fastReads=g_SceneFastParticleReads;
         auditRenderers=g_SceneBench.Active&&!g_SceneBench.Measuring&&!g_SceneBench.Audited&&!g_SceneBench.ModelsOnly;
         if(auditRenderers)g_SceneBench.Audited=true;
     }
@@ -1406,9 +1425,9 @@ void SceneCacheDrawParticles()
     }
     // Non-main callbacks must not overwrite the last main-view diagnostic.
     if(!result.MainView&&result.Status.empty())return;
-    if(epoch==g_SceneDrawEpoch.load()&&g_SceneNativeParticleReplay) {
+    if(epoch==g_SceneDrawEpoch.load()&&revision==g_SceneNativeParticles.Revision&&g_SceneNativeParticleReplay) {
         if(!g_SceneBench.Active&&(!result.MainView||result.Rejected||result.CleanupFailures||result.Particles!=sample->Active))
-            g_SceneIsolationFailed=sample; // latch until the decoded lease changes
+            g_SceneIsolationFailed.Mark(revision,sample->Tick);
         g_SceneParticleReplayTick=sample->Tick;g_SceneParticleReplayResult=std::move(result);
     }
 }
@@ -2706,7 +2725,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	    } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"status")) {
 	        SceneNativeParticleStatus(g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneNativeParticles.Frames.empty()?-1:g_SceneNativeParticles.Frames.back().Tick);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyCapture")&&parseInteger(3,value)&&(value==0||value==1)) {
-            if(value&&!g_SceneLegacyCapture){g_SceneLegacyHistory.Clear();g_SceneLegacyIsolationFailed.reset();g_SceneLegacyCaptureStatus="Not captured.";}
+            if(value&&!g_SceneLegacyCapture){g_SceneLegacyHistory.Clear();g_SceneLegacyIsolationFailed.Reset();g_SceneLegacyCaptureStatus="Not captured.";}
             g_SceneLegacyCapture=value!=0;SceneLegacyParticleStatus(-1);
         } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyAll")&&parseInteger(3,value)&&(value==0||value==1)) {
             if(g_SceneLegacyAll!=(value!=0)){g_SceneLegacyAll=value!=0;g_SceneLegacyHistory.Clear();}
@@ -7310,7 +7329,7 @@ static void DrawSceneCacheMenu(int playhead)
 		if(ImGui::Checkbox("Capture particles (TF2 x64 experiment)",&particles))SceneParticleCaptureEnabled(particles);
 		if(particles)DrawOverlayHint("Captures particle appearance automatically. Historical native preview uses the setting in Preview; record fresh history.");
         if(ImGui::Checkbox("Capture legacy dissolve particles (experimental)",&g_SceneLegacyCapture)&&g_SceneLegacyCapture){
-            g_SceneLegacyHistory.Clear();g_SceneLegacyIsolationFailed.reset();g_SceneLegacyCaptureStatus="Not captured.";
+            g_SceneLegacyHistory.Clear();g_SceneLegacyIsolationFailed.Reset();g_SceneLegacyCaptureStatus="Not captured.";
         }
 		if(g_SceneLegacyCapture&&ImGui::Checkbox("Include other exact simple emitters (experimental)",&g_SceneLegacyAll))g_SceneLegacyHistory.Clear();
         if(ImGui::Checkbox("Capture shadow projections and world decals (experimental)",&g_SceneSurfaceCapture)&&g_SceneSurfaceCapture){g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();}
