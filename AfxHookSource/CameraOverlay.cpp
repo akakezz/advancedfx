@@ -405,7 +405,7 @@ static const char *SceneBenchLabel(int phase){
     if(g_SceneBench.ModelsOnly){
         if(SceneBenchQueuedLegacy(g_SceneBench)&&phase==SceneBenchLegacyPhase(g_SceneBench))
             return SceneBenchQueuedDecals(g_SceneBench)?"Queued models + decals + legacy overlay":"Queued models + legacy overlay";
-        static const char *names[]={"Live baseline (live effects)","Historical models, all views","Historical models, main only","Historical models, main + cull","Historical models, batching off","Historical models, batching on (repeat)","Historical models, actor-group cull","Historical models + queued decal visibility"};
+        static const char *names[]={"Live baseline (live effects)","Historical models, all views","Historical models, main only","Historical models, main + cull","Historical models, batching off","Historical models, batching on (repeat)","Historical models, actor-group cull","Historical models + queued decals"};
         return names[phase];
     }
     static const char *names[]={"Live baseline","Full cached preview","Main view only","Main + cull","Main + cull, historical particles off","Historical models and surfaces off","Optimized at latest tick","Earlier tick, previous memory path","Earlier tick, both optimizations","Earlier tick, residency only","Earlier tick, fast writes only","Earlier tick, batching off (both memory optimizations)","Earlier tick, batching on (repeat both)","Earlier tick, guarded reads off","Earlier tick, modern particles off","Earlier tick, legacy particles off","Earlier tick, historical surfaces off","Earlier tick, actor-group cull"};
@@ -600,7 +600,7 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
             g_SceneBenchReport+="  Native particle status: "+g_SceneParticleReplayResult.Status+"\n  Legacy status: "+g_SceneLegacyReplayResult.Status+"\n  Surface status: "+g_SceneHistoricalSurfaceStatus+"\n";
         }
     }
-    if(SceneBenchQueuedDecals(b)&&b.Phase>=7)g_SceneBenchReport+="  Queued decal visibility status: "+g_SceneHistoricalSurfaceStatus+"\n";
+    if(SceneBenchQueuedDecals(b)&&b.Phase>=7)g_SceneBenchReport+="  Queued decal status: "+g_SceneHistoricalSurfaceStatus+"\n";
     if(SceneBenchQueuedLegacy(b)&&b.Phase==SceneBenchLegacyPhase(b))g_SceneBenchReport+="  Queued legacy overlay status: "+g_SceneLegacyReplayResult.Status+
         "; submitted "+std::to_string(g_SceneLegacyReplayResult.Particles)+", rejected "+std::to_string(g_SceneLegacyReplayResult.Rejected)+" (live effects retained).\n";
     if(!b.RendererTargets.empty()||!b.PostRenderTargets.empty()){

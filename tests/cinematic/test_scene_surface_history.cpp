@@ -130,6 +130,14 @@ int main(){
     assert(!FilterQueuedDecalTail({mark,B},true,hideA,filtered,removed));
     assert(!FilterQueuedDecalTail({0,B},true,hideA,filtered,removed));
     assert(!FilterQueuedDecalTail({A,0},false,hideA,filtered,removed));
+    assert(CanPlanDetached(true,4,false,false));
+    assert(!CanPlanDetached(false,4,false,false));
+    assert(CanPlanDetached(false,4|16,false,false));
+    assert(!CanPlanDetached(false,4|16,false,true));
+    assert(!CanPlanDetached(false,4|8|16,true,false));
+    assert(CanPlanDetached(true,8,true,false));
+    assert(!CanPlanDetached(true,8,true,true));
+    assert(!CanPlanDetached(true,4,true,false));
     Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
     sh.Texture=ShadowTexture::Simple;sh.UV={.25f,.25f,.5f,.5f};
     assert(sh.HasSimpleTexture()&&sh.ReplayTextureRect()==sh.UV);

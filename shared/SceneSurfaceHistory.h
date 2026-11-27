@@ -71,6 +71,14 @@ struct Decal {
 inline bool ShouldSubmitDetached(bool surviving,bool liveVisible,bool gated){
     return !surviving||!liveVisible||gated;
 }
+// Queued detached reconstruction is strictly for absent historical records.
+// A surviving mark can only be replaced by the synchronous geometry gate;
+// an unsupported current slot is never permission to submit a duplicate.
+inline bool CanPlanDetached(bool immediate,unsigned requested,bool surviving,bool uncertainSlot){
+    if(uncertainSlot)return false;
+    if(surviving)return immediate&&(requested&8);
+    return (requested&4)&&(immediate||(requested&16));
+}
 // Native queued gathering has two formats: a plain list of decal pointers
 // or a sorted list with zero (outer group) and 0xffffffff (material run)
 // delimiters. The consumer looks ahead from a material marker to a real
