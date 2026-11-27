@@ -28,7 +28,10 @@ int main(){
     put(root,Address(0));check(!Capture(base,13,read).Complete,"root vtable guard");
     const auto oldBytes=h.Bytes,oldRevision=h.Revision;
     auto oldLease=h.ShareForPreview(11);auto invalidTick=f;invalidTick.Tick=-1;
-    check(!h.Append(invalidTick)&&h.At(10)&&h.At(11)&&h.Bytes==oldBytes&&h.Revision==oldRevision&&oldLease==h.ShareForPreview(11),"invalid tick preserves interval and lease");
+    check(!h.Append(invalidTick)&&h.Bytes==oldBytes&&h.Revision==oldRevision&&oldLease==h.ShareForPreview(11),"invalid tick preserves interval and lease");
+    // The one-entry decode cache legitimately changes when accessing another
+    // tick; verify lease identity before performing those lookups.
+    check(h.At(10)&&h.At(11),"invalid tick preserves both recorded samples");
     History retain(HistoryStorage::Store(f).BytesUsed());check(retain.Append(f),"retention budget");
     auto oversized=f;oversized.Tick=9;oversized.Points.resize(2048);
     for(std::size_t i=0;i<oversized.Points.size();++i)oversized.Points[i]={float(i),float(i*i),float(i%11)};
