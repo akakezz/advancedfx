@@ -1294,8 +1294,8 @@ bool SceneCacheSuppressLiveParticles()
         return deny("Previous native submission for this retained sample was incomplete; live effects retained.");
     if(!g_SceneBench.Active&&g_SceneLegacyReplay){
         const auto legacy=g_SceneLegacyHistory.ShareForPreview(tick);
-        if(!legacy||!legacy->Complete||legacy->Rejected||legacy->OtherRejected||legacy->UnknownMaterials||legacy->Expected!=legacy->Particles.size())
-            return deny("Requested legacy replay has incomplete recorded coverage; live effects retained.");
+        if(!legacy||!legacy->RecordedIsolationReady())
+            return deny("Requested legacy replay lacks complete manager-wide recorded coverage; live effects retained.");
         if(g_SceneLegacyIsolationFailed.Contains(g_SceneLegacyHistory.Revision,legacy->Tick))
             return deny("Previous legacy submission for this sample was incomplete; live effects retained.");
     }
@@ -2410,6 +2410,7 @@ static void SceneLegacyParticleStatus(int tick,bool previewSample=false)
     advancedfx::Message("Legacy dissolve tick %d: %zu emitters, %zu expected, %zu captured; spark %zu, combinemuzzle2 %zu, unknown material %zu; complete %d.\n",
         sample->Tick,sample->Emitters,sample->Expected,sample->Particles.size(),spark,glow,sample->UnknownMaterials,int(sample->Complete));
     advancedfx::Message("Additional exact simple emitters %zu; skipped additional emitters %zu; registered material names %zu.\n",sample->OtherEmitters,sample->OtherRejected,sample->Materials.size());
+    advancedfx::Message("Observed manager active %zu (known %d); uncaptured %zu; manager-wide isolation prerequisites %d.\n",sample->ObservedActive,int(sample->ObservedActiveKnown),sample->UncapturedActive(),int(sample->RecordedIsolationReady()));
     if(!sample->Particles.empty()){
         const auto &p=sample->Particles.front();
         advancedfx::Message("First XYZ %.3f %.3f %.3f; RGB %u %u %u; alpha %u -> %u; size %u -> %u; lifetime %.3f / %.3f; roll %.3f; UV %.3f %.3f %.3f %.3f.\n",
@@ -2508,7 +2509,7 @@ static std::string SceneValidationReport(){
         out<<"Modern sample: "<<p->Tick<<", complete "<<p->Complete<<", appearance complete "<<p->AppearanceComplete<<", collections "<<p->Collections.size()<<", active "<<p->Active<<", rejected "<<p->Rejected<<", appearance rejected "<<p->AppearanceRejected<<"\n";
     else out<<"Modern sample: unavailable\n";
     if(auto p=g_SceneLegacyHistory.ShareForPreview(tick))
-        out<<"Legacy sample: "<<p->Tick<<", complete "<<p->Complete<<", particles "<<p->Particles.size()<<", rejected "<<p->Rejected<<", unknown material "<<p->UnknownMaterials<<", other rejected "<<p->OtherRejected<<"\n";
+        out<<"Legacy sample: "<<p->Tick<<", complete "<<p->Complete<<", particles "<<p->Particles.size()<<", rejected "<<p->Rejected<<", unknown material "<<p->UnknownMaterials<<", other rejected "<<p->OtherRejected<<", manager active "<<p->ObservedActive<<" (known "<<p->ObservedActiveKnown<<"), uncaptured "<<p->UncapturedActive()<<", manager-wide isolation ready "<<p->RecordedIsolationReady()<<"\n";
     else out<<"Legacy sample: unavailable\n";
     const auto surface=g_SceneSurfaces.ResolvePreview(tick);
     if(surface){

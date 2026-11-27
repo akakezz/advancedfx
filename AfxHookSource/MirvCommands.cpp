@@ -290,6 +290,7 @@ std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *
         get(manager+0x38,endNodes)&&endNodes==nodes&&get(manager+0x48,endHead)&&endHead==head&&
         get(manager+0x4a,endTail)&&endTail==tail&&get(manager+0x4e,endCount)&&endCount==count;
     if(snapshot){
+        snapshot->ObservedActiveKnown=complete;snapshot->ObservedActive=active;
         snapshot->Complete=complete&&!unnamed&&!snapshot->Rejected&&snapshot->Particles.size()==snapshot->Expected;
         if(snapshot->Complete)for(const auto &[binding,particles]:otherSimple){
             if(named&&advancedfx::LegacyParticles::CaptureBinding(binding,particles,spark,glow,read,*snapshot,&materialNames)){++snapshot->OtherEmitters;++snapshot->Emitters;snapshot->Expected+=particles;}
@@ -303,7 +304,8 @@ std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *
     if(simple>64)report<<"Showing first 64 simple emitters plus any additional C_EntityDissolve emitters.\n";
     if(snapshot)report<<"Dissolve sample: "<<snapshot->Emitters<<" emitters, "<<snapshot->Expected<<" expected, "
         <<snapshot->Particles.size()<<" copied, "<<snapshot->UnknownMaterials<<" unknown material, "
-        <<snapshot->Rejected<<" rejected bindings; complete "<<int(snapshot->Complete)<<".\n";
+        <<snapshot->Rejected<<" rejected bindings; complete "<<int(snapshot->Complete)
+        <<"; manager active "<<snapshot->ObservedActive<<" (known "<<int(snapshot->ObservedActiveKnown)<<"), uncaptured "<<snapshot->UncapturedActive()<<".\n";
     report<<out.str();
     return report.str();
 #else

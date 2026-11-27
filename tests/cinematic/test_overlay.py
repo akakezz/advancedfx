@@ -1144,8 +1144,11 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
    g_SceneCursor=20*SceneTickInterval()+1e-8;check(!SceneCacheSuppressLiveParticles(),"Scrub back preserves native failure");
    g_SceneNativeParticles.Append(p);check(SceneCacheSuppressLiveParticles(),"Same-tick replacement invalidates failure revision");
    g_SceneLegacyReplay=true;check(!SceneCacheSuppressLiveParticles(),"Requested legacy replay without history prevents hiding");
-   advancedfx::LegacyParticles::Frame legacy;legacy.Tick=19;legacy.Complete=true;g_SceneLegacyHistory.Append(legacy);legacy.Tick=20;
-   check(g_SceneLegacyHistory.Append(legacy)&&SceneCacheSuppressLiveParticles(),"Complete empty legacy sample permits isolation");
+   advancedfx::LegacyParticles::Frame legacy;legacy.Tick=19;legacy.Complete=legacy.ObservedActiveKnown=true;g_SceneLegacyHistory.Append(legacy);legacy.Tick=20;
+   legacy.ObservedActive=1;
+   check(g_SceneLegacyHistory.Append(legacy)&&!SceneCacheSuppressLiveParticles(),"Selected empty legacy sample cannot hide unsupported active manager particles");
+   legacy.ObservedActive=0;
+   check(g_SceneLegacyHistory.Append(legacy)&&SceneCacheSuppressLiveParticles(),"Complete manager-wide empty legacy sample permits isolation");
    g_SceneLegacyIsolationFailed.Mark(g_SceneLegacyHistory.Revision,20);
    check(!SceneCacheSuppressLiveParticles(),"Known failed legacy submission prevents isolation");
    check(g_SceneLegacyHistory.ShareForPreview(19)!=nullptr,"Legacy decode switches lease");

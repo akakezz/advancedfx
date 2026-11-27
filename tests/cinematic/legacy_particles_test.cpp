@@ -30,6 +30,13 @@ int main(){
     Frame sample;sample.Tick=10;sample.Complete=true;sample.Expected=1;
     assert(CaptureBinding(binding,1,sub,0,read,sample));
     assert(sample.Particles.size()==1&&sample.Particles[0].Texture==Material::Spark&&sample.Particles[0].Color[2]==30);
+    assert(!sample.RecordedIsolationReady()); // selected capture does not establish global coverage
+    sample.ObservedActiveKnown=true;sample.ObservedActive=2;
+    assert(!sample.RecordedIsolationReady()&&sample.UncapturedActive()==1);
+    sample.ObservedActive=1;
+    assert(sample.RecordedIsolationReady()&&sample.UncapturedActive()==0);
+    sample.UnknownMaterials=1;assert(!sample.RecordedIsolationReady());sample.UnknownMaterials=0;
+    sample.OtherRejected=1;assert(!sample.RecordedIsolationReady());sample.OtherRejected=0;
     Frame unknown;assert(CaptureBinding(binding,1,0,0,read,unknown)&&unknown.UnknownMaterials==1);
     put(particle,Address(0));Frame bad;assert(!CaptureBinding(binding,1,sub,0,read,bad)&&bad.Particles.empty());
     put(particle,sentinel);put(particle+8,particle);assert(!CaptureBinding(binding,1,sub,0,read,bad));

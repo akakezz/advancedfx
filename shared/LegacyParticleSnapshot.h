@@ -50,6 +50,15 @@ struct Frame {
     std::vector<Particle> Particles;
     std::vector<std::string> Materials;
     std::size_t OtherEmitters=0,OtherRejected=0;
+    // Complete describes selected capture bindings, not necessarily the
+    // entire legacy manager. Blanket suppression needs independent coverage.
+    bool ObservedActiveKnown=false;
+    std::size_t ObservedActive=0;
+    std::size_t UncapturedActive()const{return ObservedActive>Particles.size()?ObservedActive-Particles.size():0;}
+    bool RecordedIsolationReady()const{
+        return Complete&&ObservedActiveKnown&&!Rejected&&!OtherRejected&&!UnknownMaterials&&
+            Expected==Particles.size()&&ObservedActive==Particles.size();
+    }
     std::size_t Bytes() const {std::size_t n=sizeof(Frame)+Particles.capacity()*sizeof(Particle)+Materials.capacity()*sizeof(std::string);for(const auto &s:Materials)n+=s.capacity();return n;}
 };
 // Capture only the exact named CSimpleEmitter dissolve type, with the binding
