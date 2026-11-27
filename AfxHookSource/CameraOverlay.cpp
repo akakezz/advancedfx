@@ -2395,7 +2395,9 @@ static std::string SceneValidationReport(){
         if(!frames.empty())out<<", ticks "<<frames.front().Tick<<".."<<frames.back().Tick;
         out<<"\n";
     };
-    out<<"Models: "<<g_SceneCache.Count()<<" frames, "<<g_SceneCache.Bytes()<<" bytes, "<<g_SceneCache.PoseCount()<<" unique poses\n";
+    out<<"Models: "<<g_SceneCache.Count()<<" frames, "<<g_SceneCache.Bytes()<<" bytes, "<<g_SceneCache.PoseCount()<<" unique poses";
+    if(!g_SceneCache.Frames().empty())out<<", ticks "<<int(std::floor(g_SceneCache.Frames().front().DemoTime/SceneTickInterval()+1e-9))<<".."<<int(std::floor(g_SceneCache.Frames().back().DemoTime/SceneTickInterval()+1e-9));
+    out<<"\n";
     history("Modern",g_SceneNativeParticles.Frames,g_SceneNativeParticles.Bytes,g_SceneNativeParticles.Evicted,g_SceneNativeParticles.Rejected);
     history("Legacy",g_SceneLegacyHistory.Frames,g_SceneLegacyHistory.Bytes,g_SceneLegacyHistory.Evicted,g_SceneLegacyHistory.Rejected);
     history("Surfaces",g_SceneSurfaces.Frames,g_SceneSurfaces.Bytes,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected);
