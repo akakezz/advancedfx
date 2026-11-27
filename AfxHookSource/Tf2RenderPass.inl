@@ -163,7 +163,10 @@ void __fastcall Tf2PassRenderFrame(void *self,
 #endif
  void *rect)
 {
+ static thread_local unsigned renderDepth=0;
+ struct DepthScope {unsigned &Depth;~DepthScope(){--Depth;}} depthScope{renderDepth};
  const bool outer = g_Tf2ActivePass == Tf2RenderPass::Count;
+ const bool benchmarkOuter=++renderDepth==1&&outer;
  struct GroupScope {
   bool Outer;
   ~GroupScope() { if (Outer) { g_Tf2RenderGroups.clear(); g_Tf2ReplayStudio = false; g_Tf2AuditActive = false; g_Tf2AuditModels.clear(); } }
@@ -197,6 +200,8 @@ void __fastcall Tf2PassRenderFrame(void *self,
    AfxHookSource::CameraOverlay::SceneCachePublishModelAudit(globals->framecount_get(), std::move(g_Tf2AuditModels));
   g_Tf2AuditActive = false;
  }
+ if(benchmarkOuter&&!any&&Tf2RenderPassSupported()&&rect)
+  AfxHookSource::CameraOverlay::SceneCacheBenchmarkRenderEnd();
  // Normal TF2 frames enter View_Render, not the tools-only RenderView entry.
  // GetPlayerView copies Source SDK 2013's 200-byte CViewSetup into bounded,
  // generously sized aligned storage; it is forwarded opaquely, never cast to CS:GO.

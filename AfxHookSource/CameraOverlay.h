@@ -47,6 +47,7 @@ enum class DemoFixPreference
 void RememberDemoFixPreference(DemoFixPreference setting, double value);
 void PreferencesFrame(); // Engine FRAME_START, including when the overlay is closed.
 void Draw();
+void SceneCacheBenchmarkRenderEnd(); // One completed ordinary outer render, independent of demo frame count.
 void SceneCacheFrame(bool capture = true); // Capture at TF2 FRAME_RENDER_END; false only updates preview.
 void SceneCacheDrawModels();
 void SceneCacheDrawParticles();

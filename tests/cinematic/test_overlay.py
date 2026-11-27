@@ -1240,7 +1240,14 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  check(SceneCacheReplayActive()&&SceneCacheSuppressLiveStudio(),"A valid broad preview enables replacement");
  {const bool record=g_SceneRecord,main=g_SceneMainViewOnly,cull=g_ScenePreviewCull,native=g_SceneNativeParticleReplay,legacy=g_SceneLegacyReplay,markers=g_SceneNativeParticleMarkers,legacyMarkers=g_SceneLegacyMarkers;const double cursor=g_SceneCursor;
   auto &b=g_SceneBench;b={};b.Active=true;b.Record=record;b.Preview=true;b.Models=true;b.MainOnly=main;b.Cull=cull;b.Native=native;b.Legacy=legacy;b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.Markers=markers;b.LegacyMarkers=legacyMarkers;b.Cursor=cursor;b.Late=cursor;b.OriginalSequencer=int(g_SequencerFrame);
-  SceneBenchApply(0,std::chrono::steady_clock::now());check(!g_ScenePreview&&!g_SceneRecord,"Benchmark baseline preserves history and stops capture");
+  const auto benchStart=std::chrono::steady_clock::now();
+  SceneBenchApply(0,benchStart);check(!g_ScenePreview&&!g_SceneRecord,"Benchmark baseline preserves history and stops capture");
+  SceneBenchFrame(benchStart+std::chrono::milliseconds(600));
+  check(b.Active&&b.Measuring&&b.RenderCallbacks==1,"Benchmark begins from render callbacks without global frame clock");
+  SceneBenchFrame(benchStart+std::chrono::milliseconds(900));
+  check(b.Frames==1&&b.RenderCallbacks==2,"Repeated render increments despite frozen global frame");
+  SceneBenchFrame(benchStart+std::chrono::milliseconds(2800));
+  check(b.Phase==1&&b.RenderCallbacks==3,"Benchmark progresses after wall-clock window");
   SceneBenchApply(3,std::chrono::steady_clock::now());check(g_ScenePreview&&g_SceneMainViewOnly&&g_ScenePreviewCull&&g_SceneDrawModels,"Benchmark applies optimized replay");
   SceneBenchApply(4,std::chrono::steady_clock::now());check(!g_SceneNativeParticleReplay&&!g_SceneLegacyReplay,"Benchmark isolates particle cost");
   SceneBenchApply(7,std::chrono::steady_clock::now());check(!g_SceneKeepAssets&&!g_SceneFastParticleWrites,"Benchmark can compare the old memory paths");SceneBenchApply(8,std::chrono::steady_clock::now());check(g_SceneKeepAssets&&g_SceneFastParticleWrites,"Benchmark enables new memory paths again");

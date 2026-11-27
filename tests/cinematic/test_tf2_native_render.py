@@ -136,7 +136,8 @@ float surfaceValues[2]={1,.5f};int surfaceWrites=0;bool surfaceWritable=true;
 bool Mirv_Tf2_SceneDrawVisibility(const char*n,float &v,bool write){int i=!std::strcmp(n,"r_shadows")?0:1;if(write){++surfaceWrites;if(!surfaceWritable)return false;surfaceValues[i]=v;}else v=surfaceValues[i];return true;}
 bool Mirv_Tf2_LiveParticleVisibility(float &v,bool write){if(!particleAvailable)return false;if(write){++particleWrites;if(!particleWritable)return false;particleVisibility=v;}else v=particleVisibility;return true;}
 int auditFrame=-1;std::map<const void*,int> audited;
-namespace AfxHookSource{namespace CameraOverlay{bool SceneCacheSuppressLiveStudio(){return replay;}bool SceneCacheSuppressLiveParticles(){return particleIsolation;}unsigned surfaceMask=0;unsigned SceneCacheLiveSurfaceIsolation(){return surfaceMask;}unsigned SceneCacheBeginHistoricalSurfaces(){return 0;}void SceneCacheEndHistoricalSurfaces(){}void SceneCachePublishSurfaceIsolation(unsigned,const char*){}void SceneCachePublishParticleIsolation(const char*s){particleIsolationStatus=s;}bool SceneCacheAuditActive(){return audit;}void SceneCachePublishModelAudit(int f,std::map<const void*,int> s){auditFrame=f;audited=std::move(s);}}}
+int benchmarkRenderEnds=0;
+namespace AfxHookSource{namespace CameraOverlay{void SceneCacheBenchmarkRenderEnd(){++benchmarkRenderEnds;}bool SceneCacheSuppressLiveStudio(){return replay;}bool SceneCacheSuppressLiveParticles(){return particleIsolation;}unsigned surfaceMask=0;unsigned SceneCacheLiveSurfaceIsolation(){return surfaceMask;}unsigned SceneCacheBeginHistoricalSurfaces(){return 0;}void SceneCacheEndHistoricalSurfaces(){}void SceneCachePublishSurfaceIsolation(unsigned,const char*){}void SceneCachePublishParticleIsolation(const char*s){particleIsolationStatus=s;}bool SceneCacheAuditActive(){return audit;}void SceneCachePublishModelAudit(int f,std::map<const void*,int> s){auditFrame=f;audited=std::move(s);}}}
 void Mirv_Tf2_RenderGroups(std::map<const void*,unsigned>&groups,int hidden,bool mark){unsigned b=mark?8u:0u;groups={{&player,b|1u|(hidden?4u:0u)},{&gear,b|1u|(hidden?4u:0u)},{&vm,b|2u},{&prop,0}};}
 #include "AfxHookSource/Tf2RenderPass.inl"
 std::map<Tf2RenderPass,std::vector<const void*>> visible,depthDraws;std::map<Tf2RenderPass,int> hudByPass;
@@ -162,7 +163,7 @@ int main(){
  void *paintSlots[37]={};paintSlots[9]=reinterpret_cast<void*>(SceneEnd);paintSlots[36]=reinterpret_cast<void*>(Paint);void **paint=paintSlots;Tf2RenderPassInstallRenderView(&paint);assert(Tf2RenderPassSupported());
  assert(clientSlots[27]==reinterpret_cast<void*>(Render)); // Normal-frame interception, not the tools-only entry.
  Tf2PassRenderFrame(&client,rect);FlushGpu();
- assert(ordinaryFrames==1&&renderCalls==5&&hudWrites==1&&mask==15&&colorStack.empty());
+ assert(ordinaryFrames==1&&renderCalls==5&&hudWrites==1&&mask==15&&colorStack.empty()&&benchmarkRenderEnds==0);
  assert(g_AfxStreams.Begins.size()==5&&g_AfxStreams.Begins==g_AfxStreams.Ends);
  assert((visible[Tf2RenderPass::World]==std::vector<const void*>{&prop}));
  assert((depthDraws[Tf2RenderPass::World]==std::vector<const void*>{&prop}));
@@ -173,7 +174,7 @@ int main(){
  Tf2PassRenderFrame(&client,rect);assert(ordinaryFrames==2&&renderCalls==5); // One capture batch per frame.
  globals.Count++;queued=true;visible.clear();Tf2PassRenderFrame(&client,rect);assert(!gpuQueue.empty());FlushGpu();assert(mask==15&&colorStack.empty()&&hudWrites==2);
  assert((visible[Tf2RenderPass::World]==std::vector<const void*>{&prop}));assert((visible[Tf2RenderPass::Players]==std::vector<const void*>{&player,&gear}));assert((visible[Tf2RenderPass::Viewmodel]==std::vector<const void*>{&vm}));
- globals.Count++;g_AfxStreams.Recording=false;Tf2PassRenderFrame(&client,rect);assert(ordinaryFrames==4&&renderCalls==10);
+ globals.Count++;g_AfxStreams.Recording=false;Tf2PassRenderFrame(&client,rect);assert(ordinaryFrames==4&&renderCalls==10&&benchmarkRenderEnds==1);
  hiddenPlayer=2;FlushGpu();visible.clear();Tf2PassRenderFrame(&client,rect);FlushGpu();
  assert((visible[Tf2RenderPass::Count]==std::vector<const void*>{&vm,&prop}));assert(g_Tf2RenderGroups.empty());
  hiddenPlayer=0;
