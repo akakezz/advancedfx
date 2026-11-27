@@ -189,5 +189,16 @@ int main(){
     damaged=full;damaged.Collections[0].HasTime=false;
     check(BuildReplayPrerequisites(damaged,eligible)&&eligible[0]==ReplayPrerequisite::Clock&&eligible[1]==ReplayPrerequisite::Ready,"empty node still requires clock, children remain eligible");
     damaged.Collections[1].Parent=1;check(!BuildReplayPrerequisites(damaged,eligible)&&eligible.empty(),"malformed recorded hierarchy rejected");
+    Frame empty;empty.Complete=empty.Appearance=empty.AppearanceComplete=true;
+    check(RecordedIsolationReady(empty),"complete empty capture may isolate live effects");
+    full.AppearanceComplete=true;full.Active=8;full.Points.resize(8);
+    check(RecordedIsolationReady(full),"compatible complete tree may isolate");
+    auto incomplete=full;incomplete.Collections[1].Mask&=~1u;
+    check(!RecordedIsolationReady(incomplete),"incompatible recorded tree cannot authorize blanket hiding");
+    incomplete=full;incomplete.Active=7;check(!RecordedIsolationReady(incomplete),"recorded active total mismatch");
+    incomplete=full;incomplete.Points.pop_back();check(!RecordedIsolationReady(incomplete),"missing recorded positions");
+    incomplete=full;incomplete.AppearanceRejected=1;check(!RecordedIsolationReady(incomplete),"capture rejection prevents isolation");
+    incomplete=empty;incomplete.Collections.resize(1);
+    check(RecordedIsolationReady(incomplete),"unused empty root does not prevent isolation");
     std::cout<<"Native particle snapshot tests passed\n";
 }

@@ -79,6 +79,10 @@ static std::string g_SceneParticleIsolationStatus="Not evaluated yet.";
 static advancedfx::NativeParticles::ReplayResult g_SceneParticleReplayResult;
 static int g_SceneParticleReplayTick=-1;
 static advancedfx::NativeParticles::History g_SceneNativeParticles;
+// Weak leases identify the immutable decoded sample, not a reusable tick.
+static std::weak_ptr<const advancedfx::NativeParticles::Frame> g_SceneIsolationChecked,g_SceneIsolationFailed;
+static bool g_SceneIsolationRecordedReady=false;
+static std::string g_SceneIsolationEligibility="Not evaluated.";
 static double g_SceneNativeParticleMs=0, g_SceneNativeParticleTotalMs=0, g_SceneNativeParticlePeakMs=0;
 static std::size_t g_SceneNativeParticleSamples=0;
 static int g_SceneDetachedTick=-1, g_SceneDetachedIndex=-1;
@@ -142,6 +146,7 @@ static bool g_SceneFastParticleWrites=true; // verified detached allocations onl
 static bool g_SceneFastParticleReads=true; // verified detached validation only
 static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
+    g_SceneIsolationChecked.reset();g_SceneIsolationFailed.reset();g_SceneIsolationRecordedReady=false;g_SceneIsolationEligibility="Not evaluated.";
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
     g_SceneLegacyAuditPending=false;
     g_SceneLegacyHistory.Clear();g_SceneLegacyCaptureStatus="Not captured.";
@@ -598,6 +603,7 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
                 }
             }
             g_SceneBenchReport+="  Recorded preflight factories avoided: "+std::to_string(g_ScenePerf.ParticlePreflightRejected-b.Before.ParticlePreflightRejected)+"\n";
+            g_SceneBenchReport+="  Isolation eligibility: "+g_SceneIsolationEligibility+"\n";
             g_SceneBenchReport+="  Native particle status: "+g_SceneParticleReplayResult.Status+"\n  Legacy status: "+g_SceneLegacyReplayResult.Status+"\n  Surface status: "+g_SceneHistoricalSurfaceStatus+"\n";
         }
     }
@@ -1234,14 +1240,27 @@ bool SceneCacheSuppressLiveParticles()
 {
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
     const bool benchOff=g_SceneBench.Active&&!g_SceneBench.ModelsOnly&&(g_SceneBench.Phase==4||g_SceneBench.Phase==14)&&g_SceneBench.Native;
+    auto deny=[](const char *why){g_SceneIsolationEligibility=why;return false;};
     if(!g_SceneSuppressLiveParticles||!g_ScenePreview||(!g_SceneNativeParticleReplay&&!benchOff)||
-       !SceneCanDrawModels()||!SceneCacheView()||!Mirv_Tf2_ParticleIsolationReady())return false;
+       !SceneCanDrawModels()||!SceneCacheView()||!Mirv_Tf2_ParticleIsolationReady())return deny("Off, no preview, or unsupported context.");
     const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
-    const auto *sample=g_SceneNativeParticles.ForPreview(tick);
-    // An empty but complete historical sample is valid. Never hide live
-    // effects across a gap, partial position capture or incomplete appearance.
-    return sample&&sample->Complete&&sample->Appearance&&sample->AppearanceComplete&&
-           !sample->Rejected&&!sample->AppearanceRejected;
+    const auto sample=g_SceneNativeParticles.ShareForPreview(tick);
+    if(!sample)return deny("No retained modern particle sample.");
+    if(g_SceneIsolationChecked.lock()!=sample){
+        g_SceneIsolationRecordedReady=advancedfx::NativeParticles::RecordedIsolationReady(*sample);
+        g_SceneIsolationChecked=sample;
+    }
+    if(!g_SceneIsolationRecordedReady)return deny("Recorded modern prerequisites incomplete; live effects retained.");
+    // Keep intentional benchmark ablations independent of previous phase outcomes.
+    if(!g_SceneBench.Active&&g_SceneIsolationFailed.lock()==sample)
+        return deny("Previous native submission for this decoded sample was incomplete; live effects retained.");
+    if(!g_SceneBench.Active&&g_SceneLegacyReplay){
+        const auto legacy=g_SceneLegacyHistory.ShareForPreview(tick);
+        if(!legacy||!legacy->Complete||legacy->Rejected||legacy->OtherRejected||legacy->UnknownMaterials||legacy->Expected!=legacy->Particles.size())
+            return deny("Requested legacy replay has incomplete recorded coverage; live effects retained.");
+    }
+    g_SceneIsolationEligibility="Recorded prerequisites satisfied (not pixel coverage).";
+    return true;
 }
 void SceneCachePublishParticleIsolation(const char *status)
 {
@@ -1360,6 +1379,8 @@ void SceneCacheDrawParticles()
     // Non-main callbacks must not overwrite the last main-view diagnostic.
     if(!result.MainView&&result.Status.empty())return;
     if(epoch==g_SceneDrawEpoch.load()&&g_SceneNativeParticleReplay) {
+        if(!g_SceneBench.Active&&(!result.MainView||result.Rejected||result.CleanupFailures||result.Particles!=sample->Active))
+            g_SceneIsolationFailed=sample; // latch until the decoded lease changes
         g_SceneParticleReplayTick=sample->Tick;g_SceneParticleReplayResult=std::move(result);
     }
 }
@@ -2454,6 +2475,7 @@ static std::string SceneValidationReport(){
        <<"Native particle replay tick "<<g_SceneParticleReplayTick<<": "<<g_SceneParticleReplayResult.Status<<"\n"
        <<"Legacy replay tick "<<g_SceneLegacyReplayTick<<": "<<g_SceneLegacyReplayResult.Status<<"\n"
        <<"Live particle isolation: "<<g_SceneParticleIsolationStatus<<"\n"
+       <<"Isolation eligibility: "<<g_SceneIsolationEligibility<<"\n"
        <<"Historical surfaces: "<<g_SceneHistoricalSurfaceStatus<<"\n"
        <<"Benchmark active "<<g_SceneBench.Active<<", queue restoration pending "<<g_SceneBenchRestoreQueue<<"\n";
     if(!g_SceneBenchReport.empty())out<<"\n--- Latest benchmark (settings/ticks at benchmark time) ---\n"<<g_SceneBenchReport;

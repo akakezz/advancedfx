@@ -1132,12 +1132,23 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  sceneCommand({"mirv_cache","particles","isolate","1"});check(g_SceneSuppressLiveParticles&&!SceneCacheSuppressLiveParticles(),"Isolation opt-in never hides live particles without cached preview coverage");
  {using namespace advancedfx::NativeParticles;Frame p;p.Tick=20;p.Complete=p.Appearance=p.AppearanceComplete=true;g_SceneNativeParticles.Append(p);
   g_ScenePreview=true;g_SceneCursor=20*SceneTickInterval()+1e-8;std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));
-  check(SceneCacheSuppressLiveParticles(),"Covered empty appearance snapshot is eligible for isolation");
+  const bool savedLegacy=g_SceneLegacyReplay;g_SceneLegacyReplay=false;
+   check(SceneCacheSuppressLiveParticles(),"Covered empty appearance snapshot is eligible for isolation");
+   g_SceneIsolationFailed=g_SceneNativeParticles.ShareForPreview(20);
+   check(!SceneCacheSuppressLiveParticles(),"Known failed submission leaves live particles visible");
+   g_SceneNativeParticles.Append(p);check(SceneCacheSuppressLiveParticles(),"Same-tick replacement invalidates failure lease");
+   g_SceneLegacyReplay=true;check(!SceneCacheSuppressLiveParticles(),"Requested legacy replay without history prevents hiding");
+   advancedfx::LegacyParticles::Frame legacy;legacy.Tick=20;legacy.Complete=true;
+   check(g_SceneLegacyHistory.Append(legacy)&&SceneCacheSuppressLiveParticles(),"Complete empty legacy sample permits isolation");
+   g_SceneLegacyHistory.Clear();g_SceneLegacyReplay=false;
+   auto bad=p;bad.Active=1;bad.Points.resize(1);bad.Collections.resize(1);bad.Collections[0].Active=1;
+   g_SceneNativeParticles.Append(bad);check(!SceneCacheSuppressLiveParticles(),"Capture flag alone cannot authorize incompatible replay");
+   g_SceneNativeParticles.Append(p);check(SceneCacheSuppressLiveParticles(),"Valid replacement refreshes eligibility");
   sceneParticleIsolationReady=false;check(!SceneCacheSuppressLiveParticles(),"Unverified or advancing engine cannot isolate particles");sceneParticleIsolationReady=true;
   SceneParticlePreviewMode(2);check(!SceneCacheSuppressLiveParticles(),"Diagnostic markers do not isolate live effects");SceneParticlePreviewMode(1);
   g_SceneCursor=100*SceneTickInterval();check(!SceneCacheSuppressLiveParticles(),"Missing history never isolates live effects");
   g_SceneCursor=20*SceneTickInterval()+1e-8;p.AppearanceComplete=false;g_SceneNativeParticles.Append(p);check(!SceneCacheSuppressLiveParticles(),"Partial appearance never isolates live effects");
-  g_ScenePreview=false;g_SceneNativeParticles.Clear();std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>{});}
+  g_SceneLegacyReplay=savedLegacy;g_ScenePreview=false;g_SceneNativeParticles.Clear();std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>{});}
  sceneCommand({"mirv_cache","particles","isolate","0"});
  sceneCommand({"mirv_cache","particles","0"});check(!g_SceneNativeParticlesEnabled&&!g_SceneNativeParticleReplay&&!g_SceneNativeParticleMarkers,"One particle command disables capture and preview");
  std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));sceneCommand({"mirv_cache","models","0"});SceneCacheDrawModels();check(scenePoseDraws==1&&sceneQueued.empty(),"Disabled models create no rendering or resource work");

@@ -331,6 +331,21 @@ inline bool BuildReplayPrerequisites(const Frame &f,std::vector<ReplayPrerequisi
     }
     return true;
 }
+// Capture completeness alone does not authorize blanket live isolation.
+inline bool RecordedIsolationReady(const Frame &f){
+    if(!f.Complete||!f.Appearance||!f.AppearanceComplete||f.Rejected||f.AppearanceRejected)return false;
+    std::vector<ReplayPrerequisite> why;
+    if(!BuildReplayPrerequisites(f,why))return false;
+    std::vector<bool> active(f.Collections.size());
+    std::size_t count=0;
+    for(std::size_t i=f.Collections.size();i--;){
+        const auto &c=f.Collections[i];count+=c.Active;
+        active[i]=active[i]||c.Active!=0;
+        if(active[i]&&why[i]!=ReplayPrerequisite::Ready)return false;
+        if(c.Parent>=0&&active[i])active[c.Parent]=true;
+    }
+    return count==f.Active&&count==f.Points.size();
+}
 template<class Reader>
 RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader read,const ChildIndex *prepared=nullptr) {
     using namespace Layout;
