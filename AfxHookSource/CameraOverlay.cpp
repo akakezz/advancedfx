@@ -2393,7 +2393,7 @@ static void SceneNativeParticleStatus(int tick)
 // empty parents, so a reported index can also be used by the detached probe.
 static void SceneLegacyParticleStatus(int tick,bool previewSample=false)
 {
-    advancedfx::Message("Queued spark/muzzle overlay %d (live effects remain; named materials immediate-only).\n",int(g_SceneLegacyQueued));
+    advancedfx::Message("Queued anchored-page legacy overlay %d (live effects remain; other named pages immediate-only).\n",int(g_SceneLegacyQueued));
     advancedfx::Message("Legacy textured replay %d; tick %d: %zu submitted, %zu rejected (particles or batches); %s\n",int(g_SceneLegacyReplay),g_SceneLegacyReplayTick,g_SceneLegacyReplayResult.Particles,g_SceneLegacyReplayResult.Rejected,g_SceneLegacyReplayResult.Status.c_str());
     using namespace advancedfx::LegacyParticles;
     const auto &history=g_SceneLegacyHistory;
@@ -7476,7 +7476,7 @@ static void DrawSceneCacheMenu(int playhead)
 		if(particleMode==1) {
 		    DrawOverlayHint("Native particle preview requires a paused or frozen demo (demo_timescale 0) and immediate rendering.");
 		    ImGui::Checkbox("Replay legacy dissolve particles (experimental)",&g_SceneLegacyReplay);
-            ImGui::Checkbox("Queued legacy spark/muzzle overlay (experimental)",&g_SceneLegacyQueued);
+            ImGui::Checkbox("Queued legacy anchored-page overlay (experimental)",&g_SceneLegacyQueued);
             if(g_SceneLegacyReplay)DrawOverlayHint(g_SceneLegacyReplayResult.Status.c_str());
 		    ImGui::Checkbox("Suppress live particles (experimental)",&g_SceneSuppressLiveParticles);
 		    if(g_SceneSuppressLiveParticles) {

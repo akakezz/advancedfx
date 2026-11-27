@@ -16,6 +16,24 @@
 namespace advancedfx { namespace LegacyParticles {
 using Address=std::uint64_t;
 enum class Material : unsigned char { Unknown, Spark, CombineMuzzle, Named };
+// Current-view dictionary only. A name with multiple native subtextures
+// is not sufficient identity for an exact historical lookup.
+inline std::map<std::string,Address> UniqueMaterialNames(const std::map<Address,std::string> &source){
+    std::map<std::string,Address> result;
+    for(const auto &[address,name]:source)if(address&&!name.empty()){
+        auto entry=result.try_emplace(name,address);
+        if(!entry.second&&entry.first->second!=address)entry.first->second=0;
+    }
+    return result;
+}
+// The known globals anchor the page lifetime. Named subtextures may share
+// either exact page, but an arbitrary registered material is not proof of
+// queued lifetime. The caller still checks native precache/proxy/mesh guards.
+inline bool QueuedMaterialPageAllowed(Material material,Address page,Address sparkPage,Address muzzlePage){
+    if(!page)return false;
+    if(material==Material::Spark||material==Material::CombineMuzzle)return true;
+    return material==Material::Named&&(page==sparkPage||page==muzzlePage);
+}
 struct Particle {
     std::array<float,3> Position{},Velocity{};
     float Roll=0,DieTime=0,Lifetime=0,RollDelta=0,NearClip=16,FarClip=64;

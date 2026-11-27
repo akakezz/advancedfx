@@ -548,34 +548,54 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
     struct Batch { Address Sub=0,Group=0;float Near=16,Far=64;std::vector<const Particle*> Items; };
     std::vector<Batch> batches;
     std::map<Address,std::string> names;
-    if(!queued&&!frame.Materials.empty())SceneLegacyMaterialNames(base,read,names);
+    if(!frame.Materials.empty())SceneLegacyMaterialNames(base,read,names);
+    const auto uniqueNames=UniqueMaterialNames(names);
+    Address sparkPage=0,muzzlePage=0;
+    // Named queued subtextures are accepted only on a page already held
+    // by one of the verified global legacy material handles. No new page
+    // lifetime is inferred from a dictionary name.
+    auto anchorPage=[&](Address field,Address &page){
+        Address sub=0,group=0;
+        if(!get(base+field,sub)||!sub||!get(sub+0x10,group)||!group||!get(group,page))page=0;
+    };
+    if(queued&&!frame.Materials.empty()){
+        anchorPage(0x11220b0,sparkPage);anchorPage(0x1071988,muzzlePage);
+    }
+    std::size_t namedEligible=0,namedRejected=0;
     // Resolve and validate each material once per synchronous callback.
     // Keep the historical UV and clip checks per particle; no pointer survives.
     struct Resolved {Address Sub=0,Group=0;std::array<float,4> UV{};bool Valid=false;};
     std::map<std::pair<unsigned,unsigned>,Resolved> resolved;
     for(const auto &p:frame.Particles){
-        // The broader named-material path remains immediate-only: arbitrary
-        // material proxy behavior is not established for this experiment.
-        if(p.Texture==Material::Unknown||(queued&&p.Texture!=Material::Spark&&p.Texture!=Material::CombineMuzzle)){++result.Rejected;continue;}
+        if(p.Texture!=Material::Spark&&p.Texture!=Material::CombineMuzzle&&p.Texture!=Material::Named){++result.Rejected;continue;}
+        auto rejectParticle=[&](){++result.Rejected;if(p.Texture==Material::Named)++namedRejected;};
         const auto key=std::make_pair(unsigned(p.Texture),p.Texture==Material::Named?unsigned(p.MaterialIndex):0u);
         auto entry=resolved.try_emplace(key);
         auto &r=entry.first->second;
         if(entry.second){
             if(p.Texture==Material::Named){
-                if(p.MaterialIndex<frame.Materials.size())for(const auto &[address,name]:names)if(name==frame.Materials[p.MaterialIndex]){r.Sub=address;break;}
+                if(p.MaterialIndex<frame.Materials.size()){
+                    auto found=uniqueNames.find(frame.Materials[p.MaterialIndex]);
+                    if(found!=uniqueNames.end())r.Sub=found->second;
+                }
             } else {const Address field=base+(p.Texture==Material::Spark?0x11220b0:0x1071988);get(field,r.Sub);}
             Address page=0,pageVt=0;
             r.Valid=r.Sub&&get(r.Sub,r.UV)&&get(r.Sub+0x10,r.Group)&&get(r.Group,page)&&get(page,pageVt)&&pageVt&&
-                (!queued||SurfaceQueuedMaterialReady(page));
+                (!queued||(QueuedMaterialPageAllowed(p.Texture,page,sparkPage,muzzlePage)&&SurfaceQueuedMaterialReady(page)));
         }
         const auto sub=r.Sub,group=r.Group;
         if(!r.Valid||r.UV!=p.UV||
-           !std::isfinite(p.NearClip)||!std::isfinite(p.FarClip)||p.NearClip<0||p.FarClip<=p.NearClip){++result.Rejected;continue;}
+           !std::isfinite(p.NearClip)||!std::isfinite(p.FarClip)||p.NearClip<0||p.FarClip<=p.NearClip){rejectParticle();continue;}
         auto it=std::find_if(batches.begin(),batches.end(),[&](const Batch &b){return b.Sub==sub&&b.Near==p.NearClip&&b.Far==p.FarClip;});
-        if(it==batches.end()){if(batches.size()>=64){++result.Rejected;continue;}batches.push_back({sub,group,p.NearClip,p.FarClip,{}});it=std::prev(batches.end());}
+        if(it==batches.end()){if(batches.size()>=64){rejectParticle();continue;}batches.push_back({sub,group,p.NearClip,p.FarClip,{}});it=std::prev(batches.end());}
         it->Items.push_back(&p);
+        if(p.Texture==Material::Named)++namedEligible;
     }
-    if(batches.empty())return fail(queued?"No supported spark/muzzle legacy batches for queued replay.":"No known valid legacy material batches at this tick.");
+    if(batches.empty()){
+        result.Status=queued?"No supported anchored legacy material batches for queued replay.":"No known valid legacy material batches at this tick.";
+        result.Status+=" Named eligible "+std::to_string(namedEligible)+", rejected "+std::to_string(namedRejected)+".";
+        return result;
+    }
     auto slot=[&](Address object,unsigned off)->Address{Address table=0,fn=0;return get(object,table)&&get(table+off,fn)?fn:0;};
     using Getter=void*(*)(void*);using NoArg=void(*)(void*);using Mode=void(*)(void*,int);
     using MatrixGet=void(*)(void*,int,float*);
@@ -676,8 +696,9 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
         else ++result.Rejected;
     }
     if(result.Status.empty())result.Status=queued?
-        "Experimental queued legacy spark/muzzle mesh submissions with private view matrix (live effects retained, not pixel coverage).":
+        "Experimental queued legacy anchored-page mesh submissions with private view matrix (live effects retained, not pixel coverage).":
         "Experimental legacy native material submissions (not pixel coverage).";
+    result.Status+=" Named eligible "+std::to_string(namedEligible)+", rejected "+std::to_string(namedRejected)+" (material selection, not draw coverage).";
 #else
     result.Status="Legacy replay requires TF2 x64.";
 #endif

@@ -4,6 +4,15 @@
 #include <map>
 using namespace advancedfx::LegacyParticles;
 int main(){
+    auto unique=UniqueMaterialNames({{0x10000,"spark"},{0x20000,"named"},{0x30000,"named"},{0x40000,"other"}});
+    assert(unique.at("spark")==0x10000&&unique.at("named")==0&&unique.at("other")==0x40000);
+    assert(QueuedMaterialPageAllowed(Material::Spark,0x10000,0,0));
+    assert(QueuedMaterialPageAllowed(Material::CombineMuzzle,0x20000,0,0));
+    assert(QueuedMaterialPageAllowed(Material::Named,0x10000,0x10000,0x20000));
+    assert(QueuedMaterialPageAllowed(Material::Named,0x20000,0x10000,0x20000));
+    assert(!QueuedMaterialPageAllowed(Material::Named,0x30000,0x10000,0x20000));
+    assert(!QueuedMaterialPageAllowed(Material::Named,0,0,0));
+    assert(!QueuedMaterialPageAllowed(Material::Unknown,0x10000,0x10000,0x20000));
     std::map<Address,unsigned char> memory;
     auto put=[&](Address a,const auto &v){const auto *p=reinterpret_cast<const unsigned char*>(&v);for(std::size_t i=0;i<sizeof(v);++i)memory[a+i]=p[i];};
     auto read=[&](Address a,void *out,std::size_t n){auto *p=static_cast<unsigned char*>(out);for(std::size_t i=0;i<n;++i){auto it=memory.find(a+i);if(it==memory.end())return false;p[i]=it->second;}return true;};
