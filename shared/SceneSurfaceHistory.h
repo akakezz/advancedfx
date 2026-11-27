@@ -51,6 +51,11 @@ struct Decal {
     unsigned char ReplayAlpha()const{return !Alpha?0:(Fading()?(FadeExpired?0:FadeAlpha):Alpha);}
     bool Visible()const{return ReplayAlpha()!=0;}
     bool HasGeometry()const{return GeometryGroup>=0&&GeometryGroup<3&&Geometry&&ValidDecalGeometry(*Geometry);}
+    // For surviving decals, replace only when a historical visible mark
+    // differs in evaluated alpha and we have a validated polygon.
+    bool NeedsOpacityReplay(const Decal &live)const{
+        return Visible()&&Same(live)&&ReplayAlpha()!=live.ReplayAlpha()&&HasGeometry();
+    }
     std::string Material;
     bool Same(const Decal &o) const {
         return Slot==o.Slot&&Surface==o.Surface&&Flags==o.Flags&&NameIndex==o.NameIndex&&Placement==o.Placement&&Color==o.Color&&Material==o.Material&&FadeDuration==o.FadeDuration&&FadeStart==o.FadeStart&&LightmapOffset==o.LightmapOffset;
@@ -60,6 +65,11 @@ struct Decal {
             (Geometry==o.Geometry||(Geometry&&o.Geometry&&*Geometry==*o.Geometry));
     }
 };
+// A planned surviving replacement is submitted only if the original
+// geometry was actually gated in this dispatcher, or already invisible.
+inline bool ShouldSubmitDetached(bool surviving,bool liveVisible,bool gated){
+    return !surviving||!liveVisible||gated;
+}
 struct Shadow {
     std::array<float,3> Origin{},Direction{},Caster{};
     std::array<float,16> Matrix{};

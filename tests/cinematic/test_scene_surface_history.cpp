@@ -61,6 +61,13 @@ int main(){
     assert(ValidDecalGeometry(polygon));polygon[0][0]=0x7f800000;assert(!ValidDecalGeometry(polygon));polygon[0][0]=0;
     Decal a;a.GeometryGroup=0;a.Geometry=std::make_shared<const std::vector<DecalVertex>>(polygon);
     assert(a.HasGeometry());a.GeometryGroup=3;assert(!a.HasGeometry());a.GeometryGroup=0;
+    Decal live=a;assert(!a.NeedsOpacityReplay(live));
+    live.Alpha=20;assert(a.NeedsOpacityReplay(live));
+    live.Surface=1;assert(!a.NeedsOpacityReplay(live));
+    Decal invisible=a;invisible.Alpha=0;assert(!invisible.NeedsOpacityReplay(a));
+    assert(ShouldSubmitDetached(false,true,false));
+    assert(!ShouldSubmitDetached(true,true,false));
+    assert(ShouldSubmitDetached(true,true,true)&&ShouldSubmitDetached(true,false,false));
     Frame geom;geom.Tick=1;geom.World=9;geom.DecalsReady=true;
     geom.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{a});
     History gh;assert(gh.Append(geom));const auto geoBytes=gh.Bytes;

@@ -85,7 +85,7 @@ static int g_SceneDetachedTick=-1, g_SceneDetachedIndex=-1;
 static bool g_SceneLegacyAuditPending=false;
 static bool g_SceneLegacyCapture=false,g_SceneLegacyReplay=false,g_SceneLegacyAll=false;
 static bool g_SceneReplayModulation=false,g_SceneHideShadows=false,g_SceneHideDecals=false,g_SceneLegacyMarkers=false;
-static bool g_SceneSurfaceCapture=false,g_SceneHistoricalShadows=false,g_SceneHistoricalDecals=false,g_SceneRemovedDecals=false;
+static bool g_SceneSurfaceCapture=false,g_SceneHistoricalShadows=false,g_SceneHistoricalDecals=false,g_SceneRemovedDecals=false,g_SceneDecalOpacity=false;
 static advancedfx::SceneSurfaces::History g_SceneSurfaces;
 static std::string g_SceneHistoricalSurfaceStatus="Not evaluated.";
 static std::string g_SceneSurfaceStatus[2]={"Not evaluated.","Not evaluated."};
@@ -576,7 +576,7 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
                 g_SceneBenchReport+="  Historical surface ticks: shadows "+std::to_string(surface.ShadowTick)+", decals "+std::to_string(surface.DecalTick)+" (-1 unavailable)\n";
                 if(surface.DecalTick>=0){
                     std::size_t geometry=0;if(surface.Value.Decals)for(const auto &d:*surface.Value.Decals)geometry+=d.HasGeometry();
-                    g_SceneBenchReport+="  Historical decal exclusions: "+surface.Value.UnsupportedDecals.Describe()+"; clipped geometry "+std::to_string(geometry)+"/"+std::to_string(surface.Value.Decals?surface.Value.Decals->size():0)+"; detached replay "+std::to_string(int(g_SceneRemovedDecals))+"\n";
+                    g_SceneBenchReport+="  Historical decal exclusions: "+surface.Value.UnsupportedDecals.Describe()+"; clipped geometry "+std::to_string(geometry)+"/"+std::to_string(surface.Value.Decals?surface.Value.Decals->size():0)+"; detached replay "+std::to_string(int(g_SceneRemovedDecals))+"; surviving opacity "+std::to_string(int(g_SceneDecalOpacity))+"\n";
                 }
             }
             g_SceneBenchReport+="  Native particle status: "+g_SceneParticleReplayResult.Status+"\n  Legacy status: "+g_SceneLegacyReplayResult.Status+"\n  Surface status: "+g_SceneHistoricalSurfaceStatus+"\n";
@@ -1210,7 +1210,7 @@ void SceneCachePublishParticleIsolation(const char *status)
 }
 unsigned SceneCacheBeginHistoricalSurfaces(){
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
-    const unsigned requested=(g_SceneHistoricalShadows?1u:0u)|(g_SceneHistoricalDecals?(g_SceneRemovedDecals?6u:2u):0u);
+    const unsigned requested=(g_SceneHistoricalShadows?1u:0u)|(g_SceneHistoricalDecals?(2u|(g_SceneRemovedDecals?4u:0u)|(g_SceneDecalOpacity?8u:0u)):0u);
     if(!requested||!SceneCacheReplayActive()||!Mirv_Tf2_ParticleIsolationReady())return 0;
     const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
     const auto sample=g_SceneSurfaces.ResolvePreview(tick);
@@ -2442,23 +2442,24 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
             else if(!_stricmp(args->ArgV(2),"shadows"))g_SceneHistoricalShadows=value!=0;
             else if(!_stricmp(args->ArgV(2),"decals"))g_SceneHistoricalDecals=value!=0;
             else if(!_stricmp(args->ArgV(2),"removed"))g_SceneRemovedDecals=value!=0;
-            else if(!_stricmp(args->ArgV(2),"batch"))g_SceneHistoricalShadows=g_SceneHistoricalDecals=g_SceneRemovedDecals=value!=0;
+            else if(!_stricmp(args->ArgV(2),"opacity"))g_SceneDecalOpacity=value!=0;
+            else if(!_stricmp(args->ArgV(2),"batch"))g_SceneHistoricalShadows=g_SceneHistoricalDecals=g_SceneRemovedDecals=g_SceneDecalOpacity=value!=0;
         }
         const int tick=g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneSurfaces.Frames.empty()?-1:g_SceneSurfaces.Frames.back().Tick;
-        advancedfx::Message("Historical surfaces capture %d, shadows %d, decals %d, removed decal replay %d; %zu frames, %.2f MiB / 64 MiB; evicted %zu, rejected %zu. %s\n",int(g_SceneSurfaceCapture),int(g_SceneHistoricalShadows),int(g_SceneHistoricalDecals),int(g_SceneRemovedDecals),g_SceneSurfaces.Frames.size(),g_SceneSurfaces.Bytes/1048576.0,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected,g_SceneHistoricalSurfaceStatus.c_str());
+        advancedfx::Message("Historical surfaces capture %d, shadows %d, decals %d, removed decal replay %d, surviving opacity %d; %zu frames, %.2f MiB / 64 MiB; evicted %zu, rejected %zu. %s\n",int(g_SceneSurfaceCapture),int(g_SceneHistoricalShadows),int(g_SceneHistoricalDecals),int(g_SceneRemovedDecals),int(g_SceneDecalOpacity),g_SceneSurfaces.Frames.size(),g_SceneSurfaces.Bytes/1048576.0,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected,g_SceneHistoricalSurfaceStatus.c_str());
         if(const auto resolved=g_SceneSurfaces.ResolvePreview(tick)){
             const auto &sample=resolved.Value;
             advancedfx::Message("Surface requested tick %d; resolved shadows %d, decals %d (-1 unavailable, bounded prior samples). Shadows ready %d, observed %zu, unobserved %zu; decals ready %d, ordinary world %zu, unsupported %zu.\n",tick,resolved.ShadowTick,resolved.DecalTick,int(sample.ShadowsReady),sample.Shadows?sample.Shadows->size():0,sample.ShadowsUnobserved,int(sample.DecalsReady),sample.Decals?sample.Decals->size():0,sample.DecalsUnsupported);
             if(resolved.DecalTick>=0){
                 std::size_t geometry=0;if(sample.Decals)for(const auto &d:*sample.Decals)geometry+=d.HasGeometry();
-                advancedfx::Message("Historical decal rejection breakdown: %s. Clipped ordinary main-world geometry %zu/%zu; detached removed-mark replay experimental; unsupported types and surviving nonzero fade opacity remain incomplete.\n",sample.UnsupportedDecals.Describe().c_str(),geometry,sample.Decals?sample.Decals->size():0);
+                advancedfx::Message("Historical decal rejection breakdown: %s. Clipped ordinary main-world geometry %zu/%zu; detached removed-mark replay experimental; unsupported types and unreplaced surviving opacity remain incomplete.\n",sample.UnsupportedDecals.Describe().c_str(),geometry,sample.Decals?sample.Decals->size():0);
             }
         }
         else advancedfx::Message("Surface tick %d: no bounded prior sample.\n",tick);
         std::size_t shadowFrames=0,decalFrames=0,nonemptyDecals=0;
         for(const auto &f:g_SceneSurfaces.Frames){shadowFrames+=f.ShadowsReady;decalFrames+=f.DecalsReady;nonemptyDecals+=f.DecalsReady&&f.Decals&&!f.Decals->empty();}
         advancedfx::Message("Surface coverage: %zu shadow-ready, %zu decal-ready (%zu nonempty) of %zu frames. Last decal capture: %s.\n",shadowFrames,decalFrames,nonemptyDecals,g_SceneSurfaces.Frames.size(),g_SceneSurfaces.Frames.empty()?"none":advancedfx::SceneSurfaces::DecalReadLabel(g_SceneSurfaces.Frames.back().DecalStatus));
-        advancedfx::Message("mirv_cache surfaces <capture|shadows|decals|removed|batch> <0|1> | status\n");return;
+        advancedfx::Message("mirv_cache surfaces <capture|shadows|decals|removed|opacity|batch> <0|1> | status\n");return;
     }
     if(!_stricmp(op,"visuals")) {
         if(args->ArgC()==4&&parseInteger(3,value)&&(value==0||value==1)) {
@@ -2868,7 +2869,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers|legacyAll> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
-		    "  mirv_cache surfaces <capture|shadows|decals|removed|batch> <0|1> | status\n"
+		    "  mirv_cache surfaces <capture|shadows|decals|removed|opacity|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|actorCull <0|1>|residency <0|1>|fastWrites <0|1>|fastReads <0|1>|batchStudio <0|1>|batchQueued <0|1>|bench [full|models|report|cancel]] - CPU replay timings and failure diagnostics.\n"
@@ -7250,7 +7251,10 @@ static void DrawSceneCacheMenu(int playhead)
         ImGui::Checkbox("Hide live world decals (temporary)",&g_SceneHideDecals);
         ImGui::Checkbox("Historical projected blob shadows (experimental)",&g_SceneHistoricalShadows);
         ImGui::Checkbox("Historical world decal visibility (experimental)",&g_SceneHistoricalDecals);
-        if(g_SceneHistoricalDecals)ImGui::Checkbox("Draw removed world decals from captured geometry (experimental)",&g_SceneRemovedDecals);
+        if(g_SceneHistoricalDecals){
+            ImGui::Checkbox("Draw removed world decals from captured geometry (experimental)",&g_SceneRemovedDecals);
+            ImGui::Checkbox("Replace surviving world decal opacity (experimental)",&g_SceneDecalOpacity);
+        }
         if(g_SceneHistoricalShadows||g_SceneHistoricalDecals)DrawOverlayHint(g_SceneHistoricalSurfaceStatus.c_str());
         if(g_SceneHideShadows||g_SceneHideDecals)DrawOverlayHint("Isolation only; historical shadows and decals are not reconstructed.");
 		ImGui::Checkbox("Draw cached bounds", &g_SceneDrawing.Bounds);
