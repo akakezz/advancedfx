@@ -38,14 +38,16 @@ replacement. BUILD_IDENTITY.txt identifies the commit and SHA256 hashes.
 
 ## Limits and recovery
 
-Native submission is not pixel validation. Queued visibility only filters
-surviving nonfading ordinary world decals and limited removed world geometry
-when a verified live proxy-free material witness and receiver are available. The separate queued legacy overlay
+Native submission is not pixel validation. Queued decal replay filters
+surviving nonfading ordinary world decals and can replace their opacity or
+submit limited removed world geometry when a verified live proxy-free
+material witness and receiver are available. Queued opacity requires all
+three verified gather categories and an actual filtered native pointer. The separate queued legacy overlay
 supports verified precached proxy-free spark/muzzle materials and unambiguous
 named subtextures on those exact live material pages. Live effects remain
 (duplicates are possible). It needs one immediate legacy replay to install
-its private matrix observer before the queued comparison. Surviving decal
-opacity, modern particles, named legacy materials on other pages and
+its private matrix observer before the queued comparison. Surviving fading
+decal opacity, modern particles, named legacy materials on other pages and
 historical shadows still need immediate rendering.
 Model/displacement decals, pose-accurate atlas silhouettes, baked lighting
 and world lighting remain incomplete. Unsupported effects may stay live.

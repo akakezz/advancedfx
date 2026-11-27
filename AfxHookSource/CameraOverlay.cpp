@@ -7502,7 +7502,7 @@ static void DrawSceneCacheMenu(int playhead)
         if(g_SceneHistoricalDecals){
             ImGui::Checkbox("Draw removed world decals from captured geometry (experimental)",&g_SceneRemovedDecals);
             ImGui::Checkbox("Replace surviving world decal opacity (experimental)",&g_SceneDecalOpacity);
-            ImGui::Checkbox("Queued surviving world decal visibility (experimental)",&g_SceneQueuedDecals);
+            ImGui::Checkbox("Queued ordinary world decals (experimental)",&g_SceneQueuedDecals);
         }
         if(g_SceneHistoricalShadows||g_SceneHistoricalDecals)DrawOverlayHint(g_SceneHistoricalSurfaceStatus.c_str());
         if(g_SceneHideShadows||g_SceneHideDecals)DrawOverlayHint("Isolation only; historical shadows and decals are not reconstructed.");

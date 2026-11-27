@@ -71,14 +71,27 @@ struct Decal {
 inline bool ShouldSubmitDetached(bool surviving,bool liveVisible,bool gated){
     return !surviving||!liveVisible||gated;
 }
-// Queued detached reconstruction is strictly for absent historical records.
-// A surviving mark can only be replaced by the synchronous geometry gate;
-// an unsupported current slot is never permission to submit a duplicate.
-inline bool CanPlanDetached(bool immediate,unsigned requested,bool surviving,bool uncertainSlot){
+// Queued replacement is restricted to ordinary nonfading survivors;
+// fading consumers must still run their native expiration bookkeeping.
+// An unsupported current slot never authorizes a detached duplicate.
+inline bool CanPlanDetached(bool immediate,unsigned requested,bool surviving,bool uncertainSlot,bool fading=false){
     if(uncertainSlot)return false;
-    if(surviving)return immediate&&(requested&8);
+    if(surviving)return (requested&8)&&(immediate||((requested&16)&&!fading));
     return (requested&4)&&(immediate||(requested&16));
 }
+// The exact queued dispatcher gathers categories 0, 1, 2 in order before
+// it copies the filtered pointer vector into queue-owned storage. A
+// replacement is authorized only after all three gathers were verified.
+struct QueuedReplacementCoverage {
+    unsigned Next=0;
+    bool Failed=false;
+    void Observe(int category,bool success){
+        if(!success||category<0||category>2||static_cast<unsigned>(category)!=Next){Failed=true;return;}
+        ++Next;
+    }
+    bool Complete()const{return !Failed&&Next==3;}
+    bool CanSubmit(bool suppressed)const{return suppressed&&Complete();}
+};
 // Native queued gathering has two formats: a plain list of decal pointers
 // or a sorted list with zero (outer group) and 0xffffffff (material run)
 // delimiters. The consumer looks ahead from a material marker to a real
