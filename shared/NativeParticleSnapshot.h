@@ -248,13 +248,30 @@ struct RestorePlan {
     std::size_t Nodes=0,Particles=0,Constants=0,ConstantDifferences=0,Missing=0;
     std::string Error;
 };
+// Recorded topology is reused across all detached tree attempts in one callback.
+using ChildIndex=std::vector<std::vector<std::size_t>>;
+inline bool BuildChildIndex(const Frame &f,ChildIndex &children) {
+    children.clear();
+    if(f.Collections.size()>Layout::MaxCollections)return false;
+    children.resize(f.Collections.size());
+    for(std::size_t i=0;i<f.Collections.size();++i){
+        const auto parent=f.Collections[i].Parent;
+        if(parent==-1)continue;
+        if(parent<0||static_cast<std::size_t>(parent)>=i){children.clear();return false;}
+        children[parent].push_back(i);
+    }
+    return true;
+}
 template<class Reader>
-RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader read) {
+RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader read,const ChildIndex *prepared=nullptr) {
     using namespace Layout;
     RestorePlan plan;
     auto get=[&](Address a,auto &v){return a>=0x10000&&read(a,&v,sizeof(v));};
     auto fail=[&](const char *why){if(plan.Error.empty()) plan.Error=why;};
     if(!f.Complete||!f.Appearance||index>=f.Collections.size()||!root) {fail("No recorded appearance collection");return plan;}
+    ChildIndex local;
+    if(!prepared){if(!BuildChildIndex(f,local)){fail("Recorded hierarchy invalid");return plan;}prepared=&local;}
+    if(prepared->size()!=f.Collections.size()){fail("Recorded hierarchy index invalid");return plan;}
     std::set<Address> visited;
     auto walk=[&](auto &&self,std::size_t i,Address c,unsigned depth)->void {
         if(!plan.Error.empty()) return;
@@ -311,7 +328,8 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
                 }
             }
         }
-        for(std::size_t j=i+1;j<f.Collections.size();++j) if(f.Collections[j].Parent==static_cast<int>(i)) {
+        for(const auto j:(*prepared)[i]) {
+            if(j<=i||j>=f.Collections.size()||f.Collections[j].Parent!=static_cast<int>(i)){fail("Recorded child index mismatch");return;}
             Address next=0;
             if(!child||!get(child+ChildNext,next)) {fail("Detached child missing");return;}
             self(self,j,child,depth+1);child=next;

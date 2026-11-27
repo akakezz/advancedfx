@@ -78,7 +78,11 @@ int main(){
     dp[Radius]=mem+12*3*4;ds[Radius]=4;
     dp[Tint]=tint;dp[ParticleId]=dp[Radius]+12*4;ds[ParticleId]=4;
     put(detached+Xyz,dp);put(detached+XyzStride,ds);
-    auto plan=PlanDetached(simple,0,detached,read);
+    ChildIndex topology;
+    check(BuildChildIndex(simple,topology)&&topology.size()==simple.Collections.size(),"prepared recorded topology");
+    auto plan=PlanDetached(simple,0,detached,read,&topology);
+    auto invalidTopology=simple;invalidTopology.Collections[0].Parent=0;
+    check(!BuildChildIndex(invalidTopology,topology),"cyclic recorded hierarchy rejected");
     check(plan.Error.empty()&&plan.Nodes==1&&plan.Particles==5&&plan.Copies.size()==3&&plan.Constants==1,"validated detached copy plan");
     put(name,'X');check(!PlanDetached(simple,0,detached,read).Error.empty(),"batched name mismatch rejected");put(name,text);
     dp[Radius]+=4;put(detached+Xyz,dp);

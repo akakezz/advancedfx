@@ -325,3 +325,8 @@ modern particles resolved 3450 while legacy/surfaces skipped. Both now use
 bounded prior samples, max 2 ticks. World decal experiment replaces alpha
 mutation with scoped geometry skipping at five verified native draw callsites.
 See Phase 14 for limitations and diagnostics; no removed decal recreation.
+
+
+## Performance continuation — Phase 16A
+
+Read Phase 15A–16A of SCENE_EFFECTS_EXPERIMENT.md before further changes. Branch checkpoint d3d8d38 was not user-tested. Prior benchmark: live 78.1 FPS, full historical 18.1, main+cull 25.1, latest tick 59.3. Early versus latest studio CPU differs by ~10x despite similar submission counts. Prepared particle topology and callback-local legacy material lookups reduce redundant work without changing history or native ownership. No Windows or runtime validation yet. Preserve queue/resource lifetimes and exact client guards; do not retain native detached objects or enable queued particle rendering until verified. Subsequent optimizations should be batched and independently testable.

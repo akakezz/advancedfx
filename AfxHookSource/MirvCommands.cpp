@@ -455,13 +455,24 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
     std::vector<Batch> batches;
     std::map<Address,std::string> names;
     if(!frame.Materials.empty())SceneLegacyMaterialNames(base,read,names);
+    // Resolve and validate each material once per synchronous callback.
+    // Keep the historical UV and clip checks per particle; no pointer survives.
+    struct Resolved {Address Sub=0,Group=0;std::array<float,4> UV{};bool Valid=false;};
+    std::map<std::pair<unsigned,unsigned>,Resolved> resolved;
     for(const auto &p:frame.Particles){
         if(p.Texture==Material::Unknown){++result.Rejected;continue;}
-        Address sub=0,group=0,page=0,pageVt=0;std::array<float,4> uv{};
-        if(p.Texture==Material::Named){
-            if(p.MaterialIndex<frame.Materials.size())for(const auto &[address,name]:names)if(name==frame.Materials[p.MaterialIndex]){sub=address;break;}
-        } else {const Address field=base+(p.Texture==Material::Spark?0x11220b0:0x1071988);get(field,sub);}
-        if(!sub||!get(sub,uv)||uv!=p.UV||!get(sub+0x10,group)||!get(group,page)||!get(page,pageVt)||!pageVt||
+        const auto key=std::make_pair(unsigned(p.Texture),p.Texture==Material::Named?unsigned(p.MaterialIndex):0u);
+        auto entry=resolved.try_emplace(key);
+        auto &r=entry.first->second;
+        if(entry.second){
+            if(p.Texture==Material::Named){
+                if(p.MaterialIndex<frame.Materials.size())for(const auto &[address,name]:names)if(name==frame.Materials[p.MaterialIndex]){r.Sub=address;break;}
+            } else {const Address field=base+(p.Texture==Material::Spark?0x11220b0:0x1071988);get(field,r.Sub);}
+            Address page=0,pageVt=0;
+            r.Valid=r.Sub&&get(r.Sub,r.UV)&&get(r.Sub+0x10,r.Group)&&get(r.Group,page)&&get(page,pageVt)&&pageVt;
+        }
+        const auto sub=r.Sub,group=r.Group;
+        if(!r.Valid||r.UV!=p.UV||
            !std::isfinite(p.NearClip)||!std::isfinite(p.FarClip)||p.NearClip<0||p.FarClip<=p.NearClip){++result.Rejected;continue;}
         auto it=std::find_if(batches.begin(),batches.end(),[&](const Batch &b){return b.Sub==sub&&b.Near==p.NearClip&&b.Far==p.FarClip;});
         if(it==batches.end()){if(batches.size()>=64){++result.Rejected;continue;}batches.push_back({sub,group,p.NearClip,p.FarClip,{}});it=std::prev(batches.end());}
@@ -703,6 +714,8 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         begin(context);ctx.Begun=true;
         ctx.Mode(context,10);push(context);ctx.Pushed=true;identity(context);
     }
+    ChildIndex children;
+    if(!BuildChildIndex(frame,children))return fail("Recorded particle hierarchy invalid");
     std::string firstFailure;
     bool listChanged=false;
     auto attempt=[&](std::size_t index,std::size_t)->bool {
@@ -729,7 +742,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
             RestorePlan plan;
             if(!read(base+Layout::Manager+Layout::RootHead,&headDuring,sizeof(headDuring))||headDuring!=headBefore) {
                 listChanged=true;plan.Error="registered effect list changed during factory call";
-            } else plan=PlanDetached(frame,index,reinterpret_cast<Address>(object),read);
+            } else plan=PlanDetached(frame,index,reinterpret_cast<Address>(object),read,&children);
             result.PlanMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-planStart).count();
             if(!plan.Error.empty())reject(plan.Error);
             else if(draw&&(plan.Missing||plan.ConstantDifferences))reject("missing attributes or differing shared constants");
