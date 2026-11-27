@@ -94,6 +94,26 @@ static unsigned long long g_SceneReplayCallbacks=0,g_SceneReplayAttempted=0,g_Sc
 static int g_SceneReplayFrame=-1;
 static unsigned g_SceneReplayFrameCallbacks=0,g_SceneReplayMaxCallbacks=0;
 static std::string g_SceneReplayLastFailure;
+// CPU wall-clock timings (not GPU completion). Access under g_SceneMutex.
+struct ScenePerfStat {
+    unsigned long long Count=0;
+    double Last=0,Total=0,Peak=0;
+    int PeakTick=-1;
+    void Add(std::chrono::steady_clock::time_point begin,int tick=-1) {
+        Last=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+        Total+=Last;if(Last>Peak){Peak=Last;PeakTick=tick;}++Count;
+    }
+    void Print(const char *label) const {
+        advancedfx::Message("  %s: last %.3f ms, mean %.3f ms, peak %.3f ms at tick %d (%llu calls)\n",label,Last,Count?Total/Count:0,Peak,PeakTick,Count);
+    }
+};
+struct ScenePerfCounters {
+    ScenePerfStat Sample,ModelDraw,ParticleAcquire,ParticleDraw,LegacyDraw,SurfaceBegin,SurfaceEnd,LegacyCapture,SurfaceCapture;
+    unsigned long long ParticleMain=0,ParticleRejected=0,ParticleAttempts=0,LegacyRejected=0;
+    int LastParticleFailureTick=-1;
+    std::string LastParticleFailure;
+};
+static ScenePerfCounters g_ScenePerf;
 static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
@@ -322,6 +342,7 @@ static void SceneClearHistory()
 	g_ScenePoseCaptured = g_ScenePoseFailures = 0;
 	SceneResetProfile();
 	g_SceneLastTick = -1;
+	g_ScenePerf={};
 	g_SceneScrubRate = 0;
 	if (g_WorkLoop) g_WorkStatus = "Cached loop stopped: cache cleared.";
 	g_WorkLoop = false;
@@ -736,12 +757,18 @@ void SceneCacheFrame(bool capture)
 		    ++g_SceneNativeParticleSamples;
 		}
         if(g_SceneLegacyCapture&&!g_ScenePreview) {
+            const auto begin=std::chrono::steady_clock::now();
             advancedfx::LegacyParticles::Frame legacy;legacy.Tick=tick;
             g_SceneLegacyCaptureStatus=Mirv_Tf2_InspectLegacyParticles(&legacy,g_SceneLegacyAll);
             if(!g_SceneLegacyHistory.Append(std::move(legacy)))
                 g_SceneLegacyCaptureStatus+="; historical sample rejected.";
+            g_ScenePerf.LegacyCapture.Add(begin,tick);
         }
-        if(g_SceneSurfaceCapture&&!g_ScenePreview)g_SceneSurfaces.Append(Mirv_Tf2_CaptureSurfaces(tick));
+        if(g_SceneSurfaceCapture&&!g_ScenePreview){
+            const auto begin=std::chrono::steady_clock::now();
+            g_SceneSurfaces.Append(Mirv_Tf2_CaptureSurfaces(tick));
+            g_ScenePerf.SurfaceCapture.Add(begin,tick);
+        }
 		if (!g_SceneCache.Append(std::move(frame)))
 			g_ScenePoseStatus = "Scene frame rejected (invalid data or payload budget too small).";
 		g_SceneLastTick = tick;
@@ -773,7 +800,9 @@ void SceneCacheFrame(bool capture)
 	bool valid = false;
 	if (g_ScenePreview)
 	{
-		valid = g_SceneCache.Sample(g_SceneCursor, frame, .1, 256, g_SceneSmoothAnimation);
+		const auto begin=std::chrono::steady_clock::now();
+        valid = g_SceneCache.Sample(g_SceneCursor, frame, .1, 256, g_SceneSmoothAnimation);
+        g_ScenePerf.Sample.Add(begin,int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)));
 	}
 	std::atomic_store(&g_SceneView,
 	                  valid ? std::make_shared<const advancedfx::SceneCache::Frame>(std::move(frame))
@@ -892,11 +921,14 @@ unsigned SceneCacheBeginHistoricalSurfaces(){
     const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
     const auto *sample=g_SceneSurfaces.ForPreview(tick);
     if(!sample){g_SceneHistoricalSurfaceStatus="No retained historical surface sample within two prior ticks.";return 0;}
-    return Mirv_Tf2_BeginSurfaceReplay(*sample,requested,g_SceneHistoricalSurfaceStatus);
+    const auto begin=std::chrono::steady_clock::now();
+    const auto active=Mirv_Tf2_BeginSurfaceReplay(*sample,requested,g_SceneHistoricalSurfaceStatus);
+    g_ScenePerf.SurfaceBegin.Add(begin,tick);return active;
 }
 void SceneCacheEndHistoricalSurfaces(){
+    const auto begin=std::chrono::steady_clock::now();
     auto status=Mirv_Tf2_EndSurfaceReplay();
-    if(!status.empty()){std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);g_SceneHistoricalSurfaceStatus=std::move(status);}
+    if(!status.empty()){std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);g_ScenePerf.SurfaceEnd.Add(begin,int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)));g_SceneHistoricalSurfaceStatus=std::move(status);}
 }
 unsigned SceneCacheLiveSurfaceIsolation()
 {
@@ -921,9 +953,12 @@ static void SceneCacheDrawLegacyParticles()
         if(!f){g_SceneLegacyReplayTick=tick;g_SceneLegacyReplayResult={};g_SceneLegacyReplayResult.Status="No retained legacy sample within two prior ticks.";return;}
         sample=*f;epoch=g_SceneDrawEpoch.load();
     }
+    const auto begin=std::chrono::steady_clock::now();
     auto result=Mirv_Tf2_RenderLegacyParticles(sample);
-    if(!result.MainView&&result.Status.empty())return;
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+    g_ScenePerf.LegacyDraw.Add(begin,sample.Tick);
+    g_ScenePerf.LegacyRejected+=result.Rejected;
+    if(!result.MainView&&result.Status.empty())return;
     if(epoch==g_SceneDrawEpoch.load()&&g_SceneLegacyReplay){g_SceneLegacyReplayTick=sample.Tick;g_SceneLegacyReplayResult=std::move(result);}
 }
 void SceneCacheDrawParticles()
@@ -937,7 +972,9 @@ void SceneCacheDrawParticles()
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
         if(!g_ScenePreview||!g_SceneNativeParticleReplay||!SceneCanDrawModels()||!SceneCacheView())return;
         const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
+        const auto begin=std::chrono::steady_clock::now();
         sample=g_SceneNativeParticles.ShareForPreview(tick);
+        g_ScenePerf.ParticleAcquire.Add(begin,tick);
         if(!sample||!sample->Appearance) {
             g_SceneParticleReplayTick=tick;g_SceneParticleReplayResult={};
             g_SceneParticleReplayResult.Status="No retained appearance sample at cursor";
@@ -945,10 +982,18 @@ void SceneCacheDrawParticles()
         }
         epoch=g_SceneDrawEpoch.load();
     }
+    const auto begin=std::chrono::steady_clock::now();
     auto result=Mirv_Tf2_RenderNativeParticles(*sample);
+    std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+    g_ScenePerf.ParticleDraw.Add(begin,sample->Tick);
+    g_ScenePerf.ParticleMain+=result.MainView;
+    g_ScenePerf.ParticleAttempts+=result.Attempts;g_ScenePerf.ParticleRejected+=result.Rejected;
+    if(result.Rejected||(!result.MainView&&!result.Status.empty())){
+        g_ScenePerf.LastParticleFailureTick=sample->Tick;
+        g_ScenePerf.LastParticleFailure=result.Status;
+    }
     // Non-main callbacks must not overwrite the last main-view diagnostic.
     if(!result.MainView&&result.Status.empty())return;
-    std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
     if(epoch==g_SceneDrawEpoch.load()&&g_SceneNativeParticleReplay) {
         g_SceneParticleReplayTick=sample->Tick;g_SceneParticleReplayResult=std::move(result);
     }
@@ -982,7 +1027,8 @@ void SceneCacheDrawModels()
 		                         "interval again. Optional bounds remain available.");
 		return;
 	}
-	std::string status = "No cached model could be submitted.";
+	const auto begin=std::chrono::steady_clock::now();
+    std::string status = "No cached model could be submitted.";
 	const bool textured = SceneCacheReplayActive();
 	unsigned submitted = 0, attempted = 0, queueSkips=0, otherSkips=0;
     std::string lastFailure;
@@ -1007,6 +1053,7 @@ void SceneCacheDrawModels()
 	}
 	{
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+        g_ScenePerf.ModelDraw.Add(begin,int(std::floor(view->DemoTime/SceneTickInterval()+1e-9)));
         ++g_SceneReplayCallbacks;g_SceneReplayAttempted+=attempted;g_SceneReplaySubmitted+=submitted;
         g_SceneReplayQueueSkips+=queueSkips;g_SceneReplayOtherSkips+=otherSkips;
         if(!lastFailure.empty()) g_SceneReplayLastFailure=lastFailure;
@@ -1943,6 +1990,25 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	auto integer = [&](int &value) { return args->ArgC() == 3 && parseInteger(2, value); };
 	int value = 0;
 	bool ok = false;
+    if(!_stricmp(op,"perf")){
+        if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"reset"))g_ScenePerf={};
+        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset]\n");return;}
+        advancedfx::Message("Scene cache CPU timing (not GPU completion), cursor %.3f ticks; capture %d, preview %d.\n",g_SceneCursor/SceneTickInterval(),int(g_SceneRecord),int(g_ScenePreview));
+        g_ScenePerf.Sample.Print("Historical model sampling");
+        g_ScenePerf.ModelDraw.Print("Studio replay submission");
+        g_ScenePerf.ParticleAcquire.Print("Particle snapshot lookup/decode");
+        g_ScenePerf.ParticleDraw.Print("Native particle replay (all eligible callbacks)");
+        g_ScenePerf.LegacyDraw.Print("Legacy replay");
+        g_ScenePerf.SurfaceBegin.Print("Surface replay setup");
+        g_ScenePerf.SurfaceEnd.Print("Surface replay cleanup");
+        g_ScenePerf.LegacyCapture.Print("Legacy capture");
+        g_ScenePerf.SurfaceCapture.Print("Surface capture");
+        advancedfx::Message("Particle main views %llu; attempts %llu; rejected %llu; legacy rejected %llu. Last particle failure tick %d: %s\n",
+            g_ScenePerf.ParticleMain,g_ScenePerf.ParticleAttempts,g_ScenePerf.ParticleRejected,g_ScenePerf.LegacyRejected,g_ScenePerf.LastParticleFailureTick,g_ScenePerf.LastParticleFailure.empty()?"none":g_ScenePerf.LastParticleFailure.c_str());
+        advancedfx::Message("Studio session callbacks %llu; attempted %llu; submitted %llu; queue skips %llu; other skips %llu; max callbacks per frame %u. Last failure: %s\n",
+            g_SceneReplayCallbacks,g_SceneReplayAttempted,g_SceneReplaySubmitted,g_SceneReplayQueueSkips,g_SceneReplayOtherSkips,g_SceneReplayMaxCallbacks,g_SceneReplayLastFailure.empty()?"none":g_SceneReplayLastFailure.c_str());
+        return;
+    }
     if(!_stricmp(op,"surfaces")){
         if(args->ArgC()==4&&parseInteger(3,value)&&(value==0||value==1)){
             if(!_stricmp(args->ArgV(2),"capture")){if(value&&!g_SceneSurfaceCapture){g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();}g_SceneSurfaceCapture=value!=0;}
@@ -2370,7 +2436,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
-		    "  mirv_cache status - Detailed capture/render diagnostics.\n"
+		      mirv_cache perf [reset] - CPU replay timings and failure diagnostics.\n"
+            "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
 	}

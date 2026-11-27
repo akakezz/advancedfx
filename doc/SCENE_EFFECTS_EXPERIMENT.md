@@ -812,3 +812,8 @@ gap fixture is added but not executed in this follow-up; native detour,
 Windows build and in-game behavior remain untested. Test with the temporary
 hideShadows/hideDecals controls off first, to distinguish historical replay
 from whole-system fallback hiding, and with r_shadows/r_drawdecals enabled.
+
+
+## Phase 15A: performance and stability
+
+Preserve historical accuracy: native renderer object lifetimes and draw paths are unchanged. Modern particle replay now holds an immutable lease of the decoded frame rather than copying the vectors per callback. A lease survives history replacement, eviction or clear; no engine pointers are retained. `mirv_cache perf` reports CPU wall-clock last/mean/peak and peak tick for historical sampling, studio submission, particle lookup/decode and replay, legacy and surface capture/replay. It also retains last native particle failure, rejection counts and studio session audit. `mirv_cache perf reset` resets the new counters, not history or existing session studio audit. These are CPU measurements, not GPU timing or proof of pixel correctness. No claim that the intermittent visual corruption is fixed. Windows/in-game validation pending.

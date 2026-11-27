@@ -1114,6 +1114,7 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
 
  auto renderFrame=std::make_shared<advancedfx::SceneCache::Frame>();advancedfx::SceneCache::Entity rendered;rendered.Identity=42;rendered.ModelPose=sceneTestPose;renderFrame->Entities.push_back(rendered);std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));
  sceneQueueDeferred=true;SceneCacheDrawModels();check(scenePoseDraws==1&&sceneQueued.empty()&&sceneLastDrawn==sceneTestPose,"Studio front-end submission runs on the engine caller, not a render-worker functor");
+ check(g_ScenePerf.ModelDraw.Count==1,"Studio replay records CPU timing");sceneCommand({"mirv_cache","perf"});sceneCommand({"mirv_cache","perf","reset"});check(g_ScenePerf.ModelDraw.Count==0,"Performance reset clears timing counters");
  sceneCommand({"mirv_cache","clear"});SceneCacheDrawModels();check(scenePoseDraws==1,"Clearing history prevents further model submissions");
  sceneCommand({"mirv_cache","effects","1"});sceneCommand({"mirv_cache","particles","1"});check(g_SceneNativeParticlesEnabled&&g_SceneNativeParticleAppearance&&g_SceneNativeParticleReplay&&!g_SceneNativeParticleMarkers&&!g_SceneEffectsEnabled,"One particle command enables full capture and native replay");
  SceneParticlePreviewMode(2);check(g_SceneNativeParticleMarkers&&g_SceneNativeParticleStyled&&!g_SceneNativeParticleReplay,"Styled preview mode is exclusive");
