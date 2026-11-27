@@ -1237,6 +1237,10 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  g_OverlayPreferencesReady=true;g_SavedTrailSeconds=g_SceneDrawing.TrailSeconds;g_OverlayPreferenceStamp=OverlayPreferenceStamp();ImGui::GetCurrentContext()->SettingsDirtyTimer=0;CheckOverlayPreferences();check(ImGui::GetCurrentContext()->SettingsDirtyTimer==0,"Idle preferences do not request repeated writes");g_SceneGibs=true;CheckOverlayPreferences();check(ImGui::GetCurrentContext()->SettingsDirtyTimer>0,"Preferences detect changes even with overlay closed");
  // Save-on-close uses the configured INI immediately instead of waiting for the timer.
  const auto preferenceFile=std::filesystem::temp_directory_path()/"hlae-overlay-preferences-test.ini";std::string preferencePath=preferenceFile.string();ImGui::GetIO().IniFilename=preferencePath.c_str();SetOpen(true);SetOpen(false);std::ifstream preferenceInput(preferenceFile);std::string preferenceContents((std::istreambuf_iterator<char>(preferenceInput)),{});preferenceInput.close();check(preferenceContents.find("CacheGibs=1")!=std::string::npos&&preferenceContents.find("FixRecorderMute=1")!=std::string::npos,"Closing the overlay saves cache and demo fixes immediately");ImGui::GetIO().IniFilename=nullptr;std::filesystem::remove(preferenceFile);g_OverlayPreferencesReady=false;
+ // Validation report reads current state without changing history or benchmark.
+ {const auto report=SceneValidationReport();check(report.find("NOT pixel validation")!=std::string::npos&&report.find("Modern sample:")!=std::string::npos,"Validation report describes bounded sample coverage");
+  const bool savedRecord=g_SceneRecord;g_SceneRecord=true;
+  check(SceneValidationSetup()!=nullptr&&g_SceneRecord,"Validation setup cannot interrupt recording");g_SceneRecord=savedRecord;}
  // Experimental snapshots bypass category filters and keep the ordinary one-pass transport.
  SceneClearHistory();g_SceneRangeEnabled=false;g_ScenePreview=false;g_SceneRecord=true;g_SceneRenderSnapshot=true;g_SceneDrawModels=true;
  sceneEntityAvailable=false;sceneExtraEntities.clear();MirvTf2SceneEntity broadModel;broadModel.Index=55;broadModel.Snapshot.Identity=(1ull<<63)|55;broadModel.Snapshot.Category=4;broadModel.ObservedRenderable=&broadModel;sceneExtraEntities.push_back(broadModel);
@@ -1244,6 +1248,7 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  check(g_SceneCache.Count()==1&&g_SceneCache.Frames().back().RenderSnapshot&&g_SceneCache.Frames().back().Entities.size()==1&&g_SceneCache.Frames().back().Entities[0].Skin==1,"Broad capture bypasses filters and retains observed skin");
  g_ScenePreview=true;g_SceneCursor=g_SceneCache.Frames().back().DemoTime;SceneCacheFrame(false);
  check(SceneCacheReplayActive()&&SceneCacheSuppressLiveStudio(),"A valid broad preview enables replacement");
+ {const auto count=g_SceneCache.Count();check(SceneValidationSetup()!=nullptr&&g_SceneCache.Count()==count,"Validation setup does not clear existing preview");check(SceneValidationReport().find("Published model sample: tick")!=std::string::npos,"Report includes the actual sampled models");}
  {const bool record=g_SceneRecord,main=g_SceneMainViewOnly,cull=g_ScenePreviewCull,native=g_SceneNativeParticleReplay,legacy=g_SceneLegacyReplay,markers=g_SceneNativeParticleMarkers,legacyMarkers=g_SceneLegacyMarkers;const double cursor=g_SceneCursor;
   auto &b=g_SceneBench;b={};b.Active=true;b.Record=record;b.Preview=true;b.Models=true;b.MainOnly=main;b.Cull=cull;b.Native=native;b.Legacy=legacy;b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;b.BatchQueued=g_SceneBatchQueued;b.ActorCull=g_SceneActorCull;b.Immediate=MaterialSystem_IsImmediate();b.Shadows=g_SceneHistoricalShadows;b.Decals=g_SceneHistoricalDecals;b.HideShadows=g_SceneHideShadows;b.HideDecals=g_SceneHideDecals;b.QueuedDecals=g_SceneQueuedDecals;b.Markers=markers;b.LegacyMarkers=legacyMarkers;b.Cursor=cursor;b.Late=cursor;b.OriginalSequencer=int(g_SequencerFrame);
   const auto benchStart=std::chrono::steady_clock::now();
@@ -1316,7 +1321,7 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   sceneNativeView=-1;SceneCacheDrawModels();check(scenePoseDraws==draws+3&&g_ScenePerf.UnknownModelDraw.Count==1,"Unverified view fails open");
   sceneCommand({"mirv_cache","perf","mainOnly","0"});
   const bool oldParticleReplay=g_SceneNativeParticleReplay;g_SceneNativeParticleReplay=true;sceneNativeView=1;
-  SceneCacheDrawParticles();check(g_ScenePerf.NonMainParticleSkipped==1,"Native particle callbacks skip verified non-main views before preparation");
+  const auto skippedParticles=g_ScenePerf.NonMainParticleSkipped;SceneCacheDrawParticles();check(g_ScenePerf.NonMainParticleSkipped==skippedParticles+1,"Native particle callbacks skip verified non-main views before preparation");
   g_SceneNativeParticleReplay=oldParticleReplay;sceneNativeView=-1;
  }
  g_SceneSuppressLiveStudio=false;check(SceneCacheReplayActive()&&!SceneCacheSuppressLiveStudio(),"Live isolation can be disabled while textured replay remains active");g_SceneSuppressLiveStudio=true;

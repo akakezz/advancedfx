@@ -2352,6 +2352,90 @@ static void SceneNativeParticleList(int tick,std::size_t start,const char *filte
     advancedfx::Message("Particle list: %zu matching collections, %zu active particles; %zu shown.\n",matches,active,shown);
     if(next<f->Collections.size())advancedfx::Message("Next page: mirv_cache particles list %d %zu \"%s\"\n",tick,next,needle.c_str());
 }
+// Explicit fresh validation profile: no automatic seek, cvar change or capture.
+static const char *SceneValidationSetup(){
+    if(g_SceneBench.Active||g_SceneBenchRestoreQueue||g_SceneRecord||g_ScenePreview||g_SceneScrubRate||g_WorkLoop||Recording::IsActive())
+        return "Stop recording, preview, transport and benchmark first.";
+    if(g_SceneCache.Count()||!g_SceneNativeParticles.Frames.empty()||!g_SceneLegacyHistory.Frames.empty()||
+       !g_SceneSurfaces.Frames.empty()||g_SceneEffects.First>=0)
+        return "Existing history preserved. Use mirv_cache clear explicitly for a fresh take.";
+    if(!Mirv_Tf2_SceneStationaryReady()||!MaterialSystem_IsImmediate())
+        return "Requires supported TF2 x64 demo paused/frozen in actual immediate context (mat_queue_mode 0).";
+    g_SceneRenderSnapshot=true;g_SceneDrawModels.store(true);g_SceneSuppressLiveStudio=true;
+    SceneParticleCaptureEnabled(true);g_SceneNativeParticleAppearance=g_SceneNativeParticleReplay=true;
+    g_SceneLegacyCapture=g_SceneLegacyReplay=g_SceneLegacyAll=true;g_SceneLegacyMarkers=false;
+    g_SceneReplayModulation=g_SceneLightingCapture=g_SceneReplayLighting=true;
+    g_SceneSurfaceCapture=g_SceneHistoricalShadows=g_SceneHistoricalDecals=g_SceneRemovedDecals=g_SceneDecalOpacity=g_SceneQueuedDecals=true;
+    g_SceneHideShadows=g_SceneHideDecals=false;g_SceneSuppressLiveParticles=true;
+    g_SceneMainViewOnly=g_ScenePreviewCull=g_SceneActorCull=false;
+    g_SceneKeepAssets=g_SceneBatchStudio=g_SceneBatchQueued=g_SceneFastParticleWrites=g_SceneFastParticleReads=true;
+    g_SceneSmoothAnimation=true;g_SceneRangeEnabled=false;
+    g_SceneBenchReport.clear();g_SceneBenchFile.clear();g_ScenePerf={};
+    g_SceneSampleReady=false;++g_SceneDrawEpoch;return nullptr;
+}
+static std::string SceneValidationReport(){
+    std::ostringstream out;
+    out<<"Scene Cache consolidated validation (native submission/coverage, NOT pixel validation)\n";
+    float queue=0;const bool queueKnown=Mirv_Tf2_SceneDrawVisibility("mat_queue_mode",queue,false);
+    int live=-1;const bool liveKnown=GetCurrentDemoTick(live);
+    out<<"Live tick "<<(liveKnown?live:-1)<<"; preview "<<g_ScenePreview<<"; recording "<<g_SceneRecord<<"; immediate "<<MaterialSystem_IsImmediate()<<"; queue cvar ";
+    if(queueKnown)out<<queue;else out<<"unknown";
+    out<<"; stationary eligibility "<<Mirv_Tf2_SceneStationaryReady()<<"\n";
+    const int tick=g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):
+        g_SceneCache.Frames().empty()?-1:int(std::floor(g_SceneCache.Frames().back().DemoTime/SceneTickInterval()+1e-9));
+    out<<"Requested cached tick "<<tick<<"\n";
+    out<<"Settings: broad "<<g_SceneRenderSnapshot<<", models "<<g_SceneDrawModels.load()<<", studio suppression "<<g_SceneSuppressLiveStudio
+       <<", modulation "<<g_SceneReplayModulation<<", lighting capture/replay "<<g_SceneLightingCapture<<"/"<<g_SceneReplayLighting
+       <<", modern capture/replay/isolate "<<g_SceneNativeParticlesEnabled<<"/"<<g_SceneNativeParticleReplay<<"/"<<g_SceneSuppressLiveParticles
+       <<", legacy capture/replay/all "<<g_SceneLegacyCapture<<"/"<<g_SceneLegacyReplay<<"/"<<g_SceneLegacyAll
+       <<", surface capture/shadows/decals/removed/opacity/queued "<<g_SceneSurfaceCapture<<"/"<<g_SceneHistoricalShadows<<"/"<<g_SceneHistoricalDecals<<"/"<<g_SceneRemovedDecals<<"/"<<g_SceneDecalOpacity<<"/"<<g_SceneQueuedDecals
+       <<", blanket hide shadows/decals "<<g_SceneHideShadows<<"/"<<g_SceneHideDecals<<"\n";
+    auto history=[&](const char *name,const auto &frames,std::size_t bytes,std::size_t evicted,std::size_t rejected){
+        out<<name<<": "<<frames.size()<<" frames, "<<bytes<<" bytes, evicted "<<evicted<<", rejected "<<rejected;
+        if(!frames.empty())out<<", ticks "<<frames.front().Tick<<".."<<frames.back().Tick;
+        out<<"\n";
+    };
+    out<<"Models: "<<g_SceneCache.Count()<<" frames, "<<g_SceneCache.Bytes()<<" bytes, "<<g_SceneCache.PoseCount()<<" unique poses\n";
+    history("Modern",g_SceneNativeParticles.Frames,g_SceneNativeParticles.Bytes,g_SceneNativeParticles.Evicted,g_SceneNativeParticles.Rejected);
+    history("Legacy",g_SceneLegacyHistory.Frames,g_SceneLegacyHistory.Bytes,g_SceneLegacyHistory.Evicted,g_SceneLegacyHistory.Rejected);
+    history("Surfaces",g_SceneSurfaces.Frames,g_SceneSurfaces.Bytes,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected);
+    if(auto view=SceneCacheView()){
+        std::size_t studio=0,brush=0,missing=0,lit=0,local=0,modulated=0;
+        for(const auto &e:view->Entities){
+            if(!e.ModelPose){++missing;continue;}
+            if(!e.ModelPose->ModelInfo->WireEdges.empty()){++brush;continue;}
+            ++studio;if(e.ModelLighting){++lit;local+=e.ModelLighting->Count;}modulated+=e.HasModulation;
+        }
+        out<<"Published model sample: tick "<<view->DemoTime/SceneTickInterval()<<"; studio "<<studio<<", brush wire "<<brush<<", missing pose "<<missing<<", lit "<<lit<<", local lights "<<local<<", known modulation "<<modulated<<"\n";
+    }else out<<"Published model sample: unavailable\n";
+    if(auto p=g_SceneNativeParticles.ShareForPreview(tick))
+        out<<"Modern sample: "<<p->Tick<<", complete "<<p->Complete<<", appearance complete "<<p->AppearanceComplete<<", collections "<<p->Collections.size()<<", active "<<p->Active<<", rejected "<<p->Rejected<<", appearance rejected "<<p->AppearanceRejected<<"\n";
+    else out<<"Modern sample: unavailable\n";
+    if(auto p=g_SceneLegacyHistory.ShareForPreview(tick))
+        out<<"Legacy sample: "<<p->Tick<<", complete "<<p->Complete<<", particles "<<p->Particles.size()<<", rejected "<<p->Rejected<<", unknown material "<<p->UnknownMaterials<<", other rejected "<<p->OtherRejected<<"\n";
+    else out<<"Legacy sample: unavailable\n";
+    const auto surface=g_SceneSurfaces.ResolvePreview(tick);
+    if(surface){
+        const auto &f=surface.Value;std::size_t geometry=0,clipped=0,simple=0;
+        if(f.Decals)for(const auto &d:*f.Decals)geometry+=d.HasGeometry();
+        if(f.Shadows)for(const auto &s:*f.Shadows){clipped+=s.ClipKnown;simple+=s.HasSimpleTexture();}
+        out<<"Surface sample: shadows tick "<<surface.ShadowTick<<", decals tick "<<surface.DecalTick
+           <<"; shadows "<<(f.Shadows?f.Shadows->size():0)<<", clip-known "<<clipped<<", verified simple "<<simple<<", unobserved "<<f.ShadowsUnobserved
+           <<"; decals "<<(f.Decals?f.Decals->size():0)<<", geometry "<<geometry<<", unsupported "<<f.DecalsUnsupported<<" ("<<f.UnsupportedDecals.Describe()<<")\n";
+    }else out<<"Surface sample: unavailable\n";
+    unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);
+    out<<"Studio submissions "<<g_SceneReplaySubmitted<<"/"<<g_SceneReplayAttempted<<", queue skips "<<g_SceneReplayQueueSkips<<", other skips "<<g_SceneReplayOtherSkips<<", outstanding owners "<<pending<<", peak "<<peak<<"\n"
+       <<"Last studio failure: "<<g_SceneReplayLastFailure<<"\n"
+       <<"Lighting: "<<g_SceneLightingStatus<<"\n"
+       <<"Native particle replay tick "<<g_SceneParticleReplayTick<<": "<<g_SceneParticleReplayResult.Status<<"\n"
+       <<"Legacy replay tick "<<g_SceneLegacyReplayTick<<": "<<g_SceneLegacyReplayResult.Status<<"\n"
+       <<"Live particle isolation: "<<g_SceneParticleIsolationStatus<<"\n"
+       <<"Historical surfaces: "<<g_SceneHistoricalSurfaceStatus<<"\n"
+       <<"Benchmark active "<<g_SceneBench.Active<<", queue restoration pending "<<g_SceneBenchRestoreQueue<<"\n";
+    if(!g_SceneBenchReport.empty())out<<"\n--- Latest benchmark (settings/ticks at benchmark time) ---\n"<<g_SceneBenchReport;
+    else out<<"No benchmark results in this validation session.\n";
+    return out.str();
+}
 void SceneCacheConsole(advancedfx::ICommandArgs *args)
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
@@ -2370,6 +2454,24 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	auto integer = [&](int &value) { return args->ArgC() == 3 && parseInteger(2, value); };
 	int value = 0;
 	bool ok = false;
+    if(!_stricmp(op,"validate")){
+        if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"setup")){
+            if(const auto *reason=SceneValidationSetup())advancedfx::Warning("Validation setup rejected: %s\n",reason);
+            else advancedfx::Message("Validation profile enabled. Record one fresh interval; stop, pause, preview an earlier tick, then mirv_cache perf bench. Use mirv_cache validate report for one combined report.\n");
+        }else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"report")){
+            const auto report=SceneValidationReport();
+            std::error_code ec;const auto folder=std::filesystem::temp_directory_path(ec);
+            if(!ec){
+                const auto path=folder/("hlae-scene-validation-"+std::to_string(std::chrono::system_clock::now().time_since_epoch().count())+".txt");
+                std::ofstream file(path,std::ios::binary|std::ios::trunc);
+                if(file){file.write(report.data(),static_cast<std::streamsize>(report.size()));file.close();}
+                if(file){advancedfx::Message("Validation report: %s\n",path.u8string().c_str());return;}
+            }
+            advancedfx::Warning("Validation report file unavailable; printing to console.\n");
+            advancedfx::Message("%s",report.c_str());
+        }else advancedfx::Message("mirv_cache validate <setup|report>\n");
+        return;
+    }
     if(g_SceneBench.Active&&_stricmp(op,"perf")&&_stricmp(op,"status")){
         SceneBenchStop("Benchmark cancelled by another cache command.");SceneCacheFrame(false);
     }
@@ -2914,6 +3016,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache visuals <modulation|lightingCapture|lighting|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|actorCull <0|1>|residency <0|1>|fastWrites <0|1>|fastReads <0|1>|batchStudio <0|1>|batchQueued <0|1>|bench [full|models|report|cancel]] - CPU replay timings and failure diagnostics.\n"
+            "  mirv_cache validate <setup|report> - Fresh consolidated validation profile or combined report.\n"
             "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;

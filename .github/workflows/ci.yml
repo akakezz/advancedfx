@@ -72,6 +72,17 @@ jobs:
           foreach ($name in @("afx_line_vs20", "afx_line_ps20", "afx_drawtexture_ps20", "afx_pgldraw_vs20", "afx_pgldraw_ps20", "afx_depth_ps20")) {
             Copy-Item "shaders/build/$name.acs" $dest -ErrorAction Stop
           }
+      - name: Stage validation guide and build identity
+        if: matrix.preset == 'x64-release'
+        shell: pwsh
+        run: |
+          $root = "build/scene-cache-ci"
+          Copy-Item "doc/SCENE_CACHE_VALIDATION.md" "$root/SCENE_CACHE_VALIDATION.md" -ErrorAction Stop
+          $lines = @("Commit: ${{ github.sha }}", "Run: ${{ github.run_id }}")
+          Get-ChildItem "$root/bin","$root/pdb" -File -Recurse | Sort-Object FullName | ForEach-Object {
+            $lines += "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.FullName.Substring((Resolve-Path $root).Path.Length+1))"
+          }
+          $lines | Set-Content "$root/BUILD_IDENTITY.txt" -Encoding utf8
       - name: Upload x64 Source 1 replacement
         if: matrix.preset == 'x64-release'
         uses: actions/upload-artifact@v4
@@ -81,4 +92,6 @@ jobs:
             build/scene-cache-ci/bin/x64/AfxHookSource.dll
             build/scene-cache-ci/pdb/x64/AfxHookSource.pdb
             build/scene-cache-ci/bin/resources/shaders/*.acs
+            build/scene-cache-ci/SCENE_CACHE_VALIDATION.md
+            build/scene-cache-ci/BUILD_IDENTITY.txt
           if-no-files-found: error
