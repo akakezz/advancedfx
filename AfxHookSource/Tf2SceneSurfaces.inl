@@ -36,7 +36,21 @@ static bool SurfaceMaterialName(SurfaceAddress material,std::string &name){
     using Name=const char*(*)(void*);
     auto ptr=reinterpret_cast<Name>(fn)(reinterpret_cast<void*>(material));
     const auto address=reinterpret_cast<SurfaceAddress>(ptr);name.clear();
-    for(unsigned i=0;i<260;++i){char ch=0;if(!SurfaceGet(address+i,ch))return false;if(!ch)return !name.empty();if(static_cast<unsigned char>(ch)<32||static_cast<unsigned char>(ch)>126)return false;name+=ch;}
+    // Read bounded chunks rather than one system call per character. If a
+    // chunk crosses unreadable memory, fall back to a single byte so a
+    // valid terminator just before that boundary remains accepted.
+    for(unsigned i=0;i<260;){
+        char bytes[32]{};
+        auto n=(std::min)(unsigned(sizeof(bytes)),260-i);
+        if(!SurfaceRead(address+i,bytes,n)){n=1;if(!SurfaceRead(address+i,bytes,n))return false;}
+        for(unsigned j=0;j<n;++j){
+            const auto ch=static_cast<unsigned char>(bytes[j]);
+            if(!ch)return !name.empty();
+            if(ch<32||ch>126)return false;
+            name+=bytes[j];
+        }
+        i+=n;
+    }
     return false;
 }
 struct NativeWorld {SurfaceAddress World=0,Surfaces=0;int Count=0;};

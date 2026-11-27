@@ -2436,7 +2436,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
-		      mirv_cache perf [reset] - CPU replay timings and failure diagnostics.\n"
+		    "  mirv_cache perf [reset] - CPU replay timings and failure diagnostics.\n"
             "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
