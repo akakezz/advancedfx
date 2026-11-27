@@ -864,6 +864,8 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
     }
     ChildIndex children;
     if(!BuildChildIndex(frame,children))return fail("Recorded particle hierarchy invalid");
+    std::vector<ReplayPrerequisite> prerequisites;
+    if(draw&&!BuildReplayPrerequisites(frame,prerequisites))return fail("Recorded particle replay prerequisites invalid");
     // Scratch is shared across attempts. A generation marker distinguishes
     // bindings belonging to this tree from earlier successful/fallback trees.
     std::vector<unsigned char> gate(draw?frame.Collections.size():0);
@@ -876,8 +878,12 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         if(listChanged)return false;
         ++result.Attempts;
         const auto &old=frame.Collections[index];
-        auto reject=[&](const std::string &why){++result.Rejected;if(firstFailure.empty())firstFailure=std::string(old.Name.data())+": "+why;return false;};
-        if(!old.Name[0])return reject("unnamed definition");
+        const auto nameEnd=std::find(old.Name.begin(),old.Name.end(),'\0');
+        auto reject=[&](const std::string &why){++result.Rejected;if(firstFailure.empty())firstFailure=std::string(old.Name.begin(),nameEnd)+": "+why;return false;};
+        if(draw&&prerequisites[index]!=ReplayPrerequisite::Ready){
+            ++result.PreflightRejected;return reject(ReplayPrerequisiteReason(prerequisites[index]));
+        }
+        if(!old.Name[0]||nameEnd==old.Name.end())return reject("unnamed or unterminated definition");
 #ifdef _MSC_VER
         region={};readRegion={}; // never reuse page permissions across native allocations
 #endif
@@ -1020,7 +1026,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
     };
     if(draw) {
         ReplayForest(frame,attempt,&children);
-        result.Status="Native particle submissions (not pixel coverage)";
+        result.Status="Native particle submissions (not pixel coverage); factories avoided by recorded preflight "+std::to_string(result.PreflightRejected);
         if(listChanged)result.Status+="; WARNING: native lifecycle guard stopped replay";
         if(!firstFailure.empty())result.Status+="; first rejected tree: "+firstFailure;
         if(auditRenderers){

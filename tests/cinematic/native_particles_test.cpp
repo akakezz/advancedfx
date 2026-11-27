@@ -162,5 +162,32 @@ int main(){
     check(visited==std::vector<std::size_t>{0,1,3,4},"prepared forest traversal identical");
     forestIndex[0].clear();visited.clear();ReplayForest(forest,[&](std::size_t i,std::size_t){visited.push_back(i);return true;},&forestIndex);
     check(visited.empty(),"missing prepared edge rejected before submission");
+    // Recorded preflight preserves root-first fallback: an incomplete
+    // child rejects the parent factory attempt, not a valid sibling.
+    Frame full;full.Complete=full.Appearance=true;full.Collections.resize(3);
+    for(std::size_t i=0;i<full.Collections.size();++i){
+        auto &node=full.Collections[i];node.Parent=i?0:-1;node.Name[0]='x';node.HasTime=true;node.Time=1;
+        node.Active=i?4:0;
+        if(node.Active)for(unsigned a=0;a<Layout::AttributeCount;++a){
+            node.Mask|=1u<<a;const auto width=4u*Components(a);
+            node.Attributes[a]={static_cast<std::uint32_t>(full.Words.size()),width,0};full.Words.resize(full.Words.size()+width);
+        }
+    }
+    std::vector<ReplayPrerequisite> eligible;
+    check(BuildReplayPrerequisites(full,eligible)&&std::all_of(eligible.begin(),eligible.end(),[](auto why){return why==ReplayPrerequisite::Ready;}),"complete recorded tree eligible");
+    auto damaged=full;damaged.Collections[1].Mask&=~1u;
+    check(BuildReplayPrerequisites(damaged,eligible)&&eligible[0]==ReplayPrerequisite::Descendant&&eligible[1]==ReplayPrerequisite::Mask&&eligible[2]==ReplayPrerequisite::Ready,"invalid child blocks parent only");
+    std::vector<std::size_t> factory;
+    ReplayForest(damaged,[&](std::size_t i,std::size_t){if(eligible[i]!=ReplayPrerequisite::Ready)return false;factory.push_back(i);return true;});
+    check(factory==std::vector<std::size_t>{2},"recorded-only rejection skips impossible factories, preserves valid sibling");
+    damaged=full;damaged.Collections[1].Attributes[Position].Start=0xffffffffu;
+    check(BuildReplayPrerequisites(damaged,eligible)&&eligible[1]==ReplayPrerequisite::Block,"recorded block bounds");
+    damaged=full;damaged.Collections[1].Active=Layout::MaxDetachedActive+1;
+    check(BuildReplayPrerequisites(damaged,eligible)&&eligible[1]==ReplayPrerequisite::Capacity,"recorded native capacity limit");
+    damaged=full;damaged.Collections[1].Name.fill('x');
+    check(BuildReplayPrerequisites(damaged,eligible)&&eligible[1]==ReplayPrerequisite::Name,"unterminated recorded definition rejected");
+    damaged=full;damaged.Collections[0].HasTime=false;
+    check(BuildReplayPrerequisites(damaged,eligible)&&eligible[0]==ReplayPrerequisite::Clock&&eligible[1]==ReplayPrerequisite::Ready,"empty node still requires clock, children remain eligible");
+    damaged.Collections[1].Parent=1;check(!BuildReplayPrerequisites(damaged,eligible)&&eligible.empty(),"malformed recorded hierarchy rejected");
     std::cout<<"Native particle snapshot tests passed\n";
 }

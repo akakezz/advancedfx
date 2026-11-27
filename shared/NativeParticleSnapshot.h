@@ -27,7 +27,7 @@ constexpr Address Xyz=0x2310, XyzStride=0x2510;
 constexpr Address Definition=0x58, DefinitionName=0x240, Clock=0x34;
 constexpr std::size_t AttributeCount=22, WordLimit=2u*1024u*1024u;
 constexpr std::size_t MaxCollections=4096, MaxPoints=262144;
-constexpr int MaxPerCollection=65536;
+constexpr int MaxPerCollection=65536, MaxDetachedActive=5000;
 }
 using Point=std::array<float,3>;
 // SDK attribute indices. Native tables store 32 entries; only 22 documented
@@ -284,6 +284,53 @@ inline bool BuildChildIndex(const Frame &f,ChildIndex &children) {
     }
     return true;
 }
+// A recorded-only rejection pass. These checks mirror conditions already
+// enforced by PlanDetached and the native draw gate; they do not assume
+// which attributes an unknown renderer actually uses. An incompatible
+// ancestor must not prevent a compatible child from being tried separately.
+enum class ReplayPrerequisite : unsigned char {Ready,Name,Clock,Capacity,Mask,Block,Descendant};
+inline const char *ReplayPrerequisiteReason(ReplayPrerequisite reason){
+    switch(reason){
+        case ReplayPrerequisite::Name:return "recorded definition name missing or unterminated";
+        case ReplayPrerequisite::Clock:return "recorded collection clock missing or invalid";
+        case ReplayPrerequisite::Capacity:return "recorded active count exceeds detached capacity";
+        case ReplayPrerequisite::Mask:return "recorded appearance attributes missing";
+        case ReplayPrerequisite::Block:return "recorded appearance block invalid";
+        case ReplayPrerequisite::Descendant:return "recorded descendant cannot be restored";
+        default:return "recorded prerequisites satisfied";
+    }
+}
+inline bool BuildReplayPrerequisites(const Frame &f,std::vector<ReplayPrerequisite> &out){
+    using namespace Layout;
+    out.clear();
+    if(!f.Complete||!f.Appearance||f.Collections.size()>MaxCollections||f.Words.size()>WordLimit)return false;
+    out.resize(f.Collections.size(),ReplayPrerequisite::Ready);
+    constexpr std::uint32_t all=(std::uint32_t(1)<<AttributeCount)-1;
+    for(std::size_t i=0;i<f.Collections.size();++i){
+        const auto &c=f.Collections[i];
+        if(c.Parent!=-1&&(c.Parent<0||static_cast<std::size_t>(c.Parent)>=i)){out.clear();return false;}
+        auto &why=out[i];
+        if(!c.Name[0]||std::find(c.Name.begin(),c.Name.end(),'\0')==c.Name.end())why=ReplayPrerequisite::Name;
+        else if(!c.HasTime||!std::isfinite(c.Time))why=ReplayPrerequisite::Clock;
+        else if(c.Active>MaxDetachedActive)why=ReplayPrerequisite::Capacity;
+        else if(c.Active){
+            if(c.Mask!=all){why=ReplayPrerequisite::Mask;continue;}
+            for(unsigned a=0;a<AttributeCount;++a){
+                const auto &b=c.Attributes[a];const auto width=4u*Components(a);
+                const auto words=(b.Stride?(std::size_t(c.Active)+3)/4:1)*width;
+                if((b.Stride&&b.Stride!=width)||b.Count!=words||b.Start>f.Words.size()||words>f.Words.size()-b.Start){
+                    why=ReplayPrerequisite::Block;break;
+                }
+            }
+        }
+    }
+    for(std::size_t i=f.Collections.size();i--;){
+        const int parent=f.Collections[i].Parent;
+        if(parent>=0&&out[i]!=ReplayPrerequisite::Ready&&out[parent]==ReplayPrerequisite::Ready)
+            out[parent]=ReplayPrerequisite::Descendant;
+    }
+    return true;
+}
 template<class Reader>
 RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader read,const ChildIndex *prepared=nullptr) {
     using namespace Layout;
@@ -312,7 +359,7 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
         }else headerOk=get(c+Definition,def)&&get(c+0x60,capacity)&&get(c+0x64,maxAllowed);
         if(!headerOk||!def||!get(def+DefinitionName,name)||!name||
            !get(c+Active,active)||active!=0||
-           maxAllowed<0||maxAllowed>5000||capacity<maxAllowed||capacity>5008||
+           maxAllowed<0||maxAllowed>MaxDetachedActive||capacity<maxAllowed||capacity>5008||
            old.Active>static_cast<unsigned>(maxAllowed)||!get(c+ChildHead,child)) {
             fail("Detached collection capacity/state mismatch");return;
         }
@@ -570,7 +617,7 @@ void ReplayForest(const Frame &f,Attempt attempt,const ChildIndex *prepared=null
 }
 struct ReplayResult {
     bool MainView=false;
-    std::size_t Attempts=0,Trees=0,Nodes=0,Particles=0,Rejected=0;
+    std::size_t Attempts=0,Trees=0,Nodes=0,Particles=0,Rejected=0,PreflightRejected=0;
     std::string Status;
     double FactoryMs=0,PlanMs=0,CopyMs=0,RenderMs=0,DestroyMs=0,GateMs=0,ActivationMs=0,ResetMs=0;
     std::size_t FastWrites=0,SystemWrites=0,WriteFaults=0,CleanupFailures=0;

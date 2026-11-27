@@ -115,7 +115,7 @@ struct ScenePerfStat {
 };
 struct ScenePerfCounters {
     ScenePerfStat Sample,ModelDraw,ParticleAcquire,ParticleDraw,LegacyDraw,SurfaceBegin,SurfaceEnd,LegacyCapture,SurfaceCapture;
-    unsigned long long ParticleMain=0,ParticleRejected=0,ParticleAttempts=0,LegacyRejected=0;
+    unsigned long long ParticleMain=0,ParticleRejected=0,ParticleAttempts=0,ParticlePreflightRejected=0,LegacyRejected=0;
     ScenePerfStat MainModelDraw,OtherModelDraw,UnknownModelDraw,MainParticleDraw;
     unsigned long long NonMainModelSkipped=0,NonMainParticleSkipped=0,ModelsCulled=0,ActorsCulled=0;
     int LastModelFailureTick=-1;
@@ -597,6 +597,7 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
                     g_SceneBenchReport+="  Historical decal exclusions: "+surface.Value.UnsupportedDecals.Describe()+"; clipped geometry "+std::to_string(geometry)+"/"+std::to_string(surface.Value.Decals?surface.Value.Decals->size():0)+"; detached replay "+std::to_string(int(g_SceneRemovedDecals))+"; surviving opacity "+std::to_string(int(g_SceneDecalOpacity))+"\n";
                 }
             }
+            g_SceneBenchReport+="  Recorded preflight factories avoided: "+std::to_string(g_ScenePerf.ParticlePreflightRejected-b.Before.ParticlePreflightRejected)+"\n";
             g_SceneBenchReport+="  Native particle status: "+g_SceneParticleReplayResult.Status+"\n  Legacy status: "+g_SceneLegacyReplayResult.Status+"\n  Surface status: "+g_SceneHistoricalSurfaceStatus+"\n";
         }
     }
@@ -1346,7 +1347,7 @@ void SceneCacheDrawParticles()
     g_ScenePerf.ParticleDraw.Add(begin,sample->Tick);
     g_ScenePerf.ParticleMain+=result.MainView;
     if(result.MainView)g_ScenePerf.MainParticleDraw.Add(begin,sample->Tick);
-    g_ScenePerf.ParticleAttempts+=result.Attempts;g_ScenePerf.ParticleRejected+=result.Rejected;
+    g_ScenePerf.ParticleAttempts+=result.Attempts;g_ScenePerf.ParticleRejected+=result.Rejected;g_ScenePerf.ParticlePreflightRejected+=result.PreflightRejected;
     g_ScenePerf.ParticleFactoryMs+=result.FactoryMs;g_ScenePerf.ParticlePlanMs+=result.PlanMs;g_ScenePerf.ParticleCopyMs+=result.CopyMs;
     g_ScenePerf.ParticleRenderMs+=result.RenderMs;g_ScenePerf.ParticleDestroyMs+=result.DestroyMs;
     g_ScenePerf.ParticleGateMs+=result.GateMs;g_ScenePerf.ParticleActivationMs+=result.ActivationMs;g_ScenePerf.ParticleResetMs+=result.ResetMs;
