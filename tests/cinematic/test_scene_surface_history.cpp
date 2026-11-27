@@ -19,6 +19,17 @@ int main(){
     assert(!h.At(11)&&h.ForPreview(11)->Tick==10&&h.ForPreview(12)->Tick==10);
     assert(!h.ForPreview(9)&&!h.ForPreview(16)&&!h.ForPreview(18)&&h.ForPreview(13)->Tick==13);
     assert(std::string(DecalReadLabel(DecalRead::Slot))=="slot identity mismatch");
+    // Unavailable and oversized captures cannot destroy a valid history.
+    const auto retainedBytes=h.Bytes, retainedFrames=h.Frames.size();
+    Frame unavailable;unavailable.Tick=17;
+    assert(!h.Append(unavailable)&&h.Bytes==retainedBytes&&h.Frames.size()==retainedFrames&&h.At(17));
+    unavailable.World=2;assert(!h.Append(unavailable)&&h.At(17));
+    unavailable.Tick=1;assert(!h.Append(unavailable)&&h.At(17));
+    Frame oversize=f;oversize.Tick=3;oversize.World=99;
+    Decal huge;huge.Material=std::string(4096,'x');
+    oversize.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{huge});
+    const auto smallBytes=small.Bytes,smallFrames=small.Frames.size();
+    assert(!small.Append(oversize)&&small.Bytes==smallBytes&&small.Frames.size()==smallFrames&&small.At(3));
     Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
     sh.Leaves.push_back(-1);assert(!sh.Valid());
 }

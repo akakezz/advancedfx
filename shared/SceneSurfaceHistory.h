@@ -100,16 +100,17 @@ public:
     std::size_t Bytes=0,Evicted=0,Rejected=0;
     void Clear(){Frames.clear();Refs.clear();Bytes=Evicted=Rejected=0;}
     bool Append(Frame f){
-        if(f.Tick<0){++Rejected;return false;}
+        // A failed/unsupported capture (often World==0) must not erase a
+        // valid history or replace a good sample at the same tick.
+        if(f.Tick<0||!f.World||(!f.DecalsReady&&!f.ShadowsReady)){++Rejected;return false;}
+        if(sizeof(Frame)+(f.Decals?Cost(*f.Decals):0)+(f.Shadows?Cost(*f.Shadows):0)>Budget){++Rejected;return false;}
         if(!Frames.empty()&&(f.World!=Frames.back().World||f.Tick<Frames.back().Tick))Clear();
         if(!Frames.empty()&&f.Tick==Frames.back().Tick)Drop(false);
-        if(!f.DecalsReady&&!f.ShadowsReady){++Rejected;return false;}
         if(!Frames.empty()){
             const auto &last=Frames.back();
             if(f.Decals&&last.Decals&&*f.Decals==*last.Decals)f.Decals=last.Decals;
             if(f.Shadows&&last.Shadows&&*f.Shadows==*last.Shadows)f.Shadows=last.Shadows;
         }
-        if(sizeof(Frame)+(f.Decals?Cost(*f.Decals):0)+(f.Shadows?Cost(*f.Shadows):0)>Budget){++Rejected;return false;}
         while(!Frames.empty()&&(Bytes>Budget-Extra(f)||Frames.size()>=32768)){Drop(true);++Evicted;}
         Bytes+=sizeof(Frame);AddVector(f.Decals);AddVector(f.Shadows);Frames.push_back(std::move(f));return true;
     }

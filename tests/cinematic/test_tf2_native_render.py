@@ -136,8 +136,8 @@ float surfaceValues[2]={1,.5f};int surfaceWrites=0;bool surfaceWritable=true;
 bool Mirv_Tf2_SceneDrawVisibility(const char*n,float &v,bool write){int i=!std::strcmp(n,"r_shadows")?0:1;if(write){++surfaceWrites;if(!surfaceWritable)return false;surfaceValues[i]=v;}else v=surfaceValues[i];return true;}
 bool Mirv_Tf2_LiveParticleVisibility(float &v,bool write){if(!particleAvailable)return false;if(write){++particleWrites;if(!particleWritable)return false;particleVisibility=v;}else v=particleVisibility;return true;}
 int auditFrame=-1;std::map<const void*,int> audited;
-int benchmarkRenderEnds=0;
-namespace AfxHookSource{namespace CameraOverlay{void SceneCacheBenchmarkRenderEnd(){++benchmarkRenderEnds;}bool SceneCacheSuppressLiveStudio(){return replay;}bool SceneCacheSuppressLiveParticles(){return particleIsolation;}unsigned surfaceMask=0;unsigned SceneCacheLiveSurfaceIsolation(){return surfaceMask;}unsigned SceneCacheBeginHistoricalSurfaces(){return 0;}void SceneCacheEndHistoricalSurfaces(){}void SceneCachePublishSurfaceIsolation(unsigned,const char*){}void SceneCachePublishParticleIsolation(const char*s){particleIsolationStatus=s;}bool SceneCacheAuditActive(){return audit;}void SceneCachePublishModelAudit(int f,std::map<const void*,int> s){auditFrame=f;audited=std::move(s);}}}
+int benchmarkRenderEnds=0,historicalBegins=0,historicalEnds=0;
+namespace AfxHookSource{namespace CameraOverlay{void SceneCacheBenchmarkRenderEnd(){++benchmarkRenderEnds;}bool SceneCacheSuppressLiveStudio(){return replay;}bool SceneCacheSuppressLiveParticles(){return particleIsolation;}unsigned surfaceMask=0;unsigned SceneCacheLiveSurfaceIsolation(){return surfaceMask;}unsigned SceneCacheBeginHistoricalSurfaces(){++historicalBegins;return 0;}void SceneCacheEndHistoricalSurfaces(){++historicalEnds;}void SceneCachePublishSurfaceIsolation(unsigned,const char*){}void SceneCachePublishParticleIsolation(const char*s){particleIsolationStatus=s;}bool SceneCacheAuditActive(){return audit;}void SceneCachePublishModelAudit(int f,std::map<const void*,int> s){auditFrame=f;audited=std::move(s);}}}
 void Mirv_Tf2_RenderGroups(std::map<const void*,unsigned>&groups,int hidden,bool mark){unsigned b=mark?8u:0u;groups={{&player,b|1u|(hidden?4u:0u)},{&gear,b|1u|(hidden?4u:0u)},{&vm,b|2u},{&prop,0}};}
 #include "AfxHookSource/Tf2RenderPass.inl"
 std::map<Tf2RenderPass,std::vector<const void*>> visible,depthDraws;std::map<Tf2RenderPass,int> hudByPass;
@@ -150,7 +150,9 @@ void Render(void *self,const void*,int clear,int draw){
  if(draw&2){const bool base=g_Tf2ActivePass==Tf2RenderPass::World;OnGpu([base]{assert(mask==(base?15:0));});Tf2PassPaint(self,2);OnGpu([base]{assert(mask==(base?15:0));});}
 }
 float expectedParticleVisibility=1;
-void Frame(void*self,void*){++ordinaryFrames;assert(mask==15&&colorStack.empty());assert(particleVisibility==expectedParticleVisibility);
+bool recurseFrame=false;
+void Frame(void*self,void*rect){++ordinaryFrames;assert(mask==15&&colorStack.empty());assert(particleVisibility==expectedParticleVisibility);
+ if(recurseFrame){recurseFrame=false;Tf2PassRenderFrame(self,rect);assert(g_Tf2ReplayStudio&&historicalBegins==historicalEnds+1);}
  for(auto pointer:{&player,&gear,&vm,&prop}){Tf2ModelInfoPrefix info{};info.Renderable=pointer;Tf2PassDrawModel(self,nullptr,&info,nullptr);}
 }
 void SceneEnd(void*){}
@@ -199,6 +201,17 @@ int main(){
  g_AfxStreams.Recording=false;AfxHookSource::CameraOverlay::surfaceMask=3;int sw=surfaceWrites;Tf2PassRenderFrame(&client,rect);FlushGpu();assert(surfaceWrites==sw+4&&surfaceValues[0]==1&&surfaceValues[1]==.5f);
  g_AfxStreams.Recording=true;sw=surfaceWrites;++globals.Count;Tf2PassRenderFrame(&client,rect);FlushGpu();assert(surfaceWrites==sw);
  AfxHookSource::CameraOverlay::surfaceMask=0;
+ // A nested ordinary callback must inherit the parent's preview and audit,
+ // not end its historical scope, clear its groups or start a separate pass.
+ g_AfxStreams.Recording=false;queued=false;replay=true;audit=true;particleIsolation=true;
+ expectedParticleVisibility=0;recurseFrame=true;visible.clear();depthDraws.clear();
+ int hb=historicalBegins,he=historicalEnds,be=benchmarkRenderEnds;beforeWrites=particleWrites;
+ Tf2PassRenderFrame(&client,rect);FlushGpu();
+ assert(historicalBegins==hb+1&&historicalEnds==he+1&&benchmarkRenderEnds==be+1);
+ assert(particleWrites==beforeWrites+2&&particleVisibility==1&&audited.size()==4);
+ assert((visible[Tf2RenderPass::Count]==std::vector<const void*>{&prop,&prop}));
+ assert(g_Tf2RenderGroups.empty()&&!g_Tf2ReplayStudio);
+ replay=false;audit=false;particleIsolation=false;expectedParticleVisibility=1;g_AfxStreams.Recording=true;
  // Every subset produces the complement in Base, including native HUD paint.
  for(bool deferred:{false,true})for(unsigned selected=0;selected<16;++selected){
   queued=deferred;g_AfxStreams.Alpha=false;g_AfxStreams.Enabled[0]=true;

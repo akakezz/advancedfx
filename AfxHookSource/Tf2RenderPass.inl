@@ -165,8 +165,20 @@ void __fastcall Tf2PassRenderFrame(void *self,
 {
  static thread_local unsigned renderDepth=0;
  struct DepthScope {unsigned &Depth;~DepthScope(){--Depth;}} depthScope{renderDepth};
+ const bool first=++renderDepth==1;
+ // A nested ordinary View_Render inherits the parent's groups, audit and
+ // historical scopes. In particular it must not end the parent's decal gate
+ // or destroy its temporary shadows while the outer view is still drawing.
+ if(!first){
+  g_Tf2OriginalFrame(self,
+#ifndef _WIN64
+   edx,
+#endif
+   rect);
+  return;
+ }
  const bool outer = g_Tf2ActivePass == Tf2RenderPass::Count;
- const bool benchmarkOuter=++renderDepth==1&&outer;
+ const bool benchmarkOuter=outer;
  struct GroupScope {
   bool Outer;
   ~GroupScope() { if (Outer) { g_Tf2RenderGroups.clear(); g_Tf2ReplayStudio = false; g_Tf2AuditActive = false; g_Tf2AuditModels.clear(); } }
