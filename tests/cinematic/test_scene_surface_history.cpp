@@ -2,6 +2,7 @@
 #include <cassert>
 using namespace advancedfx::SceneSurfaces;
 int main(){
+    DecalCoverage coverage;coverage.Attached=2;coverage.OutsideWorld=3;coverage.Displacement=4;assert(coverage.Total()==9&&coverage.Describe().find("attached 2")!=std::string::npos);
     Frame f;f.Tick=1;f.World=1;f.DecalsReady=true;
     Decal d;d.Material="decals/test";d.Alpha=123;
     f.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{d});

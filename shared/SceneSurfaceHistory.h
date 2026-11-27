@@ -54,12 +54,23 @@ inline const char *DecalReadLabel(DecalRead value){
     default:return "not run";
     }
 }
+// Exclusive observed rejection categories, not a claim of complete decal coverage.
+struct DecalCoverage {
+    std::size_t OutsideWorld=0,Attached=0,Flagged=0,Displacement=0,Material=0;
+    std::size_t Total()const{return OutsideWorld+Attached+Flagged+Displacement+Material;}
+    std::string Describe()const{
+        return "outside world "+std::to_string(OutsideWorld)+", attached "+std::to_string(Attached)+
+            ", flags 0x1100 "+std::to_string(Flagged)+", displacement "+std::to_string(Displacement)+
+            ", material unavailable "+std::to_string(Material);
+    }
+};
 struct Frame {
     int Tick=-1;
     std::uint64_t World=0; // session generation, never a native pointer
     bool DecalsReady=false,ShadowsReady=false;
     DecalRead DecalStatus=DecalRead::NotRun;
     std::size_t DecalsUnsupported=0,ShadowsUnobserved=0;
+    DecalCoverage UnsupportedDecals;
     std::shared_ptr<const std::vector<Decal>> Decals;
     std::shared_ptr<const std::vector<Shadow>> Shadows;
 };

@@ -2286,7 +2286,10 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         }
         const int tick=g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneSurfaces.Frames.empty()?-1:g_SceneSurfaces.Frames.back().Tick;
         advancedfx::Message("Historical surfaces capture %d, shadows %d, decals %d; %zu frames, %.2f MiB / 64 MiB; evicted %zu, rejected %zu. %s\n",int(g_SceneSurfaceCapture),int(g_SceneHistoricalShadows),int(g_SceneHistoricalDecals),g_SceneSurfaces.Frames.size(),g_SceneSurfaces.Bytes/1048576.0,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected,g_SceneHistoricalSurfaceStatus.c_str());
-        if(auto sample=g_SceneSurfaces.ForPreview(tick))advancedfx::Message("Surface requested tick %d; resolved tick %d (bounded prior sample). Shadows ready %d, observed %zu, unobserved %zu; decals ready %d, ordinary world %zu, unsupported %zu.\n",tick,sample->Tick,int(sample->ShadowsReady),sample->Shadows?sample->Shadows->size():0,sample->ShadowsUnobserved,int(sample->DecalsReady),sample->Decals?sample->Decals->size():0,sample->DecalsUnsupported);
+        if(auto sample=g_SceneSurfaces.ForPreview(tick)){
+            advancedfx::Message("Surface requested tick %d; resolved tick %d (bounded prior sample). Shadows ready %d, observed %zu, unobserved %zu; decals ready %d, ordinary world %zu, unsupported %zu.\n",tick,sample->Tick,int(sample->ShadowsReady),sample->Shadows?sample->Shadows->size():0,sample->ShadowsUnobserved,int(sample->DecalsReady),sample->Decals?sample->Decals->size():0,sample->DecalsUnsupported);
+            advancedfx::Message("Historical decal rejection breakdown: %s. Surviving ordinary world marks only; removed marks and unsupported types are not reconstructed.\n",sample->UnsupportedDecals.Describe().c_str());
+        }
         else advancedfx::Message("Surface tick %d: no bounded prior sample.\n",tick);
         std::size_t shadowFrames=0,decalFrames=0,nonemptyDecals=0;
         for(const auto &f:g_SceneSurfaces.Frames){shadowFrames+=f.ShadowsReady;decalFrames+=f.DecalsReady;nonemptyDecals+=f.DecalsReady&&f.Decals&&!f.Decals->empty();}

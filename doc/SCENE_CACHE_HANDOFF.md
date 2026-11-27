@@ -355,3 +355,5 @@ Phase 17D: `mirv_cache perf bench models` is a six-phase comparable geometry ben
 Phase 17E precomputes frustum planes and adds opt-in conservative grouped player/ragdoll/attachment culling (`perf cull 1; mirv_cache perf actorCull 1`). Default actor cull off; compare final benchmark phase (15 full, 7 model-only) and check edge fidelity. No changes to recorded history.
 
 Phase 17C queued studio fixture passed CI. Phase 17D initially failed overlay compilation on non-const demo interface; corrected pointer. Public SDK normal particle render context usage is not proof for detached collection/legacy scratch lifetime in queued mode; exact target DLLs unavailable here, so immediate particle/surface guard remains. Next native queue research requires those binaries and completion/thread/lifecycle verification.
+
+Phase 17F: decal capture/live replay status now breaks down unsupported classes; reuses validated record fields for geometry gating, with unchanged hook checks. Use `mirv_cache surfaces status` at a problematic cursor. Full decal reconstruction still unimplemented; no unsupported marks hidden automatically. Corrected Phase 17A–E checkpoint passed portable CI.

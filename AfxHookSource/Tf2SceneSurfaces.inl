@@ -60,8 +60,9 @@ static bool SurfaceWorld(SurfaceAddress base,NativeWorld &w){
 static NativeWorld g_SurfaceWorld;
 static std::uint64_t g_SurfaceGeneration=1;
 static bool SurfaceSameWorld(const NativeWorld &a,const NativeWorld &b){return a.World==b.World&&a.Surfaces==b.Surfaces&&a.Count==b.Count;}
-struct LiveDecal {Decal Value;SurfaceAddress Object=0;};
-static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::vector<LiveDecal> &out,std::size_t &unsupported,DecalRead &status){
+struct LiveDecal {Decal Value;SurfaceAddress Object=0,Surface=0,Material=0;};
+static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::vector<LiveDecal> &out,std::size_t &unsupported,DecalRead &status,DecalCoverage &coverage){
+    coverage={};unsupported=0;
     status=DecalRead::Guard;
     if(!SurfaceMatch(base,0x117c42,{0x48,0x89,0x04,0xd1,0x66,0x89,0x58,0x66})||
        !SurfaceMatch(base,0x118700,{0x48,0x8b,0x80,0xe8,0x00,0x00,0x00,0x48,0x8d,0x49,0x40})||
@@ -84,11 +85,14 @@ static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::ve
         SurfaceAddress surface=0,material=0,attachment=0;
         get(0x10,surface);get(0x18,material);get(0x58,attachment);get(0x66,v.Slot);get(0x68,v.Flags);get(0x6a,v.NameIndex);
         if(v.Slot!=i){status=DecalRead::Slot;return false;}
-        if(!surface||surface<world.Surfaces||(surface-world.Surfaces)%64||(surface-world.Surfaces)/64>=static_cast<unsigned>(world.Count)||
-           attachment||(v.Flags&0x1100)){++unsupported;continue;}
+        if(attachment){++unsupported;++coverage.Attached;continue;}
+        if(v.Flags&0x1100){++unsupported;++coverage.Flagged;continue;}
+        if(!surface||surface<world.Surfaces||(surface-world.Surfaces)%64||(surface-world.Surfaces)/64>=static_cast<unsigned>(world.Count)){
+            ++unsupported;++coverage.OutsideWorld;continue;
+        }
         std::uint32_t surfaceFlags=0;
         if(!SurfaceGet(surface,surfaceFlags)){status=DecalRead::Surface;return false;}
-        if(surfaceFlags&0x800){++unsupported;continue;}
+        if(surfaceFlags&0x800){++unsupported;++coverage.Displacement;continue;}
         v.Surface=static_cast<std::uint32_t>((surface-world.Surfaces)/64);
         std::memcpy(v.Placement.data(),raw.data()+0x24,12);
         if(v.Flags&0x80)std::memcpy(v.Placement.data()+3,raw.data()+0x30,12);
@@ -96,10 +100,11 @@ static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::ve
         v.Flags&=0x0081; // avoid transient draw/clip flags in historical identity
         auto found=materials.find(material);
         if(found==materials.end()){
-            std::string name;if(!SurfaceMaterialName(material,name)){++unsupported;continue;}
+            std::string name;if(!SurfaceMaterialName(material,name)){++unsupported;++coverage.Material;continue;}
             found=materials.emplace(material,std::move(name)).first;
         }
         v.Material=found->second;
+        live.Surface=surface;live.Material=material;
         out.push_back(std::move(live));
     }
     SurfaceAddress after=0;int n=0;NativeWorld now;
@@ -254,7 +259,7 @@ advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){
     if(!SurfaceSameWorld(world,g_SurfaceWorld)){g_SurfaceWorld=world;++g_SurfaceGeneration;g_SurfaceObserved.clear();}
     sample.World=g_SurfaceGeneration;
     std::vector<LiveDecal> decals;
-    sample.DecalsReady=ReadWorldDecals(base,world,decals,sample.DecalsUnsupported,sample.DecalStatus);
+    sample.DecalsReady=ReadWorldDecals(base,world,decals,sample.DecalsUnsupported,sample.DecalStatus,sample.UnsupportedDecals);
     if(sample.DecalsReady){auto values=std::make_shared<std::vector<Decal>>();values->reserve(decals.size());for(auto &d:decals)values->push_back(std::move(d.Value));sample.Decals=values;}
     if(SurfaceShadowHooks(base)){
         std::vector<ShadowSlot> slots;
@@ -319,8 +324,8 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
         if(!sample.DecalsReady||!sample.Decals)report<<"Historical decal capture unavailable: "<<DecalReadLabel(sample.DecalStatus)<<". ";
         else if(!SurfaceDecalHooks(base))report<<"Decal geometry gate unavailable (ABI or installation). ";
         else {
-            std::vector<LiveDecal> current;std::size_t unsupported=0;DecalRead status=DecalRead::NotRun;
-            if(ReadWorldDecals(base,world,current,unsupported,status)){
+            std::vector<LiveDecal> current;std::size_t unsupported=0;DecalRead status=DecalRead::NotRun;DecalCoverage coverage;
+            if(ReadWorldDecals(base,world,current,unsupported,status,coverage)){
                 std::size_t matched=0,hidden=0,failed=0;
                 g_SurfaceHiddenDecals.clear();g_SurfaceDecalDrawSkips=0;
                 for(const auto &live:current){
@@ -328,14 +333,15 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
                     auto it=std::lower_bound(sample.Decals->begin(),sample.Decals->end(),v.Slot,[](const Decal &a,std::uint16_t s){return a.Slot<s;});
                     const bool same=it!=sample.Decals->end()&&it->Same(v);matched+=same;
                     if(!same||it->Alpha==0){
-                        DecalGate gate;gate.Slot=v.Slot;
-                        if(SurfaceGet(live.Object+0x10,gate.Surface)&&SurfaceGet(live.Object+0x18,gate.Material)){
-                            g_SurfaceHiddenDecals.emplace(live.Object,gate);++hidden;
-                        }else ++failed;
+                        // Use the pointers from the validated record; the hook
+                        // still checks surface/material/slot before suppression.
+                        DecalGate gate;gate.Slot=v.Slot;gate.Surface=live.Surface;gate.Material=live.Material;
+                        if(g_SurfaceHiddenDecals.emplace(live.Object,gate).second)++hidden;
+                        else ++failed;
                     }
                 }
                 g_SurfaceDecalGate=true;active|=2;
-                report<<"Historical surviving decals "<<matched<<"/"<<sample.Decals->size()<<"; geometry gates "<<hidden<<"; missing "<<sample.Decals->size()-matched<<"; unsupported live "<<unsupported<<"; rejected gates "<<failed<<". ";
+                report<<"Historical surviving decals "<<matched<<"/"<<sample.Decals->size()<<"; geometry gates "<<hidden<<"; missing "<<sample.Decals->size()-matched<<"; unsupported live "<<unsupported<<" ("<<coverage.Describe()<<"); rejected gates "<<failed<<". ";
             }else report<<"Live decal traversal failed: "<<DecalReadLabel(status)<<". ";
         }
     }
