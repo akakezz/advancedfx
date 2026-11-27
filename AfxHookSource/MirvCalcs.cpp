@@ -11249,8 +11249,10 @@ static void ScenePrepareLocalPose(advancedfx::SceneCache::Pose &pose)
 	std::vector<Cache::Matrix>().swap(pose.Bones);
 }
 // No live entity or bone-cache pointers are needed to rebuild a sampled pose.
+using SceneOwnerMatrices=std::map<std::uint64_t,std::vector<SOURCESDK::matrix3x4_t>>;
 static bool SceneBuildMatrices(const advancedfx::SceneCache::Entity &entity,
-                               const advancedfx::SceneCache::Entity *owner, SOURCESDK::matrix3x4_t *out)
+                               const advancedfx::SceneCache::Entity *owner, SOURCESDK::matrix3x4_t *out,
+                               SceneOwnerMatrices *preparedOwners=nullptr)
 {
 	using Cache = advancedfx::SceneCache;
 	const auto &pose = *entity.ModelPose;
@@ -11275,7 +11277,7 @@ static bool SceneBuildMatrices(const advancedfx::SceneCache::Entity &entity,
 	else
 	{
 		SOURCESDK::matrix3x4_t ownerBones[Cache::MaxBones];
-		const bool merge =
+		const bool mergeCandidate =
 		    owner &&
 		    (owner->Category == MIRV_TF2_ENTITY_PLAYER || owner->Category == MIRV_TF2_ENTITY_RAGDOLL ||
 			 owner->Category == MIRV_TF2_ENTITY_BUILDING || owner->Category == MIRV_TF2_ENTITY_PROP) &&
@@ -11283,8 +11285,25 @@ static bool SceneBuildMatrices(const advancedfx::SceneCache::Entity &entity,
 		    entity.OwnerIdentity == owner->Identity && owner->ModelPose &&
 		    Cache::ValidPose(*owner->ModelPose) && !pose.ModelInfo->BoneNames.empty() &&
 		    !owner->ModelPose->ModelInfo->BoneNames.empty() &&
-		    !owner->ModelPose->ModelInfo->MergeBones.empty() &&
-		    SceneBuildMatrices(*owner, nullptr, ownerBones);
+		    !owner->ModelPose->ModelInfo->MergeBones.empty();
+        const SOURCESDK::matrix3x4_t *ownerSource=ownerBones;
+        bool merge=false;
+        if(mergeCandidate){
+            if(preparedOwners){
+                auto it=preparedOwners->find(owner->Identity);
+                if(it!=preparedOwners->end()){
+                    ownerSource=it->second.data();merge=true;
+                }
+            }
+            if(!merge){
+                merge=SceneBuildMatrices(*owner,nullptr,ownerBones);
+                if(merge&&preparedOwners&&preparedOwners->size()<256){
+                    const auto n=owner->ModelPose->ModelInfo->Parents.size();
+                    auto it=preparedOwners->emplace(owner->Identity,std::vector<SOURCESDK::matrix3x4_t>(ownerBones,ownerBones+n));
+                    ownerSource=it.first->second.data();
+                }
+            }
+        }
 		SOURCESDK::matrix3x4_t delta;
 		if (std::any_of(pose.Fixed.begin(), pose.Fixed.end(), [](const auto &bone) { return bone.World; }))
 		{
@@ -11313,7 +11332,7 @@ static bool SceneBuildMatrices(const advancedfx::SceneCache::Entity &entity,
 				if (!name.empty() && name.size() < 63 && found != model.MergeBones.end() &&
 				    !_stricmp(name.c_str(), model.BoneNames[*found].c_str()))
 				{
-					out[i] = ownerBones[*found];
+					out[i] = ownerSource[*found];
 					merged = true;
 				}
 			}
@@ -11711,8 +11730,9 @@ static bool SceneReplayMatrices(const advancedfx::SceneCache::Entity &entity,
     using Cache=advancedfx::SceneCache;
     static std::weak_ptr<const Cache::Frame> previous;
     static std::map<std::uint64_t,std::vector<SOURCESDK::matrix3x4_t>> matrices;
+    static SceneOwnerMatrices ownerMatrices;
     if(!frame)return SceneBuildMatrices(entity,owner,out);
-    if(previous.lock()!=frame){matrices.clear();previous=frame;}
+    if(previous.lock()!=frame){matrices.clear();ownerMatrices.clear();previous=frame;}
     // Only published rows qualify; modulation is irrelevant to reconstruction.
     const auto found=std::lower_bound(frame->Entities.begin(),frame->Entities.end(),entity.Identity,
         [](const auto &row,std::uint64_t id){return row.Identity<id;});
@@ -11729,7 +11749,7 @@ static bool SceneReplayMatrices(const advancedfx::SceneCache::Entity &entity,
     if(cached!=matrices.end()){
         std::copy(cached->second.begin(),cached->second.end(),out);return true;
     }
-    if(!SceneBuildMatrices(entity,owner,out))return false;
+    if(!SceneBuildMatrices(entity,owner,out,&ownerMatrices))return false;
     if(matrices.size()<2048)matrices.emplace(entity.Identity,std::vector<SOURCESDK::matrix3x4_t>(out,out+count));
     return true;
 }

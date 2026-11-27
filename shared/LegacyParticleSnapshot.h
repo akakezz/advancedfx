@@ -6,6 +6,7 @@
 #include <deque>
 #include <set>
 #include <map>
+#include <memory>
 #include <string>
 #include <iterator>
 #include <vector>
@@ -110,9 +111,9 @@ public:
     std::deque<Frame> Frames;
     std::size_t Bytes=0,Evicted=0,Rejected=0;
     std::uint64_t Revision=0;
-    void Clear(){Frames.clear();Bytes=Evicted=Rejected=0;++Revision;}
+    void Clear(){Frames.clear();Leased.reset();Bytes=Evicted=Rejected=0;++Revision;}
     bool Append(Frame frame) {
-        ++Revision;
+        ++Revision;Leased.reset();
         if(frame.Tick<0){++Rejected;return false;}
         if(!Frames.empty()&&frame.Tick<Frames.back().Tick)Clear();
         if(!Frames.empty()&&frame.Tick==Frames.back().Tick){Bytes-=Frames.back().Bytes();Frames.pop_back();}
@@ -129,11 +130,24 @@ public:
         if(it==Frames.begin())return nullptr;
         --it;return static_cast<std::int64_t>(tick)-it->Tick<=maxGap?&*it:nullptr;
     }
+    // One immutable preview copy per resolved tick/revision, not per render.
+    // The lease survives history mutation while a draw is in flight.
+    std::shared_ptr<const Frame> ShareForPreview(int tick,int maxGap=2) const {
+        const auto *sample=ForPreview(tick,maxGap);
+        if(!sample)return {};
+        if(!Leased||Leased->Tick!=sample->Tick||LeaseRevision!=Revision){
+            Leased=std::make_shared<const Frame>(*sample);
+            LeaseRevision=Revision;
+        }
+        return Leased;
+    }
     const Frame *At(int tick) const {
         auto it=std::lower_bound(Frames.begin(),Frames.end(),tick,[](const Frame &f,int t){return f.Tick<t;});
         return it!=Frames.end()&&it->Tick==tick?&*it:nullptr;
     }
 private:
+    mutable std::shared_ptr<const Frame> Leased;
+    mutable std::uint64_t LeaseRevision=0;
     std::size_t Budget;
 };
 }} // namespace

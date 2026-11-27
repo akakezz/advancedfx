@@ -34,5 +34,10 @@ int main(){
     History gaps;Frame f;f.Complete=true;f.Tick=10;assert(gaps.Append(f));f.Tick=13;assert(gaps.Append(f));f.Tick=17;assert(gaps.Append(f));
     assert(!gaps.At(11)&&gaps.ForPreview(11)->Tick==10&&gaps.ForPreview(12)->Tick==10);
     assert(!gaps.ForPreview(9)&&!gaps.ForPreview(16)&&!gaps.ForPreview(18)&&gaps.ForPreview(13)->Tick==13);
+    auto lease=gaps.ShareForPreview(11);
+    assert(lease&&lease->Tick==10&&lease==gaps.ShareForPreview(12));
+    assert(gaps.ShareForPreview(13)!=lease&&!gaps.ShareForPreview(16));
+    gaps.Clear();assert(!gaps.ShareForPreview(11)&&lease->Tick==10);
+    f.Tick=10;assert(gaps.Append(f));auto newerLease=gaps.ShareForPreview(10);assert(newerLease&&newerLease!=lease);
     std::cout<<"legacy particle snapshot fixtures passed\n";
 }
