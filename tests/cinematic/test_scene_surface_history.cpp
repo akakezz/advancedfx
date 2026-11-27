@@ -138,7 +138,7 @@ int main(){
     assert(CanPlanDetached(true,8,true,false));
     assert(!CanPlanDetached(true,8,true,true));
     assert(!CanPlanDetached(true,4,true,false));
-    Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
+    Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;assert(sh.SetLeaves({1,2})&&sh.Valid());
     sh.Texture=ShadowTexture::Simple;sh.UV={.25f,.25f,.5f,.5f};
     assert(sh.HasSimpleTexture()&&sh.ReplayTextureRect()==sh.UV);
     auto other=sh;other.Texture=ShadowTexture::Other;
@@ -174,5 +174,30 @@ int main(){
     History constrained(mergedBytes-1);
     assert(constrained.Append(second));first.World=13;const auto before=constrained.Bytes;
     assert(!constrained.Append(first)&&constrained.Bytes==before&&constrained.At(40)->DecalsReady&&!constrained.At(40)->ShadowsReady);
-    sh.Leaves.push_back(-1);assert(!sh.Valid());
+    // Different projections share equal immutable BSP leaf lists without
+    // reducing coverage. The history charges each nested vector once.
+    Shadow stable=sh;
+    auto sameLeaves=sh.Leaves;
+    assert(stable.SetLeaves({1,2},sameLeaves)&&stable.Leaves==sameLeaves);
+    assert(stable.SetLeaves({2,1},sameLeaves)&&stable.Leaves!=sameLeaves);
+    assert(stable.SetLeaves({1,2},sameLeaves)&&stable.Leaves==sameLeaves);
+    stable.Origin[0]=1;
+    Frame shadowFrame;shadowFrame.Tick=1;shadowFrame.World=22;shadowFrame.ShadowsReady=true;
+    shadowFrame.Shadows=std::make_shared<const std::vector<Shadow>>(std::vector<Shadow>{sh,stable});
+    History sharedLeaves;
+    assert(sharedLeaves.Append(shadowFrame));
+    const auto leafCost=sizeof(std::vector<int>)+sameLeaves->capacity()*sizeof(int);
+    const auto vectorCost=sizeof(std::vector<Shadow>)+shadowFrame.Shadows->capacity()*sizeof(Shadow);
+    const auto fullCost=sizeof(Frame)+vectorCost+leafCost;
+    assert(sharedLeaves.Bytes==fullCost);
+    stable.Origin[0]=2;shadowFrame.Tick=2;
+    shadowFrame.Shadows=std::make_shared<const std::vector<Shadow>>(std::vector<Shadow>{sh,stable});
+    assert(sharedLeaves.Append(shadowFrame)&&sharedLeaves.Bytes==fullCost+sizeof(Frame)+vectorCost);
+    History oneFrame(fullCost);shadowFrame.Tick=1;assert(oneFrame.Append(shadowFrame));
+    stable.Origin[0]=3;shadowFrame.Tick=2;
+    shadowFrame.Shadows=std::make_shared<const std::vector<Shadow>>(std::vector<Shadow>{sh,stable});
+    assert(oneFrame.Append(shadowFrame)&&oneFrame.Frames.size()==1&&oneFrame.Bytes==fullCost);
+    sharedLeaves.Clear();assert(!sharedLeaves.Bytes);
+    assert(!sh.SetLeaves({1,2,-1})&&!sh.Valid());
+    assert(stable.Valid()&&stable.Leaves==sameLeaves);
 }

@@ -472,10 +472,12 @@ static void SurfaceProjectHook(void *self,ShadowHandle handle,const float *origi
     if(!SurfaceSameWorld(world,g_SurfaceWorld)){g_SurfaceWorld=world;++g_SurfaceGeneration;g_SurfaceObserved.clear();SurfaceResetGeometry();}
     Shadow s;s.Height=height;s.FalloffOffset=offset;s.FalloffAmount=amount;
     if(count<=0||count>8192||!leaves){g_SurfaceObserved.erase(handle);return;}
-    s.Leaves.resize(count);
+    std::vector<int> leafValues(count);
+    const auto previous=g_SurfaceObserved.find(handle);
     if(!SurfaceGet(reinterpret_cast<SurfaceAddress>(origin),s.Origin)||!SurfaceGet(reinterpret_cast<SurfaceAddress>(dir),s.Direction)||
        !SurfaceGet(reinterpret_cast<SurfaceAddress>(matrix),s.Matrix)||!SurfaceGet(reinterpret_cast<SurfaceAddress>(size),s.Size)||
-       !SurfaceGet(reinterpret_cast<SurfaceAddress>(caster),s.Caster)||!SurfaceRead(reinterpret_cast<SurfaceAddress>(leaves),s.Leaves.data(),count*sizeof(int))||!s.Valid()){
+       !SurfaceGet(reinterpret_cast<SurfaceAddress>(caster),s.Caster)||!SurfaceRead(reinterpret_cast<SurfaceAddress>(leaves),leafValues.data(),count*sizeof(int))||
+       !s.SetLeaves(std::move(leafValues),previous!=g_SurfaceObserved.end()?previous->second.Leaves:nullptr)||!s.Valid()){
         g_SurfaceObserved.erase(handle);return;
     }
     if(g_SurfaceObserved.size()>=2048&&!g_SurfaceObserved.count(handle))return;
@@ -873,7 +875,7 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
                 if(s.HasSimpleTexture())++simple;
                 else if(s.Texture==ShadowTexture::Other)++other;
                 else ++unknown;
-                g_SurfaceProject(g_SurfaceShadowManager,handle,s.Origin.data(),s.Direction.data(),s.Matrix.data(),s.Size.data(),static_cast<int>(s.Leaves.size()),s.Leaves.data(),s.Height,s.FalloffOffset,s.FalloffAmount,s.Caster.data());
+                g_SurfaceProject(g_SurfaceShadowManager,handle,s.Origin.data(),s.Direction.data(),s.Matrix.data(),s.Size.data(),static_cast<int>(s.Leaves->size()),s.Leaves->data(),s.Height,s.FalloffOffset,s.FalloffAmount,s.Caster.data());
                 // Native client projects first, then computes extra planes.
                 // Only call the bounded API for our newly owned shadow.
                 if(s.ClipKnown){clearClip(g_SurfaceShadowManager,handle);for(unsigned i=0;i<s.ClipCount;++i){const auto &p=s.ClipPlanes[i];addClip(g_SurfaceShadowManager,handle,p.data(),p[3]);++clipPlanes;}}

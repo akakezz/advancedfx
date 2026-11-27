@@ -212,15 +212,24 @@ struct Shadow {
         }
         return true;
     }
-    std::vector<int> Leaves;
+    // BSP leaf identities are immutable recorded values, not live addresses.
+    // A moving projection can share the same leaf list across many samples.
+    std::shared_ptr<const std::vector<int>> Leaves;
+    bool SetLeaves(std::vector<int> values,const std::shared_ptr<const std::vector<int>> &previous={}){
+        if(values.empty()||values.size()>8192||!std::all_of(values.begin(),values.end(),[](int v){return v>=0&&v<1048576;})){
+            Leaves.reset();return false;
+        }
+        Leaves=previous&&*previous==values?previous:std::make_shared<const std::vector<int>>(std::move(values));
+        return true;
+    }
     bool Valid() const {
         auto finite=[](const auto &v){return std::all_of(v.begin(),v.end(),[](float x){return std::isfinite(x)&&std::abs(x)<1e7f;});};
         return ValidClipPlanes()&&finite(Origin)&&finite(Direction)&&finite(Caster)&&finite(Matrix)&&finite(Size)&&Size[0]>0&&Size[1]>0&&Size[0]<8192&&Size[1]<8192&&
             std::isfinite(Height)&&Height>0&&Height<32768&&std::isfinite(FalloffOffset)&&std::isfinite(FalloffAmount)&&
-            !Leaves.empty()&&Leaves.size()<=8192&&std::all_of(Leaves.begin(),Leaves.end(),[](int v){return v>=0&&v<1048576;});
+            Leaves&&!Leaves->empty()&&Leaves->size()<=8192&&std::all_of(Leaves->begin(),Leaves->end(),[](int v){return v>=0&&v<1048576;});
     }
     bool operator==(const Shadow &o) const {
-        return Origin==o.Origin&&Direction==o.Direction&&Caster==o.Caster&&Matrix==o.Matrix&&Size==o.Size&&Height==o.Height&&FalloffOffset==o.FalloffOffset&&FalloffAmount==o.FalloffAmount&&Bias==o.Bias&&Texture==o.Texture&&UV==o.UV&&ClipKnown==o.ClipKnown&&ClipCount==o.ClipCount&&ClipPlanes==o.ClipPlanes&&Leaves==o.Leaves;
+        return Origin==o.Origin&&Direction==o.Direction&&Caster==o.Caster&&Matrix==o.Matrix&&Size==o.Size&&Height==o.Height&&FalloffOffset==o.FalloffOffset&&FalloffAmount==o.FalloffAmount&&Bias==o.Bias&&Texture==o.Texture&&UV==o.UV&&ClipKnown==o.ClipKnown&&ClipCount==o.ClipCount&&ClipPlanes==o.ClipPlanes&&(Leaves==o.Leaves||(Leaves&&o.Leaves&&*Leaves==*o.Leaves));
     }
 };
 enum class DecalRead { NotRun, Guard, Table, Record, Slot, Surface, Changed, Ready };
@@ -272,7 +281,8 @@ struct PreviewSample {
 class History {
     std::size_t Budget;
     static std::size_t Cost(const std::vector<Decal> &v){std::size_t n=sizeof(v)+v.capacity()*sizeof(Decal);for(const auto &d:v)n+=d.Material.capacity();return n;}
-    static std::size_t Cost(const std::vector<Shadow> &v){std::size_t n=sizeof(v)+v.capacity()*sizeof(Shadow);for(const auto &s:v)n+=s.Leaves.capacity()*sizeof(int);return n;}
+    static std::size_t Cost(const std::vector<Shadow> &v){return sizeof(v)+v.capacity()*sizeof(Shadow);}
+    static std::size_t Cost(const std::vector<int> &v){return sizeof(v)+v.capacity()*sizeof(int);}
     static std::size_t Cost(const std::vector<DecalVertex> &v){return sizeof(v)+v.capacity()*sizeof(DecalVertex);}
     static std::size_t Cost(const std::vector<std::uint16_t> &v){return sizeof(v)+v.capacity()*sizeof(std::uint16_t);}
     std::map<const void*,std::size_t> Refs;
@@ -282,6 +292,9 @@ class History {
         if constexpr(std::is_same_v<T,Decal>){
             std::set<const void*> seen;
             for(const auto &d:*p)if(d.Geometry&&(standalone||!Refs.count(d.Geometry.get()))&&seen.insert(d.Geometry.get()).second)n+=Cost(*d.Geometry);
+        }else if constexpr(std::is_same_v<T,Shadow>){
+            std::set<const void*> seen;
+            for(const auto &s:*p)if(s.Leaves&&(standalone||!Refs.count(s.Leaves.get()))&&seen.insert(s.Leaves.get()).second)n+=Cost(*s.Leaves);
         }
         return n;
     }
@@ -291,6 +304,7 @@ class History {
         if(!n++){
             Bytes+=Cost(*p);
             if constexpr(std::is_same_v<T,Decal>)for(const auto &d:*p)AddVector(d.Geometry);
+            else if constexpr(std::is_same_v<T,Shadow>)for(const auto &s:*p)AddVector(s.Leaves);
         }
     }
     template<class T> void DropVector(const std::shared_ptr<const std::vector<T>> &p){
@@ -299,6 +313,7 @@ class History {
         if(it!=Refs.end()&&!--it->second){
             Bytes-=Cost(*p);Refs.erase(it);
             if constexpr(std::is_same_v<T,Decal>)for(const auto &d:*p)DropVector(d.Geometry);
+            else if constexpr(std::is_same_v<T,Shadow>)for(const auto &s:*p)DropVector(s.Leaves);
         }
     }
     std::size_t Extra(const Frame &f)const{return sizeof(Frame)+ExtraVector(f.Decals)+ExtraVector(f.Shadows)+ExtraVector(f.UncertainDecalSlots);}
