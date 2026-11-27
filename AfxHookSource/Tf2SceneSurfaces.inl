@@ -152,7 +152,7 @@ static BiasFn g_SurfaceBias=nullptr;
 static DWORD g_SurfaceThread=0;
 static bool g_SurfaceHooks=false,g_SurfaceOwn=false,g_SurfaceReplayActive=false,g_SurfaceCaptureArmed=false;
 static std::map<ShadowHandle,Shadow> g_SurfaceObserved;
-static bool g_SurfaceAtlasArmed=false;
+static bool g_SurfaceAtlasRequested=false,g_SurfaceAtlasArmed=false;
 static std::uint64_t g_SurfaceShadowRevision=0;
 static void SurfaceClearAtlasObservation();
 static std::map<ShadowHandle,unsigned char> g_SurfaceSavedBias;
@@ -520,6 +520,19 @@ static bool SurfaceExactModule(const char *name,DWORD timestamp,DWORD image,Surf
         SurfaceGet(base+dos.e_lfanew,nt)&&nt.Signature==IMAGE_NT_SIGNATURE&&nt.FileHeader.Machine==IMAGE_FILE_MACHINE_AMD64&&
         nt.FileHeader.TimeDateStamp==timestamp&&nt.OptionalHeader.SizeOfImage==image;
 }
+// The exact client constructor initializes the singleton at client+0x10e4800.
+// Confirm that this is its current atlas, not merely a similarly named texture.
+static bool SurfaceAtlasOwner(SurfaceAddress texture,SurfaceAddress &worldMaterial,SurfaceAddress &modelMaterial){
+    const auto client=g_SurfaceAtlasClient;SurfaceAddress vt=0,current=0;unsigned char ready=0;
+    if(!client||!SurfaceGet(client+0x10e4800,vt)||vt!=client+0xb36880||
+       !SurfaceGet(client+0x10e4918,ready)||!ready||
+       !SurfaceGet(client+0x10e4860,current)||current!=texture||
+       !SurfaceGet(client+0x10e4820,worldMaterial)||!worldMaterial||
+       !SurfaceGet(client+0x10e4828,modelMaterial)||!modelMaterial)return false;
+    std::string worldName,modelName;
+    return SurfaceMaterialName(worldMaterial,worldName)&&SurfaceMaterialName(modelMaterial,modelName)&&
+        worldName=="decals/rendershadow"&&modelName=="decals/rendermodelshadow";
+}
 static bool SurfaceAtlasTexture(void *context,SurfaceAddress &texture,SurfaceAddress &d3dTexture){
     const auto a=reinterpret_cast<SurfaceAddress>(context);
     SurfaceAddress ms=0,api=0,vt=0,stack=0,fn=0,handleArray=0,handle=0,shader=0;
@@ -604,8 +617,16 @@ static void SurfaceAtlasPopHook(void *context){
             }else{
                 SurfaceClearAtlasObservation();auto &o=g_SurfaceAtlasObservation;
                 o.Frame=frame;o.Tick=tick;o.World=g_SurfaceGeneration;o.Revision=g_SurfaceShadowRevision;o.Status=AtlasRead::Guard;
-                SurfaceAddress texture=0,d3dTexture=0;
-                if(SurfaceAtlasTexture(context,texture,d3dTexture)&&ShadowSlots(g_SurfaceShadowManager,o.Slots,true)){
+                SurfaceAddress texture=0,d3dTexture=0,worldMaterial=0,modelMaterial=0;
+                if(SurfaceAtlasTexture(context,texture,d3dTexture)&&SurfaceAtlasOwner(texture,worldMaterial,modelMaterial)&&
+                   ShadowSlots(g_SurfaceShadowManager,o.Slots,true)){
+                    // Avoid a blocking readback when there is no retained projection
+                    // that could use these exact atlas pixels.
+                    const bool useful=std::any_of(o.Slots.begin(),o.Slots.end(),[&](const ShadowSlot &s){
+                        return !(s.Flags&6)&&s.Bias!=255&&s.Appearance&&s.Material==worldMaterial&&s.ModelMaterial==modelMaterial&&
+                            ValidShadowTextureRect(s.UV)&&g_SurfaceObserved.count(s.Handle);
+                    });
+                    if(!useful){o.Status=AtlasRead::Unused;g_SurfaceAtlasPop(context);return;}
                     // Pop's verified first action is Flush(false). Perform
                     // it before the readback while the atlas is still bound;
                     // the original pop will flush again and restore state.
@@ -631,6 +652,7 @@ static bool SurfaceInstallAtlasCapture(){
        !SurfaceExactModule("materialsystem.dll",0x6ac56a08,0x141000,ms))return false;
     if(g_SurfaceAtlasPop)return client==g_SurfaceAtlasClient&&ms==g_SurfaceAtlasMaterial&&GetCurrentThreadId()==g_SurfaceAtlasThread;
     if(!MaterialSystem_IsImmediate()||
+       !SurfaceMatch(client,0xe054,{0x48,0x8d,0x0d,0xa5,0x67,0x0d,0x01,0xe8,0x80,0x6b,0x23,0})||
        !SurfaceMatch(client,0x248a6a,{0x49,0x8b,0x56,0x60,0xff,0x90,0x58,0x03,0,0})||
        !SurfaceMatch(client,0x248cc0,{0x48,0x8b,0x03,0x48,0x8b,0xcb,0xff,0x90,0x68,0x03,0,0})||
        !SurfaceGet(ms+0xbcab0+0x358,fn)||fn!=ms+0x34dd0||
@@ -970,6 +992,7 @@ advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){
     if(!SurfaceSameWorld(world,g_SurfaceWorld)){g_SurfaceWorld=world;++g_SurfaceGeneration;g_SurfaceObserved.clear();SurfaceResetGeometry();}
     SurfaceWorldDecalHooks(base); // observe subsequent ordinary main-world draws
     sample.World=g_SurfaceGeneration;
+    if(g_SurfaceAtlasRequested)sample.AtlasStatus=g_SurfaceAtlasArmed?AtlasRead::Missing:AtlasRead::Guard;
     std::vector<LiveDecal> decals;std::set<std::uint16_t> excludedSlots;
     sample.DecalsReady=ReadWorldDecals(base,world,decals,sample.DecalsUnsupported,sample.DecalStatus,sample.UnsupportedDecals,&excludedSlots);
     if(sample.DecalsReady){
@@ -1044,6 +1067,7 @@ void Mirv_Tf2_SetSurfaceObservation(bool armed,bool atlas){
     if(!armed&&g_SurfaceCaptureArmed){g_SurfaceObserved.clear();SurfaceResetGeometry();}
     g_SurfaceCaptureArmed=armed;
     const bool wantAtlas=armed&&atlas;
+    g_SurfaceAtlasRequested=wantAtlas;
     if(!wantAtlas&&g_SurfaceAtlasArmed)SurfaceClearAtlasObservation();
     g_SurfaceAtlasArmed=wantAtlas&&SurfaceInstallAtlasCapture();
 #endif

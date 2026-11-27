@@ -327,7 +327,7 @@ struct ShadowAtlasImage {
         out=std::move(next);return true;
     }
 };
-enum class AtlasRead { Disabled, Missing, Guard, Readback, TooLarge, Changed, Ready, Budget };
+enum class AtlasRead { Disabled, Missing, Guard, Readback, TooLarge, Changed, Ready, Budget, Unused };
 inline const char *AtlasReadLabel(AtlasRead status){
     switch(status){
     case AtlasRead::Missing:return "no same-frame atlas pass";
@@ -337,6 +337,7 @@ inline const char *AtlasReadLabel(AtlasRead status){
     case AtlasRead::Changed:return "atlas/shadow observation mismatch";
     case AtlasRead::Ready:return "captured";
     case AtlasRead::Budget:return "atlas-only budget";
+    case AtlasRead::Unused:return "no observed atlas projection";
     default:return "disabled";
     }
 }
