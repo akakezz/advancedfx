@@ -357,3 +357,5 @@ Phase 17E precomputes frustum planes and adds opt-in conservative grouped player
 Phase 17C queued studio fixture passed CI. Phase 17D initially failed overlay compilation on non-const demo interface; corrected pointer. Public SDK normal particle render context usage is not proof for detached collection/legacy scratch lifetime in queued mode; exact target DLLs unavailable here, so immediate particle/surface guard remains. Next native queue research requires those binaries and completion/thread/lifecycle verification.
 
 Phase 17F: decal capture/live replay status now breaks down unsupported classes; reuses validated record fields for geometry gating, with unchanged hook checks. Use `mirv_cache surfaces status` at a problematic cursor. Full decal reconstruction still unimplemented; no unsupported marks hidden automatically. Corrected Phase 17A–E checkpoint passed portable CI.
+
+Phase 17G caches validation for immutable sampled poses and avoids redundant owner lookup/entity copies. No native header validation is removed. Portable CI and native runtime are separate validation steps.

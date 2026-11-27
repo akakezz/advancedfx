@@ -903,3 +903,8 @@ CI follow-up: Phase 17C b099363 passed both jobs ([46057971386](https://github.c
 ### Phase 17F: decal coverage diagnostic and redundant read removal
 
 The decal traversal reports exclusive rejection counts for outside-world receiver, attached records, 0x1100 flag exclusions, displacement and unavailable material, separately for historical capture and current live traversal. Reuse already-read record surface/material addresses when creating the geometry gate; draw hook still checks matching pointers/slot. Do not retain native decal addresses in history. This does not recreate removed marks or suppress unsupported decal classes. User-reported leakage remains an open fidelity bug; `mirv_cache surfaces status` gives the breakdown to distinguish coverage from gate failure. No automatic hiding of all world decals. Fixture added for rejection-count formatting. Combined Phase 17A–E corrected checkpoint 25d29af passed [CI 46058319848](https://github.com/akakezz/advancedfx/actions/runs/46058319848). Windows/runtime validation remains pending.
+
+
+### Phase 17G: stationary pose validation reuse
+
+Cache validation of exact immutable published model poses for the current sampled frame (2048-entry bound, frame ownership checked; arbitrary/unmatched calls validate directly). No native header/hardware checks removed. Avoid owner lookup for ownerless rows and entity copies unless modulation must be changed. Added fixture for immutable validation and unmatched/new-frame fallback. Windows/runtime validation remains pending. Do not mutate published history in place.

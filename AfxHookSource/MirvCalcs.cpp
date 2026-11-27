@@ -11737,6 +11737,26 @@ void Mirv_Tf2_EndSceneStudioBatch()
     SceneInterfaceCall<void>(batch->Cache,26);
 }
 // Cache only CPU value matrices for the exact immutable published frame.
+// Validate each immutable published pose at most once per sampled frame.
+static bool SceneReplayPoseValid(const advancedfx::SceneCache::Entity &entity,
+    const std::shared_ptr<const advancedfx::SceneCache::Frame> &frame)
+{
+    using Cache=advancedfx::SceneCache;
+    if(!entity.ModelPose)return false;
+    if(!frame)return Cache::ValidPose(*entity.ModelPose);
+    const auto it=std::lower_bound(frame->Entities.begin(),frame->Entities.end(),entity.Identity,
+        [](const auto &row,std::uint64_t id){return row.Identity<id;});
+    if(it==frame->Entities.end()||it->Identity!=entity.Identity||it->ModelPose!=entity.ModelPose)
+        return Cache::ValidPose(*entity.ModelPose);
+    static thread_local std::weak_ptr<const Cache::Frame> previous;
+    static thread_local std::map<const Cache::Pose*,bool> validated;
+    if(previous.lock()!=frame){validated.clear();previous=frame;}
+    const auto found=validated.find(entity.ModelPose.get());
+    if(found!=validated.end())return found->second;
+    const bool valid=Cache::ValidPose(*entity.ModelPose);
+    if(validated.size()<2048)validated.emplace(entity.ModelPose.get(),valid);
+    return valid;
+}
 static bool SceneReplayMatrices(const advancedfx::SceneCache::Entity &entity,
     const advancedfx::SceneCache::Entity *owner,SOURCESDK::matrix3x4_t *out,
     const std::shared_ptr<const advancedfx::SceneCache::Frame> &frame)
@@ -11793,7 +11813,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	}
 
 	const auto pose = entity.ModelPose;
-	if (!pose || !advancedfx::SceneCache::ValidPose(*pose))
+	if (!SceneReplayPoseValid(entity,frame))
 	{
 		status = "Cached model pose is unavailable or invalid.";
 		return false;

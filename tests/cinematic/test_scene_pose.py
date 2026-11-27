@@ -271,6 +271,15 @@ int main(){
  auto gearModel=std::make_shared<Cache::Model>(*skeleton);gearModel->Flags={0x400,0x400};gearModel->MergeBones.clear();gearModel->BoneNames={"HAND","tip"};
  auto gearPose=std::make_shared<Cache::Pose>(*ownerPose);gearPose->ModelInfo=gearModel;gearPose->Local[0]=Cache::Transform{};gearPose->Local[0].Position[0]=200;gearPose->Local[1].Position[0]=2;
  Cache::Entity gear;gear.Identity=(1ull<<63)|50;gear.OwnerIdentity=7;gear.Category=2;gear.ModelPose=gearPose;
+ {
+    auto published=std::make_shared<Cache::Frame>();published->Entities={owner};
+    assert(SceneReplayPoseValid(owner,published));assert(SceneReplayPoseValid(owner,published));
+    auto badPose=std::make_shared<Cache::Pose>(*owner.ModelPose);badPose->Root={};
+    auto invalidOwner=owner;invalidOwner.ModelPose=badPose;
+    assert(!SceneReplayPoseValid(invalidOwner,published));
+    auto next=std::make_shared<Cache::Frame>();next->Entities={invalidOwner};
+    assert(!SceneReplayPoseValid(invalidOwner,next));
+ }
  SOURCESDK::matrix3x4_t ownerOut[128],gearOut[128];assert(SceneBuildMatrices(owner,nullptr,ownerOut)&&SceneBuildMatrices(gear,&owner,gearOut));
   {auto frame=std::make_shared<Cache::Frame>();frame->Entities={owner,gear};std::sort(frame->Entities.begin(),frame->Entities.end(),[](const auto&a,const auto&b){return a.Identity<b.Identity;});auto &first=frame->Entities[0];auto &second=frame->Entities[1];SOURCESDK::matrix3x4_t cached[128],direct[128];assert(SceneReplayMatrices(second,&first,cached,frame)&&SceneBuildMatrices(second,&first,direct));assert(!std::memcmp(cached,direct,second.ModelPose->ModelInfo->Parents.size()*sizeof(cached[0])));assert(SceneReplayMatrices(second,&first,cached,frame)&&!std::memcmp(cached,direct,second.ModelPose->ModelInfo->Parents.size()*sizeof(cached[0])));auto next=std::make_shared<Cache::Frame>(*frame);next->Entities[1].Origin[0]+=32;assert(SceneReplayMatrices(next->Entities[1],&next->Entities[0],cached,next)&&SceneBuildMatrices(next->Entities[1],&next->Entities[0],direct));assert(!std::memcmp(cached,direct,next->Entities[1].ModelPose->ModelInfo->Parents.size()*sizeof(cached[0]))); }
  SOURCESDK::matrix3x4_t cachedBone;assert(SceneCachedBoneFrame(gear,&owner,"hand",cachedBone));for(int r=0;r<3;++r)for(int c=0;c<4;++c)assert(std::abs(cachedBone[r][c]-gearOut[0][r][c])<1e-5);assert(!SceneCachedBoneFrame(gear,&owner,"missing",cachedBone)&&!SceneCachedBoneFrame(gear,&owner,"",cachedBone));auto absentPose=gear;absentPose.ModelPose.reset();assert(!SceneCachedBoneFrame(absentPose,&owner,"hand",cachedBone));

@@ -1230,17 +1230,18 @@ void SceneCacheDrawModels()
 		{
             if(cull&&frustum.OutsideOrdinary(entity)){++culled;continue;}
             if(!culledActors.empty()&&culledActors.count(entity.Identity)){++culled;++actorCulled;continue;}
-			const auto found =
-			    std::lower_bound(view->Entities.begin(), view->Entities.end(), entity.OwnerIdentity,
-				                 [](const auto &row, std::uint64_t id) { return row.Identity < id; });
-			const auto owner = entity.OwnerIdentity && found != view->Entities.end() &&
-			                           found->Identity == entity.OwnerIdentity
-			                       ? &*found
-			                       : nullptr;
-			++attempted;
-			auto drawEntity=entity; if(!modulation)drawEntity.HasModulation=false;
-			advancedfx::SceneCache::ReplayTimings modelStages;
-            if (Mirv_Tf2_DrawScenePose(drawEntity, status, owner, textured, view,&modelStages)) ++submitted;
+            const advancedfx::SceneCache::Entity *owner=nullptr;
+            if(entity.OwnerIdentity){
+                const auto found=std::lower_bound(view->Entities.begin(),view->Entities.end(),entity.OwnerIdentity,
+                    [](const auto &row,std::uint64_t id){return row.Identity<id;});
+                if(found!=view->Entities.end()&&found->Identity==entity.OwnerIdentity)owner=&*found;
+            }
+            ++attempted;
+            const auto *drawEntity=&entity;
+            advancedfx::SceneCache::Entity unmodulated;
+            if(!modulation&&entity.HasModulation){unmodulated=entity;unmodulated.HasModulation=false;drawEntity=&unmodulated;}
+            advancedfx::SceneCache::ReplayTimings modelStages;
+            if (Mirv_Tf2_DrawScenePose(*drawEntity, status, owner, textured, view,&modelStages)) ++submitted;
             else {lastFailure=status;lastFailureAsset=entity.ModelPose->ModelInfo->Name;if(status.find("queue is behind")!=std::string::npos) ++queueSkips;else ++otherSkips;}
             double total=0;
             for(std::size_t i=0;i<modelStages.Ms.size();++i){stages.Ms[i]+=modelStages.Ms[i];total+=modelStages.Ms[i];}
