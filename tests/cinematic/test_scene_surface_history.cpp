@@ -30,6 +30,25 @@ int main(){
     oversize.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{huge});
     const auto smallBytes=small.Bytes,smallFrames=small.Frames.size();
     assert(!small.Append(oversize)&&small.Bytes==smallBytes&&small.Frames.size()==smallFrames&&small.At(3));
+    History independent;
+    Frame decals;decals.Tick=10;decals.World=7;decals.DecalsReady=true;
+    decals.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{d});
+    assert(independent.Append(decals));
+    Frame shadows;shadows.Tick=11;shadows.World=7;shadows.ShadowsReady=true;
+    shadows.Shadows=std::make_shared<const std::vector<Shadow>>();
+    assert(independent.Append(shadows));
+    auto both=independent.ResolvePreview(11);
+    assert(both&&both.ShadowTick==11&&both.DecalTick==10&&both.Value.Decals->size()==1&&both.Value.Shadows->empty());
+    decals.Tick=12;decals.Decals=std::make_shared<const std::vector<Decal>>();
+    assert(independent.Append(decals));
+    both=independent.ResolvePreview(12);
+    assert(both.ShadowTick==11&&both.DecalTick==12&&both.Value.Decals->empty());
+    decals.Tick=14;assert(independent.Append(decals));
+    both=independent.ResolvePreview(14);
+    assert(both&&both.ShadowTick==-1&&both.DecalTick==14&&!both.Value.ShadowsReady);
+    assert(!independent.ResolvePreview(15)&&!independent.ResolvePreview(9));
+    decals.World=8;decals.Tick=20;assert(independent.Append(decals));
+    both=independent.ResolvePreview(20);assert(both&&both.ShadowTick==-1&&both.DecalTick==20);
     Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
     sh.Leaves.push_back(-1);assert(!sh.Valid());
 }

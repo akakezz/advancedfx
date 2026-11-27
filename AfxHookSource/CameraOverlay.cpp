@@ -572,8 +572,9 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
                 std::snprintf(line,sizeof(line),"  Particle coverage: requested %d resolved %d complete %d appearance %d appearance complete %d collections %zu\n",tick,p->Tick,int(p->Complete),int(p->Appearance),int(p->AppearanceComplete),p->Collections.size());
                 g_SceneBenchReport+=line;
             }
-            if(const auto *surface=g_SceneSurfaces.ForPreview(tick)){
-                g_SceneBenchReport+="  Historical decal exclusions: "+surface->UnsupportedDecals.Describe()+"\n";
+            if(const auto surface=g_SceneSurfaces.ResolvePreview(tick)){
+                g_SceneBenchReport+="  Historical surface ticks: shadows "+std::to_string(surface.ShadowTick)+", decals "+std::to_string(surface.DecalTick)+" (-1 unavailable)\n";
+                if(surface.DecalTick>=0)g_SceneBenchReport+="  Historical decal exclusions: "+surface.Value.UnsupportedDecals.Describe()+"\n";
             }
             g_SceneBenchReport+="  Native particle status: "+g_SceneParticleReplayResult.Status+"\n  Legacy status: "+g_SceneLegacyReplayResult.Status+"\n  Surface status: "+g_SceneHistoricalSurfaceStatus+"\n";
         }
@@ -1209,10 +1210,10 @@ unsigned SceneCacheBeginHistoricalSurfaces(){
     const unsigned requested=(g_SceneHistoricalShadows?1u:0u)|(g_SceneHistoricalDecals?2u:0u);
     if(!requested||!SceneCacheReplayActive()||!Mirv_Tf2_ParticleIsolationReady())return 0;
     const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
-    const auto *sample=g_SceneSurfaces.ForPreview(tick);
+    const auto sample=g_SceneSurfaces.ResolvePreview(tick);
     if(!sample){g_SceneHistoricalSurfaceStatus="No retained historical surface sample within two prior ticks.";return 0;}
     const auto begin=std::chrono::steady_clock::now();
-    const auto active=Mirv_Tf2_BeginSurfaceReplay(*sample,requested,g_SceneHistoricalSurfaceStatus);
+    const auto active=Mirv_Tf2_BeginSurfaceReplay(sample.Value,requested,g_SceneHistoricalSurfaceStatus);
     g_ScenePerf.SurfaceBegin.Add(begin,tick);return active;
 }
 void SceneCacheEndHistoricalSurfaces(){
@@ -2441,9 +2442,10 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         }
         const int tick=g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneSurfaces.Frames.empty()?-1:g_SceneSurfaces.Frames.back().Tick;
         advancedfx::Message("Historical surfaces capture %d, shadows %d, decals %d; %zu frames, %.2f MiB / 64 MiB; evicted %zu, rejected %zu. %s\n",int(g_SceneSurfaceCapture),int(g_SceneHistoricalShadows),int(g_SceneHistoricalDecals),g_SceneSurfaces.Frames.size(),g_SceneSurfaces.Bytes/1048576.0,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected,g_SceneHistoricalSurfaceStatus.c_str());
-        if(auto sample=g_SceneSurfaces.ForPreview(tick)){
-            advancedfx::Message("Surface requested tick %d; resolved tick %d (bounded prior sample). Shadows ready %d, observed %zu, unobserved %zu; decals ready %d, ordinary world %zu, unsupported %zu.\n",tick,sample->Tick,int(sample->ShadowsReady),sample->Shadows?sample->Shadows->size():0,sample->ShadowsUnobserved,int(sample->DecalsReady),sample->Decals?sample->Decals->size():0,sample->DecalsUnsupported);
-            advancedfx::Message("Historical decal rejection breakdown: %s. Surviving ordinary world marks only; removed marks and unsupported types are not reconstructed.\n",sample->UnsupportedDecals.Describe().c_str());
+        if(const auto resolved=g_SceneSurfaces.ResolvePreview(tick)){
+            const auto &sample=resolved.Value;
+            advancedfx::Message("Surface requested tick %d; resolved shadows %d, decals %d (-1 unavailable, bounded prior samples). Shadows ready %d, observed %zu, unobserved %zu; decals ready %d, ordinary world %zu, unsupported %zu.\n",tick,resolved.ShadowTick,resolved.DecalTick,int(sample.ShadowsReady),sample.Shadows?sample.Shadows->size():0,sample.ShadowsUnobserved,int(sample.DecalsReady),sample.Decals?sample.Decals->size():0,sample.DecalsUnsupported);
+            if(resolved.DecalTick>=0)advancedfx::Message("Historical decal rejection breakdown: %s. Surviving ordinary world marks only; removed marks and unsupported types are not reconstructed.\n",sample.UnsupportedDecals.Describe().c_str());
         }
         else advancedfx::Message("Surface tick %d: no bounded prior sample.\n",tick);
         std::size_t shadowFrames=0,decalFrames=0,nonemptyDecals=0;

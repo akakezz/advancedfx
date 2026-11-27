@@ -74,6 +74,13 @@ struct Frame {
     std::shared_ptr<const std::vector<Decal>> Decals;
     std::shared_ptr<const std::vector<Shadow>> Shadows;
 };
+// Surface systems can be captured independently. Empty ready vectors are
+// authoritative; unavailable systems may fall back only within the tick bound.
+struct PreviewSample {
+    Frame Value;
+    int ShadowTick=-1,DecalTick=-1;
+    explicit operator bool()const{return ShadowTick>=0||DecalTick>=0;}
+};
 class History {
     std::size_t Budget;
     static std::size_t Cost(const std::vector<Decal> &v){std::size_t n=sizeof(v)+v.capacity()*sizeof(Decal);for(const auto &d:v)n+=d.Material.capacity();return n;}
@@ -120,6 +127,28 @@ public:
         auto it=std::upper_bound(Frames.begin(),Frames.end(),tick,[](int t,const Frame &f){return t<f.Tick;});
         if(it==Frames.begin())return nullptr;
         --it;return static_cast<std::int64_t>(tick)-it->Tick<=maxGap?&*it:nullptr;
+    }
+    PreviewSample ResolvePreview(int tick,int maxGap=2)const{
+        PreviewSample result;result.Value.Tick=tick;
+        const auto *latest=ForPreview(tick,maxGap);
+        if(!latest)return result;
+        result.Value.World=latest->World;
+        auto it=std::upper_bound(Frames.begin(),Frames.end(),tick,[](int t,const Frame &f){return t<f.Tick;});
+        while(it!=Frames.begin()){
+            --it;
+            if(it->World!=result.Value.World||static_cast<std::int64_t>(tick)-it->Tick>maxGap)break;
+            if(result.ShadowTick<0&&it->ShadowsReady&&it->Shadows){
+                result.ShadowTick=it->Tick;result.Value.ShadowsReady=true;
+                result.Value.Shadows=it->Shadows;result.Value.ShadowsUnobserved=it->ShadowsUnobserved;
+            }
+            if(result.DecalTick<0&&it->DecalsReady&&it->Decals){
+                result.DecalTick=it->Tick;result.Value.DecalsReady=true;
+                result.Value.Decals=it->Decals;result.Value.DecalStatus=it->DecalStatus;
+                result.Value.DecalsUnsupported=it->DecalsUnsupported;result.Value.UnsupportedDecals=it->UnsupportedDecals;
+            }
+            if(result.ShadowTick>=0&&result.DecalTick>=0)break;
+        }
+        return result;
     }
     const Frame *At(int tick)const{
         auto it=std::lower_bound(Frames.begin(),Frames.end(),tick,[](const Frame &f,int t){return f.Tick<t;});

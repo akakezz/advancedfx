@@ -374,3 +374,5 @@ Phase 18E: Windows CI builds x64 and Win32 Source 1 targets independently. Succe
 ### Phase 19A: history and nested render scope correction
 
 Reject unavailable/oversized surface samples before changing retained history, including same-tick and world-zero failures. Nested ordinary View_Render callbacks inherit the outer scope and no longer clear its studio groups/audit, end its historical surfaces, or launch separate capture batches. Added portable regressions; target runtime not verified. This is a correctness fix, not a new decal creation path or queued native-effects implementation.
+
+Phase 19B: resolve shadows and decals independently within the existing two-tick causal bound; an empty ready sample is authoritative. Both resolved ticks are included in surfaces status and the benchmark. No samples are extrapolated outside retained coverage or across worlds. This reduces avoidable partial-capture gaps but does not reconstruct removed marks or unobserved shadows. Portable fixture added; runtime validation pending.
