@@ -510,8 +510,9 @@ void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued r
 void Mirv_Tf2_SceneAssetResidency(bool enabled); // Engine thread only.
 void Mirv_Tf2_ClearSceneResidentAssets();
 void Mirv_Tf2_SceneAssetStatus(unsigned &resident,unsigned long long &hits,unsigned long long &adds);
-// Engine-thread, immediate-mode textured view only. Pair successful begin with end.
-bool Mirv_Tf2_BeginSceneStudioBatch();
+// Engine-thread textured view. Queued mode retains per-draw ordered completion tokens.
+// Pair successful begin with end. allowQueued is opt-in at the caller.
+bool Mirv_Tf2_BeginSceneStudioBatch(bool allowQueued = false);
 void Mirv_Tf2_EndSceneStudioBatch();
 
 // Engine-thread polling; worker callbacks never call MDL/material APIs.

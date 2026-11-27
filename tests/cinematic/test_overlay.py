@@ -138,7 +138,7 @@ std::vector<MirvTf2SceneEntity> sceneExtraEntities;
 void Mirv_Tf2_CollectSceneEntities(bool projectiles,bool weapons,bool cosmetics,bool ragdolls,bool gibs,bool buildings,bool props,std::vector<MirvTf2SceneEntity>&out,bool generic=false){out.clear();if(sceneEntityAvailable){MirvTf2SceneEntity row;row.Index=1;row.Snapshot.Identity=repairTestUser;for(auto&v:row.Snapshot.Maxs)v=10;out.push_back(row);}for(auto&row:sceneExtraEntities)if(row.Snapshot.Category==0||(row.Snapshot.Category==1&&projectiles)||(row.Snapshot.Category==2&&weapons)||(row.Snapshot.Category==3&&cosmetics)||(row.Snapshot.Category==5&&ragdolls)||(row.Snapshot.Category==6&&gibs)||(row.Snapshot.Category==7&&buildings)||(row.Snapshot.Category==8&&props)||generic)out.push_back(row);}
 void Mirv_Tf2_ReleaseSceneMaterials(){}
 void Mirv_Tf2_SceneRenderFrame(){}
-bool Mirv_Tf2_BeginSceneStudioBatch(){return false;}void Mirv_Tf2_EndSceneStudioBatch(){}
+bool Mirv_Tf2_BeginSceneStudioBatch(bool){return false;}void Mirv_Tf2_EndSceneStudioBatch(){}
 void Mirv_Tf2_SceneAssetResidency(bool){}void Mirv_Tf2_SceneAssetStatus(unsigned &n,unsigned long long &h,unsigned long long &a){n=0;h=a=0;}
 void Mirv_Tf2_SceneRenderStatus(unsigned &pending,unsigned &peak){pending=peak=0;}
 

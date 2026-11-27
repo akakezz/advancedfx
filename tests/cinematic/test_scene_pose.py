@@ -101,6 +101,7 @@ auto g_AppSystemFactory=Factory;
 struct BrushEngine {std::string Level,Directory;const char*GetLevelName(){return Level.c_str();}const char*GetGameDirectory(){return Directory.c_str();}} brushEngine;auto*g_VEngineClient=&brushEngine;
 bool queueAvailable=true,immediate=false;
 bool MaterialSystem_IsImmediate(){return immediate;}
+bool Mirv_Tf2_BeginSceneStudioBatch(bool allowQueued=false);
 std::vector<std::unique_ptr<CMaterialSystemFunctor>> retirements;
 bool MaterialSystem_CanExecuteOnRenderThread(){return queueAvailable;}
 bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor*f){assert(std::this_thread::get_id()==fixture.EngineThread);retirements.emplace_back(f);return true;}
@@ -234,6 +235,22 @@ int main(){
   Mirv_Tf2_EndSceneStudioBatch();
   assert(!fixture.Refs&&!fixture.HeaderLocks&&!fixture.Locks);
   immediate=false;
+  assert(Mirv_Tf2_BeginSceneStudioBatch(true));
+  assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));
+  assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));
+  assert(fixture.Refs==1&&fixture.HeaderLocks==1&&retirements.size()==2);
+  Mirv_Tf2_EndSceneStudioBatch();
+  assert(fixture.Refs==1&&fixture.HeaderLocks==1);
+  // A discarded use must not unpin while another queued use remains.
+  retirements.erase(retirements.begin());
+  Mirv_Tf2_SceneRenderFrame();assert(fixture.Refs==1&&fixture.HeaderLocks==1);
+  ConsumeRenderQueue(false);assert(fixture.Refs==1&&fixture.HeaderLocks==1);
+  Mirv_Tf2_SceneRenderFrame();assert(!fixture.Refs&&!fixture.HeaderLocks);
+  assert(Mirv_Tf2_BeginSceneStudioBatch(true));
+  assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));
+  ConsumeRenderQueue(false,true);Mirv_Tf2_SceneRenderFrame();
+  assert(fixture.Refs==1&&fixture.HeaderLocks==1); // producer still owns it
+  Mirv_Tf2_EndSceneStudioBatch();Mirv_Tf2_SceneRenderFrame();assert(!fixture.Refs&&!fixture.HeaderLocks);
   entity.Skin=-1;g_SceneStudioStateInstalled=false;
   // A slow or discarded render queue retains ownership without unbounded growth.
   for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
