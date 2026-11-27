@@ -666,6 +666,26 @@ void ReplayForest(const Frame &f,Attempt attempt,const ChildIndex *prepared=null
     if(actualEdges!=expectedEdges)return;
     WalkReplayForest(f,children,ReplaySubtreeCounts(f),attempt);
 }
+// Exact modern particle manager render-accounting fields: two signed
+// 32-bit counters followed by a one-byte over-budget flag. No padding or
+// neighboring manager state is included in this snapshot.
+using GeometryAccounting=std::array<unsigned char,9>;
+inline bool GeometryAccountingValid(const GeometryAccounting &a){
+    std::int32_t first=0,second=0;
+    std::memcpy(&first,a.data(),4);std::memcpy(&second,a.data()+4,4);
+    return first>=0&&second>=0&&a[8]<=1;
+}
+enum class GeometryAccountingAction {Unchanged,Restore,Uncertain};
+inline GeometryAccountingAction CompareGeometryAccounting(const GeometryAccounting &before,const GeometryAccounting &after){
+    if(!GeometryAccountingValid(before)||!GeometryAccountingValid(after))return GeometryAccountingAction::Uncertain;
+    if(before==after)return GeometryAccountingAction::Unchanged;
+    for(unsigned i=0;i<8;i+=4){
+        std::int32_t a=0,b=0;std::memcpy(&a,before.data()+i,4);std::memcpy(&b,after.data()+i,4);
+        if(b<a)return GeometryAccountingAction::Uncertain; // native reset or overflow
+    }
+    if(after[8]<before[8])return GeometryAccountingAction::Uncertain;
+    return GeometryAccountingAction::Restore;
+}
 struct ReplayResult {
     bool MainView=false;
     std::size_t Attempts=0,Trees=0,Nodes=0,Particles=0,Rejected=0,PreflightRejected=0;
@@ -673,6 +693,7 @@ struct ReplayResult {
     double FactoryMs=0,PlanMs=0,CopyMs=0,RenderMs=0,DestroyMs=0,GateMs=0,ActivationMs=0,ResetMs=0;
     std::size_t FastWrites=0,SystemWrites=0,WriteFaults=0,CleanupFailures=0;
     std::size_t FastReads=0,SystemReads=0,ReadFaults=0;
+    bool GeometryAccountingRestored=false;
     std::vector<std::uint32_t> RendererTargets,PostRenderTargets;
 };
 class History {

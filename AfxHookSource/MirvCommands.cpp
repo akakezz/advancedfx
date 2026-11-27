@@ -860,8 +860,14 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
            !match(0x2dadbc,{0xff,0x90,0x10,0x03,0x00,0x00})||
            !match(0x2daf80,{0xff,0x90,0xa0,0x00,0x00,0x00})||
            !match(0x2daf98,{0xff,0x90,0xf8,0x00,0x00,0x00})||
-           !match(0x2dafd4,{0xff,0x90,0xb0,0x00,0x00,0x00}))
-            return fail("Native renderer ABI guard failed");
+           !match(0x2dafd4,{0xff,0x90,0xb0,0x00,0x00,0x00})||
+           // Historical rendering must not feed the live manager's budget.
+           !match(0x8e5d30,{0x44,0x01,0x81,0xe0,0x01,0,0,0x01,0x91,0xe4,0x01,0,0})||
+           !match(0x8e5d3d,{0x81,0xb9,0xe4,0x01,0,0,0x50,0xc3,0,0,0x7e,0x07,0xc6,0x81,0xe8,0x01,0,0,0x01})||
+           !match(0x8e0823,{0x41,0x01,0x90,0xe4,0x01,0,0,0x8d,0x0c,0x40,0x41,0x01,0x88,0xe0,0x01,0,0})||
+           !match(0x8e0841,{0x41,0xc6,0x80,0xe8,0x01,0,0,0x01})||
+           !match(0x8e4c02,{0x4d,0x89,0x88,0xe0,0x01,0,0,0xc3}))
+            return fail("Native renderer/accounting ABI guard failed");
         int view=-1;
         if(!read(base+0xfe77c0,&view,sizeof(view))||view!=0)return result; // not the main view
         result.MainView=true;
@@ -1055,8 +1061,30 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         return ok;
     };
     if(draw) {
+        // Both the common counter helper and an inline native mesh path
+        // write these nine bytes. Preserve the original live totals across
+        // this synchronous immediate-only detached replay. No historical
+        // manager pointer or accounting state survives the callback.
+        GeometryAccounting before{},after{},verified{};
+        if(!read(manager+0x1e0,before.data(),before.size())||!GeometryAccountingValid(before))
+            return fail("Live particle geometry accounting unavailable");
         if(prepared)prepared->Walk(frame,attempt);else ReplayForest(frame,attempt,&children);
+        Address currentManager=0;
+        const bool accountingReadable=read(base+0x10067e0,&currentManager,sizeof(currentManager))&&currentManager==manager&&
+            MaterialSystem_IsImmediate()&&read(manager+0x1e0,after.data(),after.size());
+        const auto action=accountingReadable?CompareGeometryAccounting(before,after):GeometryAccountingAction::Uncertain;
+        if(action==GeometryAccountingAction::Restore){
+            SIZE_T wrote=0;
+            // Restore only the verified fields, not neighboring manager
+            // state, and never use the detached fast-write shortcut here.
+            if(WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(manager+0x1e0),before.data(),before.size(),&wrote)&&
+               wrote==before.size()&&read(manager+0x1e0,verified.data(),verified.size())&&verified==before)
+                result.GeometryAccountingRestored=true;
+            else ++result.CleanupFailures;
+        }else if(action==GeometryAccountingAction::Uncertain)++result.CleanupFailures;
         result.Status="Native particle submissions (not pixel coverage); factories avoided by recorded preflight "+std::to_string(result.PreflightRejected);
+        if(action==GeometryAccountingAction::Uncertain)result.Status+="; WARNING: live geometry accounting changed unexpectedly; not overwritten";
+        else if(action==GeometryAccountingAction::Restore)result.Status+=result.GeometryAccountingRestored?"; live geometry accounting restored":"; WARNING: live geometry accounting restoration failed";
         if(listChanged)result.Status+="; WARNING: native lifecycle guard stopped replay";
         if(!firstFailure.empty())result.Status+="; first rejected tree: "+firstFailure;
         if(auditRenderers){

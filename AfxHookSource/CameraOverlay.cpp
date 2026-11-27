@@ -1423,7 +1423,7 @@ void SceneCacheDrawParticles()
     g_ScenePerf.ParticleGateMs+=result.GateMs;g_ScenePerf.ParticleActivationMs+=result.ActivationMs;g_ScenePerf.ParticleResetMs+=result.ResetMs;
     g_ScenePerf.FastWrites+=result.FastWrites;g_ScenePerf.SystemWrites+=result.SystemWrites;g_ScenePerf.WriteFaults+=result.WriteFaults;g_ScenePerf.CleanupFailures+=result.CleanupFailures;
     g_ScenePerf.FastReads+=result.FastReads;g_ScenePerf.SystemReads+=result.SystemReads;g_ScenePerf.ReadFaults+=result.ReadFaults;
-    if(result.Rejected||(!result.MainView&&!result.Status.empty())){
+    if(result.Rejected||result.CleanupFailures||(!result.MainView&&!result.Status.empty())){
         g_ScenePerf.LastParticleFailureTick=sample->Tick;
         g_ScenePerf.LastParticleFailure=result.Status;
     }

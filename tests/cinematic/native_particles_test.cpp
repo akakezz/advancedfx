@@ -214,5 +214,15 @@ int main(){
     incomplete=full;incomplete.AppearanceRejected=1;check(!RecordedIsolationReady(incomplete),"capture rejection prevents isolation");
     incomplete=empty;incomplete.Collections.resize(1);
     check(RecordedIsolationReady(incomplete),"unused empty root does not prevent isolation");
+    auto accounting=[](std::int32_t a,std::int32_t b,unsigned char flag){
+        GeometryAccounting r{};std::memcpy(r.data(),&a,4);std::memcpy(r.data()+4,&b,4);r[8]=flag;return r;
+    };
+    const auto prior=accounting(100,200,0);
+    check(CompareGeometryAccounting(prior,prior)==GeometryAccountingAction::Unchanged,"no write for unchanged live geometry accounting");
+    check(CompareGeometryAccounting(prior,accounting(120,51000,1))==GeometryAccountingAction::Restore,"restore monotonic historical accounting");
+    check(CompareGeometryAccounting(prior,accounting(0,0,0))==GeometryAccountingAction::Uncertain,"native reset is not overwritten");
+    check(CompareGeometryAccounting(prior,accounting(-1,201,0))==GeometryAccountingAction::Uncertain,"overflow is not overwritten");
+    check(CompareGeometryAccounting(accounting(100,200,1),accounting(101,201,0))==GeometryAccountingAction::Uncertain,"unexpected native flag reset is not overwritten");
+    check(!GeometryAccountingValid(accounting(0,0,2)),"invalid flag rejected");
     std::cout<<"Native particle snapshot tests passed\n";
 }
