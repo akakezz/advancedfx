@@ -80,6 +80,7 @@ int main(){
     put(detached+Xyz,dp);put(detached+XyzStride,ds);
     auto plan=PlanDetached(simple,0,detached,read);
     check(plan.Error.empty()&&plan.Nodes==1&&plan.Particles==5&&plan.Copies.size()==3&&plan.Constants==1,"validated detached copy plan");
+    put(name,'X');check(!PlanDetached(simple,0,detached,read).Error.empty(),"batched name mismatch rejected");put(name,text);
     dp[Radius]+=4;put(detached+Xyz,dp);
     check(!PlanDetached(simple,0,detached,read).Error.empty()&&PlanDetached(simple,0,detached,read).Copies.empty(),"wrong allocation address fails closed");
     check(app.SharedConstantWords>=12,"identical constant tint shared between collections");

@@ -1047,7 +1047,7 @@ void SceneCacheDrawModels()
 			                       : nullptr;
 			++attempted;
 			auto drawEntity=entity; if(!modulation)drawEntity.HasModulation=false;
-			if (Mirv_Tf2_DrawScenePose(drawEntity, status, owner, textured)) ++submitted;
+			if (Mirv_Tf2_DrawScenePose(drawEntity, status, owner, textured, view)) ++submitted;
             else {lastFailure=status;if(status.find("queue is behind")!=std::string::npos) ++queueSkips;else ++otherSkips;}
 		}
 	}

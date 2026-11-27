@@ -23,7 +23,7 @@ preamble = r'''
 #include "shared/AfxMath.h"
 #include "AfxHookSource/MaterialSystemHooks.h"
 bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&,std::string&,void* = nullptr);
-bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr, bool = false);
+bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&,std::string&,const advancedfx::SceneCache::Entity* = nullptr, bool = false,const std::shared_ptr<const advancedfx::SceneCache::Frame>& = {});
 void Mirv_Tf2_SceneRenderFrame();
 #include <thread>
 #include <filesystem>
@@ -238,6 +238,7 @@ int main(){
  auto gearPose=std::make_shared<Cache::Pose>(*ownerPose);gearPose->ModelInfo=gearModel;gearPose->Local[0]=Cache::Transform{};gearPose->Local[0].Position[0]=200;gearPose->Local[1].Position[0]=2;
  Cache::Entity gear;gear.Identity=(1ull<<63)|50;gear.OwnerIdentity=7;gear.Category=2;gear.ModelPose=gearPose;
  SOURCESDK::matrix3x4_t ownerOut[128],gearOut[128];assert(SceneBuildMatrices(owner,nullptr,ownerOut)&&SceneBuildMatrices(gear,&owner,gearOut));
+  {auto frame=std::make_shared<Cache::Frame>();frame->Entities={owner,gear};std::sort(frame->Entities.begin(),frame->Entities.end(),[](const auto&a,const auto&b){return a.Identity<b.Identity;});auto &first=frame->Entities[0];auto &second=frame->Entities[1];SOURCESDK::matrix3x4_t cached[128],direct[128];assert(SceneReplayMatrices(second,&first,cached,frame)&&SceneBuildMatrices(second,&first,direct));assert(!std::memcmp(cached,direct,second.ModelPose->ModelInfo->Parents.size()*sizeof(cached[0])));assert(SceneReplayMatrices(second,&first,cached,frame)&&!std::memcmp(cached,direct,second.ModelPose->ModelInfo->Parents.size()*sizeof(cached[0])));auto next=std::make_shared<Cache::Frame>(*frame);next->Entities[1].Origin[0]+=32;assert(SceneReplayMatrices(next->Entities[1],&next->Entities[0],cached,next)&&SceneBuildMatrices(next->Entities[1],&next->Entities[0],direct));assert(!std::memcmp(cached,direct,next->Entities[1].ModelPose->ModelInfo->Parents.size()*sizeof(cached[0]))); }
  SOURCESDK::matrix3x4_t cachedBone;assert(SceneCachedBoneFrame(gear,&owner,"hand",cachedBone));for(int r=0;r<3;++r)for(int c=0;c<4;++c)assert(std::abs(cachedBone[r][c]-gearOut[0][r][c])<1e-5);assert(!SceneCachedBoneFrame(gear,&owner,"missing",cachedBone)&&!SceneCachedBoneFrame(gear,&owner,"",cachedBone));auto absentPose=gear;absentPose.ModelPose.reset();assert(!SceneCachedBoneFrame(absentPose,&owner,"hand",cachedBone));
 
  for(int r=0;r<3;++r)for(int c=0;c<4;++c)assert(std::abs(gearOut[0][r][c]-ownerOut[1][r][c])<1e-5);

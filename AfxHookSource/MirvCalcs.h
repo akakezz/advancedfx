@@ -488,7 +488,8 @@ IMirvVecAngCalc *Mirv_Tf2_RetargetCamera(IMirvVecAngCalc *calc, int entity, int 
 bool Mirv_Tf2_CameraBone(IMirvVecAngCalc *calc, int &index, std::string &name);
 // Engine-thread submission only: Source queues the draw; HLAE queues resource retirement.
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
- const advancedfx::SceneCache::Entity *owner = nullptr, bool textured = false);
+ const advancedfx::SceneCache::Entity *owner = nullptr, bool textured = false,
+ const std::shared_ptr<const advancedfx::SceneCache::Frame> &frame = {});
 
 struct MirvTf2SceneEntity
 {

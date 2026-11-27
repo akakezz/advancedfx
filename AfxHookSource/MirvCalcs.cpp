@@ -11629,8 +11629,39 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 	status = "Capturing " + metadata->Name + ": " + std::to_string(count) + " bones per observed tick.";
 	return true;
 }
+// Cache only CPU value matrices for the exact immutable published frame.
+static bool SceneReplayMatrices(const advancedfx::SceneCache::Entity &entity,
+    const advancedfx::SceneCache::Entity *owner,SOURCESDK::matrix3x4_t *out,
+    const std::shared_ptr<const advancedfx::SceneCache::Frame> &frame)
+{
+    using Cache=advancedfx::SceneCache;
+    static std::weak_ptr<const Cache::Frame> previous;
+    static std::map<std::uint64_t,std::vector<SOURCESDK::matrix3x4_t>> matrices;
+    if(!frame)return SceneBuildMatrices(entity,owner,out);
+    if(previous.lock()!=frame){matrices.clear();previous=frame;}
+    // Only published rows qualify; modulation is irrelevant to reconstruction.
+    const auto found=std::lower_bound(frame->Entities.begin(),frame->Entities.end(),entity.Identity,
+        [](const auto &row,std::uint64_t id){return row.Identity<id;});
+    if(found==frame->Entities.end()||found->Identity!=entity.Identity||found->ModelPose!=entity.ModelPose||
+       found->OwnerIdentity!=entity.OwnerIdentity||found->Category!=entity.Category||
+       !std::equal(found->Origin,found->Origin+3,entity.Origin)||!std::equal(found->Angles,found->Angles+3,entity.Angles))
+        return SceneBuildMatrices(entity,owner,out);
+    const auto ownerRow=std::lower_bound(frame->Entities.begin(),frame->Entities.end(),entity.OwnerIdentity,
+        [](const auto &row,std::uint64_t id){return row.Identity<id;});
+    const auto expected=entity.OwnerIdentity&&ownerRow!=frame->Entities.end()&&ownerRow->Identity==entity.OwnerIdentity?&*ownerRow:nullptr;
+    if(expected!=owner)return SceneBuildMatrices(entity,owner,out);
+    const auto count=entity.ModelPose->ModelInfo->Parents.size();
+    auto cached=matrices.find(entity.Identity);
+    if(cached!=matrices.end()){
+        std::copy(cached->second.begin(),cached->second.end(),out);return true;
+    }
+    if(!SceneBuildMatrices(entity,owner,out))return false;
+    if(matrices.size()<2048)matrices.emplace(entity.Identity,std::vector<SOURCESDK::matrix3x4_t>(out,out+count));
+    return true;
+}
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
-                            const advancedfx::SceneCache::Entity *owner, bool textured)
+                            const advancedfx::SceneCache::Entity *owner, bool textured,
+                            const std::shared_ptr<const advancedfx::SceneCache::Frame> &frame)
 {
 	Mirv_Tf2_SceneRenderFrame();
 	if (g_SceneOutstanding.load() >= SceneMaxOutstanding)
@@ -11716,7 +11747,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Studio bone allocation unavailable.";
 		return false;
 	}
-	const bool built = SceneBuildMatrices(entity, owner, matrices);
+	const bool built = SceneReplayMatrices(entity, owner, matrices, frame);
 	SceneInterfaceCall<void>(studio, 23); // Source owns the matrices until its queued render finishes.
 	if (!built)
 	{

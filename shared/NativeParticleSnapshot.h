@@ -269,10 +269,13 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
             fail("Detached collection capacity/state mismatch");return;
         }
         if(!old.Name[0]) {fail("Recorded definition unavailable");return;}
-        for(std::size_t k=0;k<old.Name.size();++k) {
-            char ch=0;
-            if(!get(name+k,ch)||ch!=old.Name[k]) {fail("Detached definition name mismatch");return;}
-            if(!ch) break;
+        // Read exactly the recorded name including its NUL.
+        const auto end=std::find(old.Name.begin(),old.Name.end(),'\0');
+        if(end==old.Name.end()){fail("Recorded definition name unterminated");return;}
+        const auto length=std::size_t(end-old.Name.begin())+1;
+        std::array<char,128> actual{};
+        if(!read(name,actual.data(),length)||!std::equal(actual.begin(),actual.begin()+length,old.Name.begin())){
+            fail("Detached definition name mismatch");return;
         }
         ++plan.Nodes;plan.Particles+=old.Active;plan.Bindings.push_back({c,i});
         if(old.Active) {
