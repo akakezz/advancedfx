@@ -260,7 +260,8 @@ public:
         std::array<float,4> Modulation{1,1,1,1};
         bool HasModulation=false;
         std::shared_ptr<const SceneLighting::Sample> ModelLighting; // optional observed native model lighting
-        SceneLighting::ModelDecalCoverage ModelDecals; // inventory only, not replay data
+        SceneLighting::ModelDecalCoverage ModelDecals;
+        std::shared_ptr<const SceneLighting::ModelDecalGeometry> ModelDecalData; // capture only
 	};
 	static std::array<std::array<double, 3>, 8> BoundsCorners(const Entity &entity)
 	{
@@ -525,7 +526,7 @@ public:
 		m_Frames.clear();
 		m_Models.clear();
 		m_Poses.clear();
-        m_Lighting.clear();
+        m_Lighting.clear();m_Decals.clear();
 		m_ReusedPoses = m_AllocatedBytes = 0;
 		m_Bytes = 0;
 	}
@@ -583,6 +584,7 @@ public:
             // Missing/invalid lighting is not a reason to lose a valid pose.
             if(entity.ModelLighting&&(!entity.ModelPose||!entity.ModelLighting->Valid()))entity.ModelLighting.reset();
             if(!entity.ModelPose)entity.ModelDecals={};
+            if(entity.ModelDecalData&&(!entity.ModelPose||!entity.ModelDecalData->Valid(entity.ModelDecals)))entity.ModelDecalData.reset();
 			if (!entity.Identity || entity.Category < 0 || entity.Category >= CategoryCount ||
 			    (entity.ModelPose && !ValidPose(*entity.ModelPose)))
 				return false;
@@ -622,17 +624,26 @@ public:
                    entity.ModelLighting&&it->ModelLighting&&entity.ModelPose&&it->ModelPose&&entity.ModelPose->ModelInfo->Checksum==it->ModelPose->ModelInfo->Checksum&&
                    entity.ModelPose->ModelInfo->Name==it->ModelPose->ModelInfo->Name&&*entity.ModelLighting==*it->ModelLighting)
                     entity.ModelLighting=it->ModelLighting;
+                if(it!=last.end()&&it->Identity==entity.Identity&&it->Category==entity.Category&&it->OwnerIdentity==entity.OwnerIdentity&&
+                   entity.ModelDecalData&&it->ModelDecalData&&entity.ModelPose&&it->ModelPose&&
+                   entity.ModelPose->ModelInfo->Checksum==it->ModelPose->ModelInfo->Checksum&&entity.ModelPose->ModelInfo->Name==it->ModelPose->ModelInfo->Name&&
+                   entity.ModelDecals==it->ModelDecals&&*entity.ModelDecalData==*it->ModelDecalData)entity.ModelDecalData=it->ModelDecalData;
 			}
 		const size_t bytes = Cost(frame);
 		const auto models = Models(frame);
 		const auto poses = Poses(frame);
         const auto lights = LightingSamples(frame);
+        auto decals=DecalSamples(frame);
 		size_t whole = bytes;
 		for (const auto *model : models)
 			whole += ModelCost(*model);
 		for (const auto *pose : poses)
 			whole += PoseCost(*pose);
         whole+=lights.size()*sizeof(SceneLighting::Sample);
+        std::size_t decalBytes=0;for(const auto *d:decals)decalBytes+=d->Bytes();
+        // Optional geometry must not invalidate an otherwise fitting frame.
+        if(whole>m_Limit||decalBytes>m_Limit-whole){for(auto &e:frame.Entities)e.ModelDecalData.reset();decals.clear();}
+        else whole+=decalBytes;
 		if (whole > m_Limit)
 			return false; // A single complete frame must fit.
         if(backward)Clear();
@@ -652,6 +663,7 @@ public:
 			++result.first->second.Frames;
 		}
         for(const auto *light:lights){auto result=m_Lighting.emplace(light,ModelUse{0,sizeof(SceneLighting::Sample)});if(result.second)m_Bytes+=result.first->second.Bytes;++result.first->second.Frames;}
+        for(const auto *d:decals){auto result=m_Decals.emplace(d,ModelUse{0,d->Bytes()});if(result.second)m_Bytes+=result.first->second.Bytes;++result.first->second.Frames;}
 		m_Bytes += bytes;
 		m_AllocatedBytes += m_Bytes - before;
 		m_ReusedPoses += reused;
@@ -733,6 +745,7 @@ public:
             // light identities; never borrow it across a missing/incompatible pose.
             entity.ModelLighting=entity.ModelPose?(f<.5?a.ModelLighting:b->ModelLighting):nullptr;
             entity.ModelDecals=entity.ModelPose?(f<.5?a.ModelDecals:b->ModelDecals):SceneLighting::ModelDecalCoverage{};
+            entity.ModelDecalData=entity.ModelPose?(f<.5?a.ModelDecalData:b->ModelDecalData):nullptr;
 			for (int i = 0; i < 3; ++i)
 			{
 				entity.Origin[i] += float(f * (b->Origin[i] - a.Origin[i]));
@@ -942,6 +955,12 @@ private:
         std::sort(result.begin(),result.end(),std::less<const SceneLighting::Sample *>());
         result.erase(std::unique(result.begin(),result.end()),result.end());return result;
     }
+    static std::vector<const SceneLighting::ModelDecalGeometry *> DecalSamples(const Frame &frame){
+        std::vector<const SceneLighting::ModelDecalGeometry *> result;
+        for(const auto &entity:frame.Entities)if(entity.ModelDecalData)result.push_back(entity.ModelDecalData.get());
+        std::sort(result.begin(),result.end(),std::less<const SceneLighting::ModelDecalGeometry *>());
+        result.erase(std::unique(result.begin(),result.end()),result.end());return result;
+    }
 	static size_t Cost(const Frame &frame)
 	{
 		size_t bytes=sizeof(Frame) + frame.Entities.capacity() * sizeof(Entity) +
@@ -972,6 +991,7 @@ private:
 				}
 			}
             for(const auto *light:LightingSamples(m_Frames.front())){auto it=m_Lighting.find(light);if(--it->second.Frames==0){m_Bytes-=it->second.Bytes;m_Lighting.erase(it);}}
+            for(const auto *d:DecalSamples(m_Frames.front())){auto it=m_Decals.find(d);if(--it->second.Frames==0){m_Bytes-=it->second.Bytes;m_Decals.erase(it);}}
 			m_Frames.pop_front();
 		}
 	}
@@ -982,6 +1002,7 @@ private:
 	std::map<const Model *, ModelUse> m_Models;
 	std::map<const Pose *, ModelUse> m_Poses;
     std::map<const SceneLighting::Sample *,ModelUse> m_Lighting;
+    std::map<const SceneLighting::ModelDecalGeometry *,ModelUse> m_Decals;
 	size_t m_ReusedPoses = 0, m_AllocatedBytes = 0;
 	std::deque<Frame> m_Frames;
 	std::uint64_t m_Revision = 0;

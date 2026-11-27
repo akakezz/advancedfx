@@ -498,3 +498,7 @@ Exact-build immediate main-view observation of the native decal pass records sel
 ### Phase 28C — model decal geometry decoder
 
 Added portable bounded decoder for actual studio material vertex and segment lists. Copies finite position/normal/UV and all six native model selectors (including flex fields), flattens local segment indices into owned arrays, rejects invalid links/counts and out-of-range indices, and accepts material identity through a resolver. No live pointers or native padding retained. Decoder tested with reverse-linked vertex order and two independent segment index spaces. Runtime hookup and budgeted history are a separate step.
+
+### Phase 28D — budgeted studio decal geometry history
+
+Immediate main-view observer now captures validated position/normal/UV, native model selectors, material names and flattened triangle indices. Restricts material names to exact-build CMaterial (or its queue-friendly wrapper), rejects unknown types and malformed/oversized records. Per-model 256 KiB, per-audit 4 MiB, existing scene cache payload budget; equal consecutive immutable geometry shares storage, trimmed with the last frame reference. Optional geometry is dropped before it could reject a fitting frame. Counts remain useful when geometry cannot be captured. Consolidated report distinguishes geometry coverage from inventory. No native replay enabled, and native performance/coverage still need the eventual consolidated test.

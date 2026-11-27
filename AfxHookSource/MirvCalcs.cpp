@@ -12139,6 +12139,7 @@ struct SceneDecalObservation {
     std::uint32_t Checksum=0;
     int Skin=-1,Body=-1;
     advancedfx::SceneLighting::ModelDecalCoverage Value;
+    std::shared_ptr<const advancedfx::SceneLighting::ModelDecalGeometry> Geometry;
     bool Ambiguous=false;
 };
 using SceneDecalFn=void(*)(void*,const SceneStudioInfo*,int,int);
@@ -12147,6 +12148,21 @@ static std::uintptr_t g_SceneDecalBase=0;
 static DWORD g_SceneDecalThread=0;
 static thread_local bool g_SceneDecalArmed=false;
 static thread_local std::map<const void*,SceneDecalObservation> g_SceneDecalObservations;
+static thread_local std::size_t g_SceneDecalBytes=0;
+static bool SceneModelDecalMaterialName(std::uint64_t material,std::string &name){
+    const auto base=reinterpret_cast<std::uintptr_t>(GetModuleHandleA("materialsystem.dll"));
+    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};std::uintptr_t vt=0,target=0;
+    if(!base||!SceneLightingRead(base,dos)||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+       !SceneLightingRead(base+dos.e_lfanew,nt)||nt.Signature!=IMAGE_NT_SIGNATURE||nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||nt.FileHeader.TimeDateStamp!=0x6ac56a08||nt.OptionalHeader.SizeOfImage!=0x141000||
+       !SceneLightingRead(material,vt))return false;
+    if(vt==base+0xb4ba0){if(!SceneLightingRead(material+8,material)||!SceneLightingRead(material,vt))return false;}
+    if(vt!=base+0xb4ec0||!SceneLightingRead(vt,target)||target!=base+0x6fe0||
+       !SceneLightingMatch(base,0x6fe0,{0x48,0x83,0xc1,0x20,0xe9,0x87,0xfa,0x06,0x00}))return false;
+    const auto ptr=reinterpret_cast<const char*(*)(void*)>(target)(reinterpret_cast<void*>(material));
+    if(!ptr)return false;
+    for(unsigned i=0;i<256;++i){char c=0;if(!SceneLightingRead(reinterpret_cast<std::uintptr_t>(ptr)+i,c))return false;if(!c)return !name.empty();if(static_cast<unsigned char>(c)<32||static_cast<unsigned char>(c)>126)return false;name+=c;}
+    return false;
+}
 static void SceneObserveModelDecals(void *renderer,const SceneStudioInfo *info,int lod,int body){
     const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     if(g_SceneDecalArmed&&GetCurrentThreadId()==g_SceneDecalThread&&caller==g_SceneDecalBase+0x51cfd&&
@@ -12160,14 +12176,29 @@ static void SceneObserveModelDecals(void *renderer,const SceneStudioInfo *info,i
            SceneLightingRead(reinterpret_cast<std::uintptr_t>(copy.Header),header)&&header[0]==0x54534449){
             SceneDecalObservation row;row.Checksum=header[2];row.Skin=copy.Skin;row.Body=copy.Body;
             const auto reader=[](std::uintptr_t a,auto &value){return SceneLightingRead(a,value);};
-            if(!advancedfx::SceneLighting::ReadModelDecalCoverage(reader,reinterpret_cast<std::uintptr_t>(renderer),
-                  reinterpret_cast<std::uintptr_t>(copy.Hardware),reinterpret_cast<std::uintptr_t>(copy.Decals),lod,row.Value))
+            using namespace advancedfx::SceneLighting;
+            ModelDecalGeometry geometry;bool geometryOk=g_SceneDecalBytes<4*1024*1024;
+            const auto readBytes=[](std::uint64_t address,void *data,std::size_t size){
+                SIZE_T got=0;return address>=0x10000&&size<=512*1024&&
+                    ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(address),data,size,&got)&&got==size;
+            };
+            const auto capture=[&](const std::array<unsigned char,0x80>& record){
+                if(!geometryOk)return;
+                ModelDecalBatch batch;
+                if(geometry.Batches.size()>=64||!CaptureModelDecalBatch(readBytes,SceneModelDecalMaterialName,record,batch)){geometryOk=false;return;}
+                geometry.Batches.push_back(std::move(batch));if(geometry.Bytes()>256*1024)geometryOk=false;
+            };
+            if(!ReadModelDecalCoverage(reader,reinterpret_cast<std::uintptr_t>(renderer),
+                  reinterpret_cast<std::uintptr_t>(copy.Hardware),reinterpret_cast<std::uintptr_t>(copy.Decals),lod,row.Value,capture))
                 row.Ambiguous=true;
+            if(!row.Ambiguous&&row.Value.Batches&&geometryOk&&geometry.Valid(row.Value)&&geometry.Bytes()<=4*1024*1024-g_SceneDecalBytes)
+                row.Geometry=std::make_shared<const ModelDecalGeometry>(std::move(geometry));
             auto it=g_SceneDecalObservations.find(copy.ClientEntity);
             if(it!=g_SceneDecalObservations.end()){
                 if(row.Ambiguous||it->second.Checksum!=row.Checksum||it->second.Skin!=row.Skin||
                    it->second.Body!=row.Body||!(it->second.Value==row.Value))it->second.Ambiguous=true;
-            }else if(g_SceneDecalObservations.size()<8192)g_SceneDecalObservations.emplace(copy.ClientEntity,std::move(row));
+                if(!it->second.Geometry||!row.Geometry||!(*it->second.Geometry==*row.Geometry))it->second.Geometry.reset();
+            }else if(g_SceneDecalObservations.size()<8192){if(row.Geometry)g_SceneDecalBytes+=row.Geometry->Bytes();g_SceneDecalObservations.emplace(copy.ClientEntity,std::move(row));}
         }
     }
     g_SceneOriginalDecals(renderer,info,lod,body);
@@ -12254,7 +12285,7 @@ static bool SceneInstallLightingObservation(){
 bool Mirv_Tf2_BeginSceneLightingAudit(bool enabled){
 #ifdef _WIN64
     g_SceneLightingArmed=false;g_SceneLightingFrame=-1;g_SceneLightingObservations.clear();
-    g_SceneDecalObservations.clear();g_SceneDecalArmed=enabled&&MaterialSystem_IsImmediate()&&SceneInstallModelDecalObservation();
+    g_SceneDecalObservations.clear();g_SceneDecalBytes=0;g_SceneDecalArmed=enabled&&MaterialSystem_IsImmediate()&&SceneInstallModelDecalObservation();
     if(enabled&&SceneInstallLightingObservation()){g_SceneLightingArmed=true;return true;}
 #endif
     return false;
@@ -12270,7 +12301,7 @@ bool Mirv_Tf2_CaptureSceneLighting(int frame,const void *renderable,advancedfx::
     auto decal=g_SceneDecalObservations.find(renderable);
     if(decal!=g_SceneDecalObservations.end()&&!decal->second.Ambiguous&&
        decal->second.Checksum==entity.ModelPose->ModelInfo->Checksum&&decal->second.Skin==entity.Skin&&
-       decal->second.Body==entity.ModelPose->Body)entity.ModelDecals=decal->second.Value;
+       decal->second.Body==entity.ModelPose->Body){entity.ModelDecals=decal->second.Value;entity.ModelDecalData=decal->second.Geometry;}
     auto found=g_SceneLightingObservations.find(renderable);
     if(found==g_SceneLightingObservations.end()||found->second.Ambiguous||
        !found->second.Key.Matches(entity.ModelPose->ModelInfo->Checksum,entity.Skin,entity.ModelPose->Body,entity.Origin))return false;
