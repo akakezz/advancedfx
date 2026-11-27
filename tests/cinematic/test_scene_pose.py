@@ -223,9 +223,8 @@ int main(){
   Mirv_Tf2_SceneAssetResidency(true);assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));ConsumeRenderQueue();assert(fixture.Refs==1&&fixture.HeaderLocks==0&&g_SceneResidentAssets.size()==1);
   assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));ConsumeRenderQueue();assert(fixture.Refs==1&&fixture.HeaderLocks==0&&g_SceneResidentHits==1);
   assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));Mirv_Tf2_SceneAssetResidency(false);assert(fixture.Refs==1&&fixture.HeaderLocks==1&&g_SceneResidentAssets.empty());ConsumeRenderQueue();assert(fixture.Refs==0&&fixture.HeaderLocks==0);
-  entity.Skin=-1;g_SceneStudioStateInstalled=false;
- // A slow or discarded render queue retains ownership without unbounded growth.
- assert(!Mirv_Tf2_BeginSceneStudioBatch()); // Queued path remains unchanged.
+  // Exercise the textured batch while the historical skin and state hooks are still active.
+  assert(!Mirv_Tf2_BeginSceneStudioBatch()); // Queued path remains unchanged.
   immediate=true;
   assert(Mirv_Tf2_BeginSceneStudioBatch());
   assert(!Mirv_Tf2_BeginSceneStudioBatch()); // No nested ownership.
@@ -235,6 +234,8 @@ int main(){
   Mirv_Tf2_EndSceneStudioBatch();
   assert(!fixture.Refs&&!fixture.HeaderLocks&&!fixture.Locks);
   immediate=false;
+  entity.Skin=-1;g_SceneStudioStateInstalled=false;
+  // A slow or discarded render queue retains ownership without unbounded growth.
   for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
  assert(!Mirv_Tf2_DrawScenePose(entity,status));unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);assert(pending==SceneMaxOutstanding&&peak==SceneMaxOutstanding);
  ConsumeRenderQueue(false,true);assert(fixture.Refs==int(SceneMaxOutstanding)&&fixture.HeaderLocks==int(SceneMaxOutstanding));
