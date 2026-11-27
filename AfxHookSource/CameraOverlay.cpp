@@ -348,10 +348,11 @@ static double g_SceneSampleCursor = 0;
 // Single-run benchmark: engine-frame wall time, not GPU timestamps.
  // All mode changes are temporary; recording and demo transport are untouched.
 struct SceneBenchState {
-    bool Active=false, Measuring=false;
+    bool Active=false, Measuring=false, ModelsOnly=false, Immediate=false;
     int Phase=0,Frames=0,OriginalSequencer=0;
     unsigned long long RenderCallbacks=0;
-    bool Record=false,Preview=false,Models=false,MainOnly=false,Cull=false,Native=false,Legacy=false,Markers=false,LegacyMarkers=false,Residency=false,FastWrites=false,BatchStudio=false,FastReads=false;
+    bool Record=false,Preview=false,Models=false,MainOnly=false,Cull=false,Native=false,Legacy=false,Markers=false,LegacyMarkers=false,Residency=false,FastWrites=false,BatchStudio=false,FastReads=false,BatchQueued=false;
+    bool Shadows=false,Decals=false,HideShadows=false,HideDecals=false;
     double Cursor=0,Late=0;
     std::chrono::steady_clock::time_point Start,LastRender;
     ScenePerfCounters Before;
@@ -359,13 +360,26 @@ struct SceneBenchState {
 };
 static SceneBenchState g_SceneBench;
 static std::string g_SceneBenchReport;
+static int SceneBenchPhaseCount(){return g_SceneBench.ModelsOnly?6:14;}
 static const char *SceneBenchLabel(int phase){
+    if(g_SceneBench.ModelsOnly){
+        static const char *names[]={"Live baseline (live effects)","Historical models, all views","Historical models, main only","Historical models, main + cull","Historical models, batching off","Historical models, batching on (repeat)"};
+        return names[phase];
+    }
     static const char *names[]={"Live baseline","Full cached preview","Main view only","Main + cull","Main + cull, historical particles off","Historical models and surfaces off","Optimized at latest tick","Earlier tick, previous memory path","Earlier tick, both optimizations","Earlier tick, residency only","Earlier tick, fast writes only","Earlier tick, batching off (both memory optimizations)","Earlier tick, batching on (repeat both)","Earlier tick, guarded reads off"};
     return names[phase];
 }
 static void SceneBenchApply(int phase,std::chrono::steady_clock::time_point now){
     auto &b=g_SceneBench;b.Phase=phase;b.Measuring=false;b.Frames=0;b.Start=now;b.LastRender=now;
-    g_SceneRecord=false;g_ScenePreview=phase!=0;g_SceneDrawModels=phase!=5;
+    g_SceneRecord=false;g_ScenePreview=phase!=0;g_SceneDrawModels=b.ModelsOnly||phase!=5;
+    if(b.ModelsOnly){
+        g_SceneMainViewOnly=phase>=2;g_ScenePreviewCull=phase>=3;
+        g_SceneKeepAssets=true;g_SceneBatchStudio=phase!=4;g_SceneBatchQueued=true;
+        g_SceneNativeParticleReplay=g_SceneLegacyReplay=g_SceneNativeParticleMarkers=g_SceneLegacyMarkers=false;
+        g_SceneHistoricalShadows=g_SceneHistoricalDecals=g_SceneHideShadows=g_SceneHideDecals=false;
+        g_SceneCursor=b.Cursor;g_SequencerFrame=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
+        g_SceneSampleReady=false;++g_SceneDrawEpoch;return;
+    }
     g_SceneMainViewOnly=phase>=2;g_ScenePreviewCull=phase>=3;
     g_SceneKeepAssets=phase!=7&&phase!=10;g_SceneFastParticleWrites=phase!=7&&phase!=9;
     g_SceneBatchStudio=phase!=11;
@@ -383,19 +397,29 @@ static void SceneBenchStop(const char *reason){
     g_SceneMainViewOnly=b.MainOnly;g_ScenePreviewCull=b.Cull;
     g_SceneKeepAssets=b.Residency;g_SceneFastParticleWrites=b.FastWrites;g_SceneBatchStudio=b.BatchStudio;g_SceneFastParticleReads=b.FastReads;
     g_SceneNativeParticleReplay=b.Native;g_SceneLegacyReplay=b.Legacy;
+    g_SceneBatchQueued=b.BatchQueued;
+    if(b.ModelsOnly){g_SceneHistoricalShadows=b.Shadows;g_SceneHistoricalDecals=b.Decals;g_SceneHideShadows=b.HideShadows;g_SceneHideDecals=b.HideDecals;}
     g_SceneNativeParticleMarkers=b.Markers;g_SceneLegacyMarkers=b.LegacyMarkers;
     g_SceneCursor=b.Cursor;g_SequencerFrame=b.OriginalSequencer;
     g_SceneSampleReady=false;++g_SceneDrawEpoch;
     g_SceneBenchReport+=reason;g_SceneBenchReport+="\n";
     advancedfx::Message("%s\nUse mirv_cache perf bench report for all completed measurements.\n",reason);
 }
+static bool SceneBenchTransportReady(bool modelsOnly){
+    if(!modelsOnly)return Mirv_Tf2_ParticleIsolationReady();
+    if(!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||g_VEngineClient->IsSkippingDemo()||
+       g_VEngineClient->IsDrawingLoadingImage()||!MaterialSystem_CanExecuteOnRenderThread()||MirvCampathPreview_IsSeeking())return false;
+    if(g_VEngineClient->IsPaused())return true;
+    const auto *demo=g_VEngineClient->GetDemoInfoEx();
+    return demo&&demo->GetDemoPlaybackTimeScale()==0.0f;
+}
 // Called after the ordinary outer View_Render returns, not from demo time.
 static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
     auto &b=g_SceneBench;if(!b.Active)return;
     if(!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||g_VEngineClient->IsSkippingDemo()||
        g_VEngineClient->IsDrawingLoadingImage()||!SceneCanDrawModels()||Recording::IsActive()||
-       !Mirv_Tf2_ParticleIsolationReady()||g_SceneScrubRate||g_WorkLoop){
-        SceneBenchStop("Benchmark cancelled: playback, focus, recording or transport changed.");return;
+       !SceneBenchTransportReady(b.ModelsOnly)||MaterialSystem_IsImmediate()!=b.Immediate||g_SceneScrubRate||g_WorkLoop){
+        SceneBenchStop("Benchmark cancelled: playback, focus, recording, queue mode or transport changed.");return;
     }
     ++b.RenderCallbacks;
     b.LastRender=now;
@@ -414,7 +438,7 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
         ms(g_ScenePerf.SurfaceBegin,b.Before.SurfaceBegin)+ms(g_ScenePerf.SurfaceEnd,b.Before.SurfaceEnd),
         double(g_SceneReplaySubmitted-b.Submissions)/b.Frames,double(g_ScenePerf.ModelsCulled-b.Before.ModelsCulled)/b.Frames);
     g_SceneBenchReport+=line;
-    advancedfx::Message("[Scene bench %d/14] %s",b.Phase+1,line);
+    advancedfx::Message("[Scene bench %d/%d] %s",b.Phase+1,SceneBenchPhaseCount(),line);
     if(b.Phase!=0){
         auto delta=[&](double end,double begin){return (end-begin)/b.Frames;};
         unsigned resident=0;unsigned long long hits=0,adds=0;Mirv_Tf2_SceneAssetStatus(resident,hits,adds);
@@ -438,7 +462,7 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
             delta(a[T::State],z[T::State]),delta(a[T::Draw],z[T::Draw]),delta(a[T::Retirement],z[T::Retirement]));
         g_SceneBenchReport+=line;
     }
-    if(b.Phase==13)SceneBenchStop("Benchmark complete; original settings restored.");
+    if(b.Phase+1==SceneBenchPhaseCount())SceneBenchStop("Benchmark complete; original settings restored.");
     else SceneBenchApply(b.Phase+1,now);
 }
 void SceneCacheBenchmarkRenderEnd(){
@@ -2173,8 +2197,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
                     auto &b=g_SceneBench;
                     const double idle=std::chrono::duration<double>(std::chrono::steady_clock::now()-b.LastRender).count();
                     if(idle>10.0){SceneBenchStop("Benchmark cancelled: no ordinary render callback for ten seconds.");SceneCacheFrame(false);}
-                    else advancedfx::Message("Benchmark phase %d/14 (%s), %s, %d measured renders, %llu total render callbacks.\n",
-                        b.Phase+1,SceneBenchLabel(b.Phase),b.Measuring?"measuring":"warming up",b.Frames,b.RenderCallbacks);
+                    else advancedfx::Message("Benchmark phase %d/%d (%s), %s, %d measured renders, %llu total render callbacks.\n",
+                        b.Phase+1,SceneBenchPhaseCount(),SceneBenchLabel(b.Phase),b.Measuring?"measuring":"warming up",b.Frames,b.RenderCallbacks);
                 }
                 if(g_SceneBenchReport.empty())advancedfx::Message("No benchmark report yet.\n");
                 else {
@@ -2184,17 +2208,21 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
                 return;
             }
             if(args->ArgC()==4&&!_stricmp(args->ArgV(3),"cancel")){SceneBenchStop("Benchmark cancelled.");SceneCacheFrame(false);return;}
-            if(args->ArgC()!=3||g_SceneBench.Active||!SceneCacheReplayActive()||!Mirv_Tf2_ParticleIsolationReady()||
+            const bool modelsOnly=args->ArgC()==4&&!_stricmp(args->ArgV(3),"models");
+            if((args->ArgC()!=3&&!modelsOnly)||g_SceneBench.Active||!SceneCacheReplayActive()||!SceneBenchTransportReady(modelsOnly)||
                g_SceneScrubRate||g_WorkLoop||Recording::IsActive()||MirvCampathPreview_IsActive()||MirvCam_RigPreviewActive()||
                g_SceneCache.Frames().empty()){
-                advancedfx::Message("Benchmark requires stationary broad cached preview, paused/frozen demo, no active camera path/rig preview or video recording. Use perf bench [report|cancel].\n");return;
+                advancedfx::Message("Benchmark requires stationary broad cached preview, paused/frozen demo, no active camera path/rig preview or video recording. Use perf bench [models|report|cancel].\n");return;
             }
-            auto &b=g_SceneBench;b={};b.Active=true;b.Record=g_SceneRecord;b.Preview=g_ScenePreview;b.Models=g_SceneDrawModels;
+            auto &b=g_SceneBench;b={};b.Active=true;b.ModelsOnly=modelsOnly;b.Immediate=MaterialSystem_IsImmediate();b.Record=g_SceneRecord;b.Preview=g_ScenePreview;b.Models=g_SceneDrawModels;
             b.MainOnly=g_SceneMainViewOnly;b.Cull=g_ScenePreviewCull;b.Native=g_SceneNativeParticleReplay;b.Legacy=g_SceneLegacyReplay;
-            b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;
+            b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;b.BatchQueued=g_SceneBatchQueued;
+            b.Shadows=g_SceneHistoricalShadows;b.Decals=g_SceneHistoricalDecals;b.HideShadows=g_SceneHideShadows;b.HideDecals=g_SceneHideDecals;
             b.Markers=g_SceneNativeParticleMarkers;b.LegacyMarkers=g_SceneLegacyMarkers;b.Cursor=g_SceneCursor;
             b.Late=g_SceneCache.Frames().back().DemoTime;b.OriginalSequencer=int(g_SequencerFrame);
             g_SceneBenchReport="Scene cache benchmark (engine wall time, CPU subsystem totals/frame; camera must remain fixed; requested live model/particle isolation retained where eligible in isolation modes; live surfaces may return; memory tests are sequential, not cold-cache controlled).\n";
+            if(modelsOnly)g_SceneBenchReport+="Models-only comparison: historical particles/surfaces and live-effect hiding temporarily off; live effects remain.\n";
+            g_SceneBenchReport+=b.Immediate?"Actual material context: immediate.\n":"Actual material context: queued.\n";
             SceneBenchApply(0,std::chrono::steady_clock::now());SceneCacheFrame(false);
             advancedfx::Message("Benchmark started. Close console and keep camera still; each phase prints progress. Use perf bench report for partial results.\n");return;
         }
@@ -2668,7 +2696,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
-		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|fastWrites <0|1>|fastReads <0|1>|batchStudio <0|1>|batchQueued <0|1>|bench [report|cancel]] - CPU replay timings and failure diagnostics.\n"
+		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|fastWrites <0|1>|fastReads <0|1>|batchStudio <0|1>|batchQueued <0|1>|bench [models|report|cancel]] - CPU replay timings and failure diagnostics.\n"
             "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
