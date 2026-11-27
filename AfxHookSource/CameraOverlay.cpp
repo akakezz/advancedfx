@@ -111,7 +111,7 @@ struct ScenePerfCounters {
     ScenePerfStat Sample,ModelDraw,ParticleAcquire,ParticleDraw,LegacyDraw,SurfaceBegin,SurfaceEnd,LegacyCapture,SurfaceCapture;
     unsigned long long ParticleMain=0,ParticleRejected=0,ParticleAttempts=0,LegacyRejected=0;
     ScenePerfStat MainModelDraw,OtherModelDraw,UnknownModelDraw,MainParticleDraw;
-    unsigned long long NonMainModelSkipped=0,NonMainParticleSkipped=0;
+    unsigned long long NonMainModelSkipped=0,NonMainParticleSkipped=0,ModelsCulled=0;
     int LastModelFailureTick=-1;
     std::string LastModelFailureAsset;
     int LastParticleFailureTick=-1;
@@ -119,6 +119,7 @@ struct ScenePerfCounters {
 };
 static ScenePerfCounters g_ScenePerf;
 static bool g_SceneMainViewOnly=false; // optional until skybox fidelity is checked
+static bool g_ScenePreviewCull=false; // opt-in until animated bounds/edge coverage verified
 static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
@@ -1043,7 +1044,9 @@ void SceneCacheDrawModels()
     const int nativeView=textured?Mirv_Tf2_SceneRenderViewId():-1;
     {std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
      if(g_SceneMainViewOnly&&nativeView>0){++g_ScenePerf.NonMainModelSkipped;return;}}
-	unsigned submitted = 0, attempted = 0, queueSkips=0, otherSkips=0;
+	float projection[4][4]{};
+    const bool cull=g_ScenePreviewCull&&nativeView==0&&!Recording::IsActive()&&Mirv_Tf2_SceneMainProjection(projection);
+    unsigned submitted = 0, attempted = 0, queueSkips=0, otherSkips=0, culled=0;
     std::string lastFailure,lastFailureAsset;
 	for (const auto &entity : view->Entities)
 	{
@@ -1051,6 +1054,7 @@ void SceneCacheDrawModels()
 			return;
 		if (entity.ModelPose && entity.ModelPose->ModelInfo->WireEdges.empty())
 		{
+            if(cull&&advancedfx::SceneCache::OutsidePreviewFrustum(entity,projection)){++culled;continue;}
 			const auto found =
 			    std::lower_bound(view->Entities.begin(), view->Entities.end(), entity.OwnerIdentity,
 				                 [](const auto &row, std::uint64_t id) { return row.Identity < id; });
@@ -1071,7 +1075,7 @@ void SceneCacheDrawModels()
         (nativeView==0?g_ScenePerf.MainModelDraw:nativeView>0?g_ScenePerf.OtherModelDraw:g_ScenePerf.UnknownModelDraw).Add(begin,tick);
         if(!lastFailure.empty()){g_ScenePerf.LastModelFailureTick=tick;g_ScenePerf.LastModelFailureAsset=lastFailureAsset;}
         ++g_SceneReplayCallbacks;g_SceneReplayAttempted+=attempted;g_SceneReplaySubmitted+=submitted;
-        g_SceneReplayQueueSkips+=queueSkips;g_SceneReplayOtherSkips+=otherSkips;
+        g_SceneReplayQueueSkips+=queueSkips;g_SceneReplayOtherSkips+=otherSkips;g_ScenePerf.ModelsCulled+=culled;
         if(!lastFailure.empty()) g_SceneReplayLastFailure=lastFailure;
         if(auto gl=g_Hook_VClient_RenderView.GetGlobals()) {
             const int frame=gl->framecount_get();
@@ -2009,12 +2013,14 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
     if(!_stricmp(op,"perf")){
         if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"reset"))g_ScenePerf={};
         else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"mainOnly")&&parseInteger(3,value)&&(value==0||value==1))g_SceneMainViewOnly=value!=0;
-        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset|mainOnly <0|1>]\n");return;}
+        else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"cull")&&parseInteger(3,value)&&(value==0||value==1))g_ScenePreviewCull=value!=0;
+        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>]\n");return;}
         advancedfx::Message("Scene cache CPU timing (not GPU completion), cursor %.3f ticks; capture %d, preview %d.\n",g_SceneCursor/SceneTickInterval(),int(g_SceneRecord),int(g_ScenePreview));
         g_ScenePerf.Sample.Print("Historical model sampling");
         g_ScenePerf.ModelDraw.Print("Studio replay submission");
         g_ScenePerf.MainModelDraw.Print("Studio main view");g_ScenePerf.OtherModelDraw.Print("Studio other views");g_ScenePerf.UnknownModelDraw.Print("Studio unverified view");
         g_ScenePerf.MainParticleDraw.Print("Native particle main view");
+        advancedfx::Message("Preview frustum cull %d; rejected model submissions %llu.\n",int(g_ScenePreviewCull),g_ScenePerf.ModelsCulled);
         advancedfx::Message("Main-only studio %d; verified non-main skips: studio %llu, particles %llu. Last studio failure tick %d, asset %s.\n",int(g_SceneMainViewOnly),g_ScenePerf.NonMainModelSkipped,g_ScenePerf.NonMainParticleSkipped,g_ScenePerf.LastModelFailureTick,g_ScenePerf.LastModelFailureAsset.empty()?"none":g_ScenePerf.LastModelFailureAsset.c_str());
         g_ScenePerf.ParticleAcquire.Print("Particle snapshot lookup/decode");
         g_ScenePerf.ParticleDraw.Print("Native particle replay (all eligible callbacks)");
@@ -2456,7 +2462,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
-		    "  mirv_cache perf [reset|mainOnly <0|1>] - CPU replay timings and failure diagnostics.\n"
+		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>] - CPU replay timings and failure diagnostics.\n"
             "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;

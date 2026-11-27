@@ -338,6 +338,13 @@ int Mirv_Tf2_SceneRenderViewId()
     return -1;
 #endif
 }
+bool Mirv_Tf2_SceneMainProjection(float (&matrix)[4][4])
+{
+    if(!g_VEngineClient||Mirv_Tf2_SceneRenderViewId()!=0)return false;
+    const auto &current=g_VEngineClient->WorldToScreenMatrix();
+    std::memcpy(matrix,current.m,sizeof(matrix));
+    return true;
+}
 // Isolation is an opt-in ordinary-view experiment. Do not change the cvar
 // unless the existing native replay path is eligible on the verified build.
 bool Mirv_Tf2_ParticleIsolationReady()

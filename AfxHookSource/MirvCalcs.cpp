@@ -12255,6 +12255,21 @@ void Mirv_Tf2_RenderGroups(std::map<const void *, unsigned> &groups, int hiddenP
  auto tools = CClientToolsTf2::Instance();
  auto iface = tools ? tools->GetClientTools() : nullptr;
  if (!iface) return;
+ // markStudio is requested only for ordinary historical replacement, never
+ // separate pass recording. With no hidden POV target, only bit 8 is read.
+ // Avoid classification, network parent reads and owner traversal entirely.
+ if(markStudio&&hiddenPlayer<=0){
+  auto info=Mirv_Tf2_GetModelInfo();
+  if(!info)return;
+  size_t scanned=0;
+  for(auto object=iface->FirstEntity();object&&scanned++<4096;object=iface->NextEntity(object)){
+   auto unknown=reinterpret_cast<CMirvTf2ClientUnknown *>(object);
+   auto renderable=unknown->GetClientRenderable();
+   if(!renderable||iface->GetEntIndex(object)==0)continue;
+   if(auto model=renderable->GetModel())if(info->GetModelType(model)==3)groups[renderable]=8;
+  }
+  return;
+ }
  struct Row { const void *Renderable; unsigned Handle, Parent, Group; };
  std::vector<Row> rows;
  std::map<unsigned, unsigned> handles;

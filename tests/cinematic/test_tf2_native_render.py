@@ -445,7 +445,7 @@ int main(){
  for(unsigned i=0;i<objects.size();++i){unsigned expected=i==7||i==8?2:i==9||i==10?0:1;assert(result[&objects[i].Renderable]==expected);}
  Mirv_Tf2_RenderGroups(result,2);assert(result[&objects[1].Renderable]==5&&result[&objects[11].Renderable]==5&&result[&objects[0].Renderable]==1);
  Mirv_Tf2_RenderGroups(result,1);assert(result[&objects[0].Renderable]==5&&result[&objects[7].Renderable]==6&&result[&objects[8].Renderable]==6&&result[&objects[12].Renderable]==5);
- Mirv_Tf2_RenderGroups(result,0,true);for(const auto&row:result)assert(row.second&8);
+ Mirv_Tf2_RenderGroups(result,0,true);assert(result.size()==objects.size());for(const auto&row:result)assert(row.second==8);
  // Shared fallback keeps cosmetics classified as cosmetics even when they are debris.
  assert(Mirv_Tf2_ModelCategory(&objects[5].Renderable,false)==MIRV_TF2_ENTITY_COSMETIC);
  std::cout<<"Player pass includes loose weapons/cosmetics/ragdolls/gibs; decals and props remain world; viewmodels stay separate\n";

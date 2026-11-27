@@ -270,6 +270,37 @@ public:
 			}
 		return corners;
 	}
+    // Experimental conservative main-view frustum rejection. Use a padded
+    // render-bound sphere; never reject malformed bounds or matrices.
+    // Omit near/far planes, and keep actors/attachments/skybox models.
+    static bool OutsidePreviewFrustum(const Entity &e,const float (&matrix)[4][4])
+    {
+        if(!e.ModelPose||e.OwnerIdentity||!(e.Category==1||e.Category==4||e.Category==7||e.Category==8)||
+           e.ModelPose->ModelInfo->Name.find("skybox")!=std::string::npos)return false;
+        double extent2=0;
+        for(int i=0;i<3;++i){
+            if(!std::isfinite(e.Origin[i])||!std::isfinite(e.Mins[i])||!std::isfinite(e.Maxs[i])||e.Mins[i]>e.Maxs[i])return false;
+            const double x=(std::max)(std::abs(double(e.Mins[i])),std::abs(double(e.Maxs[i])));
+            extent2+=x*x;
+        }
+        if(!(extent2>0)||!std::isfinite(extent2))return false;
+        // Large fixed padding and generous scale cover common animated bounds.
+        const double radius=2*std::sqrt(extent2)+128;
+        for(const auto &row:matrix)for(float v:row)if(!std::isfinite(v))return false;
+        const double wnorm=std::hypot(double(matrix[3][0]),double(matrix[3][1]),double(matrix[3][2]));
+        if(!(wnorm>1e-6))return false; // unsupported projection
+        // Homogeneous clip planes x +/- w, y +/- w. Keep a 10% screen margin.
+        bool outside=false;
+        for(int axis=0;axis<2;++axis)for(int sign:{-1,1}){
+            double plane[4];
+            for(int j=0;j<4;++j)plane[j]=1.1*matrix[3][j]+sign*matrix[axis][j];
+            const double norm=std::hypot(plane[0],plane[1],plane[2]);
+            if(!(norm>1e-6)||!std::isfinite(norm))return false;
+            const double distance=plane[3]+plane[0]*e.Origin[0]+plane[1]*e.Origin[1]+plane[2]*e.Origin[2];
+            outside|=distance < -radius*norm;
+        }
+        return outside;
+    }
 	static constexpr std::array<unsigned char, 3> CategoryColor(int category)
 	{
 		return category == 1   ? std::array<unsigned char, 3>{255, 80, 70}
