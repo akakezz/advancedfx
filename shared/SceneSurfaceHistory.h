@@ -18,11 +18,21 @@ struct Decal {
     std::array<std::uint32_t,7> Placement{}; // raw position, optional axis, scale
     std::array<unsigned char,3> Color{};
     unsigned char Alpha=255;
+    // Native 0x100 fading world decal: retain identity and visibility,
+    // not a promise to reproduce nonzero historical opacity.
+    float FadeDuration=0,FadeStart=0;
+    bool FadeExpired=false;
+    bool Fading()const{return (Flags&0x100)!=0;}
+    bool SetFade(float duration,float start,float now){
+        if(!std::isfinite(duration)||duration<=0||!std::isfinite(start)||!std::isfinite(now)||!std::isfinite(start+duration))return false;
+        FadeDuration=duration;FadeStart=start;FadeExpired=now>=start+duration;return true;
+    }
+    bool Visible()const{return Alpha!=0&&!FadeExpired;}
     std::string Material;
     bool Same(const Decal &o) const {
-        return Slot==o.Slot&&Surface==o.Surface&&Flags==o.Flags&&NameIndex==o.NameIndex&&Placement==o.Placement&&Color==o.Color&&Material==o.Material;
+        return Slot==o.Slot&&Surface==o.Surface&&Flags==o.Flags&&NameIndex==o.NameIndex&&Placement==o.Placement&&Color==o.Color&&Material==o.Material&&FadeDuration==o.FadeDuration&&FadeStart==o.FadeStart;
     }
-    bool operator==(const Decal &o) const{return Same(o)&&Alpha==o.Alpha;}
+    bool operator==(const Decal &o) const{return Same(o)&&Alpha==o.Alpha&&FadeExpired==o.FadeExpired;}
 };
 struct Shadow {
     std::array<float,3> Origin{},Direction{},Caster{};
@@ -56,12 +66,12 @@ inline const char *DecalReadLabel(DecalRead value){
 }
 // Exclusive observed rejection categories, not a claim of complete decal coverage.
 struct DecalCoverage {
-    std::size_t OutsideWorld=0,Attached=0,Flagged=0,Displacement=0,Material=0;
-    std::size_t Total()const{return OutsideWorld+Attached+Flagged+Displacement+Material;}
+    std::size_t OutsideWorld=0,Attached=0,Flagged=0,Displacement=0,Material=0,FadeInvalid=0;
+    std::size_t Total()const{return OutsideWorld+Attached+Flagged+Displacement+Material+FadeInvalid;}
     std::string Describe()const{
         return "outside world "+std::to_string(OutsideWorld)+", attached "+std::to_string(Attached)+
-            ", flags 0x1100 "+std::to_string(Flagged)+", displacement "+std::to_string(Displacement)+
-            ", material unavailable "+std::to_string(Material);
+            ", flags 0x1000 "+std::to_string(Flagged)+", displacement "+std::to_string(Displacement)+
+            ", material unavailable "+std::to_string(Material)+", invalid fade "+std::to_string(FadeInvalid);
     }
 };
 struct Frame {

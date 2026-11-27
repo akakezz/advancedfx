@@ -49,6 +49,14 @@ int main(){
     assert(!independent.ResolvePreview(15)&&!independent.ResolvePreview(9));
     decals.World=8;decals.Tick=20;assert(independent.Append(decals));
     both=independent.ResolvePreview(20);assert(both&&both.ShadowTick==-1&&both.DecalTick==20);
+    Decal fade;fade.Flags=0x100;fade.Alpha=200;
+    assert(fade.Fading()&&fade.SetFade(2,10,10)&&fade.Visible());
+    const auto beforeFade=fade;assert(fade.SetFade(2,10,11.9f)&&fade.Visible()&&fade==beforeFade);
+    assert(fade.SetFade(2,10,12)&&!fade.Visible()&&fade.Same(beforeFade)&&!(fade==beforeFade));
+    assert(fade.SetFade(2,11,12)&&fade.Visible()&&!fade.Same(beforeFade));
+    assert(!fade.SetFade(0,11,12)&&!fade.SetFade(-1,11,12)&&!fade.SetFade(NAN,11,12)&&!fade.SetFade(2,11,INFINITY));
+    fade.Alpha=0;assert(!fade.Visible());
+    coverage.FadeInvalid=1;assert(coverage.Total()==10&&coverage.Describe().find("invalid fade 1")!=std::string::npos);
     Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
     sh.Leaves.push_back(-1);assert(!sh.Valid());
 }

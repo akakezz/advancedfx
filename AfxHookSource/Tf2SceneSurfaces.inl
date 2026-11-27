@@ -60,6 +60,20 @@ static bool SurfaceWorld(SurfaceAddress base,NativeWorld &w){
 static NativeWorld g_SurfaceWorld;
 static std::uint64_t g_SurfaceGeneration=1;
 static bool SurfaceSameWorld(const NativeWorld &a,const NativeWorld &b){return a.World==b.World&&a.Surfaces==b.Surfaces&&a.Count==b.Count;}
+// Read the exact client-state clock used by both native creation and
+// ordinary decal fading. No engine call or global clock mutation.
+static bool SurfaceDecalClock(SurfaceAddress base,float &now){
+    if(!SurfaceMatch(base,0xa4320,{0x80,0xb9,0x64,0x8c,0,0,0,0x66,0x0f,0x6e,0x81,0xb4,0x01,0,0,0x0f,0x5b,0xc0,0xf3,0x0f,0x59,0x05,0x06,0x14,0x6b,0,0x75,0x08})||
+       !SurfaceMatch(base,0xa433c,{0xf3,0x0f,0x58,0x81,0x6c,0x8c,0,0,0xc3})||
+       !SurfaceMatch(base,0x11ac29,{0x48,0x8d,0x0d,0x30,0xdc,0x41,0,0xe8,0xeb,0x96,0xf8,0xff})||
+       !SurfaceMatch(base,0x11b33c,{0xb9,0,0x01,0,0,0x66,0x85,0x4b,0x68,0x74,0x5f,0xf3,0x0f,0x10,0x53,0x4c}))return false;
+    int tick=0;float interval=0,delta=0;unsigned char mode=0;
+    const auto state=base+0x538860;
+    if(!SurfaceGet(state+0x1b4,tick)||!SurfaceGet(base+0x755740,interval)||!SurfaceGet(state+0x8c64,mode)||
+       !std::isfinite(interval)||interval<=0||interval>1||tick<0)return false;
+    if(!mode&&(!SurfaceGet(state+0x8c6c,delta)||!std::isfinite(delta)))return false;
+    now=float(tick)*interval+delta;return std::isfinite(now);
+}
 struct LiveDecal {Decal Value;SurfaceAddress Object=0,Surface=0,Material=0;};
 static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::vector<LiveDecal> &out,std::size_t &unsupported,DecalRead &status,DecalCoverage &coverage){
     coverage={};unsupported=0;
@@ -76,6 +90,7 @@ static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::ve
     if(count&&!SurfaceRead(table,slots.data(),slots.size()*sizeof(SurfaceAddress)))return false;
     std::map<SurfaceAddress,std::string> materials;
     std::map<SurfaceAddress,std::uint32_t> surfaceFlagsCache;
+    bool clockChecked=false,clockReady=false;float clock=0;
     for(int i=0;i<count;++i){
         auto a=slots[i];if(!a)continue;
         std::array<unsigned char,0x6c> raw{};
@@ -87,7 +102,7 @@ static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::ve
         get(0x10,surface);get(0x18,material);get(0x58,attachment);get(0x66,v.Slot);get(0x68,v.Flags);get(0x6a,v.NameIndex);
         if(v.Slot!=i){status=DecalRead::Slot;return false;}
         if(attachment){++unsupported;++coverage.Attached;continue;}
-        if(v.Flags&0x1100){++unsupported;++coverage.Flagged;continue;}
+        if(v.Flags&0x1000){++unsupported;++coverage.Flagged;continue;}
         if(!surface||surface<world.Surfaces||(surface-world.Surfaces)%64||(surface-world.Surfaces)/64>=static_cast<unsigned>(world.Count)){
             ++unsupported;++coverage.OutsideWorld;continue;
         }
@@ -98,7 +113,12 @@ static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::ve
         std::memcpy(v.Placement.data(),raw.data()+0x24,12);
         if(v.Flags&0x80)std::memcpy(v.Placement.data()+3,raw.data()+0x30,12);
         get(0x44,v.Placement[6]);get(0x54,v.Color);get(0x57,v.Alpha);
-        v.Flags&=0x0081; // avoid transient draw/clip flags in historical identity
+        if(v.Fading()){
+            if(!clockChecked){clockChecked=true;clockReady=SurfaceDecalClock(base,clock);}
+            float duration=0,start=0;get(0x4c,duration);get(0x50,start);
+            if(!clockReady||!v.SetFade(duration,start,clock)){++unsupported;++coverage.FadeInvalid;continue;}
+        }
+        v.Flags&=0x0181; // retain fade identity, exclude transient draw/clip flags
         auto found=materials.find(material);
         if(found==materials.end()){
             std::string name;if(!SurfaceMaterialName(material,name)){++unsupported;++coverage.Material;continue;}
@@ -327,13 +347,17 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
         else {
             std::vector<LiveDecal> current;std::size_t unsupported=0;DecalRead status=DecalRead::NotRun;DecalCoverage coverage;
             if(ReadWorldDecals(base,world,current,unsupported,status,coverage)){
-                std::size_t matched=0,hidden=0,failed=0;
+                std::size_t matched=0,hidden=0,failed=0,fading=0,fadeUnknown=0;
                 g_SurfaceHiddenDecals.clear();g_SurfaceDecalDrawSkips=0;
                 for(const auto &live:current){
                     const auto &v=live.Value;
                     auto it=std::lower_bound(sample.Decals->begin(),sample.Decals->end(),v.Slot,[](const Decal &a,std::uint16_t s){return a.Slot<s;});
                     const bool same=it!=sample.Decals->end()&&it->Same(v);matched+=same;
-                    if(!same||it->Alpha==0){
+                    fading+=v.Fading();
+                    // If any historical fade record was unreadable, an
+                    // unmatched live fade may be that record; fail open.
+                    if(!same&&v.Fading()&&sample.UnsupportedDecals.FadeInvalid){++fadeUnknown;continue;}
+                    if(!same||!it->Visible()){
                         // Use the pointers from the validated record; the hook
                         // still checks surface/material/slot before suppression.
                         DecalGate gate;gate.Slot=v.Slot;gate.Surface=live.Surface;gate.Material=live.Material;
@@ -342,7 +366,7 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
                     }
                 }
                 g_SurfaceDecalGate=true;active|=2;
-                report<<"Historical surviving decals "<<matched<<"/"<<sample.Decals->size()<<"; geometry gates "<<hidden<<"; missing "<<sample.Decals->size()-matched<<"; unsupported live "<<unsupported<<" ("<<coverage.Describe()<<"); rejected gates "<<failed<<". ";
+                report<<"Historical surviving decals "<<matched<<"/"<<sample.Decals->size()<<"; geometry gates "<<hidden<<"; missing "<<sample.Decals->size()-matched<<"; unsupported live "<<unsupported<<" ("<<coverage.Describe()<<"); rejected gates "<<failed<<"; live fading "<<fading<<"; unknown historical fades left live "<<fadeUnknown<<". Historical nonzero fade opacity is not reconstructed. ";
             }else report<<"Live decal traversal failed: "<<DecalReadLabel(status)<<". ";
         }
     }

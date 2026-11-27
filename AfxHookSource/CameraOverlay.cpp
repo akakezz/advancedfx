@@ -2445,7 +2445,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         if(const auto resolved=g_SceneSurfaces.ResolvePreview(tick)){
             const auto &sample=resolved.Value;
             advancedfx::Message("Surface requested tick %d; resolved shadows %d, decals %d (-1 unavailable, bounded prior samples). Shadows ready %d, observed %zu, unobserved %zu; decals ready %d, ordinary world %zu, unsupported %zu.\n",tick,resolved.ShadowTick,resolved.DecalTick,int(sample.ShadowsReady),sample.Shadows?sample.Shadows->size():0,sample.ShadowsUnobserved,int(sample.DecalsReady),sample.Decals?sample.Decals->size():0,sample.DecalsUnsupported);
-            if(resolved.DecalTick>=0)advancedfx::Message("Historical decal rejection breakdown: %s. Surviving ordinary world marks only; removed marks and unsupported types are not reconstructed.\n",sample.UnsupportedDecals.Describe().c_str());
+            if(resolved.DecalTick>=0)advancedfx::Message("Historical decal rejection breakdown: %s. Surviving ordinary and verified fading world marks only; removed marks, nonzero fade opacity and unsupported types are not reconstructed.\n",sample.UnsupportedDecals.Describe().c_str());
         }
         else advancedfx::Message("Surface tick %d: no bounded prior sample.\n",tick);
         std::size_t shadowFrames=0,decalFrames=0,nonemptyDecals=0;
