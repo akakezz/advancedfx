@@ -23,6 +23,15 @@ on:
       - 'AfxHookSource/Gui.cpp'
       - 'AfxHookSource/main.cpp'
       - 'AfxHookSource/MirvCommands.cpp'
+      - 'AfxHookSource/MirvCalcs.cpp'
+      - 'AfxHookSource/MirvCalcs.h'
+      - 'AfxHookSource/MaterialSystemHooks.cpp'
+      - 'AfxHookSource/MaterialSystemHooks.h'
+      - 'AfxHookSource/Tf2RenderPass.inl'
+      - 'AfxHookSource/Tf2SceneSurfaces.inl'
+      - 'shared/SceneCache.h'
+      - 'shared/*Particle*.h'
+      - 'shared/SceneSurfaceHistory.h'
       - 'tests/cinematic/**'
       - '.github/workflows/camera-transitions.yml'
   workflow_dispatch:
@@ -39,6 +48,12 @@ jobs:
       - name: Check native particle position snapshot and bounded history
         if: github.ref == 'refs/heads/feature/scene-cache-2'
         run: c++ -std=c++17 -Wall -Wextra -I. tests/cinematic/native_particles_test.cpp -o /tmp/native-particle-tests && /tmp/native-particle-tests
+      - name: Check legacy particle capture, history and preview leases
+        if: github.ref == 'refs/heads/feature/scene-cache-2'
+        run: c++ -std=c++17 -Wall -Wextra -I. tests/cinematic/legacy_particles_test.cpp -o /tmp/legacy-particle-tests && /tmp/legacy-particle-tests
+      - name: Check historical surface history and identity
+        if: github.ref == 'refs/heads/feature/scene-cache-2'
+        run: c++ -std=c++17 -Wall -Wextra -I. tests/cinematic/test_scene_surface_history.cpp -o /tmp/scene-surface-tests && /tmp/scene-surface-tests
       - name: Check bounded particle event journal and historical control points
         if: github.ref == 'refs/heads/feature/scene-cache-2'
         run: c++ -std=c++17 -Wall -Wextra -I. tests/cinematic/effects_probe_test.cpp -o /tmp/effects-probe-tests && /tmp/effects-probe-tests
