@@ -1422,6 +1422,7 @@ __declspec(naked)  void CAfxBaseClientDll::LevelInitPostEntity()
 //__declspec(naked) 
 void CAfxBaseClientDll::LevelShutdown(void)
 { // NAKED_JMP_CLASSMEMBERIFACE_FN(CAfxBaseClientDll, m_Parent, 7)
+	Mirv_Tf2_SceneAssetResidency(false);
 	g_AfxStreams.LevelShutdown();
 
 #if AFX_SHADERS_CSGO

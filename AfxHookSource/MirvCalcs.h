@@ -506,6 +506,9 @@ void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetic
 	std::vector<MirvTf2SceneEntity> &out, bool generic = false);
 void Mirv_Tf2_InstallSceneStudioState(void *studio);
 void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued references remain pinned.
+void Mirv_Tf2_SceneAssetResidency(bool enabled); // Engine thread only.
+void Mirv_Tf2_ClearSceneResidentAssets();
+void Mirv_Tf2_SceneAssetStatus(unsigned &resident,unsigned long long &hits,unsigned long long &adds);
 
 // Engine-thread polling; worker callbacks never call MDL/material APIs.
 void Mirv_Tf2_SceneRenderFrame();

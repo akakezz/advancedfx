@@ -11083,6 +11083,46 @@ static std::atomic<unsigned> g_SceneOutstanding{0}, g_SceneOutstandingPeak{0};
 // Two tool callbacks and multiple queued frames may be outstanding at once.
 // Keep a hard bound, but allow headroom for broad scenes and gib bursts.
 static constexpr unsigned SceneMaxOutstanding = 2048;
+// Preview-only residency: retain one FindMDL reference per validated asset.
+// Header and hardware pointers are still reacquired/validated for every draw;
+// existing per-draw locks and queue retirement are completely independent.
+static bool g_SceneAssetResidency=false;
+static void *g_SceneResidentCache=nullptr;
+static std::map<std::string,unsigned short> g_SceneResidentAssets;
+static unsigned long long g_SceneResidentHits=0,g_SceneResidentAdds=0;
+void Mirv_Tf2_ClearSceneResidentAssets()
+{
+    if(g_SceneResidentCache&&!g_SceneResidentAssets.empty()){
+        SceneInterfaceCall<void>(g_SceneResidentCache,25);
+        for(const auto &row:g_SceneResidentAssets)
+            SceneInterfaceCall<int,unsigned short>(g_SceneResidentCache,8,row.second);
+        SceneInterfaceCall<void>(g_SceneResidentCache,26);
+    }
+    g_SceneResidentAssets.clear();g_SceneResidentCache=nullptr;
+}
+void Mirv_Tf2_SceneAssetResidency(bool enabled)
+{
+    g_SceneAssetResidency=enabled;
+    if(!enabled)Mirv_Tf2_ClearSceneResidentAssets();
+}
+void Mirv_Tf2_SceneAssetStatus(unsigned &resident,unsigned long long &hits,unsigned long long &adds)
+{
+    resident=static_cast<unsigned>(g_SceneResidentAssets.size());hits=g_SceneResidentHits;adds=g_SceneResidentAdds;
+}
+static void SceneKeepAsset(void *cache,const std::string &name,unsigned short handle)
+{
+    if(!g_SceneAssetResidency)return;
+    // Called while holding this cache's existing MDL lock. A changed interface
+    // is never dereferenced here; level shutdown retires the old references.
+    if(g_SceneResidentCache&&g_SceneResidentCache!=cache)return;
+    auto found=g_SceneResidentAssets.find(name);
+    if(found!=g_SceneResidentAssets.end()){if(found->second==handle)++g_SceneResidentHits;return;}
+    if(g_SceneResidentAssets.size()>=256)return;
+    const auto pinned=SceneInterfaceCall<unsigned short,const char *>(cache,6,name.c_str());
+    if(pinned==0xffff)return;
+    if(pinned!=handle){SceneInterfaceCall<int,unsigned short>(cache,8,pinned);return;}
+    g_SceneResidentCache=cache;g_SceneResidentAssets.emplace(name,pinned);++g_SceneResidentAdds;
+}
 static void SceneReleaseResources(SceneRetirement *data)
 {
 	if (data->HeaderLocked)
@@ -11739,6 +11779,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached pose does not match the loaded model asset, or hardware data is unavailable.";
 		return false;
 	}
+	if(textured)SceneKeepAsset(cache,pose->ModelInfo->Name,handle);
 	// Allocate through studio's render context so queued rendering owns the
 	// matrix lifetime. Stack matrices and live renderable pointers are not passed.
 	auto matrices = SceneInterfaceCall<SOURCESDK::matrix3x4_t *, int>(studio, 22, count);
@@ -11824,6 +11865,7 @@ void Mirv_Tf2_SceneRenderStatus(unsigned &outstanding, unsigned &peak)
 }
 void Mirv_Tf2_ReleaseSceneMaterials()
 {
+	Mirv_Tf2_SceneAssetResidency(false);
 	for (auto &material : g_SceneMaterials)
 		if (void *value = std::exchange(material, nullptr))
 			SceneInterfaceCall<void>(value, 13);

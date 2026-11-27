@@ -148,7 +148,7 @@ void Draw(void*,void*results,const SceneStudioInfo&info,SOURCESDK::matrix3x4_t*b
  assert(results==nullptr&&info.Header==fixture.Header&&info.Hardware==&fixture&&info.Body==fixture.Body);
  assert(info.ClientEntity==nullptr&&info.Decals==nullptr&&info.ColorMeshes==nullptr&&info.Lod==0);
  const bool textured=info.AmbientCube[0][0]>.5f;if(textured){assert(info.Skin==1);assert(g_SceneStudioState.Alpha>=0&&g_SceneStudioState.Color[0]>=0&&g_SceneStudioState.Ambient3[0]==.55f&&g_SceneStudioState.LightCount==0);}
- assert(flex==nullptr&&delayed==nullptr&&flags==(0x04|0x20|(fixture.Override||textured?0:0x80)));assert(fixture.Locks==1&&fixture.Refs>=1&&fixture.HeaderLocks==fixture.Refs);
+ assert(flex==nullptr&&delayed==nullptr&&flags==(0x04|0x20|(fixture.Override||textured?0:0x80)));assert(fixture.Locks==1&&fixture.Refs>=1&&fixture.HeaderLocks==fixture.Refs-int(g_SceneResidentAssets.size()));
  // Match Source's studio draw: ColorModulate replaces $color, even on
  // an override material, before the shader multiplies it by $color2.
  if(fixture.Override){auto&m=*static_cast<Fixture::Material*>(fixture.Override);m.Modulation={1,1,1};for(int i=0;i<3;++i)fixture.DrawColor[i]=m.Modulation[i]*m.Tint[i];}
@@ -217,7 +217,11 @@ int main(){
  fixture.Put(224,2);entity.Skin=1;g_SceneStudioStateInstalled=true;g_SceneStudioState.Color[0]=.2f;g_SceneStudioState.Alpha=.3f;g_SceneStudioState.AmbientSlot=16;g_SceneStudioState.Ambient4[0]=.12f;g_SceneStudioState.LightCount=1;g_SceneStudioState.Lights[0][0]=.7f;
  assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true)&&!fixture.Override&&status.find("isolated neutral lighting")!=std::string::npos);
  assert(g_SceneStudioState.Color[0]==.2f&&g_SceneStudioState.Alpha==.3f&&g_SceneStudioState.AmbientSlot==16&&g_SceneStudioState.Ambient4[0]==.12f&&g_SceneStudioState.LightCount==1&&g_SceneStudioState.Lights[0][0]==.7f);
- ConsumeRenderQueue();entity.HasModulation=true;entity.Modulation={.25f,.5f,.75f,.5f};assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));assert(g_SceneStudioState.Color[0]==.2f&&g_SceneStudioState.Alpha==.3f);ConsumeRenderQueue();entity.HasModulation=false;entity.Skin=-1;g_SceneStudioStateInstalled=false;
+ ConsumeRenderQueue();entity.HasModulation=true;entity.Modulation={.25f,.5f,.75f,.5f};assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));assert(g_SceneStudioState.Color[0]==.2f&&g_SceneStudioState.Alpha==.3f);ConsumeRenderQueue();entity.HasModulation=false;
+  Mirv_Tf2_SceneAssetResidency(true);assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));ConsumeRenderQueue();assert(fixture.Refs==1&&fixture.HeaderLocks==0&&g_SceneResidentAssets.size()==1);
+  assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));ConsumeRenderQueue();assert(fixture.Refs==1&&fixture.HeaderLocks==0&&g_SceneResidentHits==1);
+  assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));Mirv_Tf2_SceneAssetResidency(false);assert(fixture.Refs==1&&fixture.HeaderLocks==1&&g_SceneResidentAssets.empty());ConsumeRenderQueue();assert(fixture.Refs==0&&fixture.HeaderLocks==0);
+  entity.Skin=-1;g_SceneStudioStateInstalled=false;
  // A slow or discarded render queue retains ownership without unbounded growth.
  for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
  assert(!Mirv_Tf2_DrawScenePose(entity,status));unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);assert(pending==SceneMaxOutstanding&&peak==SceneMaxOutstanding);

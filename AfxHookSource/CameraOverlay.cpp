@@ -120,6 +120,7 @@ struct ScenePerfCounters {
 static ScenePerfCounters g_ScenePerf;
 static bool g_SceneMainViewOnly=false; // optional until skybox fidelity is checked
 static bool g_ScenePreviewCull=false; // opt-in until animated bounds/edge coverage verified
+static bool g_SceneKeepAssets=true; // bounded preview-only references
 static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
@@ -618,6 +619,7 @@ void SceneCacheFrame(bool capture)
 	{
 		Mirv_Tf2_SceneRenderFrame();
         SceneBenchFrame();
+        Mirv_Tf2_SceneAssetResidency(g_SceneKeepAssets&&g_ScenePreview&&g_SceneDrawModels.load()&&g_SceneRenderSnapshot&&g_VEngineClient&&g_VEngineClient->IsPlayingDemo()&&!g_VEngineClient->IsSkippingDemo()&&!g_VEngineClient->IsDrawingLoadingImage()&&SceneCanDrawModels());
         Mirv_Tf2_SetSurfaceObservation(g_SceneSurfaceCapture&&g_SceneRecord&&!g_ScenePreview&&g_VEngineClient&&g_VEngineClient->IsPlayingDemo()&&!g_VEngineClient->IsSkippingDemo()&&!g_VEngineClient->IsDrawingLoadingImage());
         if(std::exchange(g_SceneLegacyAuditPending,false)) {
             int liveTick=-1;
@@ -2105,12 +2107,15 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"reset"))g_ScenePerf={};
         else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"mainOnly")&&parseInteger(3,value)&&(value==0||value==1))g_SceneMainViewOnly=value!=0;
         else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"cull")&&parseInteger(3,value)&&(value==0||value==1))g_ScenePreviewCull=value!=0;
-        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>]\n");return;}
+        else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"residency")&&parseInteger(3,value)&&(value==0||value==1))g_SceneKeepAssets=value!=0;
+        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>]\n");return;}
         advancedfx::Message("Scene cache CPU timing (not GPU completion), cursor %.3f ticks; capture %d, preview %d.\n",g_SceneCursor/SceneTickInterval(),int(g_SceneRecord),int(g_ScenePreview));
         g_ScenePerf.Sample.Print("Historical model sampling");
         g_ScenePerf.ModelDraw.Print("Studio replay submission");
         g_ScenePerf.MainModelDraw.Print("Studio main view");g_ScenePerf.OtherModelDraw.Print("Studio other views");g_ScenePerf.UnknownModelDraw.Print("Studio unverified view");
         g_ScenePerf.MainParticleDraw.Print("Native particle main view");
+        unsigned resident=0;unsigned long long hits=0,adds=0;Mirv_Tf2_SceneAssetStatus(resident,hits,adds);
+        advancedfx::Message("Model residency %d; %u/256 retained asset references; %llu reuse hits, %llu additions (session).\n",int(g_SceneKeepAssets),resident,hits,adds);
         advancedfx::Message("Preview frustum cull %d; rejected model submissions %llu.\n",int(g_ScenePreviewCull),g_ScenePerf.ModelsCulled);
         advancedfx::Message("Main-only studio %d; verified non-main skips: studio %llu, particles %llu. Last studio failure tick %d, asset %s.\n",int(g_SceneMainViewOnly),g_ScenePerf.NonMainModelSkipped,g_ScenePerf.NonMainParticleSkipped,g_ScenePerf.LastModelFailureTick,g_ScenePerf.LastModelFailureAsset.empty()?"none":g_ScenePerf.LastModelFailureAsset.c_str());
         g_ScenePerf.ParticleAcquire.Print("Particle snapshot lookup/decode");
@@ -2553,7 +2558,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
-		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|bench [report|cancel]] - CPU replay timings and failure diagnostics.\n"
+		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|bench [report|cancel]] - CPU replay timings and failure diagnostics.\n"
             "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
