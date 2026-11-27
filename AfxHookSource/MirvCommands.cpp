@@ -349,12 +349,12 @@ bool Mirv_Tf2_SceneMainProjection(float (&matrix)[4][4])
 }
 // Isolation is an opt-in ordinary-view experiment. Do not change the cvar
 // unless the existing native replay path is eligible on the verified build.
-bool Mirv_Tf2_ParticleIsolationReady()
+bool Mirv_Tf2_SceneStationaryReady()
 {
 #ifdef _WIN64
     if(g_SourceSdkVer!=SourceSdkVer_TF2||!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||
        g_VEngineClient->IsSkippingDemo()||MirvCampathPreview_IsSeeking()||
-       g_VEngineClient->IsDrawingLoadingImage()||!MaterialSystem_IsImmediate())return false;
+       g_VEngineClient->IsDrawingLoadingImage())return false;
     if(!g_VEngineClient->IsPaused()) {
         auto *demo=g_VEngineClient->GetDemoInfoEx();
         if(!demo||demo->GetDemoPlaybackTimeScale()!=0.0f)return false;
@@ -381,6 +381,7 @@ bool Mirv_Tf2_ParticleIsolationReady()
     return false;
 #endif
 }
+bool Mirv_Tf2_ParticleIsolationReady(){return MaterialSystem_IsImmediate()&&Mirv_Tf2_SceneStationaryReady();}
 bool Mirv_Tf2_LiveParticleVisibility(float &value,bool write)
 {
     return Mirv_Tf2_SceneDrawVisibility("r_drawparticles",value,write);

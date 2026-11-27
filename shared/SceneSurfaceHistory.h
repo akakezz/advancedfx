@@ -71,6 +71,41 @@ struct Decal {
 inline bool ShouldSubmitDetached(bool surviving,bool liveVisible,bool gated){
     return !surviving||!liveVisible||gated;
 }
+// Native queued gathering has two formats: a plain list of decal pointers
+// or a sorted list with zero (outer group) and 0xffffffff (material run)
+// delimiters. The consumer looks ahead from a material marker to a real
+// record, so never leave an empty material run after filtering.
+template<class Hide>
+bool FilterQueuedDecalTail(const std::vector<std::uint64_t> &input,bool sorted,Hide hide,
+                          std::vector<std::uint64_t> &output,std::size_t &removed){
+    output.clear();removed=0;
+    if(input.size()>65536)return false;
+    constexpr std::uint64_t marker=0xffffffffu;
+    std::vector<std::uint64_t> next;next.reserve(input.size());
+    std::size_t hidden=0;
+    bool outer=false,run=false,runHasInput=false,outerEmitted=false,runEmitted=false;
+    for(auto address:input){
+        if(sorted&&(address==0||address==marker)){
+            // The native sorted collector can emit empty outer groups but
+            // an empty material run is not a layout we can safely rewrite.
+            if(run&&!runHasInput)return false;
+            if(address==0){outer=true;run=false;outerEmitted=false;runEmitted=false;}
+            else {if(!outer)return false;run=true;runEmitted=false;runHasInput=false;}
+            continue;
+        }
+        if(address<0x10000||address==marker||(sorted&&!run))return false;
+        runHasInput=true;
+        if(hide(address)){++hidden;continue;}
+        if(sorted){
+            if(!outerEmitted){next.push_back(0);outerEmitted=true;}
+            if(!runEmitted){next.push_back(marker);runEmitted=true;}
+        }
+        next.push_back(address);
+    }
+    if(sorted&&run&&!runHasInput)return false;
+    if(hidden==0)next=input; // preserve even harmless empty outer groups
+    output.swap(next);removed=hidden;return true;
+}
 // Read-only adapter for the exact engine's opaque-world render-list
 // buckets. Only current-view receiver indices are returned, never pointers.
 // A failed or incomplete walk cannot authorize detached submissions.

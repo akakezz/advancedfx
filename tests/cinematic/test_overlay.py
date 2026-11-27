@@ -45,6 +45,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
 int sceneNativeView=-1;int Mirv_Tf2_SceneRenderViewId(){return sceneNativeView;}
 bool Mirv_Tf2_SceneMainProjection(float (&matrix)[4][4]){return false;}
 bool sceneParticleIsolationReady=true;bool Mirv_Tf2_ParticleIsolationReady(){return sceneParticleIsolationReady;}
+bool Mirv_Tf2_SceneStationaryReady(){return true;}
 float benchQueueMode=0;bool Mirv_Tf2_SceneDrawVisibility(const char*,float &v,bool write){if(write)benchQueueMode=v;else v=benchQueueMode;return true;}
 advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){advancedfx::SceneSurfaces::Frame f;f.Tick=tick;return f;}void Mirv_Tf2_ResetSurfaces(){}void Mirv_Tf2_SetSurfaceObservation(bool){}unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame&,unsigned,std::string&){return 0;}std::string Mirv_Tf2_EndSurfaceReplay(){return {};}
 #include "shared/PlayerRepair.h"
@@ -1270,6 +1271,11 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   SceneBenchApply(3,std::chrono::steady_clock::now());check(SceneBenchPhaseCount()==7&&!g_SceneNativeParticleReplay&&!g_SceneHistoricalShadows&&!g_SceneHideDecals&&g_SceneBatchStudio&&g_SceneBatchQueued,"Models-only diagnostic keeps live effects and tests queued batching");
   SceneBenchApply(4,std::chrono::steady_clock::now());check(!g_SceneBatchStudio,"Models-only benchmark compares original studio path");
   SceneBenchApply(6,std::chrono::steady_clock::now());check(g_SceneActorCull&&g_ScenePreviewCull,"Models benchmark measures actor-group culling separately");
+  {const auto saved=b.Immediate;const auto savedDecals=b.Decals;const auto savedQueued=g_SceneQueuedDecals;
+   b.Immediate=false;b.Decals=true;g_SceneQueuedDecals=true;
+   SceneBenchApply(6,std::chrono::steady_clock::now());check(SceneBenchPhaseCount()==8&&g_SceneActorCull&&!g_SceneHistoricalDecals,"queued model-only control retains live decals");
+   SceneBenchApply(7,std::chrono::steady_clock::now());check(g_SceneActorCull&&g_SceneHistoricalDecals&&!g_SceneNativeParticleReplay&&!g_SceneHistoricalShadows,"queued visibility comparison isolates decal gating");
+   b.Immediate=saved;b.Decals=savedDecals;g_SceneQueuedDecals=savedQueued;}
   SceneBenchStop("models fixture complete");SceneCacheFrame(false);
   b.Active=true;b.AutoQueue=true;b.OriginalQueue=b.OwnedQueue=0;benchQueueMode=0;
   SceneBenchSwitch(2,2,std::chrono::steady_clock::now());check(b.Switching&&!g_ScenePreview,"Queue transition uses live view");

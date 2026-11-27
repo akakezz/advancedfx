@@ -115,6 +115,21 @@ int main(){
     const auto kept=uncertain.Bytes;assert(!uncertain.Append(corrupt)&&uncertain.Bytes==kept&&uncertain.At(51)->DecalSlotUncertain(9));
     unknown.Tick=52;unknown.UncertainDecalSlots.reset();assert(uncertain.Append(unknown)&&!uncertain.ResolvePreview(52).Value.DecalSlotUncertain(9));
     uncertain.Clear();assert(!uncertain.Bytes);
+    // Queued native pointer list compaction must not change the prefix of
+    // earlier categories, nor leave a material marker without a record.
+    constexpr std::uint64_t mark=0xffffffffu,A=0x10000,B=0x20000,C=0x30000,D=0x40000;
+    std::vector<std::uint64_t> filtered;std::size_t removed=0;
+    auto hideA=[](std::uint64_t p){return p==A;};
+    assert(FilterQueuedDecalTail({A,B,A,C},false,hideA,filtered,removed)&&removed==2&&(filtered==std::vector<std::uint64_t>{B,C}));
+    assert(FilterQueuedDecalTail({0,mark,A,mark,B,C,0,mark,A,0,mark,D},true,hideA,filtered,removed)&&removed==2&&
+           (filtered==std::vector<std::uint64_t>{0,mark,B,C,0,mark,D}));
+    assert(FilterQueuedDecalTail({0,mark,A},true,hideA,filtered,removed)&&removed==1&&filtered.empty());
+    assert(FilterQueuedDecalTail({0,0,mark,B,0},true,hideA,filtered,removed)&&removed==0&&(filtered==std::vector<std::uint64_t>{0,0,mark,B,0}));
+    assert(!FilterQueuedDecalTail({0,mark,A,mark},true,hideA,filtered,removed)&&filtered.empty()&&!removed);
+    assert(!FilterQueuedDecalTail({0,mark,0,mark,B},true,hideA,filtered,removed));
+    assert(!FilterQueuedDecalTail({mark,B},true,hideA,filtered,removed));
+    assert(!FilterQueuedDecalTail({0,B},true,hideA,filtered,removed));
+    assert(!FilterQueuedDecalTail({A,0},false,hideA,filtered,removed));
     Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
     sh.Texture=ShadowTexture::Simple;sh.UV={.25f,.25f,.5f,.5f};
     assert(sh.HasSimpleTexture()&&sh.ReplayTextureRect()==sh.UV);

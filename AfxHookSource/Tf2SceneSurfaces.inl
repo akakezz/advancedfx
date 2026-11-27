@@ -166,6 +166,16 @@ static bool g_SurfaceDecalHookInstalled=false;
 static thread_local bool g_SurfaceDecalGate=false;
 struct DecalGate {SurfaceAddress Surface=0,Material=0;std::uint16_t Slot=0;};
 static thread_local std::map<SurfaceAddress,DecalGate> g_SurfaceHiddenDecals;
+// Queued visibility uses only the engine's producer-side gather vector.
+// Never pass a cache pointer, temporary record or historical geometry to
+// the native queue. Fading marks retain their native lifecycle bookkeeping.
+using DecalGatherFn=void(*)(void*,int,int,void*);
+static DecalGatherFn g_SurfaceGatherPlain=nullptr,g_SurfaceGatherSorted=nullptr;
+static bool g_SurfaceGatherInstalled=false;
+static thread_local bool g_SurfaceQueueRequested=false;
+static thread_local int g_SurfaceQueuedGroup=-1;
+static thread_local std::map<SurfaceAddress,LiveDecal> g_SurfaceQueuedHidden;
+static std::size_t g_SurfaceQueuedRemoved=0,g_SurfaceQueuedRejected=0,g_SurfaceQueuedFades=0,g_SurfaceQueuedGroups=0;
 static thread_local std::size_t g_SurfaceDecalDrawSkips=0;
 // Observe only ordinary immediate main-world geometry dispatch. Native
 // addresses here are transient observations, discarded at capture end.
@@ -267,6 +277,119 @@ static void *SurfaceDecalGeometryHook(void *scratch,void *decal,void *surface,vo
     if(g_SurfaceGeometryGroup>=0&&GetCurrentThreadId()==g_SurfaceDecalThread&&g_SurfaceCaptureArmed&&!g_SurfaceReplayActive)
         SurfaceObserveDecal(geometry,decal,surface,material);
     return geometry;
+}
+// Only the exact verified scratch vector can be edited, and only while
+// the native producer owns it. Require committed writable pages across
+// the entire destination; never attempt partial system writes.
+static bool SurfaceWritable(SurfaceAddress address,std::size_t bytes){
+    if(!bytes)return true;
+    const auto max=(std::numeric_limits<SurfaceAddress>::max)();
+    if(address<0x10000||address>max-bytes)return false;
+    const auto end=address+bytes;
+    while(address<end){
+        MEMORY_BASIC_INFORMATION mbi{};
+        if(!VirtualQuery(reinterpret_cast<const void*>(address),&mbi,sizeof(mbi))||mbi.State!=MEM_COMMIT||
+           (mbi.Protect&(PAGE_GUARD|PAGE_NOACCESS))||
+           !(mbi.Protect&(PAGE_READWRITE|PAGE_WRITECOPY|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY)))return false;
+        const auto start=reinterpret_cast<SurfaceAddress>(mbi.BaseAddress);
+        if(start>address||start>max-mbi.RegionSize||start+mbi.RegionSize<=address)return false;
+        address=start+mbi.RegionSize;
+    }
+    return true;
+}
+struct SurfaceGatherVector {
+    SurfaceAddress Data=0;
+    int Capacity=0,Grow=0,Count=0,Padding=0;
+    SurfaceAddress Elements=0;
+};
+static_assert(sizeof(SurfaceGatherVector)==32&&offsetof(SurfaceGatherVector,Count)==16&&offsetof(SurfaceGatherVector,Elements)==24,"native gather vector ABI");
+static bool SurfaceGatherRead(SurfaceAddress address,SurfaceGatherVector &v){
+    return SurfaceGet(address,v)&&v.Count>=0&&v.Capacity>=v.Count&&v.Capacity<=262144&&v.Count<=65536&&
+        (!v.Count||(v.Data>=0x10000&&v.Data==v.Elements&&v.Data<=(std::numeric_limits<SurfaceAddress>::max)()-std::uint64_t(v.Count)*8));
+}
+static bool SurfaceQueuedIdentity(SurfaceAddress address){
+    auto it=g_SurfaceQueuedHidden.find(address);
+    if(it==g_SurfaceQueuedHidden.end())return false;
+    const auto &live=it->second;
+    DecalObservation o;o.Object=address;o.Surface=live.Surface;o.Material=live.Material;
+    if(!SurfaceGet(address,o.Raw))return false;
+    SurfaceAddress attachment=0,receiver=0,material=0;std::uint16_t flags=0;
+    std::memcpy(&attachment,o.Raw.data()+0x58,8);std::memcpy(&receiver,o.Raw.data()+0x10,8);
+    std::memcpy(&material,o.Raw.data()+0x18,8);std::memcpy(&flags,o.Raw.data()+0x68,2);
+    return !attachment&&receiver==live.Surface&&material==live.Material&&!(flags&0x3100)&&SurfaceObservationMatches(o,live);
+}
+static void SurfaceGather(DecalGatherFn original,bool sorted,SurfaceAddress caller,void *context,int group,int category,void *vector){
+    const auto base=g_SurfaceDecalBase,address=reinterpret_cast<SurfaceAddress>(vector);
+    const bool callsite=sorted?(category==0?caller==base+0x116bb5:category==1?caller==base+0x116bd3:category==2&&caller==base+0x116bf4):
+                               (category==0?caller==base+0x116bfb:category==1?caller==base+0x116c19:category==2&&caller==base+0x116c3a);
+    SurfaceGatherVector before,after;
+    const bool eligible=GetCurrentThreadId()==g_SurfaceDecalThread&&g_SurfaceQueuedGroup==group&&group>=0&&group<3&&
+        callsite&&address==base+0x6c55b8&&!g_SurfaceQueuedHidden.empty()&&SurfaceGatherRead(address,before);
+    original(context,group,category,vector);
+    if(!eligible)return;
+    // The original collector may grow its allocation. Re-read the header
+    // and copy just this category's newly appended tail. Prior categories
+    // were already counted by the native dispatcher and must stay intact.
+    NativeWorld world;
+    if(!SurfaceWorld(base,world)||!SurfaceSameWorld(world,g_SurfaceWorld)||!SurfaceGatherRead(address,after)||after.Count<before.Count){++g_SurfaceQueuedRejected;return;}
+    if(after.Count==before.Count)return;
+    const auto tail=after.Data+std::uint64_t(before.Count)*8;
+    std::vector<SurfaceAddress> input(after.Count-before.Count),output;
+    if(!SurfaceRead(tail,input.data(),input.size()*8)){++g_SurfaceQueuedRejected;return;}
+    std::size_t removed=0;
+    if(!FilterQueuedDecalTail(input,sorted,SurfaceQueuedIdentity,output,removed)){++g_SurfaceQueuedRejected;return;}
+    if(!removed)return;
+    SurfaceGatherVector check;
+    if(output.size()>input.size()||!SurfaceGatherRead(address,check)||check.Data!=after.Data||check.Elements!=after.Elements||
+       check.Count!=after.Count||check.Capacity!=after.Capacity||!SurfaceWritable(address+16,sizeof(int))||
+       !SurfaceWritable(tail,output.size()*8)){++g_SurfaceQueuedRejected;return;}
+    if(!output.empty())std::memcpy(reinterpret_cast<void*>(tail),output.data(),output.size()*8);
+    const int count=before.Count+static_cast<int>(output.size());
+    std::memcpy(reinterpret_cast<void*>(address+16),&count,sizeof(count));
+    g_SurfaceQueuedRemoved+=removed;
+}
+static void SurfaceGatherPlainHook(void *context,int group,int category,void *vector){
+    SurfaceGather(g_SurfaceGatherPlain,false,reinterpret_cast<SurfaceAddress>(_ReturnAddress()),context,group,category,vector);
+}
+static void SurfaceGatherSortedHook(void *context,int group,int category,void *vector){
+    SurfaceGather(g_SurfaceGatherSorted,true,reinterpret_cast<SurfaceAddress>(_ReturnAddress()),context,group,category,vector);
+}
+static bool SurfaceQueuedContext(void *context){
+    const auto base=reinterpret_cast<SurfaceAddress>(GetModuleHandleA("materialsystem.dll"));
+    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};SurfaceAddress vt=0,slot=0;
+    return base&&SurfaceGet(base,dos)&&dos.e_magic==IMAGE_DOS_SIGNATURE&&dos.e_lfanew>0&&dos.e_lfanew<=0x1000&&
+        SurfaceGet(base+dos.e_lfanew,nt)&&nt.Signature==IMAGE_NT_SIGNATURE&&nt.FileHeader.Machine==IMAGE_FILE_MACHINE_AMD64&&
+        nt.FileHeader.TimeDateStamp==0x6ac56a08&&nt.OptionalHeader.SizeOfImage==0x141000&&
+        SurfaceGet(reinterpret_cast<SurfaceAddress>(context),vt)&&vt==base+0xb6c28&&SurfaceGet(vt+0x498,slot)&&slot==base+0x2c4a0&&
+        SurfaceMatch(base,0x2c4a0,{0x48,0x8d,0x81,0xa8,0x03,0,0,0xc3});
+}
+static bool SurfaceQueuedGatherHooks(SurfaceAddress base){
+    if(g_SurfaceGatherInstalled)return base==g_SurfaceDecalBase&&GetCurrentThreadId()==g_SurfaceDecalThread;
+    if(!SurfaceMatch(base,0x116b23,{0xff,0x90,0x98,0x04,0,0,0x4c,0x8b,0xf0})||
+       !SurfaceMatch(base,0x11c670,{0x48,0x8b,0xc4,0x53,0x48,0x83,0xec,0x50,0x4c,0x63,0x15,0x29,0x8e,0x58,0})||
+       !SurfaceMatch(base,0x11c749,{0xff,0x43,0x10,0x8b,0x43,0x10,0x48,0x8b,0x0b,0x2b,0xc6,0xff,0xc8,0x48,0x89,0x4b,0x18})||
+       !SurfaceMatch(base,0x11c775,{0x48,0x8b,0x03,0x48,0x89,0x2c,0xf0})||
+       !SurfaceMatch(base,0x11d220,{0x4c,0x8b,0xdc,0x53,0x55,0x48,0x83,0xec,0x58,0x48,0x63,0x05,0x78,0x82,0x58,0})||
+       !SurfaceMatch(base,0x11d2d7,{0x48,0x8b,0x03,0x48,0xc7,0x04,0xf8,0,0,0,0})||
+       !SurfaceMatch(base,0x11d398,{0x48,0x8b,0x03,0xba,0xff,0xff,0xff,0xff,0x48,0x89,0x14,0xf0})||
+       !SurfaceMatch(base,0x11d3f9,{0x48,0x8b,0x03,0x48,0x89,0x2c,0xf0})||
+       !SurfaceMatch(base,0x116bb0,{0xe8,0x6b,0x66,0,0})||!SurfaceMatch(base,0x116bce,{0xe8,0x4d,0x66,0,0})||
+       !SurfaceMatch(base,0x116bef,{0xe8,0x2c,0x66,0,0})||!SurfaceMatch(base,0x116bf6,{0xe8,0x75,0x5a,0,0})||
+       !SurfaceMatch(base,0x116c14,{0xe8,0x57,0x5a,0,0})||!SurfaceMatch(base,0x116c35,{0xe8,0x36,0x5a,0,0})||
+       !SurfaceMatch(base,0x116c3a,{0x8b,0x15,0x88,0xe9,0x5a,0,0x44,0x8b,0xfa,0x45,0x2b,0xfc,0x45,0x2b,0xfd,0x85,0xd2})||
+       !SurfaceMatch(base,0x116c64,{0x4c,0x63,0x05,0x5d,0xe9,0x5a,0,0x48,0x8b,0xc8,0x48,0x8b,0x15,0x43,0xe9,0x5a,0})||
+       !SurfaceMatch(base,0x116d02,{0xc7,0x05,0xbc,0xe8,0x5a,0,0,0,0,0})||
+       !SurfaceMatch(base,0x11d670,{0x48,0x8b,0x1c,0xc1,0x41,0xb8,0xff,0xff,0xff,0xff,0x48,0x85,0xdb,0x0f,0x84,0x75,0x09,0,0,0x49,0x3b,0xd8,0x0f,0x84,0x6c,0x09,0,0})||
+       !SurfaceMatch(base,0x11e1cb,{0x48,0xff,0xc0,0x48,0x3b,0xc6,0x74,0x22,0x4c,0x8b,0x2c,0xc1,0x4d,0x85,0xed}))return false;
+    g_SurfaceGatherPlain=reinterpret_cast<DecalGatherFn>(base+0x11c670);
+    g_SurfaceGatherSorted=reinterpret_cast<DecalGatherFn>(base+0x11d220);
+    if(DetourTransactionBegin()!=NO_ERROR)return false;
+    LONG err=DetourUpdateThread(GetCurrentThread());
+    if(err==NO_ERROR)err=DetourAttach(reinterpret_cast<PVOID*>(&g_SurfaceGatherPlain),reinterpret_cast<PVOID>(SurfaceGatherPlainHook));
+    if(err==NO_ERROR)err=DetourAttach(reinterpret_cast<PVOID*>(&g_SurfaceGatherSorted),reinterpret_cast<PVOID>(SurfaceGatherSortedHook));
+    if(err!=NO_ERROR){DetourTransactionAbort();return false;}
+    if(DetourTransactionCommit()!=NO_ERROR)return false;
+    g_SurfaceGatherInstalled=true;return true;
 }
 static bool SurfaceDecalHooks(SurfaceAddress base){
     if(g_SurfaceDecalHookInstalled)return base==g_SurfaceDecalBase&&GetCurrentThreadId()==g_SurfaceDecalThread;
@@ -483,7 +606,13 @@ static void SurfaceDecalDispatchHook(void *context,int group,float blend){
     // calls. Group 3 uses an optional translated water model matrix.
     const bool world=caller==0xe729d&&group>=0&&group<3&&GetCurrentThreadId()==g_SurfaceDecalThread&&
         (g_SurfaceCaptureArmed||g_SurfaceReplayActive)&&MaterialSystem_IsImmediate()&&Mirv_Tf2_SceneRenderViewId()==0;
-    const int old=g_SurfaceGeometryGroup;
+    const int old=g_SurfaceGeometryGroup,oldQueued=g_SurfaceQueuedGroup;
+    g_SurfaceQueuedGroup=-1;
+    if(caller==0xe729d&&group>=0&&group<3&&GetCurrentThreadId()==g_SurfaceDecalThread&&
+       g_SurfaceQueueRequested&&g_SurfaceReplayActive&&g_SurfaceDecalGate&&
+       Mirv_Tf2_SceneRenderViewId()==0&&SurfaceQueuedContext(context)){
+        g_SurfaceQueuedGroup=group;++g_SurfaceQueuedGroups;
+    }
     NativeWorld captureWorld;
     if(world&&g_SurfaceCaptureArmed&&!g_SurfaceReplayActive&&SurfaceWorld(base,captureWorld)&&SurfaceSameWorld(captureWorld,g_SurfaceWorld))g_SurfaceGeometryGroup=group;
     else g_SurfaceGeometryGroup=-1;
@@ -497,7 +626,7 @@ static void SurfaceDecalDispatchHook(void *context,int group,float blend){
     g_SurfaceReplacementGates=replacements.empty()?nullptr:&replacements;
     g_SurfaceDecalDispatch(context,group,blend);
     g_SurfaceReplacementGates=previousGates;
-    g_SurfaceGeometryGroup=old;
+    g_SurfaceGeometryGroup=old;g_SurfaceQueuedGroup=oldQueued;
     if(!prepared.empty())SurfaceDrawPreparedDecals(base,context,blend,prepared);
 }
 static void SurfaceWorldDrawHook(void *list,int flags,float waterZ){
@@ -622,12 +751,18 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
     status="Historical surfaces unavailable or not eligible.";
 #ifdef _WIN64
     const auto base=SurfaceEngine();NativeWorld world;
-    if(!requested||!base||!Mirv_Tf2_ParticleIsolationReady()||!SurfaceWorld(base,world)||!SurfaceSameWorld(world,g_SurfaceWorld)||sample.World!=g_SurfaceGeneration||g_SurfaceReplayActive)return 0;
+    const bool immediate=MaterialSystem_IsImmediate();
+    if(!requested||!base||!Mirv_Tf2_SceneStationaryReady()||
+       (!immediate&&(!(requested&16)||!(requested&2)||!MaterialSystem_CanExecuteOnRenderThread()))||
+       !SurfaceWorld(base,world)||!SurfaceSameWorld(world,g_SurfaceWorld)||sample.World!=g_SurfaceGeneration||g_SurfaceReplayActive)return 0;
     unsigned active=0;std::ostringstream report;
+    g_SurfaceQueueRequested=false;g_SurfaceQueuedGroup=-1;g_SurfaceQueuedHidden.clear();
+    g_SurfaceQueuedRemoved=g_SurfaceQueuedRejected=g_SurfaceQueuedFades=g_SurfaceQueuedGroups=0;
+    if(!immediate)report<<"Queued experiment: only nonfading surviving decal visibility; removed geometry, opacity and historical shadows remain immediate-only. ";
     g_SurfacePendingDecals.clear();g_SurfaceDrawnGroups=0;
     g_SurfaceDecalsSubmitted=g_SurfaceDecalsRejected=g_SurfaceOpacitySubmitted=g_SurfaceOpacityNotObserved=0;
     g_SurfaceReceiverCulled=g_SurfaceReceiverUnknown=0;g_SurfaceCurrentWorldList=0;
-    if((requested&1)&&sample.ShadowsReady&&sample.Shadows&&g_SurfaceHooks&&GetCurrentThreadId()==g_SurfaceThread){
+    if(immediate&&(requested&1)&&sample.ShadowsReady&&sample.Shadows&&g_SurfaceHooks&&GetCurrentThreadId()==g_SurfaceThread){
         float visible=0;std::vector<ShadowSlot> slots;
         auto material=Mirv_Tf2_SceneDrawVisibility("r_shadows",visible,false)&&visible!=0?SurfaceSimpleShadowMaterial():nullptr;
         if(material&&ShadowSlots(g_SurfaceShadowManager,slots)){
@@ -666,10 +801,10 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
     }
     if(requested&2){
         if(!sample.DecalsReady||!sample.Decals)report<<"Historical decal capture unavailable: "<<DecalReadLabel(sample.DecalStatus)<<". ";
-        else if(!SurfaceDecalHooks(base))report<<"Decal geometry gate unavailable (ABI or installation). ";
+        else if(immediate?!SurfaceDecalHooks(base):!(SurfaceWorldDecalHooks(base)&&SurfaceQueuedGatherHooks(base)))report<<"Decal gate unavailable (ABI or installation). ";
         else {
             std::vector<LiveDecal> current;std::size_t unsupported=0;DecalRead status=DecalRead::NotRun;DecalCoverage coverage;
-            const bool detached=(requested&12)&&SurfaceWorldDecalHooks(base);
+            const bool detached=immediate&&(requested&12)&&SurfaceWorldDecalHooks(base);
             std::set<std::uint16_t> excludedSlots;
             if(ReadWorldDecals(base,world,current,unsupported,status,coverage,detached?&excludedSlots:nullptr)){
                 std::size_t matched=0,hidden=0,failed=0,fading=0,fadeUnknown=0,slotUnknown=0;
@@ -686,9 +821,13 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
                     if(!same||!it->Visible()){
                         // Use the pointers from the validated record; the hook
                         // still checks surface/material/slot before suppression.
-                        DecalGate gate;gate.Slot=v.Slot;gate.Surface=live.Surface;gate.Material=live.Material;
-                        if(g_SurfaceHiddenDecals.emplace(live.Object,gate).second)++hidden;
-                        else ++failed;
+                        if(!immediate){
+                            if(v.Fading()){++g_SurfaceQueuedFades;continue;}
+                            if(g_SurfaceQueuedHidden.emplace(live.Object,live).second)++hidden;else ++failed;
+                        }else{
+                            DecalGate gate;gate.Slot=v.Slot;gate.Surface=live.Surface;gate.Material=live.Material;
+                            if(g_SurfaceHiddenDecals.emplace(live.Object,gate).second)++hidden;else ++failed;
+                        }
                     }
                 }
                 std::size_t geometryMissing=0,excludedMissing=0,opacityPlanned=0,opacityUnavailable=0,removedPlanned=0;
@@ -709,7 +848,7 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
                 }
                 if(requested&4)report<<"Detached removed decals "<<(detached?"enabled":"guard unavailable")<<"; planned "<<removedPlanned<<"; missing geometry/bounded "<<geometryMissing<<"; unknown live slot "<<excludedMissing<<". ";
                 if(requested&8)report<<"Surviving opacity replacement "<<(detached?"enabled":"guard unavailable")<<"; planned "<<opacityPlanned<<"; unavailable "<<opacityUnavailable<<". ";
-                g_SurfaceDecalGate=true;active|=2;
+                g_SurfaceDecalGate=true;g_SurfaceQueueRequested=!immediate;active|=2;
                 report<<"Historical surviving decals "<<matched<<"/"<<sample.Decals->size()<<"; geometry gates "<<hidden<<"; missing "<<sample.Decals->size()-matched<<"; unsupported live "<<unsupported<<" ("<<coverage.Describe()<<"); rejected gates "<<failed<<"; live fading "<<fading<<"; unknown historical fades left live "<<fadeUnknown<<"; unsupported historical slots left live "<<slotUnknown<<". Unreplaced surviving marks retain live opacity. ";
             }else report<<"Live decal traversal failed: "<<DecalReadLabel(status)<<". ";
         }
@@ -722,9 +861,10 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
 }
 std::string Mirv_Tf2_EndSurfaceReplay(){
 #ifdef _WIN64
-    const bool gated=g_SurfaceDecalGate;
+    const bool gated=g_SurfaceDecalGate,queued=g_SurfaceQueueRequested;
     const auto decalSkips=g_SurfaceDecalDrawSkips;
-    g_SurfaceDecalGate=false;g_SurfaceHiddenDecals.clear();g_SurfaceDecalDrawSkips=0;
+    g_SurfaceDecalGate=false;g_SurfaceQueueRequested=false;g_SurfaceQueuedGroup=-1;g_SurfaceQueuedHidden.clear();
+    g_SurfaceHiddenDecals.clear();g_SurfaceDecalDrawSkips=0;
     if(!g_SurfaceReplayActive)return {};
     std::size_t failed=0;const auto base=SurfaceEngineModule();NativeWorld world;
     if(base&&SurfaceWorld(base,world)&&SurfaceSameWorld(world,g_SurfaceWorld)){
@@ -744,6 +884,7 @@ std::string Mirv_Tf2_EndSurfaceReplay(){
     g_SurfaceOwned.clear();g_SurfaceSavedBias.clear();g_SurfaceReplayActive=false;
     const auto pending=g_SurfacePendingDecals.size();g_SurfacePendingDecals.clear();
     return g_SurfaceReport+(gated?" Native decal geometry skips "+std::to_string(decalSkips)+".":"")+
+        (queued?" Queued world groups "+std::to_string(g_SurfaceQueuedGroups)+", filtered pointer submissions "+std::to_string(g_SurfaceQueuedRemoved)+", rejected gathers "+std::to_string(g_SurfaceQueuedRejected)+", fading candidates left native "+std::to_string(g_SurfaceQueuedFades)+".":"")+
         (pending?" Detached decal submissions "+std::to_string(g_SurfaceDecalsSubmitted)+"/"+std::to_string(pending)+", rejected "+std::to_string(g_SurfaceDecalsRejected)+", surviving opacity "+std::to_string(g_SurfaceOpacitySubmitted)+", surviving live geometry not gated "+std::to_string(g_SurfaceOpacityNotObserved)+", receiver culled decals "+std::to_string(g_SurfaceReceiverCulled)+", unknown receiver candidates "+std::to_string(g_SurfaceReceiverUnknown)+".":"")+
         " Scope cleanup warnings "+std::to_string(failed)+".";
 #else
