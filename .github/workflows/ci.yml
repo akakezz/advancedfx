@@ -63,6 +63,15 @@ jobs:
       - name: Stage x64 Source 1 DLL and symbols
         if: matrix.preset == 'x64-release'
         run: cmake --install build/x64-release --config Release --prefix build/scene-cache-ci --component x64-source1
+      - name: Stage matching Source 1 shader resources
+        if: matrix.preset == 'x64-release'
+        shell: pwsh
+        run: |
+          $dest = "build/scene-cache-ci/bin/resources/shaders"
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          foreach ($name in @("afx_line_vs20", "afx_line_ps20", "afx_drawtexture_ps20", "afx_pgldraw_vs20", "afx_pgldraw_ps20", "afx_depth_ps20")) {
+            Copy-Item "shaders/build/$name.acs" $dest -ErrorAction Stop
+          }
       - name: Upload x64 Source 1 replacement
         if: matrix.preset == 'x64-release'
         uses: actions/upload-artifact@v4
@@ -71,4 +80,5 @@ jobs:
           path: |
             build/scene-cache-ci/bin/x64/AfxHookSource.dll
             build/scene-cache-ci/pdb/x64/AfxHookSource.pdb
+            build/scene-cache-ci/bin/resources/shaders/*.acs
           if-no-files-found: error

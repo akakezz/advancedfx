@@ -31,11 +31,12 @@ add_shader("afx_line_vs20" "vs_2_0")
 add_shader("afx_line_ps20" "ps_2_0")
 add_shader("afx_drawtexture_ps20" "ps_2_0")
 
-if(CMAKE_GENERATOR_PLATFORM STREQUAL "Win32")
-    add_shader("afx_pgldraw_vs20" "vs_2_0")
-    add_shader("afx_pgldraw_ps20" "ps_2_0")
-    add_shader("afx_depth_ps20" "ps_2_0")
-endif()
+# Shader bytecode/combination headers are architecture independent.
+# TF2 x64 also uses depth and drawtexture/PGL shader declarations;
+# generate all Source 1 shaders in a clean standalone x64 build.
+add_shader("afx_pgldraw_vs20" "vs_2_0")
+add_shader("afx_pgldraw_ps20" "ps_2_0")
+add_shader("afx_depth_ps20" "ps_2_0")
 
 ## END Shaders
 ###############################################################################

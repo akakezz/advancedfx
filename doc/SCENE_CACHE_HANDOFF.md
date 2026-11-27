@@ -388,3 +388,7 @@ Phase 19E: optional surviving decal opacity replacement (`surfaces opacity 1`, i
 ### Phase 20A: particle history reliability and restore-plan read batching
 
 Reject invalid ticks and oversized modern samples before backward-history reset; legacy rejects incomplete/oversized samples before replacement/reset and keeps its immutable lease on rejected input. Valid backward capture still resets history. Modern partial snapshots remain diagnostic records. Batch the detached attribute allocation base and pointer/stride tables into one 0x328-byte bounded read, falling back to original field reads. Reuse the already built and validated child index for forest traversal. Portable regression fixtures updated. No persistent native collections or queued native effects; runtime performance unmeasured.
+
+### Phase 20B: independent x64 build dependency fix
+
+Retrieved actual push workflow results via the branch Actions collection. Phase 18E run 46062340354: Win32 passed, x64 failed C1083 in d3d9Hooks.cpp because afx_depth_ps20.h was not generated in a clean x64 checkout (Win32-first multibuild hid the dependency). Generate the architecture-independent depth and PGL shaders in both architectures; stage all six matching Source 1 .acs files alongside the x64 DLL/PDB artifact for replacement in a compatible existing installation. Phase 19E portable CI passed both jobs (46066625702); exact newer Windows build and full native runtime remain pending. Intermediate Windows jobs canceled on superseding commits are not build failures.
