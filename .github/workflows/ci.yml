@@ -7,8 +7,13 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/feature/scene-cache-2' }}
+
 jobs:
   build:
+    if: github.ref != 'refs/heads/feature/scene-cache-2'
     runs-on: windows-2022
 
     steps:
@@ -32,3 +37,38 @@ jobs:
       - name: CMake - Build Staging
         working-directory: "${{github.workspace}}"
         run: cmake -DAFX_MULTIBUILD_STAGING=ON -P cmake/MultiBuild.cmake
+
+  scene-cache-source1:
+    if: github.ref == 'refs/heads/feature/scene-cache-2'
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [x64-release, win32-release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/iron
+          check-latest: true
+      - uses: MinoruSekine/setup-scoop@v4
+      - name: Install gettext
+        run: scoop install gettext
+      - name: Configure Source 1
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build AfxHookSource
+        run: cmake --build --preset ${{ matrix.preset }} --target AfxHookSource --parallel 2
+      - name: Stage x64 Source 1 DLL and symbols
+        if: matrix.preset == 'x64-release'
+        run: cmake --install build/x64-release --config Release --prefix build/scene-cache-ci --component x64-source1
+      - name: Upload x64 Source 1 replacement
+        if: matrix.preset == 'x64-release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scene-cache-x64-${{ github.sha }}
+          path: |
+            build/scene-cache-ci/bin/x64/AfxHookSource.dll
+            build/scene-cache-ci/pdb/x64/AfxHookSource.pdb
+          if-no-files-found: error
