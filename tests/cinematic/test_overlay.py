@@ -1235,6 +1235,16 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  check(g_SceneCache.Count()==1&&g_SceneCache.Frames().back().RenderSnapshot&&g_SceneCache.Frames().back().Entities.size()==1&&g_SceneCache.Frames().back().Entities[0].Skin==1,"Broad capture bypasses filters and retains observed skin");
  g_ScenePreview=true;g_SceneCursor=g_SceneCache.Frames().back().DemoTime;SceneCacheFrame(false);
  check(SceneCacheReplayActive()&&SceneCacheSuppressLiveStudio(),"A valid broad preview enables replacement");
+ {const auto draws=scenePoseDraws;
+  sceneNativeView=1;SceneCacheDrawModels();check(scenePoseDraws==draws+1,"Default keeps additional native view submissions");
+  sceneCommand({"mirv_cache","perf","mainOnly","1"});SceneCacheDrawModels();check(scenePoseDraws==draws+1&&g_ScenePerf.NonMainModelSkipped==1,"Main-only skips verified non-main native view");
+  sceneNativeView=0;SceneCacheDrawModels();check(scenePoseDraws==draws+2&&g_ScenePerf.MainModelDraw.Count==1,"Main-only retains verified main native view");
+  sceneNativeView=-1;SceneCacheDrawModels();check(scenePoseDraws==draws+3&&g_ScenePerf.UnknownModelDraw.Count==1,"Unverified view fails open");
+  sceneCommand({"mirv_cache","perf","mainOnly","0"});
+  const bool oldParticleReplay=g_SceneNativeParticleReplay;g_SceneNativeParticleReplay=true;sceneNativeView=1;
+  SceneCacheDrawParticles();check(g_ScenePerf.NonMainParticleSkipped==1,"Native particle callbacks skip verified non-main views before preparation");
+  g_SceneNativeParticleReplay=oldParticleReplay;sceneNativeView=-1;
+ }
  g_SceneSuppressLiveStudio=false;check(SceneCacheReplayActive()&&!SceneCacheSuppressLiveStudio(),"Live isolation can be disabled while textured replay remains active");g_SceneSuppressLiveStudio=true;
  g_MirvTime.Time+=SceneTickInterval();SceneCacheFrame();check(g_SceneCache.Count()==1,"Experimental capture suspends during cached preview");
  sceneQueueAvailable=false;check(!SceneCacheSuppressLiveStudio(),"Unavailable render queue cannot suppress live models");sceneQueueAvailable=true;

@@ -329,6 +329,9 @@ int Mirv_Tf2_SceneRenderViewId()
     const unsigned char anchor[]={0x89,0x2d,0x94,0xae,0xc9,0x00};
     unsigned char actual[sizeof(anchor)]{};
     if(!read(base+0x34c926,actual,sizeof(actual))||!std::equal(std::begin(anchor),std::end(anchor),actual))return -1;
+    const unsigned char skyAnchor[]={0x83,0xfd,0x01,0xba,0x0a,0x00,0x00,0x00};
+    unsigned char skyActual[sizeof(skyAnchor)]{};
+    if(!read(base+0x34c97e,skyActual,sizeof(skyActual))||!std::equal(std::begin(skyAnchor),std::end(skyAnchor),skyActual))return -1;
     int view=-1;
     return read(base+0xfe77c0,&view,sizeof(view))&&view>=0&&view<=16?view:-1;
 #else
