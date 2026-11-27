@@ -11091,6 +11091,8 @@ static bool g_SceneAssetResidency=false;
 static void *g_SceneResidentCache=nullptr;
 static std::map<std::string,unsigned short> g_SceneResidentAssets;
 static unsigned long long g_SceneResidentHits=0,g_SceneResidentAdds=0;
+} // namespace
+
 void Mirv_Tf2_ClearSceneResidentAssets()
 {
     if(g_SceneResidentCache&&!g_SceneResidentAssets.empty()){
@@ -11110,6 +11112,8 @@ void Mirv_Tf2_SceneAssetStatus(unsigned &resident,unsigned long long &hits,unsig
 {
     resident=static_cast<unsigned>(g_SceneResidentAssets.size());hits=g_SceneResidentHits;adds=g_SceneResidentAdds;
 }
+namespace
+{
 static void SceneKeepAsset(void *cache,const std::string &name,unsigned short handle)
 {
     if(!g_SceneAssetResidency)return;
@@ -11181,6 +11185,16 @@ private:
 	std::atomic<SceneRetirement *> Data;
 	bool Submitted = false;
 };
+// One synchronous textured-view batch. Only a pinned studio header and its
+// FindMDL reference survive individual calls; hardware data is reacquired
+// under the normal per-draw lock. No pointer survives this callback.
+struct SceneStudioBatch {
+    void *Studio=nullptr,*Cache=nullptr;
+    struct Asset {std::unique_ptr<SceneModelResources> Owner;void *Header=nullptr;};
+    std::map<std::pair<std::string,unsigned int>,Asset> Assets;
+};
+static thread_local std::unique_ptr<SceneStudioBatch> g_SceneStudioBatch;
+
 // Convert once per observed pose, using the same inverse/concatenation as AGR.
 // Unsupported bones retain their own verbatim matrices; the remaining bones can still blend.
 static void ScenePrepareLocalPose(advancedfx::SceneCache::Pose &pose)
@@ -11670,6 +11684,25 @@ bool Mirv_Tf2_CaptureScenePose(int index, advancedfx::SceneCache::Entity &entity
 	status = "Capturing " + metadata->Name + ": " + std::to_string(count) + " bones per observed tick.";
 	return true;
 }
+bool Mirv_Tf2_BeginSceneStudioBatch()
+{
+    if(g_SceneStudioBatch||!g_AppSystemFactory||!MaterialSystem_CanExecuteOnRenderThread()||!MaterialSystem_IsImmediate())return false;
+    auto batch=std::make_unique<SceneStudioBatch>();
+    batch->Studio=g_AppSystemFactory("VStudioRender025",nullptr);
+    batch->Cache=g_AppSystemFactory("MDLCache004",nullptr);
+    if(!batch->Studio||!batch->Cache)return false;
+    Mirv_Tf2_SceneRenderFrame();
+    g_SceneStudioBatch=std::move(batch);
+    return true;
+}
+void Mirv_Tf2_EndSceneStudioBatch()
+{
+    auto batch=std::move(g_SceneStudioBatch);
+    if(!batch)return;
+    SceneInterfaceCall<void>(batch->Cache,25);
+    batch->Assets.clear();
+    SceneInterfaceCall<void>(batch->Cache,26);
+}
 // Cache only CPU value matrices for the exact immutable published frame.
 static bool SceneReplayMatrices(const advancedfx::SceneCache::Entity &entity,
     const advancedfx::SceneCache::Entity *owner,SOURCESDK::matrix3x4_t *out,
@@ -11717,7 +11750,8 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
         }
         ~StageTimer(){Next(Current);}
     } timer(timings);
-	Mirv_Tf2_SceneRenderFrame();
+    auto *batch=textured&&g_SceneStudioBatch&&MaterialSystem_IsImmediate()?g_SceneStudioBatch.get():nullptr;
+    if(!batch)Mirv_Tf2_SceneRenderFrame();
 	if (g_SceneOutstanding.load() >= SceneMaxOutstanding)
 	{
 		status = "Cached model render queue is behind; submission deferred.";
@@ -11748,8 +11782,8 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Material-system render queue unavailable; cached model submission skipped.";
 		return false;
 	}
-	void *studio = g_AppSystemFactory("VStudioRender025", nullptr);
-	void *cache = g_AppSystemFactory("MDLCache004", nullptr);
+	void *studio = batch?batch->Studio:g_AppSystemFactory("VStudioRender025", nullptr);
+	void *cache = batch?batch->Cache:g_AppSystemFactory("MDLCache004", nullptr);
 	if (!studio || !cache)
 	{
 		status = "VStudioRender025 / MDLCache004 unavailable; cached boxes remain usable.";
@@ -11773,17 +11807,24 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 			SceneInterfaceCall<void>(Cache, 26);
 		}
 	} unlock{cache};
-	const auto handle =
-	    SceneInterfaceCall<unsigned short, const char *>(cache, 6, pose->ModelInfo->Name.c_str());
-	if (handle == 0xffff)
-	{
-		status = "Cached model asset could not be resolved.";
-		return false;
-	}
-	auto resources = std::make_unique<SceneModelResources>(cache, handle);
-	SceneStudioInfo info;
-	info.Header = SceneInterfaceCall<void *, unsigned short>(cache, 40, handle); // LockStudioHdr
-	resources->State().HeaderLocked = info.Header != nullptr;
+	std::unique_ptr<SceneModelResources> resources;
+    SceneStudioInfo info;
+    unsigned short handle=0xffff;
+    auto assetKey=std::make_pair(pose->ModelInfo->Name,pose->ModelInfo->Checksum);
+    if(batch){
+        auto it=batch->Assets.find(assetKey);
+        if(it!=batch->Assets.end()){
+            handle=it->second.Owner->State().Handle;
+            info.Header=it->second.Header;
+        }
+    }
+    if(handle==0xffff){
+        handle=SceneInterfaceCall<unsigned short,const char *>(cache,6,pose->ModelInfo->Name.c_str());
+        if(handle==0xffff){status="Cached model asset could not be resolved.";return false;}
+        resources=std::make_unique<SceneModelResources>(cache,handle);
+        info.Header=SceneInterfaceCall<void *,unsigned short>(cache,40,handle);
+        resources->State().HeaderLocked=info.Header!=nullptr;
+    }
 	info.Hardware = SceneInterfaceCall<void *, unsigned short>(cache, 11, handle);
 	int count;
 	unsigned int checksum;
@@ -11795,6 +11836,8 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		return false;
 	}
 	if(textured)SceneKeepAsset(cache,pose->ModelInfo->Name,handle);
+    if(batch&&resources&&batch->Assets.size()<256)
+        batch->Assets.emplace(std::move(assetKey),SceneStudioBatch::Asset{std::move(resources),info.Header});
     timer.Next(Timing::Bones);
 	// Allocate through studio's render context so queued rendering owns the
 	// matrix lifetime. Stack matrices and live renderable pointers are not passed.
@@ -11846,7 +11889,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	const int flags = 0x04 | 0x20 | (material || textured ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
 	SceneStudioScope studioScope(studio, info, textured,entity);
-	resources->Submit();
+	if(resources)resources->Submit();
     timer.Next(Timing::Draw);
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
 	                   const SOURCESDK::Vector &, int>(studio, 29, nullptr, info, matrices, nullptr, nullptr,
@@ -11855,7 +11898,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	// The capability check above and this enqueue run on the same engine thread;
 	// the material-system hook remains stable for this submission. The helper
 	// owns/deletes the callback on both success and failure.
-	if (!MaterialSystem_ExecuteOnRenderThread(resources.release()))
+	if (resources && !MaterialSystem_ExecuteOnRenderThread(resources.release()))
 	{
 		status = "Cached model cleanup callback could not be submitted.";
 		return false;

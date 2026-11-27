@@ -99,7 +99,8 @@ struct View{Globals*GetGlobals(){return &globals;}} g_Hook_VClient_RenderView;
 void*Factory(const char*name,int*){if(!fixture.Interfaces)return nullptr;if(!strcmp(name,"VStudioRender025"))return &fixture.Studio;if(!strcmp(name,"MDLCache004"))return &fixture.Cache;if(!strcmp(name,"VMaterialSystem082"))return fixture.MaterialInterface?&fixture.MaterialSystem:nullptr;if(!strcmp(name,"VBaseFileSystem011"))return fixture.FileSystem;assert(false);return nullptr;}
 auto g_AppSystemFactory=Factory;
 struct BrushEngine {std::string Level,Directory;const char*GetLevelName(){return Level.c_str();}const char*GetGameDirectory(){return Directory.c_str();}} brushEngine;auto*g_VEngineClient=&brushEngine;
-bool queueAvailable=true;
+bool queueAvailable=true,immediate=false;
+bool MaterialSystem_IsImmediate(){return immediate;}
 std::vector<std::unique_ptr<CMaterialSystemFunctor>> retirements;
 bool MaterialSystem_CanExecuteOnRenderThread(){return queueAvailable;}
 bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor*f){assert(std::this_thread::get_id()==fixture.EngineThread);retirements.emplace_back(f);return true;}
@@ -224,7 +225,17 @@ int main(){
   assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));Mirv_Tf2_SceneAssetResidency(false);assert(fixture.Refs==1&&fixture.HeaderLocks==1&&g_SceneResidentAssets.empty());ConsumeRenderQueue();assert(fixture.Refs==0&&fixture.HeaderLocks==0);
   entity.Skin=-1;g_SceneStudioStateInstalled=false;
  // A slow or discarded render queue retains ownership without unbounded growth.
- for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
+ assert(!Mirv_Tf2_BeginSceneStudioBatch()); // Queued path remains unchanged.
+  immediate=true;
+  assert(Mirv_Tf2_BeginSceneStudioBatch());
+  assert(!Mirv_Tf2_BeginSceneStudioBatch()); // No nested ownership.
+  assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));
+  assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));
+  assert(fixture.Refs==1&&fixture.HeaderLocks==1&&retirements.empty());
+  Mirv_Tf2_EndSceneStudioBatch();
+  assert(!fixture.Refs&&!fixture.HeaderLocks&&!fixture.Locks);
+  immediate=false;
+  for(unsigned i=0;i<SceneMaxOutstanding;++i)assert(Mirv_Tf2_DrawScenePose(entity,status));
  assert(!Mirv_Tf2_DrawScenePose(entity,status));unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);assert(pending==SceneMaxOutstanding&&peak==SceneMaxOutstanding);
  ConsumeRenderQueue(false,true);assert(fixture.Refs==int(SceneMaxOutstanding)&&fixture.HeaderLocks==int(SceneMaxOutstanding));
  Mirv_Tf2_SceneRenderFrame();Mirv_Tf2_SceneRenderStatus(pending,peak);assert(!pending&&!fixture.Refs&&!fixture.HeaderLocks);

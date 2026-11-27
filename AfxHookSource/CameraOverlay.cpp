@@ -127,6 +127,7 @@ static ScenePerfCounters g_ScenePerf;
 static bool g_SceneMainViewOnly=false; // optional until skybox fidelity is checked
 static bool g_ScenePreviewCull=false; // opt-in until animated bounds/edge coverage verified
 static bool g_SceneKeepAssets=true; // bounded preview-only references
+static bool g_SceneBatchStudio=true; // immediate mode only, reversible
 static bool g_SceneFastParticleWrites=true; // verified detached allocations only
 static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
@@ -1150,6 +1151,15 @@ void SceneCacheDrawModels()
     unsigned submitted = 0, attempted = 0, queueSkips=0, otherSkips=0, culled=0;
     std::string lastFailure,lastFailureAsset;
     advancedfx::SceneCache::ReplayTimings stages;
+    using Timing=advancedfx::SceneCache::ReplayTimings;
+    struct BatchScope {
+        bool Active;
+        void Finish(){if(Active){Mirv_Tf2_EndSceneStudioBatch();Active=false;}}
+        ~BatchScope(){Finish();}
+    };
+    const auto batchStart=std::chrono::steady_clock::now();
+    BatchScope batch{textured&&g_SceneBatchStudio&&Mirv_Tf2_BeginSceneStudioBatch()};
+    stages.Ms[Timing::Preflight]+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-batchStart).count();
     double slowest=0;
     const std::string *slowAsset=nullptr;
 	for (const auto &entity : view->Entities)
@@ -1176,6 +1186,9 @@ void SceneCacheDrawModels()
             if(total>slowest){slowest=total;slowAsset=&entity.ModelPose->ModelInfo->Name;}
 		}
 	}
+    const auto batchEnd=std::chrono::steady_clock::now();
+    batch.Finish();
+    stages.Ms[Timing::Retirement]+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-batchEnd).count();
 	{
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
         const int tick=int(std::floor(view->DemoTime/SceneTickInterval()+1e-9));
@@ -2149,7 +2162,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"cull")&&parseInteger(3,value)&&(value==0||value==1))g_ScenePreviewCull=value!=0;
         else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"residency")&&parseInteger(3,value)&&(value==0||value==1))g_SceneKeepAssets=value!=0;
         else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"fastWrites")&&parseInteger(3,value)&&(value==0||value==1))g_SceneFastParticleWrites=value!=0;
-        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|fastWrites <0|1>]\n");return;}
+        else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"batchStudio")&&parseInteger(3,value)&&(value==0||value==1))g_SceneBatchStudio=value!=0;
+        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|fastWrites <0|1>|batchStudio <0|1>]\n");return;}
         advancedfx::Message("Scene cache CPU timing (not GPU completion), cursor %.3f ticks; capture %d, preview %d.\n",g_SceneCursor/SceneTickInterval(),int(g_SceneRecord),int(g_ScenePreview));
         g_ScenePerf.Sample.Print("Historical model sampling");
         g_ScenePerf.ModelDraw.Print("Studio replay submission");
@@ -2164,7 +2178,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
             g_ScenePerf.ParticleFactoryMs/views,g_ScenePerf.ParticlePlanMs/views,g_ScenePerf.ParticleCopyMs/views,g_ScenePerf.ParticleRenderMs/views,g_ScenePerf.ParticleDestroyMs/views,
             int(g_SceneFastParticleWrites),g_ScenePerf.FastWrites,g_ScenePerf.SystemWrites,g_ScenePerf.WriteFaults,g_ScenePerf.CleanupFailures);
         unsigned resident=0;unsigned long long hits=0,adds=0;Mirv_Tf2_SceneAssetStatus(resident,hits,adds);
-        advancedfx::Message("Model residency %d; %u/256 retained asset references; %llu reuse hits, %llu additions (session).\n",int(g_SceneKeepAssets),resident,hits,adds);
+        advancedfx::Message("Model residency %d; %u/256 retained asset references; %llu reuse hits, %llu additions (session). Immediate studio batching %d.\n",int(g_SceneKeepAssets),resident,hits,adds,int(g_SceneBatchStudio));
         advancedfx::Message("Preview frustum cull %d; rejected model submissions %llu.\n",int(g_ScenePreviewCull),g_ScenePerf.ModelsCulled);
         advancedfx::Message("Main-only studio %d; verified non-main skips: studio %llu, particles %llu. Last studio failure tick %d, asset %s.\n",int(g_SceneMainViewOnly),g_ScenePerf.NonMainModelSkipped,g_ScenePerf.NonMainParticleSkipped,g_ScenePerf.LastModelFailureTick,g_ScenePerf.LastModelFailureAsset.empty()?"none":g_ScenePerf.LastModelFailureAsset.c_str());
         g_ScenePerf.ParticleAcquire.Print("Particle snapshot lookup/decode");
@@ -2607,7 +2621,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
-		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|fastWrites <0|1>|bench [report|cancel]] - CPU replay timings and failure diagnostics.\n"
+		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|residency <0|1>|fastWrites <0|1>|batchStudio <0|1>|bench [report|cancel]] - CPU replay timings and failure diagnostics.\n"
             "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;
