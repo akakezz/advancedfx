@@ -93,8 +93,8 @@ int main()
  // Model-decal geometry shares immutable storage, survives eviction while
  // externally owned, and cannot invalidate an otherwise fitting pose frame.
  using namespace advancedfx::SceneLighting;
- auto decal=std::make_shared<ModelDecalGeometry>();ModelDecalBatch b;
- b.Material="decals/test";b.Vertices.resize(3);b.Indices={0,1,2};decal->Batches.push_back(b);
+ auto decal=std::make_shared<ModelDecalGeometry>();ModelDecalBatch decalBatch;
+ decalBatch.Material="decals/test";decalBatch.Vertices.resize(3);decalBatch.Indices={0,1,2};decal->Batches.push_back(decalBatch);
  Cache::Frame df=p;df.DemoTime=30;df.ClientTime=30;auto &de=df.Entities[0];de.ModelPose=pose;
  de.ModelDecals.Lod=0;de.ModelDecals.Batches=1;de.ModelDecals.Vertices=3;de.ModelDecals.Indices=3;de.ModelDecalData=decal;
  Cache dc;assert(dc.Append(df));const auto decalCost=dc.Bytes();assert(decalCost>=cost+decal->Bytes());
