@@ -494,3 +494,7 @@ The supplied studiorender.dll is exact TF2 x64 (SHA256 5dbf854792167261a7769b196
 ### Phase 28B — Studio model decal inventory (capture only)
 
 Exact-build immediate main-view observation of the native decal pass records selected LOD, nonempty material batch count, vertex and index totals per model identity. Shares existing lighting capture audit scheduling and consolidated report. Unknown/ambiguous samples remain unknown, not zero. No native decal handle or geometry is retained and no historical model decal rendering is enabled. Queued observation is intentionally disabled pending ownership/thread analysis.
+
+### Phase 28C — model decal geometry decoder
+
+Added portable bounded decoder for actual studio material vertex and segment lists. Copies finite position/normal/UV and all six native model selectors (including flex fields), flattens local segment indices into owned arrays, rejects invalid links/counts and out-of-range indices, and accepts material identity through a resolver. No live pointers or native padding retained. Decoder tested with reverse-linked vertex order and two independent segment index spaces. Runtime hookup and budgeted history are a separate step.

@@ -33,6 +33,34 @@ int main(){
     put(pool+0x18,int(7));assert(!ReadModelDecalCoverage(read,renderer,hardware,handle,0,decals));
     assert(ReadModelDecalCoverage(read,renderer,hardware,handle,1,decals)&&decals.Lod==1&&!decals.Batches);
     assert(!ReadModelDecalCoverage(read,renderer,hardware,handle,2,decals));
+    // Two decal segments with distinct local index spaces; linked vertices
+    // need not be stored contiguously or in numerical index order.
+    std::array<unsigned char,0x80> record{};
+    auto field=[&](std::size_t at,const auto &v){std::memcpy(record.data()+at,&v,sizeof(v));};
+    const std::uint64_t vd=0x600,sd=0x800,id=0x900;
+    field(0,std::uint64_t(1));field(8,id);field(0x10,int(6));field(0x18,int(6));
+    field(0x28,vd);field(0x30,int(6));field(0x38,std::uint16_t(5));field(0x3a,std::uint16_t(0));field(0x3e,std::uint16_t(6));
+    field(0x50,sd);field(0x58,int(2));field(0x60,std::uint16_t(0));field(0x62,std::uint16_t(1));field(0x66,std::uint16_t(2));
+    for(unsigned j=0;j<6;++j){
+        put(vd+j*0x30,float(j));put(vd+j*0x30+0x20,std::uint16_t(j+1));
+        put(vd+j*0x30+0x2c,std::uint16_t(j==5?0xffff:j+1));
+        put(vd+j*0x30+0x2e,std::uint16_t(j==0?0xffff:j-1));
+    }
+    for(unsigned j=0;j<2;++j){
+        put(sd+j*0x18,int(3));put(sd+j*0x18+4,int(3));
+        put(sd+j*0x18+0x14,std::uint16_t(j==0?0xffff:0));
+        put(sd+j*0x18+0x16,std::uint16_t(j==1?0xffff:1));
+    }
+    for(unsigned j=0;j<6;++j)put(id+j*2,std::uint16_t(j%3));
+    auto readBytes=[&](std::uint64_t at,void *data,std::size_t size){if(at>mem.size()||size>mem.size()-at)return false;std::memcpy(data,mem.data()+at,size);return true;};
+    auto name=[](std::uint64_t material,std::string &out){if(material!=1)return false;out="decals/test";return true;};
+    ModelDecalBatch batch;assert(CaptureModelDecalBatch(readBytes,name,record,batch));
+    assert(batch.Vertices.size()==6&&batch.Vertices.front().Values[0]==5&&batch.Vertices.front().Selectors[0]==6);
+    assert((batch.Indices==std::vector<std::uint16_t>{0,1,2,3,4,5}));
+    ModelDecalGeometry geometry;geometry.Batches.push_back(batch);ModelDecalCoverage cov;cov.Lod=0;cov.Batches=1;cov.Vertices=6;cov.Indices=6;
+    assert(geometry.Valid(cov));
+    put(id+8,std::uint16_t(3));assert(!CaptureModelDecalBatch(readBytes,name,record,batch)&&batch==geometry.Batches[0]);
+    put(id+8,std::uint16_t(1));put(vd+0x2e,std::uint16_t(5));assert(!CaptureModelDecalBatch(readBytes,name,record,batch));
     Descriptor raw{};raw[0]=1;SetWord(raw,1,2);SetWord(raw,4,100);SetWord(raw,10,20);SetWord(raw,12,1);raw[19]=9;
     // The native converter doesn't initialize the unused angular or
     // private derived fields. Never capture them as arbitrary floats.

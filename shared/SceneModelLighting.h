@@ -1,5 +1,7 @@
 #pragma once
 #include <array>
+#include <vector>
+#include <string>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -81,15 +83,17 @@ struct ModelDecalCoverage {
     bool Known()const{return Lod>=0&&Lod<32;}
     bool operator==(const ModelDecalCoverage &o)const{return Lod==o.Lod&&Batches==o.Batches&&Vertices==o.Vertices&&Indices==o.Indices;}
 };
-template<class Read>
-bool ReadModelDecalCoverage(Read read,std::uintptr_t renderer,std::uintptr_t hardware,std::uintptr_t handle,int lod,ModelDecalCoverage &out){
+struct IgnoreDecalBatch {void operator()(const std::array<unsigned char,0x80>&)const{}};
+template<class Read,class Batch=IgnoreDecalBatch>
+bool ReadModelDecalCoverage(Read read,std::uint64_t renderer,std::uint64_t hardware,std::uint64_t handle,int lod,ModelDecalCoverage &out,Batch batch={}){
+
     ModelDecalCoverage next;
     if(lod<0||lod>=32||!hardware||!renderer)return false;
     int hardwareLods=0;
     if(!read(hardware+4,hardwareLods)||hardwareLods<=lod||hardwareLods>32)return false;
     next.Lod=lod;
     if(!handle){out=next;return true;}
-    std::uintptr_t owner=0,levels=0,pool=0;
+    std::uint64_t owner=0,levels=0,pool=0;
     int count=0,capacity=0;
     std::uint16_t active=0,head=0xffff;
     if(!read(handle,owner)||owner!=hardware||!read(handle+8,levels)||!levels||
@@ -107,7 +111,7 @@ bool ReadModelDecalCoverage(Read read,std::uintptr_t renderer,std::uintptr_t har
         const auto record=pool+std::uintptr_t(index)*0x80;
         std::array<unsigned char,0x80> bytes{};
         if(!read(record,bytes))return false;
-        std::uintptr_t material=0,indices=0,vertices=0;
+        std::uint64_t material=0,indices=0,vertices=0;
         int indexCount=0,indexCapacity=0,vertexCapacity=0;
         std::uint16_t vertexCount=0;
         std::memcpy(&material,bytes.data(),8);
@@ -121,10 +125,10 @@ bool ReadModelDecalCoverage(Read read,std::uintptr_t renderer,std::uintptr_t har
         if(indexCount<0||indexCount>indexCapacity||indexCount>65535||indexCount%3||
            vertexCapacity<0||vertexCount>vertexCapacity||
            (indexCount&&(!material||!indices||!vertices||!vertexCount)))return false;
-        if(indexCount){++next.Batches;next.Indices+=indexCount;next.Vertices+=vertexCount;}
+        if(indexCount){++next.Batches;next.Indices+=indexCount;next.Vertices+=vertexCount;batch(bytes);}
     }
     // Detect pool/list replacement during observation; this is not a lock.
-    std::uintptr_t poolAgain=0,levelsAgain=0,ownerAgain=0;
+    std::uint64_t poolAgain=0,levelsAgain=0,ownerAgain=0;
     std::uint16_t headAgain=0xffff,activeAgain=0;
     int countAgain=0,capacityAgain=0;
     if(!read(handle,ownerAgain)||ownerAgain!=owner||!read(handle+8,levelsAgain)||levelsAgain!=levels||
@@ -133,6 +137,86 @@ bool ReadModelDecalCoverage(Read read,std::uintptr_t renderer,std::uintptr_t har
        !read(renderer+0x10,poolAgain)||poolAgain!=pool||!read(renderer+0x18,capacityAgain)||capacityAgain!=capacity||
        !read(renderer+0x26,activeAgain)||activeAgain!=active)return false;
     out=next;return true;
+}
+// Pointer-free native vertex values. Six model selectors include flex
+// fields; preserve them without interpreting them as bone indices.
+struct ModelDecalVertex {
+    std::array<float,8> Values{};
+    std::array<std::uint16_t,6> Selectors{};
+    bool operator==(const ModelDecalVertex &o)const{return Values==o.Values&&Selectors==o.Selectors;}
+};
+struct ModelDecalBatch {
+    std::string Material;
+    std::vector<ModelDecalVertex> Vertices;
+    std::vector<std::uint16_t> Indices;
+    bool operator==(const ModelDecalBatch &o)const{return Material==o.Material&&Vertices==o.Vertices&&Indices==o.Indices;}
+};
+struct ModelDecalGeometry {
+    std::vector<ModelDecalBatch> Batches;
+    std::size_t Bytes()const{
+        std::size_t n=sizeof(*this)+Batches.capacity()*sizeof(ModelDecalBatch);
+        for(const auto &b:Batches)n+=b.Material.capacity()+1+b.Vertices.capacity()*sizeof(ModelDecalVertex)+b.Indices.capacity()*sizeof(std::uint16_t);
+        return n;
+    }
+    bool operator==(const ModelDecalGeometry &o)const{return Batches==o.Batches;}
+    bool Valid(const ModelDecalCoverage &coverage)const{
+        if(!coverage.Known()||Batches.size()!=coverage.Batches||Batches.size()>64||Bytes()>256*1024)return false;
+        std::size_t v=0,i=0;
+        for(const auto &b:Batches){
+            if(b.Material.empty()||b.Material.size()>255||b.Vertices.empty()||b.Indices.empty()||b.Indices.size()%3)return false;
+            v+=b.Vertices.size();i+=b.Indices.size();
+            if(v>4096||i>12288)return false;
+            for(const auto &vert:b.Vertices)for(float f:vert.Values)if(!std::isfinite(f))return false;
+            for(auto index:b.Indices)if(index>=b.Vertices.size())return false;
+        }
+        return v==coverage.Vertices&&i==coverage.Indices;
+    }
+};
+template<class T,std::size_t N> T DecalField(const std::array<unsigned char,N> &b,std::size_t offset){
+    T result{};std::memcpy(&result,b.data()+offset,sizeof(result));return result;
+}
+template<class ReadBytes,class MaterialName>
+bool CaptureModelDecalBatch(ReadBytes read,MaterialName name,const std::array<unsigned char,0x80> &record,ModelDecalBatch &out){
+    const auto material=DecalField<std::uint64_t>(record,0),indexData=DecalField<std::uint64_t>(record,8),
+        vertexData=DecalField<std::uint64_t>(record,0x28),segmentData=DecalField<std::uint64_t>(record,0x50);
+    const int ni=DecalField<int>(record,0x18),nvCapacity=DecalField<int>(record,0x30),nsCapacity=DecalField<int>(record,0x58);
+    const auto nv=DecalField<std::uint16_t>(record,0x3e),ns=DecalField<std::uint16_t>(record,0x66);
+    if(!material||!indexData||!vertexData||!segmentData||ni<=0||ni>12288||ni%3||
+       ni>DecalField<int>(record,0x10)||!nv||nv>4096||nv>nvCapacity||nvCapacity>8192||
+       !ns||ns>512||ns>nsCapacity||nsCapacity>1024)return false;
+    ModelDecalBatch next;
+    if(!name(material,next.Material)||next.Material.empty()||next.Material.size()>255)return false;
+    std::vector<std::array<unsigned char,0x30>> vertices(nvCapacity);
+    std::vector<std::array<unsigned char,0x18>> segments(nsCapacity);
+    std::vector<std::uint16_t> indices(ni);
+    if(!read(vertexData,vertices.data(),vertices.size()*0x30)||!read(segmentData,segments.data(),segments.size()*0x18)||
+       !read(indexData,indices.data(),indices.size()*2))return false;
+    next.Vertices.reserve(nv);next.Indices.reserve(ni);
+    auto head=DecalField<std::uint16_t>(record,0x38);
+    std::uint16_t previous=0xffff;
+    for(unsigned n=0;n<nv;++n){
+        if(head>=vertices.size())return false;
+        const auto &v=vertices[head];
+        if(DecalField<std::uint16_t>(v,0x2c)!=previous)return false;
+        ModelDecalVertex value;std::memcpy(value.Values.data(),v.data(),32);
+        std::memcpy(value.Selectors.data(),v.data()+0x20,12);
+        for(float f:value.Values)if(!std::isfinite(f))return false;
+        next.Vertices.push_back(value);previous=head;head=DecalField<std::uint16_t>(v,0x2e);
+    }
+    if(head!=0xffff||previous!=DecalField<std::uint16_t>(record,0x3a))return false;
+    head=DecalField<std::uint16_t>(record,0x60);previous=0xffff;
+    std::size_t base=0,offset=0;
+    for(unsigned n=0;n<ns;++n){
+        if(head>=segments.size())return false;
+        const auto &seg=segments[head];
+        if(DecalField<std::uint16_t>(seg,0x14)!=previous)return false;
+        const int ic=DecalField<int>(seg,0),vc=DecalField<int>(seg,4);
+        if(ic<=0||ic%3||vc<=0||std::size_t(ic)>indices.size()-offset||std::size_t(vc)>next.Vertices.size()-base)return false;
+        for(int j=0;j<ic;++j){const auto index=indices[offset++];if(index>=vc)return false;next.Indices.push_back(std::uint16_t(base+index));}
+        base+=vc;previous=head;head=DecalField<std::uint16_t>(seg,0x16);
+    }
+    if(head!=0xffff||previous!=DecalField<std::uint16_t>(record,0x62)||base!=next.Vertices.size()||offset!=indices.size())return false;
+    out=std::move(next);return true;
 }
 struct Key {
     std::uint32_t Checksum=0;
