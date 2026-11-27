@@ -241,6 +241,21 @@ struct CopyOp {
     Address Destination=0;
     std::uint32_t Start=0,Count=0;
 };
+// Merge only adjacent verified ranges within the same native allocation.
+// Do not write padding/gaps or constants, and never bridge collection boundaries.
+inline void AppendCopy(std::vector<CopyOp> &copies,std::size_t collectionStart,CopyOp op){
+    if(copies.size()>collectionStart){
+        auto &last=copies.back();
+        const auto maxAddress=(std::numeric_limits<Address>::max)();
+        const auto maxCount=(std::numeric_limits<std::uint32_t>::max)();
+        const auto bytes=Address(last.Count)*sizeof(std::uint32_t);
+        if(last.Count&&op.Count&&last.Destination<=maxAddress-bytes&&last.Destination+bytes==op.Destination&&
+           last.Start<=maxCount-last.Count&&last.Start+last.Count==op.Start&&last.Count<=maxCount-op.Count){
+            last.Count+=op.Count;return;
+        }
+    }
+    copies.push_back(op);
+}
 struct RestoreBinding {Address Native=0;std::size_t Recorded=0;Address Definition=0;};
 // Exact adjacent native clock/active-block fields at +0x20..+0x37.
 // The active count at +0x38 is deliberately committed separately, last.
@@ -332,6 +347,7 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
                 fail("Detached attribute table unavailable");return;
             }
             Address next=(memory+15)&~Address(15);
+            const auto collectionStart=plan.Copies.size();
             // Allocation lays out each varying attribute consecutively, using
             // padded capacity and the binary's component mask. Verify all slots,
             // including undocumented slots, before accepting any write.
@@ -351,7 +367,7 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
                    std::size_t(b.Start)>f.Words.size()||words>f.Words.size()-b.Start) {
                     fail("Recorded and detached attribute layouts differ");return;
                 }
-                if(stride[a]) plan.Copies.push_back({ptr[a],b.Start,b.Count});
+                if(stride[a]) AppendCopy(plan.Copies,collectionStart,{ptr[a],b.Start,b.Count});
                 else {
                     std::array<std::uint32_t,12> current{};
                     if(!read(ptr[a],current.data(),words*sizeof(std::uint32_t))) {fail("Detached constant unreadable");return;}

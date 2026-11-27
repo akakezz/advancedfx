@@ -142,6 +142,12 @@ int main(){
     check(!HistoryCodec::Decode({128,0,0},4,decoded)&&!HistoryCodec::Decode({127,1},128,decoded),"malformed codec input rejected");
     check(!HistoryCodec::Decode(encoded,repeat.size()-1,decoded),"decoded size bound");
     check(plan.Bindings.size()==1&&plan.Bindings[0].Native==detached&&plan.Bindings[0].Recorded==0&&plan.Bindings[0].Definition==def,"native activation binding");
+    std::vector<CopyOp> copies;
+    AppendCopy(copies,0,{0x10000,0,12});AppendCopy(copies,0,{0x10030,12,4});
+    check(copies.size()==1&&copies[0].Count==16,"adjacent source/destination coalesce");
+    AppendCopy(copies,0,{0x10044,16,4});check(copies.size()==2,"destination gap never overwritten");
+    AppendCopy(copies,0,{0x10054,21,4});check(copies.size()==3,"source gap never overwritten");
+    AppendCopy(copies,copies.size(),{0x10064,25,4});check(copies.size()==4,"no cross-collection merge");
     auto prefix=ActivationPrefix(1.25f,5);float clock=0;std::memcpy(&clock,&prefix[5],sizeof(clock));
     check(clock==1.25f&&prefix[0]==prefix[5]&&prefix[1]==prefix[5]&&prefix[2]==prefix[5]&&prefix[3]==prefix[5]&&prefix[4]==2,"activation prefix preserves all clock/count fields");
     Frame forest;forest.Collections.resize(7);

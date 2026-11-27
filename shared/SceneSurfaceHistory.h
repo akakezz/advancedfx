@@ -184,6 +184,12 @@ struct Frame {
     std::size_t DecalsUnsupported=0,ShadowsUnobserved=0;
     DecalCoverage UnsupportedDecals;
     std::shared_ptr<const std::vector<Decal>> Decals;
+    // Slot identities from a complete traversal whose payload was unsupported.
+    // A matching live slot is uncertain, not proof of a future-only mark.
+    std::shared_ptr<const std::vector<std::uint16_t>> UncertainDecalSlots;
+    bool DecalSlotUncertain(std::uint16_t slot)const{
+        return UncertainDecalSlots&&std::binary_search(UncertainDecalSlots->begin(),UncertainDecalSlots->end(),slot);
+    }
     std::shared_ptr<const std::vector<Shadow>> Shadows;
 };
 // Surface systems can be captured independently. Empty ready vectors are
@@ -198,6 +204,7 @@ class History {
     static std::size_t Cost(const std::vector<Decal> &v){std::size_t n=sizeof(v)+v.capacity()*sizeof(Decal);for(const auto &d:v)n+=d.Material.capacity();return n;}
     static std::size_t Cost(const std::vector<Shadow> &v){std::size_t n=sizeof(v)+v.capacity()*sizeof(Shadow);for(const auto &s:v)n+=s.Leaves.capacity()*sizeof(int);return n;}
     static std::size_t Cost(const std::vector<DecalVertex> &v){return sizeof(v)+v.capacity()*sizeof(DecalVertex);}
+    static std::size_t Cost(const std::vector<std::uint16_t> &v){return sizeof(v)+v.capacity()*sizeof(std::uint16_t);}
     std::map<const void*,std::size_t> Refs;
     template<class T> std::size_t ExtraVector(const std::shared_ptr<const std::vector<T>> &p,bool standalone=false)const{
         if(!p||(!standalone&&Refs.count(p.get())))return 0;
@@ -224,11 +231,11 @@ class History {
             if constexpr(std::is_same_v<T,Decal>)for(const auto &d:*p)DropVector(d.Geometry);
         }
     }
-    std::size_t Extra(const Frame &f)const{return sizeof(Frame)+ExtraVector(f.Decals)+ExtraVector(f.Shadows);}
+    std::size_t Extra(const Frame &f)const{return sizeof(Frame)+ExtraVector(f.Decals)+ExtraVector(f.Shadows)+ExtraVector(f.UncertainDecalSlots);}
     void Drop(bool front){
         Frame f=front?std::move(Frames.front()):std::move(Frames.back());
         if(front)Frames.pop_front();else Frames.pop_back();
-        Bytes-=sizeof(Frame);DropVector(f.Decals);DropVector(f.Shadows);
+        Bytes-=sizeof(Frame);DropVector(f.Decals);DropVector(f.Shadows);DropVector(f.UncertainDecalSlots);
     }
 public:
     explicit History(std::size_t budget=64u*1024u*1024u):Budget(budget){}
@@ -243,29 +250,31 @@ public:
         // same tick and world; a valid new empty sample replaces old data.
         f.DecalsReady=f.DecalsReady&&bool(f.Decals);
         f.ShadowsReady=f.ShadowsReady&&bool(f.Shadows);
-        if(!f.DecalsReady)f.Decals.reset();
+        if(!f.DecalsReady){f.Decals.reset();f.UncertainDecalSlots.reset();}
+        if(f.UncertainDecalSlots&&(!std::is_sorted(f.UncertainDecalSlots->begin(),f.UncertainDecalSlots->end())||f.UncertainDecalSlots->size()>8192)){++Rejected;return false;}
         if(!f.ShadowsReady)f.Shadows.reset();
         if(f.Tick<0||!f.World||(!f.DecalsReady&&!f.ShadowsReady)){++Rejected;return false;}
         if(!Frames.empty()&&f.Tick==Frames.back().Tick&&f.World==Frames.back().World){
             const auto &last=Frames.back();
             if(!f.DecalsReady&&last.DecalsReady&&last.Decals){
                 f.DecalsReady=true;f.Decals=last.Decals;f.DecalStatus=last.DecalStatus;
-                f.DecalsUnsupported=last.DecalsUnsupported;f.UnsupportedDecals=last.UnsupportedDecals;
+                f.DecalsUnsupported=last.DecalsUnsupported;f.UnsupportedDecals=last.UnsupportedDecals;f.UncertainDecalSlots=last.UncertainDecalSlots;
             }
             if(!f.ShadowsReady&&last.ShadowsReady&&last.Shadows){
                 f.ShadowsReady=true;f.Shadows=last.Shadows;f.ShadowsUnobserved=last.ShadowsUnobserved;
             }
         }
-        if(sizeof(Frame)+ExtraVector(f.Decals,true)+ExtraVector(f.Shadows,true)>Budget){++Rejected;return false;}
+        if(sizeof(Frame)+ExtraVector(f.Decals,true)+ExtraVector(f.Shadows,true)+ExtraVector(f.UncertainDecalSlots,true)>Budget){++Rejected;return false;}
         if(!Frames.empty()&&(f.World!=Frames.back().World||f.Tick<Frames.back().Tick))Clear();
         if(!Frames.empty()&&f.Tick==Frames.back().Tick)Drop(false);
         if(!Frames.empty()){
             const auto &last=Frames.back();
             if(f.Decals&&last.Decals&&*f.Decals==*last.Decals)f.Decals=last.Decals;
             if(f.Shadows&&last.Shadows&&*f.Shadows==*last.Shadows)f.Shadows=last.Shadows;
+            if(f.UncertainDecalSlots&&last.UncertainDecalSlots&&*f.UncertainDecalSlots==*last.UncertainDecalSlots)f.UncertainDecalSlots=last.UncertainDecalSlots;
         }
         while(!Frames.empty()&&(Bytes>Budget-Extra(f)||Frames.size()>=32768)){Drop(true);++Evicted;}
-        Bytes+=sizeof(Frame);AddVector(f.Decals);AddVector(f.Shadows);Frames.push_back(std::move(f));return true;
+        Bytes+=sizeof(Frame);AddVector(f.Decals);AddVector(f.Shadows);AddVector(f.UncertainDecalSlots);Frames.push_back(std::move(f));return true;
     }
     // Same bounded, causal sample policy as modern particle history.
     const Frame *ForPreview(int tick,int maxGap=2) const {
@@ -290,7 +299,7 @@ public:
             if(result.DecalTick<0&&it->DecalsReady&&it->Decals){
                 result.DecalTick=it->Tick;result.Value.DecalsReady=true;
                 result.Value.Decals=it->Decals;result.Value.DecalStatus=it->DecalStatus;
-                result.Value.DecalsUnsupported=it->DecalsUnsupported;result.Value.UnsupportedDecals=it->UnsupportedDecals;
+                result.Value.DecalsUnsupported=it->DecalsUnsupported;result.Value.UnsupportedDecals=it->UnsupportedDecals;result.Value.UncertainDecalSlots=it->UncertainDecalSlots;
             }
             if(result.ShadowTick>=0&&result.DecalTick>=0)break;
         }

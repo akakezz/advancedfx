@@ -487,8 +487,8 @@ static void SurfaceWorldDrawHook(void *list,int flags,float waterZ){
     const auto saved=g_SurfaceCurrentWorldList;
     // A nested non-main or special pass cannot borrow the outer list.
     g_SurfaceCurrentWorldList=0;
-    if(GetCurrentThreadId()==g_SurfaceDecalThread&&g_SurfaceReplayActive&&g_SurfaceDecalGate&&
-       !g_SurfacePendingDecals.empty()&&!(flags&0x840)&&Mirv_Tf2_SceneRenderViewId()==0&&MaterialSystem_IsImmediate())
+    if(GetCurrentThreadId()==g_SurfaceDecalThread&&reinterpret_cast<SurfaceAddress>(_ReturnAddress())==g_SurfaceDecalBase+0xe10e7&&
+       g_SurfaceReplayActive&&g_SurfaceDecalGate&&!g_SurfacePendingDecals.empty()&&!(flags&0x840)&&Mirv_Tf2_SceneRenderViewId()==0&&MaterialSystem_IsImmediate())
         g_SurfaceCurrentWorldList=reinterpret_cast<SurfaceAddress>(list);
     g_SurfaceWorldDraw(list,flags,waterZ);
     g_SurfaceCurrentWorldList=saved;
@@ -497,6 +497,12 @@ static bool SurfaceWorldDecalHooks(SurfaceAddress base){
     if(!SurfaceDecalHooks(base))return false;
     if(g_SurfaceDispatchInstalled&&g_SurfaceWorldDrawInstalled)return true;
     if(!SurfaceMatch(base,0xe7010,{0x40,0x53,0x48,0x83,0xec,0x70,0x48,0x89,0xb4,0x24,0x90,0,0,0})||
+       !SurfaceMatch(base,0xe10da,{0x0f,0x28,0xd6,0x8b,0xd6,0x48,0x8b,0xcd,0xe8,0x29,0x5f,0,0})||
+       !SurfaceMatch(base,0xd240b,{0x8b,0x47,0x08,0xba,0x01,0,0,0,0x48,0x89,0x6c,0x24,0x50,0x8b,0x6f,0x10})||
+       !SurfaceMatch(base,0xd2480,{0x89,0x4f,0x08,0x48,0x8b,0x07,0x48,0x63,0xc9,0x48,0xc1,0xe1,0x07})||
+       !SurfaceMatch(base,0xd24a7,{0xff,0x47,0x10,0x8b,0x47,0x10,0x4c,0x8b,0x0f})||
+       !SurfaceMatch(base,0xd2571,{0x4c,0x8b,0x03,0x48,0xc1,0xe1,0x03})||
+       !SurfaceMatch(base,0xd2592,{0x8b,0x43,0x10,0x4c,0x8b,0x0b,0xff,0xc0,0x89,0x43,0x10})||
        !SurfaceMatch(base,0xe71c8,{0x41,0x8b,0xd6,0x48,0x8b,0xce,0xe8,0xcd,0x43,0xff,0xff})||
        !SurfaceMatch(base,0xdb5b3,{0x4c,0x8d,0x41,0x18,0x48,0x63,0xda,0x4c,0x89,0x44,0x24,0x20,0x48,0x8b,0xd3,0x48,0x8d,0x43,0x03,0x48,0xc1,0xe0,0x05,0x49,0x03,0xc0})||
        !SurfaceMatch(base,0xdb620,{0x48,0x8b,0x00,0x48,0x8b,0x0c,0xc8,0x44,0x0f,0xb7,0x21})||
@@ -529,9 +535,10 @@ advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){
     if(!SurfaceSameWorld(world,g_SurfaceWorld)){g_SurfaceWorld=world;++g_SurfaceGeneration;g_SurfaceObserved.clear();SurfaceResetGeometry();}
     SurfaceWorldDecalHooks(base); // observe subsequent ordinary main-world draws
     sample.World=g_SurfaceGeneration;
-    std::vector<LiveDecal> decals;
-    sample.DecalsReady=ReadWorldDecals(base,world,decals,sample.DecalsUnsupported,sample.DecalStatus,sample.UnsupportedDecals);
+    std::vector<LiveDecal> decals;std::set<std::uint16_t> excludedSlots;
+    sample.DecalsReady=ReadWorldDecals(base,world,decals,sample.DecalsUnsupported,sample.DecalStatus,sample.UnsupportedDecals,&excludedSlots);
     if(sample.DecalsReady){
+        if(!excludedSlots.empty())sample.UncertainDecalSlots=std::make_shared<const std::vector<std::uint16_t>>(excludedSlots.begin(),excludedSlots.end());
         auto values=std::make_shared<std::vector<Decal>>();values->reserve(decals.size());
         for(auto &d:decals){
             auto &v=d.Value;
@@ -642,13 +649,14 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
             const bool detached=(requested&12)&&SurfaceWorldDecalHooks(base);
             std::set<std::uint16_t> excludedSlots;
             if(ReadWorldDecals(base,world,current,unsupported,status,coverage,detached?&excludedSlots:nullptr)){
-                std::size_t matched=0,hidden=0,failed=0,fading=0,fadeUnknown=0;
+                std::size_t matched=0,hidden=0,failed=0,fading=0,fadeUnknown=0,slotUnknown=0;
                 g_SurfaceHiddenDecals.clear();g_SurfaceDecalDrawSkips=0;
                 for(const auto &live:current){
                     const auto &v=live.Value;
                     auto it=std::lower_bound(sample.Decals->begin(),sample.Decals->end(),v.Slot,[](const Decal &a,std::uint16_t s){return a.Slot<s;});
                     const bool same=it!=sample.Decals->end()&&it->Same(v);matched+=same;
                     fading+=v.Fading();
+                    if(!same&&sample.DecalSlotUncertain(v.Slot)){++slotUnknown;continue;}
                     // If any historical fade record was unreadable, an
                     // unmatched live fade may be that record; fail open.
                     if(!same&&v.Fading()&&sample.UnsupportedDecals.FadeInvalid){++fadeUnknown;continue;}
@@ -679,7 +687,7 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
                 if(requested&4)report<<"Detached removed decals "<<(detached?"enabled":"guard unavailable")<<"; planned "<<removedPlanned<<"; missing geometry/bounded "<<geometryMissing<<"; unknown live slot "<<excludedMissing<<". ";
                 if(requested&8)report<<"Surviving opacity replacement "<<(detached?"enabled":"guard unavailable")<<"; planned "<<opacityPlanned<<"; unavailable "<<opacityUnavailable<<". ";
                 g_SurfaceDecalGate=true;active|=2;
-                report<<"Historical surviving decals "<<matched<<"/"<<sample.Decals->size()<<"; geometry gates "<<hidden<<"; missing "<<sample.Decals->size()-matched<<"; unsupported live "<<unsupported<<" ("<<coverage.Describe()<<"); rejected gates "<<failed<<"; live fading "<<fading<<"; unknown historical fades left live "<<fadeUnknown<<". Unreplaced surviving marks retain live opacity. ";
+                report<<"Historical surviving decals "<<matched<<"/"<<sample.Decals->size()<<"; geometry gates "<<hidden<<"; missing "<<sample.Decals->size()-matched<<"; unsupported live "<<unsupported<<" ("<<coverage.Describe()<<"); rejected gates "<<failed<<"; live fading "<<fading<<"; unknown historical fades left live "<<fadeUnknown<<"; unsupported historical slots left live "<<slotUnknown<<". Unreplaced surviving marks retain live opacity. ";
             }else report<<"Live decal traversal failed: "<<DecalReadLabel(status)<<". ";
         }
     }

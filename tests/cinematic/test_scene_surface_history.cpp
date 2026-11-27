@@ -97,6 +97,24 @@ int main(){
     put(pool+136,receivers+256);put(head,std::uint16_t(2));assert(!ResolveWorldReceivers(list,0,receivers,8,wanted,visible,read));
     put(head,std::uint16_t(0));put(list+0x88,std::int32_t(0));assert(ResolveWorldReceivers(list,0,receivers,8,wanted,visible,read)&&visible.empty());
     assert(!ResolveWorldReceivers(list,3,receivers,8,wanted,visible,read));
+    // Unsupported slot identities are independent of the supported decal
+    // payload, retained across a same-tick partial shadow update, and owned
+    // under the history budget just like other shared immutable vectors.
+    History uncertain;
+    Frame unknown;unknown.Tick=50;unknown.World=17;unknown.DecalsReady=true;
+    unknown.Decals=std::make_shared<const std::vector<Decal>>();
+    unknown.UncertainDecalSlots=std::make_shared<const std::vector<std::uint16_t>>(std::vector<std::uint16_t>{2,9});
+    assert(uncertain.Append(unknown)&&uncertain.At(50)->DecalSlotUncertain(2)&&!uncertain.At(50)->DecalSlotUncertain(3));
+    const auto unknownCost=uncertain.Bytes;
+    unknown.Tick=51;unknown.UncertainDecalSlots=std::make_shared<const std::vector<std::uint16_t>>(*unknown.UncertainDecalSlots);
+    assert(uncertain.Append(unknown)&&uncertain.Bytes==unknownCost+sizeof(Frame));
+    assert(uncertain.At(50)->UncertainDecalSlots==uncertain.At(51)->UncertainDecalSlots);
+    Frame partial;partial.Tick=51;partial.World=17;partial.ShadowsReady=true;partial.Shadows=std::make_shared<const std::vector<Shadow>>();
+    assert(uncertain.Append(partial)&&uncertain.ResolvePreview(51).Value.DecalSlotUncertain(9));
+    auto corrupt=unknown;corrupt.Tick=52;corrupt.UncertainDecalSlots=std::make_shared<const std::vector<std::uint16_t>>(std::vector<std::uint16_t>{9,2});
+    const auto kept=uncertain.Bytes;assert(!uncertain.Append(corrupt)&&uncertain.Bytes==kept&&uncertain.At(51)->DecalSlotUncertain(9));
+    unknown.Tick=52;unknown.UncertainDecalSlots.reset();assert(uncertain.Append(unknown)&&!uncertain.ResolvePreview(52).Value.DecalSlotUncertain(9));
+    uncertain.Clear();assert(!uncertain.Bytes);
     Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
     sh.Texture=ShadowTexture::Simple;sh.UV={.25f,.25f,.5f,.5f};
     assert(sh.HasSimpleTexture()&&sh.ReplayTextureRect()==sh.UV);
