@@ -274,7 +274,7 @@ public:
 		g_Engine_ClientEngineTools->LevelInitPreEntityAllTools();
 	}
 	virtual void LevelInitPostEntityAllTools() { g_Engine_ClientEngineTools->LevelInitPostEntityAllTools(); }
-	virtual void LevelShutdownPreEntityAllTools() { MirvPovSpectate_SetPlayer(0); g_Engine_ClientEngineTools->LevelShutdownPreEntityAllTools(); }
+	virtual void LevelShutdownPreEntityAllTools() { Mirv_Tf2_SceneAssetResidency(false); MirvPovSpectate_SetPlayer(0); g_Engine_ClientEngineTools->LevelShutdownPreEntityAllTools(); }
 	virtual void LevelShutdownPostEntityAllTools() { g_Engine_ClientEngineTools->LevelShutdownPostEntityAllTools(); }
 	virtual void PreRenderAllTools()
 	{

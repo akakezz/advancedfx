@@ -637,7 +637,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
 #ifdef _MSC_VER
         if(draw&&fastMemory&&region.Allows(static_cast<std::uintptr_t>(a),n)){
             if(SceneCopyDetachedMemory(reinterpret_cast<void*>(a),data,n)){++result.FastWrites;return true;}
-            ++result.WriteFaults;return false;
+            ++result.WriteFaults;region={}; // revalidate, then use original system write fallback
         }
 #endif
         ++result.SystemWrites;
