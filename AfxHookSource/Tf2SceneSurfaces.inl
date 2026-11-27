@@ -142,6 +142,8 @@ using DestroyFn=void(*)(void*,ShadowHandle);
 using BiasFn=void(*)(void*,ShadowHandle,unsigned char);
 using CreateFn=ShadowHandle(*)(void*,void*,void*,void*,int);
 using TexFn=void(*)(void*,ShadowHandle,float,float,float,float);
+using ClearClipFn=void(*)(void*,ShadowHandle);
+using AddClipFn=void(*)(void*,ShadowHandle,const float*,float);
 static void *g_SurfaceShadowManager=nullptr;
 static ProjectFn g_SurfaceProject=nullptr;
 static DestroyFn g_SurfaceDestroy=nullptr;
@@ -287,6 +289,10 @@ struct ShadowSlot {
     bool Appearance=false;
     std::array<float,4> UV{};
     SurfaceAddress Material=0,ModelMaterial=0;
+    bool ClipReady=false;
+    std::uint16_t ClipCount=0;
+    std::array<float,12> ClipNormals{};
+    std::array<float,4> ClipDistances{};
 };
 static bool ShadowSlots(void *manager,std::vector<ShadowSlot> &out,bool appearance=false){
     const auto a=reinterpret_cast<SurfaceAddress>(manager);
@@ -304,10 +310,17 @@ static bool ShadowSlots(void *manager,std::vector<ShadowSlot> &out,bool appearan
         if(SurfaceGet(item,raw)){
             auto get=[&](std::size_t off,auto &v){std::memcpy(&v,raw.data()+off,sizeof(v));};
             get(0x150,back);get(0x152,next);get(0x88,s.Flags);get(0x5c,s.Bias);
-            if(appearance){get(0x4c,s.UV);get(0x70,s.Material);get(0x78,s.ModelMaterial);s.Appearance=true;}
+            if(appearance){
+                get(0x4c,s.UV);get(0x70,s.Material);get(0x78,s.ModelMaterial);s.Appearance=true;
+                get(0xf8,s.ClipCount);get(0xfc,s.ClipNormals);get(0x12c,s.ClipDistances);s.ClipReady=s.ClipCount<=4;
+            }
         }else {
             if(!SurfaceGet(item+0x150,back)||!SurfaceGet(item+0x152,next)||!SurfaceGet(item+0x88,s.Flags)||!SurfaceGet(item+0x5c,s.Bias))return false;
-            if(appearance)s.Appearance=SurfaceGet(item+0x4c,s.UV)&&SurfaceGet(item+0x70,s.Material)&&SurfaceGet(item+0x78,s.ModelMaterial);
+            if(appearance){
+                s.Appearance=SurfaceGet(item+0x4c,s.UV)&&SurfaceGet(item+0x70,s.Material)&&SurfaceGet(item+0x78,s.ModelMaterial);
+                s.ClipReady=SurfaceGet(item+0xf8,s.ClipCount)&&s.ClipCount<=4&&(!s.ClipCount||
+                    (SurfaceRead(item+0xfc,s.ClipNormals.data(),s.ClipCount*3*sizeof(float))&&SurfaceRead(item+0x12c,s.ClipDistances.data(),s.ClipCount*sizeof(float))));
+            }
         }
         if(back!=prev)return false;
         out.push_back(s);prev=i;i=next;
@@ -351,6 +364,10 @@ static bool SurfaceShadowHooks(SurfaceAddress base){
        !SurfaceMatch(base,0x12b7e0,{0x0f,0xb7,0xc2,0x48,0x69,0xd0,0x60,0x01,0,0})||
        !SurfaceMatch(base,0x12a8ff,{0x80,0x7c,0x01,0x5c,0xff})||
        !SurfaceMatch(base,0x12bb0b,{0x48,0x89,0x5a,0x78,0x49,0x8b,0xf8,0x48,0x89,0x82,0x80,0,0,0,0x4c,0x8b,0xf2,0x4c,0x89,0x42,0x70})||
+       !SurfaceMatch(base,0x1237c0,{0x0f,0xb7,0xc2,0x48,0x69,0xd0,0x60,0x01,0,0,0x48,0x8b,0x41,0x10,0x33,0xc9,0x66,0x89,0x8c,0x02,0xf8,0,0,0})||
+       !SurfaceMatch(base,0x1217ce,{0x0f,0xb7,0x82,0xf8,0,0,0,0x48,0x83,0xc0,0x15,0x48,0x8d,0x0c,0x40})||
+       !SurfaceMatch(base,0x1217f3,{0x0f,0xb7,0x82,0xf8,0,0,0,0xf3,0x0f,0x11,0x9c,0x82,0x2c,0x01,0,0,0x66,0xff,0x82,0xf8,0,0,0})||
+       !SurfaceMatch(base,0x123a62,{0x49,0x8d,0xb6,0x2c,0x01,0,0,0x49,0x8d,0xbe,0x04,0x01,0,0})||
        !SurfaceMatch(base,0x12c1ca,{0xf3,0x0f,0x11,0x52,0x4c,0xf3,0x0f,0x11,0x5a,0x50,0xf3,0x0f,0x11,0x42,0x54,0xf3,0x0f,0x11,0x4a,0x58,0xc3}))return false;
     using Factory=void*(*)(const char*,int*);
     auto factory=reinterpret_cast<Factory>(GetProcAddress(reinterpret_cast<HMODULE>(base),"CreateInterface"));
@@ -358,7 +375,7 @@ static bool SurfaceShadowHooks(SurfaceAddress base){
     void *manager=factory("VEngineShadowMgr002",nullptr);
     SurfaceAddress vt=0;std::array<SurfaceAddress,20> slots{};
     if(!manager||!SurfaceGet(reinterpret_cast<SurfaceAddress>(manager),vt)||vt!=base+0x3959f0||!SurfaceGet(vt,slots)||
-       slots[0]!=base+0x124900||slots[1]!=base+0x124b00||slots[3]!=base+0x127de0||slots[9]!=base+0x12c1b0||slots[15]!=base+0x12b7e0)return false;
+       slots[0]!=base+0x124900||slots[1]!=base+0x124b00||slots[3]!=base+0x127de0||slots[9]!=base+0x12c1b0||slots[12]!=base+0x1237c0||slots[13]!=base+0x1217c0||slots[15]!=base+0x12b7e0)return false;
     g_SurfaceProject=reinterpret_cast<ProjectFn>(slots[3]);g_SurfaceDestroy=reinterpret_cast<DestroyFn>(slots[1]);g_SurfaceBias=reinterpret_cast<BiasFn>(slots[15]);
     if(DetourTransactionBegin()!=NO_ERROR)return false;
     LONG err=DetourUpdateThread(GetCurrentThread());
@@ -573,6 +590,7 @@ advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){
                 auto it=g_SurfaceObserved.find(s.Handle);
                 if(it==g_SurfaceObserved.end()||shadows->size()>=128){++sample.ShadowsUnobserved;continue;}
                 auto projection=it->second;projection.Bias=s.Bias;
+                if(s.ClipReady)projection.SetClipPlanes(s.ClipCount,s.ClipNormals,s.ClipDistances);
                 if(s.Appearance){
                     const auto &worldName=name(s.Material),&modelName=name(s.ModelMaterial);
                     if(!worldName.empty()&&!modelName.empty()){
@@ -615,7 +633,8 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
         if(material&&ShadowSlots(g_SurfaceShadowManager,slots)){
             auto vt=*reinterpret_cast<void***>(g_SurfaceShadowManager);
             auto create=reinterpret_cast<CreateFn>(vt[0]);auto tex=reinterpret_cast<TexFn>(vt[9]);
-            std::size_t simple=0,other=0,unknown=0;
+            auto clearClip=reinterpret_cast<ClearClipFn>(vt[12]);auto addClip=reinterpret_cast<AddClipFn>(vt[13]);
+            std::size_t simple=0,other=0,unknown=0,clipPlanes=0,clipUnknown=0;
             g_SurfaceOwn=true;
             for(const auto &s:*sample.Shadows){
                 if(!s.Valid())continue;
@@ -628,17 +647,21 @@ unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sam
                 else if(s.Texture==ShadowTexture::Other)++other;
                 else ++unknown;
                 g_SurfaceProject(g_SurfaceShadowManager,handle,s.Origin.data(),s.Direction.data(),s.Matrix.data(),s.Size.data(),static_cast<int>(s.Leaves.size()),s.Leaves.data(),s.Height,s.FalloffOffset,s.FalloffAmount,s.Caster.data());
+                // Native client projects first, then computes extra planes.
+                // Only call the bounded API for our newly owned shadow.
+                if(s.ClipKnown){clearClip(g_SurfaceShadowManager,handle);for(unsigned i=0;i<s.ClipCount;++i){const auto &p=s.ClipPlanes[i];addClip(g_SurfaceShadowManager,handle,p.data(),p[3]);++clipPlanes;}}
+                else ++clipUnknown;
                 g_SurfaceBias(g_SurfaceShadowManager,handle,s.Bias);
             }
             g_SurfaceOwn=false;
             // Fail open on incomplete observation or creation. Keep live
             // shadows if replacement coverage cannot be established.
-            const bool replace=sample.ShadowsUnobserved==0&&g_SurfaceOwned.size()==sample.Shadows->size();
+            const bool replace=sample.ShadowsUnobserved==0&&clipUnknown==0&&g_SurfaceOwned.size()==sample.Shadows->size();
             if(replace){
                 for(const auto &s:slots)if(!(s.Flags&6)&&s.Bias!=255){g_SurfaceSavedBias[s.Handle]=s.Bias;g_SurfaceBias(g_SurfaceShadowManager,s.Handle,255);}
             }
             if(replace||!g_SurfaceOwned.empty())active|=1;
-            report<<"Historical projected blobs "<<g_SurfaceOwned.size()<<"/"<<sample.Shadows->size()<<"; simple texture rect "<<simple<<"; non-simple approximations "<<other<<"; unknown appearance approximations "<<unknown<<"; unobserved "<<sample.ShadowsUnobserved<<"; live bias gates "<<g_SurfaceSavedBias.size()<<"; "<<(replace?"replacement":"partial overlay")<<". ";
+            report<<"Historical projected blobs "<<g_SurfaceOwned.size()<<"/"<<sample.Shadows->size()<<"; simple texture rect "<<simple<<"; non-simple approximations "<<other<<"; unknown appearance approximations "<<unknown<<"; restored clip planes "<<clipPlanes<<"; unknown clip coverage "<<clipUnknown<<"; unobserved "<<sample.ShadowsUnobserved<<"; live bias gates "<<g_SurfaceSavedBias.size()<<"; "<<(replace?"replacement":"partial overlay")<<". ";
         }else report<<"Shadow material, manager, or r_shadows unavailable. ";
     }
     if(requested&2){

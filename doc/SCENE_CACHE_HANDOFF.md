@@ -414,3 +414,7 @@ Exact ordinary world draw 0xe7010 scopes its current render list to its own nest
 ### Phase 22B — unsupported decal slot retention and safe contiguous particle copies
 
 Historical capture retains sorted unsupported native slot IDs as immutable budgeted values, not native pointers. Same-tick merge and bounded preview carry them with their source decal sample. An unmatched live slot that was unsupported historically is left live, avoiding false future-only suppression. Verified exact world bucket builder offsets in engine 0xd240b..0xd25d3 and ordinary world draw caller 0xe10e7, added byte guards. Native particle restore plans coalesce only contiguous source and destination words within a single verified collection, never across gaps, constants or native collection boundaries. No new queued effects or native resource retention; portable fixtures and exact native build required.
+
+### Phase 22C — historical shadow projection clip planes
+
+Capture the verified native shadow slot extra clip planes (count +0xf8, up to four normals +0xfc, distances +0x12c), validating finite values and preserving known-empty versus unknown coverage. Replay through shadow manager slots 12/13 only on the owned historical shadow, after projection, matching SDK call order. Unknown clip coverage prevents suppressing live shadows under the existing partial-overlay policy. Reports include restored planes and unknown counts. This reduces historical shadow poke-through/back-casting; no shadow atlas/silhouette capture yet. Portable fixtures and exact native build pending.

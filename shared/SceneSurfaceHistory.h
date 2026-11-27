@@ -142,15 +142,42 @@ struct Shadow {
     std::array<float,4> UV{0,0,1,1};
     bool HasSimpleTexture()const{return Texture==ShadowTexture::Simple&&ValidShadowTextureRect(UV);}
     std::array<float,4> ReplayTextureRect()const{return HasSimpleTexture()?UV:std::array<float,4>{0,0,1,1};}
+    // Engine projected shadows support four additional world-space planes.
+    // Only initialized entries are retained; a known empty list is distinct
+    // from a failed capture.
+    bool ClipKnown=false;
+    std::uint16_t ClipCount=0;
+    std::array<std::array<float,4>,4> ClipPlanes{};
+    bool SetClipPlanes(unsigned count,const std::array<float,12> &normals,const std::array<float,4> &distances){
+        ClipKnown=false;ClipCount=0;ClipPlanes={};
+        if(count>4)return false;
+        std::array<std::array<float,4>,4> planes{};
+        for(unsigned i=0;i<count;++i){
+            auto &p=planes[i];p={normals[i*3],normals[i*3+1],normals[i*3+2],distances[i]};
+            if(!std::all_of(p.begin(),p.end(),[](float x){return std::isfinite(x)&&std::abs(x)<1e7f;})||
+               (p[0]==0&&p[1]==0&&p[2]==0))return false;
+        }
+        ClipPlanes=planes;ClipCount=static_cast<std::uint16_t>(count);ClipKnown=true;return true;
+    }
+    bool ValidClipPlanes()const{
+        if(!ClipKnown)return ClipCount==0;
+        if(ClipCount>4)return false;
+        for(unsigned i=0;i<ClipCount;++i){
+            const auto &p=ClipPlanes[i];
+            if(!std::all_of(p.begin(),p.end(),[](float x){return std::isfinite(x)&&std::abs(x)<1e7f;})||
+               (p[0]==0&&p[1]==0&&p[2]==0))return false;
+        }
+        return true;
+    }
     std::vector<int> Leaves;
     bool Valid() const {
         auto finite=[](const auto &v){return std::all_of(v.begin(),v.end(),[](float x){return std::isfinite(x)&&std::abs(x)<1e7f;});};
-        return finite(Origin)&&finite(Direction)&&finite(Caster)&&finite(Matrix)&&finite(Size)&&Size[0]>0&&Size[1]>0&&Size[0]<8192&&Size[1]<8192&&
+        return ValidClipPlanes()&&finite(Origin)&&finite(Direction)&&finite(Caster)&&finite(Matrix)&&finite(Size)&&Size[0]>0&&Size[1]>0&&Size[0]<8192&&Size[1]<8192&&
             std::isfinite(Height)&&Height>0&&Height<32768&&std::isfinite(FalloffOffset)&&std::isfinite(FalloffAmount)&&
             !Leaves.empty()&&Leaves.size()<=8192&&std::all_of(Leaves.begin(),Leaves.end(),[](int v){return v>=0&&v<1048576;});
     }
     bool operator==(const Shadow &o) const {
-        return Origin==o.Origin&&Direction==o.Direction&&Caster==o.Caster&&Matrix==o.Matrix&&Size==o.Size&&Height==o.Height&&FalloffOffset==o.FalloffOffset&&FalloffAmount==o.FalloffAmount&&Bias==o.Bias&&Texture==o.Texture&&UV==o.UV&&Leaves==o.Leaves;
+        return Origin==o.Origin&&Direction==o.Direction&&Caster==o.Caster&&Matrix==o.Matrix&&Size==o.Size&&Height==o.Height&&FalloffOffset==o.FalloffOffset&&FalloffAmount==o.FalloffAmount&&Bias==o.Bias&&Texture==o.Texture&&UV==o.UV&&ClipKnown==o.ClipKnown&&ClipCount==o.ClipCount&&ClipPlanes==o.ClipPlanes&&Leaves==o.Leaves;
     }
 };
 enum class DecalRead { NotRun, Guard, Table, Record, Slot, Surface, Changed, Ready };

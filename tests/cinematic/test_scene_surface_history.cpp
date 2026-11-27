@@ -123,6 +123,16 @@ int main(){
     assert(!(other==sh)&&!other.HasSimpleTexture()&&other.ReplayTextureRect()==full);
     other=sh;other.UV[2]=NAN;assert(!other.HasSimpleTexture()&&other.ReplayTextureRect()==full);
     other=sh;other.UV[2]=1;assert(!other.HasSimpleTexture());
+    std::array<float,12> normals{1,0,0,0,1,0,0,0,1,-1,0,0};
+    std::array<float,4> distances{3,5,8,13};
+    auto clipped=sh;assert(clipped.SetClipPlanes(4,normals,distances)&&clipped.Valid()&&clipped.ClipCount==4&&!(clipped==sh));
+    assert(clipped.ClipPlanes[2][2]==1&&clipped.ClipPlanes[3][3]==13);
+    auto exactClip=clipped;assert(exactClip==clipped);
+    assert(!exactClip.SetClipPlanes(5,normals,distances)&&!exactClip.ClipKnown&&exactClip.ClipCount==0);
+    distances[0]=NAN;assert(!exactClip.SetClipPlanes(1,normals,distances));
+    assert(exactClip.SetClipPlanes(0,normals,distances)&&exactClip.ClipKnown&&exactClip.ClipCount==0&&exactClip.Valid());
+    distances[0]=3;normals[0]=0;assert(!exactClip.SetClipPlanes(1,normals,distances));
+    exactClip.ClipKnown=true;exactClip.ClipCount=5;assert(!exactClip.Valid());
     History merge;
     Frame first;first.Tick=40;first.World=12;first.ShadowsReady=true;first.ShadowsUnobserved=2;
     first.Shadows=std::make_shared<const std::vector<Shadow>>(std::vector<Shadow>{sh});
