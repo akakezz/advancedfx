@@ -2,7 +2,14 @@
 #include <cassert>
 using namespace advancedfx::SceneLighting;
 int main(){
-    float ambient[24]{};ambient[0]=.4f;ambient[3]=1;
+    static_assert(AmbientRgbSlot==16&&AmbientRgbaSlot==17,"verified TF2 overload order");
+    static_assert(AmbientWordCount(16)==18&&AmbientWordCount(17)==24&&AmbientWordCount(15)==0,"exact native input lengths");
+    float rgb[18]{};for(unsigned i=0;i<18;++i)rgb[i]=float(i+1)/64;
+    float ambient[24]{};for(unsigned i=0;i<24;++i)ambient[i]=float(i+1)/32;
+    Sample rgbOnly;assert(Sample::Capture(16,rgb,0,nullptr,rgbOnly)&&rgbOnly.AmbientWords()==18);
+    assert(rgbOnly.Ambient[17]==rgb[17]&&rgbOnly.Ambient[18]==0&&rgbOnly.Ambient[23]==0);
+    Sample rgbaOnly;assert(Sample::Capture(17,ambient,0,nullptr,rgbaOnly)&&rgbaOnly.AmbientWords()==24);
+    assert(rgbaOnly.Ambient[23]==ambient[23]);
     Descriptor raw{};raw[0]=1;SetWord(raw,1,2);SetWord(raw,4,100);SetWord(raw,10,20);SetWord(raw,12,1);raw[19]=9;
     // The native converter doesn't initialize the unused angular or
     // private derived fields. Never capture them as arbitrary floats.
@@ -13,7 +20,7 @@ int main(){
     auto spot=raw;spot[0]=3;SetWord(spot,11,5);SetWord(spot,15,.5f);SetWord(spot,16,1);
     SetWord(spot,17,.875f);SetWord(spot,18,.625f);
     Sample s;assert(Sample::Capture(17,ambient,1,&spot,s)&&s.Valid());
-    assert(FloatWord(s.Lights[0],20)==4&&s.AmbientWords()==18);
+    assert(FloatWord(s.Lights[0],20)==4&&s.AmbientWords()==24);
     auto previous=s;spot[19]=0;assert(!Sample::Capture(17,ambient,1,&spot,s)&&s==previous);
     assert(!Sample::Capture(15,ambient,0,nullptr,s)&&!Sample::Capture(16,ambient,5,&raw,s));
     ambient[0]=NAN;assert(!Sample::Capture(16,ambient,0,nullptr,s));ambient[0]=.4f;

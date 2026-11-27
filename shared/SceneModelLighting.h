@@ -43,11 +43,14 @@ inline bool Normalize(Descriptor &d){
     SetWord(d,21,static_cast<float>(squared));
     return true;
 }
+// Verified TF2 x64 CStudioRenderContext slots, not guessed from overload order.
+inline constexpr int AmbientRgbSlot=16,AmbientRgbaSlot=17;
+inline constexpr unsigned AmbientWordCount(int slot){return slot==AmbientRgbSlot?18u:slot==AmbientRgbaSlot?24u:0u;}
 struct Sample {
-    int AmbientSlot=0,Count=0; // slot 16 = float4 faces, slot 17 = float3
+    int AmbientSlot=0,Count=0; // slot 16 = six float3, slot 17 = six float4
     std::array<float,24> Ambient{};
     std::array<Descriptor,4> Lights{};
-    unsigned AmbientWords()const{return AmbientSlot==16?24u:AmbientSlot==17?18u:0u;}
+    unsigned AmbientWords()const{return AmbientWordCount(AmbientSlot);}
     bool Valid()const{
         const auto n=AmbientWords();
         if(!n||Count<0||Count>4)return false;

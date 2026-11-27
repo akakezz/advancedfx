@@ -10927,7 +10927,7 @@ struct SceneStudioState
 {
 	float Color[3]{1,1,1}, Alpha = 1;
 	float Ambient3[18]{}, Ambient4[24]{};
-	int AmbientSlot = 17, LightCount = 0;
+	int AmbientSlot = advancedfx::SceneLighting::AmbientRgbSlot, LightCount = 0;
     unsigned Known=0; // color 1, alpha 2, ambient 4, lights 8
     std::uint64_t AmbientRevision=0,LightRevision=0;
     void *AmbientOwner=nullptr,*LightOwner=nullptr;
@@ -10959,11 +10959,11 @@ struct SceneStudioScope
             SceneInterfaceCall<void, const float *>(Studio,27,color);
         if(!(s.Known&2)||s.Alpha!=alpha)
             SceneInterfaceCall<void,float>(Studio,28,alpha);
-        const int ambientSlot=lighting?lighting->AmbientSlot:17;
+        const int ambientSlot=lighting?lighting->AmbientSlot:advancedfx::SceneLighting::AmbientRgbSlot;
         const float *ambient=lighting?lighting->Ambient.data():&info.AmbientCube[0][0];
-        const auto *currentAmbient=ambientSlot==16?s.Ambient4:s.Ambient3;
+        const auto *currentAmbient=ambientSlot==advancedfx::SceneLighting::AmbientRgbaSlot?s.Ambient4:s.Ambient3;
         if(!(s.Known&4)||s.AmbientOwner!=Studio||s.AmbientSlot!=ambientSlot||
-           std::memcmp(currentAmbient,ambient,(ambientSlot==16?24u:18u)*sizeof(float)))
+           std::memcmp(currentAmbient,ambient,advancedfx::SceneLighting::AmbientWordCount(ambientSlot)*sizeof(float)))
             SceneInterfaceCall<void,const float *>(Studio,ambientSlot,ambient);
         if(!(s.Known&8)||s.LightOwner!=Studio||s.LightCount!=info.LightCount||
            std::memcmp(s.Lights,info.LightDescriptors,std::size_t(info.LightCount)*sizeof(s.Lights[0])))
@@ -10979,10 +10979,10 @@ struct SceneStudioScope
         if(!(known&2)||s.Alpha!=Previous.Alpha)
             SceneInterfaceCall<void,float>(Studio,28,Previous.Alpha);
         const bool ambientEqual=s.AmbientSlot==Previous.AmbientSlot&&
-            (Previous.AmbientSlot==16?std::equal(s.Ambient4,s.Ambient4+24,Previous.Ambient4):
+            (Previous.AmbientSlot==advancedfx::SceneLighting::AmbientRgbaSlot?std::equal(s.Ambient4,s.Ambient4+24,Previous.Ambient4):
              std::equal(s.Ambient3,s.Ambient3+18,Previous.Ambient3));
         if(!(known&4)||!ambientEqual)
-            SceneInterfaceCall<void,const float *>(Studio,Previous.AmbientSlot,Previous.AmbientSlot==16?Previous.Ambient4:Previous.Ambient3);
+            SceneInterfaceCall<void,const float *>(Studio,Previous.AmbientSlot,Previous.AmbientSlot==advancedfx::SceneLighting::AmbientRgbaSlot?Previous.Ambient4:Previous.Ambient3);
         const bool lightsEqual=s.LightCount==Previous.LightCount&&s.LightCount>=0&&s.LightCount<=4&&
             !std::memcmp(s.Lights,Previous.Lights,size_t(s.LightCount)*sizeof(s.Lights[0]));
         if(!(known&8)||!lightsEqual)
@@ -11960,7 +11960,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
        g_SceneStudioState.AmbientOwner!=studio||g_SceneStudioState.LightOwner!=studio||!lighting||!lighting->Valid())lighting=nullptr;
     if(textured){
         for(unsigned face=0;face<6;++face)for(unsigned channel=0;channel<3;++channel)
-            info.AmbientCube[face][channel]=lighting?lighting->Ambient[face*(lighting->AmbientSlot==16?4:3)+channel]:.55f;
+            info.AmbientCube[face][channel]=lighting?lighting->Ambient[face*(lighting->AmbientSlot==advancedfx::SceneLighting::AmbientRgbaSlot?4:3)+channel]:.55f;
         if(lighting){
             info.LightCount=lighting->Count;
             std::memcpy(info.LightDescriptors,lighting->Lights.data(),std::size_t(info.LightCount)*sizeof(info.LightDescriptors[0]));
@@ -12087,14 +12087,14 @@ void __fastcall SceneStudioAlpha(void *self, SCENE_STUDIO_EDX float v)
 void __fastcall SceneStudioAmbient3(void *self, SCENE_STUDIO_EDX const float *v)
 {
     ++g_SceneStudioState.AmbientRevision;g_SceneStudioState.AmbientOwner=self;
-	if (v) { std::memcpy(g_SceneStudioState.Ambient3, v, sizeof(g_SceneStudioState.Ambient3)); g_SceneStudioState.AmbientSlot = 17;g_SceneStudioState.Known|=4; }
+	if (v) { std::memcpy(g_SceneStudioState.Ambient3, v, sizeof(g_SceneStudioState.Ambient3)); g_SceneStudioState.AmbientSlot = advancedfx::SceneLighting::AmbientRgbSlot;g_SceneStudioState.Known|=4; }
     else g_SceneStudioState.Known&=~4u;
 	g_SceneOriginalAmbient3(self, SCENE_STUDIO_PASS v);
 }
 void __fastcall SceneStudioAmbient4(void *self, SCENE_STUDIO_EDX const float *v)
 {
     ++g_SceneStudioState.AmbientRevision;g_SceneStudioState.AmbientOwner=self;
-	if (v) { std::memcpy(g_SceneStudioState.Ambient4, v, sizeof(g_SceneStudioState.Ambient4)); g_SceneStudioState.AmbientSlot = 16;g_SceneStudioState.Known|=4; }
+	if (v) { std::memcpy(g_SceneStudioState.Ambient4, v, sizeof(g_SceneStudioState.Ambient4)); g_SceneStudioState.AmbientSlot = advancedfx::SceneLighting::AmbientRgbaSlot;g_SceneStudioState.Known|=4; }
     else g_SceneStudioState.Known&=~4u;
 	g_SceneOriginalAmbient4(self, SCENE_STUDIO_PASS v);
 }
@@ -12160,7 +12160,7 @@ static void SceneObserveLighting(void *self,const void *state,const float *posit
     std::memcpy(row.Key.Origin.data(),modelBytes.data(),12);
     std::memcpy(&row.Key.Skin,modelBytes.data()+0x48,4);std::memcpy(&row.Key.Body,modelBytes.data()+0x4c,4);
     if(row.Key.Skin<0||row.Key.Body<0||!row.Key.Matches(row.Key.Checksum,row.Key.Skin,row.Key.Body,row.Key.Origin.data())||
-       !advancedfx::SceneLighting::Sample::Capture(studio.AmbientSlot,studio.AmbientSlot==16?studio.Ambient4:studio.Ambient3,
+       !advancedfx::SceneLighting::Sample::Capture(studio.AmbientSlot,studio.AmbientSlot==advancedfx::SceneLighting::AmbientRgbaSlot?studio.Ambient4:studio.Ambient3,
            studio.LightCount,studio.Lights,row.Value))return;
     auto found=g_SceneLightingObservations.find(renderable);
     if(found!=g_SceneLightingObservations.end()){
@@ -12218,12 +12218,36 @@ bool Mirv_Tf2_CaptureSceneLighting(int frame,const void *renderable,advancedfx::
 void Mirv_Tf2_InstallSceneStudioState(void *studio)
 {
 	if (!studio || g_SceneOriginalColor) return;
+#ifdef _WIN64
+    // Both ambient overloads are ABI-sensitive: calling the float4 setter
+    // with an 18-float array reads beyond that array. Verify the exact
+    // native studio interface before installing the observation hooks.
+    const auto base=reinterpret_cast<std::uintptr_t>(GetModuleHandleA("studiorender.dll"));
+    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};std::uintptr_t nativeTable=0;
+    if(g_SourceSdkVer!=SourceSdkVer_TF2||!base||
+       !SceneLightingRead(base,dos)||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+       !SceneLightingRead(base+dos.e_lfanew,nt)||nt.Signature!=IMAGE_NT_SIGNATURE||nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||
+       nt.FileHeader.TimeDateStamp!=0x6ac412f0||nt.OptionalHeader.SizeOfImage!=0x43d000||
+       !SceneLightingRead(reinterpret_cast<std::uintptr_t>(studio),nativeTable)||nativeTable!=base+0x81120)return;
+    const std::pair<unsigned,std::uintptr_t> slots[]={{16,0x599e0},{17,0x59940},{18,0x59bd0},{27,0x59b30},{28,0x59930}};
+    for(const auto &slot:slots){
+        std::uintptr_t target=0;
+        if(!SceneLightingRead(nativeTable+slot.first*sizeof(void*),target)||target!=base+slot.second)return;
+    }
+    if(!SceneLightingMatch(base,0x599ea,{0x8b,0x02,0x48,0x8d,0xb9,0x88,0,0,0,0x89,0x07})||
+       !SceneLightingMatch(base,0x599a9,{0xff,0x90,0x80,0,0,0})||
+       !SceneLightingMatch(base,0x5994a,{0x0f,0x10,0x02,0x48,0x8d,0xb9,0x88,0,0,0,0x0f,0x11,0x07})||
+       !SceneLightingMatch(base,0x59977,{0x0f,0x10,0x4a,0x50,0x0f,0x11,0x4f,0x50})||
+       !SceneLightingMatch(base,0x59c00,{0x41,0x89,0x86,0x48,0x02,0,0})||
+       !SceneLightingMatch(base,0x59b30,{0x8b,0x02,0x89,0x81,0x4c,0x02,0,0})||
+       !SceneLightingMatch(base,0x59930,{0xf3,0x0f,0x11,0x89,0x58,0x02,0,0}))return;
+#endif
 	auto table = *static_cast<void ***>(studio);
 	bool ok = true;
 	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[27]), reinterpret_cast<PVOID>(SceneStudioColor), reinterpret_cast<PVOID *>(&g_SceneOriginalColor));
 	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[28]), reinterpret_cast<PVOID>(SceneStudioAlpha), reinterpret_cast<PVOID *>(&g_SceneOriginalAlpha));
-	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[17]), reinterpret_cast<PVOID>(SceneStudioAmbient3), reinterpret_cast<PVOID *>(&g_SceneOriginalAmbient3));
-	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[16]), reinterpret_cast<PVOID>(SceneStudioAmbient4), reinterpret_cast<PVOID *>(&g_SceneOriginalAmbient4));
+	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[advancedfx::SceneLighting::AmbientRgbSlot]), reinterpret_cast<PVOID>(SceneStudioAmbient3), reinterpret_cast<PVOID *>(&g_SceneOriginalAmbient3));
+	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[advancedfx::SceneLighting::AmbientRgbaSlot]), reinterpret_cast<PVOID>(SceneStudioAmbient4), reinterpret_cast<PVOID *>(&g_SceneOriginalAmbient4));
 	ok &= !!AfxDetourPtr(reinterpret_cast<PVOID *>(&table[18]), reinterpret_cast<PVOID>(SceneStudioLights), reinterpret_cast<PVOID *>(&g_SceneOriginalLights));
 	g_SceneStudioStateInstalled = ok;
 }
