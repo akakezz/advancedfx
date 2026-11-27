@@ -90,6 +90,22 @@ int main()
  lit.DemoTime=1;lit.Entities[0].Identity=1;auto extra=lit.Entities[0];extra.Identity=2;lit.Entities.push_back(extra);
  assert(!backwardBudget.Append(lit)&&backwardBudget.Count()==1&&backwardBudget.Frames().front().DemoTime==10);
 
+ // Model-decal geometry shares immutable storage, survives eviction while
+ // externally owned, and cannot invalidate an otherwise fitting pose frame.
+ using namespace advancedfx::SceneLighting;
+ auto decal=std::make_shared<ModelDecalGeometry>();ModelDecalBatch b;
+ b.Material="decals/test";b.Vertices.resize(3);b.Indices={0,1,2};decal->Batches.push_back(b);
+ Cache::Frame df=p;df.DemoTime=30;df.ClientTime=30;auto &de=df.Entities[0];de.ModelPose=pose;
+ de.ModelDecals.Lod=0;de.ModelDecals.Batches=1;de.ModelDecals.Vertices=3;de.ModelDecals.Indices=3;de.ModelDecalData=decal;
+ Cache dc;assert(dc.Append(df));const auto decalCost=dc.Bytes();assert(decalCost>=cost+decal->Bytes());
+ df.DemoTime=30.05;df.ClientTime=30.05;de.ModelDecalData=std::make_shared<ModelDecalGeometry>(*decal);
+ assert(dc.Append(df));assert(dc.Frames().front().Entities[0].ModelDecalData==dc.Frames().back().Entities[0].ModelDecalData);
+ assert(dc.Sample(30.02,out)&&out.Entities[0].ModelDecalData==decal);
+ dc.SetLimit(decalCost);assert(dc.Count()==1&&dc.Bytes()==decalCost);dc.Clear();assert(dc.Bytes()==0&&decal->Valid(de.ModelDecals));
+ Cache optionalDecals(cost);assert(optionalDecals.Append(df)&&optionalDecals.Count()==1&&!optionalDecals.Frames().back().Entities[0].ModelDecalData);
+ assert(optionalDecals.Frames().back().Entities[0].ModelDecals.Known());
+ auto brokenDecal=std::make_shared<ModelDecalGeometry>(*decal);brokenDecal->Batches[0].Indices[0]=3;
+ de.ModelDecalData=brokenDecal;assert(dc.Append(df)&&!dc.Frames().back().Entities[0].ModelDecalData);
  // Exact pose reuse charges shared allocations once and never crosses ownership/model boundaries.
  Cache reuse;Cache::Frame repeated;p.DemoTime=0;p.ClientTime=0;p.Entities[0].ModelPose=pose;p.Entities[0].OwnerIdentity=0;assert(reuse.Append(p));auto firstPose=reuse.Frames().front().Entities[0].ModelPose;size_t firstBytes=reuse.Bytes();
  auto copy = std::make_shared<Cache::Pose>(*pose);
