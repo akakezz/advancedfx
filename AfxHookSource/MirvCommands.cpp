@@ -41,6 +41,8 @@ extern SOURCESDK::CreateInterfaceFn g_AppSystemFactory;
 #include <cerrno>
 #include <climits>
 #include <cstdarg>
+#include <chrono>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -540,13 +542,39 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
 }
 
 // Explicit one-shot, engine thread at FRAME_RENDER_END, while demo paused.
+#if defined(_WIN64) && defined(_MSC_VER)
+// Local writes only to verified, freshly allocated detached collections.
+// No C++ objects with destructors in this SEH function.
+static bool SceneCopyDetachedMemory(void *to,const void *from,std::size_t size)
+{
+    __try {std::memcpy(to,from,size);return true;}
+    __except(GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION||GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR?
+             EXCEPTION_EXECUTE_HANDLER:EXCEPTION_CONTINUE_SEARCH){return false;}
+}
+struct SceneDetachedWriteRegion {
+    std::uintptr_t Begin=0,End=0;
+    bool Allows(std::uintptr_t address,std::size_t size){
+        if(!size||address<0x10000||size>UINTPTR_MAX-address)return false;
+        if(address>=Begin&&address+size<=End)return true;
+        MEMORY_BASIC_INFORMATION info{};
+        if(!VirtualQuery(reinterpret_cast<void*>(address),&info,sizeof(info))||info.State!=MEM_COMMIT||
+           (info.Protect&(PAGE_GUARD|PAGE_NOACCESS)))return false;
+        const auto protection=info.Protect&0xff;
+        if(protection!=PAGE_READWRITE&&protection!=PAGE_EXECUTE_READWRITE)return false;
+        const auto begin=reinterpret_cast<std::uintptr_t>(info.BaseAddress);
+        if(info.RegionSize>UINTPTR_MAX-begin)return false;
+        Begin=begin;End=begin+info.RegionSize;
+        return address>=Begin&&address+size<=End;
+    }
+};
+#endif
 // Factory-created collections link to their definition temporarily, but never
 // enter CParticleMgr's registered CNewParticleEffect list. Destroy immediately;
 // no draw calls or pointers are queued.
 // Native particle replay uses the same verified factory and allocations as
 // the successful dry run. No engine pointers are retained between callbacks.
 static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
-    const advancedfx::NativeParticles::Frame &frame,std::size_t probeIndex,bool draw)
+    const advancedfx::NativeParticles::Frame &frame,std::size_t probeIndex,bool draw,bool fastMemory=false)
 {
     using namespace advancedfx::NativeParticles;
     ReplayResult result;
@@ -602,7 +630,17 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
 
     using Render=void(*)(void *,void *,bool,void *);
     auto render=reinterpret_cast<Render>(base+0x8e4840);
-    auto write=[](Address a,const void *data,std::size_t n) {
+#ifdef _MSC_VER
+    SceneDetachedWriteRegion region;
+#endif
+    auto write=[&](Address a,const void *data,std::size_t n) {
+#ifdef _MSC_VER
+        if(draw&&fastMemory&&region.Allows(static_cast<std::uintptr_t>(a),n)){
+            if(SceneCopyDetachedMemory(reinterpret_cast<void*>(a),data,n)){++result.FastWrites;return true;}
+            ++result.WriteFaults;return false;
+        }
+#endif
+        ++result.SystemWrites;
         SIZE_T wrote=0;return WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(a),data,n,&wrote)&&wrote==n;
     };
     void *context=nullptr;
@@ -673,19 +711,30 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         const auto &old=frame.Collections[index];
         auto reject=[&](const std::string &why){++result.Rejected;if(firstFailure.empty())firstFailure=std::string(old.Name.data())+": "+why;return false;};
         if(!old.Name[0])return reject("unnamed definition");
+#ifdef _MSC_VER
+        region={}; // never reuse page permissions across native allocations
+#endif
+        const auto factoryStart=std::chrono::steady_clock::now();
         void *object=make(reinterpret_cast<void*>(manager),old.Name.data(),0.0f,1);
+        result.FactoryMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-factoryStart).count();
         if(!object)return reject("factory returned null");
         bool ok=false;
         {
-            struct Owner {void *Object;Destroy Destructor,Free;~Owner(){Destructor(Object);Free(Object);}} owner{object,destruct,freeMemory};
+            struct Owner {void *Object;Destroy Destructor,Free;double &Ms;~Owner(){
+                const auto start=std::chrono::steady_clock::now();Destructor(Object);Free(Object);
+                Ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+            }} owner{object,destruct,freeMemory,result.DestroyMs};
+            const auto planStart=std::chrono::steady_clock::now();
             Address headDuring=0;
             RestorePlan plan;
             if(!read(base+Layout::Manager+Layout::RootHead,&headDuring,sizeof(headDuring))||headDuring!=headBefore) {
                 listChanged=true;plan.Error="registered effect list changed during factory call";
             } else plan=PlanDetached(frame,index,reinterpret_cast<Address>(object),read);
+            result.PlanMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-planStart).count();
             if(!plan.Error.empty())reject(plan.Error);
             else if(draw&&(plan.Missing||plan.ConstantDifferences))reject("missing attributes or differing shared constants");
             else {
+                const auto copyStart=std::chrono::steady_clock::now();
                 std::size_t copied=0;std::vector<std::uint32_t> verify;bool copyOk=true;
                 for(const auto &op:plan.Copies) {
                     const auto n=std::size_t(op.Count)*sizeof(std::uint32_t);
@@ -696,6 +745,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                     }
                     ++copied;
                 }
+                result.CopyMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-copyStart).count();
                 if(!copyOk)reject("attribute copy failed");
                 else if(!draw) {
                     result.Status=std::string(copied?"Detached attribute copy verified":"Detached probe inconclusive (no varying blocks copied)")+
@@ -722,9 +772,12 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                     // Always return active counters to their factory state before destruction.
                     // No queued consumers are permitted in this experimental path.
                     struct ResetActive {
-                        const RestorePlan &Plan;decltype(write) &Write;
-                        ~ResetActive(){const int zero=0;for(const auto &b:Plan.Bindings){Write(b.Native+Layout::Active,&zero,sizeof(zero));Write(b.Native+0x30,&zero,sizeof(zero));}}
-                    } reset{plan,write};
+                        const RestorePlan &Plan;decltype(write) &Write;std::size_t &Failures;
+                        ~ResetActive(){const int zero=0;for(const auto &b:Plan.Bindings){
+                            if(!Write(b.Native+Layout::Active,&zero,sizeof(zero)))++Failures;
+                            if(!Write(b.Native+0x30,&zero,sizeof(zero)))++Failures;
+                        }}
+                    } reset{plan,write,result.CleanupFailures};
                     if(valid)for(const auto &binding:plan.Bindings) {
                         const auto &c=frame.Collections[binding.Recorded];
                         const int active=static_cast<int>(c.Active),padded=(active+3)/4;
@@ -743,7 +796,9 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                             const auto &c=frame.Collections[i];
                             if(c.Parent<0||!bound[c.Parent]||!gate[c.Parent]) {
                                 ctx.Mode(context,10);identity(context);
+                                const auto drawStart=std::chrono::steady_clock::now();
                                 render(reinterpret_cast<void*>(binding.Native),context,false,nullptr);
+                                result.RenderMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-drawStart).count();
                             }
                             if(c.Active){++nodes;particles+=c.Active;}
                         }
@@ -752,6 +807,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                 }
             }
         }
+        if(result.CleanupFailures){listChanged=true;reject("native active count cleanup failed");ok=false;}
         Address headAfter=0;
         if(!read(base+Layout::Manager+Layout::RootHead,&headAfter,sizeof(headAfter))||headAfter!=headBefore) {
             listChanged=true;reject("registered effect list head changed");ok=false;
@@ -762,7 +818,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
     if(draw) {
         ReplayForest(frame,attempt);
         result.Status="Native particle submissions (not pixel coverage)";
-        if(listChanged)result.Status+="; WARNING: registered list changed; stopped";
+        if(listChanged)result.Status+="; WARNING: native lifecycle guard stopped replay";
         if(!firstFailure.empty())result.Status+="; first rejected tree: "+firstFailure;
     } else {
         if(!attempt(probeIndex,frame.Collections[probeIndex].Active)&&!firstFailure.empty())
@@ -777,9 +833,9 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
 {
     return SceneNativeParticleOperation(frame,index,false).Status;
 }
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame)
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame,bool fastMemory)
 {
-    return SceneNativeParticleOperation(frame,0,true);
+    return SceneNativeParticleOperation(frame,0,true,fastMemory);
 }
 
 

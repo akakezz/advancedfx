@@ -497,6 +497,8 @@ struct ReplayResult {
     bool MainView=false;
     std::size_t Attempts=0,Trees=0,Nodes=0,Particles=0,Rejected=0;
     std::string Status;
+    double FactoryMs=0,PlanMs=0,CopyMs=0,RenderMs=0,DestroyMs=0;
+    std::size_t FastWrites=0,SystemWrites=0,WriteFaults=0,CleanupFailures=0;
 };
 class History {
 public:
