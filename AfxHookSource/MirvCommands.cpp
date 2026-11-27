@@ -414,14 +414,16 @@ bool Mirv_Tf2_SceneDrawVisibility(const char *name,float &value,bool write)
 // Synchronous legacy draw: construct only the scratch fields read by the
 // verified DrawMaterialParticles path. No manager registration, factory,
 // allocator, simulation, live list substitution or native destructor.
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &frame)
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &frame,bool allowQueued)
 {
     advancedfx::NativeParticles::ReplayResult result;
 #ifdef _WIN64
     using namespace advancedfx::LegacyParticles;
     auto fail=[&](const char *message){result.Status=message;return result;};
-    if(!frame.Complete||frame.Particles.size()>2048||!Mirv_Tf2_ParticleIsolationReady())
-        return fail("Legacy replay requires complete history, verified stationary TF2 x64 and immediate rendering.");
+    const bool queued=!MaterialSystem_IsImmediate();
+    if(!frame.Complete||frame.Particles.size()>2048||!Mirv_Tf2_SceneStationaryReady()||
+       (queued&&(!allowQueued||!MaterialSystem_CanExecuteOnRenderThread())))
+        return fail("Legacy replay requires complete history, stationary TF2 x64 and immediate rendering or the explicit queued experiment.");
     const auto client=GetModuleHandleA("client.dll");
     if(!client)return fail("Legacy client unavailable.");
     const Address base=reinterpret_cast<Address>(client),manager=base+0x10f5020;
@@ -435,7 +437,18 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
     int view=-1;
     if(!get(base+0xfe77c0,view)||view!=0)return result;
     result.MainView=true;
-    if(frame.Particles.empty())return fail("Complete empty legacy dissolve sample.");
+    if(frame.Particles.empty())return fail("Complete empty legacy particle sample.");
+    // The queued path is deliberately restricted to the exact ordinary simple
+    // emitter renderer and native engine-owned dynamic mesh staging buffers.
+    // No pointer to a historical emitter/particle/mesh descriptor is queued.
+    if(queued&&(!match(0x2d7fb0,{0xff,0x50,0x48})||
+       !match(0x2d7fc6,{0xff,0x90,0xc0,0x01,0,0})||
+       !match(0x2d8011,{0x41,0xff,0x92,0x90,0,0,0})||
+       !match(0x2d5555,{0xff,0x90,0xa8,0,0,0})||
+       !match(0x2d558f,{0xff,0x50,0x68})||
+       !match(0x2dc889,{0xe8,0xc2,0xaa,0xf2,0xff})||
+       !match(0x2dc895,{0xe8,0x56,0xf0,0xf1,0xff})))
+        return fail("Queued legacy CPU mesh submission guard failed.");
     if(!match(0x2d5250,{0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x55,0x57})||
        !match(0x2d5344,{0x48,0x8b,0x8f,0x98,0x00,0x00,0x00})||
        !match(0x2d53bd,{0x48,0x8b,0x01,0xff,0x50,0x30})||
@@ -452,16 +465,44 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
        !get(manager+0x88,materials)||!materials||!get(base+0x1199678,globalMaterials)||materials!=globalMaterials||
        !get(base+0xb61040+0x30,renderSlot)||renderSlot!=base+0x2dc6c0)
         return fail("Legacy manager or renderer unavailable.");
+    Address materialBase=0,queuedMesh=0;
+    auto queuedMatch=[&](Address r,std::initializer_list<unsigned char> bytes){
+        unsigned char actual[32]{};
+        return bytes.size()<=sizeof(actual)&&read(materialBase+r,actual,bytes.size())&&std::equal(bytes.begin(),bytes.end(),actual);
+    };
+    if(queued){
+        materialBase=reinterpret_cast<Address>(GetModuleHandleA("materialsystem.dll"));
+        IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};Address table=0,getter=0;
+        if(!materialBase||!get(materialBase,dos)||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+           !get(materialBase+dos.e_lfanew,nt)||nt.Signature!=IMAGE_NT_SIGNATURE||nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||
+           nt.FileHeader.TimeDateStamp!=0x6ac56a08||nt.OptionalHeader.SizeOfImage!=0x141000||
+           !get(materials,table)||table!=materialBase+0xb7470||!get(table+0x310,getter)||getter!=materialBase+0x16c20||
+           !queuedMatch(0x2c53a,{0x48,0x8b,0x8e,0x10,0x03,0,0})||
+           !queuedMatch(0x2c557,{0xe8,0x44,0x11,0,0})||
+           !queuedMatch(0x2cd6c,{0x44,0x0f,0xb7,0x41,0x68,0x48,0x8b,0x49,0x28,0xe8,0x56,0xd8,0xff,0xff})||
+           !queuedMatch(0x2cdb7,{0x48,0x8b,0x4f,0x28,0x8b,0xd6,0xe8,0x5e,0xd6,0xff,0xff,0x48,0x89,0x47,0x58})||
+           !queuedMatch(0x2a5eb,{0x48,0x8d,0xb9,0x48,0x03,0,0})||
+           !queuedMatch(0x2a437,{0x48,0x8d,0xb9,0x78,0x03,0,0})||
+           !queuedMatch(0x2df5a,{0x48,0x89,0x5f,0x30,0x48,0x8b,0x43,0x50,0x48,0x89,0x47,0x38,0x8b,0x43,0x60,0x89,0x47,0x40,0x44,0x89,0x77,0x44,0x48,0x8b,0x43,0x58})||
+           !queuedMatch(0x2df78,{0x8b,0x43,0x64,0x89,0x47,0x50,0xe8,0x3d,0xba,0xfd,0xff})||
+           !queuedMatch(0x2df88,{0x48,0xc7,0x43,0x50,0,0,0,0,0x48,0xc7,0x43,0x58,0,0,0,0})||
+           !queuedMatch(0x2b61c,{0x48,0x89,0x5f,0x30,0x44,0x89,0x77,0x38,0x89,0x77,0x3c})||
+           !queuedMatch(0x2b648,{0xe9,0x73,0xe3,0xfd,0xff})||
+           !queuedMatch(0x32b40,{0x4c,0x63,0xca,0x49,0xc1,0xe1,0x05,0x4c,0x03,0xc9,0x41,0x8b,0x81,0xb8,0,0,0}))
+            return fail("Queued legacy material-system ownership guard failed.");
+    }
     struct Batch { Address Sub=0,Group=0;float Near=16,Far=64;std::vector<const Particle*> Items; };
     std::vector<Batch> batches;
     std::map<Address,std::string> names;
-    if(!frame.Materials.empty())SceneLegacyMaterialNames(base,read,names);
+    if(!queued&&!frame.Materials.empty())SceneLegacyMaterialNames(base,read,names);
     // Resolve and validate each material once per synchronous callback.
     // Keep the historical UV and clip checks per particle; no pointer survives.
     struct Resolved {Address Sub=0,Group=0;std::array<float,4> UV{};bool Valid=false;};
     std::map<std::pair<unsigned,unsigned>,Resolved> resolved;
     for(const auto &p:frame.Particles){
-        if(p.Texture==Material::Unknown){++result.Rejected;continue;}
+        // The broader named-material path remains immediate-only: arbitrary
+        // material proxy behavior is not established for this experiment.
+        if(p.Texture==Material::Unknown||(queued&&p.Texture!=Material::Spark&&p.Texture!=Material::CombineMuzzle)){++result.Rejected;continue;}
         const auto key=std::make_pair(unsigned(p.Texture),p.Texture==Material::Named?unsigned(p.MaterialIndex):0u);
         auto entry=resolved.try_emplace(key);
         auto &r=entry.first->second;
@@ -479,7 +520,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
         if(it==batches.end()){if(batches.size()>=64){++result.Rejected;continue;}batches.push_back({sub,group,p.NearClip,p.FarClip,{}});it=std::prev(batches.end());}
         it->Items.push_back(&p);
     }
-    if(batches.empty())return fail("No known valid legacy material batches at this tick.");
+    if(batches.empty())return fail(queued?"No supported spark/muzzle legacy batches for queued replay.":"No known valid legacy material batches at this tick.");
     auto slot=[&](Address object,unsigned off)->Address{Address table=0,fn=0;return get(object,table)&&get(table+off,fn)?fn:0;};
     using Getter=void*(*)(void*);using NoArg=void(*)(void*);using Mode=void(*)(void*,int);
     using MatrixGet=void(*)(void*,int,float*);
@@ -508,6 +549,26 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
     const auto getMatrix=reinterpret_cast<MatrixGet>(slot(ctx,0xf0));
     if(!scope.Release||!begin||!scope.End||!scope.Select||!push||!scope.Pop||!identity||!getMatrix)
         return fail("Legacy context methods unavailable.");
+    if(queued){
+        Address table=0,meshTable=0,meshOwner=0;
+        if(!get(ctx,table)||table!=materialBase+0xb6c28||!get(ctx+0x310,queuedMesh)||!queuedMesh||
+           !get(queuedMesh,meshTable)||meshTable!=materialBase+0xbb7d0||
+           !get(queuedMesh+0x28,meshOwner)||meshOwner!=ctx)
+            return fail("Queued legacy context/mesh identity unavailable.");
+        const std::pair<unsigned,Address> methods[]={{8,0x1ac20},{0x10,0x2a940},{0x18,0x2ba90},{0x48,0x2a9d0},
+            {0xa0,0x2cf00},{0xa8,0x2de80},{0xb0,0x2de50},{0xf0,0x32b40},{0xf8,0x2cb70},{0x1c0,0x2c4c0},{0x498,0x2c4a0}};
+        for(const auto &m:methods)if(slot(ctx,m.first)!=materialBase+m.second)return fail("Queued legacy context method changed.");
+        const std::pair<unsigned,Address> meshMethods[]={{0x58,0x2eac0},{0x68,0x2b510},{0x90,0x2cd30},{0xa8,0x2edf0},{0xc8,0x2ce20}};
+        for(const auto &m:meshMethods)if(slot(queuedMesh,m.first)!=materialBase+m.second)return fail("Queued legacy mesh method changed.");
+    }
+    auto meshIdle=[&](){
+        if(!queued)return true;
+        Address vt=0,vertices=0,indices=0,vertexOverride=0,indexOverride=0,currentMesh=0;
+        return get(ctx+0x310,currentMesh)&&currentMesh==queuedMesh&&get(queuedMesh,vt)&&vt==materialBase+0xbb7d0&&
+            get(queuedMesh+0x50,vertices)&&!vertices&&get(queuedMesh+0x58,indices)&&!indices&&
+            get(queuedMesh+0x70,vertexOverride)&&!vertexOverride&&get(queuedMesh+0x78,indexOverride)&&!indexOverride;
+    };
+    if(!meshIdle())return fail("Queued legacy mesh is already in use; left native state unchanged.");
     if(!get(manager+0x90,scope.Saved))return fail("Legacy modelview unavailable.");
     begin(context);scope.Begun=true;
     std::array<float,16> matrix{};getMatrix(context,0,matrix.data());
@@ -523,6 +584,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
     auto put=[](unsigned char *bytes,std::size_t offset,const auto &v){std::memcpy(bytes+offset,&v,sizeof(v));};
     struct alignas(16) ScratchParticle {unsigned char Data[0x60]{};};
     for(const auto &batch:batches){
+        if(!meshIdle()){++result.Rejected;result.Status="Queued legacy mesh ownership changed; stopped further submissions.";break;}
         ++result.Attempts;
         alignas(16) unsigned char emitter[0x158]{},material[0x38]{};
         auto *binding=emitter+0x10;
@@ -546,7 +608,9 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
         if(submitted==int(scratch.size())){++result.Trees;++result.Nodes;result.Particles+=scratch.size();}
         else ++result.Rejected;
     }
-    result.Status="Experimental legacy native material submissions (not pixel coverage).";
+    if(result.Status.empty())result.Status=queued?
+        "Experimental queued legacy spark/muzzle mesh submissions (live effects retained, not pixel coverage).":
+        "Experimental legacy native material submissions (not pixel coverage).";
 #else
     result.Status="Legacy replay requires TF2 x64.";
 #endif

@@ -26,7 +26,8 @@ replacement. BUILD_IDENTITY.txt identifies the commit and SHA256 hashes.
    Use a busy earlier tick and fixed camera for the benchmark.
 5. Run mirv_cache perf bench once. Close console and leave camera/transport
    unchanged. The automatic suite compares full immediate, models-only
-   immediate, models-only queued, and optional queued decal visibility.
+   immediate, models-only queued, optional queued decal visibility and a
+   queued legacy spark/muzzle overlay comparison.
    It saves partial results and restores the original benchmark queue cvar
    and scene settings. Use mirv_cache perf bench report for progress/path
    or mirv_cache perf bench cancel to abort.
@@ -38,8 +39,10 @@ replacement. BUILD_IDENTITY.txt identifies the commit and SHA256 hashes.
 ## Limits and recovery
 
 Native submission is not pixel validation. Queued visibility only filters
-surviving nonfading ordinary world decals. Detached geometry, opacity,
-native particles and historical shadows still need immediate rendering.
+surviving nonfading ordinary world decals. The separate queued legacy overlay
+supports verified spark/muzzle materials and retains live effects (duplicates
+are possible). Detached geometry, opacity, modern particles, named legacy
+materials and historical shadows still need immediate rendering.
 Model/displacement decals, pose-accurate atlas silhouettes, baked lighting
 and world lighting remain incomplete. Unsupported effects may stay live.
 

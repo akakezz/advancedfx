@@ -83,7 +83,7 @@ static double g_SceneNativeParticleMs=0, g_SceneNativeParticleTotalMs=0, g_Scene
 static std::size_t g_SceneNativeParticleSamples=0;
 static int g_SceneDetachedTick=-1, g_SceneDetachedIndex=-1;
 static bool g_SceneLegacyAuditPending=false;
-static bool g_SceneLegacyCapture=false,g_SceneLegacyReplay=false,g_SceneLegacyAll=false;
+static bool g_SceneLegacyCapture=false,g_SceneLegacyReplay=false,g_SceneLegacyAll=false,g_SceneLegacyQueued=false;
 static bool g_SceneReplayModulation=false,g_SceneHideShadows=false,g_SceneHideDecals=false,g_SceneLegacyMarkers=false;
 static bool g_SceneLightingCapture=false,g_SceneReplayLighting=false,g_SceneLightingObserverReady=false;
 static std::string g_SceneLightingStatus="Historical model lighting not captured.";
@@ -365,7 +365,7 @@ struct SceneBenchState {
     int Phase=0,Frames=0,OriginalSequencer=0;
     unsigned long long RenderCallbacks=0;
     bool Record=false,Preview=false,Models=false,MainOnly=false,Cull=false,Native=false,Legacy=false,Markers=false,LegacyMarkers=false,Residency=false,FastWrites=false,BatchStudio=false,FastReads=false,BatchQueued=false,ActorCull=false;
-    bool Shadows=false,Decals=false,HideShadows=false,HideDecals=false,QueuedDecals=false;
+    bool Shadows=false,Decals=false,HideShadows=false,HideDecals=false,QueuedDecals=false,LegacyQueued=false;
     double Cursor=0,Late=0;
     std::chrono::steady_clock::time_point Start,LastRender;
     ScenePerfCounters Before;
@@ -397,9 +397,14 @@ static void SceneBenchQueueRestore(){
     }
     SceneBenchSave();
 }
-static int SceneBenchPhaseCount(){const auto &b=g_SceneBench;return b.ModelsOnly?(!b.Immediate&&b.Decals&&b.QueuedDecals?8:7):18;}
+static bool SceneBenchQueuedDecals(const SceneBenchState &b){return b.ModelsOnly&&!b.Immediate&&b.Decals&&b.QueuedDecals;}
+static bool SceneBenchQueuedLegacy(const SceneBenchState &b){return b.ModelsOnly&&!b.Immediate&&b.Legacy&&b.LegacyQueued;}
+static int SceneBenchLegacyPhase(const SceneBenchState &b){return 7+int(SceneBenchQueuedDecals(b));}
+static int SceneBenchPhaseCount(){const auto &b=g_SceneBench;return b.ModelsOnly?7+int(SceneBenchQueuedDecals(b))+int(SceneBenchQueuedLegacy(b)):18;}
 static const char *SceneBenchLabel(int phase){
     if(g_SceneBench.ModelsOnly){
+        if(SceneBenchQueuedLegacy(g_SceneBench)&&phase==SceneBenchLegacyPhase(g_SceneBench))
+            return SceneBenchQueuedDecals(g_SceneBench)?"Queued models + decals + legacy overlay":"Queued models + legacy overlay";
         static const char *names[]={"Live baseline (live effects)","Historical models, all views","Historical models, main only","Historical models, main + cull","Historical models, batching off","Historical models, batching on (repeat)","Historical models, actor-group cull","Historical models + queued decal visibility"};
         return names[phase];
     }
@@ -410,14 +415,16 @@ static void SceneBenchApply(int phase,std::chrono::steady_clock::time_point now)
     auto &b=g_SceneBench;b.Phase=phase;b.Measuring=false;b.Frames=0;b.Start=now;b.LastRender=now;b.PreviousRender=now;b.FrameMs.clear();b.Audited=false;
     g_SceneRecord=false;g_ScenePreview=phase!=0;g_SceneDrawModels=b.ModelsOnly||phase!=5;
     g_SceneActorCull=b.ModelsOnly?phase>=6:phase+1==SceneBenchPhaseCount();
-    g_SceneQueuedDecals=b.QueuedDecals;
+    g_SceneQueuedDecals=b.QueuedDecals;g_SceneLegacyQueued=b.LegacyQueued;
     if(b.ModelsOnly){
         g_SceneMainViewOnly=phase>=2;g_ScenePreviewCull=phase>=3;
         g_SceneKeepAssets=true;g_SceneBatchStudio=phase!=4;g_SceneBatchQueued=true;
         g_SceneNativeParticleReplay=g_SceneLegacyReplay=g_SceneNativeParticleMarkers=g_SceneLegacyMarkers=false;
         g_SceneHistoricalShadows=g_SceneHideShadows=g_SceneHideDecals=false;
-        g_SceneHistoricalDecals=!b.Immediate&&phase==7&&b.Decals&&b.QueuedDecals;
+        g_SceneHistoricalDecals=phase>=7&&SceneBenchQueuedDecals(b);
+        g_SceneLegacyReplay=SceneBenchQueuedLegacy(b)&&phase==SceneBenchLegacyPhase(b);
         if(g_SceneHistoricalDecals)g_SceneHistoricalSurfaceStatus="No queued decal scope evaluated yet.";
+        if(g_SceneLegacyReplay){g_SceneLegacyReplayTick=-1;g_SceneLegacyReplayResult={};g_SceneLegacyReplayResult.Status="No queued legacy draw evaluated yet.";}
         g_SceneCursor=b.Cursor;g_SequencerFrame=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
         g_SceneSampleReady=false;++g_SceneDrawEpoch;return;
     }
@@ -441,7 +448,7 @@ static void SceneBenchStop(const char *reason){
     g_SceneKeepAssets=b.Residency;g_SceneFastParticleWrites=b.FastWrites;g_SceneBatchStudio=b.BatchStudio;g_SceneFastParticleReads=b.FastReads;
     g_SceneNativeParticleReplay=b.Native;g_SceneLegacyReplay=b.Legacy;
     g_SceneBatchQueued=b.BatchQueued;g_SceneActorCull=b.ActorCull;
-    g_SceneHistoricalShadows=b.Shadows;g_SceneHistoricalDecals=b.Decals;g_SceneHideShadows=b.HideShadows;g_SceneHideDecals=b.HideDecals;g_SceneQueuedDecals=b.QueuedDecals;
+    g_SceneHistoricalShadows=b.Shadows;g_SceneHistoricalDecals=b.Decals;g_SceneHideShadows=b.HideShadows;g_SceneHideDecals=b.HideDecals;g_SceneQueuedDecals=b.QueuedDecals;g_SceneLegacyQueued=b.LegacyQueued;
     g_SceneNativeParticleMarkers=b.Markers;g_SceneLegacyMarkers=b.LegacyMarkers;
     g_SceneCursor=b.Cursor;g_SequencerFrame=b.OriginalSequencer;
     g_SceneSampleReady=false;++g_SceneDrawEpoch;
@@ -593,7 +600,9 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
             g_SceneBenchReport+="  Native particle status: "+g_SceneParticleReplayResult.Status+"\n  Legacy status: "+g_SceneLegacyReplayResult.Status+"\n  Surface status: "+g_SceneHistoricalSurfaceStatus+"\n";
         }
     }
-    if(b.ModelsOnly&&!b.Immediate&&b.Phase==7)g_SceneBenchReport+="  Queued decal visibility status: "+g_SceneHistoricalSurfaceStatus+"\n";
+    if(SceneBenchQueuedDecals(b)&&b.Phase>=7)g_SceneBenchReport+="  Queued decal visibility status: "+g_SceneHistoricalSurfaceStatus+"\n";
+    if(SceneBenchQueuedLegacy(b)&&b.Phase==SceneBenchLegacyPhase(b))g_SceneBenchReport+="  Queued legacy overlay status: "+g_SceneLegacyReplayResult.Status+
+        "; submitted "+std::to_string(g_SceneLegacyReplayResult.Particles)+", rejected "+std::to_string(g_SceneLegacyReplayResult.Rejected)+" (live effects retained).\n";
     if(!b.RendererTargets.empty()||!b.PostRenderTargets.empty()){
         auto append=[&](const char *label,const std::set<std::uint32_t>& targets){
             g_SceneBenchReport+=label;char value[24]{};
@@ -1270,18 +1279,22 @@ static void SceneCacheDrawLegacyParticles()
 {
     std::shared_ptr<const advancedfx::LegacyParticles::Frame> sample;
     unsigned long long epoch=0;
+    bool allowQueued=false;
     {
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
         // Phase 14 disables modern replay only, not its legacy companion.
         const bool legacyOnlyBench=g_SceneBench.Active&&!g_SceneBench.ModelsOnly&&g_SceneBench.Phase==14&&g_SceneBench.Native;
-        if(!g_SceneLegacyReplay||!g_ScenePreview||(!g_SceneNativeParticleReplay&&!legacyOnlyBench)||!SceneCanDrawModels()||!SceneCacheView())return;
+        allowQueued=g_SceneBench.Active?g_SceneBench.LegacyQueued:g_SceneLegacyQueued;
+        const bool queued=!MaterialSystem_IsImmediate();
+        if(!g_SceneLegacyReplay||!g_ScenePreview||(!g_SceneNativeParticleReplay&&!legacyOnlyBench&&!(queued&&allowQueued))||!SceneCanDrawModels()||!SceneCacheView())return;
+        if(queued&&!allowQueued)return;
         const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
         sample=g_SceneLegacyHistory.ShareForPreview(tick);
         if(!sample){g_SceneLegacyReplayTick=tick;g_SceneLegacyReplayResult={};g_SceneLegacyReplayResult.Status="No retained legacy sample within two prior ticks.";return;}
         epoch=g_SceneDrawEpoch.load();
     }
     const auto begin=std::chrono::steady_clock::now();
-    auto result=Mirv_Tf2_RenderLegacyParticles(*sample);
+    auto result=Mirv_Tf2_RenderLegacyParticles(*sample,allowQueued);
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
     g_ScenePerf.LegacyDraw.Add(begin,sample->Tick);
     g_ScenePerf.LegacyRejected+=result.Rejected;
@@ -1293,7 +1306,7 @@ void SceneCacheDrawParticles()
     // Both native paths already reject non-main views internally. Avoid the
     // snapshot acquisition and expensive ABI checks on verified other views.
     {std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
-     if(g_ScenePreview&&(g_SceneNativeParticleReplay||(g_SceneBench.Active&&!g_SceneBench.ModelsOnly&&g_SceneBench.Phase==14&&g_SceneLegacyReplay))&&Mirv_Tf2_SceneRenderViewId()>0){++g_ScenePerf.NonMainParticleSkipped;return;}}
+     if(g_ScenePreview&&(g_SceneNativeParticleReplay||(g_SceneBench.Active&&!g_SceneBench.ModelsOnly&&g_SceneBench.Phase==14&&g_SceneLegacyReplay)||(g_SceneLegacyReplay&&(g_SceneBench.Active?g_SceneBench.LegacyQueued:g_SceneLegacyQueued)))&&Mirv_Tf2_SceneRenderViewId()>0){++g_ScenePerf.NonMainParticleSkipped;return;}}
     SceneCacheDrawLegacyParticles();
     // Main-view guard inside the native path. No persistent native objects,
     // and no native drawing in ordinary live demo playback.
@@ -1304,6 +1317,13 @@ void SceneCacheDrawParticles()
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
         if(!g_ScenePreview||!g_SceneNativeParticleReplay||!SceneCanDrawModels()||!SceneCacheView())return;
         const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
+        // Do not decode/copy appearance data every frame merely to fail the
+        // modern native renderer's immediate-context gate.
+        if(!MaterialSystem_IsImmediate()){
+            g_SceneParticleReplayTick=tick;g_SceneParticleReplayResult={};
+            g_SceneParticleReplayResult.Status="Modern native particles require immediate rendering; live effects retained.";
+            return;
+        }
         const auto begin=std::chrono::steady_clock::now();
         sample=g_SceneNativeParticles.ShareForPreview(tick);
         g_ScenePerf.ParticleAcquire.Add(begin,tick);
@@ -2300,6 +2320,7 @@ static void SceneNativeParticleStatus(int tick)
 // empty parents, so a reported index can also be used by the detached probe.
 static void SceneLegacyParticleStatus(int tick,bool previewSample=false)
 {
+    advancedfx::Message("Queued spark/muzzle overlay %d (live effects remain; named materials immediate-only).\n",int(g_SceneLegacyQueued));
     advancedfx::Message("Legacy textured replay %d; tick %d: %zu submitted, %zu rejected (particles or batches); %s\n",int(g_SceneLegacyReplay),g_SceneLegacyReplayTick,g_SceneLegacyReplayResult.Particles,g_SceneLegacyReplayResult.Rejected,g_SceneLegacyReplayResult.Status.c_str());
     using namespace advancedfx::LegacyParticles;
     const auto &history=g_SceneLegacyHistory;
@@ -2363,7 +2384,7 @@ static const char *SceneValidationSetup(){
         return "Requires supported TF2 x64 demo paused/frozen in actual immediate context (mat_queue_mode 0).";
     g_SceneRenderSnapshot=true;g_SceneDrawModels.store(true);g_SceneSuppressLiveStudio=true;
     SceneParticleCaptureEnabled(true);g_SceneNativeParticleAppearance=g_SceneNativeParticleReplay=true;
-    g_SceneLegacyCapture=g_SceneLegacyReplay=g_SceneLegacyAll=true;g_SceneLegacyMarkers=false;
+    g_SceneLegacyCapture=g_SceneLegacyReplay=g_SceneLegacyAll=g_SceneLegacyQueued=true;g_SceneLegacyMarkers=false;
     g_SceneReplayModulation=g_SceneLightingCapture=g_SceneReplayLighting=true;
     g_SceneSurfaceCapture=g_SceneHistoricalShadows=g_SceneHistoricalDecals=g_SceneRemovedDecals=g_SceneDecalOpacity=g_SceneQueuedDecals=true;
     g_SceneHideShadows=g_SceneHideDecals=false;g_SceneSuppressLiveParticles=true;
@@ -2387,7 +2408,7 @@ static std::string SceneValidationReport(){
     out<<"Settings: broad "<<g_SceneRenderSnapshot<<", models "<<g_SceneDrawModels.load()<<", studio suppression "<<g_SceneSuppressLiveStudio
        <<", modulation "<<g_SceneReplayModulation<<", lighting capture/replay "<<g_SceneLightingCapture<<"/"<<g_SceneReplayLighting
        <<", modern capture/replay/isolate "<<g_SceneNativeParticlesEnabled<<"/"<<g_SceneNativeParticleReplay<<"/"<<g_SceneSuppressLiveParticles
-       <<", legacy capture/replay/all "<<g_SceneLegacyCapture<<"/"<<g_SceneLegacyReplay<<"/"<<g_SceneLegacyAll
+       <<", legacy capture/replay/all/queued "<<g_SceneLegacyCapture<<"/"<<g_SceneLegacyReplay<<"/"<<g_SceneLegacyAll<<"/"<<g_SceneLegacyQueued
        <<", surface capture/shadows/decals/removed/opacity/queued "<<g_SceneSurfaceCapture<<"/"<<g_SceneHistoricalShadows<<"/"<<g_SceneHistoricalDecals<<"/"<<g_SceneRemovedDecals<<"/"<<g_SceneDecalOpacity<<"/"<<g_SceneQueuedDecals
        <<", blanket hide shadows/decals "<<g_SceneHideShadows<<"/"<<g_SceneHideDecals<<"\n";
     auto history=[&](const char *name,const auto &frames,std::size_t bytes,std::size_t evicted,std::size_t rejected){
@@ -2512,7 +2533,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
             auto &b=g_SceneBench;b={};b.Active=true;b.ModelsOnly=modelsOnly;b.AutoQueue=automatic;b.OriginalQueue=b.OwnedQueue=int(queueMode);b.Immediate=MaterialSystem_IsImmediate();b.Record=g_SceneRecord;b.Preview=g_ScenePreview;b.Models=g_SceneDrawModels;
             b.MainOnly=g_SceneMainViewOnly;b.Cull=g_ScenePreviewCull;b.Native=g_SceneNativeParticleReplay;b.Legacy=g_SceneLegacyReplay;
             b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;b.BatchQueued=g_SceneBatchQueued;b.ActorCull=g_SceneActorCull;
-            b.Shadows=g_SceneHistoricalShadows;b.Decals=g_SceneHistoricalDecals;b.HideShadows=g_SceneHideShadows;b.HideDecals=g_SceneHideDecals;b.QueuedDecals=g_SceneQueuedDecals;
+            b.Shadows=g_SceneHistoricalShadows;b.Decals=g_SceneHistoricalDecals;b.HideShadows=g_SceneHideShadows;b.HideDecals=g_SceneHideDecals;b.QueuedDecals=g_SceneQueuedDecals;b.LegacyQueued=g_SceneLegacyQueued;
             b.Markers=g_SceneNativeParticleMarkers;b.LegacyMarkers=g_SceneLegacyMarkers;b.Cursor=g_SceneCursor;
             b.Late=g_SceneCache.Frames().back().DemoTime;b.OriginalSequencer=int(g_SequencerFrame);
             g_SceneBenchReport="Scene cache benchmark (engine wall time, CPU subsystem totals/frame; camera must remain fixed; requested live model/particle isolation retained where eligible in isolation modes; live surfaces may return; memory tests are sequential, not cold-cache controlled).\n";
@@ -2641,6 +2662,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
             advancedfx::Message("Broader exact simple-emitter capture %d. Record fresh history.\n",int(g_SceneLegacyAll));
         } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyReplay")&&parseInteger(3,value)&&(value==0||value==1)) {
             g_SceneLegacyReplay=value!=0;g_SceneLegacyReplayResult={};g_SceneLegacyReplayTick=-1;SceneLegacyParticleStatus(-1);
+        } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyQueued")&&parseInteger(3,value)&&(value==0||value==1)) {
+            g_SceneLegacyQueued=value!=0;g_SceneLegacyReplayResult={};g_SceneLegacyReplayTick=-1;SceneLegacyParticleStatus(-1);
         } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyMarkers")&&parseInteger(3,value)&&(value==0||value==1)) {
             g_SceneLegacyMarkers=value!=0;SceneLegacyParticleStatus(-1);
         } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"legacyStatus")) {
@@ -2690,7 +2713,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	        g_SceneNativeParticleAppearance=value!=0;SceneNativeParticleStatus(-1);
 	    } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"styled")&&parseInteger(3,value)&&(value==0||value==1)) {
 	        g_SceneNativeParticleStyled=value!=0;SceneNativeParticleStatus(-1);
-	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers|legacyAll> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
+	    } else advancedfx::Message("mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyQueued|legacyMarkers|legacyAll> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - TF2 x64 native particle experiment.\n");
 	    return;
 	}
 	if (!_stricmp(op, "effects"))
@@ -3013,7 +3036,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache trails <0|1> | trails seconds <0.05..30>\n"
 		    "  mirv_cache trails "
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
-		    "  mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers|legacyAll> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
+		    "  mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyQueued|legacyMarkers|legacyAll> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
 		    "  mirv_cache surfaces <capture|shadows|decals|removed|opacity|queued|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|lightingCapture|lighting|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
@@ -7379,6 +7402,7 @@ static void DrawSceneCacheMenu(int playhead)
 		if(particleMode==1) {
 		    DrawOverlayHint("Native particle preview requires a paused or frozen demo (demo_timescale 0) and immediate rendering.");
 		    ImGui::Checkbox("Replay legacy dissolve particles (experimental)",&g_SceneLegacyReplay);
+            ImGui::Checkbox("Queued legacy spark/muzzle overlay (experimental)",&g_SceneLegacyQueued);
             if(g_SceneLegacyReplay)DrawOverlayHint(g_SceneLegacyReplayResult.Status.c_str());
 		    ImGui::Checkbox("Suppress live particles (experimental)",&g_SceneSuppressLiveParticles);
 		    if(g_SceneSuppressLiveParticles) {

@@ -41,8 +41,8 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick,bool
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &,std::size_t){return "fixture";}
 std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *snapshot,bool){if(snapshot)snapshot->Complete=true;return "legacy fixture";}
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &,bool,bool,bool){return {}; }
-int sceneLegacyDraws=0;
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &){++sceneLegacyDraws;return {}; }
+int sceneLegacyDraws=0,sceneLegacyQueuedDraws=0;
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &,bool allowQueued){++sceneLegacyDraws;if(allowQueued)++sceneLegacyQueuedDraws;return {}; }
 int sceneNativeView=-1;int Mirv_Tf2_SceneRenderViewId(){return sceneNativeView;}
 bool Mirv_Tf2_SceneMainProjection(float (&matrix)[4][4]){return false;}
 bool sceneParticleIsolationReady=true;bool Mirv_Tf2_ParticleIsolationReady(){return sceneParticleIsolationReady;}
@@ -1288,6 +1288,17 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
    SceneBenchApply(6,std::chrono::steady_clock::now());check(SceneBenchPhaseCount()==8&&g_SceneActorCull&&!g_SceneHistoricalDecals,"queued model-only control retains live decals");
    g_SceneQueuedDecals=false;check(SceneBenchPhaseCount()==8,"queued benchmark phase count uses saved configuration");
    SceneBenchApply(7,std::chrono::steady_clock::now());check(g_SceneActorCull&&g_SceneHistoricalDecals&&!g_SceneNativeParticleReplay&&!g_SceneHistoricalShadows,"queued visibility comparison isolates decal gating");
+   {const auto savedLegacy=b.Legacy,savedLegacyQueued=b.LegacyQueued;const auto savedView=sceneNativeView;
+    b.Legacy=b.LegacyQueued=true;SceneBenchApply(7,std::chrono::steady_clock::now());
+    check(SceneBenchPhaseCount()==9&&!g_SceneLegacyReplay&&g_SceneHistoricalDecals,"Queued decal control does not draw legacy overlay");
+    SceneBenchApply(8,std::chrono::steady_clock::now());SceneCacheFrame(false);
+    check(g_SceneLegacyReplay&&g_SceneHistoricalDecals&&!g_SceneNativeParticleReplay&&g_SceneActorCull,"Queued legacy phase preserves preceding decal and model configuration");
+    advancedfx::LegacyParticles::Frame sample;sample.Tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));sample.Complete=true;
+    check(g_SceneLegacyHistory.Append(std::move(sample)),"Queued legacy fixture retained");
+    const auto draws=sceneLegacyQueuedDraws;sceneNativeView=0;SceneCacheDrawParticles();check(sceneLegacyQueuedDraws==draws+1,"Queued legacy dispatch explicitly opts in without modern replay");
+    sceneNativeView=1;SceneCacheDrawParticles();check(sceneLegacyQueuedDraws==draws+1,"Queued legacy dispatch skips non-main view");
+    b.QueuedDecals=false;check(SceneBenchPhaseCount()==8&&SceneBenchLegacyPhase(b)==7,"Queued legacy phase works without queued decals");
+    sceneNativeView=savedView;g_SceneLegacyHistory.Clear();b.Legacy=savedLegacy;b.LegacyQueued=savedLegacyQueued;g_SceneLegacyQueued=savedLegacyQueued;}
    b.Immediate=saved;b.Decals=savedDecals;b.QueuedDecals=savedQueued;g_SceneQueuedDecals=savedQueued;}
   SceneBenchStop("models fixture complete");SceneCacheFrame(false);
   b.Active=true;b.AutoQueue=true;b.OriginalQueue=b.OwnedQueue=0;benchQueueMode=0;
@@ -1333,7 +1344,7 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   SceneClearHistory();g_SceneRecord=g_ScenePreview=false;g_SceneBenchRestoreQueue=false;sceneQueueDeferred=true;
   check(SceneValidationSetup()!=nullptr&&!g_SceneRenderSnapshot,"Setup refuses deferred context before changing settings");
   sceneQueueDeferred=false;sceneParticleIsolationReady=true;benchQueueMode=0;
-  check(SceneValidationSetup()==nullptr&&g_SceneRenderSnapshot&&g_SceneDrawModels&&g_SceneNativeParticlesEnabled&&g_SceneNativeParticleAppearance&&g_SceneNativeParticleReplay&&g_SceneLegacyCapture&&g_SceneLegacyReplay&&g_SceneLegacyAll&&g_SceneSurfaceCapture&&g_SceneHistoricalShadows&&g_SceneHistoricalDecals&&g_SceneRemovedDecals&&g_SceneDecalOpacity&&g_SceneQueuedDecals&&g_SceneLightingCapture&&g_SceneReplayLighting&&g_SceneReplayModulation,"Fresh validation profile arms all supported capture/replay experiments");
+  check(SceneValidationSetup()==nullptr&&g_SceneRenderSnapshot&&g_SceneDrawModels&&g_SceneNativeParticlesEnabled&&g_SceneNativeParticleAppearance&&g_SceneNativeParticleReplay&&g_SceneLegacyCapture&&g_SceneLegacyReplay&&g_SceneLegacyAll&&g_SceneLegacyQueued&&g_SceneSurfaceCapture&&g_SceneHistoricalShadows&&g_SceneHistoricalDecals&&g_SceneRemovedDecals&&g_SceneDecalOpacity&&g_SceneQueuedDecals&&g_SceneLightingCapture&&g_SceneReplayLighting&&g_SceneReplayModulation,"Fresh validation profile arms all supported capture/replay experiments");
   check(!g_SceneRecord&&!g_ScenePreview&&!g_SceneHideShadows&&!g_SceneHideDecals&&!g_SceneCache.Count()&&benchQueueMode==0,"Setup leaves transport, queue cvar, empty history and blanket surface isolation unchanged");
   g_SceneBench.Active=true;check(SceneValidationSetup()!=nullptr&&g_SceneBench.Active,"Setup does not cancel benchmark");
   const auto report=SceneValidationReport();check(report.find("Benchmark active 1")!=std::string::npos&&g_SceneBench.Active,"Report does not cancel benchmark");g_SceneBench.Active=false;}

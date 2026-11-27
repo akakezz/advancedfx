@@ -28,7 +28,7 @@ void Mirv_Tf2_ResetSurfaces();
 void Mirv_Tf2_SetSurfaceObservation(bool armed);
 unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sample,unsigned requested,std::string &status);
 std::string Mirv_Tf2_EndSurfaceReplay();
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &frame);
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &frame,bool allowQueued=false);
 namespace AfxHookSource
 {
 namespace CameraOverlay
