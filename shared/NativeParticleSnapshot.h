@@ -314,7 +314,20 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
         if(old.Active) {
             std::array<Address,32> ptr{},stride{};
             Address memory=0;
-            if(!get(c+Xyz,ptr)||!get(c+XyzStride,stride)||!get(c+0x22e8,memory)||memory<0x10000||
+            // The allocation base and both 32-entry attribute tables are
+            // inside one bounded collection region. Copy only the fields
+            // already used by the narrow path; ignore intervening bytes.
+            constexpr Address TableBase=0x22e8;
+            constexpr std::size_t TableBytes=std::size_t(XyzStride-TableBase)+sizeof(stride);
+            static_assert(TableBytes==0x328,"verified detached table span");
+            std::array<unsigned char,TableBytes> tables{};
+            bool tablesOk=c>=0x10000&&c<=(std::numeric_limits<Address>::max)()-TableBase-TableBytes&&read(c+TableBase,tables.data(),tables.size());
+            if(tablesOk){
+                std::memcpy(&memory,tables.data(),sizeof(memory));
+                std::memcpy(ptr.data(),tables.data()+std::size_t(Xyz-TableBase),sizeof(ptr));
+                std::memcpy(stride.data(),tables.data()+std::size_t(XyzStride-TableBase),sizeof(stride));
+            }else tablesOk=get(c+Xyz,ptr)&&get(c+XyzStride,stride)&&get(c+TableBase,memory);
+            if(!tablesOk||memory<0x10000||
                memory>(std::numeric_limits<Address>::max)()-15) {
                 fail("Detached attribute table unavailable");return;
             }
@@ -507,16 +520,25 @@ inline bool Load(const Stored &s,Frame &f) {
 // A root-first fallback traversal. Successful attempts own their entire
 // subtree; failed attempts descend to children without double-submitting.
 template<class Attempt>
-void ReplayForest(const Frame &f,Attempt attempt) {
+void ReplayForest(const Frame &f,Attempt attempt,const ChildIndex *prepared=nullptr) {
     if(f.Collections.size()>Layout::MaxCollections)return;
-    std::vector<std::vector<std::size_t>> children(f.Collections.size());
-    std::vector<std::size_t> roots;
-    for(std::size_t i=0;i<f.Collections.size();++i) {
+    ChildIndex local;
+    if(!prepared){if(!BuildChildIndex(f,local))return;prepared=&local;}
+    if(prepared->size()!=f.Collections.size())return;
+    const auto &children=*prepared;
+    // A supplied index must still describe exactly the immutable frame's
+    // edges. Check before attempting any native submission.
+    std::size_t expectedEdges=0,actualEdges=0;
+    for(std::size_t i=0;i<f.Collections.size();++i){
         const auto parent=f.Collections[i].Parent;
-        if(parent==-1)roots.push_back(i);
-        else if(parent>=0&&static_cast<std::size_t>(parent)<i)children[parent].push_back(i);
-        else return;
+        if(parent!=-1){if(parent<0||static_cast<std::size_t>(parent)>=i)return;++expectedEdges;}
+        std::size_t previous=i;
+        for(auto child:children[i]){
+            if(child<=previous||child>=f.Collections.size()||f.Collections[child].Parent!=static_cast<int>(i))return;
+            previous=child;++actualEdges;
+        }
     }
+    if(actualEdges!=expectedEdges)return;
     std::vector<std::size_t> active(f.Collections.size());
     for(std::size_t i=f.Collections.size();i--;) {
         active[i]+=f.Collections[i].Active;
@@ -528,7 +550,7 @@ void ReplayForest(const Frame &f,Attempt attempt) {
         if(attempt(i,active[i]))return;
         for(auto c:children[i])self(self,c,depth+1);
     };
-    for(auto i:roots)walk(walk,i,0);
+    for(std::size_t i=0;i<f.Collections.size();++i)if(f.Collections[i].Parent==-1)walk(walk,i,0);
 }
 struct ReplayResult {
     bool MainView=false;
@@ -547,11 +569,13 @@ public:
     std::size_t DecodedBytes() const{return Decoded?Decoded->Bytes():0;}
     void SetBudget(std::size_t budget) {Budget=budget;while(!Frames.empty()&&Bytes>Budget) Evict();Invalidate();++Revision;}
     bool Append(Frame f) {
-        if(!Frames.empty()&&f.Tick<Frames.back().Tick) Clear();
+        // A rejected sample cannot erase a valid interval or decoded lease.
+        // Incomplete but storable modern snapshots remain diagnostic data.
         if(f.Tick<0){++Rejected;return false;}
         auto stored=HistoryStorage::Store(f);
         const auto n=stored.BytesUsed();
         if(n>Budget){++Rejected;return false;}
+        if(!Frames.empty()&&f.Tick<Frames.back().Tick) Clear();
         Invalidate();
         if(!Frames.empty()&&Frames.back().Tick==f.Tick) {Subtract(Frames.back());Frames.pop_back();}
         while(!Frames.empty()&&(Bytes>Budget-n||Frames.size()>=32768)) Evict();

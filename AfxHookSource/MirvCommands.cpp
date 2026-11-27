@@ -887,7 +887,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         return ok;
     };
     if(draw) {
-        ReplayForest(frame,attempt);
+        ReplayForest(frame,attempt,&children);
         result.Status="Native particle submissions (not pixel coverage)";
         if(listChanged)result.Status+="; WARNING: native lifecycle guard stopped replay";
         if(!firstFailure.empty())result.Status+="; first rejected tree: "+firstFailure;

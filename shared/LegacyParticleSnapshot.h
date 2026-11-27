@@ -113,15 +113,16 @@ public:
     std::uint64_t Revision=0;
     void Clear(){Frames.clear();Leased.reset();Bytes=Evicted=Rejected=0;++Revision;}
     bool Append(Frame frame) {
-        ++Revision;Leased.reset();
-        if(frame.Tick<0){++Rejected;return false;}
+        const auto cost=frame.Bytes();
+        // Reject before altering history or the immutable preview lease.
+        if(frame.Tick<0||!frame.Complete||cost>Budget){++Rejected;return false;}
         if(!Frames.empty()&&frame.Tick<Frames.back().Tick)Clear();
+        ++Revision;Leased.reset();
         if(!Frames.empty()&&frame.Tick==Frames.back().Tick){Bytes-=Frames.back().Bytes();Frames.pop_back();}
-        if(!frame.Complete||frame.Bytes()>Budget){++Rejected;return false;}
-        while(!Frames.empty()&&(Bytes>Budget-frame.Bytes()||Frames.size()>=32768)){
+        while(!Frames.empty()&&(Bytes>Budget-cost||Frames.size()>=32768)){
             Bytes-=Frames.front().Bytes();Frames.pop_front();++Evicted;
         }
-        Bytes+=frame.Bytes();Frames.push_back(std::move(frame));return true;
+        Bytes+=cost;Frames.push_back(std::move(frame));return true;
     }
     // Same bounded, causal sample policy as modern particle history.
     const Frame *ForPreview(int tick,int maxGap=2) const {

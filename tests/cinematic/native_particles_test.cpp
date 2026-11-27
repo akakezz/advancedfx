@@ -26,6 +26,15 @@ int main(){
     put(child+ChildNext,child);auto cycle=Capture(base,12,read);check(!cycle.Complete&&cycle.Rejected,"child cycle bounded");
     put(child+ChildNext,Address(0));put(coll+XyzStride,Address(99));auto invalid=Capture(base,12,read);check(!invalid.Complete&&invalid.Points.size()==2,"unexpected stride rejected");
     put(root,Address(0));check(!Capture(base,13,read).Complete,"root vtable guard");
+    const auto oldBytes=h.Bytes,oldRevision=h.Revision;
+    auto oldLease=h.ShareForPreview(11);auto invalidTick=f;invalidTick.Tick=-1;
+    check(!h.Append(invalidTick)&&h.At(10)&&h.At(11)&&h.Bytes==oldBytes&&h.Revision==oldRevision&&oldLease==h.ShareForPreview(11),"invalid tick preserves interval and lease");
+    History retain(HistoryStorage::Store(f).BytesUsed());check(retain.Append(f),"retention budget");
+    auto oversized=f;oversized.Tick=9;oversized.Points.resize(2048);
+    for(std::size_t i=0;i<oversized.Points.size();++i)oversized.Points[i]={float(i),float(i*i),float(i%11)};
+    check(HistoryStorage::Store(oversized).BytesUsed()>retain.BudgetBytes(),"oversized fixture");
+    auto retainedLease=retain.ShareForPreview(10);const auto retainedBytes=retain.Bytes;
+    check(!retain.Append(oversized)&&retain.At(10)&&retain.Bytes==retainedBytes&&retain.ShareForPreview(10)==retainedLease,"oversized backward sample preserves interval");
     check(h.Append(f)&&!h.At(11),"backward tick resets history");
     History small(4096);check(small.Append(f),"initial budget sample");small.SetBudget((std::max)(small.Bytes,HistoryStorage::Store(newer).BytesUsed()));check(small.Append(newer)&&small.Frames.size()==1&&small.At(11),"rolling budget");
     // Restore root list and positions; synthesize the indexed attribute arrays.
@@ -73,7 +82,7 @@ int main(){
     constexpr Address detached=0x60000000,mem=0x61000000;
     auto simple=app;simple.Collections.resize(1);auto &c=simple.Collections[0];
     put(detached+Definition,def);put(detached+Active,0);put(detached+0x60,12);put(detached+0x64,8);
-    put(detached+ChildHead,Address(0));put(detached+0x22e8,mem);
+    put(detached+ChildHead,Address(0));put(detached+0x22e8,std::array<unsigned char,0x328>{});put(detached+0x22e8,mem);
     std::array<Address,32> dp{},ds{};dp[Position]=mem;ds[Position]=12;
     dp[Radius]=mem+12*3*4;ds[Radius]=4;
     dp[Tint]=tint;dp[ParticleId]=dp[Radius]+12*4;ds[ParticleId]=4;
@@ -83,8 +92,8 @@ int main(){
     std::size_t reads=0;
     auto counted=[&](Address a,void *out,std::size_t n){++reads;return read(a,out,n);};
     auto plan=PlanDetached(simple,0,detached,counted,&topology);
-    check(reads==9,"detached header fields use one bounded read");
-    auto narrow=[&](Address a,void *out,std::size_t n){if(a==detached+Definition&&n==16)return false;return read(a,out,n);};
+    check(reads==7,"detached header and attribute tables use bounded reads");
+    auto narrow=[&](Address a,void *out,std::size_t n){if((a==detached+Definition&&n==16)||(a==detached+0x22e8&&n==0x328))return false;return read(a,out,n);};
     auto fallback=PlanDetached(simple,0,detached,narrow,&topology);
     check(fallback.Error.empty()&&fallback.Copies.size()==plan.Copies.size()&&fallback.Particles==plan.Particles,"narrow field fallback preserves restore plan");
     auto invalidTopology=simple;invalidTopology.Collections[0].Parent=0;
@@ -139,5 +148,10 @@ int main(){
     std::vector<std::size_t> visited;
     ReplayForest(forest,[&](std::size_t i,std::size_t active){visited.push_back(i);check(active>0,"empty branches skipped");return i!=0;});
     check(visited==std::vector<std::size_t>{0,1,3,4},"root success avoids duplicates; root failure falls back to child subtrees");
+    ChildIndex forestIndex;check(BuildChildIndex(forest,forestIndex),"forest topology");
+    visited.clear();ReplayForest(forest,[&](std::size_t i,std::size_t){visited.push_back(i);return i!=0;},&forestIndex);
+    check(visited==std::vector<std::size_t>{0,1,3,4},"prepared forest traversal identical");
+    forestIndex[0].clear();visited.clear();ReplayForest(forest,[&](std::size_t i,std::size_t){visited.push_back(i);return true;},&forestIndex);
+    check(visited.empty(),"missing prepared edge rejected before submission");
     std::cout<<"Native particle snapshot tests passed\n";
 }
