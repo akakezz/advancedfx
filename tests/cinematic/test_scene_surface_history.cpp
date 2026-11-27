@@ -51,12 +51,26 @@ int main(){
     both=independent.ResolvePreview(20);assert(both&&both.ShadowTick==-1&&both.DecalTick==20);
     Decal fade;fade.Flags=0x100;fade.Alpha=200;
     assert(fade.Fading()&&fade.SetFade(2,10,10)&&fade.Visible());
-    const auto beforeFade=fade;assert(fade.SetFade(2,10,11.9f)&&fade.Visible()&&fade==beforeFade);
+    const auto beforeFade=fade;assert(fade.SetFade(2,10,11)&&fade.Visible()&&fade.ReplayAlpha()==100&&fade.Same(beforeFade)&&!(fade==beforeFade));
     assert(fade.SetFade(2,10,12)&&!fade.Visible()&&fade.Same(beforeFade)&&!(fade==beforeFade));
     assert(fade.SetFade(2,11,12)&&fade.Visible()&&!fade.Same(beforeFade));
     assert(!fade.SetFade(0,11,12)&&!fade.SetFade(-1,11,12)&&!fade.SetFade(NAN,11,12)&&!fade.SetFade(2,11,INFINITY));
     fade.Alpha=0;assert(!fade.Visible());
     coverage.FadeInvalid=1;assert(coverage.Total()==10&&coverage.Describe().find("invalid fade 1")!=std::string::npos);
+    std::vector<DecalVertex> polygon(3);
+    assert(ValidDecalGeometry(polygon));polygon[0][0]=0x7f800000;assert(!ValidDecalGeometry(polygon));polygon[0][0]=0;
+    Decal a;a.GeometryGroup=0;a.Geometry=std::make_shared<const std::vector<DecalVertex>>(polygon);
+    assert(a.HasGeometry());a.GeometryGroup=3;assert(!a.HasGeometry());a.GeometryGroup=0;
+    Frame geom;geom.Tick=1;geom.World=9;geom.DecalsReady=true;
+    geom.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{a});
+    History gh;assert(gh.Append(geom));const auto geoBytes=gh.Bytes;
+    a.Alpha=100;geom.Tick=2;geom.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{a});
+    assert(gh.Append(geom));const auto secondCost=gh.Bytes-geoBytes;
+    assert(secondCost<geoBytes&&gh.At(1)->Decals->front().Geometry==gh.At(2)->Decals->front().Geometry);
+    History ghSmall(geoBytes);geom.Tick=1;assert(ghSmall.Append(geom));geom.Tick=2;a.Alpha=101;
+    geom.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{a});
+    assert(ghSmall.Append(geom)&&ghSmall.Frames.size()==1&&ghSmall.Bytes==geoBytes);
+    gh.Clear();assert(!gh.Bytes);
     Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
     sh.Leaves.push_back(-1);assert(!sh.Valid());
 }

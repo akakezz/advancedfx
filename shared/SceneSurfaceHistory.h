@@ -10,8 +10,23 @@
 #include <vector>
 #include <type_traits>
 #include <utility>
+#include <cstring>
+#include <set>
 
 namespace advancedfx { namespace SceneSurfaces {
+// Exact engine's ordinary clipped decal vertex: xyz, unused word, UV,
+// lightmap UV. Preserve the seven consumed float bit patterns losslessly.
+using DecalVertex=std::array<std::uint32_t,8>;
+static_assert(sizeof(DecalVertex)==32,"native decal vertex stride");
+inline bool ValidDecalGeometry(const std::vector<DecalVertex> &v){
+    if(v.size()<3||v.size()>64)return false;
+    for(const auto &vertex:v)for(unsigned i=0;i<8;++i){
+        if(i==3)continue;
+        float f=0;std::memcpy(&f,&vertex[i],sizeof(f));
+        if(!std::isfinite(f)||std::abs(f)>1e7f)return false;
+    }
+    return true;
+}
 struct Decal {
     std::uint16_t Slot=0,Flags=0,NameIndex=0;
     std::uint32_t Surface=0;
@@ -22,17 +37,28 @@ struct Decal {
     // not a promise to reproduce nonzero historical opacity.
     float FadeDuration=0,FadeStart=0;
     bool FadeExpired=false;
+    unsigned char FadeAlpha=255;
+    std::uint32_t LightmapOffset=0;
+    int GeometryGroup=-1;
+    std::shared_ptr<const std::vector<DecalVertex>> Geometry;
     bool Fading()const{return (Flags&0x100)!=0;}
     bool SetFade(float duration,float start,float now){
         if(!std::isfinite(duration)||duration<=0||!std::isfinite(start)||!std::isfinite(now)||!std::isfinite(start+duration))return false;
-        FadeDuration=duration;FadeStart=start;FadeExpired=now>=start+duration;return true;
+        FadeDuration=duration;FadeStart=start;FadeExpired=now>=start+duration;
+        const float fraction=(std::max)(0.0f,(std::min)(1.0f,1.0f-(now-start)/duration));
+        FadeAlpha=static_cast<unsigned char>(float(Alpha)*fraction);return true;
     }
-    bool Visible()const{return Alpha!=0&&!FadeExpired;}
+    unsigned char ReplayAlpha()const{return Fading()?(FadeExpired?0:FadeAlpha):Alpha;}
+    bool Visible()const{return ReplayAlpha()!=0;}
+    bool HasGeometry()const{return GeometryGroup>=0&&GeometryGroup<3&&Geometry&&ValidDecalGeometry(*Geometry);}
     std::string Material;
     bool Same(const Decal &o) const {
-        return Slot==o.Slot&&Surface==o.Surface&&Flags==o.Flags&&NameIndex==o.NameIndex&&Placement==o.Placement&&Color==o.Color&&Material==o.Material&&FadeDuration==o.FadeDuration&&FadeStart==o.FadeStart;
+        return Slot==o.Slot&&Surface==o.Surface&&Flags==o.Flags&&NameIndex==o.NameIndex&&Placement==o.Placement&&Color==o.Color&&Material==o.Material&&FadeDuration==o.FadeDuration&&FadeStart==o.FadeStart&&LightmapOffset==o.LightmapOffset;
     }
-    bool operator==(const Decal &o) const{return Same(o)&&Alpha==o.Alpha&&FadeExpired==o.FadeExpired;}
+    bool operator==(const Decal &o) const{
+        return Same(o)&&Alpha==o.Alpha&&FadeExpired==o.FadeExpired&&FadeAlpha==o.FadeAlpha&&GeometryGroup==o.GeometryGroup&&
+            (Geometry==o.Geometry||(Geometry&&o.Geometry&&*Geometry==*o.Geometry));
+    }
 };
 struct Shadow {
     std::array<float,3> Origin{},Direction{},Caster{};
@@ -95,15 +121,32 @@ class History {
     std::size_t Budget;
     static std::size_t Cost(const std::vector<Decal> &v){std::size_t n=sizeof(v)+v.capacity()*sizeof(Decal);for(const auto &d:v)n+=d.Material.capacity();return n;}
     static std::size_t Cost(const std::vector<Shadow> &v){std::size_t n=sizeof(v)+v.capacity()*sizeof(Shadow);for(const auto &s:v)n+=s.Leaves.capacity()*sizeof(int);return n;}
+    static std::size_t Cost(const std::vector<DecalVertex> &v){return sizeof(v)+v.capacity()*sizeof(DecalVertex);}
     std::map<const void*,std::size_t> Refs;
-    template<class T> std::size_t ExtraVector(const std::shared_ptr<const std::vector<T>> &p)const{
-        return p&&!Refs.count(p.get())?Cost(*p):0;
+    template<class T> std::size_t ExtraVector(const std::shared_ptr<const std::vector<T>> &p,bool standalone=false)const{
+        if(!p||(!standalone&&Refs.count(p.get())))return 0;
+        std::size_t n=Cost(*p);
+        if constexpr(std::is_same_v<T,Decal>){
+            std::set<const void*> seen;
+            for(const auto &d:*p)if(d.Geometry&&(standalone||!Refs.count(d.Geometry.get()))&&seen.insert(d.Geometry.get()).second)n+=Cost(*d.Geometry);
+        }
+        return n;
     }
     template<class T> void AddVector(const std::shared_ptr<const std::vector<T>> &p){
-        if(p){auto &n=Refs[p.get()];if(!n++)Bytes+=Cost(*p);}
+        if(!p)return;
+        auto &n=Refs[p.get()];
+        if(!n++){
+            Bytes+=Cost(*p);
+            if constexpr(std::is_same_v<T,Decal>)for(const auto &d:*p)AddVector(d.Geometry);
+        }
     }
     template<class T> void DropVector(const std::shared_ptr<const std::vector<T>> &p){
-        if(p){auto it=Refs.find(p.get());if(it!=Refs.end()&&!--it->second){Bytes-=Cost(*p);Refs.erase(it);}}
+        if(!p)return;
+        auto it=Refs.find(p.get());
+        if(it!=Refs.end()&&!--it->second){
+            Bytes-=Cost(*p);Refs.erase(it);
+            if constexpr(std::is_same_v<T,Decal>)for(const auto &d:*p)DropVector(d.Geometry);
+        }
     }
     std::size_t Extra(const Frame &f)const{return sizeof(Frame)+ExtraVector(f.Decals)+ExtraVector(f.Shadows);}
     void Drop(bool front){
@@ -120,7 +163,7 @@ public:
         // A failed/unsupported capture (often World==0) must not erase a
         // valid history or replace a good sample at the same tick.
         if(f.Tick<0||!f.World||(!f.DecalsReady&&!f.ShadowsReady)){++Rejected;return false;}
-        if(sizeof(Frame)+(f.Decals?Cost(*f.Decals):0)+(f.Shadows?Cost(*f.Shadows):0)>Budget){++Rejected;return false;}
+        if(sizeof(Frame)+ExtraVector(f.Decals,true)+ExtraVector(f.Shadows,true)>Budget){++Rejected;return false;}
         if(!Frames.empty()&&(f.World!=Frames.back().World||f.Tick<Frames.back().Tick))Clear();
         if(!Frames.empty()&&f.Tick==Frames.back().Tick)Drop(false);
         if(!Frames.empty()){
