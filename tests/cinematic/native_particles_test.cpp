@@ -80,7 +80,13 @@ int main(){
     put(detached+Xyz,dp);put(detached+XyzStride,ds);
     ChildIndex topology;
     check(BuildChildIndex(simple,topology)&&topology.size()==simple.Collections.size(),"prepared recorded topology");
-    auto plan=PlanDetached(simple,0,detached,read,&topology);
+    std::size_t reads=0;
+    auto counted=[&](Address a,void *out,std::size_t n){++reads;return read(a,out,n);};
+    auto plan=PlanDetached(simple,0,detached,counted,&topology);
+    check(reads==9,"detached header fields use one bounded read");
+    auto narrow=[&](Address a,void *out,std::size_t n){if(a==detached+Definition&&n==16)return false;return read(a,out,n);};
+    auto fallback=PlanDetached(simple,0,detached,narrow,&topology);
+    check(fallback.Error.empty()&&fallback.Copies.size()==plan.Copies.size()&&fallback.Particles==plan.Particles,"narrow field fallback preserves restore plan");
     auto invalidTopology=simple;invalidTopology.Collections[0].Parent=0;
     check(!BuildChildIndex(invalidTopology,topology),"cyclic recorded hierarchy rejected");
     check(plan.Error.empty()&&plan.Nodes==1&&plan.Particles==5&&plan.Copies.size()==3&&plan.Constants==1,"validated detached copy plan");

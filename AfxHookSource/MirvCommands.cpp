@@ -716,6 +716,10 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
     }
     ChildIndex children;
     if(!BuildChildIndex(frame,children))return fail("Recorded particle hierarchy invalid");
+    // Scratch is shared across attempts. A generation marker distinguishes
+    // bindings belonging to this tree from earlier successful/fallback trees.
+    std::vector<unsigned char> gate(draw?frame.Collections.size():0);
+    std::vector<std::size_t> bound(draw?frame.Collections.size():0);
     std::string firstFailure;
     bool listChanged=false;
     auto attempt=[&](std::size_t index,std::size_t)->bool {
@@ -771,7 +775,8 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                     // Validate all render gates before activating anything. A
                     // parent with no material short-circuits recursive Render;
                     // submit renderable descendants below those gates separately.
-                    std::vector<bool> gate(frame.Collections.size()),bound(frame.Collections.size());
+                    const auto gateStart=std::chrono::steady_clock::now();
+                    const auto generation=result.Attempts;
                     bool valid=true;
                     for(const auto &binding:plan.Bindings) {
                         const auto &c=frame.Collections[binding.Recorded];
@@ -780,17 +785,19 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                            !read(binding.Native+Layout::Definition,&definition,sizeof(definition))||!definition||
                            !read(definition+0x3fa,&flag,1)||!read(definition+0x148,&material,sizeof(material))) {valid=false;break;}
                         gate[binding.Recorded]=(flag&1)&&material;
-                        bound[binding.Recorded]=true;
+                        bound[binding.Recorded]=generation;
                     }
+                    result.GateMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-gateStart).count();
                     // Always return active counters to their factory state before destruction.
                     // No queued consumers are permitted in this experimental path.
                     struct ResetActive {
-                        const RestorePlan &Plan;decltype(write) &Write;std::size_t &Failures;
-                        ~ResetActive(){const int zero=0;for(const auto &b:Plan.Bindings){
+                        const RestorePlan &Plan;decltype(write) &Write;std::size_t &Failures;double &Ms;
+                        ~ResetActive(){const auto start=std::chrono::steady_clock::now();const int zero=0;for(const auto &b:Plan.Bindings){
                             if(!Write(b.Native+Layout::Active,&zero,sizeof(zero)))++Failures;
                             if(!Write(b.Native+0x30,&zero,sizeof(zero)))++Failures;
-                        }}
-                    } reset{plan,write,result.CleanupFailures};
+                        }Ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();}
+                    } reset{plan,write,result.CleanupFailures,result.ResetMs};
+                    const auto activationStart=std::chrono::steady_clock::now();
                     if(valid)for(const auto &binding:plan.Bindings) {
                         const auto &c=frame.Collections[binding.Recorded];
                         const int active=static_cast<int>(c.Active),padded=(active+3)/4;
@@ -800,6 +807,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                            !write(binding.Native+0x30,&padded,sizeof(padded))||
                            !write(binding.Native+Layout::Active,&active,sizeof(active))) {valid=false;break;}
                     }
+                    result.ActivationMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-activationStart).count();
                     if(!valid)reject("native activation validation/write failed");
                     else {
                         std::size_t nodes=0,particles=0;
@@ -807,7 +815,7 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                             const auto i=binding.Recorded;
                             if(!gate[i])continue;
                             const auto &c=frame.Collections[i];
-                            if(c.Parent<0||!bound[c.Parent]||!gate[c.Parent]) {
+                            if(c.Parent<0||bound[c.Parent]!=generation||!gate[c.Parent]) {
                                 ctx.Mode(context,10);identity(context);
                                 const auto drawStart=std::chrono::steady_clock::now();
                                 render(reinterpret_cast<void*>(binding.Native),context,false,nullptr);

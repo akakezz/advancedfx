@@ -279,8 +279,17 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
         const auto &old=f.Collections[i];
         Address def=0,name=0,child=0;
         int active=0,capacity=0,maxAllowed=0;
-        if(!get(c+Definition,def)||!def||!get(def+DefinitionName,name)||!name||
-           !get(c+Active,active)||active!=0||!get(c+0x60,capacity)||!get(c+0x64,maxAllowed)||
+        // These three verified fields are contiguous. Prefer one bounded read;
+        // retain the original narrow reads if the platform reader rejects it.
+        std::array<unsigned char,16> header{};
+        bool headerOk=c>=0x10000&&read(c+Definition,header.data(),header.size());
+        if(headerOk){
+            std::memcpy(&def,header.data(),sizeof(def));
+            std::memcpy(&capacity,header.data()+8,sizeof(capacity));
+            std::memcpy(&maxAllowed,header.data()+12,sizeof(maxAllowed));
+        }else headerOk=get(c+Definition,def)&&get(c+0x60,capacity)&&get(c+0x64,maxAllowed);
+        if(!headerOk||!def||!get(def+DefinitionName,name)||!name||
+           !get(c+Active,active)||active!=0||
            maxAllowed<0||maxAllowed>5000||capacity<maxAllowed||capacity>5008||
            old.Active>static_cast<unsigned>(maxAllowed)||!get(c+ChildHead,child)) {
             fail("Detached collection capacity/state mismatch");return;
@@ -298,7 +307,8 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
         if(old.Active) {
             std::array<Address,32> ptr{},stride{};
             Address memory=0;
-            if(!get(c+Xyz,ptr)||!get(c+XyzStride,stride)||!get(c+0x22e8,memory)||memory<0x10000) {
+            if(!get(c+Xyz,ptr)||!get(c+XyzStride,stride)||!get(c+0x22e8,memory)||memory<0x10000||
+               memory>(std::numeric_limits<Address>::max)()-15) {
                 fail("Detached attribute table unavailable");return;
             }
             Address next=(memory+15)&~Address(15);
@@ -309,7 +319,9 @@ RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader re
                 const auto width=4u*Components(a);
                 if(stride[a]) {
                     if(stride[a]!=width||ptr[a]!=next) {fail("Detached varying buffer layout mismatch");return;}
-                    next+=Address(capacity)*Components(a)*sizeof(std::uint32_t);
+                    const auto bytes=Address(capacity)*Components(a)*sizeof(std::uint32_t);
+                    if(next>(std::numeric_limits<Address>::max)()-bytes){fail("Detached varying buffer address overflow");return;}
+                    next+=bytes;
                 }
                 if(a>=AttributeCount) continue;
                 if(!(old.Mask&(1u<<a))) {++plan.Missing;continue;}
@@ -515,7 +527,7 @@ struct ReplayResult {
     bool MainView=false;
     std::size_t Attempts=0,Trees=0,Nodes=0,Particles=0,Rejected=0;
     std::string Status;
-    double FactoryMs=0,PlanMs=0,CopyMs=0,RenderMs=0,DestroyMs=0;
+    double FactoryMs=0,PlanMs=0,CopyMs=0,RenderMs=0,DestroyMs=0,GateMs=0,ActivationMs=0,ResetMs=0;
     std::size_t FastWrites=0,SystemWrites=0,WriteFaults=0,CleanupFailures=0;
 };
 class History {

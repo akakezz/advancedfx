@@ -119,6 +119,7 @@ struct ScenePerfCounters {
     std::string SlowestModelAsset;
     int SlowestModelTick=-1;
     double ParticleFactoryMs=0,ParticlePlanMs=0,ParticleCopyMs=0,ParticleRenderMs=0,ParticleDestroyMs=0;
+    double ParticleGateMs=0,ParticleActivationMs=0,ParticleResetMs=0;
     unsigned long long FastWrites=0,SystemWrites=0,WriteFaults=0,CleanupFailures=0;
     int LastParticleFailureTick=-1;
     std::string LastParticleFailure;
@@ -417,6 +418,9 @@ static void SceneBenchFrame(){
             delta(g_ScenePerf.ParticleDestroyMs,b.Before.ParticleDestroyMs),resident,
             g_ScenePerf.FastWrites-b.Before.FastWrites,g_ScenePerf.SystemWrites-b.Before.SystemWrites,
             g_ScenePerf.WriteFaults-b.Before.WriteFaults,g_ScenePerf.CleanupFailures-b.Before.CleanupFailures);
+        g_SceneBenchReport+=line;
+        std::snprintf(line,sizeof(line),"  Particle extra stages ms/frame: gates %.2f, activation %.2f, active reset %.2f\n",
+            delta(g_ScenePerf.ParticleGateMs,b.Before.ParticleGateMs),delta(g_ScenePerf.ParticleActivationMs,b.Before.ParticleActivationMs),delta(g_ScenePerf.ParticleResetMs,b.Before.ParticleResetMs));
         g_SceneBenchReport+=line;
         using T=advancedfx::SceneCache::ReplayTimings;
         const auto &a=g_ScenePerf.StudioStages.Ms;const auto &z=b.Before.StudioStages.Ms;
@@ -1109,6 +1113,7 @@ void SceneCacheDrawParticles()
     g_ScenePerf.ParticleAttempts+=result.Attempts;g_ScenePerf.ParticleRejected+=result.Rejected;
     g_ScenePerf.ParticleFactoryMs+=result.FactoryMs;g_ScenePerf.ParticlePlanMs+=result.PlanMs;g_ScenePerf.ParticleCopyMs+=result.CopyMs;
     g_ScenePerf.ParticleRenderMs+=result.RenderMs;g_ScenePerf.ParticleDestroyMs+=result.DestroyMs;
+    g_ScenePerf.ParticleGateMs+=result.GateMs;g_ScenePerf.ParticleActivationMs+=result.ActivationMs;g_ScenePerf.ParticleResetMs+=result.ResetMs;
     g_ScenePerf.FastWrites+=result.FastWrites;g_ScenePerf.SystemWrites+=result.SystemWrites;g_ScenePerf.WriteFaults+=result.WriteFaults;g_ScenePerf.CleanupFailures+=result.CleanupFailures;
     if(result.Rejected||(!result.MainView&&!result.Status.empty())){
         g_ScenePerf.LastParticleFailureTick=sample->Tick;
@@ -2186,6 +2191,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         advancedfx::Message("Native particle CPU mean/main view: factory %.3f, validation %.3f, attribute copy %.3f, render %.3f, destruction %.3f ms; fast writes %d: %llu direct, %llu system, %llu faults; active cleanup failures %llu.\n",
             g_ScenePerf.ParticleFactoryMs/views,g_ScenePerf.ParticlePlanMs/views,g_ScenePerf.ParticleCopyMs/views,g_ScenePerf.ParticleRenderMs/views,g_ScenePerf.ParticleDestroyMs/views,
             int(g_SceneFastParticleWrites),g_ScenePerf.FastWrites,g_ScenePerf.SystemWrites,g_ScenePerf.WriteFaults,g_ScenePerf.CleanupFailures);
+        advancedfx::Message("Native particle extra CPU mean/main view: gates %.3f, activation %.3f, active reset %.3f ms.\n",
+            g_ScenePerf.ParticleGateMs/views,g_ScenePerf.ParticleActivationMs/views,g_ScenePerf.ParticleResetMs/views);
         unsigned resident=0;unsigned long long hits=0,adds=0;Mirv_Tf2_SceneAssetStatus(resident,hits,adds);
         advancedfx::Message("Model residency %d; %u/256 retained asset references; %llu reuse hits, %llu additions (session). Immediate studio batching %d.\n",int(g_SceneKeepAssets),resident,hits,adds,int(g_SceneBatchStudio));
         advancedfx::Message("Preview frustum cull %d; rejected model submissions %llu.\n",int(g_ScenePreviewCull),g_ScenePerf.ModelsCulled);
