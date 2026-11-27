@@ -12304,6 +12304,9 @@ static void SceneObserveModelDecals(void *renderer,const SceneStudioInfo *info,i
         }
     }
 #endif
+    // The normal draw may populate fat model vertex data on demand.
+    // Observe after it returns, still inside the same synchronous draw.
+    g_SceneOriginalDecals(renderer,info,lod,body);
     if(g_SceneDecalArmed&&GetCurrentThreadId()==g_SceneDecalThread&&caller==g_SceneDecalBase+0x51cfd&&
        MaterialSystem_IsImmediate()&&Mirv_Tf2_SceneRenderViewId()==0){
         SceneStudioInfo copy{};
@@ -12317,6 +12320,13 @@ static void SceneObserveModelDecals(void *renderer,const SceneStudioInfo *info,i
             const auto reader=[](std::uintptr_t a,auto &value){return SceneLightingRead(a,value);};
             using namespace advancedfx::SceneLighting;
             ModelDecalGeometry geometry;bool geometryOk=g_SceneDecalBytes<4*1024*1024;
+            int bones=0;const auto headerAddress=reinterpret_cast<std::uintptr_t>(copy.Header);
+            const bool skinReady=SceneLightingRead(headerAddress+0x9c,bones)&&bones>1&&bones<=128&&
+                SceneLightingMatch(g_SceneDecalBase,0x825d,{0x49,0x63,0x93,0xec,0,0,0})&&
+                SceneLightingMatch(g_SceneDecalBase,0x8271,{0x48,0x69,0xc1,0x94,0,0,0})&&
+                SceneLightingMatch(g_SceneDecalBase,0x8282,{0x49,0x6b,0xc2,0x74})&&
+                SceneLightingMatch(g_SceneDecalBase,0x86cd,{0x41,0x03,0x54,0x24,0xdc})&&
+                SceneLightingMatch(g_SceneDecalBase,0x86df,{0x80,0x7f,0x0f,0x01});
             const auto readBytes=[](std::uint64_t address,void *data,std::size_t size){
                 SIZE_T got=0;return address>=0x10000&&size<=512*1024&&
                     ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(address),data,size,&got)&&got==size;
@@ -12325,6 +12335,7 @@ static void SceneObserveModelDecals(void *renderer,const SceneStudioInfo *info,i
                 if(!geometryOk)return;
                 ModelDecalBatch batch;
                 if(geometry.Batches.size()>=64||!CaptureModelDecalBatch(readBytes,SceneModelDecalMaterialName,record,batch)){geometryOk=false;return;}
+                if(skinReady)CaptureModelDecalSkin(reader,headerAddress,row.Checksum,row.Body,bones,batch);
                 geometry.Batches.push_back(std::move(batch));if(geometry.Bytes()>256*1024)geometryOk=false;
             };
             if(!ReadModelDecalCoverage(reader,reinterpret_cast<std::uintptr_t>(renderer),
@@ -12340,7 +12351,6 @@ static void SceneObserveModelDecals(void *renderer,const SceneStudioInfo *info,i
             }else if(g_SceneDecalObservations.size()<8192){if(row.Geometry)g_SceneDecalBytes+=row.Geometry->Bytes();g_SceneDecalObservations.emplace(copy.ClientEntity,std::move(row));}
         }
     }
-    g_SceneOriginalDecals(renderer,info,lod,body);
 }
 static bool SceneInstallModelDecalObservation(){
     const auto base=reinterpret_cast<std::uintptr_t>(GetModuleHandleA("studiorender.dll"));

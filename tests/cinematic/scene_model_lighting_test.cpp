@@ -72,6 +72,31 @@ int main(){
     auto invalidBatch=batch;invalidBatch.Indices[0]=65535;assert(!scratch.Build(invalidBatch));
     put(id+8,std::uint16_t(3));assert(!CaptureModelDecalBatch(readBytes,name,record,batch)&&batch==geometry.Batches[0]);
     put(id+8,std::uint16_t(1));put(vd+0x2e,std::uint16_t(5));assert(!CaptureModelDecalBatch(readBytes,name,record,batch));
+    // Exact x64 MDL metadata plus one resident fat vertex.
+    std::array<unsigned char,0x1000> mdl{};
+    const std::uint64_t hdr=0x100,part=hdr+0x200,model=part+0x10,mesh=model+0x94,sourceVertices=0x800;
+    auto mdlPut=[&](std::uint64_t address,const auto &value){std::memcpy(mdl.data()+address,&value,sizeof(value));};
+    auto mdlRead=[&](std::uint64_t address,auto &value){if(address>mdl.size()||sizeof(value)>mdl.size()-address)return false;std::memcpy(&value,mdl.data()+address,sizeof(value));return true;};
+    mdlPut(hdr,std::array<std::uint32_t,3>{0x54534449,48,77});
+    mdlPut(hdr+0x4c,int(0x500));mdlPut(hdr+0x9c,int(2));mdlPut(hdr+0xe8,int(1));mdlPut(hdr+0xec,int(0x200));
+    mdlPut(part,std::array<int,4>{0,1,1,0x10});mdlPut(model+0x48,int(1));mdlPut(model+0x4c,int(0x94));
+    mdlPut(model+0x50,int(1));mdlPut(model+0x54,int(0));mdlPut(model+0x6c,sourceVertices);
+    mdlPut(mesh+4,int(-0x94));mdlPut(mesh+8,int(1));mdlPut(mesh+0xc,int(0));mdlPut(mesh+0x54,model+0x6c);
+    mdlPut(sourceVertices,std::array<float,3>{.25f,.75f,0});mdlPut(sourceVertices+12,std::array<unsigned char,4>{0,1,0,2});
+    mdlPut(sourceVertices+16,std::array<float,3>{1,2,3});mdlPut(sourceVertices+28,std::array<float,3>{0,0,1});
+    ModelDecalVertex direct;direct.Selectors={0,0,0,0,0,0};
+    ModelDecalSkin skin;assert(ReadModelDecalSkin(mdlRead,hdr,77,0,2,direct,skin)&&skin.Count==2);
+    auto skinnedInput=geometry.Batches[0];for(auto &v:skinnedInput.Vertices)v.Selectors=direct.Selectors;
+    assert(CaptureModelDecalSkin(mdlRead,hdr,77,0,2,skinnedInput));
+    std::array<float,12> transforms[2]={{1,0,0,0,0,1,0,0,0,0,1,0},{1,0,0,4,0,1,0,0,0,0,1,0}};
+    ModelDecalBatch posed;assert(SkinModelDecalBatch(skinnedInput,transforms,2,posed)&&posed.Skin.empty());
+    assert(posed.Vertices[0].Values[0]==4&&posed.Vertices[0].Values[1]==2&&std::abs(posed.Vertices[0].Values[2]-3.1f)<.0001f);
+    assert(posed.Vertices[0].Values[5]==1&&posed.Vertices[0].Values[6]==skinnedInput.Vertices[0].Values[6]&&posed.Indices==skinnedInput.Indices);
+    direct.Selectors[0]=0xffff;assert(!ReadModelDecalSkin(mdlRead,hdr,77,0,2,direct,skin));
+    direct.Selectors[0]=0;assert(!ReadModelDecalSkin(mdlRead,hdr,78,0,2,direct,skin));
+    mdlPut(sourceVertices+12,std::array<unsigned char,4>{0,2,0,2});assert(!ReadModelDecalSkin(mdlRead,hdr,77,0,2,direct,skin));
+    mdlPut(sourceVertices+12,std::array<unsigned char,4>{0,1,0,2});mdlPut(mesh+0x54,std::uint64_t(0));
+    assert(!CaptureModelDecalSkin(mdlRead,hdr,77,0,2,skinnedInput)&&skinnedInput.Skin.empty());
     Descriptor raw{};raw[0]=1;SetWord(raw,1,2);SetWord(raw,4,100);SetWord(raw,10,20);SetWord(raw,12,1);raw[19]=9;
     // The native converter doesn't initialize the unused angular or
     // private derived fields. Never capture them as arbitrary floats.

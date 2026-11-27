@@ -145,17 +145,38 @@ struct ModelDecalVertex {
     std::array<std::uint16_t,6> Selectors{};
     bool operator==(const ModelDecalVertex &o)const{return Values==o.Values&&Selectors==o.Selectors;}
 };
+// Source-vertex inputs for the native multi-bone decal writer. Capture
+// only directly mapped fat vertices from a validated studio asset.
+struct ModelDecalSkin {
+    std::array<float,3> Position{},Normal{},Weights{};
+    std::array<unsigned char,3> Bones{};
+    unsigned char Count=0;
+    bool Valid(int boneCount)const{
+        if(boneCount<1||boneCount>128||Count<1||Count>3)return false;
+        for(float f:Position)if(!std::isfinite(f)||std::abs(f)>1e7f)return false;
+        float len=0;for(float f:Normal){if(!std::isfinite(f)||std::abs(f)>2.f)return false;len+=f*f;}
+        if(len<.25f||len>4.f)return false;
+        float sum=0;
+        for(unsigned i=0;i<Count;++i){
+            if(Bones[i]>=boneCount||!std::isfinite(Weights[i])||Weights[i]<0||Weights[i]>1.001f)return false;
+            sum+=Weights[i];
+        }
+        return std::abs(sum-1.f)<.01f;
+    }
+    bool operator==(const ModelDecalSkin &o)const{return Position==o.Position&&Normal==o.Normal&&Weights==o.Weights&&Bones==o.Bones&&Count==o.Count;}
+};
 struct ModelDecalBatch {
     std::string Material;
     std::vector<ModelDecalVertex> Vertices;
     std::vector<std::uint16_t> Indices;
-    bool operator==(const ModelDecalBatch &o)const{return Material==o.Material&&Vertices==o.Vertices&&Indices==o.Indices;}
+    std::vector<ModelDecalSkin> Skin; // empty = unsupported or not captured; otherwise one per vertex
+    bool operator==(const ModelDecalBatch &o)const{return Material==o.Material&&Vertices==o.Vertices&&Indices==o.Indices&&Skin==o.Skin;}
 };
 struct ModelDecalGeometry {
     std::vector<ModelDecalBatch> Batches;
     std::size_t Bytes()const{
         std::size_t n=sizeof(*this)+Batches.capacity()*sizeof(ModelDecalBatch);
-        for(const auto &b:Batches)n+=b.Material.capacity()+1+b.Vertices.capacity()*sizeof(ModelDecalVertex)+b.Indices.capacity()*sizeof(std::uint16_t);
+        for(const auto &b:Batches)n+=b.Material.capacity()+1+b.Vertices.capacity()*sizeof(ModelDecalVertex)+b.Indices.capacity()*sizeof(std::uint16_t)+b.Skin.capacity()*sizeof(ModelDecalSkin);
         return n;
     }
     bool operator==(const ModelDecalGeometry &o)const{return Batches==o.Batches;}
@@ -168,6 +189,8 @@ struct ModelDecalGeometry {
             if(v>4096||i>12288)return false;
             for(const auto &vert:b.Vertices)for(float f:vert.Values)if(!std::isfinite(f))return false;
             for(auto index:b.Indices)if(index>=b.Vertices.size())return false;
+            if(!b.Skin.empty()&&b.Skin.size()!=b.Vertices.size())return false;
+            for(const auto &s:b.Skin)if(!s.Valid(128))return false;
         }
         return v==coverage.Vertices&&i==coverage.Indices;
     }
@@ -216,6 +239,98 @@ bool CaptureModelDecalBatch(ReadBytes read,MaterialName name,const std::array<un
         base+=vc;previous=head;head=DecalField<std::uint16_t>(seg,0x16);
     }
     if(head!=0xffff||previous!=DecalField<std::uint16_t>(record,0x62)||base!=next.Vertices.size()||offset!=indices.size())return false;
+    out=std::move(next);return true;
+}
+// Verified SDK-2013 x64 studio layout and exact native 0x8180 lookup.
+// All relative metadata ranges must remain inside the current IDST asset.
+// Never load an asset or call CacheVertexData here.
+template<class Read>
+bool ReadModelDecalSkin(Read read,std::uint64_t header,std::uint32_t checksum,int body,int bones,
+                       const ModelDecalVertex &vertex,ModelDecalSkin &out){
+    if(!header||header>(std::numeric_limits<std::uint64_t>::max)()-32*1024*1024||
+       body<0||bones<2||bones>128)return false;
+    const unsigned vi=vertex.Selectors[0],bi=vertex.Selectors[1],mi=vertex.Selectors[2],si=vertex.Selectors[3];
+    if(vi==0xffff||bi==0xffff||mi==0xffff||si==0xffff)return false;
+    std::array<std::uint32_t,3> signature{};
+    int length=0,nativeBones=0,parts=0,partOffset=0;
+    if(!read(header,signature)||signature[0]!=0x54534449||signature[1]!=48||signature[2]!=checksum||
+       !read(header+0x4c,length)||length<0x198||length>32*1024*1024||
+       !read(header+0x9c,nativeBones)||nativeBones!=bones||
+       !read(header+0xe8,parts)||parts<1||parts>128||bi>=static_cast<unsigned>(parts)||
+       !read(header+0xec,partOffset)||partOffset<0x198)return false;
+    auto inside=[&](std::uint64_t offset,std::uint64_t bytes){return offset<=static_cast<unsigned>(length)&&bytes<=static_cast<unsigned>(length)-offset;};
+    if(!inside(partOffset,std::uint64_t(parts)*16))return false;
+    const std::uint64_t part=std::uint64_t(partOffset)+bi*16;
+    std::array<int,4> p{};
+    if(!read(header+part,p)||p[1]<1||p[1]>256||p[2]<=0||p[3]<=0||mi>=static_cast<unsigned>(p[1])||
+       static_cast<unsigned>((body/p[2])%p[1])!=mi||!inside(part+std::uint64_t(p[3]),std::uint64_t(p[1])*0x94))return false;
+    const auto model=part+std::uint64_t(p[3])+mi*0x94;
+    std::array<unsigned char,0x94> m{};
+    if(!read(header+model,m))return false;
+    const int meshCount=DecalField<int>(m,0x48),meshOffset=DecalField<int>(m,0x4c),
+        modelVerts=DecalField<int>(m,0x50),vertexOffset=DecalField<int>(m,0x54);
+    if(meshCount<1||meshCount>256||si>=static_cast<unsigned>(meshCount)||meshOffset<=0||
+       modelVerts<1||modelVerts>65536||vertexOffset<0||vertexOffset%48||
+       !inside(model+std::uint64_t(meshOffset),std::uint64_t(meshCount)*0x74))return false;
+    const auto mesh=model+std::uint64_t(meshOffset)+si*0x74;
+    std::array<unsigned char,0x74> s{};
+    if(!read(header+mesh,s))return false;
+    const int modelBack=DecalField<int>(s,4),meshVerts=DecalField<int>(s,8),meshStart=DecalField<int>(s,0xc);
+    if(std::int64_t(mesh)+modelBack!=std::int64_t(model)||meshVerts<1||meshVerts>modelVerts||
+       vi>=static_cast<unsigned>(meshVerts)||meshStart<0||meshStart>modelVerts-meshVerts||
+       DecalField<std::uint64_t>(s,0x54)!=header+model+0x6c)return false;
+    const auto data=DecalField<std::uint64_t>(m,0x6c);
+    const std::uint64_t offset=std::uint64_t(vertexOffset)+48*(std::uint64_t(meshStart)+vi);
+    if(!data||data>(std::numeric_limits<std::uint64_t>::max)()-offset-48)return false;
+    std::array<unsigned char,48> raw{};
+    if(!read(data+offset,raw))return false;
+    ModelDecalSkin next;next.Count=raw[15];
+    std::memcpy(next.Weights.data(),raw.data(),12);std::memcpy(next.Bones.data(),raw.data()+12,3);
+    std::memcpy(next.Position.data(),raw.data()+16,12);std::memcpy(next.Normal.data(),raw.data()+28,12);
+    if(!next.Valid(bones))return false;
+    // Discard unused native weight/bone bytes before equality and retention.
+    for(unsigned i=next.Count;i<3;++i){next.Weights[i]=0;next.Bones[i]=0;}
+    out=next;return true;
+}
+template<class Read>
+bool CaptureModelDecalSkin(Read read,std::uint64_t header,std::uint32_t checksum,int body,int bones,ModelDecalBatch &batch){
+    batch.Skin.clear();
+    if(batch.Vertices.empty()||batch.Vertices.size()>4096)return false;
+    std::vector<ModelDecalSkin> skin;skin.reserve(batch.Vertices.size());
+    for(const auto &vertex:batch.Vertices){
+        ModelDecalSkin next;
+        if(!ReadModelDecalSkin(read,header,checksum,body,bones,vertex,next))return false;
+        skin.push_back(next);
+    }
+    batch.Skin=std::move(skin);return true;
+}
+// Native software decal position/normal transformation, evaluated against
+// the studio renderer's pose-to-world (not uncorrected bone-to-world).
+inline bool SkinModelDecalBatch(const ModelDecalBatch &source,const std::array<float,12> *matrices,int bones,ModelDecalBatch &out){
+    if(!matrices||bones<2||bones>128||source.Skin.empty()||source.Skin.size()!=source.Vertices.size())return false;
+    ModelDecalBatch next;next.Material=source.Material;next.Indices=source.Indices;next.Vertices=source.Vertices;
+    for(unsigned i=0;i<source.Skin.size();++i){
+        const auto &skin=source.Skin[i];if(!skin.Valid(bones))return false;
+        std::array<float,3> pos{},normal{};
+        for(unsigned j=0;j<skin.Count;++j){
+            const auto &m=matrices[skin.Bones[j]];
+            const float weight=skin.Count==1?1.f:skin.Weights[j];
+            for(unsigned axis=0;axis<3;++axis){
+                const auto off=axis*4;
+                float p=m[off+3],n=0;
+                for(unsigned k=0;k<3;++k){if(!std::isfinite(m[off+k]))return false;p+=m[off+k]*skin.Position[k];n+=m[off+k]*skin.Normal[k];}
+                pos[axis]+=weight*p;normal[axis]+=weight*n;
+            }
+        }
+        const float norm=std::sqrt(normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2]);
+        if(!std::isfinite(norm)||norm<1e-8f)return false;
+        for(unsigned axis=0;axis<3;++axis){
+            if(skin.Count>1)normal[axis]/=norm;
+            pos[axis]+=.1f*normal[axis]; // exact studio software writer constant
+            if(!std::isfinite(pos[axis])||std::abs(pos[axis])>1e7f)return false;
+            next.Vertices[i].Values[axis]=pos[axis];next.Vertices[i].Values[3+axis]=normal[axis];
+        }
+    }
     out=std::move(next);return true;
 }
 // Private native draw-batch storage, never a registered studio decal list.
