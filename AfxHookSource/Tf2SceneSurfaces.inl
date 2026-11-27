@@ -232,7 +232,7 @@ static void *SurfaceDecalGeometryHook(void *scratch,void *decal,void *surface,vo
         }
     }
     auto geometry=g_SurfaceDecalGeometry(scratch,decal,surface,material);
-    if(g_SurfaceGeometryGroup>=0&&GetCurrentThreadId()==g_SurfaceDecalThread)
+    if(g_SurfaceGeometryGroup>=0&&GetCurrentThreadId()==g_SurfaceDecalThread&&g_SurfaceCaptureArmed&&!g_SurfaceReplayActive)
         SurfaceObserveDecal(geometry,decal,surface,material);
     return geometry;
 }
@@ -273,7 +273,7 @@ static void SurfaceProjectHook(void *self,ShadowHandle handle,const float *origi
     if(GetCurrentThreadId()!=g_SurfaceThread||g_SurfaceOwn||g_SurfaceReplayActive||!g_SurfaceCaptureArmed||self!=g_SurfaceShadowManager)return;
     auto base=SurfaceEngine();NativeWorld world;
     if(!base||!SurfaceWorld(base,world)){g_SurfaceObserved.clear();return;}
-    if(!SurfaceSameWorld(world,g_SurfaceWorld)){g_SurfaceWorld=world;++g_SurfaceGeneration;g_SurfaceObserved.clear();}
+    if(!SurfaceSameWorld(world,g_SurfaceWorld)){g_SurfaceWorld=world;++g_SurfaceGeneration;g_SurfaceObserved.clear();SurfaceResetGeometry();}
     Shadow s;s.Height=height;s.FalloffOffset=offset;s.FalloffAmount=amount;
     if(count<=0||count>8192||!leaves){g_SurfaceObserved.erase(handle);return;}
     s.Leaves.resize(count);
@@ -389,7 +389,8 @@ static void SurfaceDecalDispatchHook(void *context,int group,float blend){
     const bool world=caller==0xe729d&&group>=0&&group<3&&GetCurrentThreadId()==g_SurfaceDecalThread&&
         (g_SurfaceCaptureArmed||g_SurfaceReplayActive)&&MaterialSystem_IsImmediate()&&Mirv_Tf2_SceneRenderViewId()==0;
     const int old=g_SurfaceGeometryGroup;
-    if(world&&g_SurfaceCaptureArmed&&!g_SurfaceReplayActive)g_SurfaceGeometryGroup=group;
+    NativeWorld captureWorld;
+    if(world&&g_SurfaceCaptureArmed&&!g_SurfaceReplayActive&&SurfaceWorld(base,captureWorld)&&SurfaceSameWorld(captureWorld,g_SurfaceWorld))g_SurfaceGeometryGroup=group;
     else g_SurfaceGeometryGroup=-1;
     g_SurfaceDecalDispatch(context,group,blend);
     g_SurfaceGeometryGroup=old;

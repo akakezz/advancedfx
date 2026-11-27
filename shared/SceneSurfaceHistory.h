@@ -48,7 +48,7 @@ struct Decal {
         const float fraction=(std::max)(0.0f,(std::min)(1.0f,1.0f-(now-start)/duration));
         FadeAlpha=static_cast<unsigned char>(float(Alpha)*fraction);return true;
     }
-    unsigned char ReplayAlpha()const{return Fading()?(FadeExpired?0:FadeAlpha):Alpha;}
+    unsigned char ReplayAlpha()const{return !Alpha?0:(Fading()?(FadeExpired?0:FadeAlpha):Alpha);}
     bool Visible()const{return ReplayAlpha()!=0;}
     bool HasGeometry()const{return GeometryGroup>=0&&GeometryGroup<3&&Geometry&&ValidDecalGeometry(*Geometry);}
     std::string Material;
