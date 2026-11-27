@@ -195,9 +195,9 @@ int main(){
  g_AfxStreams.Recording=true;beforeWrites=particleWrites;++globals.Count;Tf2PassRenderFrame(&client,rect);FlushGpu();assert(particleWrites==beforeWrites&&particleVisibility==1);
  particleIsolation=false;
  // Independent surface gates restore prior values and never affect separate passes.
- g_AfxStreams.Recording=false;surfaceMask=3;int sw=surfaceWrites;Tf2PassRenderFrame(&client,rect);FlushGpu();assert(surfaceWrites==sw+4&&surfaceValues[0]==1&&surfaceValues[1]==.5f);
+ g_AfxStreams.Recording=false;AfxHookSource::CameraOverlay::surfaceMask=3;int sw=surfaceWrites;Tf2PassRenderFrame(&client,rect);FlushGpu();assert(surfaceWrites==sw+4&&surfaceValues[0]==1&&surfaceValues[1]==.5f);
  g_AfxStreams.Recording=true;sw=surfaceWrites;++globals.Count;Tf2PassRenderFrame(&client,rect);FlushGpu();assert(surfaceWrites==sw);
- surfaceMask=0;
+ AfxHookSource::CameraOverlay::surfaceMask=0;
  // Every subset produces the complement in Base, including native HUD paint.
  for(bool deferred:{false,true})for(unsigned selected=0;selected<16;++selected){
   queued=deferred;g_AfxStreams.Alpha=false;g_AfxStreams.Enabled[0]=true;
@@ -451,8 +451,10 @@ int main(){
  std::cout<<"Player pass includes loose weapons/cosmetics/ragdolls/gibs; decals and props remain world; viewmodels stay separate\n";
 }
 '''
-for name,source in [('pov',pov),('passes',render),('writer',writer),('capture',capture),('groups',groups)]:
- if a.scene_replay_only and name not in ('passes','groups'): continue
+# Run the standalone history fixtures in CI as part of scene replay checks.
+history_fixtures=[('legacy_particles', (r/'tests/cinematic/legacy_particles_test.cpp').read_text()), ('surface_history', (r/'tests/cinematic/test_scene_surface_history.cpp').read_text())]
+for name,source in history_fixtures+[('pov',pov),('passes',render),('writer',writer),('capture',capture),('groups',groups)]:
+ if a.scene_replay_only and name not in ('passes','groups','legacy_particles','surface_history'): continue
  file=o/(name+'.cpp');file.write_text(source);cmd=['g++','-std=c++17','-O1','-g','-pthread','-I'+str(r),str(file),'-o',str(o/name)]
  if a.sanitize:cmd[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
  q=subprocess.run(cmd,capture_output=True,text=True)
