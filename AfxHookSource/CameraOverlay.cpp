@@ -412,7 +412,7 @@ static bool SceneBenchTransportReady(bool modelsOnly){
     if(!g_VEngineClient||!g_VEngineClient->IsPlayingDemo()||g_VEngineClient->IsSkippingDemo()||
        g_VEngineClient->IsDrawingLoadingImage()||!MaterialSystem_CanExecuteOnRenderThread()||MirvCampathPreview_IsSeeking())return false;
     if(g_VEngineClient->IsPaused())return true;
-    const auto *demo=g_VEngineClient->GetDemoInfoEx();
+    auto *demo=g_VEngineClient->GetDemoInfoEx();
     return demo&&demo->GetDemoPlaybackTimeScale()==0.0f;
 }
 // Called after the ordinary outer View_Render returns, not from demo time.
