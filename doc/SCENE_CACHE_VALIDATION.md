@@ -59,3 +59,5 @@ Do not clear retained history just to diagnose a visual error. If the game
 crashes, revert to the backed-up DLL and matching resources.
 
 Studio model decals are experimental in the same historical decal toggle. Capture uses the existing model-lighting audit (enabled by setup). Check the report's inventory/geometry/directly skinnable counts and requested/submitted native material batches. Include a model with attached marks and scrub across creation/removal; move the camera. Single-bone rigid and directly mapped animated base-pose geometry are supported only in immediate mode; flex morph history, unsupported generated vertices, missing materials, LOD mismatch and queued model decal replay are not implemented. No submission count certifies visual coverage.
+
+Optional shadow-atlas diagnostic: `mirv_cache surfaces atlasCapture 1` before a fresh short capture interval (default off; synchronous GPU readback may be slow). Report shows exact-frame image status and independent 16 MiB retained payload. Atlas texture replay is not implemented yet; projected blobs remain the expected visual fallback. Do not judge atlas fidelity from capture counters alone.

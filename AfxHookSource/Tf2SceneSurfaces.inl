@@ -2,6 +2,7 @@
 // No historical native address is retained in a Frame.
 #ifdef _WIN64
 #include <intrin.h>
+extern bool GetCurrentDemoTick(int &);
 namespace {
 using namespace advancedfx::SceneSurfaces;
 using SurfaceAddress=std::uint64_t;
@@ -151,6 +152,9 @@ static BiasFn g_SurfaceBias=nullptr;
 static DWORD g_SurfaceThread=0;
 static bool g_SurfaceHooks=false,g_SurfaceOwn=false,g_SurfaceReplayActive=false,g_SurfaceCaptureArmed=false;
 static std::map<ShadowHandle,Shadow> g_SurfaceObserved;
+static bool g_SurfaceAtlasArmed=false;
+static std::uint64_t g_SurfaceShadowRevision=0;
+static void SurfaceClearAtlasObservation();
 static std::map<ShadowHandle,unsigned char> g_SurfaceSavedBias;
 static std::vector<ShadowHandle> g_SurfaceOwned;
 static std::string g_SurfaceReport;
@@ -228,7 +232,7 @@ static void SurfaceClearGeometryObservations(){
     g_SurfaceDecalObservations.clear();g_SurfaceObservedVertices=0;
 }
 static void SurfaceResetGeometry(){
-    SurfaceClearGeometryObservations();g_SurfaceLastDecals.reset();
+    SurfaceClearGeometryObservations();g_SurfaceLastDecals.reset();SurfaceClearAtlasObservation();
 }
 static bool SurfaceObservationMatches(const DecalObservation &o,const LiveDecal &live){
     if(o.Object!=live.Object||o.Surface!=live.Surface||o.Material!=live.Material)return false;
@@ -494,11 +498,161 @@ static bool ShadowSlots(void *manager,std::vector<ShadowSlot> &out,bool appearan
         SurfaceGet(a+0x10,after)&&after==data&&SurfaceGet(a+0x2c,afterCount)&&afterCount==count&&
         SurfaceGet(a+0x20,afterHead)&&afterHead==head&&SurfaceGet(a+0x24,afterTail)&&afterTail==tail;
 }
+// Native shadow atlas is bound by the exact client call at 248a6e and
+// popped at 248cc6. Snapshot only before the latter, on the ordinary
+// synchronous rendering thread, with an exact texture/COM witness.
+struct AtlasObservation {
+    int Frame=-1,Tick=-1;
+    std::uint64_t World=0,Revision=0;
+    AtlasRead Status=AtlasRead::Missing;
+    std::vector<ShadowSlot> Slots;
+    std::shared_ptr<const ShadowAtlasImage> Image;
+};
+static AtlasObservation g_SurfaceAtlasObservation;
+static void SurfaceClearAtlasObservation(){g_SurfaceAtlasObservation={};}
+using AtlasPopFn=void(*)(void*);
+static AtlasPopFn g_SurfaceAtlasPop=nullptr;
+static SurfaceAddress g_SurfaceAtlasClient=0,g_SurfaceAtlasMaterial=0;
+static DWORD g_SurfaceAtlasThread=0;
+static bool SurfaceExactModule(const char *name,DWORD timestamp,DWORD image,SurfaceAddress &base){
+    base=reinterpret_cast<SurfaceAddress>(GetModuleHandleA(name));IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
+    return base&&SurfaceGet(base,dos)&&dos.e_magic==IMAGE_DOS_SIGNATURE&&dos.e_lfanew>0&&dos.e_lfanew<=0x1000&&
+        SurfaceGet(base+dos.e_lfanew,nt)&&nt.Signature==IMAGE_NT_SIGNATURE&&nt.FileHeader.Machine==IMAGE_FILE_MACHINE_AMD64&&
+        nt.FileHeader.TimeDateStamp==timestamp&&nt.OptionalHeader.SizeOfImage==image;
+}
+static bool SurfaceAtlasTexture(void *context,SurfaceAddress &texture,SurfaceAddress &d3dTexture){
+    const auto a=reinterpret_cast<SurfaceAddress>(context);
+    SurfaceAddress ms=0,api=0,vt=0,stack=0,fn=0,handleArray=0,handle=0,shader=0;
+    int depth=0;unsigned flags=0;std::uint16_t width=0,height=0;unsigned char copies=0,textureFlags=0;
+    if(!SurfaceExactModule("materialsystem.dll",0x6ac56a08,0x141000,ms)||ms!=g_SurfaceAtlasMaterial||
+       !SurfaceExactModule("shaderapidx9.dll",0x6ac412f6,0xdb000,api)||
+       !SurfaceGet(a,vt)||vt!=ms+0xbcab0||
+       !SurfaceGet(vt+0x20,fn)||fn!=ms+0x323b0||
+       !SurfaceGet(a+0x78,stack)||!stack||!SurfaceGet(a+0x88,depth)||depth<1||depth>64||
+       !SurfaceGet(stack+SurfaceAddress(depth-1)*0x38,texture)||!texture||
+       !SurfaceGet(texture,vt)||vt!=ms+0xbdef0||!SurfaceGet(vt,fn)||fn!=ms+0xd660||
+       !SurfaceGet(texture+0x18,flags)||!(flags&0x8000)||
+       !SurfaceGet(texture+0x30,width)||!SurfaceGet(texture+0x32,height)||width!=1024||height!=1024||
+       !SurfaceGet(texture+0x88,handleArray)||!handleArray||!SurfaceGet(handleArray,handle)||handle<0x10000||
+       !SurfaceGet(handle+0x22,copies)||copies!=1||!SurfaceGet(handle+0x5a,textureFlags)||!(textureFlags&1)||
+       !SurfaceGet(handle+0x60,d3dTexture)||!d3dTexture||
+       !SurfaceGet(ms+0x107248,shader)||!shader||!SurfaceGet(shader,vt)||vt!=api+0x7cce8||
+       !SurfaceGet(vt+0x620,fn)||fn!=api+0x22da0||
+       !SurfaceMatch(ms,0x30bba,{0x8b,0x81,0x88,0,0,0,0x48,0x8b,0xf9,0xff,0xc8,0x48,0x6b,0xf0,0x38})||
+       !SurfaceMatch(ms,0xd660,{0x48,0x83,0xc1,0x14,0xe9,0x07,0x94,0x06,0})||
+       !SurfaceMatch(ms,0x3f28e,{0x48,0x8b,0x89,0x88,0,0,0,0x48,0xc7,0xc0,0xff,0xff,0xff,0xff})||
+       !SurfaceMatch(ms,0x3f2e9,{0x41,0xff,0x92,0x20,0x06,0,0})||
+       !SurfaceMatch(api,0x22e5f,{0xf6,0x47,0x5a,0x01})||
+       !SurfaceMatch(api,0x22e6e,{0x80,0x7f,0x22,0x01,0x75,0x06,0x48,0x8b,0x4f,0x60})||
+       !SurfaceMatch(api,0x22e99,{0xff,0x90,0x90,0,0,0}))return false;
+    std::string name;return SurfaceMaterialName(texture,name)&&!_stricmp(name.c_str(),"_rt_Shadows");
+}
+struct AtlasRelease {template<class T> void operator()(T *p)const{if(p)p->Release();}};
+static AtlasRead SurfaceReadAtlasPixels(SurfaceAddress expectedTexture,ShadowAtlasImage &image){
+    auto *device=AfxGetDirect3DDevice9();if(!device)return AtlasRead::Readback;
+    IDirect3DSurface9 *raw=nullptr;
+    if(FAILED(device->GetRenderTarget(0,&raw))||!raw)return AtlasRead::Readback;
+    std::unique_ptr<IDirect3DSurface9,AtlasRelease> source(raw);
+    D3DSURFACE_DESC desc{};
+    if(FAILED(source->GetDesc(&desc))||desc.Width!=1024||desc.Height!=1024||
+       desc.Pool!=D3DPOOL_DEFAULT||desc.MultiSampleType!=D3DMULTISAMPLE_NONE||!(desc.Usage&D3DUSAGE_RENDERTARGET)||
+       (desc.Format!=D3DFMT_A8R8G8B8&&desc.Format!=D3DFMT_X8R8G8B8))return AtlasRead::Guard;
+    IDirect3DTexture9 *rawTexture=nullptr;
+    if(FAILED(source->GetContainer(__uuidof(IDirect3DTexture9),reinterpret_cast<void**>(&rawTexture)))||!rawTexture)return AtlasRead::Guard;
+    std::unique_ptr<IDirect3DTexture9,AtlasRelease> container(rawTexture);
+    // Compare the actual native device's current RT container to the
+    // shader record. A wrapper/alias mismatch is a conservative rejection.
+    if(reinterpret_cast<SurfaceAddress>(container.get())!=expectedTexture)return AtlasRead::Guard;
+    raw=nullptr;
+    if(FAILED(device->CreateOffscreenPlainSurface(1024,1024,desc.Format,D3DPOOL_SYSTEMMEM,&raw,nullptr))||!raw)return AtlasRead::Readback;
+    std::unique_ptr<IDirect3DSurface9,AtlasRelease> staging(raw);
+    if(FAILED(device->GetRenderTargetData(source.get(),staging.get())))return AtlasRead::Readback;
+    std::vector<std::uint32_t> pixels(ShadowAtlasImage::Pixels);
+    D3DLOCKED_RECT lock{};
+    if(FAILED(staging->LockRect(&lock,nullptr,D3DLOCK_READONLY)))return AtlasRead::Readback;
+    const bool pitchOk=lock.pBits&&lock.Pitch>=4096&&lock.Pitch<=1024*1024;
+    if(pitchOk)for(unsigned y=0;y<1024;++y)std::memcpy(pixels.data()+y*1024,static_cast<const unsigned char*>(lock.pBits)+std::size_t(y)*lock.Pitch,4096);
+    if(FAILED(staging->UnlockRect())||!pitchOk)return AtlasRead::Readback;
+    return ShadowAtlasImage::Encode(pixels,desc.Format==D3DFMT_A8R8G8B8?ShadowAtlasImage::Format::Argb:ShadowAtlasImage::Format::Xrgb,image)?AtlasRead::Ready:AtlasRead::TooLarge;
+}
+static bool SurfaceSameAtlasSlots(const std::vector<ShadowSlot> &a,const std::vector<ShadowSlot> &b){
+    if(a.size()!=b.size())return false;
+    for(std::size_t i=0;i<a.size();++i){
+        const auto &x=a[i],&y=b[i];
+        if(x.Handle!=y.Handle||x.Flags!=y.Flags||x.Bias!=y.Bias||x.Appearance!=y.Appearance||
+           x.Material!=y.Material||x.ModelMaterial!=y.ModelMaterial||x.UV!=y.UV||
+           x.ClipReady!=y.ClipReady||x.ClipCount!=y.ClipCount)return false;
+        if(x.ClipReady)for(unsigned j=0;j<x.ClipCount;++j){
+            if(x.ClipDistances[j]!=y.ClipDistances[j])return false;
+            for(unsigned k=0;k<3;++k)if(x.ClipNormals[j*3+k]!=y.ClipNormals[j*3+k])return false;
+        }
+    }
+    return true;
+}
+static void SurfaceAtlasPopHook(void *context){
+    const auto caller=reinterpret_cast<SurfaceAddress>(_ReturnAddress());
+    if(g_SurfaceAtlasArmed&&g_SurfaceCaptureArmed&&!g_SurfaceReplayActive&&GetCurrentThreadId()==g_SurfaceAtlasThread&&
+       caller==g_SurfaceAtlasClient+0x248ccc&&MaterialSystem_IsImmediate()&&Mirv_Tf2_SceneRenderViewId()==0&&g_SurfaceHooks&&
+       GetCurrentThreadId()==g_SurfaceThread){
+        const auto engine=SurfaceEngine();NativeWorld world;int tick=-1;
+        auto *globals=g_Hook_VClient_RenderView.GetGlobals();
+        if(globals&&engine&&SurfaceWorld(engine,world)&&SurfaceSameWorld(world,g_SurfaceWorld)&&GetCurrentDemoTick(tick)&&tick>=0){
+            const int frame=globals->framecount_get();
+            // Multiple ordinary atlas passes in one frame are ambiguous.
+            if(g_SurfaceAtlasObservation.Frame==frame&&g_SurfaceAtlasObservation.Tick==tick){
+                g_SurfaceAtlasObservation.Image.reset();g_SurfaceAtlasObservation.Status=AtlasRead::Changed;
+            }else{
+                SurfaceClearAtlasObservation();auto &o=g_SurfaceAtlasObservation;
+                o.Frame=frame;o.Tick=tick;o.World=g_SurfaceGeneration;o.Revision=g_SurfaceShadowRevision;o.Status=AtlasRead::Guard;
+                SurfaceAddress texture=0,d3dTexture=0;
+                if(SurfaceAtlasTexture(context,texture,d3dTexture)&&ShadowSlots(g_SurfaceShadowManager,o.Slots,true)){
+                    // Pop's verified first action is Flush(false). Perform
+                    // it before the readback while the atlas is still bound;
+                    // the original pop will flush again and restore state.
+                    reinterpret_cast<void(*)(void*,bool)>(g_SurfaceAtlasMaterial+0x323b0)(context,false);
+                    SurfaceAddress again=0,d3dAgain=0;
+                    ShadowAtlasImage image;
+                    if(SurfaceAtlasTexture(context,again,d3dAgain)&&again==texture&&d3dAgain==d3dTexture){
+                        o.Status=SurfaceReadAtlasPixels(d3dTexture,image);
+                        int after=-1;std::vector<ShadowSlot> slots;
+                        if(o.Status==AtlasRead::Ready&&(!GetCurrentDemoTick(after)||after!=tick||globals->framecount_get()!=frame||
+                           g_SurfaceShadowRevision!=o.Revision||!ShadowSlots(g_SurfaceShadowManager,slots,true)||!SurfaceSameAtlasSlots(o.Slots,slots)))o.Status=AtlasRead::Changed;
+                        if(o.Status==AtlasRead::Ready)o.Image=std::make_shared<const ShadowAtlasImage>(std::move(image));
+                    }
+                }
+            }
+        }
+    }
+    g_SurfaceAtlasPop(context);
+}
+static bool SurfaceInstallAtlasCapture(){
+    SurfaceAddress client=0,ms=0;SurfaceAddress fn=0;
+    if(!SurfaceExactModule("client.dll",0x6ad26f17,0x133a000,client)||
+       !SurfaceExactModule("materialsystem.dll",0x6ac56a08,0x141000,ms))return false;
+    if(g_SurfaceAtlasPop)return client==g_SurfaceAtlasClient&&ms==g_SurfaceAtlasMaterial&&GetCurrentThreadId()==g_SurfaceAtlasThread;
+    if(!MaterialSystem_IsImmediate()||
+       !SurfaceMatch(client,0x248a6a,{0x49,0x8b,0x56,0x60,0xff,0x90,0x58,0x03,0,0})||
+       !SurfaceMatch(client,0x248cc0,{0x48,0x8b,0x03,0x48,0x8b,0xcb,0xff,0x90,0x68,0x03,0,0})||
+       !SurfaceGet(ms+0xbcab0+0x358,fn)||fn!=ms+0x34dd0||
+       !SurfaceGet(ms+0xbcab0+0x368,fn)||fn!=ms+0x34a30||
+       !SurfaceMatch(ms,0x34dd0,{0x40,0x53,0x48,0x83,0xec,0x60,0x0f,0x57,0xc0,0x48,0x89,0x54,0x24,0x20})||
+       !SurfaceMatch(ms,0x34a30,{0x40,0x53,0x48,0x83,0xec,0x20,0x83,0xb9,0x88,0,0,0,0})||
+       !SurfaceMatch(ms,0x34a42,{0x48,0x8b,0x01,0x33,0xd2,0xff,0x50,0x20})||
+       !SurfaceMatch(ms,0x323b0,{0x40,0x53,0x48,0x83,0xec,0x20,0x48,0x8b,0x0d,0x8b,0x4e,0x0d,0,0x0f,0xb6,0xda}))return false;
+    g_SurfaceAtlasPop=reinterpret_cast<AtlasPopFn>(ms+0x34a30);
+    if(DetourTransactionBegin()!=NO_ERROR){g_SurfaceAtlasPop=nullptr;return false;}
+    LONG error=DetourUpdateThread(GetCurrentThread());
+    if(error==NO_ERROR)error=DetourAttach(reinterpret_cast<PVOID*>(&g_SurfaceAtlasPop),reinterpret_cast<PVOID>(SurfaceAtlasPopHook));
+    if(error!=NO_ERROR){DetourTransactionAbort();g_SurfaceAtlasPop=nullptr;return false;}
+    if(DetourTransactionCommit()!=NO_ERROR){g_SurfaceAtlasPop=nullptr;return false;}
+    g_SurfaceAtlasClient=client;g_SurfaceAtlasMaterial=ms;g_SurfaceAtlasThread=GetCurrentThreadId();return true;
+}
 static void SurfaceProjectHook(void *self,ShadowHandle handle,const float *origin,const float *dir,const float *matrix,const float *size,int count,const int *leaves,float height,float offset,float amount,const float *caster){
     g_SurfaceProject(self,handle,origin,dir,matrix,size,count,leaves,height,offset,amount,caster);
     if(GetCurrentThreadId()!=g_SurfaceThread||g_SurfaceOwn||g_SurfaceReplayActive||!g_SurfaceCaptureArmed||self!=g_SurfaceShadowManager)return;
+    ++g_SurfaceShadowRevision;
     auto base=SurfaceEngine();NativeWorld world;
-    if(!base||!SurfaceWorld(base,world)){g_SurfaceObserved.clear();return;}
+    if(!base||!SurfaceWorld(base,world)){g_SurfaceObserved.clear();SurfaceClearAtlasObservation();return;}
     if(!SurfaceSameWorld(world,g_SurfaceWorld)){g_SurfaceWorld=world;++g_SurfaceGeneration;g_SurfaceObserved.clear();SurfaceResetGeometry();}
     Shadow s;s.Height=height;s.FalloffOffset=offset;s.FalloffAmount=amount;
     if(count<=0||count>8192||!leaves){g_SurfaceObserved.erase(handle);return;}
@@ -514,7 +668,7 @@ static void SurfaceProjectHook(void *self,ShadowHandle handle,const float *origi
     g_SurfaceObserved[handle]=std::move(s);
 }
 static void SurfaceDestroyHook(void *self,ShadowHandle handle){
-    if(!g_SurfaceOwn&&GetCurrentThreadId()==g_SurfaceThread&&self==g_SurfaceShadowManager){g_SurfaceObserved.erase(handle);g_SurfaceSavedBias.erase(handle);g_SurfaceOwned.erase(std::remove(g_SurfaceOwned.begin(),g_SurfaceOwned.end(),handle),g_SurfaceOwned.end());}
+    if(!g_SurfaceOwn&&GetCurrentThreadId()==g_SurfaceThread&&self==g_SurfaceShadowManager){++g_SurfaceShadowRevision;g_SurfaceObserved.erase(handle);g_SurfaceSavedBias.erase(handle);g_SurfaceOwned.erase(std::remove(g_SurfaceOwned.begin(),g_SurfaceOwned.end(),handle),g_SurfaceOwned.end());}
     g_SurfaceDestroy(self,handle);
 }
 static void SurfaceBiasHook(void *self,ShadowHandle handle,unsigned char bias){
@@ -868,15 +1022,30 @@ advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){
                 shadows->push_back(std::move(projection));
             }
             sample.Shadows=shadows;sample.ShadowsReady=true;
+            if(g_SurfaceAtlasArmed){
+                auto &o=g_SurfaceAtlasObservation;auto *globals=g_Hook_VClient_RenderView.GetGlobals();
+                sample.AtlasStatus=AtlasRead::Missing;
+                if(globals&&o.Frame==globals->framecount_get()&&o.Tick==tick&&o.World==sample.World){
+                    sample.AtlasStatus=o.Status;
+                    if(o.Image&&o.Status==AtlasRead::Ready){
+                        if(o.Revision==g_SurfaceShadowRevision&&SurfaceSameAtlasSlots(o.Slots,slots)&&
+                           std::any_of(shadows->begin(),shadows->end(),[](const Shadow &s){return s.HasAtlasRect();}))sample.Atlas=o.Image;
+                        else sample.AtlasStatus=AtlasRead::Changed;
+                    }
+                }
+            }
         }
     }
 #endif
     return sample;
 }
-void Mirv_Tf2_SetSurfaceObservation(bool armed){
+void Mirv_Tf2_SetSurfaceObservation(bool armed,bool atlas){
 #ifdef _WIN64
     if(!armed&&g_SurfaceCaptureArmed){g_SurfaceObserved.clear();SurfaceResetGeometry();}
     g_SurfaceCaptureArmed=armed;
+    const bool wantAtlas=armed&&atlas;
+    if(!wantAtlas&&g_SurfaceAtlasArmed)SurfaceClearAtlasObservation();
+    g_SurfaceAtlasArmed=wantAtlas&&SurfaceInstallAtlasCapture();
 #endif
 }
 void Mirv_Tf2_ResetSurfaces(){

@@ -25,7 +25,7 @@ bool Mirv_Tf2_LiveParticleVisibility(float &value, bool write);
 bool Mirv_Tf2_SceneDrawVisibility(const char *name,float &value,bool write);
 advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick);
 void Mirv_Tf2_ResetSurfaces();
-void Mirv_Tf2_SetSurfaceObservation(bool armed);
+void Mirv_Tf2_SetSurfaceObservation(bool armed,bool atlas=false);
 unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame &sample,unsigned requested,std::string &status);
 std::string Mirv_Tf2_EndSurfaceReplay();
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &frame,bool allowQueued=false);

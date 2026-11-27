@@ -111,6 +111,7 @@ static bool g_SceneLegacyCapture=false,g_SceneLegacyReplay=false,g_SceneLegacyAl
 static bool g_SceneReplayModulation=false,g_SceneHideShadows=false,g_SceneHideDecals=false,g_SceneLegacyMarkers=false;
 static bool g_SceneLightingCapture=false,g_SceneReplayLighting=false,g_SceneLightingObserverReady=false;
 static std::string g_SceneLightingStatus="Historical model lighting not captured.";
+static bool g_SceneAtlasCapture=false;
 static bool g_SceneSurfaceCapture=false,g_SceneHistoricalShadows=false,g_SceneHistoricalDecals=false,g_SceneRemovedDecals=false,g_SceneDecalOpacity=false,g_SceneQueuedDecals=false;
 static advancedfx::SceneSurfaces::History g_SceneSurfaces;
 static std::string g_SceneHistoricalSurfaceStatus="Not evaluated.";
@@ -914,7 +915,7 @@ void SceneCacheFrame(bool capture)
 	{
 		Mirv_Tf2_SceneRenderFrame();
         Mirv_Tf2_SceneAssetResidency(g_SceneKeepAssets&&g_ScenePreview&&g_SceneDrawModels.load()&&g_SceneRenderSnapshot&&SceneCacheView()&&g_VEngineClient&&g_VEngineClient->IsPlayingDemo()&&!g_VEngineClient->IsSkippingDemo()&&!g_VEngineClient->IsDrawingLoadingImage()&&SceneCanDrawModels());
-        Mirv_Tf2_SetSurfaceObservation(g_SceneSurfaceCapture&&g_SceneRecord&&!g_ScenePreview&&g_VEngineClient&&g_VEngineClient->IsPlayingDemo()&&!g_VEngineClient->IsSkippingDemo()&&!g_VEngineClient->IsDrawingLoadingImage());
+        Mirv_Tf2_SetSurfaceObservation(g_SceneSurfaceCapture&&g_SceneRecord&&!g_ScenePreview&&g_VEngineClient&&g_VEngineClient->IsPlayingDemo()&&!g_VEngineClient->IsSkippingDemo()&&!g_VEngineClient->IsDrawingLoadingImage(),g_SceneAtlasCapture);
         if(std::exchange(g_SceneLegacyAuditPending,false)) {
             int liveTick=-1;
             if(g_ScenePreview||!GetCurrentDemoTick(liveTick))
@@ -2499,6 +2500,7 @@ static std::string SceneValidationReport(){
     history("Modern",g_SceneNativeParticles.Frames,g_SceneNativeParticles.Bytes,g_SceneNativeParticles.Evicted,g_SceneNativeParticles.Rejected);
     history("Legacy",g_SceneLegacyHistory.Frames,g_SceneLegacyHistory.Bytes,g_SceneLegacyHistory.Evicted,g_SceneLegacyHistory.Rejected);
     history("Surfaces",g_SceneSurfaces.Frames,g_SceneSurfaces.Bytes,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected);
+    out<<"Shadow atlas capture "<<g_SceneAtlasCapture<<", retained pixel payload "<<g_SceneSurfaces.AtlasBytes<<" bytes / 16 MiB (capture only)\n";
     if(auto view=SceneCacheView()){
         std::size_t studio=0,brush=0,missing=0,lit=0,local=0,modulated=0,decalKnown=0,decalModels=0,decalBatches=0,decalVertices=0,decalIndices=0,decalGeometry=0,decalGeometryBytes=0,decalSkinBatches=0;
         for(const auto &e:view->Entities){
@@ -2527,6 +2529,7 @@ static std::string SceneValidationReport(){
         out<<"Surface sample: shadows tick "<<surface.ShadowTick<<", decals tick "<<surface.DecalTick
            <<"; shadows "<<(f.Shadows?f.Shadows->size():0)<<", clip-known "<<clipped<<", verified simple "<<simple<<", unobserved "<<f.ShadowsUnobserved
            <<"; decals "<<(f.Decals?f.Decals->size():0)<<", geometry "<<geometry<<", unsupported "<<f.DecalsUnsupported<<" ("<<f.UnsupportedDecals.Describe()<<")\n";
+        out<<"Shadow atlas sample: "<<advancedfx::SceneSurfaces::AtlasReadLabel(f.AtlasStatus)<<", bytes "<<(f.Atlas?f.Atlas->Bytes():0)<<" (not replayed)\n";
     }else out<<"Surface sample: unavailable\n";
     unsigned pending=0,peak=0;Mirv_Tf2_SceneRenderStatus(pending,peak);
     out<<"Studio submissions "<<g_SceneReplaySubmitted<<"/"<<g_SceneReplayAttempted<<", queue skips "<<g_SceneReplayQueueSkips<<", other skips "<<g_SceneReplayOtherSkips<<", outstanding owners "<<pending<<", peak "<<peak<<"\n"
@@ -2682,6 +2685,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
     if(!_stricmp(op,"surfaces")){
         if(args->ArgC()==4&&parseInteger(3,value)&&(value==0||value==1)){
             if(!_stricmp(args->ArgV(2),"capture")){if(value&&!g_SceneSurfaceCapture){g_SceneSurfaces.Clear();Mirv_Tf2_ResetSurfaces();}g_SceneSurfaceCapture=value!=0;}
+            else if(!_stricmp(args->ArgV(2),"atlasCapture"))g_SceneAtlasCapture=value!=0;
             else if(!_stricmp(args->ArgV(2),"shadows"))g_SceneHistoricalShadows=value!=0;
             else if(!_stricmp(args->ArgV(2),"decals"))g_SceneHistoricalDecals=value!=0;
             else if(!_stricmp(args->ArgV(2),"removed"))g_SceneRemovedDecals=value!=0;
@@ -2691,9 +2695,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         }
         const int tick=g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneSurfaces.Frames.empty()?-1:g_SceneSurfaces.Frames.back().Tick;
         advancedfx::Message("Historical surfaces capture %d, shadows %d, decals %d, removed decal replay %d, surviving opacity %d, queued visibility %d; %zu frames, %.2f MiB / 64 MiB; evicted %zu, rejected %zu. %s\n",int(g_SceneSurfaceCapture),int(g_SceneHistoricalShadows),int(g_SceneHistoricalDecals),int(g_SceneRemovedDecals),int(g_SceneDecalOpacity),int(g_SceneQueuedDecals),g_SceneSurfaces.Frames.size(),g_SceneSurfaces.Bytes/1048576.0,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected,g_SceneHistoricalSurfaceStatus.c_str());
+        advancedfx::Message("Shadow atlas pixel capture %d (surfaces atlasCapture 0|1); %zu bytes / 16 MiB; capture only.\n",int(g_SceneAtlasCapture),g_SceneSurfaces.AtlasBytes);
         if(const auto resolved=g_SceneSurfaces.ResolvePreview(tick)){
             const auto &sample=resolved.Value;
             advancedfx::Message("Surface requested tick %d; resolved shadows %d, decals %d (-1 unavailable, bounded prior samples). Shadows ready %d, observed %zu, unobserved %zu; decals ready %d, ordinary world %zu, unsupported %zu.\n",tick,resolved.ShadowTick,resolved.DecalTick,int(sample.ShadowsReady),sample.Shadows?sample.Shadows->size():0,sample.ShadowsUnobserved,int(sample.DecalsReady),sample.Decals?sample.Decals->size():0,sample.DecalsUnsupported);
+            advancedfx::Message("Atlas pixels: %s; %zu bytes.\n",advancedfx::SceneSurfaces::AtlasReadLabel(sample.AtlasStatus),sample.Atlas?sample.Atlas->Bytes():0);
             if(resolved.DecalTick>=0){
                 std::size_t geometry=0;if(sample.Decals)for(const auto &d:*sample.Decals)geometry+=d.HasGeometry();
                 advancedfx::Message("Historical decal rejection breakdown: %s. Clipped ordinary main-world geometry %zu/%zu; detached removed-mark replay experimental; unsupported types and unreplaced surviving opacity remain incomplete.\n",sample.UnsupportedDecals.Describe().c_str(),geometry,sample.Decals?sample.Decals->size():0);

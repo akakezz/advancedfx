@@ -327,6 +327,19 @@ struct ShadowAtlasImage {
         out=std::move(next);return true;
     }
 };
+enum class AtlasRead { Disabled, Missing, Guard, Readback, TooLarge, Changed, Ready, Budget };
+inline const char *AtlasReadLabel(AtlasRead status){
+    switch(status){
+    case AtlasRead::Missing:return "no same-frame atlas pass";
+    case AtlasRead::Guard:return "native texture/context guard";
+    case AtlasRead::Readback:return "D3D9 readback unavailable";
+    case AtlasRead::TooLarge:return "lossless image exceeds cap";
+    case AtlasRead::Changed:return "atlas/shadow observation mismatch";
+    case AtlasRead::Ready:return "captured";
+    case AtlasRead::Budget:return "atlas-only budget";
+    default:return "disabled";
+    }
+}
 struct Frame {
     int Tick=-1;
     std::uint64_t World=0; // session generation, never a native pointer
@@ -342,6 +355,7 @@ struct Frame {
         return UncertainDecalSlots&&std::binary_search(UncertainDecalSlots->begin(),UncertainDecalSlots->end(),slot);
     }
     std::shared_ptr<const std::vector<Shadow>> Shadows;
+    AtlasRead AtlasStatus=AtlasRead::Disabled;
     std::shared_ptr<const ShadowAtlasImage> Atlas; // optional exact shadow-sample pixels, never a native texture
 };
 // Surface systems can be captured independently. Empty ready vectors are
@@ -357,14 +371,14 @@ class History {
     void DropAtlas(Frame &f){
         if(!f.Atlas)return;auto it=AtlasRefs.find(f.Atlas.get());
         if(it!=AtlasRefs.end()&&!--it->second){AtlasBytes-=f.Atlas->Bytes();AtlasRefs.erase(it);}
-        f.Atlas.reset();
+        f.Atlas.reset();f.AtlasStatus=AtlasRead::Budget;
     }
     void AddAtlas(Frame &f){
         if(!f.Atlas)return;
-        const auto bytes=f.Atlas->Bytes();if(bytes>AtlasBudget){f.Atlas.reset();return;}
+        const auto bytes=f.Atlas->Bytes();if(bytes>AtlasBudget){f.Atlas.reset();f.AtlasStatus=AtlasRead::Budget;return;}
         if(!AtlasRefs.count(f.Atlas.get())){
             for(auto &old:Frames){if(AtlasBytes<=AtlasBudget-bytes)break;DropAtlas(old);}
-            if(AtlasBytes>AtlasBudget-bytes){f.Atlas.reset();return;}
+            if(AtlasBytes>AtlasBudget-bytes){f.Atlas.reset();f.AtlasStatus=AtlasRead::Budget;return;}
         }
         auto &n=AtlasRefs[f.Atlas.get()];if(!n++)AtlasBytes+=bytes;
     }
@@ -426,7 +440,7 @@ public:
         if(!f.DecalsReady){f.Decals.reset();f.UncertainDecalSlots.reset();}
         if(f.UncertainDecalSlots&&(!std::is_sorted(f.UncertainDecalSlots->begin(),f.UncertainDecalSlots->end())||f.UncertainDecalSlots->size()>8192)){++Rejected;return false;}
         if(!f.ShadowsReady){f.Shadows.reset();f.Atlas.reset();}
-        if(f.Atlas&&(!f.Atlas->Valid()||!std::any_of(f.Shadows->begin(),f.Shadows->end(),[](const Shadow &s){return s.HasAtlasRect();})))f.Atlas.reset();
+        if(f.Atlas&&(!f.Atlas->Valid()||!std::any_of(f.Shadows->begin(),f.Shadows->end(),[](const Shadow &s){return s.HasAtlasRect();}))){f.Atlas.reset();f.AtlasStatus=AtlasRead::Changed;}
         if(f.Tick<0||!f.World||(!f.DecalsReady&&!f.ShadowsReady)){++Rejected;return false;}
         if(!Frames.empty()&&f.Tick==Frames.back().Tick&&f.World==Frames.back().World){
             const auto &last=Frames.back();
@@ -435,7 +449,7 @@ public:
                 f.DecalsUnsupported=last.DecalsUnsupported;f.UnsupportedDecals=last.UnsupportedDecals;f.UncertainDecalSlots=last.UncertainDecalSlots;
             }
             if(!f.ShadowsReady&&last.ShadowsReady&&last.Shadows){
-                f.ShadowsReady=true;f.Shadows=last.Shadows;f.ShadowsUnobserved=last.ShadowsUnobserved;f.Atlas=last.Atlas;
+                f.ShadowsReady=true;f.Shadows=last.Shadows;f.ShadowsUnobserved=last.ShadowsUnobserved;f.Atlas=last.Atlas;f.AtlasStatus=last.AtlasStatus;
             }
         }
         if(sizeof(Frame)+ExtraVector(f.Decals,true)+ExtraVector(f.Shadows,true)+ExtraVector(f.UncertainDecalSlots,true)>Budget){++Rejected;return false;}
@@ -469,7 +483,7 @@ public:
             if(it->World!=result.Value.World||static_cast<std::int64_t>(tick)-it->Tick>maxGap)break;
             if(result.ShadowTick<0&&it->ShadowsReady&&it->Shadows){
                 result.ShadowTick=it->Tick;result.Value.ShadowsReady=true;
-                result.Value.Shadows=it->Shadows;result.Value.ShadowsUnobserved=it->ShadowsUnobserved;result.Value.Atlas=it->Atlas;
+                result.Value.Shadows=it->Shadows;result.Value.ShadowsUnobserved=it->ShadowsUnobserved;result.Value.Atlas=it->Atlas;result.Value.AtlasStatus=it->AtlasStatus;
             }
             if(result.DecalTick<0&&it->DecalsReady&&it->Decals){
                 result.DecalTick=it->Tick;result.Value.DecalsReady=true;
