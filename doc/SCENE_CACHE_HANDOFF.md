@@ -490,3 +490,7 @@ Reverified exact material RB-tree lookup/insertion (24-byte records, name +8/sub
 ### Phase 28A — verified studio ambient overload ABI correction
 
 The supplied studiorender.dll is exact TF2 x64 (SHA256 5dbf854792167261a7769b19634bb20273cdeb31d1cbcbd6b5b409c991cb8983, timestamp 6ac412f0, image 43d000). RTTI CStudioRenderContext primary vtable 0x81120 establishes slot 16 -> 0x599e0 (six RGB vectors; writes alpha=1 to each face), slot 17 -> 0x59940 (six four-float vectors, copies 96 bytes). Previous implementation and mock reversed these overloads, including neutral replay and ambient observation, risking overread and wrong colors. Correct input lengths, selector, stride, hook slots and fixture together. Exact PE/vtable/body guards before x64 studio-state hook installation. Unknown binary leaves hooks disabled. Rebuild and native verification required; no claim of model decal reconstruction yet.
+
+### Phase 28B — Studio model decal inventory (capture only)
+
+Exact-build immediate main-view observation of the native decal pass records selected LOD, nonempty material batch count, vertex and index totals per model identity. Shares existing lighting capture audit scheduling and consolidated report. Unknown/ambiguous samples remain unknown, not zero. No native decal handle or geometry is retained and no historical model decal rendering is enabled. Queued observation is intentionally disabled pending ownership/thread analysis.

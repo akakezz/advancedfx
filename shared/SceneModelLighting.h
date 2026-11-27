@@ -73,6 +73,67 @@ struct Sample {
         out=next;return true;
     }
 };
+// Read-only model decal inventory for the actually drawn LOD. Values only;
+// no native handles, material pointers, geometry or replay authorization.
+struct ModelDecalCoverage {
+    int Lod=-1;
+    std::uint32_t Batches=0,Vertices=0,Indices=0;
+    bool Known()const{return Lod>=0&&Lod<32;}
+    bool operator==(const ModelDecalCoverage &o)const{return Lod==o.Lod&&Batches==o.Batches&&Vertices==o.Vertices&&Indices==o.Indices;}
+};
+template<class Read>
+bool ReadModelDecalCoverage(Read read,std::uintptr_t renderer,std::uintptr_t hardware,std::uintptr_t handle,int lod,ModelDecalCoverage &out){
+    ModelDecalCoverage next;
+    if(lod<0||lod>=32||!hardware||!renderer)return false;
+    int hardwareLods=0;
+    if(!read(hardware+4,hardwareLods)||hardwareLods<=lod||hardwareLods>32)return false;
+    next.Lod=lod;
+    if(!handle){out=next;return true;}
+    std::uintptr_t owner=0,levels=0,pool=0;
+    int count=0,capacity=0;
+    std::uint16_t active=0,head=0xffff;
+    if(!read(handle,owner)||owner!=hardware||!read(handle+8,levels)||!levels||
+       !read(handle+0x10,count)||count!=hardwareLods||
+       !read(levels+std::uintptr_t(lod)*0x30,head)||
+       !read(renderer+0x10,pool)||!read(renderer+0x18,capacity)||capacity<0||capacity>65535||
+       !read(renderer+0x26,active)||active>capacity)return false;
+    std::array<std::uint16_t,256> visited{};
+    auto index=head;
+    unsigned traversed=0;
+    while(index!=0xffff){
+        if(!pool||index>=capacity||traversed>=visited.size()||traversed>=active)return false;
+        for(unsigned i=0;i<traversed;++i)if(visited[i]==index)return false;
+        visited[traversed++]=index;
+        const auto record=pool+std::uintptr_t(index)*0x80;
+        std::array<unsigned char,0x80> bytes{};
+        if(!read(record,bytes))return false;
+        std::uintptr_t material=0,indices=0,vertices=0;
+        int indexCount=0,indexCapacity=0,vertexCapacity=0;
+        std::uint16_t vertexCount=0;
+        std::memcpy(&material,bytes.data(),8);
+        std::memcpy(&indices,bytes.data()+8,8);
+        std::memcpy(&indexCapacity,bytes.data()+0x10,4);
+        std::memcpy(&indexCount,bytes.data()+0x18,4);
+        std::memcpy(&vertices,bytes.data()+0x28,8);
+        std::memcpy(&vertexCapacity,bytes.data()+0x30,4);
+        std::memcpy(&vertexCount,bytes.data()+0x3e,2);
+        std::memcpy(&index,bytes.data()+0x7a,2);
+        if(indexCount<0||indexCount>indexCapacity||indexCount>65535||indexCount%3||
+           vertexCapacity<0||vertexCount>vertexCapacity||
+           (indexCount&&(!material||!indices||!vertices||!vertexCount)))return false;
+        if(indexCount){++next.Batches;next.Indices+=indexCount;next.Vertices+=vertexCount;}
+    }
+    // Detect pool/list replacement during observation; this is not a lock.
+    std::uintptr_t poolAgain=0,levelsAgain=0,ownerAgain=0;
+    std::uint16_t headAgain=0xffff,activeAgain=0;
+    int countAgain=0,capacityAgain=0;
+    if(!read(handle,ownerAgain)||ownerAgain!=owner||!read(handle+8,levelsAgain)||levelsAgain!=levels||
+       !read(handle+0x10,countAgain)||countAgain!=count||
+       !read(levels+std::uintptr_t(lod)*0x30,headAgain)||headAgain!=head||
+       !read(renderer+0x10,poolAgain)||poolAgain!=pool||!read(renderer+0x18,capacityAgain)||capacityAgain!=capacity||
+       !read(renderer+0x26,activeAgain)||activeAgain!=active)return false;
+    out=next;return true;
+}
 struct Key {
     std::uint32_t Checksum=0;
     int Skin=-1,Body=-1;

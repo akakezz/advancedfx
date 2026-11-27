@@ -12135,6 +12135,65 @@ static bool SceneLightingMatch(std::uintptr_t base,std::uintptr_t rva,std::initi
     return pattern.size()<=sizeof(actual)&&ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(base+rva),actual,pattern.size(),&got)&&
         got==pattern.size()&&std::equal(pattern.begin(),pattern.end(),actual);
 }
+struct SceneDecalObservation {
+    std::uint32_t Checksum=0;
+    int Skin=-1,Body=-1;
+    advancedfx::SceneLighting::ModelDecalCoverage Value;
+    bool Ambiguous=false;
+};
+using SceneDecalFn=void(*)(void*,const SceneStudioInfo*,int,int);
+static SceneDecalFn g_SceneOriginalDecals=nullptr;
+static std::uintptr_t g_SceneDecalBase=0;
+static DWORD g_SceneDecalThread=0;
+static thread_local bool g_SceneDecalArmed=false;
+static thread_local std::map<const void*,SceneDecalObservation> g_SceneDecalObservations;
+static void SceneObserveModelDecals(void *renderer,const SceneStudioInfo *info,int lod,int body){
+    const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    if(g_SceneDecalArmed&&GetCurrentThreadId()==g_SceneDecalThread&&caller==g_SceneDecalBase+0x51cfd&&
+       MaterialSystem_IsImmediate()&&Mirv_Tf2_SceneRenderViewId()==0){
+        SceneStudioInfo copy{};
+        std::array<std::uint32_t,3> header{};
+        void *nativeRenderer=nullptr;
+        if(SceneLightingRead(g_SceneDecalBase+0x96348,nativeRenderer)&&nativeRenderer==renderer&&
+           SceneLightingRead(reinterpret_cast<std::uintptr_t>(info),copy)&&copy.ClientEntity&&copy.Header&&
+           copy.Skin>=0&&copy.Body>=0&&copy.Body==body&&
+           SceneLightingRead(reinterpret_cast<std::uintptr_t>(copy.Header),header)&&header[0]==0x54534449){
+            SceneDecalObservation row;row.Checksum=header[2];row.Skin=copy.Skin;row.Body=copy.Body;
+            const auto reader=[](std::uintptr_t a,auto &value){return SceneLightingRead(a,value);};
+            if(!advancedfx::SceneLighting::ReadModelDecalCoverage(reader,reinterpret_cast<std::uintptr_t>(renderer),
+                  reinterpret_cast<std::uintptr_t>(copy.Hardware),reinterpret_cast<std::uintptr_t>(copy.Decals),lod,row.Value))
+                row.Ambiguous=true;
+            auto it=g_SceneDecalObservations.find(copy.ClientEntity);
+            if(it!=g_SceneDecalObservations.end()){
+                if(row.Ambiguous||it->second.Checksum!=row.Checksum||it->second.Skin!=row.Skin||
+                   it->second.Body!=row.Body||!(it->second.Value==row.Value))it->second.Ambiguous=true;
+            }else if(g_SceneDecalObservations.size()<8192)g_SceneDecalObservations.emplace(copy.ClientEntity,std::move(row));
+        }
+    }
+    g_SceneOriginalDecals(renderer,info,lod,body);
+}
+static bool SceneInstallModelDecalObservation(){
+    const auto base=reinterpret_cast<std::uintptr_t>(GetModuleHandleA("studiorender.dll"));
+    if(g_SceneOriginalDecals)return base==g_SceneDecalBase&&GetCurrentThreadId()==g_SceneDecalThread;
+    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
+    if(g_SourceSdkVer!=SourceSdkVer_TF2||!base||
+       !SceneLightingRead(base,dos)||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+       !SceneLightingRead(base+dos.e_lfanew,nt)||nt.Signature!=IMAGE_NT_SIGNATURE||
+       nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||nt.FileHeader.TimeDateStamp!=0x6ac412f0||nt.OptionalHeader.SizeOfImage!=0x43d000||
+       !SceneLightingMatch(base,0x7b00,{0x48,0x8b,0xc4,0x48,0x89,0x70,0x20,0x41,0x55,0x41,0x56,0x41,0x57})||
+       !SceneLightingMatch(base,0x51cf8,{0xe8,0x03,0x5e,0xfb,0xff})||
+       !SceneLightingMatch(base,0x784a,{0x66,0x89,0x54,0x08,0xd0})||
+       !SceneLightingMatch(base,0x7cc6,{0x0f,0xb7,0x54,0x07,0x7a})||
+       !SceneLightingMatch(base,0x7d3d,{0x4d,0x63,0x68,0x18})||
+       !SceneLightingMatch(base,0x7de1,{0x0f,0xb7,0x5e,0x3e}))return false;
+    g_SceneOriginalDecals=reinterpret_cast<SceneDecalFn>(base+0x7b00);
+    if(DetourTransactionBegin()!=NO_ERROR){g_SceneOriginalDecals=nullptr;return false;}
+    LONG error=DetourUpdateThread(GetCurrentThread());
+    if(error==NO_ERROR)error=DetourAttach(reinterpret_cast<PVOID*>(&g_SceneOriginalDecals),reinterpret_cast<PVOID>(SceneObserveModelDecals));
+    if(error!=NO_ERROR){DetourTransactionAbort();g_SceneOriginalDecals=nullptr;return false;}
+    if(DetourTransactionCommit()!=NO_ERROR){g_SceneOriginalDecals=nullptr;return false;}
+    g_SceneDecalBase=base;g_SceneDecalThread=GetCurrentThreadId();return true;
+}
 static void SceneObserveLighting(void *self,const void *state,const float *position,void *cache,bool a,bool b,bool *c,SceneStudioInfo *info,const void *model,int flags){
     const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     const bool observe=g_SceneLightingArmed&&GetCurrentThreadId()==g_SceneLightingThread&&caller==g_SceneLightingBase+0xee463;
@@ -12195,18 +12254,23 @@ static bool SceneInstallLightingObservation(){
 bool Mirv_Tf2_BeginSceneLightingAudit(bool enabled){
 #ifdef _WIN64
     g_SceneLightingArmed=false;g_SceneLightingFrame=-1;g_SceneLightingObservations.clear();
+    g_SceneDecalObservations.clear();g_SceneDecalArmed=enabled&&MaterialSystem_IsImmediate()&&SceneInstallModelDecalObservation();
     if(enabled&&SceneInstallLightingObservation()){g_SceneLightingArmed=true;return true;}
 #endif
     return false;
 }
 void Mirv_Tf2_FinishSceneLightingAudit(int frame){
 #ifdef _WIN64
-    g_SceneLightingFrame=g_SceneLightingArmed?frame:-1;g_SceneLightingArmed=false;
+    g_SceneLightingFrame=(g_SceneLightingArmed||g_SceneDecalArmed)?frame:-1;g_SceneLightingArmed=false;g_SceneDecalArmed=false;
 #endif
 }
 bool Mirv_Tf2_CaptureSceneLighting(int frame,const void *renderable,advancedfx::SceneCache::Entity &entity){
 #ifdef _WIN64
     if(frame<0||g_SceneLightingFrame!=frame||!entity.ModelPose||!entity.ModelPose->ModelInfo)return false;
+    auto decal=g_SceneDecalObservations.find(renderable);
+    if(decal!=g_SceneDecalObservations.end()&&!decal->second.Ambiguous&&
+       decal->second.Checksum==entity.ModelPose->ModelInfo->Checksum&&decal->second.Skin==entity.Skin&&
+       decal->second.Body==entity.ModelPose->Body)entity.ModelDecals=decal->second.Value;
     auto found=g_SceneLightingObservations.find(renderable);
     if(found==g_SceneLightingObservations.end()||found->second.Ambiguous||
        !found->second.Key.Matches(entity.ModelPose->ModelInfo->Checksum,entity.Skin,entity.ModelPose->Body,entity.Origin))return false;

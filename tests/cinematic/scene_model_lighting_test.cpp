@@ -10,6 +10,29 @@ int main(){
     assert(rgbOnly.Ambient[17]==rgb[17]&&rgbOnly.Ambient[18]==0&&rgbOnly.Ambient[23]==0);
     Sample rgbaOnly;assert(Sample::Capture(17,ambient,0,nullptr,rgbaOnly)&&rgbaOnly.AmbientWords()==24);
     assert(rgbaOnly.Ambient[23]==ambient[23]);
+    // Synthetic exact-layout model decal list: two material batches, one empty.
+    std::array<unsigned char,0x1000> mem{};
+    auto put=[&](std::size_t at,const auto &value){std::memcpy(mem.data()+at,&value,sizeof(value));};
+    auto read=[&](std::uintptr_t at,auto &value){
+        if(at>mem.size()||sizeof(value)>mem.size()-at)return false;
+        std::memcpy(&value,mem.data()+at,sizeof(value));return true;
+    };
+    const std::uintptr_t renderer=0x100,hardware=0x200,handle=0x300,levels=0x400,pool=0x500;
+    put(hardware+4,int(2));put(handle,hardware);put(handle+8,levels);put(handle+0x10,int(2));
+    put(levels,std::uint16_t(0));put(levels+0x30,std::uint16_t(0xffff));
+    put(renderer+0x10,pool);put(renderer+0x18,int(2));put(renderer+0x26,std::uint16_t(2));
+    put(pool,std::uintptr_t(0x900));put(pool+8,std::uintptr_t(0xa00));put(pool+0x10,int(6));put(pool+0x18,int(6));
+    put(pool+0x28,std::uintptr_t(0xb00));put(pool+0x30,int(4));put(pool+0x3e,std::uint16_t(4));put(pool+0x7a,std::uint16_t(1));
+    put(pool+0x80+0x7a,std::uint16_t(0xffff));
+    ModelDecalCoverage decals;
+    assert(ReadModelDecalCoverage(read,renderer,hardware,0,0,decals)&&decals.Known()&&!decals.Batches);
+    assert(ReadModelDecalCoverage(read,renderer,hardware,handle,0,decals)&&decals.Batches==1&&decals.Vertices==4&&decals.Indices==6);
+    auto good=decals;
+    put(pool+0x80+0x7a,std::uint16_t(0));assert(!ReadModelDecalCoverage(read,renderer,hardware,handle,0,decals)&&decals==good);
+    put(pool+0x80+0x7a,std::uint16_t(0xffff));
+    put(pool+0x18,int(7));assert(!ReadModelDecalCoverage(read,renderer,hardware,handle,0,decals));
+    assert(ReadModelDecalCoverage(read,renderer,hardware,handle,1,decals)&&decals.Lod==1&&!decals.Batches);
+    assert(!ReadModelDecalCoverage(read,renderer,hardware,handle,2,decals));
     Descriptor raw{};raw[0]=1;SetWord(raw,1,2);SetWord(raw,4,100);SetWord(raw,10,20);SetWord(raw,12,1);raw[19]=9;
     // The native converter doesn't initialize the unused angular or
     // private derived fields. Never capture them as arbitrary floats.

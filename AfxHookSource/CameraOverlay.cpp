@@ -2497,13 +2497,15 @@ static std::string SceneValidationReport(){
     history("Legacy",g_SceneLegacyHistory.Frames,g_SceneLegacyHistory.Bytes,g_SceneLegacyHistory.Evicted,g_SceneLegacyHistory.Rejected);
     history("Surfaces",g_SceneSurfaces.Frames,g_SceneSurfaces.Bytes,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected);
     if(auto view=SceneCacheView()){
-        std::size_t studio=0,brush=0,missing=0,lit=0,local=0,modulated=0;
+        std::size_t studio=0,brush=0,missing=0,lit=0,local=0,modulated=0,decalKnown=0,decalModels=0,decalBatches=0,decalVertices=0,decalIndices=0;
         for(const auto &e:view->Entities){
             if(!e.ModelPose){++missing;continue;}
             if(!e.ModelPose->ModelInfo->WireEdges.empty()){++brush;continue;}
             ++studio;if(e.ModelLighting){++lit;local+=e.ModelLighting->Count;}modulated+=e.HasModulation;
+            if(e.ModelDecals.Known()){++decalKnown;decalModels+=e.ModelDecals.Batches!=0;decalBatches+=e.ModelDecals.Batches;decalVertices+=e.ModelDecals.Vertices;decalIndices+=e.ModelDecals.Indices;}
         }
         out<<"Published model sample: tick "<<view->DemoTime/SceneTickInterval()<<"; studio "<<studio<<", brush wire "<<brush<<", missing pose "<<missing<<", lit "<<lit<<", local lights "<<local<<", known modulation "<<modulated<<"\n";
+        out<<"Studio decal inventory (capture only): known models "<<decalKnown<<"/"<<studio<<", affected "<<decalModels<<", batches "<<decalBatches<<", vertices "<<decalVertices<<", indices "<<decalIndices<<"\n";
     }else out<<"Published model sample: unavailable\n";
     if(auto p=g_SceneNativeParticles.ShareForPreview(tick))
         out<<"Modern sample: "<<p->Tick<<", complete "<<p->Complete<<", appearance complete "<<p->AppearanceComplete<<", collections "<<p->Collections.size()<<", active "<<p->Active<<", rejected "<<p->Rejected<<", appearance rejected "<<p->AppearanceRejected<<"\n";
@@ -2711,6 +2713,8 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         if(auto view=SceneCacheView()){
             std::size_t lit=0,lights=0;for(const auto &e:view->Entities)if(e.ModelLighting){++lit;lights+=e.ModelLighting->Count;}
             advancedfx::Message("Sampled historical model lighting: %zu models, %zu local descriptors.\n",lit,lights);
+            std::size_t decalKnown=0,decalModels=0,decalIndices=0;for(const auto &e:view->Entities)if(e.ModelDecals.Known()){++decalKnown;decalModels+=e.ModelDecals.Batches!=0;decalIndices+=e.ModelDecals.Indices;}
+            advancedfx::Message("Studio decal inventory (capture only): %zu known models, %zu affected, %zu indices.\n",decalKnown,decalModels,decalIndices);
             std::size_t known=0,changed=0;
             for(const auto &e:view->Entities)if(e.ModelPose&&e.HasModulation){
                 ++known;

@@ -260,6 +260,7 @@ public:
         std::array<float,4> Modulation{1,1,1,1};
         bool HasModulation=false;
         std::shared_ptr<const SceneLighting::Sample> ModelLighting; // optional observed native model lighting
+        SceneLighting::ModelDecalCoverage ModelDecals; // inventory only, not replay data
 	};
 	static std::array<std::array<double, 3>, 8> BoundsCorners(const Entity &entity)
 	{
@@ -581,6 +582,7 @@ public:
 		{
             // Missing/invalid lighting is not a reason to lose a valid pose.
             if(entity.ModelLighting&&(!entity.ModelPose||!entity.ModelLighting->Valid()))entity.ModelLighting.reset();
+            if(!entity.ModelPose)entity.ModelDecals={};
 			if (!entity.Identity || entity.Category < 0 || entity.Category >= CategoryCount ||
 			    (entity.ModelPose && !ValidPose(*entity.ModelPose)))
 				return false;
@@ -730,6 +732,7 @@ public:
             // Lighting is sampled nearest, not interpolated across different
             // light identities; never borrow it across a missing/incompatible pose.
             entity.ModelLighting=entity.ModelPose?(f<.5?a.ModelLighting:b->ModelLighting):nullptr;
+            entity.ModelDecals=entity.ModelPose?(f<.5?a.ModelDecals:b->ModelDecals):SceneLighting::ModelDecalCoverage{};
 			for (int i = 0; i < 3; ++i)
 			{
 				entity.Origin[i] += float(f * (b->Origin[i] - a.Origin[i]));
