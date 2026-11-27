@@ -275,36 +275,52 @@ public:
 			}
 		return corners;
 	}
-    // Experimental conservative main-view frustum rejection. Use a padded
-    // render-bound sphere; never reject malformed bounds or matrices.
-    // Omit near/far planes, and keep actors/attachments/skybox models.
-    static bool OutsidePreviewFrustum(const Entity &e,const float (&matrix)[4][4])
-    {
-        if(!e.ModelPose||e.OwnerIdentity||!(e.Category==1||e.Category==4||e.Category==7||e.Category==8)||
-           e.ModelPose->ModelInfo->Name.find("skybox")!=std::string::npos)return false;
-        double extent2=0;
-        for(int i=0;i<3;++i){
-            if(!std::isfinite(e.Origin[i])||!std::isfinite(e.Mins[i])||!std::isfinite(e.Maxs[i])||e.Mins[i]>e.Maxs[i])return false;
-            const double x=(std::max)(std::abs(double(e.Mins[i])),std::abs(double(e.Maxs[i])));
-            extent2+=x*x;
+    // Prepare the four conservative side planes once per verified main view.
+    // No near/far plane rejection. Invalid projections/bounds fail open.
+    struct PreviewFrustum {
+        std::array<std::array<double,4>,4> Planes{};
+        std::array<double,4> Norms{};
+        bool Valid=false;
+        explicit PreviewFrustum(const float (&matrix)[4][4]){
+            for(const auto &row:matrix)for(float v:row)if(!std::isfinite(v))return;
+            const double wnorm=std::hypot(double(matrix[3][0]),double(matrix[3][1]),double(matrix[3][2]));
+            if(!(wnorm>1e-6))return;
+            unsigned n=0;
+            for(int axis=0;axis<2;++axis)for(int sign:{-1,1}){
+                auto &plane=Planes[n];
+                for(int j=0;j<4;++j)plane[j]=1.1*matrix[3][j]+sign*matrix[axis][j];
+                const double norm=std::hypot(plane[0],plane[1],plane[2]);
+                if(!(norm>1e-6)||!std::isfinite(norm))return;
+                Norms[n++]=norm;
+            }
+            Valid=true;
         }
-        if(!(extent2>0)||!std::isfinite(extent2))return false;
-        // Large fixed padding and generous scale cover common animated bounds.
-        const double radius=2*std::sqrt(extent2)+128;
-        for(const auto &row:matrix)for(float v:row)if(!std::isfinite(v))return false;
-        const double wnorm=std::hypot(double(matrix[3][0]),double(matrix[3][1]),double(matrix[3][2]));
-        if(!(wnorm>1e-6))return false; // unsupported projection
-        // Homogeneous clip planes x +/- w, y +/- w. Keep a 10% screen margin.
-        bool outside=false;
-        for(int axis=0;axis<2;++axis)for(int sign:{-1,1}){
-            double plane[4];
-            for(int j=0;j<4;++j)plane[j]=1.1*matrix[3][j]+sign*matrix[axis][j];
-            const double norm=std::hypot(plane[0],plane[1],plane[2]);
-            if(!(norm>1e-6)||!std::isfinite(norm))return false;
-            const double distance=plane[3]+plane[0]*e.Origin[0]+plane[1]*e.Origin[1]+plane[2]*e.Origin[2];
-            outside|=distance < -radius*norm;
+        unsigned OutsideMask(const Entity &e,double scale=2,double padding=128)const{
+            if(!Valid||!e.ModelPose||!e.ModelPose->ModelInfo||
+               !e.ModelPose->ModelInfo->WireEdges.empty()||
+               e.ModelPose->ModelInfo->Name.find("skybox")!=std::string::npos)return 0;
+            double extent2=0;
+            for(int i=0;i<3;++i){
+                if(!std::isfinite(e.Origin[i])||!std::isfinite(e.Mins[i])||!std::isfinite(e.Maxs[i])||e.Mins[i]>e.Maxs[i])return 0;
+                const double x=(std::max)(std::abs(double(e.Mins[i])),std::abs(double(e.Maxs[i])));
+                extent2+=x*x;
+            }
+            if(!(extent2>0)||!std::isfinite(extent2))return 0;
+            const double radius=scale*std::sqrt(extent2)+padding;
+            unsigned mask=0;
+            for(unsigned i=0;i<Planes.size();++i){
+                const auto &p=Planes[i];
+                const double distance=p[3]+p[0]*e.Origin[0]+p[1]*e.Origin[1]+p[2]*e.Origin[2];
+                if(distance < -radius*Norms[i])mask|=1u<<i;
+            }
+            return mask;
         }
-        return outside;
+        bool OutsideOrdinary(const Entity &e)const{
+            return !e.OwnerIdentity&&(e.Category==1||e.Category==4||e.Category==7||e.Category==8)&&OutsideMask(e)!=0;
+        }
+    };
+    static bool OutsidePreviewFrustum(const Entity &e,const float (&matrix)[4][4]){
+        return PreviewFrustum(matrix).OutsideOrdinary(e);
     }
 	static constexpr std::array<unsigned char, 3> CategoryColor(int category)
 	{
@@ -332,6 +348,43 @@ public:
 		// Broad renderable snapshot, not a guarantee of complete coverage.
 		bool RenderSnapshot = false;
 	};
+
+    // Optional actor-group culling: reject a player/ragdoll and its recorded
+    // attachment ancestry only if ALL members lie outside the SAME side
+    // plane. Extra padding accommodates animation/gear. Missing/invalid
+    // bounds keep the group. Exact sampled entities remain untouched.
+    static std::set<std::uint64_t> OutsideActorGroups(const Frame &frame,const PreviewFrustum &frustum){
+        std::set<std::uint64_t> result;
+        if(!frustum.Valid)return result;
+        const auto &rows=frame.Entities;
+        if(!std::is_sorted(rows.begin(),rows.end(),[](const Entity &a,const Entity &b){return a.Identity<b.Identity;}))return result;
+        std::map<std::uint64_t,unsigned> masks;
+        std::vector<std::uint64_t> group(rows.size());
+        auto find=[&](std::uint64_t id)->const Entity*{
+            auto it=std::lower_bound(rows.begin(),rows.end(),id,[](const Entity &e,std::uint64_t key){return e.Identity<key;});
+            return it!=rows.end()&&it->Identity==id?&*it:nullptr;
+        };
+        // Fail open for malformed duplicate identities.
+        for(std::size_t i=1;i<rows.size();++i)if(rows[i-1].Identity==rows[i].Identity)return result;
+        for(std::size_t i=0;i<rows.size();++i){
+            const auto &e=rows[i];const Entity *root=&e;
+            unsigned depth=0;
+            while(root&&root->OwnerIdentity&&depth++<16)root=find(root->OwnerIdentity);
+            if(!root||root->OwnerIdentity||!root->Identity||(root->Category!=0&&root->Category!=5))continue;
+            group[i]=root->Identity;
+            auto it=masks.try_emplace(root->Identity,15u).first;
+            it->second&=frustum.OutsideMask(e,3,256);
+        }
+        // Unresolved/cyclic or unusually deep ancestry cannot prove safety.
+        // Keep every actor group if any owner chain exceeds the verified bound.
+        for(std::size_t i=0;i<rows.size();++i)if(rows[i].OwnerIdentity&&!group[i]){
+            const Entity *root=&rows[i];unsigned depth=0;
+            while(root&&root->OwnerIdentity&&depth++<16)root=find(root->OwnerIdentity);
+            if(root&&root->OwnerIdentity)return {};
+        }
+        for(std::size_t i=0;i<rows.size();++i)if(group[i]&&masks[group[i]])result.insert(rows[i].Identity);
+        return result;
+    }
 
 	struct Line
 	{

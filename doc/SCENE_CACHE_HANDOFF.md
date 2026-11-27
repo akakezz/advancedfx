@@ -351,3 +351,5 @@ Phase 17B introduces guarded detached validation reads (`perf fastReads 0|1`, de
 Phase 17C enables queued textured studio batching using shared per-view asset ownership and individual ordered completion tokens. `perf batchQueued 0` restores old queued path; `perf batchStudio 0` disables all batching. This does not yet enable full native historical particle/surface replay in queued mode. Native lifetimes must be verified before lifting their guards.
 
 Phase 17D: `mirv_cache perf bench models` is a six-phase comparable geometry benchmark for either immediate or queued contexts. Temporarily disables historical effects, leaves live effects, restores settings, and reports actual context mode. Compare manually selected `mat_queue_mode 0` against the normal queued setting at the same cursor/camera. The 14-phase full benchmark still needs immediate mode; no automatic cvar change.
+
+Phase 17E precomputes frustum planes and adds opt-in conservative grouped player/ragdoll/attachment culling (`perf cull 1; mirv_cache perf actorCull 1`). Default actor cull off; compare final benchmark phase (15 full, 7 model-only) and check edge fidelity. No changes to recorded history.

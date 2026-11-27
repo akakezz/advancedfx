@@ -1239,7 +1239,7 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  g_ScenePreview=true;g_SceneCursor=g_SceneCache.Frames().back().DemoTime;SceneCacheFrame(false);
  check(SceneCacheReplayActive()&&SceneCacheSuppressLiveStudio(),"A valid broad preview enables replacement");
  {const bool record=g_SceneRecord,main=g_SceneMainViewOnly,cull=g_ScenePreviewCull,native=g_SceneNativeParticleReplay,legacy=g_SceneLegacyReplay,markers=g_SceneNativeParticleMarkers,legacyMarkers=g_SceneLegacyMarkers;const double cursor=g_SceneCursor;
-  auto &b=g_SceneBench;b={};b.Active=true;b.Record=record;b.Preview=true;b.Models=true;b.MainOnly=main;b.Cull=cull;b.Native=native;b.Legacy=legacy;b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;b.BatchQueued=g_SceneBatchQueued;b.Immediate=MaterialSystem_IsImmediate();b.Markers=markers;b.LegacyMarkers=legacyMarkers;b.Cursor=cursor;b.Late=cursor;b.OriginalSequencer=int(g_SequencerFrame);
+  auto &b=g_SceneBench;b={};b.Active=true;b.Record=record;b.Preview=true;b.Models=true;b.MainOnly=main;b.Cull=cull;b.Native=native;b.Legacy=legacy;b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;b.BatchQueued=g_SceneBatchQueued;b.ActorCull=g_SceneActorCull;b.Immediate=MaterialSystem_IsImmediate();b.Markers=markers;b.LegacyMarkers=legacyMarkers;b.Cursor=cursor;b.Late=cursor;b.OriginalSequencer=int(g_SequencerFrame);
   const auto benchStart=std::chrono::steady_clock::now();
   SceneBenchApply(0,benchStart);check(!g_ScenePreview&&!g_SceneRecord,"Benchmark baseline preserves history and stops capture");
   SceneBenchFrame(benchStart+std::chrono::milliseconds(600));
@@ -1259,8 +1259,9 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   engine.Paused=true;sceneQueueDeferred=true;
   b.Active=true;b.ModelsOnly=true;b.Immediate=false;b.Shadows=g_SceneHistoricalShadows;b.Decals=g_SceneHistoricalDecals;b.HideShadows=g_SceneHideShadows;b.HideDecals=g_SceneHideDecals;
   sceneParticleIsolationReady=false;check(SceneBenchTransportReady(true)&&!SceneBenchTransportReady(false),"Models benchmark accepts queued mode without native particle guard");
-  SceneBenchApply(3,std::chrono::steady_clock::now());check(SceneBenchPhaseCount()==6&&!g_SceneNativeParticleReplay&&!g_SceneHistoricalShadows&&!g_SceneHideDecals&&g_SceneBatchStudio&&g_SceneBatchQueued,"Models-only diagnostic keeps live effects and tests queued batching");
+  SceneBenchApply(3,std::chrono::steady_clock::now());check(SceneBenchPhaseCount()==7&&!g_SceneNativeParticleReplay&&!g_SceneHistoricalShadows&&!g_SceneHideDecals&&g_SceneBatchStudio&&g_SceneBatchQueued,"Models-only diagnostic keeps live effects and tests queued batching");
   SceneBenchApply(4,std::chrono::steady_clock::now());check(!g_SceneBatchStudio,"Models-only benchmark compares original studio path");
+  SceneBenchApply(6,std::chrono::steady_clock::now());check(g_SceneActorCull&&g_ScenePreviewCull,"Models benchmark measures actor-group culling separately");
   SceneBenchStop("models fixture complete");SceneCacheFrame(false);
   engine.Paused=wasPaused;sceneQueueDeferred=wasDeferred;sceneParticleIsolationReady=true;
  }
@@ -1269,6 +1270,15 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   e.Origin[0]=0;e.Origin[1]=0;e.Origin[2]=1000;check(!advancedfx::SceneCache::OutsidePreviewFrustum(e,matrix),"Visible historical model kept");
   e.Origin[0]=5000;check(advancedfx::SceneCache::OutsidePreviewFrustum(e,matrix),"Far off-screen historical model rejected");
   e.OwnerIdentity=123;check(!advancedfx::SceneCache::OutsidePreviewFrustum(e,matrix),"Attached models kept");e.OwnerIdentity=0;
+  using Cache=advancedfx::SceneCache;
+  Cache::Frame actors;auto actor=e;actor.Identity=100;actor.Category=0;actor.Origin[0]=5000;
+  auto gear=e;gear.Identity=101;gear.OwnerIdentity=100;gear.Category=3;gear.Origin[0]=5100;
+  actors.Entities={actor,gear};
+  Cache::PreviewFrustum frustum(matrix);
+  check(Cache::OutsideActorGroups(actors,frustum).size()==2,"Actor and gear outside common plane culled together");
+  actors.Entities[1].Origin[0]=-5100;check(Cache::OutsideActorGroups(actors,frustum).empty(),"Opposite planes keep group");
+  actors.Entities[1].Origin[0]=0;check(Cache::OutsideActorGroups(actors,frustum).empty(),"Visible attachment keeps group");
+  actors.Entities[1].ModelPose.reset();check(Cache::OutsideActorGroups(actors,frustum).empty(),"Missing attachment bounds/pose keep group");
   matrix[3][2]=0;check(!advancedfx::SceneCache::OutsidePreviewFrustum(e,matrix),"Invalid projection fails open");
  }
  {const auto draws=scenePoseDraws;
