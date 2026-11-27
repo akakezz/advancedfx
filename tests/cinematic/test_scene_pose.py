@@ -110,11 +110,12 @@ void ConsumeRenderQueue(bool drain=true,bool discard=false){std::thread worker([
 '''
 fixtures = r'''
 namespace {
-void StudioColor(void*,const float*v){std::memcpy(g_SceneStudioState.Color,v,3*sizeof(float));}
-void StudioAlpha(void*,float v){g_SceneStudioState.Alpha=v;}
-void StudioAmbient3(void*,const float*v){std::memcpy(g_SceneStudioState.Ambient3,v,18*sizeof(float));g_SceneStudioState.AmbientSlot=17;}
-void StudioAmbient4(void*,const float*v){std::memcpy(g_SceneStudioState.Ambient4,v,24*sizeof(float));g_SceneStudioState.AmbientSlot=16;}
-void StudioLights(void*,int n,const float*v){g_SceneStudioState.LightCount=n;if(n)std::memcpy(g_SceneStudioState.Lights,v,n*sizeof(g_SceneStudioState.Lights[0]));}
+unsigned studioSetterCalls=0;
+void StudioColor(void*,const float*v){++studioSetterCalls;g_SceneStudioState.Known|=1;std::memcpy(g_SceneStudioState.Color,v,3*sizeof(float));}
+void StudioAlpha(void*,float v){++studioSetterCalls;g_SceneStudioState.Known|=2;g_SceneStudioState.Alpha=v;}
+void StudioAmbient3(void*,const float*v){++studioSetterCalls;g_SceneStudioState.Known|=4;std::memcpy(g_SceneStudioState.Ambient3,v,18*sizeof(float));g_SceneStudioState.AmbientSlot=17;}
+void StudioAmbient4(void*,const float*v){++studioSetterCalls;g_SceneStudioState.Known|=4;std::memcpy(g_SceneStudioState.Ambient4,v,24*sizeof(float));g_SceneStudioState.AmbientSlot=16;}
+void StudioLights(void*,int n,const float*v){++studioSetterCalls;g_SceneStudioState.Known|=8;g_SceneStudioState.LightCount=n;if(n)std::memcpy(g_SceneStudioState.Lights,v,n*sizeof(g_SceneStudioState.Lights[0]));}
 void SetOverride(void*,void*material,int type){assert(std::this_thread::get_id()==fixture.EngineThread);fixture.Override=material;fixture.OverrideType=type;}
 void MaterialInc(void*p){++static_cast<Fixture::Material*>(p)->Refs;}
 void MaterialDec(void*p){assert(std::this_thread::get_id()==fixture.EngineThread);auto&m=*static_cast<Fixture::Material*>(p);assert(m.Refs>0);--m.Refs;}
@@ -234,6 +235,15 @@ int main(){
   assert(fixture.Refs==1&&fixture.HeaderLocks==1&&retirements.empty());
   Mirv_Tf2_EndSceneStudioBatch();
   assert(!fixture.Refs&&!fixture.HeaderLocks&&!fixture.Locks);
+  {auto previous=g_SceneStudioState;SceneStudioInfo info;for(auto &face:info.AmbientCube)for(float &channel:face)channel=.55f;
+   g_SceneStudioState=SceneStudioState{};g_SceneStudioState.Known=15;
+   const auto calls=studioSetterCalls;
+   {SceneStudioScope scope(&fixture.Studio,info,true,entity);}
+   assert(studioSetterCalls==calls); // known equal state: no setters or restoration
+   g_SceneStudioState.Known=0;
+   {SceneStudioScope scope(&fixture.Studio,info,true,entity);}
+   assert(studioSetterCalls==calls+8); // unknown state: old explicit behavior
+   g_SceneStudioState=previous;}
   immediate=false;
   assert(Mirv_Tf2_BeginSceneStudioBatch(true));
   assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));

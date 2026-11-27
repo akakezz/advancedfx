@@ -10923,6 +10923,7 @@ struct SceneStudioState
 	float Color[3]{1,1,1}, Alpha = 1;
 	float Ambient3[18]{}, Ambient4[24]{};
 	int AmbientSlot = 17, LightCount = 0;
+    unsigned Known=0; // color 1, alpha 2, ambient 4, lights 8
 	float Lights[4][22]{};
 	SceneStudioState()
 	{
@@ -10941,20 +10942,38 @@ struct SceneStudioScope
 		: Studio(studio), Previous(g_SceneStudioState), Active(textured && g_SceneStudioStateInstalled)
 	{
 		if (!Active) return;
-		const float white[3]{1,1,1};
-        SceneInterfaceCall<void, const float *>(Studio, 27, entity.HasModulation?entity.Modulation.data():white);
-        SceneInterfaceCall<void, float>(Studio, 28, entity.HasModulation?entity.Modulation[3]:1.f);
-		SceneInterfaceCall<void, const float *>(Studio, 17, &info.AmbientCube[0][0]);
-		SceneInterfaceCall<void, int, const float *>(Studio, 18, 0, &info.LightDescriptors[0][0]);
+        const float white[3]{1,1,1};
+        const float *color=entity.HasModulation?entity.Modulation.data():white;
+        const float alpha=entity.HasModulation?entity.Modulation[3]:1.f;
+        const auto &s=g_SceneStudioState;
+        // Only elide setters whose exact state was observed by the installed hooks.
+        if(!(s.Known&1)||!std::equal(s.Color,s.Color+3,color))
+            SceneInterfaceCall<void, const float *>(Studio,27,color);
+        if(!(s.Known&2)||s.Alpha!=alpha)
+            SceneInterfaceCall<void,float>(Studio,28,alpha);
+        if(!(s.Known&4)||s.AmbientSlot!=17||std::memcmp(s.Ambient3,info.AmbientCube,sizeof(s.Ambient3)))
+            SceneInterfaceCall<void,const float *>(Studio,17,&info.AmbientCube[0][0]);
+        if(!(s.Known&8)||s.LightCount!=0)
+            SceneInterfaceCall<void,int,const float *>(Studio,18,0,&info.LightDescriptors[0][0]);
 	}
 	~SceneStudioScope()
 	{
 		if (!Active) return;
-		SceneInterfaceCall<void, const float *>(Studio, 27, Previous.Color);
-		SceneInterfaceCall<void, float>(Studio, 28, Previous.Alpha);
-		SceneInterfaceCall<void, const float *>(Studio, Previous.AmbientSlot,
-			Previous.AmbientSlot == 16 ? Previous.Ambient4 : Previous.Ambient3);
-		SceneInterfaceCall<void, int, const float *>(Studio, 18, Previous.LightCount, &Previous.Lights[0][0]);
+        const auto &s=g_SceneStudioState;
+        const unsigned known=s.Known&Previous.Known;
+        if(!(known&1)||!std::equal(s.Color,s.Color+3,Previous.Color))
+            SceneInterfaceCall<void,const float *>(Studio,27,Previous.Color);
+        if(!(known&2)||s.Alpha!=Previous.Alpha)
+            SceneInterfaceCall<void,float>(Studio,28,Previous.Alpha);
+        const bool ambientEqual=s.AmbientSlot==Previous.AmbientSlot&&
+            (Previous.AmbientSlot==16?std::equal(s.Ambient4,s.Ambient4+24,Previous.Ambient4):
+             std::equal(s.Ambient3,s.Ambient3+18,Previous.Ambient3));
+        if(!(known&4)||!ambientEqual)
+            SceneInterfaceCall<void,const float *>(Studio,Previous.AmbientSlot,Previous.AmbientSlot==16?Previous.Ambient4:Previous.Ambient3);
+        const bool lightsEqual=s.LightCount==Previous.LightCount&&s.LightCount>=0&&s.LightCount<=4&&
+            !std::memcmp(s.Lights,Previous.Lights,size_t(s.LightCount)*sizeof(s.Lights[0]));
+        if(!(known&8)||!lightsEqual)
+            SceneInterfaceCall<void,int,const float *>(Studio,18,Previous.LightCount,&Previous.Lights[0][0]);
 	}
 };
 // Private, immutable materials avoid mutating the engine's shared debug
@@ -12034,31 +12053,35 @@ SceneStudioAlphaFn g_SceneOriginalAlpha = nullptr;
 SceneStudioLightsFn g_SceneOriginalLights = nullptr;
 void __fastcall SceneStudioColor(void *self, SCENE_STUDIO_EDX const float *v)
 {
-	if (v) std::memcpy(g_SceneStudioState.Color, v, sizeof(g_SceneStudioState.Color));
+	if (v) {std::memcpy(g_SceneStudioState.Color,v,sizeof(g_SceneStudioState.Color));g_SceneStudioState.Known|=1;}
+    else g_SceneStudioState.Known&=~1u;
 	g_SceneOriginalColor(self, SCENE_STUDIO_PASS v);
 }
 void __fastcall SceneStudioAlpha(void *self, SCENE_STUDIO_EDX float v)
 {
-	g_SceneStudioState.Alpha = v;
+	g_SceneStudioState.Alpha = v;g_SceneStudioState.Known|=2;
 	g_SceneOriginalAlpha(self, SCENE_STUDIO_PASS v);
 }
 void __fastcall SceneStudioAmbient3(void *self, SCENE_STUDIO_EDX const float *v)
 {
-	if (v) { std::memcpy(g_SceneStudioState.Ambient3, v, sizeof(g_SceneStudioState.Ambient3)); g_SceneStudioState.AmbientSlot = 17; }
+	if (v) { std::memcpy(g_SceneStudioState.Ambient3, v, sizeof(g_SceneStudioState.Ambient3)); g_SceneStudioState.AmbientSlot = 17;g_SceneStudioState.Known|=4; }
+    else g_SceneStudioState.Known&=~4u;
 	g_SceneOriginalAmbient3(self, SCENE_STUDIO_PASS v);
 }
 void __fastcall SceneStudioAmbient4(void *self, SCENE_STUDIO_EDX const float *v)
 {
-	if (v) { std::memcpy(g_SceneStudioState.Ambient4, v, sizeof(g_SceneStudioState.Ambient4)); g_SceneStudioState.AmbientSlot = 16; }
+	if (v) { std::memcpy(g_SceneStudioState.Ambient4, v, sizeof(g_SceneStudioState.Ambient4)); g_SceneStudioState.AmbientSlot = 16;g_SceneStudioState.Known|=4; }
+    else g_SceneStudioState.Known&=~4u;
 	g_SceneOriginalAmbient4(self, SCENE_STUDIO_PASS v);
 }
 void __fastcall SceneStudioLights(void *self, SCENE_STUDIO_EDX int count, const float *v)
 {
 	if (count >= 0 && count <= 4 && (!count || v))
 	{
-		g_SceneStudioState.LightCount = count;
+		g_SceneStudioState.LightCount = count;g_SceneStudioState.Known|=8;
 		if (count) std::memcpy(g_SceneStudioState.Lights, v, size_t(count) * sizeof(g_SceneStudioState.Lights[0]));
 	}
+    else g_SceneStudioState.Known&=~8u;
 	g_SceneOriginalLights(self, SCENE_STUDIO_PASS count, v);
 }
 #undef SCENE_STUDIO_EDX

@@ -75,6 +75,7 @@ static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::ve
     std::vector<SurfaceAddress> slots(count);
     if(count&&!SurfaceRead(table,slots.data(),slots.size()*sizeof(SurfaceAddress)))return false;
     std::map<SurfaceAddress,std::string> materials;
+    std::map<SurfaceAddress,std::uint32_t> surfaceFlagsCache;
     for(int i=0;i<count;++i){
         auto a=slots[i];if(!a)continue;
         std::array<unsigned char,0x6c> raw{};
@@ -90,9 +91,9 @@ static bool ReadWorldDecals(SurfaceAddress base,const NativeWorld &world,std::ve
         if(!surface||surface<world.Surfaces||(surface-world.Surfaces)%64||(surface-world.Surfaces)/64>=static_cast<unsigned>(world.Count)){
             ++unsupported;++coverage.OutsideWorld;continue;
         }
-        std::uint32_t surfaceFlags=0;
-        if(!SurfaceGet(surface,surfaceFlags)){status=DecalRead::Surface;return false;}
-        if(surfaceFlags&0x800){++unsupported;++coverage.Displacement;continue;}
+        auto sf=surfaceFlagsCache.try_emplace(surface,0);
+        if(sf.second&&!SurfaceGet(surface,sf.first->second)){status=DecalRead::Surface;return false;}
+        if(sf.first->second&0x800){++unsupported;++coverage.Displacement;continue;}
         v.Surface=static_cast<std::uint32_t>((surface-world.Surfaces)/64);
         std::memcpy(v.Placement.data(),raw.data()+0x24,12);
         if(v.Flags&0x80)std::memcpy(v.Placement.data()+3,raw.data()+0x30,12);
