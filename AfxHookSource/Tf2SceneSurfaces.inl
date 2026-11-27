@@ -323,10 +323,11 @@ static void SurfaceGather(DecalGatherFn original,bool sorted,SurfaceAddress call
     const bool callsite=sorted?(category==0?caller==base+0x116bb5:category==1?caller==base+0x116bd3:category==2&&caller==base+0x116bf4):
                                (category==0?caller==base+0x116bfb:category==1?caller==base+0x116c19:category==2&&caller==base+0x116c3a);
     SurfaceGatherVector before,after;
-    const bool eligible=GetCurrentThreadId()==g_SurfaceDecalThread&&g_SurfaceQueuedGroup==group&&group>=0&&group<3&&
-        callsite&&address==base+0x6c55b8&&!g_SurfaceQueuedHidden.empty()&&SurfaceGatherRead(address,before);
+    const bool candidate=GetCurrentThreadId()==g_SurfaceDecalThread&&g_SurfaceQueuedGroup==group&&group>=0&&group<3&&
+        callsite&&address==base+0x6c55b8&&!g_SurfaceQueuedHidden.empty();
+    const bool eligible=candidate&&SurfaceGatherRead(address,before);
     original(context,group,category,vector);
-    if(!eligible)return;
+    if(!eligible){if(candidate)++g_SurfaceQueuedRejected;return;}
     // The original collector may grow its allocation. Re-read the header
     // and copy just this category's newly appended tail. Prior categories
     // were already counted by the native dispatcher and must stay intact.

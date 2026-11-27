@@ -41,7 +41,8 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick,bool
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &,std::size_t){return "fixture";}
 std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *snapshot,bool){if(snapshot)snapshot->Complete=true;return "legacy fixture";}
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &,bool,bool,bool){return {}; }
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &){return {}; }
+int sceneLegacyDraws=0;
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &){++sceneLegacyDraws;return {}; }
 int sceneNativeView=-1;int Mirv_Tf2_SceneRenderViewId(){return sceneNativeView;}
 bool Mirv_Tf2_SceneMainProjection(float (&matrix)[4][4]){return false;}
 bool sceneParticleIsolationReady=true;bool Mirv_Tf2_ParticleIsolationReady(){return sceneParticleIsolationReady;}
@@ -1244,7 +1245,7 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
  g_ScenePreview=true;g_SceneCursor=g_SceneCache.Frames().back().DemoTime;SceneCacheFrame(false);
  check(SceneCacheReplayActive()&&SceneCacheSuppressLiveStudio(),"A valid broad preview enables replacement");
  {const bool record=g_SceneRecord,main=g_SceneMainViewOnly,cull=g_ScenePreviewCull,native=g_SceneNativeParticleReplay,legacy=g_SceneLegacyReplay,markers=g_SceneNativeParticleMarkers,legacyMarkers=g_SceneLegacyMarkers;const double cursor=g_SceneCursor;
-  auto &b=g_SceneBench;b={};b.Active=true;b.Record=record;b.Preview=true;b.Models=true;b.MainOnly=main;b.Cull=cull;b.Native=native;b.Legacy=legacy;b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;b.BatchQueued=g_SceneBatchQueued;b.ActorCull=g_SceneActorCull;b.Immediate=MaterialSystem_IsImmediate();b.Shadows=g_SceneHistoricalShadows;b.Decals=g_SceneHistoricalDecals;b.HideShadows=g_SceneHideShadows;b.HideDecals=g_SceneHideDecals;b.Markers=markers;b.LegacyMarkers=legacyMarkers;b.Cursor=cursor;b.Late=cursor;b.OriginalSequencer=int(g_SequencerFrame);
+  auto &b=g_SceneBench;b={};b.Active=true;b.Record=record;b.Preview=true;b.Models=true;b.MainOnly=main;b.Cull=cull;b.Native=native;b.Legacy=legacy;b.Residency=g_SceneKeepAssets;b.FastWrites=g_SceneFastParticleWrites;b.BatchStudio=g_SceneBatchStudio;b.FastReads=g_SceneFastParticleReads;b.BatchQueued=g_SceneBatchQueued;b.ActorCull=g_SceneActorCull;b.Immediate=MaterialSystem_IsImmediate();b.Shadows=g_SceneHistoricalShadows;b.Decals=g_SceneHistoricalDecals;b.HideShadows=g_SceneHideShadows;b.HideDecals=g_SceneHideDecals;b.QueuedDecals=g_SceneQueuedDecals;b.Markers=markers;b.LegacyMarkers=legacyMarkers;b.Cursor=cursor;b.Late=cursor;b.OriginalSequencer=int(g_SequencerFrame);
   const auto benchStart=std::chrono::steady_clock::now();
   SceneBenchApply(0,benchStart);check(!g_ScenePreview&&!g_SceneRecord,"Benchmark baseline preserves history and stops capture");
   SceneBenchFrame(benchStart+std::chrono::milliseconds(600));
@@ -1260,22 +1261,29 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   SceneBenchApply(11,std::chrono::steady_clock::now());check(!g_SceneBatchStudio&&g_SceneKeepAssets&&g_SceneFastParticleWrites,"Benchmark isolates studio batching");SceneBenchApply(12,std::chrono::steady_clock::now());check(g_SceneBatchStudio,"Benchmark repeats batched mode");
   SceneBenchApply(13,std::chrono::steady_clock::now());check(!g_SceneFastParticleReads&&g_SceneFastParticleWrites&&g_SceneBatchStudio,"Benchmark isolates guarded reads");
   SceneBenchApply(14,std::chrono::steady_clock::now());check(!g_SceneNativeParticleReplay&&g_SceneLegacyReplay==legacy,"Benchmark isolates modern particles");
+  {const auto originalNative=b.Native,originalLegacy=b.Legacy;const auto savedView=sceneNativeView;
+   b.Native=b.Legacy=true;SceneBenchApply(14,std::chrono::steady_clock::now());SceneCacheFrame(false);
+   advancedfx::LegacyParticles::Frame sample;sample.Tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));sample.Complete=true;check(g_SceneLegacyHistory.Append(std::move(sample)),"Legacy isolation fixture retained");
+   const auto draws=sceneLegacyDraws;sceneNativeView=0;SceneCacheDrawParticles();check(sceneLegacyDraws==draws+1,"Modern-off phase still submits legacy replay");
+   sceneNativeView=1;SceneCacheDrawParticles();check(sceneLegacyDraws==draws+1,"Legacy-only benchmark skips non-main views");
+   sceneNativeView=savedView;g_SceneLegacyHistory.Clear();b.Native=originalNative;b.Legacy=originalLegacy;}
   SceneBenchApply(15,std::chrono::steady_clock::now());check(g_SceneNativeParticleReplay==native&&!g_SceneLegacyReplay,"Benchmark isolates legacy particles");
   SceneBenchApply(16,std::chrono::steady_clock::now());check(!g_SceneHistoricalShadows&&!g_SceneHistoricalDecals&&!g_SceneHideShadows&&!g_SceneHideDecals,"Benchmark isolates historical surfaces");
   SceneBenchApply(17,std::chrono::steady_clock::now());check(SceneBenchPhaseCount()==18&&g_SceneActorCull,"Full suite includes actor group comparison");
   SceneBenchStop("fixture complete");SceneCacheFrame(false);check(!b.Active&&g_SceneRecord==record&&g_ScenePreview&&g_SceneMainViewOnly==main&&g_ScenePreviewCull==cull&&g_SceneNativeParticleReplay==native&&g_SceneCursor==cursor,"Benchmark restores original scene settings");
   const bool wasPaused=engine.Paused,wasDeferred=sceneQueueDeferred;
   engine.Paused=true;sceneQueueDeferred=true;
-  b.Active=true;b.ModelsOnly=true;b.Immediate=false;b.Shadows=g_SceneHistoricalShadows;b.Decals=g_SceneHistoricalDecals;b.HideShadows=g_SceneHideShadows;b.HideDecals=g_SceneHideDecals;
+  b.Active=true;b.ModelsOnly=true;b.Immediate=false;b.Shadows=g_SceneHistoricalShadows;b.Decals=g_SceneHistoricalDecals;b.HideShadows=g_SceneHideShadows;b.HideDecals=g_SceneHideDecals;b.QueuedDecals=g_SceneQueuedDecals;
   sceneParticleIsolationReady=false;check(SceneBenchTransportReady(true)&&!SceneBenchTransportReady(false),"Models benchmark accepts queued mode without native particle guard");
   SceneBenchApply(3,std::chrono::steady_clock::now());check(SceneBenchPhaseCount()==7&&!g_SceneNativeParticleReplay&&!g_SceneHistoricalShadows&&!g_SceneHideDecals&&g_SceneBatchStudio&&g_SceneBatchQueued,"Models-only diagnostic keeps live effects and tests queued batching");
   SceneBenchApply(4,std::chrono::steady_clock::now());check(!g_SceneBatchStudio,"Models-only benchmark compares original studio path");
   SceneBenchApply(6,std::chrono::steady_clock::now());check(g_SceneActorCull&&g_ScenePreviewCull,"Models benchmark measures actor-group culling separately");
-  {const auto saved=b.Immediate;const auto savedDecals=b.Decals;const auto savedQueued=g_SceneQueuedDecals;
-   b.Immediate=false;b.Decals=true;g_SceneQueuedDecals=true;
+  {const auto saved=b.Immediate;const auto savedDecals=b.Decals;const auto savedQueued=b.QueuedDecals;
+   b.Immediate=false;b.Decals=true;b.QueuedDecals=true;
    SceneBenchApply(6,std::chrono::steady_clock::now());check(SceneBenchPhaseCount()==8&&g_SceneActorCull&&!g_SceneHistoricalDecals,"queued model-only control retains live decals");
+   g_SceneQueuedDecals=false;check(SceneBenchPhaseCount()==8,"queued benchmark phase count uses saved configuration");
    SceneBenchApply(7,std::chrono::steady_clock::now());check(g_SceneActorCull&&g_SceneHistoricalDecals&&!g_SceneNativeParticleReplay&&!g_SceneHistoricalShadows,"queued visibility comparison isolates decal gating");
-   b.Immediate=saved;b.Decals=savedDecals;g_SceneQueuedDecals=savedQueued;}
+   b.Immediate=saved;b.Decals=savedDecals;b.QueuedDecals=savedQueued;g_SceneQueuedDecals=savedQueued;}
   SceneBenchStop("models fixture complete");SceneCacheFrame(false);
   b.Active=true;b.AutoQueue=true;b.OriginalQueue=b.OwnedQueue=0;benchQueueMode=0;
   SceneBenchSwitch(2,2,std::chrono::steady_clock::now());check(b.Switching&&!g_ScenePreview,"Queue transition uses live view");
