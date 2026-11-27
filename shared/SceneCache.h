@@ -26,6 +26,11 @@ public:
 	static constexpr int CategoryCount = 9; // Existing categories 0..6, buildings 7, props 8.
 	static constexpr size_t MaxBones = 128; // TF2 / Source SDK 2013 studio limit.
 	using Matrix = std::array<float, 12>;
+    // CPU wall time, not GPU completion. Ordered, exclusive stages per call.
+    struct ReplayTimings {
+        enum Stage { Preflight, Asset, Bones, State, Draw, Retirement, Count };
+        std::array<double,Count> Ms{};
+    };
 	struct Model
 	{
 		std::string Name;

@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cfloat>
 #include <cstddef>
 #include <cstring>
@@ -11701,8 +11702,21 @@ static bool SceneReplayMatrices(const advancedfx::SceneCache::Entity &entity,
 }
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::string &status,
                             const advancedfx::SceneCache::Entity *owner, bool textured,
-                            const std::shared_ptr<const advancedfx::SceneCache::Frame> &frame)
+                            const std::shared_ptr<const advancedfx::SceneCache::Frame> &frame,
+                            advancedfx::SceneCache::ReplayTimings *timings)
 {
+    using Timing=advancedfx::SceneCache::ReplayTimings;
+    struct StageTimer {
+        Timing *Out;
+        Timing::Stage Current=Timing::Preflight;
+        std::chrono::steady_clock::time_point Start;
+        explicit StageTimer(Timing *out):Out(out){if(Out)Start=std::chrono::steady_clock::now();}
+        void Next(Timing::Stage stage){
+            if(Out){const auto now=std::chrono::steady_clock::now();Out->Ms[Current]+=std::chrono::duration<double,std::milli>(now-Start).count();Start=now;}
+            Current=stage;
+        }
+        ~StageTimer(){Next(Current);}
+    } timer(timings);
 	Mirv_Tf2_SceneRenderFrame();
 	if (g_SceneOutstanding.load() >= SceneMaxOutstanding)
 	{
@@ -11749,6 +11763,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached model deferred during an engine material override.";
 		return false;
 	}
+	timer.Next(Timing::Asset);
 	SceneInterfaceCall<void>(cache, 25); // IMDLCache::BeginLock
 	struct Unlock
 	{
@@ -11780,6 +11795,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		return false;
 	}
 	if(textured)SceneKeepAsset(cache,pose->ModelInfo->Name,handle);
+    timer.Next(Timing::Bones);
 	// Allocate through studio's render context so queued rendering owns the
 	// matrix lifetime. Stack matrices and live renderable pointers are not passed.
 	auto matrices = SceneInterfaceCall<SOURCESDK::matrix3x4_t *, int>(studio, 22, count);
@@ -11795,6 +11811,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached bone reconstruction failed; model drawing skipped.";
 		return false;
 	}
+	timer.Next(Timing::State);
 	info.Body = pose->Body;
 	// Validate historical skin against the SDK 2013 studio header's numskinfamilies.
 	if (textured && entity.Skin >= 0)
@@ -11830,9 +11847,11 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
 	SceneStudioScope studioScope(studio, info, textured,entity);
 	resources->Submit();
+    timer.Next(Timing::Draw);
 	SceneInterfaceCall<void, void *, const SceneStudioInfo &, SOURCESDK::matrix3x4_t *, float *, float *,
 	                   const SOURCESDK::Vector &, int>(studio, 29, nullptr, info, matrices, nullptr, nullptr,
 	                                                   origin, flags);
+    timer.Next(Timing::Retirement);
 	// The capability check above and this enqueue run on the same engine thread;
 	// the material-system hook remains stable for this submission. The helper
 	// owns/deletes the callback on both success and failure.
