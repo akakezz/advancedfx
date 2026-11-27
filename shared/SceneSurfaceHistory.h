@@ -70,12 +70,23 @@ struct Decal {
 inline bool ShouldSubmitDetached(bool surviving,bool liveVisible,bool gated){
     return !surviving||!liveVisible||gated;
 }
+// The projected-shadow atlas itself is not historical. Only a verified
+// simple material pair can use the original texture rectangle directly.
+enum class ShadowTexture { Unknown, Simple, Other };
+inline bool ValidShadowTextureRect(const std::array<float,4> &r){
+    return std::all_of(r.begin(),r.end(),[](float x){return std::isfinite(x)&&x>=0&&x<=1;})&&
+        r[2]>0&&r[3]>0&&r[0]+r[2]<=1.0001f&&r[1]+r[3]<=1.0001f;
+}
 struct Shadow {
     std::array<float,3> Origin{},Direction{},Caster{};
     std::array<float,16> Matrix{};
     std::array<float,2> Size{};
     float Height=0,FalloffOffset=0,FalloffAmount=0;
     unsigned char Bias=0;
+    ShadowTexture Texture=ShadowTexture::Unknown;
+    std::array<float,4> UV{0,0,1,1};
+    bool HasSimpleTexture()const{return Texture==ShadowTexture::Simple&&ValidShadowTextureRect(UV);}
+    std::array<float,4> ReplayTextureRect()const{return HasSimpleTexture()?UV:std::array<float,4>{0,0,1,1};}
     std::vector<int> Leaves;
     bool Valid() const {
         auto finite=[](const auto &v){return std::all_of(v.begin(),v.end(),[](float x){return std::isfinite(x)&&std::abs(x)<1e7f;});};
@@ -84,7 +95,7 @@ struct Shadow {
             !Leaves.empty()&&Leaves.size()<=8192&&std::all_of(Leaves.begin(),Leaves.end(),[](int v){return v>=0&&v<1048576;});
     }
     bool operator==(const Shadow &o) const {
-        return Origin==o.Origin&&Direction==o.Direction&&Caster==o.Caster&&Matrix==o.Matrix&&Size==o.Size&&Height==o.Height&&FalloffOffset==o.FalloffOffset&&FalloffAmount==o.FalloffAmount&&Bias==o.Bias&&Leaves==o.Leaves;
+        return Origin==o.Origin&&Direction==o.Direction&&Caster==o.Caster&&Matrix==o.Matrix&&Size==o.Size&&Height==o.Height&&FalloffOffset==o.FalloffOffset&&FalloffAmount==o.FalloffAmount&&Bias==o.Bias&&Texture==o.Texture&&UV==o.UV&&Leaves==o.Leaves;
     }
 };
 enum class DecalRead { NotRun, Guard, Table, Record, Slot, Surface, Changed, Ready };
@@ -172,7 +183,24 @@ public:
     bool Append(Frame f){
         // A failed/unsupported capture (often World==0) must not erase a
         // valid history or replace a good sample at the same tick.
+        // Readiness without a payload is not authoritative, but a ready
+        // empty vector is. Merge only unavailable subsystems at the exact
+        // same tick and world; a valid new empty sample replaces old data.
+        f.DecalsReady=f.DecalsReady&&bool(f.Decals);
+        f.ShadowsReady=f.ShadowsReady&&bool(f.Shadows);
+        if(!f.DecalsReady)f.Decals.reset();
+        if(!f.ShadowsReady)f.Shadows.reset();
         if(f.Tick<0||!f.World||(!f.DecalsReady&&!f.ShadowsReady)){++Rejected;return false;}
+        if(!Frames.empty()&&f.Tick==Frames.back().Tick&&f.World==Frames.back().World){
+            const auto &last=Frames.back();
+            if(!f.DecalsReady&&last.DecalsReady&&last.Decals){
+                f.DecalsReady=true;f.Decals=last.Decals;f.DecalStatus=last.DecalStatus;
+                f.DecalsUnsupported=last.DecalsUnsupported;f.UnsupportedDecals=last.UnsupportedDecals;
+            }
+            if(!f.ShadowsReady&&last.ShadowsReady&&last.Shadows){
+                f.ShadowsReady=true;f.Shadows=last.Shadows;f.ShadowsUnobserved=last.ShadowsUnobserved;
+            }
+        }
         if(sizeof(Frame)+ExtraVector(f.Decals,true)+ExtraVector(f.Shadows,true)>Budget){++Rejected;return false;}
         if(!Frames.empty()&&(f.World!=Frames.back().World||f.Tick<Frames.back().Tick))Clear();
         if(!Frames.empty()&&f.Tick==Frames.back().Tick)Drop(false);
