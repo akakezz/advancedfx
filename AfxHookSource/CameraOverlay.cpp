@@ -85,7 +85,7 @@ static int g_SceneDetachedTick=-1, g_SceneDetachedIndex=-1;
 static bool g_SceneLegacyAuditPending=false;
 static bool g_SceneLegacyCapture=false,g_SceneLegacyReplay=false,g_SceneLegacyAll=false;
 static bool g_SceneReplayModulation=false,g_SceneHideShadows=false,g_SceneHideDecals=false,g_SceneLegacyMarkers=false;
-static bool g_SceneLightingCapture=false,g_SceneReplayLighting=false;
+static bool g_SceneLightingCapture=false,g_SceneReplayLighting=false,g_SceneLightingObserverReady=false;
 static std::string g_SceneLightingStatus="Historical model lighting not captured.";
 static bool g_SceneSurfaceCapture=false,g_SceneHistoricalShadows=false,g_SceneHistoricalDecals=false,g_SceneRemovedDecals=false,g_SceneDecalOpacity=false;
 static advancedfx::SceneSurfaces::History g_SceneSurfaces;
@@ -629,7 +629,7 @@ static void SceneClearHistory()
 	SceneClearNativeParticles();
 	g_SceneDrawing.BoundEntities.clear();
 	g_SceneAuditFrame = -1; g_SceneAuditDraws.clear();
-    Mirv_Tf2_BeginSceneLightingAudit(false);g_SceneLightingStatus="Historical model lighting not captured.";
+    Mirv_Tf2_BeginSceneLightingAudit(false);g_SceneLightingObserverReady=false;g_SceneLightingStatus="Historical model lighting not captured.";
 	g_SceneAuditStatus = "No same-frame native model observation yet.";
     g_SceneReplayCallbacks=g_SceneReplayAttempted=g_SceneReplaySubmitted=g_SceneReplayQueueSkips=g_SceneReplayOtherSkips=0;
     g_SceneReplayFrame=-1;g_SceneReplayFrameCallbacks=g_SceneReplayMaxCallbacks=0;g_SceneReplayLastFailure.clear();
@@ -652,7 +652,8 @@ bool SceneCacheAuditActive()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	const bool active=g_SceneRenderSnapshot && g_SceneRecord && !g_ScenePreview;
-    if(!Mirv_Tf2_BeginSceneLightingAudit(active&&g_SceneLightingCapture)&&active&&g_SceneLightingCapture)
+    g_SceneLightingObserverReady=Mirv_Tf2_BeginSceneLightingAudit(active&&g_SceneLightingCapture);
+    if(!g_SceneLightingObserverReady&&active&&g_SceneLightingCapture)
         g_SceneLightingStatus="Historical lighting observer unavailable (exact TF2 x64 ABI or studio hooks).";
     return active;
 }
@@ -1055,7 +1056,7 @@ void SceneCacheFrame(bool capture)
 			g_SceneAuditStatus += " Skins: " + std::to_string(nativeSkins) + " native, " +
 				std::to_string(networkSkins) + " network, " + std::to_string(teamSkins) + " team fallback, " +
 				std::to_string(unknownSkins) + " unknown.";
-            if(g_SceneLightingCapture){
+            if(g_SceneLightingCapture&&audit&&g_SceneLightingObserverReady){
                 g_SceneLightingStatus="Tick "+std::to_string(tick)+": "+std::to_string(lightingCaptured)+"/"+std::to_string(lightingModels)+
                     " studio poses with same-view historical lighting; "+std::to_string(localLights)+" local light descriptors. Unobserved/static/ambiguous models use neutral fallback.";
             }

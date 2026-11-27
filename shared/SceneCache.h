@@ -524,6 +524,7 @@ public:
 		m_Frames.clear();
 		m_Models.clear();
 		m_Poses.clear();
+        m_Lighting.clear();
 		m_ReusedPoses = m_AllocatedBytes = 0;
 		m_Bytes = 0;
 	}
@@ -615,15 +616,21 @@ public:
 					entity.ModelPose = it->ModelPose;
 					++reused;
 				}
+                if(it!=last.end()&&it->Identity==entity.Identity&&it->Category==entity.Category&&it->OwnerIdentity==entity.OwnerIdentity&&
+                   entity.ModelLighting&&it->ModelLighting&&entity.ModelPose&&it->ModelPose&&entity.ModelPose->ModelInfo->Checksum==it->ModelPose->ModelInfo->Checksum&&
+                   entity.ModelPose->ModelInfo->Name==it->ModelPose->ModelInfo->Name&&*entity.ModelLighting==*it->ModelLighting)
+                    entity.ModelLighting=it->ModelLighting;
 			}
 		const size_t bytes = Cost(frame);
 		const auto models = Models(frame);
 		const auto poses = Poses(frame);
+        const auto lights = LightingSamples(frame);
 		size_t whole = bytes;
 		for (const auto *model : models)
 			whole += ModelCost(*model);
 		for (const auto *pose : poses)
 			whole += PoseCost(*pose);
+        whole+=lights.size()*sizeof(SceneLighting::Sample);
 		if (whole > m_Limit)
 			return false; // A single complete frame must fit.
         if(backward)Clear();
@@ -642,6 +649,7 @@ public:
 				m_Bytes += result.first->second.Bytes;
 			++result.first->second.Frames;
 		}
+        for(const auto *light:lights){auto result=m_Lighting.emplace(light,ModelUse{0,sizeof(SceneLighting::Sample)});if(result.second)m_Bytes+=result.first->second.Bytes;++result.first->second.Frames;}
 		m_Bytes += bytes;
 		m_AllocatedBytes += m_Bytes - before;
 		m_ReusedPoses += reused;
@@ -925,12 +933,16 @@ private:
 		return sizeof(Pose) + pose.Bones.capacity() * sizeof(Matrix) +
 		       pose.Local.capacity() * sizeof(Transform) + pose.Fixed.capacity() * sizeof(FixedBone);
 	}
+    static std::vector<const SceneLighting::Sample *> LightingSamples(const Frame &frame){
+        std::vector<const SceneLighting::Sample *> result;
+        for(const auto &entity:frame.Entities)if(entity.ModelLighting)result.push_back(entity.ModelLighting.get());
+        std::sort(result.begin(),result.end(),std::less<const SceneLighting::Sample *>());
+        result.erase(std::unique(result.begin(),result.end()),result.end());return result;
+    }
 	static size_t Cost(const Frame &frame)
 	{
 		size_t bytes=sizeof(Frame) + frame.Entities.capacity() * sizeof(Entity) +
 			   frame.Cameras.capacity() * sizeof(CameraSample);
-        // Conservative per-entity charge, even when callers share a sample.
-        for(const auto &entity:frame.Entities)if(entity.ModelLighting)bytes+=sizeof(SceneLighting::Sample);
         return bytes;
 	}
 	void Trim()
@@ -956,6 +968,7 @@ private:
 					m_Models.erase(it);
 				}
 			}
+            for(const auto *light:LightingSamples(m_Frames.front())){auto it=m_Lighting.find(light);if(--it->second.Frames==0){m_Bytes-=it->second.Bytes;m_Lighting.erase(it);}}
 			m_Frames.pop_front();
 		}
 	}
@@ -965,6 +978,7 @@ private:
 	};
 	std::map<const Model *, ModelUse> m_Models;
 	std::map<const Pose *, ModelUse> m_Poses;
+    std::map<const SceneLighting::Sample *,ModelUse> m_Lighting;
 	size_t m_ReusedPoses = 0, m_AllocatedBytes = 0;
 	std::deque<Frame> m_Frames;
 	std::uint64_t m_Revision = 0;

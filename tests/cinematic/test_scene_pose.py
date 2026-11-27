@@ -111,11 +111,12 @@ void ConsumeRenderQueue(bool drain=true,bool discard=false){std::thread worker([
 fixtures = r'''
 namespace {
 unsigned studioSetterCalls=0;
+const advancedfx::SceneLighting::Sample *expectedLighting=nullptr;
 void StudioColor(void*,const float*v){++studioSetterCalls;g_SceneStudioState.Known|=1;std::memcpy(g_SceneStudioState.Color,v,3*sizeof(float));}
 void StudioAlpha(void*,float v){++studioSetterCalls;g_SceneStudioState.Known|=2;g_SceneStudioState.Alpha=v;}
-void StudioAmbient3(void*,const float*v){++studioSetterCalls;g_SceneStudioState.Known|=4;std::memcpy(g_SceneStudioState.Ambient3,v,18*sizeof(float));g_SceneStudioState.AmbientSlot=17;}
-void StudioAmbient4(void*,const float*v){++studioSetterCalls;g_SceneStudioState.Known|=4;std::memcpy(g_SceneStudioState.Ambient4,v,24*sizeof(float));g_SceneStudioState.AmbientSlot=16;}
-void StudioLights(void*,int n,const float*v){++studioSetterCalls;g_SceneStudioState.Known|=8;g_SceneStudioState.LightCount=n;if(n)std::memcpy(g_SceneStudioState.Lights,v,n*sizeof(g_SceneStudioState.Lights[0]));}
+void StudioAmbient3(void* self,const float*v){g_SceneStudioState.AmbientOwner=self;++g_SceneStudioState.AmbientRevision;++studioSetterCalls;g_SceneStudioState.Known|=4;std::memcpy(g_SceneStudioState.Ambient3,v,18*sizeof(float));g_SceneStudioState.AmbientSlot=17;}
+void StudioAmbient4(void* self,const float*v){g_SceneStudioState.AmbientOwner=self;++g_SceneStudioState.AmbientRevision;++studioSetterCalls;g_SceneStudioState.Known|=4;std::memcpy(g_SceneStudioState.Ambient4,v,24*sizeof(float));g_SceneStudioState.AmbientSlot=16;}
+void StudioLights(void* self,int n,const float*v){g_SceneStudioState.LightOwner=self;++g_SceneStudioState.LightRevision;++studioSetterCalls;g_SceneStudioState.Known|=8;g_SceneStudioState.LightCount=n;if(n)std::memcpy(g_SceneStudioState.Lights,v,n*sizeof(g_SceneStudioState.Lights[0]));}
 void SetOverride(void*,void*material,int type){assert(std::this_thread::get_id()==fixture.EngineThread);fixture.Override=material;fixture.OverrideType=type;}
 void MaterialInc(void*p){++static_cast<Fixture::Material*>(p)->Refs;}
 void MaterialDec(void*p){assert(std::this_thread::get_id()==fixture.EngineThread);auto&m=*static_cast<Fixture::Material*>(p);assert(m.Refs>0);--m.Refs;}
@@ -151,7 +152,7 @@ void Draw(void*,void*results,const SceneStudioInfo&info,SOURCESDK::matrix3x4_t*b
  assert(std::this_thread::get_id()==fixture.EngineThread);
  assert(results==nullptr&&info.Header==fixture.Header&&info.Hardware==&fixture&&info.Body==fixture.Body);
  assert(info.ClientEntity==nullptr&&info.Decals==nullptr&&info.ColorMeshes==nullptr&&info.Lod==0);
- const bool textured=info.AmbientCube[0][0]>.5f;if(textured){assert(info.Skin==1);assert(g_SceneStudioState.Alpha>=0&&g_SceneStudioState.Color[0]>=0&&g_SceneStudioState.Ambient3[0]==.55f&&g_SceneStudioState.LightCount==0);}
+ const bool textured=info.AmbientCube[0][0]>.5f||expectedLighting;if(textured){assert(info.Skin==1);assert(g_SceneStudioState.Alpha>=0&&g_SceneStudioState.Color[0]>=0);if(expectedLighting){const auto &s=*expectedLighting;assert(g_SceneStudioState.AmbientSlot==s.AmbientSlot&&g_SceneStudioState.LightCount==s.Count&&info.LightCount==s.Count);const float *ambient=s.AmbientSlot==16?g_SceneStudioState.Ambient4:g_SceneStudioState.Ambient3;assert(!memcmp(ambient,s.Ambient.data(),s.AmbientWords()*sizeof(float)));for(unsigned face=0;face<6;++face)for(unsigned channel=0;channel<3;++channel)assert(info.AmbientCube[face][channel]==s.Ambient[face*(s.AmbientSlot==16?4:3)+channel]);assert(!memcmp(info.LightDescriptors,s.Lights.data(),s.Count*sizeof(advancedfx::SceneLighting::Descriptor)));assert(!memcmp(g_SceneStudioState.Lights,s.Lights.data(),s.Count*sizeof(advancedfx::SceneLighting::Descriptor)));}else assert(g_SceneStudioState.Ambient3[0]==.55f&&g_SceneStudioState.LightCount==0);}
  assert(flex==nullptr&&delayed==nullptr&&flags==(0x04|0x20|(fixture.Override||textured?0:0x80)));assert(fixture.Locks==1&&fixture.Refs>=1&&fixture.HeaderLocks==fixture.Refs-int(g_SceneResidentAssets.size()));
  // Match Source's studio draw: ColorModulate replaces $color, even on
  // an override material, before the shader multiplies it by $color2.
@@ -236,14 +237,32 @@ int main(){
   Mirv_Tf2_EndSceneStudioBatch();
   assert(!fixture.Refs&&!fixture.HeaderLocks&&!fixture.Locks);
   {auto previous=g_SceneStudioState;SceneStudioInfo info;for(auto &face:info.AmbientCube)for(float &channel:face)channel=.55f;
-   g_SceneStudioState=SceneStudioState{};g_SceneStudioState.Known=15;
+   g_SceneStudioState=SceneStudioState{};g_SceneStudioState.Known=15;g_SceneStudioState.AmbientOwner=g_SceneStudioState.LightOwner=&fixture.Studio;
    const auto calls=studioSetterCalls;
-   {SceneStudioScope scope(&fixture.Studio,info,true,entity);}
+   {SceneStudioScope scope(&fixture.Studio,info,true,entity,nullptr);}
    assert(studioSetterCalls==calls); // known equal state: no setters or restoration
    g_SceneStudioState.Known=0;
-   {SceneStudioScope scope(&fixture.Studio,info,true,entity);}
+   {SceneStudioScope scope(&fixture.Studio,info,true,entity,nullptr);}
    assert(studioSetterCalls==calls+8); // unknown state: old explicit behavior
    g_SceneStudioState=previous;}
+  // Historical lighting must be submitted in both the draw info and studio setters,
+  // then restore the exact prior slot, values and descriptor array.
+  {using namespace advancedfx::SceneLighting;
+   float ambient[24]{};for(unsigned i=0;i<24;++i)ambient[i]=float(i+1)/64;
+   Descriptor light{};light[0]=1;SetWord(light,1,2);SetWord(light,10,100);SetWord(light,12,1);light[19]=9;
+   auto sample=std::make_shared<Sample>();assert(Sample::Capture(16,ambient,1,&light,*sample));
+   entity.ModelLighting=sample;
+   for(bool mode:{true,false}){
+    immediate=mode;
+    float previousAmbient[18];std::fill(previousAmbient,previousAmbient+18,.125f);
+    StudioAmbient3(&fixture.Studio,previousAmbient);StudioLights(&fixture.Studio,0,nullptr);
+    expectedLighting=sample.get();assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true)&&status.find("captured model lighting")!=std::string::npos);expectedLighting=nullptr;
+    assert(g_SceneStudioState.AmbientSlot==17&&g_SceneStudioState.LightCount==0&&!memcmp(g_SceneStudioState.Ambient3,previousAmbient,sizeof(previousAmbient)));
+    ConsumeRenderQueue();Mirv_Tf2_SceneRenderFrame();
+    g_SceneStudioState.Known&=~8u;
+    assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true)&&status.find("neutral lighting")!=std::string::npos);ConsumeRenderQueue();Mirv_Tf2_SceneRenderFrame();
+   }
+   entity.ModelLighting.reset();}
   immediate=false;
   assert(Mirv_Tf2_BeginSceneStudioBatch(true));
   assert(Mirv_Tf2_DrawScenePose(entity,status,nullptr,true));

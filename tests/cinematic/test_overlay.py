@@ -55,6 +55,9 @@ bool sceneEntityAvailable=false,scenePoseCaptureSuccess=true;int scenePoseCaptur
 std::shared_ptr<const advancedfx::SceneCache::Pose> sceneTestPose;std::shared_ptr<const advancedfx::SceneCache::Pose> sceneLastDrawn;
 bool Mirv_Tf2_GetSceneEntity(int,float*origin,float*angles,float*mins,float*maxs){for(int i=0;i<3;++i){origin[i]=angles[i]=mins[i]=0;maxs[i]=10;}return sceneEntityAvailable;}
 bool Mirv_Tf2_CaptureScenePose(int,advancedfx::SceneCache::Entity&entity,std::string&status,void*observedObject=nullptr){++scenePoseCaptures;if(!scenePoseCaptureSuccess){status="Pose unavailable";return false;}entity.ModelPose=sceneTestPose;status="Pose captured";return true;}
+bool Mirv_Tf2_BeginSceneLightingAudit(bool){return false;}
+void Mirv_Tf2_FinishSceneLightingAudit(int){}
+bool Mirv_Tf2_CaptureSceneLighting(int,const void*,advancedfx::SceneCache::Entity&){return false;}
 bool sceneQueueAvailable=true,sceneQueueDeferred=false;bool MaterialSystem_CanExecuteOnRenderThread(){return sceneQueueAvailable;}bool MaterialSystem_IsImmediate(){return !sceneQueueDeferred;}std::vector<std::unique_ptr<CMaterialSystemFunctor>> sceneQueued;
 bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity&entity,std::string&status,const advancedfx::SceneCache::Entity*owner=nullptr,bool textured=false,const std::shared_ptr<const advancedfx::SceneCache::Frame>&frame={},advancedfx::SceneCache::ReplayTimings* timings=nullptr){if(timings)timings->Ms[advancedfx::SceneCache::ReplayTimings::Draw]=1;if(!sceneQueueAvailable){status="Material-system render queue unavailable";return false;}++scenePoseDraws;sceneLastDrawn=entity.ModelPose;status="Pose drawn";return true;}
 bool MaterialSystem_ExecuteOnRenderThread(CMaterialSystemFunctor*functor){std::unique_ptr<CMaterialSystemFunctor>owned(functor);if(!sceneQueueAvailable)return false;if(sceneQueueDeferred)sceneQueued.push_back(std::move(owned));else (*owned)();return true;}

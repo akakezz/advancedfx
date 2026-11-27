@@ -80,6 +80,12 @@ int main()
  assert(lighting.Sample(10.075,out)&&!out.Entities[0].ModelLighting&&!out.Entities[0].ModelPose);
  auto malformed=std::make_shared<Light>(*lightA);malformed->Ambient[0]=NAN;lit.DemoTime=10.15;lit.Entities[0].ModelLighting=malformed;
  assert(lighting.Append(lit)&&!lighting.Frames().back().Entities[0].ModelLighting);
+ Cache sharedLighting(litBytes*4);auto repeated=lit;repeated.DemoTime=20;repeated.Entities[0].ModelPose=pose;repeated.Entities[0].ModelLighting=lightA;
+ assert(sharedLighting.Append(repeated));auto singleBytes=sharedLighting.Bytes();repeated.DemoTime=20.05;
+ repeated.Entities[0].ModelLighting=std::make_shared<Light>(*lightA);assert(sharedLighting.Append(repeated));
+ assert(sharedLighting.Frames().front().Entities[0].ModelLighting==sharedLighting.Frames().back().Entities[0].ModelLighting);
+ sharedLighting.SetLimit(singleBytes);assert(sharedLighting.Count()==1&&sharedLighting.Bytes()==singleBytes);
+ sharedLighting.Clear();assert(sharedLighting.Bytes()==0);
  Cache backwardBudget(litBytes);lit.DemoTime=10;lit.Entities[0].ModelPose=pose;lit.Entities[0].ModelLighting=lightA;assert(backwardBudget.Append(lit));
  lit.DemoTime=1;lit.Entities[0].Identity=1;auto extra=lit.Entities[0];extra.Identity=2;lit.Entities.push_back(extra);
  assert(!backwardBudget.Append(lit)&&backwardBudget.Count()==1&&backwardBudget.Frames().front().DemoTime==10);
