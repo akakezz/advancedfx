@@ -85,6 +85,8 @@ static int g_SceneDetachedTick=-1, g_SceneDetachedIndex=-1;
 static bool g_SceneLegacyAuditPending=false;
 static bool g_SceneLegacyCapture=false,g_SceneLegacyReplay=false,g_SceneLegacyAll=false;
 static bool g_SceneReplayModulation=false,g_SceneHideShadows=false,g_SceneHideDecals=false,g_SceneLegacyMarkers=false;
+static bool g_SceneLightingCapture=false,g_SceneReplayLighting=false;
+static std::string g_SceneLightingStatus="Historical model lighting not captured.";
 static bool g_SceneSurfaceCapture=false,g_SceneHistoricalShadows=false,g_SceneHistoricalDecals=false,g_SceneRemovedDecals=false,g_SceneDecalOpacity=false;
 static advancedfx::SceneSurfaces::History g_SceneSurfaces;
 static std::string g_SceneHistoricalSurfaceStatus="Not evaluated.";
@@ -566,6 +568,12 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
         std::snprintf(line,sizeof(line),"  Queue owners outstanding %u (session peak %u); particle attempts/frame %.1f rejected/frame %.1f; legacy rejected/frame %.1f; sampled model CPU %.3f ms/frame; particle acquire %.3f ms/frame\n",pending,peak,
             double(g_ScenePerf.ParticleAttempts-b.Before.ParticleAttempts)/b.Frames,double(g_ScenePerf.ParticleRejected-b.Before.ParticleRejected)/b.Frames,double(g_ScenePerf.LegacyRejected-b.Before.LegacyRejected)/b.Frames,ms(g_ScenePerf.Sample,b.Before.Sample),ms(g_ScenePerf.ParticleAcquire,b.Before.ParticleAcquire));
         g_SceneBenchReport+=line;
+        if(auto view=SceneCacheView()){
+            std::size_t lit=0,total=0,lights=0;for(const auto &e:view->Entities)if(e.ModelPose&&e.ModelPose->ModelInfo->WireEdges.empty()){
+                ++total;if(e.ModelLighting){++lit;lights+=e.ModelLighting->Count;}
+            }
+            g_SceneBenchReport+="  Historical model lighting requested "+std::to_string(int(g_SceneReplayLighting))+"; sampled "+std::to_string(lit)+"/"+std::to_string(total)+" studio poses, "+std::to_string(lights)+" local descriptors\n";
+        }
         if(!b.ModelsOnly){
             const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
             if(const auto *p=g_SceneNativeParticles.ForPreview(tick)){
@@ -621,6 +629,7 @@ static void SceneClearHistory()
 	SceneClearNativeParticles();
 	g_SceneDrawing.BoundEntities.clear();
 	g_SceneAuditFrame = -1; g_SceneAuditDraws.clear();
+    Mirv_Tf2_BeginSceneLightingAudit(false);g_SceneLightingStatus="Historical model lighting not captured.";
 	g_SceneAuditStatus = "No same-frame native model observation yet.";
     g_SceneReplayCallbacks=g_SceneReplayAttempted=g_SceneReplaySubmitted=g_SceneReplayQueueSkips=g_SceneReplayOtherSkips=0;
     g_SceneReplayFrame=-1;g_SceneReplayFrameCallbacks=g_SceneReplayMaxCallbacks=0;g_SceneReplayLastFailure.clear();
@@ -642,7 +651,10 @@ bool SceneCachePreviewActive() { std::lock_guard<std::recursive_mutex> lock(g_Sc
 bool SceneCacheAuditActive()
 {
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
-	return g_SceneRenderSnapshot && g_SceneRecord && !g_ScenePreview;
+	const bool active=g_SceneRenderSnapshot && g_SceneRecord && !g_ScenePreview;
+    if(!Mirv_Tf2_BeginSceneLightingAudit(active&&g_SceneLightingCapture)&&active&&g_SceneLightingCapture)
+        g_SceneLightingStatus="Historical lighting observer unavailable (exact TF2 x64 ABI or studio hooks).";
+    return active;
 }
 int SceneCacheParticleMessage(const char *name, const void *state)
 {
@@ -731,6 +743,7 @@ void SceneCachePublishModelAudit(int frame, std::map<const void *, int> submissi
 	std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 	g_SceneAuditFrame = frame;
 	g_SceneAuditDraws = std::move(submissions);
+    Mirv_Tf2_FinishSceneLightingAudit(frame);
 }
 bool SceneCacheReplayActive()
 {
@@ -934,6 +947,7 @@ void SceneCacheFrame(bool capture)
 		const auto globals = g_Hook_VClient_RenderView.GetGlobals();
 		const bool audit = broad && globals && g_SceneAuditFrame == globals->framecount_get();
 		size_t seen = 0, unseen = 0, matched = 0, nativeSkins = 0, networkSkins = 0, teamSkins = 0, unknownSkins = 0;
+        size_t lightingCaptured=0,lightingModels=0,localLights=0;
 		Mirv_Tf2_CollectSceneEntities(broad || g_SceneProjectiles, broad || g_SceneWeapons, broad || g_SceneCosmetics,
 		                              broad || g_SceneRagdolls, broad || g_SceneGibs, broad || g_SceneBuildings,
 		                              broad || g_SceneProps, entities, broad);
@@ -974,6 +988,12 @@ void SceneCacheFrame(bool capture)
 					if (broad && entity.ModelPose && entity.ModelPose->ModelInfo->WireEdges.empty())
 					{
 						if (audit) (observed != g_SceneAuditDraws.end() ? seen : unseen)++;
+                        if(g_SceneLightingCapture){
+                            ++lightingModels;
+                            if(audit&&observed!=g_SceneAuditDraws.end()&&Mirv_Tf2_CaptureSceneLighting(g_SceneAuditFrame,row.ObservedRenderable,entity)){
+                                ++lightingCaptured;localLights+=entity.ModelLighting->Count;
+                            }
+                        }
 						using Source = advancedfx::SceneCache::Entity::SkinSource;
 						switch (entity.SkinFrom) {
 						case Source::Native: ++nativeSkins; break;
@@ -1035,7 +1055,12 @@ void SceneCacheFrame(bool capture)
 			g_SceneAuditStatus += " Skins: " + std::to_string(nativeSkins) + " native, " +
 				std::to_string(networkSkins) + " network, " + std::to_string(teamSkins) + " team fallback, " +
 				std::to_string(unknownSkins) + " unknown.";
+            if(g_SceneLightingCapture){
+                g_SceneLightingStatus="Tick "+std::to_string(tick)+": "+std::to_string(lightingCaptured)+"/"+std::to_string(lightingModels)+
+                    " studio poses with same-view historical lighting; "+std::to_string(localLights)+" local light descriptors. Unobserved/static/ambiguous models use neutral fallback.";
+            }
 			g_SceneAuditDraws.clear(); g_SceneAuditFrame = -1;
+            Mirv_Tf2_BeginSceneLightingAudit(false);
 		}
 		if (g_SceneEffectsEnabled) g_SceneEffects.Observe(tick);
 		if (g_SceneNativeParticlesEnabled && !g_ScenePreview) {
@@ -1315,14 +1340,14 @@ void SceneCacheDrawModels()
 		return;
 	std::shared_ptr<const advancedfx::SceneCache::Frame> view;
 	unsigned long long epoch;
-    bool modulation=false;
+    bool modulation=false,lighting=false;
 	{
 		// Read the frame and its invalidation epoch together. Release the lock
 		// before queueing: render-thread callbacks must never wait on UI state.
 		std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
 		view = SceneCacheView();
 		epoch = g_SceneDrawEpoch.load();
-        modulation=g_SceneReplayModulation;
+        modulation=g_SceneReplayModulation;lighting=g_SceneReplayLighting;
 	}
 	if (!view)
 		return;
@@ -1379,7 +1404,9 @@ void SceneCacheDrawModels()
             ++attempted;
             const auto *drawEntity=&entity;
             advancedfx::SceneCache::Entity unmodulated;
-            if(!modulation&&entity.HasModulation){unmodulated=entity;unmodulated.HasModulation=false;drawEntity=&unmodulated;}
+            if((!modulation&&entity.HasModulation)||(!lighting&&entity.ModelLighting)){
+                unmodulated=entity;if(!modulation)unmodulated.HasModulation=false;if(!lighting)unmodulated.ModelLighting.reset();drawEntity=&unmodulated;
+            }
             advancedfx::SceneCache::ReplayTimings modelStages;
             if (Mirv_Tf2_DrawScenePose(*drawEntity, status, owner, textured, view,&modelStages)) ++submitted;
             else {lastFailure=status;lastFailureAsset=entity.ModelPose->ModelInfo->Name;if(status.find("queue is behind")!=std::string::npos) ++queueSkips;else ++otherSkips;}
@@ -2464,12 +2491,17 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
     if(!_stricmp(op,"visuals")) {
         if(args->ArgC()==4&&parseInteger(3,value)&&(value==0||value==1)) {
             if(!_stricmp(args->ArgV(2),"modulation"))g_SceneReplayModulation=value!=0;
+            else if(!_stricmp(args->ArgV(2),"lightingCapture"))g_SceneLightingCapture=value!=0;
+            else if(!_stricmp(args->ArgV(2),"lighting"))g_SceneReplayLighting=value!=0;
             else if(!_stricmp(args->ArgV(2),"hideShadows"))g_SceneHideShadows=value!=0;
             else if(!_stricmp(args->ArgV(2),"hideDecals"))g_SceneHideDecals=value!=0;
-            else if(!_stricmp(args->ArgV(2),"batch")){g_SceneReplayModulation=g_SceneHideShadows=g_SceneHideDecals=g_SceneLegacyReplay=value!=0;g_SceneLegacyMarkers=false;}
+            else if(!_stricmp(args->ArgV(2),"batch")){g_SceneReplayModulation=g_SceneLightingCapture=g_SceneReplayLighting=g_SceneHideShadows=g_SceneHideDecals=g_SceneLegacyReplay=value!=0;g_SceneLegacyMarkers=false;}
         }
-        advancedfx::Message("mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1>; or visuals status. Modulation %d; hide live shadows %d (%s); hide live decals %d (%s).\n",int(g_SceneReplayModulation),int(g_SceneHideShadows),g_SceneSurfaceStatus[0].c_str(),int(g_SceneHideDecals),g_SceneSurfaceStatus[1].c_str());
+        advancedfx::Message("mirv_cache visuals <modulation|lightingCapture|lighting|hideShadows|hideDecals|batch> <0|1>; or visuals status. Modulation %d; hide live shadows %d (%s); hide live decals %d (%s).\n",int(g_SceneReplayModulation),int(g_SceneHideShadows),g_SceneSurfaceStatus[0].c_str(),int(g_SceneHideDecals),g_SceneSurfaceStatus[1].c_str());
+        advancedfx::Message("Model lighting capture %d, replay %d. %s\n",int(g_SceneLightingCapture),int(g_SceneReplayLighting),g_SceneLightingStatus.c_str());
         if(auto view=SceneCacheView()){
+            std::size_t lit=0,lights=0;for(const auto &e:view->Entities)if(e.ModelLighting){++lit;lights+=e.ModelLighting->Count;}
+            advancedfx::Message("Sampled historical model lighting: %zu models, %zu local descriptors.\n",lit,lights);
             std::size_t known=0,changed=0;
             for(const auto &e:view->Entities)if(e.ModelPose&&e.HasModulation){
                 ++known;
@@ -2870,7 +2902,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "<all|players|projectiles|weapons|cosmetics|other|ragdolls|gibs|buildings|props> <0|1>\n"
 		    "  mirv_cache particles <0|1|status|clear|legacy|legacyStatus> | <legacyCapture|legacyReplay|legacyMarkers|legacyAll> <0|1> | legacyAt <tick> | at <tick> | list <tick> [start [filter]] | find <tick> <filter> | prepare [tick] <collection index> | budget <MiB:64..2048> | <native|markers|appearance|styled|isolate> <0|1> - Native particle experiment.\n"
 		    "  mirv_cache surfaces <capture|shadows|decals|removed|opacity|batch> <0|1> | status\n"
-		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
+		    "  mirv_cache visuals <modulation|lightingCapture|lighting|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
 		    "  mirv_cache perf [reset|mainOnly <0|1>|cull <0|1>|actorCull <0|1>|residency <0|1>|fastWrites <0|1>|fastReads <0|1>|batchStudio <0|1>|batchQueued <0|1>|bench [full|models|report|cancel]] - CPU replay timings and failure diagnostics.\n"
             "  mirv_cache status - Detailed capture/render diagnostics.\n"
@@ -7247,6 +7279,9 @@ static void DrawSceneCacheMenu(int playhead)
 		}
         ImGui::Checkbox("Legacy dissolve diagnostic markers",&g_SceneLegacyMarkers);
         ImGui::Checkbox("Replay captured model color and alpha (experimental)",&g_SceneReplayModulation);
+        ImGui::Checkbox("Capture native model lighting (TF2 x64 experimental)",&g_SceneLightingCapture);
+        ImGui::Checkbox("Replay captured model lighting (experimental)",&g_SceneReplayLighting);
+        if(g_SceneLightingCapture||g_SceneReplayLighting)DrawOverlayHint(g_SceneLightingStatus.c_str());
         ImGui::Checkbox("Hide live shadows (temporary)",&g_SceneHideShadows);
         ImGui::Checkbox("Hide live world decals (temporary)",&g_SceneHideDecals);
         ImGui::Checkbox("Historical projected blob shadows (experimental)",&g_SceneHistoricalShadows);

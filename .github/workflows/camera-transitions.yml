@@ -30,6 +30,7 @@ on:
       - 'AfxHookSource/Tf2RenderPass.inl'
       - 'AfxHookSource/Tf2SceneSurfaces.inl'
       - 'shared/SceneCache.h'
+      - 'shared/SceneModelLighting.h'
       - 'shared/*Particle*.h'
       - 'shared/SceneSurfaceHistory.h'
       - 'tests/cinematic/**'
@@ -54,6 +55,9 @@ jobs:
       - name: Check historical surface history and identity
         if: github.ref == 'refs/heads/feature/scene-cache-2'
         run: c++ -std=c++17 -Wall -Wextra -I. tests/cinematic/test_scene_surface_history.cpp -o /tmp/scene-surface-tests && /tmp/scene-surface-tests
+      - name: Check historical model lighting values and identity
+        if: github.ref == 'refs/heads/feature/scene-cache-2'
+        run: c++ -std=c++17 -Wall -Wextra -I. tests/cinematic/scene_model_lighting_test.cpp -o /tmp/scene-lighting-tests && /tmp/scene-lighting-tests
       - name: Check bounded particle event journal and historical control points
         if: github.ref == 'refs/heads/feature/scene-cache-2'
         run: c++ -std=c++17 -Wall -Wextra -I. tests/cinematic/effects_probe_test.cpp -o /tmp/effects-probe-tests && /tmp/effects-probe-tests

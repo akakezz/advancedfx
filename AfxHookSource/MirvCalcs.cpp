@@ -34,6 +34,11 @@
 #include <fstream>
 #include <mutex>
 #include <shared/AfxDetours.h>
+#ifdef _WIN64
+#include <intrin.h>
+#endif
+
+int Mirv_Tf2_SceneRenderViewId();
 
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -10924,6 +10929,8 @@ struct SceneStudioState
 	float Ambient3[18]{}, Ambient4[24]{};
 	int AmbientSlot = 17, LightCount = 0;
     unsigned Known=0; // color 1, alpha 2, ambient 4, lights 8
+    std::uint64_t AmbientRevision=0,LightRevision=0;
+    void *AmbientOwner=nullptr,*LightOwner=nullptr;
 	float Lights[4][22]{};
 	SceneStudioState()
 	{
@@ -10938,7 +10945,8 @@ struct SceneStudioScope
 	void *Studio;
 	SceneStudioState Previous;
 	bool Active;
-	SceneStudioScope(void *studio, const SceneStudioInfo &info, bool textured,const advancedfx::SceneCache::Entity &entity)
+	SceneStudioScope(void *studio, const SceneStudioInfo &info, bool textured,const advancedfx::SceneCache::Entity &entity,
+                     const advancedfx::SceneLighting::Sample *lighting)
 		: Studio(studio), Previous(g_SceneStudioState), Active(textured && g_SceneStudioStateInstalled)
 	{
 		if (!Active) return;
@@ -10951,10 +10959,15 @@ struct SceneStudioScope
             SceneInterfaceCall<void, const float *>(Studio,27,color);
         if(!(s.Known&2)||s.Alpha!=alpha)
             SceneInterfaceCall<void,float>(Studio,28,alpha);
-        if(!(s.Known&4)||s.AmbientSlot!=17||std::memcmp(s.Ambient3,info.AmbientCube,sizeof(s.Ambient3)))
-            SceneInterfaceCall<void,const float *>(Studio,17,&info.AmbientCube[0][0]);
-        if(!(s.Known&8)||s.LightCount!=0)
-            SceneInterfaceCall<void,int,const float *>(Studio,18,0,&info.LightDescriptors[0][0]);
+        const int ambientSlot=lighting?lighting->AmbientSlot:17;
+        const float *ambient=lighting?lighting->Ambient.data():&info.AmbientCube[0][0];
+        const auto *currentAmbient=ambientSlot==16?s.Ambient4:s.Ambient3;
+        if(!(s.Known&4)||s.AmbientOwner!=Studio||s.AmbientSlot!=ambientSlot||
+           std::memcmp(currentAmbient,ambient,(ambientSlot==16?24u:18u)*sizeof(float)))
+            SceneInterfaceCall<void,const float *>(Studio,ambientSlot,ambient);
+        if(!(s.Known&8)||s.LightOwner!=Studio||s.LightCount!=info.LightCount||
+           std::memcmp(s.Lights,info.LightDescriptors,std::size_t(info.LightCount)*sizeof(s.Lights[0])))
+            SceneInterfaceCall<void,int,const float *>(Studio,18,info.LightCount,&info.LightDescriptors[0][0]);
 	}
 	~SceneStudioScope()
 	{
@@ -11940,10 +11953,19 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		std::memcpy(&families, static_cast<const unsigned char *>(info.Header) + 224, sizeof(families));
 		if (families > 0 && entity.Skin < families) info.Skin = entity.Skin;
 	}
-	// Neutral ambient is a feasibility aid, not historical lighting.
-	if (textured)
-		for (auto &face : info.AmbientCube)
-			for (float &channel : face) channel = .55f;
+    // Replay only an owned validated sample when the exact studio instance
+    // has an observed ambient/light state to restore after this submission.
+    const auto *lighting=entity.ModelLighting.get();
+    if(!textured||!g_SceneStudioStateInstalled||(g_SceneStudioState.Known&12)!=12||
+       g_SceneStudioState.AmbientOwner!=studio||g_SceneStudioState.LightOwner!=studio||!lighting||!lighting->Valid())lighting=nullptr;
+    if(textured){
+        for(unsigned face=0;face<6;++face)for(unsigned channel=0;channel<3;++channel)
+            info.AmbientCube[face][channel]=lighting?lighting->Ambient[face*(lighting->AmbientSlot==16?4:3)+channel]:.55f;
+        if(lighting){
+            info.LightCount=lighting->Count;
+            std::memcpy(info.LightDescriptors,lighting->Lights.data(),std::size_t(info.LightCount)*sizeof(info.LightDescriptors[0]));
+        }
+    }
 	void *material = textured ? nullptr : SceneCategoryMaterial(entity.Category);
 	if (material)
 	{
@@ -11965,7 +11987,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	} restore{studio, overrideMaterial, overrideType, material != nullptr};
 	const int flags = 0x04 | 0x20 | (material || textured ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
-	SceneStudioScope studioScope(studio, info, textured,entity);
+	SceneStudioScope studioScope(studio, info, textured,entity,lighting);
     std::unique_ptr<SceneStudioUse> queuedUse;
     if(batchOwner&&!batch->Immediate){
         queuedUse=std::make_unique<SceneStudioUse>(batchOwner);
@@ -11986,7 +12008,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		status = "Cached model cleanup callback could not be submitted.";
 		return false;
 	}
-	status = textured ? (studioScope.Active ? "Drawing native textured cached models (isolated neutral lighting)." :
+	status = textured ? (studioScope.Active ? (lighting?"Drawing native textured cached models (captured model lighting).":"Drawing native textured cached models (isolated neutral lighting).") :
 	         "Drawing native textured cached models (studio state hooks unavailable).") :
 	         material ? "Drawing category-colored cached models."
 	                  : "Drawing default cached wireframe; category material requires VMaterialSystem082.";
@@ -12064,18 +12086,21 @@ void __fastcall SceneStudioAlpha(void *self, SCENE_STUDIO_EDX float v)
 }
 void __fastcall SceneStudioAmbient3(void *self, SCENE_STUDIO_EDX const float *v)
 {
+    ++g_SceneStudioState.AmbientRevision;g_SceneStudioState.AmbientOwner=self;
 	if (v) { std::memcpy(g_SceneStudioState.Ambient3, v, sizeof(g_SceneStudioState.Ambient3)); g_SceneStudioState.AmbientSlot = 17;g_SceneStudioState.Known|=4; }
     else g_SceneStudioState.Known&=~4u;
 	g_SceneOriginalAmbient3(self, SCENE_STUDIO_PASS v);
 }
 void __fastcall SceneStudioAmbient4(void *self, SCENE_STUDIO_EDX const float *v)
 {
+    ++g_SceneStudioState.AmbientRevision;g_SceneStudioState.AmbientOwner=self;
 	if (v) { std::memcpy(g_SceneStudioState.Ambient4, v, sizeof(g_SceneStudioState.Ambient4)); g_SceneStudioState.AmbientSlot = 16;g_SceneStudioState.Known|=4; }
     else g_SceneStudioState.Known&=~4u;
 	g_SceneOriginalAmbient4(self, SCENE_STUDIO_PASS v);
 }
 void __fastcall SceneStudioLights(void *self, SCENE_STUDIO_EDX int count, const float *v)
 {
+    ++g_SceneStudioState.LightRevision;g_SceneStudioState.LightOwner=self;
 	if (count >= 0 && count <= 4 && (!count || v))
 	{
 		g_SceneStudioState.LightCount = count;g_SceneStudioState.Known|=8;
@@ -12086,6 +12111,109 @@ void __fastcall SceneStudioLights(void *self, SCENE_STUDIO_EDX int count, const 
 }
 #undef SCENE_STUDIO_EDX
 #undef SCENE_STUDIO_PASS
+#ifdef _WIN64
+// The exact native lighting setup precedes the ordinary engine studio draw.
+// Observe fresh setter calls within that helper, not stale state left by a
+// previous model, static vertex-lighting data, or any additional render pass.
+using SceneLightingFn=void(*)(void*,const void*,const float*,void*,bool,bool,bool*,SceneStudioInfo*,const void*,int);
+static SceneLightingFn g_SceneOriginalLighting=nullptr;
+static std::uintptr_t g_SceneLightingBase=0;
+static DWORD g_SceneLightingThread=0;
+static thread_local bool g_SceneLightingArmed=false;
+static thread_local int g_SceneLightingFrame=-1;
+struct SceneLightingObservation {
+    advancedfx::SceneLighting::Key Key;
+    advancedfx::SceneLighting::Sample Value;
+    bool Ambiguous=false;
+};
+static thread_local std::map<const void*,SceneLightingObservation> g_SceneLightingObservations;
+template<class T> static bool SceneLightingRead(std::uintptr_t address,T &out){
+    SIZE_T got=0;return address>=0x10000&&ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(address),&out,sizeof(out),&got)&&got==sizeof(out);
+}
+static bool SceneLightingMatch(std::uintptr_t base,std::uintptr_t rva,std::initializer_list<unsigned char> pattern){
+    unsigned char actual[32]{};SIZE_T got=0;
+    return pattern.size()<=sizeof(actual)&&ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(base+rva),actual,pattern.size(),&got)&&
+        got==pattern.size()&&std::equal(pattern.begin(),pattern.end(),actual);
+}
+static void SceneObserveLighting(void *self,const void *state,const float *position,void *cache,bool a,bool b,bool *c,SceneStudioInfo *info,const void *model,int flags){
+    const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    const bool observe=g_SceneLightingArmed&&GetCurrentThreadId()==g_SceneLightingThread&&caller==g_SceneLightingBase+0xee463;
+    const auto ambientRevision=g_SceneStudioState.AmbientRevision,lightRevision=g_SceneStudioState.LightRevision;
+    g_SceneOriginalLighting(self,state,position,cache,a,b,c,info,model,flags);
+    if(!observe||!g_SceneLightingArmed||Mirv_Tf2_SceneRenderViewId()!=0||!state||!model||!info)return;
+    const auto &studio=g_SceneStudioState;
+    if(studio.AmbientRevision==ambientRevision||studio.LightRevision==lightRevision||(studio.Known&12)!=12)return;
+    void *nativeStudio=nullptr;unsigned char staticLighting=1;
+    if(!SceneLightingRead(g_SceneLightingBase+0x7aace8,nativeStudio)||!nativeStudio||
+       studio.AmbientOwner!=nativeStudio||studio.LightOwner!=nativeStudio||
+       !SceneLightingRead(reinterpret_cast<std::uintptr_t>(info)+0x40,staticLighting)||staticLighting)return;
+    std::array<unsigned char,0x58> modelBytes{};
+    std::array<std::uintptr_t,3> drawState{};
+    if(!SceneLightingRead(reinterpret_cast<std::uintptr_t>(model),modelBytes)||
+       !SceneLightingRead(reinterpret_cast<std::uintptr_t>(state),drawState)||!drawState[0])return;
+    const void *renderable=nullptr;
+    std::memcpy(&renderable,modelBytes.data()+0x18,sizeof(renderable));
+    if(!renderable||reinterpret_cast<std::uintptr_t>(renderable)!=drawState[2])return;
+    std::array<std::uint32_t,3> header{};
+    if(!SceneLightingRead(drawState[0],header)||header[0]!=0x54534449)return; // IDST
+    SceneLightingObservation row;row.Key.Checksum=header[2];
+    std::memcpy(row.Key.Origin.data(),modelBytes.data(),12);
+    std::memcpy(&row.Key.Skin,modelBytes.data()+0x48,4);std::memcpy(&row.Key.Body,modelBytes.data()+0x4c,4);
+    if(row.Key.Skin<0||row.Key.Body<0||!row.Key.Matches(row.Key.Checksum,row.Key.Skin,row.Key.Body,row.Key.Origin.data())||
+       !advancedfx::SceneLighting::Sample::Capture(studio.AmbientSlot,studio.AmbientSlot==16?studio.Ambient4:studio.Ambient3,
+           studio.LightCount,studio.Lights,row.Value))return;
+    auto found=g_SceneLightingObservations.find(renderable);
+    if(found!=g_SceneLightingObservations.end()){
+        if(!found->second.Key.Matches(row.Key.Checksum,row.Key.Skin,row.Key.Body,row.Key.Origin.data())||
+           !(found->second.Value==row.Value))found->second.Ambiguous=true;
+    }else if(g_SceneLightingObservations.size()<8192)g_SceneLightingObservations.emplace(renderable,std::move(row));
+}
+static bool SceneInstallLightingObservation(){
+    const auto base=reinterpret_cast<std::uintptr_t>(GetModuleHandleA("engine.dll"));
+    if(g_SceneOriginalLighting)return base==g_SceneLightingBase&&GetCurrentThreadId()==g_SceneLightingThread;
+    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
+    if(g_SourceSdkVer!=SourceSdkVer_TF2||!g_SceneStudioStateInstalled||!base||
+       !SceneLightingRead(base,dos)||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+       !SceneLightingRead(base+dos.e_lfanew,nt)||nt.Signature!=IMAGE_NT_SIGNATURE||
+       nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||nt.FileHeader.TimeDateStamp!=0x6ac41507||nt.OptionalHeader.SizeOfImage!=0x822000||
+       !SceneLightingMatch(base,0xf2dd0,{0x48,0x8b,0xc4,0x4c,0x89,0x48,0x20,0x48,0x89,0x50,0x10,0x48,0x89,0x48,0x08})||
+       !SceneLightingMatch(base,0xee45e,{0xe8,0x6d,0x49,0,0,0x48,0x8b,0x0d,0x7e,0xc8,0x6b,0})||
+       !SceneLightingMatch(base,0xee5ac,{0x41,0xff,0x92,0xe8,0,0,0})||
+       !SceneLightingMatch(base,0xf2eb8,{0x48,0x8b,0xb5,0x08,0x02,0,0,0x88,0x46,0x40,0x44,0x89,0xb6,0x8c,0})||
+       !SceneLightingMatch(base,0xf20ae,{0x48,0x6b,0xd8,0x58,0x44,0x0f,0x28,0xde})||
+       !SceneLightingMatch(base,0xf2460,{0x48,0x8b,0x01,0xff,0x90,0x90,0,0,0}))return false;
+    g_SceneOriginalLighting=reinterpret_cast<SceneLightingFn>(base+0xf2dd0);
+    if(DetourTransactionBegin()!=NO_ERROR){g_SceneOriginalLighting=nullptr;return false;}
+    LONG error=DetourUpdateThread(GetCurrentThread());
+    if(error==NO_ERROR)error=DetourAttach(reinterpret_cast<PVOID*>(&g_SceneOriginalLighting),reinterpret_cast<PVOID>(SceneObserveLighting));
+    if(error!=NO_ERROR){DetourTransactionAbort();g_SceneOriginalLighting=nullptr;return false;}
+    if(DetourTransactionCommit()!=NO_ERROR){g_SceneOriginalLighting=nullptr;return false;}
+    g_SceneLightingBase=base;g_SceneLightingThread=GetCurrentThreadId();return true;
+}
+#endif
+}
+bool Mirv_Tf2_BeginSceneLightingAudit(bool enabled){
+#ifdef _WIN64
+    g_SceneLightingArmed=false;g_SceneLightingFrame=-1;g_SceneLightingObservations.clear();
+    if(enabled&&SceneInstallLightingObservation()){g_SceneLightingArmed=true;return true;}
+#endif
+    return false;
+}
+void Mirv_Tf2_FinishSceneLightingAudit(int frame){
+#ifdef _WIN64
+    g_SceneLightingFrame=g_SceneLightingArmed?frame:-1;g_SceneLightingArmed=false;
+#endif
+}
+bool Mirv_Tf2_CaptureSceneLighting(int frame,const void *renderable,advancedfx::SceneCache::Entity &entity){
+#ifdef _WIN64
+    if(frame<0||g_SceneLightingFrame!=frame||!entity.ModelPose||!entity.ModelPose->ModelInfo)return false;
+    auto found=g_SceneLightingObservations.find(renderable);
+    if(found==g_SceneLightingObservations.end()||found->second.Ambiguous||
+       !found->second.Key.Matches(entity.ModelPose->ModelInfo->Checksum,entity.Skin,entity.ModelPose->Body,entity.Origin))return false;
+    entity.ModelLighting=std::make_shared<const advancedfx::SceneLighting::Sample>(found->second.Value);return true;
+#else
+    return false;
+#endif
 }
 void Mirv_Tf2_InstallSceneStudioState(void *studio)
 {

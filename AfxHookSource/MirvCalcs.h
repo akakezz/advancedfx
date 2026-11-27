@@ -506,6 +506,10 @@ struct MirvTf2SceneEntity
 void Mirv_Tf2_CollectSceneEntities(bool projectiles, bool weapons, bool cosmetics, bool ragdolls, bool gibs, bool buildings, bool props,
 	std::vector<MirvTf2SceneEntity> &out, bool generic = false);
 void Mirv_Tf2_InstallSceneStudioState(void *studio);
+// Same ordinary view, engine-thread, transient observation; only value data enters history.
+bool Mirv_Tf2_BeginSceneLightingAudit(bool enabled);
+void Mirv_Tf2_FinishSceneLightingAudit(int frame);
+bool Mirv_Tf2_CaptureSceneLighting(int frame,const void *renderable,advancedfx::SceneCache::Entity &entity);
 void Mirv_Tf2_ReleaseSceneMaterials(); // Engine-thread level shutdown; queued references remain pinned.
 void Mirv_Tf2_SceneAssetResidency(bool enabled); // Engine thread only.
 void Mirv_Tf2_ClearSceneResidentAssets();

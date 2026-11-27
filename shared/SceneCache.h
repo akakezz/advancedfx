@@ -1,6 +1,7 @@
 #pragma once
 #include "CameraRig.h"
 #include "AfxMath.h"
+#include "SceneModelLighting.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -258,6 +259,7 @@ public:
 		SkinSource SkinFrom = SkinSource::Unknown;
         std::array<float,4> Modulation{1,1,1,1};
         bool HasModulation=false;
+        std::shared_ptr<const SceneLighting::Sample> ModelLighting; // optional observed native model lighting
 	};
 	static std::array<std::array<double, 3>, 8> BoundsCorners(const Entity &entity)
 	{
@@ -574,8 +576,10 @@ public:
 			if (!camera.Pose.Valid() || (camera.HasBasePose && !camera.BasePose.Valid()) ||
 				!camera.Definition)
 				return false;
-		for (const auto &entity : frame.Entities)
+		for (auto &entity : frame.Entities)
 		{
+            // Missing/invalid lighting is not a reason to lose a valid pose.
+            if(entity.ModelLighting&&(!entity.ModelPose||!entity.ModelLighting->Valid()))entity.ModelLighting.reset();
 			if (!entity.Identity || entity.Category < 0 || entity.Category >= CategoryCount ||
 			    (entity.ModelPose && !ValidPose(*entity.ModelPose)))
 				return false;
@@ -590,15 +594,15 @@ public:
 		for (size_t i = 1; i < frame.Entities.size(); ++i)
 			if (frame.Entities[i - 1].Identity == frame.Entities[i].Identity)
 				return false;
-		// A backward seek starts a new observed interval. Never join two takes.
-		if (!m_Frames.empty() && frame.DemoTime < m_Frames.back().DemoTime)
-			Clear();
+		// A valid backward sample starts a new observed interval. Reject an
+        // oversized one before clearing the existing take.
+        const bool backward=!m_Frames.empty()&&frame.DemoTime<m_Frames.back().DemoTime;
 		if (!m_Frames.empty() && frame.DemoTime == m_Frames.back().DemoTime)
 			return false;
 		// Share only exactly equal recorded poses from the same stable entity/owner.
 		// No quantization: small animation changes must remain observable.
 		size_t reused = 0;
-		if (!m_Frames.empty())
+		if (!backward && !m_Frames.empty())
 			for (auto &entity : frame.Entities)
 			{
 				const auto &last = m_Frames.back().Entities;
@@ -622,6 +626,7 @@ public:
 			whole += PoseCost(*pose);
 		if (whole > m_Limit)
 			return false; // A single complete frame must fit.
+        if(backward)Clear();
 		const size_t before = m_Bytes;
 		for (const auto *pose : poses)
 		{
@@ -714,6 +719,9 @@ public:
             entity.HasModulation=f<.5?a.HasModulation:b->HasModulation;
             entity.Modulation=f<.5?a.Modulation:b->Modulation;
 			entity.ModelPose = BlendPose(a.ModelPose, b->ModelPose, f, smoothAnimation);
+            // Lighting is sampled nearest, not interpolated across different
+            // light identities; never borrow it across a missing/incompatible pose.
+            entity.ModelLighting=entity.ModelPose?(f<.5?a.ModelLighting:b->ModelLighting):nullptr;
 			for (int i = 0; i < 3; ++i)
 			{
 				entity.Origin[i] += float(f * (b->Origin[i] - a.Origin[i]));
@@ -919,8 +927,11 @@ private:
 	}
 	static size_t Cost(const Frame &frame)
 	{
-		return sizeof(Frame) + frame.Entities.capacity() * sizeof(Entity) +
+		size_t bytes=sizeof(Frame) + frame.Entities.capacity() * sizeof(Entity) +
 			   frame.Cameras.capacity() * sizeof(CameraSample);
+        // Conservative per-entity charge, even when callers share a sample.
+        for(const auto &entity:frame.Entities)if(entity.ModelLighting)bytes+=sizeof(SceneLighting::Sample);
+        return bytes;
 	}
 	void Trim()
 	{

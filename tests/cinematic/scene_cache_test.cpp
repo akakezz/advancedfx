@@ -67,6 +67,23 @@ int main()
  Cache::Frame retained=bounded.Frames().front();bounded.Clear();assert(retained.Entities[0].ModelPose->Bones[1][3]==10);
  Cache tiny(cost-1);assert(!tiny.Append(p)&&tiny.Count()==0);
 
+ // Optional historical lighting is owned, budgeted and sampled nearest.
+ using Light=advancedfx::SceneLighting::Sample;
+ auto lightA=std::make_shared<Light>();lightA->AmbientSlot=17;lightA->Ambient.fill(.25f);
+ auto lightB=std::make_shared<Light>(*lightA);lightB->Ambient.fill(.75f);
+ Cache lighting;Cache::Frame lit=p;lit.DemoTime=10;lit.ClientTime=10;lit.Entities[0].ModelPose=pose;lit.Entities[0].ModelLighting=lightA;
+ assert(lighting.Append(lit));auto litBytes=lighting.Bytes();assert(litBytes>=cost+sizeof(Light));
+ lit.DemoTime=10.05;lit.ClientTime=10.05;lit.Entities[0].ModelLighting=lightB;assert(lighting.Append(lit));
+ assert(lighting.Sample(10.01,out)&&out.Entities[0].ModelLighting==lightA);
+ assert(lighting.Sample(10.04,out)&&out.Entities[0].ModelLighting==lightB);
+ lit.DemoTime=10.1;lit.ClientTime=10.1;lit.Entities[0].ModelPose=changedPose;assert(lighting.Append(lit));
+ assert(lighting.Sample(10.075,out)&&!out.Entities[0].ModelLighting&&!out.Entities[0].ModelPose);
+ auto malformed=std::make_shared<Light>(*lightA);malformed->Ambient[0]=NAN;lit.DemoTime=10.15;lit.Entities[0].ModelLighting=malformed;
+ assert(lighting.Append(lit)&&!lighting.Frames().back().Entities[0].ModelLighting);
+ Cache backwardBudget(litBytes);lit.DemoTime=10;lit.Entities[0].ModelPose=pose;lit.Entities[0].ModelLighting=lightA;assert(backwardBudget.Append(lit));
+ lit.DemoTime=1;lit.Entities[0].Identity=1;auto extra=lit.Entities[0];extra.Identity=2;lit.Entities.push_back(extra);
+ assert(!backwardBudget.Append(lit)&&backwardBudget.Count()==1&&backwardBudget.Frames().front().DemoTime==10);
+
  // Exact pose reuse charges shared allocations once and never crosses ownership/model boundaries.
  Cache reuse;Cache::Frame repeated;p.DemoTime=0;p.ClientTime=0;p.Entities[0].ModelPose=pose;p.Entities[0].OwnerIdentity=0;assert(reuse.Append(p));auto firstPose=reuse.Frames().front().Entities[0].ModelPose;size_t firstBytes=reuse.Bytes();
  auto copy = std::make_shared<Cache::Pose>(*pose);
