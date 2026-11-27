@@ -12,6 +12,7 @@
 #include <utility>
 #include <cstring>
 #include <set>
+#include <limits>
 
 namespace advancedfx { namespace SceneSurfaces {
 // Exact engine's ordinary clipped decal vertex: xyz, unused word, UV,
@@ -69,6 +70,60 @@ struct Decal {
 // geometry was actually gated in this dispatcher, or already invisible.
 inline bool ShouldSubmitDetached(bool surviving,bool liveVisible,bool gated){
     return !surviving||!liveVisible||gated;
+}
+// Read-only adapter for the exact engine's opaque-world render-list
+// buckets. Only current-view receiver indices are returned, never pointers.
+// A failed or incomplete walk cannot authorize detached submissions.
+template<class Read>
+bool ResolveWorldReceivers(std::uint64_t list,int group,std::uint64_t surfaces,std::uint32_t surfaceCount,
+                           const std::set<std::uint32_t> &wanted,std::set<std::uint32_t> &visible,Read read){
+    visible.clear();
+    if(group<0||group>=3||!list||!surfaces||!surfaceCount||surfaceCount>1048576)return false;
+    constexpr auto Max=(std::numeric_limits<std::uint64_t>::max)();
+    if(list>Max-0x200||surfaces>Max-std::uint64_t(surfaceCount)*64)return false;
+    struct VectorHeader {
+        std::uint64_t Data=0;
+        std::int32_t Capacity=0,Grow=0,Count=0;
+    };
+    auto header=[&](std::uint64_t address,VectorHeader &h){
+        return read(address,&h.Data,8)&&read(address+8,&h.Capacity,4)&&read(address+16,&h.Count,4)&&
+            h.Capacity>=0&&h.Capacity<=32768&&h.Count>=0&&h.Count<=h.Capacity&&(!h.Count||h.Data);
+    };
+    auto equal=[](const VectorHeader &a,const VectorHeader &b){return a.Data==b.Data&&a.Capacity==b.Capacity&&a.Count==b.Count;};
+    const auto poolAddress=list+0x18,groupAddress=list+0x78+std::uint64_t(group)*0x20;
+    VectorHeader pool,buckets;
+    if(!header(poolAddress,pool)||!header(groupAddress,buckets))return false;
+    if(wanted.empty()||!buckets.Count)return true;
+    if(!pool.Count||pool.Data>Max-std::uint64_t(pool.Count)*128||buckets.Data>Max-std::uint64_t(buckets.Count)*8)return false;
+    std::vector<std::uint64_t> heads(buckets.Count);
+    // One bulk copy per contiguous array. Only linked, valid entries in the
+    // temporary pool copy are interpreted, and the copy is never retained.
+    using Chunk=std::array<unsigned char,128>;
+    std::vector<Chunk> chunks(pool.Count);
+    if(!read(buckets.Data,heads.data(),heads.size()*8)||!read(pool.Data,chunks.data(),chunks.size()*sizeof(Chunk)))return false;
+    std::vector<unsigned char> visited(pool.Count);
+    std::set<std::uint32_t> result;
+    for(auto head:heads){
+        std::uint16_t next=0xffff;
+        if(!head||!read(head,&next,sizeof(next)))return false;
+        while(next!=0xffff){
+            if(next>=chunks.size()||visited[next])return false;
+            visited[next]=1;
+            const auto &chunk=chunks[next];
+            std::uint16_t count=0;
+            std::memcpy(&next,chunk.data(),2);std::memcpy(&count,chunk.data()+2,2);
+            if(count>15)return false;
+            for(unsigned i=0;i<count;++i){
+                std::uint64_t receiver=0;std::memcpy(&receiver,chunk.data()+8+i*8,8);
+                if(receiver<surfaces||(receiver-surfaces)%64||(receiver-surfaces)/64>=surfaceCount)return false;
+                const auto index=static_cast<std::uint32_t>((receiver-surfaces)/64);
+                if(wanted.count(index))result.insert(index);
+            }
+        }
+    }
+    VectorHeader afterPool,afterBuckets;
+    if(!header(poolAddress,afterPool)||!header(groupAddress,afterBuckets)||!equal(pool,afterPool)||!equal(buckets,afterBuckets))return false;
+    visible.swap(result);return true;
 }
 // The projected-shadow atlas itself is not historical. Only a verified
 // simple material pair can use the original texture rectangle directly.

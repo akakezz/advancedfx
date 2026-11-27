@@ -406,3 +406,7 @@ Phase 20C portable CI passed, and its x64 build passed; confirmed 1f5ac2ae remai
 ### Phase 21B — lighting integration and storage
 
 Fixed the portable integration fixtures for the new audit API and studio ownership tracking. Added native-adapter fixture coverage for historical float4 ambient and local light submission in immediate and queued mock modes, exact restoration, and neutral fallback when previous light state is unknown. Equal consecutive lighting samples share immutable storage for matching entity/model identity, charged once across retained frames and released with the last reference. Preserve observer-unavailable status rather than replacing it with misleading zero coverage. No claim of in-game verification.
+
+### Phase 22A — current-world receiver gating for detached decal replay
+
+Exact ordinary world draw 0xe7010 scopes its current render list to its own nested dispatcher. Traverse current group opaque receiver buckets read-only; only submit detached polygons (including surviving opacity replacements) whose receiver is present. Unknown or malformed list disables detached draws and replacement gates for that group, not native surviving visibility. No change to retained geometry or live decal lists. Bounded temporary reads and diagnostics for receiver culled/unknown counts. This is a conservative ordinary opaque receiver check, not full visibility equivalence for all surface classes. Portable fixture covers malformed/cyclic list, out-of-range receiver, empty group. Exact Windows/native validation pending.

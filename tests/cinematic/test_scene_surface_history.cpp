@@ -78,6 +78,25 @@ int main(){
     geom.Decals=std::make_shared<const std::vector<Decal>>(std::vector<Decal>{a});
     assert(ghSmall.Append(geom)&&ghSmall.Frames.size()==1&&ghSmall.Bytes==geoBytes);
     gh.Clear();assert(!gh.Bytes);
+    // Exact ordinary-world receiver list: two linked 128-byte chunks.
+    // The synthetic reader refuses all reads outside the fixture.
+    std::vector<unsigned char> mem(4096);
+    auto put=[&](std::uint64_t addr,const auto &value){assert(addr+sizeof(value)<=mem.size());std::memcpy(mem.data()+addr,&value,sizeof(value));};
+    const std::uint64_t list=0x100,pool=0x500,buckets=0x400,head=0x450,receivers=0x10000;
+    put(list+0x18,pool);put(list+0x20,std::int32_t(2));put(list+0x28,std::int32_t(2));
+    put(list+0x78,buckets);put(list+0x80,std::int32_t(1));put(list+0x88,std::int32_t(1));
+    put(buckets,head);put(head,std::uint16_t(0));
+    put(pool,std::uint16_t(1));put(pool+2,std::uint16_t(2));put(pool+8,receivers+64);put(pool+16,receivers+128);
+    put(pool+128,std::uint16_t(0xffff));put(pool+130,std::uint16_t(1));put(pool+136,receivers+256);
+    auto read=[&](std::uint64_t addr,void *out,std::size_t n){if(addr>mem.size()||n>mem.size()-addr)return false;std::memcpy(out,mem.data()+addr,n);return true;};
+    std::set<std::uint32_t> wanted{1,3,4},visible;
+    assert(ResolveWorldReceivers(list,0,receivers,8,wanted,visible,read)&&(visible==std::set<std::uint32_t>{1,4}));
+    put(pool+128,std::uint16_t(0));assert(!ResolveWorldReceivers(list,0,receivers,8,wanted,visible,read)&&visible.empty());
+    put(pool+128,std::uint16_t(0xffff));put(pool+130,std::uint16_t(16));assert(!ResolveWorldReceivers(list,0,receivers,8,wanted,visible,read));
+    put(pool+130,std::uint16_t(1));put(pool+136,receivers+257);assert(!ResolveWorldReceivers(list,0,receivers,8,wanted,visible,read));
+    put(pool+136,receivers+256);put(head,std::uint16_t(2));assert(!ResolveWorldReceivers(list,0,receivers,8,wanted,visible,read));
+    put(head,std::uint16_t(0));put(list+0x88,std::int32_t(0));assert(ResolveWorldReceivers(list,0,receivers,8,wanted,visible,read)&&visible.empty());
+    assert(!ResolveWorldReceivers(list,3,receivers,8,wanted,visible,read));
     Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
     sh.Texture=ShadowTexture::Simple;sh.UV={.25f,.25f,.5f,.5f};
     assert(sh.HasSimpleTexture()&&sh.ReplayTextureRect()==sh.UV);
