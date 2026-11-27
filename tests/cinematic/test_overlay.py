@@ -48,7 +48,7 @@ bool Mirv_Tf2_SceneMainProjection(float (&matrix)[4][4]){return false;}
 bool sceneParticleIsolationReady=true;bool Mirv_Tf2_ParticleIsolationReady(){return sceneParticleIsolationReady;}
 bool Mirv_Tf2_SceneStationaryReady(){return true;}
 float benchQueueMode=0;bool Mirv_Tf2_SceneDrawVisibility(const char*,float &v,bool write){if(write)benchQueueMode=v;else v=benchQueueMode;return true;}
-advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){advancedfx::SceneSurfaces::Frame f;f.Tick=tick;return f;}void Mirv_Tf2_ResetSurfaces(){}void Mirv_Tf2_SetSurfaceObservation(bool){}unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame&,unsigned,std::string&){return 0;}std::string Mirv_Tf2_EndSurfaceReplay(){return {};}
+advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){advancedfx::SceneSurfaces::Frame f;f.Tick=tick;return f;}void Mirv_Tf2_ResetSurfaces(){}void Mirv_Tf2_SetSurfaceObservation(bool,bool){}unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame&,unsigned,std::string&){return 0;}std::string Mirv_Tf2_EndSurfaceReplay(){return {};}
 #include "shared/PlayerRepair.h"
 void MirvFix_PlayerRepairNewDemo(const char*);
 void MirvFix_PlayerAngleTraceEnd();
