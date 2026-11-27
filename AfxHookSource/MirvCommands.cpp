@@ -309,6 +309,32 @@ std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *
 #endif
 }
 
+// The same exact-build view anchors used by native particle replay.
+// Do not infer view identity from callback order or engine frame count.
+int Mirv_Tf2_SceneRenderViewId()
+{
+#ifdef _WIN64
+    if(g_SourceSdkVer!=SourceSdkVer_TF2)return -1;
+    const auto module=GetModuleHandleA("client.dll");
+    if(!module)return -1;
+    const auto base=reinterpret_cast<std::uintptr_t>(module);
+    auto read=[](std::uintptr_t a,void *out,std::size_t n){
+        SIZE_T got=0;return ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(a),out,n,&got)&&got==n;
+    };
+    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
+    if(!read(base,&dos,sizeof(dos))||dos.e_magic!=IMAGE_DOS_SIGNATURE||dos.e_lfanew<=0||dos.e_lfanew>0x1000||
+       !read(base+dos.e_lfanew,&nt,sizeof(nt))||nt.Signature!=IMAGE_NT_SIGNATURE||
+       nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64||nt.FileHeader.TimeDateStamp!=0x6ad26f17||
+       nt.OptionalHeader.SizeOfImage!=0x133a000)return -1;
+    const unsigned char anchor[]={0x89,0x2d,0x94,0xae,0xc9,0x00};
+    unsigned char actual[sizeof(anchor)]{};
+    if(!read(base+0x34c926,actual,sizeof(actual))||!std::equal(std::begin(anchor),std::end(anchor),actual))return -1;
+    int view=-1;
+    return read(base+0xfe77c0,&view,sizeof(view))&&view>=0&&view<=16?view:-1;
+#else
+    return -1;
+#endif
+}
 // Isolation is an opt-in ordinary-view experiment. Do not change the cvar
 // unless the existing native replay path is eligible on the verified build.
 bool Mirv_Tf2_ParticleIsolationReady()

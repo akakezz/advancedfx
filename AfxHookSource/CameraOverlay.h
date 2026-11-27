@@ -18,6 +18,7 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame);
 // Engine-thread preflight and registered TF2 particle visibility cvar access.
 bool Mirv_Tf2_ParticleIsolationReady();
+int Mirv_Tf2_SceneRenderViewId(); // -1 when the exact native view ABI is unverified
 bool Mirv_Tf2_LiveParticleVisibility(float &value, bool write);
 bool Mirv_Tf2_SceneDrawVisibility(const char *name,float &value,bool write);
 advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick);

@@ -110,10 +110,15 @@ struct ScenePerfStat {
 struct ScenePerfCounters {
     ScenePerfStat Sample,ModelDraw,ParticleAcquire,ParticleDraw,LegacyDraw,SurfaceBegin,SurfaceEnd,LegacyCapture,SurfaceCapture;
     unsigned long long ParticleMain=0,ParticleRejected=0,ParticleAttempts=0,LegacyRejected=0;
+    ScenePerfStat MainModelDraw,OtherModelDraw,UnknownModelDraw,MainParticleDraw;
+    unsigned long long NonMainModelSkipped=0,NonMainParticleSkipped=0;
+    int LastModelFailureTick=-1;
+    std::string LastModelFailureAsset;
     int LastParticleFailureTick=-1;
     std::string LastParticleFailure;
 };
 static ScenePerfCounters g_ScenePerf;
+static bool g_SceneMainViewOnly=false; // optional until skybox fidelity is checked
 static void SceneClearNativeParticles() {
     g_SceneNativeParticles.Clear(); g_SceneNativeParticleSamples=0;
     g_SceneDetachedTick=g_SceneDetachedIndex=-1;g_SceneDetachedStatus="Not run.";
@@ -963,6 +968,10 @@ static void SceneCacheDrawLegacyParticles()
 }
 void SceneCacheDrawParticles()
 {
+    // Both native paths already reject non-main views internally. Avoid the
+    // snapshot acquisition and expensive ABI checks on verified other views.
+    {std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+     if(g_ScenePreview&&g_SceneNativeParticleReplay&&Mirv_Tf2_SceneRenderViewId()>0){++g_ScenePerf.NonMainParticleSkipped;return;}}
     SceneCacheDrawLegacyParticles();
     // Main-view guard inside the native path. No persistent native objects,
     // and no native drawing in ordinary live demo playback.
@@ -987,6 +996,7 @@ void SceneCacheDrawParticles()
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
     g_ScenePerf.ParticleDraw.Add(begin,sample->Tick);
     g_ScenePerf.ParticleMain+=result.MainView;
+    if(result.MainView)g_ScenePerf.MainParticleDraw.Add(begin,sample->Tick);
     g_ScenePerf.ParticleAttempts+=result.Attempts;g_ScenePerf.ParticleRejected+=result.Rejected;
     if(result.Rejected||(!result.MainView&&!result.Status.empty())){
         g_ScenePerf.LastParticleFailureTick=sample->Tick;
@@ -1030,8 +1040,11 @@ void SceneCacheDrawModels()
 	const auto begin=std::chrono::steady_clock::now();
     std::string status = "No cached model could be submitted.";
 	const bool textured = SceneCacheReplayActive();
+    const int nativeView=textured?Mirv_Tf2_SceneRenderViewId():-1;
+    {std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
+     if(g_SceneMainViewOnly&&nativeView>0){++g_ScenePerf.NonMainModelSkipped;return;}}
 	unsigned submitted = 0, attempted = 0, queueSkips=0, otherSkips=0;
-    std::string lastFailure;
+    std::string lastFailure,lastFailureAsset;
 	for (const auto &entity : view->Entities)
 	{
 		if (!g_SceneDrawModels.load() || !SceneCanDrawModels() || epoch != g_SceneDrawEpoch.load())
@@ -1048,12 +1061,15 @@ void SceneCacheDrawModels()
 			++attempted;
 			auto drawEntity=entity; if(!modulation)drawEntity.HasModulation=false;
 			if (Mirv_Tf2_DrawScenePose(drawEntity, status, owner, textured, view)) ++submitted;
-            else {lastFailure=status;if(status.find("queue is behind")!=std::string::npos) ++queueSkips;else ++otherSkips;}
+            else {lastFailure=status;lastFailureAsset=entity.ModelPose->ModelInfo->Name;if(status.find("queue is behind")!=std::string::npos) ++queueSkips;else ++otherSkips;}
 		}
 	}
 	{
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
-        g_ScenePerf.ModelDraw.Add(begin,int(std::floor(view->DemoTime/SceneTickInterval()+1e-9)));
+        const int tick=int(std::floor(view->DemoTime/SceneTickInterval()+1e-9));
+        g_ScenePerf.ModelDraw.Add(begin,tick);
+        (nativeView==0?g_ScenePerf.MainModelDraw:nativeView>0?g_ScenePerf.OtherModelDraw:g_ScenePerf.UnknownModelDraw).Add(begin,tick);
+        if(!lastFailure.empty()){g_ScenePerf.LastModelFailureTick=tick;g_ScenePerf.LastModelFailureAsset=lastFailureAsset;}
         ++g_SceneReplayCallbacks;g_SceneReplayAttempted+=attempted;g_SceneReplaySubmitted+=submitted;
         g_SceneReplayQueueSkips+=queueSkips;g_SceneReplayOtherSkips+=otherSkips;
         if(!lastFailure.empty()) g_SceneReplayLastFailure=lastFailure;
@@ -1992,10 +2008,14 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 	bool ok = false;
     if(!_stricmp(op,"perf")){
         if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"reset"))g_ScenePerf={};
-        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset]\n");return;}
+        else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"mainOnly")&&parseInteger(3,value)&&(value==0||value==1))g_SceneMainViewOnly=value!=0;
+        else if(args->ArgC()!=2){advancedfx::Message("mirv_cache perf [reset|mainOnly <0|1>]\n");return;}
         advancedfx::Message("Scene cache CPU timing (not GPU completion), cursor %.3f ticks; capture %d, preview %d.\n",g_SceneCursor/SceneTickInterval(),int(g_SceneRecord),int(g_ScenePreview));
         g_ScenePerf.Sample.Print("Historical model sampling");
         g_ScenePerf.ModelDraw.Print("Studio replay submission");
+        g_ScenePerf.MainModelDraw.Print("Studio main view");g_ScenePerf.OtherModelDraw.Print("Studio other views");g_ScenePerf.UnknownModelDraw.Print("Studio unverified view");
+        g_ScenePerf.MainParticleDraw.Print("Native particle main view");
+        advancedfx::Message("Main-only studio %d; verified non-main skips: studio %llu, particles %llu. Last studio failure tick %d, asset %s.\n",int(g_SceneMainViewOnly),g_ScenePerf.NonMainModelSkipped,g_ScenePerf.NonMainParticleSkipped,g_ScenePerf.LastModelFailureTick,g_ScenePerf.LastModelFailureAsset.empty()?"none":g_ScenePerf.LastModelFailureAsset.c_str());
         g_ScenePerf.ParticleAcquire.Print("Particle snapshot lookup/decode");
         g_ScenePerf.ParticleDraw.Print("Native particle replay (all eligible callbacks)");
         g_ScenePerf.LegacyDraw.Print("Legacy replay");
@@ -2436,7 +2456,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
 		    "  mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n"
 		    "  mirv_cache visuals <modulation|hideShadows|hideDecals|batch> <0|1> | status\n"
 		    "  mirv_cache effects <0|1|status|clear> | at <tick> - Particle event probe (no visual replay).\n"
-		    "  mirv_cache perf [reset] - CPU replay timings and failure diagnostics.\n"
+		    "  mirv_cache perf [reset|mainOnly <0|1>] - CPU replay timings and failure diagnostics.\n"
             "  mirv_cache status - Detailed capture/render diagnostics.\n"
 		    "Cached navigation: Right Ctrl + arrows / Home / End.\n");
 		return;

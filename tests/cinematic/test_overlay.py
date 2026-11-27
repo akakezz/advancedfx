@@ -42,6 +42,7 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
 std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *snapshot,bool){if(snapshot)snapshot->Complete=true;return "legacy fixture";}
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &){return {}; }
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &){return {}; }
+int sceneNativeView=-1;int Mirv_Tf2_SceneRenderViewId(){return sceneNativeView;}
 bool sceneParticleIsolationReady=true;bool Mirv_Tf2_ParticleIsolationReady(){return sceneParticleIsolationReady;}
 advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){advancedfx::SceneSurfaces::Frame f;f.Tick=tick;return f;}void Mirv_Tf2_ResetSurfaces(){}void Mirv_Tf2_SetSurfaceObservation(bool){}unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame&,unsigned,std::string&){return 0;}std::string Mirv_Tf2_EndSurfaceReplay(){return {};}
 #include "shared/PlayerRepair.h"
@@ -1114,7 +1115,7 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
 
  auto renderFrame=std::make_shared<advancedfx::SceneCache::Frame>();advancedfx::SceneCache::Entity rendered;rendered.Identity=42;rendered.ModelPose=sceneTestPose;renderFrame->Entities.push_back(rendered);std::atomic_store(&g_SceneView,std::shared_ptr<const advancedfx::SceneCache::Frame>(renderFrame));
  sceneQueueDeferred=true;SceneCacheDrawModels();check(scenePoseDraws==1&&sceneQueued.empty()&&sceneLastDrawn==sceneTestPose,"Studio front-end submission runs on the engine caller, not a render-worker functor");
- check(g_ScenePerf.ModelDraw.Count==1,"Studio replay records CPU timing");sceneCommand({"mirv_cache","perf"});sceneCommand({"mirv_cache","perf","reset"});check(g_ScenePerf.ModelDraw.Count==0,"Performance reset clears timing counters");
+ check(g_ScenePerf.ModelDraw.Count==1,"Studio replay records CPU timing");sceneCommand({"mirv_cache","perf"});sceneCommand({"mirv_cache","perf","reset"});check(g_ScenePerf.ModelDraw.Count==0,"Performance reset clears timing counters");sceneCommand({"mirv_cache","perf","mainOnly","1"});check(g_SceneMainViewOnly,"Main-only replay is opt-in");sceneCommand({"mirv_cache","perf","mainOnly","0"});check(!g_SceneMainViewOnly,"Main-only replay is reversible");
  sceneCommand({"mirv_cache","clear"});SceneCacheDrawModels();check(scenePoseDraws==1,"Clearing history prevents further model submissions");
  sceneCommand({"mirv_cache","effects","1"});sceneCommand({"mirv_cache","particles","1"});check(g_SceneNativeParticlesEnabled&&g_SceneNativeParticleAppearance&&g_SceneNativeParticleReplay&&!g_SceneNativeParticleMarkers&&!g_SceneEffectsEnabled,"One particle command enables full capture and native replay");
  SceneParticlePreviewMode(2);check(g_SceneNativeParticleMarkers&&g_SceneNativeParticleStyled&&!g_SceneNativeParticleReplay,"Styled preview mode is exclusive");
