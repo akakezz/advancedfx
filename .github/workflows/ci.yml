@@ -2,7 +2,7 @@ name: Build Release
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/scene-cache-2]
   merge_group:
   pull_request:
     branches: [main]

@@ -359,3 +359,6 @@ Phase 17C queued studio fixture passed CI. Phase 17D initially failed overlay co
 Phase 17F: decal capture/live replay status now breaks down unsupported classes; reuses validated record fields for geometry gating, with unchanged hook checks. Use `mirv_cache surfaces status` at a problematic cursor. Full decal reconstruction still unimplemented; no unsupported marks hidden automatically. Corrected Phase 17A–E checkpoint passed portable CI.
 
 Phase 17G caches validation for immutable sampled poses and avoids redundant owner lookup/entity copies. No native header validation is removed. Portable CI and native runtime are separate validation steps.
+
+
+Phase 18A fixes reported missing <sstream> (Win32 build stopped before x64), enables existing Windows Release CI on this branch, and consolidates diagnostics: run `mirv_cache perf bench` once from stationary broad preview, close console, keep camera fixed. Automatic full immediate + model-only immediate + model-only queued suite, incremental unique temp report; `perf bench report` displays path/partial results, `perf bench cancel` aborts. Queue changes/restoration at engine FRAME_START; original value restored unless externally changed. `bench full` or `bench models` is a no-switch fallback. No native queued effects enabled by this diagnostic. Windows and runtime unverified.

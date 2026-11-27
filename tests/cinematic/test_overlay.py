@@ -45,6 +45,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const a
 int sceneNativeView=-1;int Mirv_Tf2_SceneRenderViewId(){return sceneNativeView;}
 bool Mirv_Tf2_SceneMainProjection(float (&matrix)[4][4]){return false;}
 bool sceneParticleIsolationReady=true;bool Mirv_Tf2_ParticleIsolationReady(){return sceneParticleIsolationReady;}
+float benchQueueMode=0;bool Mirv_Tf2_SceneDrawVisibility(const char*,float &v,bool write){if(write)benchQueueMode=v;else v=benchQueueMode;return true;}
 advancedfx::SceneSurfaces::Frame Mirv_Tf2_CaptureSurfaces(int tick){advancedfx::SceneSurfaces::Frame f;f.Tick=tick;return f;}void Mirv_Tf2_ResetSurfaces(){}void Mirv_Tf2_SetSurfaceObservation(bool){}unsigned Mirv_Tf2_BeginSurfaceReplay(const advancedfx::SceneSurfaces::Frame&,unsigned,std::string&){return 0;}std::string Mirv_Tf2_EndSurfaceReplay(){return {};}
 #include "shared/PlayerRepair.h"
 void MirvFix_PlayerRepairNewDemo(const char*);
@@ -1263,6 +1264,12 @@ g_RepairProperties.clear();g_RepairHooks=false;diagnosticObject=nullptr;g_Repair
   SceneBenchApply(4,std::chrono::steady_clock::now());check(!g_SceneBatchStudio,"Models-only benchmark compares original studio path");
   SceneBenchApply(6,std::chrono::steady_clock::now());check(g_SceneActorCull&&g_ScenePreviewCull,"Models benchmark measures actor-group culling separately");
   SceneBenchStop("models fixture complete");SceneCacheFrame(false);
+  b.Active=true;b.AutoQueue=true;b.OriginalQueue=b.OwnedQueue=0;benchQueueMode=0;
+  SceneBenchSwitch(2,2,std::chrono::steady_clock::now());check(b.Switching&&!g_ScenePreview,"Queue transition uses live view");
+  SceneBenchService();check(b.SwitchWritten&&benchQueueMode==2,"Queue mode set at frame service");
+  SceneBenchFrame(std::chrono::steady_clock::now());check(!b.Switching&&b.ModelsOnly&&!b.Immediate,"Queued suite starts only in observed queued context");
+  SceneBenchStop("automatic fixture complete");check(g_SceneBenchRestoreQueue,"Queue restoration deferred outside render");
+  SceneBenchService();check(!g_SceneBenchRestoreQueue&&benchQueueMode==0,"Original queue restored at frame service");
   engine.Paused=wasPaused;sceneQueueDeferred=wasDeferred;sceneParticleIsolationReady=true;
  }
  {auto e=SceneCacheView()->Entities.front();e.Category=4;e.OwnerIdentity=0;e.Mins[0]=e.Mins[1]=e.Mins[2]=-8;e.Maxs[0]=e.Maxs[1]=e.Maxs[2]=8;
