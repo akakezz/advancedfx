@@ -122,6 +122,13 @@ public:
         }
         Bytes+=frame.Bytes();Frames.push_back(std::move(frame));return true;
     }
+    // Same bounded, causal sample policy as modern particle history.
+    const Frame *ForPreview(int tick,int maxGap=2) const {
+        if(Frames.empty()||tick<Frames.front().Tick||tick>Frames.back().Tick||maxGap<0)return nullptr;
+        auto it=std::upper_bound(Frames.begin(),Frames.end(),tick,[](int t,const Frame &f){return t<f.Tick;});
+        if(it==Frames.begin())return nullptr;
+        --it;return static_cast<std::int64_t>(tick)-it->Tick<=maxGap?&*it:nullptr;
+    }
     const Frame *At(int tick) const {
         auto it=std::lower_bound(Frames.begin(),Frames.end(),tick,[](const Frame &f,int t){return f.Tick<t;});
         return it!=Frames.end()&&it->Tick==tick?&*it:nullptr;

@@ -772,3 +772,33 @@ build or runtime validation performed for Phase 13.
 Review follow-up: projection observation armed only during live recording; cleanup uses module identity independent of demo transport state, handles destroyed by the engine are forgotten, transient decal draw flags excluded from identity, and immutable payload accounting uses reference counts rather than scanning history. Added portable history fixture.
 
 Portable surface history fixture passed locally using g++ C++17 with AddressSanitizer and UndefinedBehaviorSanitizer, covering unchanged payload sharing, budget eviction, exact tick lookup, world change, clearing, decal identity and shadow validation. Local source and fixture Git blob hashes match the committed versions. This does not validate native engine calls, rendering or Windows compilation. Full historical decals that no longer survive in the live scene and pose-accurate shadow silhouettes are not implemented.
+
+
+## Phase 14: missing-tick replay and native decal geometry gate
+
+User confirmed projected blobs appear under cached actors on 1590ef1, but
+reported constant scrub flicker and nonworking decal history. Status at
+requested tick 3451: models interpolated, modern particle replay resolved
+3450; legacy/surface paths had no exact sample. All four histories had 2737
+frames over ticks 3..3460, no reported particle/surface evictions/rejections.
+Legacy 3.41 MiB, surfaces 11.45 MiB, modern 244.08 MiB, model 236.54 MiB.
+The log confirms a missing-tick policy mismatch, not every other tick missing.
+Decal behavior at exact samples was not established by that status. Both
+legacy textured/marker and historical surface replay now use the same
+bounded prior policy (up to 2 ticks, never outside retained bounds) as modern
+particles. Exact legacyAt stays exact. No temporal interpolation of decal
+existence; long gaps intentionally retain existing fallback behavior.
+
+Reinspection of supplied engine SHA-256 4802a74c... confirms native decal
+geometry lookup at 0x119490 receives scratch, decal, surface, material and
+returns pointer/null. Callers at 0x116fe4, 0x11ae5c, 0x11bd7e, 0x11c967,
+0x11d703 immediately branch on null to skip drawing. Replace the previous
+alpha-write experiment with an opt-in detour guarded by exact module and
+entry/callsite bytes, restricted to those return addresses, ordinary immediate
+preview scope and the engine thread. Future-only surviving ordinary decals
+are excluded from geometry submission, using live pointer/surface/material/
+slot identity only within the current scope. No decal record mutation or
+restoration writes. Nonzero historical alpha changes are not reproduced;
+removed decals and unsupported types remain out of scope. Status now reports
+actual skipped geometry calls, per-subsystem ready-frame counts, nonempty
+decal frames and native read failure stage. Native tests pending.

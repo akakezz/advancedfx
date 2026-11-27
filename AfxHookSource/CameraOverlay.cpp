@@ -854,7 +854,7 @@ std::shared_ptr<const std::vector<advancedfx::SceneCache::Line>> SceneCacheLines
 		        result.push_back({{p[0],p[1],p[2]-r},{p[0],p[1],p[2]+r},4,alpha,custom,rgb});
 		    }
 		}
-        if(g_SceneLegacyMarkers)if(const auto *sample=g_SceneLegacyHistory.At(legacyTick)){
+        if(g_SceneLegacyMarkers)if(const auto *sample=g_SceneLegacyHistory.ForPreview(legacyTick)){
             for(const auto &p:sample->Particles){
                 const float f=std::clamp(p.Lifetime/p.DieTime,0.f,1.f);
                 const float r=std::clamp(p.StartSize+(float(p.EndSize)-p.StartSize)*f,.35f,64.f);
@@ -890,8 +890,8 @@ unsigned SceneCacheBeginHistoricalSurfaces(){
     const unsigned requested=(g_SceneHistoricalShadows?1u:0u)|(g_SceneHistoricalDecals?2u:0u);
     if(!requested||!SceneCacheReplayActive()||!Mirv_Tf2_ParticleIsolationReady())return 0;
     const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
-    const auto *sample=g_SceneSurfaces.At(tick);
-    if(!sample){g_SceneHistoricalSurfaceStatus="No exact historical surface sample.";return 0;}
+    const auto *sample=g_SceneSurfaces.ForPreview(tick);
+    if(!sample){g_SceneHistoricalSurfaceStatus="No retained historical surface sample within two prior ticks.";return 0;}
     return Mirv_Tf2_BeginSurfaceReplay(*sample,requested,g_SceneHistoricalSurfaceStatus);
 }
 void SceneCacheEndHistoricalSurfaces(){
@@ -917,8 +917,8 @@ static void SceneCacheDrawLegacyParticles()
         std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
         if(!g_SceneLegacyReplay||!g_ScenePreview||!g_SceneNativeParticleReplay||!SceneCanDrawModels()||!SceneCacheView())return;
         const int tick=int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9));
-        const auto *f=g_SceneLegacyHistory.At(tick);
-        if(!f){g_SceneLegacyReplayTick=tick;g_SceneLegacyReplayResult={};g_SceneLegacyReplayResult.Status="No exact retained legacy sample.";return;}
+        const auto *f=g_SceneLegacyHistory.ForPreview(tick);
+        if(!f){g_SceneLegacyReplayTick=tick;g_SceneLegacyReplayResult={};g_SceneLegacyReplayResult.Status="No retained legacy sample within two prior ticks.";return;}
         sample=*f;epoch=g_SceneDrawEpoch.load();
     }
     auto result=Mirv_Tf2_RenderLegacyParticles(sample);
@@ -1871,7 +1871,7 @@ static void SceneNativeParticleStatus(int tick)
 }
 // Read-only exact-tick inspection: retain original collection indices, including
 // empty parents, so a reported index can also be used by the detached probe.
-static void SceneLegacyParticleStatus(int tick)
+static void SceneLegacyParticleStatus(int tick,bool previewSample=false)
 {
     advancedfx::Message("Legacy textured replay %d; tick %d: %zu submitted, %zu rejected (particles or batches); %s\n",int(g_SceneLegacyReplay),g_SceneLegacyReplayTick,g_SceneLegacyReplayResult.Particles,g_SceneLegacyReplayResult.Rejected,g_SceneLegacyReplayResult.Status.c_str());
     using namespace advancedfx::LegacyParticles;
@@ -1881,12 +1881,13 @@ static void SceneLegacyParticleStatus(int tick)
         history.Frames.empty()?-1:history.Frames.front().Tick,history.Frames.empty()?-1:history.Frames.back().Tick,
         history.Evicted,history.Rejected);
     if(tick<0)return;
-    const auto *sample=history.At(tick);
+    const auto *sample=previewSample?history.ForPreview(tick):history.At(tick);
+    if(previewSample)advancedfx::Message("Legacy preview requested tick %d; resolved tick %d (bounded prior sample).\n",tick,sample?sample->Tick:-1);
     if(!sample){advancedfx::Message("Legacy dissolve tick %d: no exact retained sample. Last capture: %s\n",tick,g_SceneLegacyCaptureStatus.c_str());return;}
     std::size_t spark=0,glow=0;
     for(const auto &p:sample->Particles){spark+=p.Texture==Material::Spark;glow+=p.Texture==Material::CombineMuzzle;}
     advancedfx::Message("Legacy dissolve tick %d: %zu emitters, %zu expected, %zu captured; spark %zu, combinemuzzle2 %zu, unknown material %zu; complete %d.\n",
-        tick,sample->Emitters,sample->Expected,sample->Particles.size(),spark,glow,sample->UnknownMaterials,int(sample->Complete));
+        sample->Tick,sample->Emitters,sample->Expected,sample->Particles.size(),spark,glow,sample->UnknownMaterials,int(sample->Complete));
     advancedfx::Message("Additional exact simple emitters %zu; skipped additional emitters %zu; registered material names %zu.\n",sample->OtherEmitters,sample->OtherRejected,sample->Materials.size());
     if(!sample->Particles.empty()){
         const auto &p=sample->Particles.front();
@@ -1951,8 +1952,11 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         }
         const int tick=g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneSurfaces.Frames.empty()?-1:g_SceneSurfaces.Frames.back().Tick;
         advancedfx::Message("Historical surfaces capture %d, shadows %d, decals %d; %zu frames, %.2f MiB / 64 MiB; evicted %zu, rejected %zu. %s\n",int(g_SceneSurfaceCapture),int(g_SceneHistoricalShadows),int(g_SceneHistoricalDecals),g_SceneSurfaces.Frames.size(),g_SceneSurfaces.Bytes/1048576.0,g_SceneSurfaces.Evicted,g_SceneSurfaces.Rejected,g_SceneHistoricalSurfaceStatus.c_str());
-        if(auto sample=g_SceneSurfaces.At(tick))advancedfx::Message("Surface tick %d: shadows ready %d, observed %zu, unobserved %zu; decals ready %d, ordinary world %zu, unsupported %zu.\n",tick,int(sample->ShadowsReady),sample->Shadows?sample->Shadows->size():0,sample->ShadowsUnobserved,int(sample->DecalsReady),sample->Decals?sample->Decals->size():0,sample->DecalsUnsupported);
-        else advancedfx::Message("Surface tick %d: no exact sample.\n",tick);
+        if(auto sample=g_SceneSurfaces.ForPreview(tick))advancedfx::Message("Surface requested tick %d; resolved tick %d (bounded prior sample). Shadows ready %d, observed %zu, unobserved %zu; decals ready %d, ordinary world %zu, unsupported %zu.\n",tick,sample->Tick,int(sample->ShadowsReady),sample->Shadows?sample->Shadows->size():0,sample->ShadowsUnobserved,int(sample->DecalsReady),sample->Decals?sample->Decals->size():0,sample->DecalsUnsupported);
+        else advancedfx::Message("Surface tick %d: no bounded prior sample.\n",tick);
+        std::size_t shadowFrames=0,decalFrames=0,nonemptyDecals=0;
+        for(const auto &f:g_SceneSurfaces.Frames){shadowFrames+=f.ShadowsReady;decalFrames+=f.DecalsReady;nonemptyDecals+=f.DecalsReady&&f.Decals&&!f.Decals->empty();}
+        advancedfx::Message("Surface coverage: %zu shadow-ready, %zu decal-ready (%zu nonempty) of %zu frames. Last decal capture: %s.\n",shadowFrames,decalFrames,nonemptyDecals,g_SceneSurfaces.Frames.size(),g_SceneSurfaces.Frames.empty()?"none":advancedfx::SceneSurfaces::DecalReadLabel(g_SceneSurfaces.Frames.back().DecalStatus));
         advancedfx::Message("mirv_cache surfaces <capture|shadows|decals|batch> <0|1> | status\n");return;
     }
     if(!_stricmp(op,"visuals")) {
@@ -1993,7 +1997,7 @@ void SceneCacheConsole(advancedfx::ICommandArgs *args)
         } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyMarkers")&&parseInteger(3,value)&&(value==0||value==1)) {
             g_SceneLegacyMarkers=value!=0;SceneLegacyParticleStatus(-1);
         } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"legacyStatus")) {
-            SceneLegacyParticleStatus(g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneLegacyHistory.Frames.empty()?-1:g_SceneLegacyHistory.Frames.back().Tick);
+            SceneLegacyParticleStatus(g_ScenePreview?int(std::floor(g_SceneCursor/SceneTickInterval()+1e-9)):g_SceneLegacyHistory.Frames.empty()?-1:g_SceneLegacyHistory.Frames.back().Tick,g_ScenePreview);
         } else if(args->ArgC()==4&&!_stricmp(args->ArgV(2),"legacyAt")&&parseInteger(3,value)&&value>=0) {
             SceneLegacyParticleStatus(value);
         } else if(args->ArgC()==3&&!_stricmp(args->ArgV(2),"legacy")) {

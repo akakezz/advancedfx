@@ -14,6 +14,10 @@ int main(){
     History small(bytes+sizeof(Frame));f.Tick=1;assert(small.Append(f));f.Tick=2;assert(small.Append(f));f.Tick=3;assert(small.Append(f));assert(small.Frames.size()==2);assert(small.Evicted==1);assert(small.Bytes==bytes+sizeof(Frame));
     f.World=2;f.Tick=1;assert(h.Append(f));assert(h.Frames.size()==1);
     h.Clear();assert(!h.Bytes&&!h.At(1));
+    f.Tick=10;assert(h.Append(f));f.Tick=13;assert(h.Append(f));f.Tick=17;assert(h.Append(f));
+    assert(!h.At(11)&&h.ForPreview(11)->Tick==10&&h.ForPreview(12)->Tick==10);
+    assert(!h.ForPreview(9)&&!h.ForPreview(16)&&!h.ForPreview(18)&&h.ForPreview(13)->Tick==13);
+    assert(std::string(DecalReadLabel(DecalRead::Slot))=="slot identity mismatch");
     Shadow sh;assert(!sh.Valid());sh.Size={32,32};sh.Height=100;sh.Leaves={1,2};assert(sh.Valid());
     sh.Leaves.push_back(-1);assert(!sh.Valid());
 }

@@ -318,3 +318,10 @@ shadows use observed historical projection calls, not true actor silhouettes;
 world decal visibility only applies to surviving ordinary marks. Missing
 projections, removed decals, dynamic fade, model decals and moving receivers
 remain limitations. See Phase 13B exact ABI notes and scope cleanup diagnostics.
+
+Phase 14: user validated projected blob placement but saw scrub flicker and
+no working decals. Missing tick 3451 confirmed a gap in all histories;
+modern particles resolved 3450 while legacy/surfaces skipped. Both now use
+bounded prior samples, max 2 ticks. World decal experiment replaces alpha
+mutation with scoped geometry skipping at five verified native draw callsites.
+See Phase 14 for limitations and diagnostics; no removed decal recreation.

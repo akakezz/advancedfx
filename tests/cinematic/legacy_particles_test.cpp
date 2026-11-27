@@ -31,5 +31,8 @@ int main(){
     Frame failed;failed.Tick=11;assert(!history.Append(failed)&&!history.At(11)&&history.Rejected==1);
     assert(history.Append(empty));empty.Tick=3;assert(history.Append(empty)&&!history.At(10)&&history.At(3));
     History budget(sample.Bytes());assert(budget.Append(sample));empty.Tick=11;assert(budget.Append(empty)&&budget.Evicted==1&&!budget.At(10));
+    History gaps;Frame f;f.Complete=true;f.Tick=10;assert(gaps.Append(f));f.Tick=13;assert(gaps.Append(f));f.Tick=17;assert(gaps.Append(f));
+    assert(!gaps.At(11)&&gaps.ForPreview(11)->Tick==10&&gaps.ForPreview(12)->Tick==10);
+    assert(!gaps.ForPreview(9)&&!gaps.ForPreview(16)&&!gaps.ForPreview(18)&&gaps.ForPreview(13)->Tick==13);
     std::cout<<"legacy particle snapshot fixtures passed\n";
 }

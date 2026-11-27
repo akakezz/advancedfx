@@ -41,10 +41,24 @@ struct Shadow {
         return Origin==o.Origin&&Direction==o.Direction&&Caster==o.Caster&&Matrix==o.Matrix&&Size==o.Size&&Height==o.Height&&FalloffOffset==o.FalloffOffset&&FalloffAmount==o.FalloffAmount&&Bias==o.Bias&&Leaves==o.Leaves;
     }
 };
+enum class DecalRead { NotRun, Guard, Table, Record, Slot, Surface, Changed, Ready };
+inline const char *DecalReadLabel(DecalRead value){
+    switch(value){
+    case DecalRead::Guard:return "native guard mismatch";
+    case DecalRead::Table:return "invalid slot table";
+    case DecalRead::Record:return "unreadable record";
+    case DecalRead::Slot:return "slot identity mismatch";
+    case DecalRead::Surface:return "unreadable surface";
+    case DecalRead::Changed:return "world or slot table changed";
+    case DecalRead::Ready:return "complete slot traversal (unsupported types excluded)";
+    default:return "not run";
+    }
+}
 struct Frame {
     int Tick=-1;
     std::uint64_t World=0; // session generation, never a native pointer
     bool DecalsReady=false,ShadowsReady=false;
+    DecalRead DecalStatus=DecalRead::NotRun;
     std::size_t DecalsUnsupported=0,ShadowsUnobserved=0;
     std::shared_ptr<const std::vector<Decal>> Decals;
     std::shared_ptr<const std::vector<Shadow>> Shadows;
@@ -87,6 +101,13 @@ public:
         if(sizeof(Frame)+(f.Decals?Cost(*f.Decals):0)+(f.Shadows?Cost(*f.Shadows):0)>Budget){++Rejected;return false;}
         while(!Frames.empty()&&(Bytes>Budget-Extra(f)||Frames.size()>=32768)){Drop(true);++Evicted;}
         Bytes+=sizeof(Frame);AddVector(f.Decals);AddVector(f.Shadows);Frames.push_back(std::move(f));return true;
+    }
+    // Same bounded, causal sample policy as modern particle history.
+    const Frame *ForPreview(int tick,int maxGap=2) const {
+        if(Frames.empty()||tick<Frames.front().Tick||tick>Frames.back().Tick||maxGap<0)return nullptr;
+        auto it=std::upper_bound(Frames.begin(),Frames.end(),tick,[](int t,const Frame &f){return t<f.Tick;});
+        if(it==Frames.begin())return nullptr;
+        --it;return static_cast<std::int64_t>(tick)-it->Tick<=maxGap?&*it:nullptr;
     }
     const Frame *At(int tick)const{
         auto it=std::lower_bound(Frames.begin(),Frames.end(),tick,[](const Frame &f,int t){return f.Tick<t;});
