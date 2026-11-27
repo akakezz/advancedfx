@@ -514,3 +514,7 @@ Capture resident fat source vertex positions/normals, validated weights/bone ind
 ### Phase 29C — limited animated historical model decal rendering
 
 Owned source vertices can now be software-skinned against the actual historical pose-to-world array and submitted via the native immediate dynamic mesh. Exact private-record writer detours bypass only native multi/flex vertex-cache lookup for our own already evaluated vertices. Live model rendering unchanged. Requires all batches directly skinnable, matching selected LOD/skin/body and ordinary proxy-free material. Flex weights are not restored (base mesh only), no generated/clipped-vertex reconstruction or queued path. Validation report shows directly skinnable captured batches and total requested/submitted model decal batches. Runtime and Windows validation pending.
+
+### Phase 29D — studio frontend state preservation and compressed model decal fix
+
+Use verified native context snapshot before textured replay; decline setter changes on un-restorable state rather than restoring guessed defaults. No direct writes to native context. Model-decal guard now uses model topology bone count for both raw and compressed poses. Portable parser tests; native runtime still pending.

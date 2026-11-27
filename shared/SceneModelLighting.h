@@ -48,6 +48,39 @@ inline bool Normalize(Descriptor &d){
 // Verified TF2 x64 CStudioRenderContext slots, not guessed from overload order.
 inline constexpr int AmbientRgbSlot=16,AmbientRgbaSlot=17;
 inline constexpr unsigned AmbientWordCount(int slot){return slot==AmbientRgbSlot?18u:slot==AmbientRgbaSlot?24u:0u;}
+// Actual CStudioRenderContext values, as stored after native setters.
+// Unlike an engine observation, the stored light flags are recalculated
+// by studio's 0x21050 copy helper, not the engine's derived flag word.
+struct NativeStudioValues {
+    std::array<float,24> Ambient{};
+    std::array<Descriptor,4> Lights{};
+    std::array<float,3> Color{};
+    float Alpha=1;
+    int Count=0;
+    static bool Decode(const std::array<unsigned char,0x1d4> &raw,NativeStudioValues &out){
+        NativeStudioValues next;
+        std::memcpy(next.Ambient.data(),raw.data(),96);
+        std::memcpy(&next.Count,raw.data()+0x1c0,4);
+        std::memcpy(next.Color.data(),raw.data()+0x1c4,12);
+        std::memcpy(&next.Alpha,raw.data()+0x1d0,4);
+        if(next.Count<0||next.Count>4||!std::isfinite(next.Alpha)||std::abs(next.Alpha)>1e6f)return false;
+        for(float f:next.Ambient)if(!std::isfinite(f)||std::abs(f)>1e6f)return false;
+        for(float f:next.Color)if(!std::isfinite(f)||std::abs(f)>1e6f)return false;
+        if(next.Count)std::memcpy(next.Lights.data(),raw.data()+0x60,std::size_t(next.Count)*sizeof(Descriptor));
+        for(int i=0;i<next.Count;++i){
+            const auto &light=next.Lights[i];
+            if(light[0]>3)return false;
+            unsigned flags=0;
+            for(unsigned j=12;j<=14;++j){
+                const float f=FloatWord(light,j);if(!std::isfinite(f))return false;if(f!=0)flags|=1u<<(j-12);
+            }
+            // The setter copies all words but rewrites word 19. Refuse
+            // state that cannot be restored through that exact setter.
+            if(light[19]!=flags)return false;
+        }
+        out=next;return true;
+    }
+};
 struct Sample {
     int AmbientSlot=0,Count=0; // slot 16 = six float3, slot 17 = six float4
     std::array<float,24> Ambient{};

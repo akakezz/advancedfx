@@ -4,6 +4,17 @@ using namespace advancedfx::SceneLighting;
 int main(){
     static_assert(AmbientRgbSlot==16&&AmbientRgbaSlot==17,"verified TF2 overload order");
     static_assert(AmbientWordCount(16)==18&&AmbientWordCount(17)==24&&AmbientWordCount(15)==0,"exact native input lengths");
+    std::array<unsigned char,0x1d4> native{};
+    auto studioPut=[&](std::size_t at,const auto &value){std::memcpy(native.data()+at,&value,sizeof(value));};
+    std::array<float,24> priorAmbient{};priorAmbient[23]=.75f;
+    studioPut(0,priorAmbient);studioPut(0x1c0,int(1));studioPut(0x1c4,std::array<float,3>{.1f,.2f,.3f});studioPut(0x1d0,.4f);
+    Descriptor stored{};stored[0]=1;SetWord(stored,12,1.f);stored[19]=1;studioPut(0x60,stored);
+    NativeStudioValues previousState;
+    assert(NativeStudioValues::Decode(native,previousState)&&previousState.Count==1&&previousState.Ambient[23]==.75f&&previousState.Alpha==.4f&&previousState.Lights[0]==stored);
+    studioPut(0x1c0,int(5));assert(!NativeStudioValues::Decode(native,previousState)&&previousState.Count==1);
+    studioPut(0x1c0,int(1));stored[19]=9;studioPut(0x60,stored);assert(!NativeStudioValues::Decode(native,previousState));
+    stored[19]=1;studioPut(0x60,stored);studioPut(0x1d0,float(NAN));assert(!NativeStudioValues::Decode(native,previousState));
+    studioPut(0x1d0,.4f);studioPut(0x1c0,int(0));assert(NativeStudioValues::Decode(native,previousState)&&previousState.Count==0&&previousState.Lights[0]==Descriptor{});
     float rgb[18]{};for(unsigned i=0;i<18;++i)rgb[i]=float(i+1)/64;
     float ambient[24]{};for(unsigned i=0;i<24;++i)ambient[i]=float(i+1)/32;
     Sample rgbOnly;assert(Sample::Capture(16,rgb,0,nullptr,rgbOnly)&&rgbOnly.AmbientWords()==18);

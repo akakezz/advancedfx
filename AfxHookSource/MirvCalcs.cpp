@@ -10961,6 +10961,9 @@ struct SceneStudioState
 };
 static thread_local SceneStudioState g_SceneStudioState;
 static bool g_SceneStudioStateInstalled = false;
+#if defined(_WIN64) && defined(_WIN32)
+static bool SceneRefreshNativeStudioState(void *studio);
+#endif
 struct SceneStudioScope
 {
 	void *Studio;
@@ -11976,8 +11979,14 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	}
     // Replay only an owned validated sample when the exact studio instance
     // has an observed ambient/light state to restore after this submission.
+    bool studioStateReady=textured&&g_SceneStudioStateInstalled;
+#if defined(_WIN64) && defined(_WIN32)
+    // A setter observer is not authoritative after an unobserved internal
+    // context write. Never restore guessed defaults on the verified x64 ABI.
+    if(studioStateReady)studioStateReady=SceneRefreshNativeStudioState(studio);
+#endif
     const auto *lighting=entity.ModelLighting.get();
-    if(!textured||!g_SceneStudioStateInstalled||(g_SceneStudioState.Known&12)!=12||
+    if(!studioStateReady||(g_SceneStudioState.Known&12)!=12||
        g_SceneStudioState.AmbientOwner!=studio||g_SceneStudioState.LightOwner!=studio||!lighting||!lighting->Valid())lighting=nullptr;
     if(textured){
         for(unsigned face=0;face<6;++face)for(unsigned channel=0;channel<3;++channel)
@@ -12008,7 +12017,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 	} restore{studio, overrideMaterial, overrideType, material != nullptr};
 	const int flags = 0x04 | 0x20 | (material || textured ? 0 : 0x80); // NO_FLEXES | NO_SHADOWS, fallback WIREFRAME
 	const SOURCESDK::Vector origin(entity.Origin[0], entity.Origin[1], entity.Origin[2]);
-	SceneStudioScope studioScope(studio, info, textured,entity,lighting);
+	SceneStudioScope studioScope(studio, info, studioStateReady,entity,lighting);
     std::unique_ptr<SceneStudioUse> queuedUse;
     if(batchOwner&&!batch->Immediate){
         queuedUse=std::make_unique<SceneStudioUse>(batchOwner);
@@ -12039,7 +12048,7 @@ bool Mirv_Tf2_DrawScenePose(const advancedfx::SceneCache::Entity &entity, std::s
 		return false;
 	}
 	status = textured ? (studioScope.Active ? (lighting?"Drawing native textured cached models (captured model lighting).":"Drawing native textured cached models (isolated neutral lighting).") :
-	         "Drawing native textured cached models (studio state hooks unavailable).") :
+	         "Drawing native textured cached models (restorable studio state unavailable).") :
 	         material ? "Drawing category-colored cached models."
 	                  : "Drawing default cached wireframe; category material requires VMaterialSystem082.";
 	return true;
@@ -12282,7 +12291,7 @@ static void SceneDrawHistoricalModelDecals(SceneDecalReplayRequest &request,void
     if(!SceneLightingRead(base+0x96348,nativeRenderer)||nativeRenderer!=renderer||
        !SceneLightingRead(r+0x110,currentHeader)||currentHeader!=info.Header||
        !SceneLightingRead(header+0x9c,bones)||!SceneLightingRead(header+0x104,flexes)||
-       bones<1||bones>128||static_cast<std::size_t>(bones)!=entity.ModelPose->Bones.size()||
+       bones<1||bones>128||static_cast<std::size_t>(bones)!=entity.ModelPose->ModelInfo->Parents.size()||
        !SceneLightingRead(reinterpret_cast<std::uintptr_t>(info.Hardware)+4,hardwareLods)||lod<0||lod>=hardwareLods||hardwareLods>32||
        !SceneLightingRead(r+8,config)||!config||!SceneLightingRead(config+0x25,config25)||(config25&0x20)||
        !SceneLightingRead(config+0x38,config38)||
@@ -12453,6 +12462,35 @@ static bool SceneInstallModelDecalObservation(){
     if(DetourTransactionCommit()!=NO_ERROR){g_SceneOriginalDecals=nullptr;return false;}
     g_SceneDecalBase=base;g_SceneDecalThread=GetCurrentThreadId();return true;
 }
+#if defined(_WIN32)
+static bool SceneRefreshNativeStudioState(void *studio){
+    const auto base=reinterpret_cast<std::uintptr_t>(GetModuleHandleA("studiorender.dll"));
+    const auto address=reinterpret_cast<std::uintptr_t>(studio);
+    std::uintptr_t vt=0;
+    if(!g_SceneStudioStateInstalled||!base||!SceneLightingRead(address,vt)||vt!=base+0x81120||
+       !SceneLightingMatch(base,0x5994a,{0x0f,0x10,0x02,0x48,0x8d,0xb9,0x88,0,0,0,0x0f,0x11,0x07})||
+       !SceneLightingMatch(base,0x59be2,{0x48,0x8d,0xb1,0xe8,0,0,0})||
+       !SceneLightingMatch(base,0x59c00,{0x41,0x89,0x86,0x48,0x02,0,0})||
+       !SceneLightingMatch(base,0x212f6,{0x0f,0x2e,0x51,0xe4,0x89,0x39})||
+       !SceneLightingMatch(base,0x59b32,{0x89,0x81,0x4c,0x02,0,0})||
+       !SceneLightingMatch(base,0x59930,{0xf3,0x0f,0x11,0x89,0x58,0x02,0,0}))return false;
+    std::array<unsigned char,0x1d4> raw{};
+    advancedfx::SceneLighting::NativeStudioValues values;
+    if(!SceneLightingRead(address+0x88,raw)||!advancedfx::SceneLighting::NativeStudioValues::Decode(raw,values))return false;
+    auto &s=g_SceneStudioState;
+    const bool alphaOne=values.Ambient[3]==1.f&&values.Ambient[7]==1.f&&values.Ambient[11]==1.f&&
+        values.Ambient[15]==1.f&&values.Ambient[19]==1.f&&values.Ambient[23]==1.f;
+    // Preserve the RGB setter path when all six alpha components are
+    // exactly one; either overload represents that state losslessly.
+    s.AmbientSlot=alphaOne?advancedfx::SceneLighting::AmbientRgbSlot:advancedfx::SceneLighting::AmbientRgbaSlot;
+    std::memcpy(s.Ambient4,values.Ambient.data(),sizeof(s.Ambient4));
+    for(unsigned face=0;face<6;++face)std::memcpy(s.Ambient3+face*3,values.Ambient.data()+face*4,3*sizeof(float));
+    std::memcpy(s.Color,values.Color.data(),sizeof(s.Color));s.Alpha=values.Alpha;
+    std::memcpy(s.Lights,values.Lights.data(),sizeof(s.Lights));s.LightCount=values.Count;
+    s.AmbientOwner=s.LightOwner=studio;s.Known=15;
+    return true;
+}
+#endif
 static void SceneObserveLighting(void *self,const void *state,const float *position,void *cache,bool a,bool b,bool *c,SceneStudioInfo *info,const void *model,int flags){
     const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     const bool observe=g_SceneLightingArmed&&GetCurrentThreadId()==g_SceneLightingThread&&caller==g_SceneLightingBase+0xee463;
