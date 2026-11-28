@@ -289,6 +289,12 @@ struct RestorePlan {
     std::vector<RestoreBinding> Bindings;
     std::size_t Nodes=0,Particles=0,Constants=0,ConstantDifferences=0,Missing=0;
     std::string Error;
+    // Reuse allocations only. No previous native address or result is
+    // logically retained when preparing another detached allocation.
+    void Reset(){
+        Copies.clear();Bindings.clear();Error.clear();
+        Nodes=Particles=Constants=ConstantDifferences=Missing=0;
+    }
 };
 // Recorded topology is reused across all detached tree attempts in one callback.
 using ChildIndex=std::vector<std::vector<std::size_t>>;
@@ -414,9 +420,9 @@ private:
     bool Valid_=false,IsolationReady_=false;
 };
 template<class Reader>
-RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader read,const ChildIndex *prepared=nullptr) {
+RestorePlan PlanDetached(const Frame &f,std::size_t index,Address root,Reader read,const ChildIndex *prepared=nullptr,RestorePlan plan={}) {
     using namespace Layout;
-    RestorePlan plan;
+    plan.Reset();
     auto get=[&](Address a,auto &v){return a>=0x10000&&read(a,&v,sizeof(v));};
     auto fail=[&](const char *why){if(plan.Error.empty()) plan.Error=why;};
     if(!f.Complete||!f.Appearance||index>=f.Collections.size()||!root) {fail("No recorded appearance collection");return plan;}

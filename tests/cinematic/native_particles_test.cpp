@@ -121,6 +121,21 @@ int main(){
     auto invalidTopology=simple;invalidTopology.Collections[0].Parent=0;
     check(!BuildChildIndex(invalidTopology,topology),"cyclic recorded hierarchy rejected");
     check(plan.Error.empty()&&plan.Nodes==1&&plan.Particles==5&&plan.Copies.size()==3&&plan.Constants==1,"validated detached copy plan");
+    auto scratch=plan;
+    scratch.Copies.reserve(128);scratch.Bindings.reserve(64);
+    const auto copyCapacity=scratch.Copies.capacity(),bindingCapacity=scratch.Bindings.capacity();
+    scratch=PlanDetached(simple,0,detached,read,nullptr,std::move(scratch));
+    check(scratch.Error.empty()&&scratch.Nodes==plan.Nodes&&scratch.Particles==plan.Particles&&
+        scratch.Constants==plan.Constants&&scratch.Copies.size()==plan.Copies.size()&&
+        scratch.Copies.capacity()==copyCapacity&&scratch.Bindings.capacity()==bindingCapacity,
+        "detached plan scratch preserves capacity without accumulating results");
+    scratch=PlanDetached(simple,0,0,read,nullptr,std::move(scratch));
+    check(!scratch.Error.empty()&&scratch.Copies.empty()&&scratch.Bindings.empty()&&!scratch.Nodes&&!scratch.Particles&&
+        scratch.Copies.capacity()==copyCapacity&&scratch.Bindings.capacity()==bindingCapacity,
+        "failed scratch plan never exposes previous bindings");
+    scratch=PlanDetached(simple,0,detached,read,nullptr,std::move(scratch));
+    check(scratch.Error.empty()&&scratch.Copies.size()==plan.Copies.size()&&scratch.Bindings.size()==1,
+        "successful retry resets prior scratch failure");
     put(name,'X');check(!PlanDetached(simple,0,detached,read).Error.empty(),"batched name mismatch rejected");put(name,text);
     dp[Radius]+=4;put(detached+Xyz,dp);
     check(!PlanDetached(simple,0,detached,read).Error.empty()&&PlanDetached(simple,0,detached,read).Copies.empty(),"wrong allocation address fails closed");

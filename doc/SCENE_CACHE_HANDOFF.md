@@ -551,3 +551,14 @@ exercise explicit overlapping and nonoverlapping match tokens. No measured FPS
 gain yet. Modern queued rendering remains disabled: shared renderer material
 mutations and deferred ownership must be established separately; no queue-mode
 switch, lifetime extension, or live isolation relaxation is introduced.
+
+### Phase 31B — reuse per-callback detached plan storage
+
+Reuse copy-operation and binding vector capacity across native tree attempts.
+Reset all logical entries, counts and errors before planning a fresh allocation
+and before the owner destroys that allocation (after active-count cleanup).
+No address, native validation result, or detached object is reused across
+attempts; no cross-callback persistence or queued-render eligibility change.
+Portable fixtures cover success, early failure and retry with reused capacity.
+This targets allocation churn during repeated historical rendering; native
+FPS and Windows build remain unverified.

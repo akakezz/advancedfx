@@ -904,6 +904,10 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
     std::set<Address> auditedDefinitions;
     std::set<std::uint32_t> rendererTargets,postTargets;
     bool listChanged=false;
+    // Only allocation capacity is reused between attempts in this callback.
+    // Every native address and validation result is recomputed for the
+    // freshly created object, never used after its owner is destroyed.
+    RestorePlan scratchPlan;
     auto attempt=[&](std::size_t index,std::size_t)->bool {
         if(listChanged)return false;
         ++result.Attempts;
@@ -929,10 +933,12 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
             }} owner{object,destruct,freeMemory,result.DestroyMs};
             const auto planStart=std::chrono::steady_clock::now();
             Address headDuring=0;
-            RestorePlan plan;
+            auto &plan=scratchPlan;
+            struct ClearPlan {RestorePlan &Plan;~ClearPlan(){Plan.Reset();}} clearPlan{plan};
+            plan.Reset();
             if(!read(base+Layout::Manager+Layout::RootHead,&headDuring,sizeof(headDuring))||headDuring!=headBefore) {
                 listChanged=true;plan.Error="registered effect list changed during factory call";
-            } else plan=PlanDetached(frame,index,reinterpret_cast<Address>(object),readDetached,&children);
+            } else plan=PlanDetached(frame,index,reinterpret_cast<Address>(object),readDetached,&children,std::move(plan));
             result.PlanMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-planStart).count();
             if(!plan.Error.empty())reject(plan.Error);
             else if(draw&&(plan.Missing||plan.ConstantDifferences))reject("missing attributes or differing shared constants");
