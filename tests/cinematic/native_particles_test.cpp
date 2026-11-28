@@ -57,7 +57,26 @@ int main(){
     put(radius,radii);put(tint,colors);put(ids,idWords);
     put(coll+Xyz,pointers);put(coll+XyzStride,strides);
     strides[Position]=0;put(child+Xyz,pointers);put(child+XyzStride,strides);
-    auto app=Capture(base,20,read,true);
+    // Make the full table span readable, as in native collection memory.
+    // Compare the broad path and narrow fallback byte-for-byte and count
+    // position payload reads for both varying and constant attributes.
+    constexpr std::size_t captureTableBytes=std::size_t(XyzStride-Xyz)+sizeof(strides);
+    for(auto addr:{coll,child})for(std::size_t i=0;i<captureTableBytes;++i)
+        bytes.emplace(addr+Xyz+i,0);
+    std::size_t broadReads=0,xyzReads=0;
+    auto captureRead=[&](Address a,void *out,std::size_t n){
+        if((a==coll+Xyz||a==child+Xyz)&&n==captureTableBytes)++broadReads;
+        if(a==xyz)++xyzReads;
+        return read(a,out,n);
+    };
+    auto app=Capture(base,20,captureRead,true);
+    check(broadReads==2&&xyzReads==2,"capture batches tables and reads each position payload once");
+    auto narrowCapture=[&](Address a,void *out,std::size_t n){
+        if((a==coll+Xyz||a==child+Xyz)&&n==captureTableBytes)return false;
+        return read(a,out,n);
+    };
+    auto narrowApp=Capture(base,20,narrowCapture,true);
+    check(HistoryStorage::Pack(app)==HistoryStorage::Pack(narrowApp),"capture table fallback preserves packed snapshot");
     check(app.Complete&&app.AppearanceComplete&&app.Collections.size()==2&&app.NamedCollections==2,"full appearance metadata");
     check(app.Collections[0].Parent==-1&&app.Collections[1].Parent==0&&app.Collections[1].PointStart==5,"frame-local hierarchy");
     check(std::string(app.Collections[0].Name.data())=="test_effect"&&app.Collections[0].HasTime&&app.Collections[0].Time==2.5f,"owned definition name and clock");
@@ -139,6 +158,13 @@ int main(){
     HistoryCodec::Bytes noise(20000);std::uint32_t rng=12345;
     for(auto &b:noise){rng=rng*1664525u+1013904223u;b=static_cast<std::uint8_t>(rng>>24);}
     check(HistoryCodec::Decode(HistoryCodec::Encode(noise),noise.size(),decoded)&&decoded==noise,"incompressible bytes roundtrip");
+    // Explicit distance-one, overlapping periodic and non-overlapping
+    // matches exercise the bulk decoder independently of encoder choices.
+    check(HistoryCodec::Decode({0,42,255,1,0},132,decoded)&&decoded==HistoryCodec::Bytes(132,42),"distance-one maximum match");
+    HistoryCodec::Bytes periodic;
+    for(std::size_t i=0;i<134;++i)periodic.push_back(static_cast<std::uint8_t>(i%3+1));
+    check(HistoryCodec::Decode({2,1,2,3,255,3,0},134,decoded)&&decoded==periodic,"overlapping distance-three match");
+    check(HistoryCodec::Decode({3,1,2,3,4,128,4,0},8,decoded)&&decoded==HistoryCodec::Bytes({1,2,3,4,1,2,3,4}),"nonoverlapping match");
     check(!HistoryCodec::Decode({128,0,0},4,decoded)&&!HistoryCodec::Decode({127,1},128,decoded),"malformed codec input rejected");
     check(!HistoryCodec::Decode(encoded,repeat.size()-1,decoded),"decoded size bound");
     check(plan.Bindings.size()==1&&plan.Bindings[0].Native==detached&&plan.Bindings[0].Recorded==0&&plan.Bindings[0].Definition==def,"native activation binding");

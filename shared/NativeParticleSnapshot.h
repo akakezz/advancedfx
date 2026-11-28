@@ -106,7 +106,7 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
     std::map<std::array<std::uint32_t,13>,std::uint32_t> constants;
     auto bad=[&](){++f.Rejected;f.Complete=false;};
     auto appearanceBad=[&](){++f.AppearanceRejected;f.AppearanceComplete=false;};
-    auto copyAppearance=[&](Address c,Collection &item) {
+    auto copyAppearance=[&](Address c,Collection &item,Address capturedXyz,Address capturedStride,bool havePosition) {
         Address def=0,name=0;
         if(get(c+Definition,def)&&def>=0x10000&&get(def+DefinitionName,name)&&name>=0x10000) {
             // Fast bounded copy; fallback handles a string near an unreadable page.
@@ -128,7 +128,15 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
         else appearanceBad();
         if(!item.Active) return; // empty nodes still preserve hierarchy/name/clock
         std::array<Address,AttributeCount> pointers{},strides{};
-        if(!get(c+Xyz,pointers)||!get(c+XyzStride,strides)) {appearanceBad();return;}
+        // One bounded read of the two verified attribute tables, with the
+        // original narrow fallback for inaccessible intervening bytes.
+        constexpr std::size_t TableBytes=std::size_t(XyzStride-Xyz)+sizeof(strides);
+        std::array<unsigned char,TableBytes> tables{};
+        if(c>=0x10000&&c<=(std::numeric_limits<Address>::max)()-Xyz-TableBytes&&
+           read(c+Xyz,tables.data(),tables.size())){
+            std::memcpy(pointers.data(),tables.data(),sizeof(pointers));
+            std::memcpy(strides.data(),tables.data()+std::size_t(XyzStride-Xyz),sizeof(strides));
+        }else if(!get(c+Xyz,pointers)||!get(c+XyzStride,strides)) {appearanceBad();return;}
         for(unsigned a=0;a<AttributeCount;++a) {
             const auto ptr=pointers[a],stride=strides[a];
             const auto width=std::size_t(4*Components(a));
@@ -136,10 +144,20 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
             if(!ptr) {if(stride) appearanceBad();continue;}
             if(ptr<0x10000||(stride!=0&&stride!=width)) {appearanceBad();continue;}
             const auto words=(stride?(std::size_t(item.Active)+3)/4:1)*width;
+            // Position was already read for diagnostic points in this
+            // quiescent capture. Reuse its exact bytes only when the fresh
+            // appearance table independently agrees on address and stride.
+            auto copyWords=[&](std::uint32_t *out){
+                if(a==Position&&havePosition&&ptr==capturedXyz&&stride==capturedStride&&words==packed.size()){
+                    std::memcpy(out,packed.data(),words*sizeof(std::uint32_t));
+                    return true;
+                }
+                return read(ptr,out,words*sizeof(std::uint32_t));
+            };
             if(!stride) {
                 std::array<std::uint32_t,13> key{};
                 key[0]=static_cast<std::uint32_t>(words);
-                if(!read(ptr,key.data()+1,words*sizeof(std::uint32_t))) {appearanceBad();continue;}
+                if(!copyWords(key.data()+1)) {appearanceBad();continue;}
                 auto found=constants.find(key);
                 std::uint32_t start=0;
                 if(found!=constants.end()) {start=found->second;f.SharedConstantWords+=words;}
@@ -156,7 +174,7 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
             if(words>WordLimit-f.Words.size()) {appearanceBad();continue;}
             const auto start=f.Words.size();
             f.Words.resize(start+words);
-            if(!read(ptr,f.Words.data()+start,words*sizeof(std::uint32_t))) {
+            if(!copyWords(f.Words.data()+start)) {
                 f.Words.resize(start);appearanceBad();continue;
             }
             item.Attributes[a]={static_cast<std::uint32_t>(start),static_cast<std::uint32_t>(words),static_cast<std::uint8_t>(stride)};
@@ -170,9 +188,10 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
         if(!get(c+Active,count)||!get(c+ChildHead,children)||count<0||count>MaxPerCollection) {bad();return;}
         f.Active+=std::size_t(count);
         const auto start=f.Points.size();
+        Address xyz=0,stride=0;
+        bool havePosition=false;
         if(!count) ++f.Empty;
         else {
-            Address xyz=0,stride=0;
             // Position uses four-wide SoA blocks, 12 floats per block; a
             // zero stride is the SDK's shared constant-attribute representation.
             if(!get(c+Xyz,xyz)||!get(c+XyzStride,stride)||xyz<0x10000||
@@ -182,6 +201,7 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
                 packed.resize((stride?blocks:1)*12);
                 if(!read(xyz,packed.data(),packed.size()*sizeof(float))) bad();
                 else {
+                    havePosition=true;
                     for(int i=0;i<count;++i) {
                         const auto offset=(std::size_t(i)/4)*std::size_t(stride)+(i&3);
                         Point p{packed[offset],packed[offset+4],packed[offset+8]};
@@ -197,7 +217,7 @@ Frame Capture(Address module,int tick,Reader read,bool appearance=false) {
             item.Parent=parent;item.Active=static_cast<std::uint32_t>(count);
             item.PointStart=static_cast<std::uint32_t>(start);
             item.PointCount=static_cast<std::uint32_t>(f.Points.size()-start);
-            copyAppearance(c,item);
+            copyAppearance(c,item,xyz,stride,havePosition);
             node=static_cast<int>(f.Collections.size());
             f.Collections.push_back(std::move(item));
         }

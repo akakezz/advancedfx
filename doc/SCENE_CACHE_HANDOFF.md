@@ -536,3 +536,18 @@ Exact client 0x248a6e pushes `_rt_Shadows`; 0x248cc6 pops after tile drawing. Ho
 Client constructor callsite 0xe054/0xe05b identifies CClientShadowMgr singleton +0x10e4800. Require exact vtable +0xb36880, initialized byte +0x118, its texture +0x60, and current world/model material refs +0x20/+0x28 matching the atlas pair before readback. Skip GPU readback when no observed eligible atlas projection exists. Distinguish a failed install from intentionally disabled capture in sample status.
 
 Replay is intentionally still blob-only: the exact client has distinct CShadowProxy (vtable +0xb36e90, OnBind +0x24d250) and CShadowModelProxy (+0xb36ec0, OnBind +0x24d170). Both set the texture from singleton +0x60. The model proxy additionally indexes the live client shadow pool (+0x10e4838, stride 0x88) using the low 16 bits of proxy data, then queries the engine handle at +4 and writes UV/falloff/world-to-shadow parameters. Existing detached engine shadow handles use synthetic proxy data 0xffff; passing that to the model proxy is not safe. Atlas replay therefore needs a private binding path (or verified proxy replacement), separately scoped for world and model receivers, rather than simply switching the materials or rewriting the live atlas. No such native path is enabled here.
+
+### Phase 31A — native particle capture and history decode hot paths
+
+Batch the live appearance pointer/stride tables with original narrow fallback.
+Reuse the diagnostic XYZ payload only when its successful read and the current
+appearance table agree on address, stride and exact word count; the constant
+and varying paths preserve their original 32-bit lane values. No additional
+native lifetime assumptions beyond the existing quiescent capture boundary.
+Replace byte-at-a-time history match decoding with bounded nonoverlapping
+copies, including overlapping matches, without changing the compressed format.
+Portable fixtures compare broad/narrow capture, count XYZ payload reads, and
+exercise explicit overlapping and nonoverlapping match tokens. No measured FPS
+gain yet. Modern queued rendering remains disabled: shared renderer material
+mutations and deferred ownership must be established separately; no queue-mode
+switch, lifetime extension, or live isolation relaxation is introduced.

@@ -67,7 +67,19 @@ inline bool Decode(const Bytes &in,std::size_t expected,Bytes &out) {
             if(in.size()-i<2||count>expected-out.size()) return false;
             const auto distance=std::size_t(in[i])+(std::size_t(in[i+1])<<8);i+=2;
             if(!distance||distance>out.size()) return false;
-            for(std::size_t j=0;j<count;++j) out.push_back(out[out.size()-distance]);
+            // A match may overlap its own output. Copy the initially
+            // available prefix, then double the initialized span in bounded
+            // non-overlapping copies. Never read an uninitialized byte.
+            const auto start=out.size();
+            out.resize(start+count);
+            const auto first=(std::min)(count,distance);
+            std::memcpy(out.data()+start,out.data()+start-distance,first);
+            std::size_t copied=first;
+            while(copied<count){
+                const auto chunk=(std::min)(copied,count-copied);
+                std::memcpy(out.data()+start+copied,out.data()+start,chunk);
+                copied+=chunk;
+            }
         }
     }
     return out.size()==expected;
