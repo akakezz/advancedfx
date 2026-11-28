@@ -36,6 +36,9 @@ inline Bytes Encode(const Bytes &in) {
             if(distance&&distance<=65535&&std::memcmp(in.data()+i,in.data()+pos,4)==0) {
                 const auto limit=(std::min)(std::size_t(131),in.size()-i);
                 std::size_t count=4;
+                // Compare immutable input in word-sized chunks; source
+                // ranges may overlap, but neither is modified.
+                while(limit-count>=8&&std::memcmp(in.data()+i+count,in.data()+pos+count,8)==0)count+=8;
                 while(count<limit&&in[i+count]==in[pos+count]) ++count;
                 literals(start,i);
                 out.push_back(static_cast<std::uint8_t>(128+count-4));

@@ -279,5 +279,30 @@ int main(){
         audit.NoAuxiliary==4&&audit.NoPost==4&&audit.MaterialReady==4,
         "sprite census keeps orientation and independent blockers separate");
     check(audit.Describe().find("not queued eligibility")!=std::string::npos,"sprite census does not claim queued eligibility");
+    // Registered witness: duplicate names with incompatible definitions,
+    // unknown initializers and cyclic native lists must not be trusted.
+    put(root,base+RootVtable);put(root+RootNext,Address(0));put(root+RootPrev,Address(0));
+    put(coll+ChildHead,Address(0));put(coll+Definition,def);
+    put(coll+0x10,Address(0));put(coll+0x2788,Address(0));
+    put(def+0x318,int(0));put(def+0x218,Address(32));
+    for(unsigned i=0;i<6;++i)put(def+0x258+i*0x20,int(0));
+    constexpr Address ops=0x60000000,offsets=0x61000000,sprite=0x62000000;
+    put(def+0x278,int(1));put(def+0x268,ops);put(def+0x348,offsets);
+    put(ops,sprite);put(offsets,Address(0));put(sprite,base+0xe0a2b8);
+    put(base+0xe0a2b8+0x10,base+0x8f5950);put(base+0xe0a2b8+0x48,base+0x8f5a00);
+    put(sprite+0x74,int(0));
+    bool witnessComplete=false;
+    auto shapes=AuditRegisteredSpriteFactories(base,read,witnessComplete);
+    check(witnessComplete&&shapes.size()==1&&shapes.begin()->second.Narrow(),"factory-free narrow live witness");
+    QueuedSpriteAudit pre;pre.FactoryWitnessComplete=witnessComplete;pre.ObserveFactory(app,shapes);
+    check(pre.WitnessMatched==2&&pre.WitnessNarrow==2&&pre.WitnessParticles==7,"pre-factory history name census");
+    put(def+0x218,Address(16));
+    shapes=AuditRegisteredSpriteFactories(base,read,witnessComplete);
+    check(witnessComplete&&!shapes.begin()->second.ScratchBounded,"scratch bounds checked");
+    put(def+0x218,Address(32));put(base+0xe0a2b8+0x10,base+0x12345);
+    shapes=AuditRegisteredSpriteFactories(base,read,witnessComplete);
+    check(witnessComplete&&!shapes.begin()->second.KnownInitializers,"unknown initializer rejected");
+    put(root+RootNext,root);
+    check(AuditRegisteredSpriteFactories(base,read,witnessComplete).empty()&&!witnessComplete,"cycle invalidates whole witness");
     std::cout<<"Native particle snapshot tests passed\n";
 }

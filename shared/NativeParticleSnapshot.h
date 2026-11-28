@@ -715,8 +715,114 @@ inline GeometryAccountingAction CompareGeometryAccounting(const GeometryAccounti
 // Read-only census of attempted detached collection shapes during the
 // existing immediate-mode benchmark warm-up. None of these counts authorize
 // a queued draw: ownership and the remaining renderer call graph still matter.
+// A read-only witness from registered collections, before any replay factory
+// invocation. The name is owned; addresses never escape this audit.
+struct SpriteFactoryShape {
+    bool SingleSprite=false,OrientationZero=false,Leaf=false,KnownInitializers=false;
+    bool ScratchBounded=false,NoSheet=false,NoPost=false;
+    bool operator==(const SpriteFactoryShape &b) const {
+        return SingleSprite==b.SingleSprite&&OrientationZero==b.OrientationZero&&Leaf==b.Leaf&&
+            KnownInitializers==b.KnownInitializers&&ScratchBounded==b.ScratchBounded&&NoSheet==b.NoSheet&&NoPost==b.NoPost;
+    }
+    bool Narrow()const{return SingleSprite&&OrientationZero&&Leaf&&KnownInitializers&&ScratchBounded&&NoSheet&&NoPost;}
+};
+template<class Reader>
+std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address module,Reader read,bool &complete){
+    using namespace Layout;
+    complete=false;
+    std::map<std::string,SpriteFactoryShape> result;
+    std::map<std::string,Address> definitions;
+    std::set<std::string> ambiguous;
+    std::set<Address> visited,roots;
+    auto get=[&](Address a,Address off,auto &v){
+        return a>=0x10000&&a<=(std::numeric_limits<Address>::max)()-off&&
+            a+off<=(std::numeric_limits<Address>::max)()-sizeof(v)&&read(a+off,&v,sizeof(v));
+    };
+    if(module>(std::numeric_limits<Address>::max)()-0x1400000)return {};
+    std::uint32_t ready=0;Address root=0;
+    if(!get(module,ManagerReady,ready)||!(ready&1)||!get(module,Manager+RootHead,root))return {};
+    auto walk=[&](auto &&self,Address c,unsigned depth)->bool{
+        if(depth>32||visited.size()>=MaxCollections||!visited.insert(c).second)return false;
+        Address def=0,name=0,child=0;
+        if(!get(c,Definition,def)||!get(def,DefinitionName,name)||!get(c,ChildHead,child))return false;
+        std::string key;
+        for(unsigned i=0;i<128;++i){
+            char ch=0;
+            if(!get(name,i,ch))return false;
+            if(!ch)break;
+            key+=ch;
+        }
+        if(key.empty()||key.size()==128)return false;
+        SpriteFactoryShape shape;
+        int childCount=-1;Address scratchSize=0,sheet=1,post=1;
+        shape.Leaf=get(def,0x318,childCount)&&childCount==0&&!child;
+        shape.NoSheet=get(c,0x10,sheet)&&!sheet;
+        shape.NoPost=get(c,0x2788,post)&&!post;
+        Address sprite=0;bool known=true,bounded=get(def,0x218,scratchSize)&&scratchSize<=0x100000;
+        // Six operator initializer lists, in the actual constructor order.
+        // Only the exact no-op and sprite initializer are recognized.
+        for(unsigned i=0;i<6;++i){
+            const Address off=0x248+i*0x20;
+            int count=-1;Address array=0,offsets=0;
+            if(!get(def,off+0x10,count)||count<0||count>256){known=bounded=false;break;}
+            if(!count)continue;
+            if(!get(def,off,array)||!get(def,0x328+i*0x20,offsets)){known=bounded=false;break;}
+            for(int j=0;j<count;++j){
+                Address op=0,vt=0,init=0,render=0,offset=0;
+                if(!get(array,Address(j)*8,op)||!get(op,0,vt)||!get(vt,0x10,init)){known=bounded=false;break;}
+                const bool exactSprite=i==1&&vt==module+0xe0a2b8&&
+                    get(vt,0x48,render)&&render==module+0x8f5a00&&init==module+0x8f5950;
+                if(i==1&&count==1&&exactSprite)sprite=op;
+                if(!exactSprite&&init!=module+0x621c0)known=false;
+                if(!get(offsets,Address(j)*8,offset)||offset>scratchSize||
+                    (exactSprite&&scratchSize-offset<0x15))bounded=false;
+            }
+        }
+        shape.SingleSprite=sprite!=0;
+        int orientation=-1;
+        shape.OrientationZero=sprite&&get(sprite,0x74,orientation)&&orientation==0;
+        shape.KnownInitializers=known;shape.ScratchBounded=bounded;
+        auto inserted=result.emplace(key,shape);
+        auto d=definitions.emplace(key,def);
+        if(!inserted.second&&(!(inserted.first->second==shape)||d.first->second!=def))ambiguous.insert(key);
+        while(child){
+            Address next=0;
+            if(!get(child,ChildNext,next)||!self(self,child,depth+1))return false;
+            child=next;
+        }
+        return true;
+    };
+    Address prev=0;
+    while(root){
+        Address vt=0,next=0,back=0;
+        if(roots.size()>=MaxCollections||!roots.insert(root).second||!get(root,0,vt)||vt!=module+RootVtable||
+            !get(root,RootNext,next)||!get(root,RootPrev,back)||back!=prev||
+            root>(std::numeric_limits<Address>::max)()-RootCollection||!walk(walk,root+RootCollection,0))return {};
+        prev=root;root=next;
+    }
+    for(const auto &name:ambiguous)result.erase(name);
+    complete=true;
+    return result;
+}
 struct QueuedSpriteAudit {
     std::size_t Nodes=0,Particles=0,SingleSprite=0,NoAuxiliary=0,NoPost=0,MaterialReady=0;
+    bool FactoryWitnessComplete=false;
+    std::size_t WitnessMatched=0,WitnessLeaf=0,WitnessKnownInitializers=0,WitnessScratch=0,WitnessNoSheet=0,WitnessNarrow=0,WitnessParticles=0;
+    void ObserveFactory(const Frame &frame,const std::map<std::string,SpriteFactoryShape> &shapes){
+        for(const auto &c:frame.Collections){
+            if(!c.Active)continue;
+            const auto end=std::find(c.Name.begin(),c.Name.end(),'\0');
+            if(end==c.Name.end())continue;
+            const auto it=shapes.find(std::string(c.Name.begin(),end));
+            if(it==shapes.end())continue;
+            ++WitnessMatched;const auto &s=it->second;
+            if(s.Leaf)++WitnessLeaf;
+            if(s.KnownInitializers)++WitnessKnownInitializers;
+            if(s.ScratchBounded)++WitnessScratch;
+            if(s.NoSheet)++WitnessNoSheet;
+            if(s.Narrow()){++WitnessNarrow;WitnessParticles+=c.Active;}
+        }
+    }
     std::array<std::size_t,4> Orientation{};
     std::size_t OtherOrientation=0,UnknownOrientation=0,NarrowNodes=0,NarrowParticles=0;
     void Observe(std::size_t active,bool singleSprite,int orientation,bool noAuxiliary,bool noPost,bool materialReady){
@@ -741,7 +847,12 @@ struct QueuedSpriteAudit {
             "; no auxiliary scratch "+std::to_string(NoAuxiliary)+", no post callback "+std::to_string(NoPost)+
             ", ordinary precached proxy-free material "+std::to_string(MaterialReady)+
             "; narrow investigation shape "+std::to_string(NarrowNodes)+" nodes / "+std::to_string(NarrowParticles)+
-            " particles (not queued eligibility or draw coverage).";
+            " particles (not queued eligibility or draw coverage)."+
+            " Pre-factory live witness "+std::string(FactoryWitnessComplete?"complete":"unavailable")+
+            ": matched "+std::to_string(WitnessMatched)+", leaf "+std::to_string(WitnessLeaf)+
+            ", known initializers "+std::to_string(WitnessKnownInitializers)+", scratch bounded "+std::to_string(WitnessScratch)+
+            ", no sheet "+std::to_string(WitnessNoSheet)+", narrow "+std::to_string(WitnessNarrow)+
+            " nodes / "+std::to_string(WitnessParticles)+" particles (diagnostic only).";
     }
 };
 struct ReplayResult {

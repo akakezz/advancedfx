@@ -914,6 +914,10 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         match(0x8e4920,{0x48,0x8b,0x82,0x48,0x03,0,0})&&
         match(0x8e4931,{0x4c,0x03,0x8f,0x78,0x22,0,0})&&
         match(0x8e497e,{0x48,0x8b,0x8f,0x88,0x27,0,0});
+    if(auditSpriteAbi){
+        const auto shapes=AuditRegisteredSpriteFactories(base,read,result.SpriteAudit.FactoryWitnessComplete);
+        if(result.SpriteAudit.FactoryWitnessComplete)result.SpriteAudit.ObserveFactory(frame,shapes);
+    }
     bool listChanged=false;
     // Only allocation capacity is reused between attempts in this callback.
     // Every native address and validation result is recomputed for the
