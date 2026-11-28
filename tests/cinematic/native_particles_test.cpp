@@ -390,8 +390,8 @@ int main(){
     check(meshCache.Count()==Billboard::MeshCache::MaxCachedCollections,"bounded collection count");
     cached=meshCache.Get(manyLease,manyLease->Collections.size()-1,cam,0x40205);
     check(cached.Packed&&!cached.DecodeHit&&!cached.MeshHit,"over-budget transient does not become a retained hit");
-    auto malformed=bill;malformed.Collections[0].Attributes[Alpha2].Start=0xffffffffu;
-    auto badLease=std::make_shared<const Frame>(std::move(malformed));
+    auto malformedBillboard=bill;malformedBillboard.Collections[0].Attributes[Alpha2].Start=0xffffffffu;
+    auto badLease=std::make_shared<const Frame>(std::move(malformedBillboard));
     cached=meshCache.Get(badLease,0,cam,0x40205);
     check(!cached.Packed&&!cached.DecodeHit,"malformed collection is rejected on first decode");
     cached=meshCache.Get(badLease,0,cam,0x40205);

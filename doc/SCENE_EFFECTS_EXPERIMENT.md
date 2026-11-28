@@ -1228,3 +1228,15 @@ Run `python tests/cinematic/check_queued_billboard_abi.py PATH_TO_X64_DLLS`
 to compare the actual C++ instruction guards to exact SHA-256-verified
 PE sections without executing game code. This is a static ABI check,
 not runtime validation.
+
+### Phase 31I — native vertex capacity check
+
+Exact shader API +0x590 -> 0x1b940 reads int at api+0x2de8; +0x820 ->
+0x25dd0 forwards to CMeshMgr +0x100 via singleton getter 0xf220.
+Native queued MaxVertices 0x2c750 gets material format, clears bit 10,
+gets shader vertex size, calls +0x590 and divides at 0x2c79e, clamps to
+65535. Our minimal supported formats already have bit 10 clear; require
+native stride equal to owned stride before dividing, and read the byte
+capacity once. No new mesh allocation contract. Existing 33 signatures
+were verified directly against the user-supplied DLL files. New signatures
+from exact disassembly 0x1b940, 0x25dd0, 0xf220, 0x25dec.

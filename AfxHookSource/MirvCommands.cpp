@@ -1225,6 +1225,11 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
        !SurfaceGet(ms+0x107248,api)||!SurfaceGet(api,vt)||vt!=shader+0x7cce8||
        !SurfaceGet(vt+0x6d8,fn)||fn!=shader+0x17250||
        !SurfaceGet(vt+0x820,fn)||fn!=shader+0x25dd0||
+       !SurfaceGet(vt+0x590,fn)||fn!=shader+0x1b940||
+       !guardedMatch(shader,0x1b940,{0x8b,0x81,0xe8,0x2d,0,0,0xc3})||
+       !guardedMatch(shader,0x25dd0,{0x40,0x53,0x48,0x83,0xec,0x20,0x48,0x8b,0xda,0xe8,0x42,0x94,0xfe,0xff})||
+       !guardedMatch(shader,0xf220,{0x48,0x8d,0x05,0x59,0x27,0x09,0,0xc3})||
+       !guardedMatch(shader,0x25dec,{0x49,0xff,0xa0,0,0x01,0,0})||
        !guardedMatch(shader,0xa5a0,{0x48,0x89,0x53,0x58})||
        !guardedMatch(shader,0xa6c0,{0x48,0x89,0x43,0x78})||
        !guardedMatch(shader,0xa74e,{0x48,0x89,0x06})||
@@ -1263,7 +1268,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
     using Mode=void(*)(void*,int);
     using Lock=void(*)(void*,int,int,void*);
     using Draw=void(*)(void*,int,int);
-    using MaxVertices=int(*)(void*,void*);
+    using VertexSize=int(*)(void*,std::uint64_t);
     auto *context=reinterpret_cast<Getter>(ms+0x16c20)(reinterpret_cast<void*>(materials));
     if(!context)return fail("Queued billboard context unavailable.");
     const Address ctx=reinterpret_cast<Address>(context);
@@ -1386,6 +1391,13 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
     // Prepare only owned data before binding or locking. No native pointer
     // survives beyond this producer callback except via native queue calls.
     std::map<Address,Material> validated;
+    // Vertex-size query depends on format, not individual sprite material.
+    // Check against native shader layout before invoking mesh allocation.
+    std::map<std::uint64_t,int> nativeVertexSizes;
+    int vertexBufferBytes=0;
+    if(!SurfaceGet(api+0x2de8,vertexBufferBytes)||vertexBufferBytes<=0||
+       vertexBufferBytes>1024*1024*1024)
+        return fail("Queued billboard dynamic vertex buffer capacity unavailable.");
     std::map<Address,std::string> rejectedMaterials;
     std::map<std::string,std::size_t> materialReasons;
     // The producer callback is engine-thread confined; use thread-local
@@ -1418,11 +1430,17 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         return true;
     };
     bool stopped=false;
-    std::size_t unsupported=0,materialRejected=0,geometryRejected=0,meshRejected=0,culled=0;
+    std::size_t unsupported=0,materialRejected=0,geometryRejected=0,meshRejected=0,culled=0,limited=0,afterFailure=0;
+    const char *firstMeshFailure=nullptr;
+    auto rejectMesh=[&](const char *reason,bool stop){
+        if(!firstMeshFailure)firstMeshFailure=reason;
+        ++meshRejected;++result.Rejected;stopped|=stop;
+    };
     for(std::size_t i=0;i<frame.Collections.size();++i){
         const auto &c=frame.Collections[i];if(!c.Active)continue;
         ++result.Attempts;
-        if(stopped||result.Trees>=128||result.Particles+c.Active>8192){++result.Rejected;continue;}
+        if(stopped){++afterFailure;++result.Rejected;continue;}
+        if(result.Trees>=128||result.Particles+c.Active>8192){++limited;++result.Rejected;continue;}
         const auto end=std::find(c.Name.begin(),c.Name.end(),'\0');
         const auto found=end==c.Name.end()?witnesses.end():witnesses.find(std::string(c.Name.begin(),end));
         if(found==witnesses.end()){++unsupported;++result.Rejected;continue;}
@@ -1445,10 +1463,21 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         if(!geometry.Visible)continue;
         const int nv=static_cast<int>(packed.Vertices.size()/packed.Stride),ni=static_cast<int>(packed.Indices.size());
         if(!SurfaceQueuedMeshIdle(ms,context)||MaterialSystem_IsImmediate()){
-            ++meshRejected;++result.Rejected;stopped=true;continue;
+            rejectMesh("context changed or mesh already busy",true);continue;
         }
-        const int maxVertices=reinterpret_cast<MaxVertices>(ms+0x2c750)(context,reinterpret_cast<void*>(material.Real));
-        if(nv>maxVertices||ni>32768||maxVertices<=0){++meshRejected;++result.Rejected;continue;}
+        auto size=nativeVertexSizes.find(material.Format);
+        if(size==nativeVertexSizes.end()){
+            const int actualSize=reinterpret_cast<VertexSize>(shader+0x25dd0)(reinterpret_cast<void*>(api),material.Format);
+            size=nativeVertexSizes.emplace(material.Format,actualSize).first;
+        }
+        // Native MaxVertices (0x2c750) divides the same buffer byte count
+        // by the shader's stride. Check stride first and perform the bounded
+        // division here, avoiding an unchecked native integer divide.
+        if(size->second<=0||static_cast<unsigned>(size->second)!=packed.Stride){
+            rejectMesh("shader vertex size differs from owned format",false);continue;
+        }
+        const int maxVertices=(std::min)(65535,vertexBufferBytes/size->second);
+        if(nv>maxVertices||ni>32768){rejectMesh("native vertex/index capacity",false);continue;}
         const auto submitStart=std::chrono::steady_clock::now();
         // Keep a native reference through bind, mesh submission and queued
         // decrement. The original material is separately pinned until restore.
@@ -1463,15 +1492,15 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         bind(context,reinterpret_cast<void*>(material.Real),nullptr);
         Address bound=0,expectedMesh=0;
         if(!SurfaceGet(ctx+0x18,bound)||bound!=material.Real||!SurfaceGet(ctx+0x310,expectedMesh)){
-            ++meshRejected;++result.Rejected;stopped=true;continue;
+            rejectMesh("material bind or mesh identity",true);continue;
         }
         auto *nativeMesh=dynamic(context,true,nullptr,nullptr,nullptr);
         Address actual=reinterpret_cast<Address>(nativeMesh),fmt=0;std::uint16_t stride=0;
         if(!actual||actual!=expectedMesh||!SurfaceQueuedMeshIdle(ms,context)){
-            ++meshRejected;++result.Rejected;stopped=true;continue;
+            rejectMesh("dynamic mesh identity or staging state",true);continue;
         }
         if(!SurfaceGet(actual+0x40,fmt)||fmt!=material.Format||!SurfaceGet(actual+0x68,stride)||stride!=packed.Stride){
-            discard(nativeMesh);++meshRejected;++result.Rejected;stopped=true;continue;
+            discard(nativeMesh);rejectMesh("dynamic mesh format or stride",true);continue;
         }
         primitive(nativeMesh,2);
         alignas(16) Billboard::LockDescriptor desc{};
@@ -1482,6 +1511,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
             SurfaceGet(actual+0x64,lockedIndices)&&lockedIndices==ni&&
             Billboard::ValidLockDescriptor(desc,vertexBase,indexBase,nv,ni,stride)&&
             writable(vertexBase,packed.Vertices.size())&&writable(indexBase,packed.Indices.size()*sizeof(std::uint16_t));
+        const bool descriptorValid=ok;
         if(ok){
             const auto writeStart=std::chrono::steady_clock::now();
             SIZE_T wrote=0;
@@ -1495,12 +1525,15 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
             // Native discard clears staging pointers and queues no draw.
             // Do not call the native renderer on a malformed descriptor.
             unlockMesh(nativeMesh,0,0,desc.data());discard(nativeMesh);
-            ++meshRejected;++result.Rejected;stopped=true;continue;
+            rejectMesh(descriptorValid?"staging memory copy failed":"lock descriptor or staging allocation invalid",true);continue;
         }
         unlockMesh(nativeMesh,nv,ni,desc.data());drawMesh(nativeMesh,-1,0);
         ++result.Trees;++result.Nodes;result.Particles+=geometry.Visible;
         result.RenderMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-submitStart).count();
-        if(!SurfaceQueuedMeshIdle(ms,context)){++result.CleanupFailures;stopped=true;}
+        if(!SurfaceQueuedMeshIdle(ms,context)){
+            ++result.CleanupFailures;stopped=true;
+            if(!firstMeshFailure)firstMeshFailure="post-draw staging not idle";
+        }
         // RestoreBinding runs before the per-batch MaterialPin, including
         // every early continue above.
     }
@@ -1509,6 +1542,8 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         std::to_string(culled)+" invisible, excluded collections (shape/material/geometry/mesh) "+
         std::to_string(unsupported)+"/"+std::to_string(materialRejected)+"/"+std::to_string(geometryRejected)+"/"+
         std::to_string(meshRejected)+". Live effects retained; native queue submission is not pixel validation.";
+    result.Status+=" Budget-excluded "+std::to_string(limited)+", skipped after mesh failure "+std::to_string(afterFailure)+".";
+    if(firstMeshFailure)result.Status+=" First mesh failure: "+std::string(firstMeshFailure)+".";
     result.Status+=" Owned geometry cache: decode hits "+std::to_string(decodeHits)+
         ", packed mesh hits "+std::to_string(meshHits)+", cached collections "+std::to_string(geometryCache.Count())+
         ", historical particles "+std::to_string(geometryCache.Particles())+".";

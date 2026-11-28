@@ -648,3 +648,18 @@ Report decode/packed hit counts with existing queued overlay status.
 No new eligibility, visual coverage or queue isolation claims. Portable
 tests cover camera/format changes, lease replacement, malformed data,
 bounds and weak lifetime. Windows/runtime validation still required.
+
+### Phase 31I — geometry-cache fixture correction and first-draw diagnostics
+
+The 669a768 portable suite failed to compile its new fixture because the
+local name malformed was already used by an earlier shared-frame test.
+Rename the new fixture without changing production cache behavior. The
+headless overlay job passed. Independently compared all 33 previous
+instruction anchors to file-backed PE sections of the exact uploaded DLLs;
+all matched. Add shader vertex-size dispatch and capacity guards, query
+stride once per format per callback, and compute the same bounded vertex
+limit as native MaxVertices without its unchecked integer division.
+Report the first mesh failure stage, budget exclusions and collections
+skipped after failure, distinctly from material/shape/geometry failures.
+No expanded eligibility, native lifetime or isolation changes. Build and
+actual rendering validation remain pending.
