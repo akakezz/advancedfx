@@ -366,6 +366,38 @@ int main(){
     field(0x78,vb+12);field(0x1c,24u);check(!Billboard::ValidLockDescriptor(descriptor,vb,ib,8,12,24),"extra texture stream rejected");
     field(0x1c,0u);field(0xf8,1u);check(!Billboard::ValidLockDescriptor(descriptor,vb,ib,8,12,24),"nonzero index offset rejected");
     field(0xf8,0u);check(!Billboard::ValidLockDescriptor(descriptor,vb,vb+16,8,12,24),"overlapping staging buffers rejected");
+    // Immutable lease + exact camera/format identity. Reuse values during
+    // camera motion, reuse packed bytes only when every geometry input agrees.
+    Billboard::MeshCache meshCache;
+    auto lease=std::make_shared<const Frame>(bill);
+    auto cached=meshCache.Get(lease,0,cam,0x40205);
+    check(cached.Packed&&!cached.DecodeHit&&!cached.MeshHit&&cached.Visible==2&&meshCache.Count()==1,"initial mesh cache miss");
+    const auto savedBytes=cached.Packed->Vertices;
+    cached=meshCache.Get(lease,0,cam,0x40205);
+    check(cached.Packed&&cached.DecodeHit&&cached.MeshHit&&cached.Packed->Vertices==savedBytes,"stationary mesh cache hit");
+    auto moved=cam;moved.Origin[0]=1;moved.View[3]=-1;
+    cached=meshCache.Get(lease,0,moved,0x40205);
+    check(cached.Packed&&cached.DecodeHit&&!cached.MeshHit,"camera movement invalidates only geometry");
+    cached=meshCache.Get(lease,0,moved,0x40005);
+    check(cached.Packed&&cached.DecodeHit&&!cached.MeshHit&&cached.Packed->Stride==32,"format change invalidates geometry");
+    auto sameTickReplacement=std::make_shared<const Frame>(bill);
+    cached=meshCache.Get(sameTickReplacement,0,moved,0x40005);
+    check(cached.Packed&&!cached.DecodeHit&&!cached.MeshHit,"same tick new immutable lease invalidates decoded values");
+    auto many=bill;many.Collections.resize(Billboard::MeshCache::MaxCachedCollections+1,bc);
+    auto manyLease=std::make_shared<const Frame>(std::move(many));
+    for(std::size_t i=0;i<manyLease->Collections.size();++i)
+        check(meshCache.Get(manyLease,i,cam,0x40205).Packed!=nullptr,"transient fallback remains usable");
+    check(meshCache.Count()==Billboard::MeshCache::MaxCachedCollections,"bounded collection count");
+    cached=meshCache.Get(manyLease,manyLease->Collections.size()-1,cam,0x40205);
+    check(cached.Packed&&!cached.DecodeHit&&!cached.MeshHit,"over-budget transient does not become a retained hit");
+    auto malformed=bill;malformed.Collections[0].Attributes[Alpha2].Start=0xffffffffu;
+    auto badLease=std::make_shared<const Frame>(std::move(malformed));
+    cached=meshCache.Get(badLease,0,cam,0x40205);
+    check(!cached.Packed&&!cached.DecodeHit,"malformed collection is rejected on first decode");
+    cached=meshCache.Get(badLease,0,cam,0x40205);
+    check(!cached.Packed&&cached.DecodeHit&&!cached.MeshHit,"malformed collection failure is memoized without stale mesh");
+    std::weak_ptr<const Frame> weak=badLease;badLease.reset();
+    check(weak.expired(),"mesh cache never owns historical frame");
     bc.Attributes[Alpha2].Start=0xffffffffu;
     check(!Billboard::Prepare(bill,0,particles)&&particles.empty(),"malformed attribute rejects entire collection");
     std::cout<<"Native particle snapshot tests passed\n";

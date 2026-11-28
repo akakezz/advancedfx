@@ -1422,7 +1422,7 @@ void SceneCacheDrawParticles()
         if(auditRenderers)g_SceneBench.Audited=true;
     }
     const auto begin=std::chrono::steady_clock::now();
-    auto result=queuedBillboards?Mirv_Tf2_RenderQueuedBillboards(*sample):
+    auto result=queuedBillboards?Mirv_Tf2_RenderQueuedBillboards(sample):
         Mirv_Tf2_RenderNativeParticles(*sample,fastMemory,fastReads,auditRenderers,prepared.get());
     std::lock_guard<std::recursive_mutex> lock(g_SceneMutex);
     if(auditRenderers&&g_SceneBench.Active){

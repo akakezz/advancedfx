@@ -631,3 +631,20 @@ definition lookup to recorded active names, cache definition names within
 the stationary callback and still walk every root/child link. Variable
 names use one bounded read with narrow fallback. No eligibility expansion
 or change to the queue opt-in. Runtime and Windows validation remain pending.
+
+### Phase 31H — bounded queued billboard geometry reuse
+
+Add a single immutable history-lease geometry cache for queued independent
+sprites. Decode only currently eligible collections on demand. Reuse
+decoded position/radius/rotation/tint/alpha values as the camera moves;
+reuse packed world-space vertex/index payload only when the exact camera
+and vertex format agree. A different shared frame (including same-tick
+replacement) invalidates all retained entries. The cache has a weak frame
+identity, holds no native pointer or material reference, and does not
+extend history lifetime. Limits: 8192 historical particles, 128 collections,
+plus one transient workspace on overflow. All material, context and mesh
+guards still run and native staging is allocated/copied for every draw.
+Report decode/packed hit counts with existing queued overlay status.
+No new eligibility, visual coverage or queue isolation claims. Portable
+tests cover camera/format changes, lease replacement, malformed data,
+bounds and weak lifetime. Windows/runtime validation still required.

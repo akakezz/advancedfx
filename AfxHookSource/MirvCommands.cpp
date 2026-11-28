@@ -1186,10 +1186,12 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
 }
 // Independent, opt-in queued overlay. No detached factory, native particle
 // renderer or particle isolation; only native queue-owned mesh allocations.
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const advancedfx::NativeParticles::Frame &frame)
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const std::shared_ptr<const advancedfx::NativeParticles::Frame> &sample)
 {
     using namespace advancedfx::NativeParticles;
     ReplayResult result;
+    if(!sample){result.Status="No retained appearance sample for queued billboard overlay.";return result;}
+    const auto &frame=*sample;
     auto fail=[&](const char *why){result.Status=why;return result;};
 #ifdef _WIN64
     if(!frame.Complete||!frame.Appearance||!Mirv_Tf2_SceneStationaryReady()||
@@ -1386,8 +1388,11 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
     std::map<Address,Material> validated;
     std::map<Address,std::string> rejectedMaterials;
     std::map<std::string,std::size_t> materialReasons;
-    std::vector<Billboard::Particle> particles;Billboard::Mesh mesh;
-    Billboard::PackedMesh packed;
+    // The producer callback is engine-thread confined; use thread-local
+    // owned memory rather than retaining any native resource between frames.
+    static thread_local Billboard::MeshCache geometryCache;
+    geometryCache.Begin(sample);
+    std::size_t decodeHits=0,meshHits=0;
     const auto begin=reinterpret_cast<NoArg>(ms+0x2a940);
     owner.End=reinterpret_cast<NoArg>(ms+0x2ba90);
     begin(context);owner.Begun=true;
@@ -1431,13 +1436,14 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         if(mat==validated.end()){++materialReasons[rejectedMaterials.at(ptr)];++materialRejected;++result.Rejected;continue;}
         const auto &material=mat->second;
         const auto geometryStart=std::chrono::steady_clock::now();
-        const bool built=Billboard::Prepare(frame,i,particles)&&Billboard::Build(particles,camera,true,mesh)&&
-            Billboard::PackWorld(mesh,camera,material.Format,packed);
+        const auto geometry=geometryCache.Get(sample,i,camera,material.Format);
         result.PlanMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-geometryStart).count();
-        if(!built){++geometryRejected;++result.Rejected;continue;}
-        culled+=mesh.Culled;
-        if(!mesh.Visible)continue;
-        const int nv=static_cast<int>(mesh.Vertices.size()),ni=static_cast<int>(mesh.Indices.size());
+        decodeHits+=geometry.DecodeHit;meshHits+=geometry.MeshHit;
+        if(!geometry.Packed){++geometryRejected;++result.Rejected;continue;}
+        const auto &packed=*geometry.Packed;
+        culled+=geometry.Culled;
+        if(!geometry.Visible)continue;
+        const int nv=static_cast<int>(packed.Vertices.size()/packed.Stride),ni=static_cast<int>(packed.Indices.size());
         if(!SurfaceQueuedMeshIdle(ms,context)||MaterialSystem_IsImmediate()){
             ++meshRejected;++result.Rejected;stopped=true;continue;
         }
@@ -1492,7 +1498,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
             ++meshRejected;++result.Rejected;stopped=true;continue;
         }
         unlockMesh(nativeMesh,nv,ni,desc.data());drawMesh(nativeMesh,-1,0);
-        ++result.Trees;++result.Nodes;result.Particles+=mesh.Visible;
+        ++result.Trees;++result.Nodes;result.Particles+=geometry.Visible;
         result.RenderMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-submitStart).count();
         if(!SurfaceQueuedMeshIdle(ms,context)){++result.CleanupFailures;stopped=true;}
         // RestoreBinding runs before the per-batch MaterialPin, including
@@ -1503,6 +1509,9 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         std::to_string(culled)+" invisible, excluded collections (shape/material/geometry/mesh) "+
         std::to_string(unsupported)+"/"+std::to_string(materialRejected)+"/"+std::to_string(geometryRejected)+"/"+
         std::to_string(meshRejected)+". Live effects retained; native queue submission is not pixel validation.";
+    result.Status+=" Owned geometry cache: decode hits "+std::to_string(decodeHits)+
+        ", packed mesh hits "+std::to_string(meshHits)+", cached collections "+std::to_string(geometryCache.Count())+
+        ", historical particles "+std::to_string(geometryCache.Particles())+".";
     for(const auto &entry:materialReasons)result.Status+=" Material rejection ["+entry.first+"]: "+std::to_string(entry.second)+".";
 #else
     (void)frame;result.Status="Queued billboard overlay requires TF2 x64.";

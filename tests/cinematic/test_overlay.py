@@ -41,7 +41,7 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick,bool
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &,std::size_t){return "fixture";}
 std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *snapshot,bool){if(snapshot)snapshot->Complete=true;return "legacy fixture";}
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &,bool,bool,bool,const advancedfx::NativeParticles::ReplayPreparation *){return {}; }
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const advancedfx::NativeParticles::Frame &){return {}; }
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const std::shared_ptr<const advancedfx::NativeParticles::Frame> &){return {}; }
 int sceneLegacyDraws=0,sceneLegacyQueuedDraws=0;
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderLegacyParticles(const advancedfx::LegacyParticles::Frame &,bool allowQueued){++sceneLegacyDraws;if(allowQueued)++sceneLegacyQueuedDraws;return {}; }
 int sceneNativeView=-1;int Mirv_Tf2_SceneRenderViewId(){return sceneNativeView;}

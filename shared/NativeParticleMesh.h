@@ -46,6 +46,75 @@ inline bool PackWorld(const Mesh &mesh,const Camera &camera,std::uint64_t format
     out.Indices=mesh.Indices;out.Stride=stride;
     return true;
 }
+// Bounded producer-local cache for a single immutable decoded history lease.
+// Entries contain only owned values. No native pointers, material references,
+// or queue allocations are cached. Repacking is needed on camera/format changes,
+// but decoding remains reusable while the source lease is unchanged.
+class MeshCache {
+public:
+    static constexpr std::size_t MaxCachedParticles=8192,MaxCachedCollections=128;
+    struct Result {
+        const PackedMesh *Packed=nullptr;
+        std::size_t Visible=0,Culled=0;
+        bool DecodeHit=false,MeshHit=false;
+    };
+    void Begin(const std::shared_ptr<const Frame> &sample){
+        // Compare the owning lease, not tick or a bare recycled address.
+        const auto old=Source.lock();
+        if(!old||old!=sample){Entries.clear();CachedParticles=0;Source=sample;}
+    }
+    Result Get(const std::shared_ptr<const Frame> &sample,std::size_t index,
+               const Camera &camera,std::uint64_t format){
+        Begin(sample);
+        if(!sample||index>=sample->Collections.size()||!CameraValid(camera)||!PackedStride(format))return {};
+        const auto active=sample->Collections[index].Active;
+        auto found=Entries.find(index);
+        if(found==Entries.end()){
+            if(Entries.size()>=MaxCachedCollections||active>MaxCachedParticles-CachedParticles){
+                // Do not evict other collections while walking the same frame.
+                // One transient workspace retains its capacity only.
+                Transient.DecodeValid=false;Transient.Decoded=false;Transient.MeshValid=false;
+                return Fill(*sample,index,camera,format,Transient);
+            }
+            found=Entries.try_emplace(index).first;
+            CachedParticles+=active;
+        }
+        return Fill(*sample,index,camera,format,found->second);
+    }
+    std::size_t Count()const{return Entries.size();}
+    std::size_t Particles()const{return CachedParticles;}
+private:
+    struct Entry {
+        bool Decoded=false,DecodeValid=false,MeshValid=false;
+        std::vector<Particle> Values;
+        Camera LastCamera{};
+        std::uint64_t Format=0;
+        PackedMesh Packed;
+        std::size_t Visible=0,Culled=0;
+    };
+    static bool SameCamera(const Camera &a,const Camera &b){
+        return a.View==b.View&&a.Origin==b.Origin&&a.Forward==b.Forward;
+    }
+    Result Fill(const Frame &sample,std::size_t index,const Camera &camera,std::uint64_t format,Entry &e){
+        Result r;r.DecodeHit=e.Decoded;
+        if(!e.Decoded){
+            e.DecodeValid=Prepare(sample,index,e.Values);e.Decoded=true;e.MeshValid=false;
+        }
+        if(!e.DecodeValid)return r;
+        r.MeshHit=e.MeshValid&&e.Format==format&&SameCamera(e.LastCamera,camera);
+        if(!r.MeshHit){
+            e.MeshValid=false;
+            if(!Build(e.Values,camera,true,Workspace)||!PackWorld(Workspace,camera,format,e.Packed))return r;
+            e.LastCamera=camera;e.Format=format;e.Visible=Workspace.Visible;e.Culled=Workspace.Culled;e.MeshValid=true;
+        }
+        r.Packed=&e.Packed;r.Visible=e.Visible;r.Culled=e.Culled;return r;
+    }
+    std::weak_ptr<const Frame> Source;
+    std::map<std::size_t,Entry> Entries;
+    std::size_t CachedParticles=0;
+    Entry Transient;
+    Mesh Workspace;
+};
 // Native LockMesh writes through +0x100 inclusive. Keep the descriptor
 // opaque/aligned; decode fields explicitly, not by casting to a guessed SDK
 // struct. Queue-owned base pointers are obtained independently from mesh.

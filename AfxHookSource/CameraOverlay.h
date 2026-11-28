@@ -16,7 +16,7 @@ advancedfx::NativeParticles::Frame Mirv_Tf2_CaptureNativeParticles(int tick, boo
 std::string Mirv_Tf2_InspectLegacyParticles(advancedfx::LegacyParticles::Frame *snapshot=nullptr,bool allSimple=false);
 std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::Frame &frame, std::size_t collection);
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame,bool fastMemory=true,bool fastReads=true,bool auditRenderers=false,const advancedfx::NativeParticles::ReplayPreparation *prepared=nullptr);
-advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const advancedfx::NativeParticles::Frame &frame);
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const std::shared_ptr<const advancedfx::NativeParticles::Frame> &sample);
 // Engine-thread preflight and registered TF2 particle visibility cvar access.
 bool Mirv_Tf2_SceneStationaryReady(); // exact stationary TF2 x64, independent of material context
 bool Mirv_Tf2_ParticleIsolationReady();
