@@ -1092,3 +1092,48 @@ null post callback and ordinary precached proxy-free material is the
 initial investigation subset, not a safe-to-draw whitelist. No native
 function is called solely to classify it. All current observations
 are diagnostic, not pixel coverage or successful queued rendering.
+
+
+### Phase 31D: factory-independent sprite investigation
+
+Exact client 0x8e16c0 links the new collection to the definition's list
+(+0x150). At 0x8e1be0 the definition's +0x218 scratch size controls allocation
+of size+0x17 and collection +0x2278 receives the aligned pointer. The six
+operator lists start at definition +0x248, spaced 0x20 apart, count +0x10;
+their scratch offsets start at +0x328, spaced 0x20 apart. Constructor
+0x8e1ca0..0x8e1ce6 invokes each operator's vtable +0x10 initialization method.
+Exact sprite initializer 0x8f5950 initializes scratch +0..7, +0x10 and +0x14;
+0x621c0 is a no-op. Other callbacks require separate investigation.
+Definition +0x308/+0x318 holds the child list/count used at 0x8e1cfe.
+A historical leaf does not prove that the current definition is a leaf.
+
+Factory 0x8e17d4..0x8e1903 resolves the base texture and accesses shared
+sprite-sheet maps at manager +0xe8/+0x108; collection +0x10 holds the sheet.
+This ownership and its intrusive list are not safe to synthesize or
+retain across queued callbacks merely because the final mesh is copied.
+
+Orientation zero on the ordinary material branch invokes 0x8faac0 at
+0x8f5b23. Sorting at 0x914ca0 uses collection attributes, native camera
+queries and global scratch 0x1181370. Geometry generation reads packed
+position, rotation, tint, alpha/radius and sequence/time fields; the sheet
+branch accesses sequence data, whereas the no-sheet branch at
+0x8fb1aa..0x8fb291 uses default UVs. At 0x8fab65..0x8fab85 the CPU path
+gets view matrix, sets clip override and submits the matrix; native
+queued material context +0x2b8 -> 0x14af0 copies the boolean and +0x2c0
+-> 0x2eeb0 copies all 64 bytes of matrix data (0x2ef61..0x2ef77).
+The CPU path stages mesh at 0x8fad5a, locks at 0x8fae0a, unlocks at
+0x8fb592 and draws at 0x8fb5d2. Geometry accounting at 0x8fad41 and
+shared material-variable ownership still need a separate contract.
+Do not enable queued native collection replay on this evidence alone.
+
+The existing warm-up report now also audits registered collection definitions
+before the first detached factory invocation. It counts historical active
+nodes matched by name to unambiguous current witnesses and reports leaf,
+known initializer, scratch-bound, no-sheet and narrow-shape counts.
+Addresses stay callback-local; invalid or cyclic registered topology
+invalidates the witness, and conflicting names are excluded. A live
+no-sheet/no-post observation does not prove future factory behavior.
+No new native calls or writes, no new queued eligibility, no change to
+the immediate-mode replay gate. The history encoder compares eight-byte
+chunks within immutable source bounds, then finishes with the original
+bytewise comparison; encoded format and match selection remain unchanged.
