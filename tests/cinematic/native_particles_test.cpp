@@ -1,4 +1,5 @@
 #include "shared/NativeParticleSnapshot.h"
+#include "shared/NativeParticleBillboard.h"
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
@@ -304,5 +305,34 @@ int main(){
     check(witnessComplete&&!shapes.begin()->second.KnownInitializers,"unknown initializer rejected");
     put(root+RootNext,root);
     check(AuditRegisteredSpriteFactories(base,read,witnessComplete).empty()&&!witnessComplete,"cycle invalidates whole witness");
+    // Factory-independent geometry: mixed constant/varying attributes,
+    // exact ownership, alpha product, sort, full UVs and bounded indices.
+    Frame bill;bill.Complete=bill.Appearance=true;bill.Collections.resize(1);
+    auto &bc=bill.Collections[0];bc.Active=3;
+    auto attr=[&](unsigned a,std::initializer_list<float> vals,unsigned stride){
+        auto &b=bc.Attributes[a];b.Start=static_cast<std::uint32_t>(bill.Words.size());
+        b.Count=static_cast<std::uint32_t>(vals.size());b.Stride=static_cast<std::uint8_t>(stride);
+        bc.Mask|=1u<<a;
+        for(float value:vals){std::uint32_t bits;std::memcpy(&bits,&value,4);bill.Words.push_back(bits);}
+    };
+    attr(Position,{0,0,0,0,0,0,0,0,-2,-4,2,0},12);
+    attr(Radius,{1,1,1,1},0);
+    attr(Rotation,{0,0,0,0,0,0,0,0,0,0,0,0},0);
+    attr(Tint,{1,1,1,1,.5f,.5f,.5f,.5f,0,0,0,0},0);
+    attr(Alpha,{1,1,1,1},0);attr(Alpha2,{.5f,.5f,.5f,.5f},0);
+    Billboard::Camera cam;cam.View={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};cam.Forward={0,0,-1};
+    std::vector<Billboard::Particle> particles;
+    Billboard::Mesh mesh;
+    check(Billboard::Prepare(bill,0,particles)&&particles.size()==3&&particles[0].Color==std::array<std::uint8_t,4>{255,128,0,128},"owned billboard attributes and alpha product");
+    check(Billboard::Build(particles,cam,true,mesh)&&mesh.Visible==2&&mesh.Culled==1&&mesh.Vertices.size()==8&&mesh.Indices.size()==12,"billboard visibility and counts");
+    check(mesh.Vertices[0].Position==Point{-1,-1,-4}&&mesh.Vertices[1].Position==Point{-1,1,-4}&&mesh.Vertices[2].Position==Point{1,1,-4}&&mesh.Vertices[3].Position==Point{1,-1,-4},"native-style quad and far-to-near sort");
+    check(mesh.Vertices[0].UV==std::array<float,2>{0,1}&&mesh.Indices==std::vector<std::uint16_t>{0,1,2,0,2,3,4,5,6,4,6,7},"quad UV and indices");
+    check(Billboard::Build(particles,cam,false,mesh)&&mesh.Vertices[0].Position[2]==-2,"unsorted source order");
+    particles[0].Rotation=1.57079632679f;
+    check(Billboard::Build(particles,cam,false,mesh)&&std::abs(mesh.Vertices[0].Position[0]-1)<1e-5f,"rotation affects owned geometry");
+    auto badCamera=cam;badCamera.View[12]=1;
+    check(!Billboard::Build(particles,badCamera,true,mesh)&&mesh.Vertices.empty()&&mesh.Indices.empty(),"invalid camera clears geometry");
+    bc.Attributes[Alpha2].Start=0xffffffffu;
+    check(!Billboard::Prepare(bill,0,particles)&&particles.empty(),"malformed attribute rejects entire collection");
     std::cout<<"Native particle snapshot tests passed\n";
 }

@@ -584,3 +584,19 @@ prioritize future renderer investigation. Counts may include fallback attempts;
 they are not coverage or permission to queue. No additional user command or
 queue-mode change. No queued modern rendering enabled, no new native calls,
 no retained pointers. Portable fixture validates census accounting.
+
+### Phase 31E — factory-independent ordinary billboard CPU geometry
+
+Implemented a portable pointer-free geometry path: decode owned position,
+radius, rotation, tint, alpha and alpha2, then construct view-space quads
+with deterministic optional distance sorting, full UVs and 16-bit indices.
+Missing/malformed attributes, invalid camera, excessive counts and nonfinite
+vertices reject the collection; no historical native address is needed.
+During existing immediate warm-up only, compare current unambiguous narrow
+live witnesses with historical names and build geometry using exact guarded
+camera getters. Report CPU time and generated vertex/index counts, without
+submission or material mutations. This is an approximate ordinary no-sheet
+billboard kernel (not native pixel equivalence); sheets, shaders, z-offset,
+special visibility, trails and ropes remain excluded. Actual queued draw,
+material binding/lifetime and mesh descriptor contract are the next step.
+No changes to runtime queue eligibility or live isolation.

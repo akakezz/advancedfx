@@ -807,6 +807,8 @@ std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address 
 struct QueuedSpriteAudit {
     std::size_t Nodes=0,Particles=0,SingleSprite=0,NoAuxiliary=0,NoPost=0,MaterialReady=0;
     bool FactoryWitnessComplete=false;
+    std::size_t BillboardPrepared=0,BillboardRejected=0,BillboardParticles=0,BillboardVertices=0,BillboardIndices=0;
+    double BillboardMs=0;
     std::size_t WitnessMatched=0,WitnessLeaf=0,WitnessKnownInitializers=0,WitnessScratch=0,WitnessNoSheet=0,WitnessNarrow=0,WitnessParticles=0;
     void ObserveFactory(const Frame &frame,const std::map<std::string,SpriteFactoryShape> &shapes){
         for(const auto &c:frame.Collections){
@@ -852,7 +854,11 @@ struct QueuedSpriteAudit {
             ": matched "+std::to_string(WitnessMatched)+", leaf "+std::to_string(WitnessLeaf)+
             ", known initializers "+std::to_string(WitnessKnownInitializers)+", scratch bounded "+std::to_string(WitnessScratch)+
             ", no sheet "+std::to_string(WitnessNoSheet)+", narrow "+std::to_string(WitnessNarrow)+
-            " nodes / "+std::to_string(WitnessParticles)+" particles (diagnostic only).";
+            " nodes / "+std::to_string(WitnessParticles)+" particles (diagnostic only)."+
+            " Factory-independent CPU billboard experiment: prepared "+std::to_string(BillboardPrepared)+
+            ", rejected "+std::to_string(BillboardRejected)+", visible "+std::to_string(BillboardParticles)+
+            ", vertices "+std::to_string(BillboardVertices)+", indices "+std::to_string(BillboardIndices)+
+            ", total "+std::to_string(BillboardMs)+" ms (geometry only, no submission).";
     }
 };
 struct ReplayResult {

@@ -1137,3 +1137,25 @@ No new native calls or writes, no new queued eligibility, no change to
 the immediate-mode replay gate. The history encoder compares eight-byte
 chunks within immutable source bounds, then finishes with the original
 bytewise comparison; encoded format and match selection remain unchanged.
+
+### Phase 31E: owned billboard geometry
+
+Rechecked client SHA256 b6f45c74805edacf0cf61d965f658158fc22960f66d583ef3a6549eb56696b95
+and materialsystem SHA256 a58d9afd625cb3b3fe9a3588a8d8192325897c803272075e97600b36383cbd7d.
+Client 0x914350/0x914810 reads attributes +0x2328 radius, +0x2348 alpha,
++0x2390 alpha2 and multiplies the alpha lanes at 0x914494 / 0x914953.
+The sorted path computes squared camera distance at 0x9144ff..0x914527.
+0x8fb179..0x8fb1a6 reads rotation and computes two trig components;
+0x8fb291..0x8fb3fc writes four view-space corners and UV/color.
+Implemented the independent ordinary geometry shape using standard trig,
+explicit color rounding, center-based visibility and optional stable sort.
+These are intentional approximations; no claim of exact native cull,
+fast-trig, byte rounding, z-offset or sheet sequence fidelity.
+
+Materialsystem immediate vtable 0xbcab0 +0xf0 -> 0x32aa0, +0x4a0 ->
+0x33020, +0x4a8 -> 0x33060. Warm-up only: use those exact methods to
+copy camera data and validate the affine orthonormal transform, camera
+origin and forward consistency. Build only for narrow live witnesses;
+no bind, queue, native particle factory or mesh calls are made by the
+new geometry kernel. Report generated counts and CPU milliseconds in the
+existing benchmark. The prior immediate native replay is unchanged.

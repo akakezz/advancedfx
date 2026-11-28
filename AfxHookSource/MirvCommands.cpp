@@ -406,6 +406,7 @@ bool Mirv_Tf2_SceneDrawVisibility(const char *name,float &value,bool write)
 }
 
 #include "Tf2SceneSurfaces.inl"
+#include "../shared/NativeParticleBillboard.h"
 
 #ifdef _WIN64
 namespace {
@@ -916,7 +917,45 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
         match(0x8e497e,{0x48,0x8b,0x8f,0x88,0x27,0,0});
     if(auditSpriteAbi){
         const auto shapes=AuditRegisteredSpriteFactories(base,read,result.SpriteAudit.FactoryWitnessComplete);
-        if(result.SpriteAudit.FactoryWitnessComplete)result.SpriteAudit.ObserveFactory(frame,shapes);
+        if(result.SpriteAudit.FactoryWitnessComplete){
+            result.SpriteAudit.ObserveFactory(frame,shapes);
+            // Run only in the existing immediate warm-up. Exact native
+            // camera queries copy into owned buffers; no mesh or material calls.
+            Address contextTable=0;
+            if(auditMaterialReady&&read(reinterpret_cast<Address>(context),&contextTable,sizeof(contextTable))&&
+               contextTable==auditMaterialBase+0xbcab0&&
+               slot(context,0xf0)==auditMaterialBase+0x32aa0&&
+               slot(context,0x4a0)==auditMaterialBase+0x33020&&
+               slot(context,0x4a8)==auditMaterialBase+0x33060){
+                Billboard::Camera camera;
+                using MatrixGet=void(*)(void*,int,float*);
+                using CameraGet=void(*)(void*,float*);
+                using BasisGet=void(*)(void*,float*,float*,float*);
+                Point right{},up{};
+                reinterpret_cast<MatrixGet>(auditMaterialBase+0x32aa0)(context,0,camera.View.data());
+                reinterpret_cast<CameraGet>(auditMaterialBase+0x33020)(context,camera.Origin.data());
+                reinterpret_cast<BasisGet>(auditMaterialBase+0x33060)(context,camera.Forward.data(),right.data(),up.data());
+                if(Billboard::CameraValid(camera)){
+                    const auto begin=std::chrono::steady_clock::now();
+                    std::vector<Billboard::Particle> particles;Billboard::Mesh mesh;
+                    for(std::size_t i=0;i<frame.Collections.size();++i){
+                        const auto &c=frame.Collections[i];if(!c.Active)continue;
+                        const auto end=std::find(c.Name.begin(),c.Name.end(),'\0');
+                        if(end==c.Name.end())continue;
+                        const auto found=shapes.find(std::string(c.Name.begin(),end));
+                        if(found==shapes.end()||!found->second.Narrow())continue;
+                        if(!Billboard::Prepare(frame,i,particles)||!Billboard::Build(particles,camera,true,mesh)){
+                            ++result.SpriteAudit.BillboardRejected;continue;
+                        }
+                        ++result.SpriteAudit.BillboardPrepared;
+                        result.SpriteAudit.BillboardParticles+=mesh.Visible;
+                        result.SpriteAudit.BillboardVertices+=mesh.Vertices.size();
+                        result.SpriteAudit.BillboardIndices+=mesh.Indices.size();
+                    }
+                    result.SpriteAudit.BillboardMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+                }
+            }
+        }
     }
     bool listChanged=false;
     // Only allocation capacity is reused between attempts in this callback.
