@@ -562,3 +562,25 @@ attempts; no cross-callback persistence or queued-render eligibility change.
 Portable fixtures cover success, early failure and retry with reused capacity.
 This targets allocation churn during repeated historical rendering; native
 FPS and Windows build remain unverified.
+
+### Phase 31C — modern sprite queue contract research and bounded census
+
+Reattached all TF2 binaries; client, engine, materialsystem, studiorender and
+shaderapidx9 x64 SHA-256 identities exactly match Phases 18B/28A. Native
+CMaterialVar already has queue-aware integer and matrix setters: the
+orientation integer is copied into its functor, and the orientation matrix
+is copied in full (64 bytes). This resolves temporary argument storage for
+the exact ordinary setter branches, not ownership of the raw material
+variable pointer, alternate/proxy paths, or shared material state. Exact
+queued context camera queries are synchronous and copy producer-side camera
+values. See Phase 31C in SCENE_EFFECTS_EXPERIMENT.md for addresses.
+
+Extend the existing immediate benchmark warm-up census with active attempted
+node/particle totals, exact single C_OP_RenderSprites vtable/target, orientation,
+factory scratch flag, post-render callback presence, and existing ordinary
+precached proxy-free material guard. Report a narrow intersection (orientation
+0, no auxiliary scratch branch or post callback, ordinary material) solely to
+prioritize future renderer investigation. Counts may include fallback attempts;
+they are not coverage or permission to queue. No additional user command or
+queue-mode change. No queued modern rendering enabled, no new native calls,
+no retained pointers. Portable fixture validates census accounting.

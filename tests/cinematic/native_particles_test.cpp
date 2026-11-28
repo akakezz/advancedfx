@@ -265,5 +265,19 @@ int main(){
     check(CompareGeometryAccounting(prior,accounting(-1,201,0))==GeometryAccountingAction::Uncertain,"overflow is not overwritten");
     check(CompareGeometryAccounting(accounting(100,200,1),accounting(101,201,0))==GeometryAccountingAction::Uncertain,"unexpected native flag reset is not overwritten");
     check(!GeometryAccountingValid(accounting(0,0,2)),"invalid flag rejected");
+    QueuedSpriteAudit audit;
+    audit.Observe(0,true,0,true,true,true);
+    audit.Observe(7,false,0,true,true,true);
+    audit.Observe(5,true,0,true,true,true);
+    audit.Observe(3,true,0,false,true,true);
+    audit.Observe(2,true,2,true,true,true);
+    audit.Observe(1,true,-1,true,false,false);
+    audit.Observe(1,true,4,true,true,true);
+    check(audit.Nodes==6&&audit.Particles==19&&audit.SingleSprite==5&&audit.NarrowNodes==1&&audit.NarrowParticles==5,
+        "sprite census counts only active exact narrow shapes");
+    check(audit.Orientation[0]==2&&audit.Orientation[2]==1&&audit.UnknownOrientation==1&&audit.OtherOrientation==1&&
+        audit.NoAuxiliary==4&&audit.NoPost==4&&audit.MaterialReady==4,
+        "sprite census keeps orientation and independent blockers separate");
+    check(audit.Describe().find("not queued eligibility")!=std::string::npos,"sprite census does not claim queued eligibility");
     std::cout<<"Native particle snapshot tests passed\n";
 }

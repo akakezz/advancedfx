@@ -405,6 +405,7 @@ struct SceneBenchState {
     std::vector<double> FrameMs;
     bool Audited=false;
     std::set<std::uint32_t> RendererTargets,PostRenderTargets;
+    advancedfx::NativeParticles::QueuedSpriteAudit SpriteAudit;
     std::chrono::steady_clock::time_point PreviousRender;
     int Phase=0,Frames=0,OriginalSequencer=0;
     unsigned long long RenderCallbacks=0;
@@ -456,7 +457,7 @@ static const char *SceneBenchLabel(int phase){
     return names[phase];
 }
 static void SceneBenchApply(int phase,std::chrono::steady_clock::time_point now){
-    auto &b=g_SceneBench;b.Phase=phase;b.Measuring=false;b.Frames=0;b.Start=now;b.LastRender=now;b.PreviousRender=now;b.FrameMs.clear();b.Audited=false;
+    auto &b=g_SceneBench;b.Phase=phase;b.Measuring=false;b.Frames=0;b.Start=now;b.LastRender=now;b.PreviousRender=now;b.FrameMs.clear();b.Audited=false;b.SpriteAudit={};
     g_SceneRecord=false;g_ScenePreview=phase!=0;g_SceneDrawModels=b.ModelsOnly||phase!=5;
     g_SceneActorCull=b.ModelsOnly?phase>=6:phase+1==SceneBenchPhaseCount();
     g_SceneQueuedDecals=b.QueuedDecals;g_SceneLegacyQueued=b.LegacyQueued;
@@ -646,6 +647,7 @@ static void SceneBenchFrame(std::chrono::steady_clock::time_point now){
             g_SceneBenchReport+="  Native particle status: "+g_SceneParticleReplayResult.Status+"\n  Legacy status: "+g_SceneLegacyReplayResult.Status+"\n  Surface status: "+g_SceneHistoricalSurfaceStatus+"\n";
         }
     }
+    if(b.SpriteAudit.Nodes)g_SceneBenchReport+="  Modern sprite investigation (immediate warm-up): "+b.SpriteAudit.Describe()+"\n";
     if(SceneBenchQueuedDecals(b)&&b.Phase>=7)g_SceneBenchReport+="  Queued decal status: "+g_SceneHistoricalSurfaceStatus+"\n";
     if(SceneBenchQueuedLegacy(b)&&b.Phase==SceneBenchLegacyPhase(b))g_SceneBenchReport+="  Queued legacy overlay status: "+g_SceneLegacyReplayResult.Status+
         "; submitted "+std::to_string(g_SceneLegacyReplayResult.Particles)+", rejected "+std::to_string(g_SceneLegacyReplayResult.Rejected)+" (live effects retained).\n";
@@ -1414,6 +1416,7 @@ void SceneCacheDrawParticles()
     if(auditRenderers&&g_SceneBench.Active){
         for(auto target:result.RendererTargets)if(g_SceneBench.RendererTargets.size()<256)g_SceneBench.RendererTargets.insert(target);
         for(auto target:result.PostRenderTargets)if(g_SceneBench.PostRenderTargets.size()<256)g_SceneBench.PostRenderTargets.insert(target);
+        g_SceneBench.SpriteAudit=result.SpriteAudit;
     }
     g_ScenePerf.ParticleDraw.Add(begin,sample->Tick);
     g_ScenePerf.ParticleMain+=result.MainView;

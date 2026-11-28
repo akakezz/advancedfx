@@ -712,6 +712,38 @@ inline GeometryAccountingAction CompareGeometryAccounting(const GeometryAccounti
     if(after[8]<before[8])return GeometryAccountingAction::Uncertain;
     return GeometryAccountingAction::Restore;
 }
+// Read-only census of attempted detached collection shapes during the
+// existing immediate-mode benchmark warm-up. None of these counts authorize
+// a queued draw: ownership and the remaining renderer call graph still matter.
+struct QueuedSpriteAudit {
+    std::size_t Nodes=0,Particles=0,SingleSprite=0,NoAuxiliary=0,NoPost=0,MaterialReady=0;
+    std::array<std::size_t,4> Orientation{};
+    std::size_t OtherOrientation=0,UnknownOrientation=0,NarrowNodes=0,NarrowParticles=0;
+    void Observe(std::size_t active,bool singleSprite,int orientation,bool noAuxiliary,bool noPost,bool materialReady){
+        if(!active)return;
+        ++Nodes;Particles+=active;
+        if(!singleSprite)return;
+        ++SingleSprite;
+        if(orientation<0)++UnknownOrientation;
+        else if(orientation<4)++Orientation[static_cast<std::size_t>(orientation)];
+        else ++OtherOrientation;
+        if(noAuxiliary)++NoAuxiliary;
+        if(noPost)++NoPost;
+        if(materialReady)++MaterialReady;
+        if(orientation==0&&noAuxiliary&&noPost&&materialReady){++NarrowNodes;NarrowParticles+=active;}
+    }
+    std::string Describe()const{
+        return "Attempted active nodes "+std::to_string(Nodes)+", particles "+std::to_string(Particles)+
+            "; single exact sprite "+std::to_string(SingleSprite)+
+            "; orientation 0/1/2/3/other/unknown "+std::to_string(Orientation[0])+"/"+std::to_string(Orientation[1])+
+            "/"+std::to_string(Orientation[2])+"/"+std::to_string(Orientation[3])+
+            "/"+std::to_string(OtherOrientation)+"/"+std::to_string(UnknownOrientation)+
+            "; no auxiliary scratch "+std::to_string(NoAuxiliary)+", no post callback "+std::to_string(NoPost)+
+            ", ordinary precached proxy-free material "+std::to_string(MaterialReady)+
+            "; narrow investigation shape "+std::to_string(NarrowNodes)+" nodes / "+std::to_string(NarrowParticles)+
+            " particles (not queued eligibility or draw coverage).";
+    }
+};
 struct ReplayResult {
     bool MainView=false;
     std::size_t Attempts=0,Trees=0,Nodes=0,Particles=0,Rejected=0,PreflightRejected=0;
@@ -721,6 +753,7 @@ struct ReplayResult {
     std::size_t FastReads=0,SystemReads=0,ReadFaults=0;
     bool GeometryAccountingRestored=false;
     std::vector<std::uint32_t> RendererTargets,PostRenderTargets;
+    QueuedSpriteAudit SpriteAudit;
 };
 class History {
 public:

@@ -903,6 +903,17 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
     std::string firstFailure;
     std::set<Address> auditedDefinitions;
     std::set<std::uint32_t> rendererTargets,postTargets;
+    // Only the existing warm-up audit reads material shape. This performs
+    // no new native calls, retains no addresses and cannot authorize drawing.
+    SurfaceAddress auditMaterialBase=0;
+    const bool auditMaterialReady=auditRenderers&&SurfaceExactModule("materialsystem.dll",0x6ac56a08,0x141000,auditMaterialBase);
+    const bool auditSpriteAbi=auditRenderers&&
+        match(0x8f5a23,{0x49,0x8b,0x48,0x58})&&
+        match(0x8f5a32,{0x41,0x80,0x7e,0x14,0})&&
+        match(0x8f5a72,{0x41,0x8b,0x57,0x74})&&
+        match(0x8e4920,{0x48,0x8b,0x82,0x48,0x03,0,0})&&
+        match(0x8e4931,{0x4c,0x03,0x8f,0x78,0x22,0,0})&&
+        match(0x8e497e,{0x48,0x8b,0x8f,0x88,0x27,0,0});
     bool listChanged=false;
     // Only allocation capacity is reused between attempts in this callback.
     // Every native address and validation result is recomputed for the
@@ -995,11 +1006,36 @@ static advancedfx::NativeParticles::ReplayResult SceneNativeParticleOperation(
                             }
                         }
                         if(auditRenderers){
-                            Address object=0,table=0,target=0;
-                            if(readDetached(binding.Native+0x2788,&object,sizeof(object))&&object&&
-                               readDetached(object,&table,sizeof(table))&&table&&readDetached(table+0x40,&target,sizeof(target))&&
+                            Address post=0,table=0,target=0;
+                            const bool knownPost=readDetached(binding.Native+0x2788,&post,sizeof(post));
+                            if(knownPost&&post&&
+                               readDetached(post,&table,sizeof(table))&&table&&readDetached(table+0x40,&target,sizeof(target))&&
                                target>=base&&target-base<nt.OptionalHeader.SizeOfImage&&postTargets.size()<256)
                                 postTargets.insert(static_cast<std::uint32_t>(target-base));
+                            if(c.Active){
+                                int count=0,orientation=-1;Address array=0,object=0,vt=0,fn=0;
+                                const bool sprite=auditSpriteAbi&&
+                                    readDetached(definition+0x278,&count,sizeof(count))&&count==1&&
+                                    readDetached(definition+0x268,&array,sizeof(array))&&array&&
+                                    readDetached(array,&object,sizeof(object))&&object&&
+                                    readDetached(object,&vt,sizeof(vt))&&vt==base+0xe0a2b8&&
+                                    readDetached(vt+0x48,&fn,sizeof(fn))&&fn==base+0x8f5a00;
+                                bool noAuxiliary=false;
+                                if(sprite){
+                                    int value=-1;
+                                    if(readDetached(object+0x74,&value,sizeof(value)))orientation=value;
+                                    Address offsets=0,offset=0,scratch=0;unsigned char flag=1;
+                                    // Bound the private scratch offset for this diagnostic,
+                                    // not as a claim of native allocation ownership.
+                                    noAuxiliary=readDetached(definition+0x348,&offsets,sizeof(offsets))&&offsets&&
+                                        readDetached(offsets,&offset,sizeof(offset))&&offset<=0x100000&&
+                                        readDetached(binding.Native+0x2278,&scratch,sizeof(scratch))&&scratch>=0x10000&&
+                                        scratch<=UINTPTR_MAX-offset-0x15&&
+                                        readDetached(scratch+offset+0x14,&flag,1)&&flag==0;
+                                }
+                                result.SpriteAudit.Observe(c.Active,sprite,orientation,noAuxiliary,knownPost&&!post,
+                                    sprite&&auditMaterialReady&&material&&SurfaceQueuedMaterialReady(material));
+                            }
                         }
                     }
                     result.GateMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-gateStart).count();

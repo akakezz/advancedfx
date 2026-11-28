@@ -1040,3 +1040,55 @@ Exact studio context setters store ambient float4 faces +0x88..+0xe7, local desc
 ### Phase 30C: exact atlas pop/readback witness
 
 Supplied client 0x2486f0 CClientShadowMgr atlas update, 0x248a6a loads allocator texture +0x60 then calls material context +0x358 (0x34dd0). Ordinary tile loop ends 0x248cbc, +0x368 pop at 0x248cc6. Native immediate pop 0x34a30 checks stack size +0x88, Flush(false) at 0x34a47 then decrements size and commits target through +0x758. 0x30bba computes top entry from +0x78, 0x38 stride; 0x30c43..0x30c4a calls texture slot +0x128. CTexture 0x3f270 checks RT flag 0x8000, loads handle array +0x88 and first handle, calls shader interface +0x620 via materialsystem+0x107248. Shader API exact vtable 0x7cce8, 0x22da0; 0x22e5f validates texture flag, 0x22e6e..0x22e86 selects single/copy-array COM texture at handle+0x60, 0x22e99 calls GetSurfaceLevel(0). No invocation of private shader APIs: verify layout and compare raw device current RT container against exact handle pointer. Unknown wrappers/format/multiple copies, stale tick, changed slots or failed readback reject. Opt-in to avoid synchronous GPU readback in normal recording. No restoration or native resource ownership retained.
+
+### Phase 31C: native queued modern sprite material and camera contract
+
+The newly supplied exact x64 DLLs match the previously recorded hashes.
+Client RTTI COL 0xf0a518 identifies C_OP_RenderSprites primary vtable
+0xe0a2b8, slot +0x48 -> 0x8f5a00. Trail vtable 0xe0a408 -> 0x8f67f0;
+rope 0xe0a558 -> 0x8f7370; screen velocity rotate 0xe0a6a8 -> 0x8f98b0.
+The sprite renderer reads its integer orientation at +0x74 (0x8f5a72)
+and finds "$orientation" (string 0xe0a9e0) through material +0x178
+at 0x8f5a60, then calls variable +0x20 at 0x8f5a76. Optional scratch
++0x14 at 0x8f5a32 invokes an auxiliary 0x8fed00 path. Material +0x198
+at 0x8f5a90 selects the alternate shader path; orientation 2 on that path
+can find "$orientationMatrix" (string 0xe0a9f0) and calls +0x98 at
+0x8f5b97 with a stack matrix. Other orientations select distinct native
+geometry branches. Definition renderer scratch offsets at +0x348 are
+added to collection +0x2278 at 0x8e4920..0x8e4938.
+
+Materialsystem RTTI COL 0xd67d0 identifies CMaterialVar vtable 0xba4b8,
++0x20 -> 0x21ce0, +0x98 -> 0x22060. Both query native queue accessor
++0x4a0 on the material system global. On the ordinary queued path
+(flag byte +0x24 nonnegative, nonnull queue), integer setter stores
+raw variable pointer at functor+0x28 and copies value to +0x30 at
+0x21dc1/0x21dd3 before enqueue 0x99c0. Matrix setter copies four 16-byte
+blocks from its caller before queue allocation, then stores variable
+pointer +0x28 and all 64 matrix bytes at functor+0x30..+0x6f at
+0x22163..0x22198, enqueues 0x99c0. A queued setter therefore does not
+retain the caller's matrix pointer on these branches; it still retains
+the raw variable owner and can mutate shared state. Flag-negative or
+null-queue paths update directly. CMaterial and CMaterial_QueueFriendly
+slot +0x178 map to 0x6ca0 and 0xac90 (wrapper delegates to real material);
+the real implementation updates a four-byte lookup token in renderer
+scratch. Do not infer material-variable lifetime from a lookup result.
+
+Queued and immediate render context slots +0x4a0/+0x4a8 both map to
+0x33020/0x33060, copying camera position and basis from context fields
+into caller buffers synchronously after updating camera state. Queued
++0x410 -> 0x2c750 queries material vertex format/shader API; +0x418 ->
+0x16a60. Sprite mesh path 0x8f5d64 calls GetDynamicMesh +0x1c0 with no
+override, 0x8f5e22 locks via +0x90 and later unlocks/draws at
+0x8f615b/0x8f619a. Camera/mesh staging evidence narrows the problem, but
+native helper call graphs, global sort scratch at 0x1181370, material
+owner lifetime and post-render consumers are not established for a
+general queued replay. Do not pass arbitrary detached collections to
+the queued context or move their factory/destructor onto the material
+worker. The existing native immediate guard remains.
+
+The existing warm-up audit now counts attempted active collection shapes.
+A single exact sprite with orientation zero, auxiliary byte clear,
+null post callback and ordinary precached proxy-free material is the
+initial investigation subset, not a safe-to-draw whitelist. No native
+function is called solely to classify it. All current observations
+are diagnostic, not pixel coverage or successful queued rendering.
