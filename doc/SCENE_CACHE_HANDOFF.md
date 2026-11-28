@@ -600,3 +600,24 @@ billboard kernel (not native pixel equivalence); sheets, shaders, z-offset,
 special visibility, trails and ropes remain excluded. Actual queued draw,
 material binding/lifetime and mesh descriptor contract are the next step.
 No changes to runtime queue eligibility or live isolation.
+
+### Phase 31F — first experimental independent queued sprite submission
+
+Portable exact mesh packing (world XYZ, native BGRA, float2 UV, 24/32-byte
+stride) and strict lock-descriptor validation. New opt-in
+`mirv_cache particles queuedBillboards 1`, default off, uses independent
+geometry only in actual queued context with normal native preview enabled.
+Requires a current unambiguous registered ordinary leaf sprite witness,
+no sheet/post callback/auxiliary scratch or z offset, exact native material
+identity, already precached proxy-free real material and embedded wrapper,
+no orientation vars or alternate shader flag, exact supported vertex format,
+valid camera and existing identity model matrix. Pins the original and target
+materials with the native wrapper's increment / ordered decrement calls.
+Use the engine's own dynamic mesh allocation, lock, copy, unlock and draw;
+restore the original material, no detached factory or particle renderer.
+Any malformed lock descriptor discards instead of drawing, and stops
+additional submission in that callback. Live particles are NOT hidden.
+Independent geometry uses world positions to avoid overriding the view;
+approximate visibility/rotation/sorting, no native pixel guarantee.
+Full automatic benchmark adds a separate queued billboard phase only when
+explicitly enabled; no setup default change. Requires in-game validation.

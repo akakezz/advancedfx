@@ -1159,3 +1159,48 @@ origin and forward consistency. Build only for narrow live witnesses;
 no bind, queue, native particle factory or mesh calls are made by the
 new geometry kernel. Report generated counts and CPU milliseconds in the
 existing benchmark. The prior immediate native replay is unchanged.
+
+### Phase 31F: queued material references and mesh lock descriptor
+
+Exact materialsystem CMaterial +0x2f0 -> 0x7710 returns real+0xd0,
+embedded CMaterial_QueueFriendly; wrapper+8 points back to real.
+Wrapper +0x60 -> 0xae60 increments wrapper+0x20 and tailcalls real
++0x60 -> 0x7a30 (atomic inc real+0x24). Wrapper +0x68 -> 0xaad0
+decrements wrapper+0x20, acquires current context via global 0x112068,
+queries +0x498 at 0xaaf6; with queue it enqueues a native decrement
+functor holding real pointer at +0x28 (0xab3f, 0xab69). Immediate
+fallback real +0x68 -> 0x6550 atomic dec. Use exact native wrapper calls
+on already referenced objects, not our own deferred lifetime callback;
+release after draw/restore in producer order. Queue cancellation retains
+native reference semantics (not independently tested).
+CMatQueuedRenderContext +0x660 -> 0x77c0 reads current real material +0x18.
+CMaterial +0xa0 -> 0x78f0 reads format +0x68; 0x8340 tests shader flags2
+bit16 via variable list +0x50 entry2 +0x10, precache flag +0x28 bit3.
+CMaterialVar +8 -> 0x21020 retrieves symbol name under native lock.
+Reject orientation variables rather than mutating them.
+Native sprite initializer 0x8f5950 stores auxiliary byte +0x14 and
+z-offset at +0x10; 0x8fab1e reads z-offset. Current live witness
+must have both clear. Definition material getter 0x8e1510 verifies
+flag +0x3fa bit0 and returns +0x148. Names/definition/material
+identity are callback-local; conflicting or incomplete lists reject.
+
+Shaderapidx9 exact CMeshMgr +0xf0 -> 0xa530 computes vertex description:
+position ptr +0x58, color +0x78, UV0 +0x88; strides +0,+0x10,+0x18,
+actual stride +0x48 (0xa922). Absent streams have zero stride, dummy
+pointers; never write those. Flags 0x40005 (32 bytes aligned) and
+0x40205 (24 exact bytes), XYZ float3, BGRA byte4, UV float2.
+Native 0x8fb2db..0x8fb2fd assembles BGRA bytes. Queued LockMesh
+0x2cd30 invokes shader API +0x6d8 -> 0x17250 then CMeshMgr +0xf0;
+native +0xe8 zero, index pointer +0xf0, +0xf8/+0xfc zero, index
+size byte +0x100 equals 1 for actual index allocation. Check separately
+against staging mesh +0x50/+0x58 and exact counts +0x60/+0x64.
+GetDynamicMesh +0x1c0 -> 0x2c4c0 configures mesh at ctx+0x310,
+format +0x40, stride +0x68. Native queued SetPrimitiveType +0x58
+-> 0x2eac0, triangle 2. Lock +0x90, unlock +0xa8, draw +0x68,
+discard +0xc8 (0x2ce20 clears stage pointers, queues discard).
+Native draw transfers owned buffers and clears stage at 0x2df88.
+World-space packed geometry avoids native model/view changes by
+requiring existing identity model and validated camera. First
+experiment supports only ordinary no-sheet, zero-offset, proxy-free
+sprite materials with exact minimal vertex format, no orientation vars;
+no live suppression or pixel-equivalence promise. Disabled by default.

@@ -305,15 +305,15 @@ int main(){
     shapes=AuditRegisteredSpriteFactories(base,read,witnessComplete);
     check(witnessComplete&&!shapes.begin()->second.KnownInitializers,"unknown initializer rejected");
     put(base+0xe0a2b8+0x10,base+0x8f5950);
-    constexpr Address scratch=0x63000000,material=0x64000000;
-    put(coll+0x2278,scratch);put(scratch+0x14,static_cast<unsigned char>(0));put(scratch+0x10,0.f);
+    constexpr Address witnessScratch=0x63000000,material=0x64000000;
+    put(coll+0x2278,witnessScratch);put(witnessScratch+0x14,static_cast<unsigned char>(0));put(witnessScratch+0x10,0.f);
     put(def+0x3fa,static_cast<unsigned char>(1));put(def+0x148,material);
     std::map<std::string,Address> drawMaterials;
     AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials);
     check(witnessComplete&&drawMaterials.size()==1&&drawMaterials.begin()->second==material,"callback-local material witness");
-    put(scratch+0x10,1.f);AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials);
+    put(witnessScratch+0x10,1.f);AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials);
     check(witnessComplete&&drawMaterials.empty(),"nonzero z offset excluded");
-    put(scratch+0x10,0.f);put(root+RootNext,root);
+    put(witnessScratch+0x10,0.f);put(root+RootNext,root);
     check(AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials).empty()&&!witnessComplete&&drawMaterials.empty(),"cycle invalidates whole witness");
     // Factory-independent geometry: mixed constant/varying attributes,
     // exact ownership, alpha product, sort, full UVs and bounded indices.

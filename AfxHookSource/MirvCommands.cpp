@@ -407,6 +407,7 @@ bool Mirv_Tf2_SceneDrawVisibility(const char *name,float &value,bool write)
 
 #include "Tf2SceneSurfaces.inl"
 #include "../shared/NativeParticleBillboard.h"
+#include "../shared/NativeParticleMesh.h"
 
 #ifdef _WIN64
 namespace {
@@ -1183,6 +1184,269 @@ std::string Mirv_Tf2_ProbeDetachedParticles(const advancedfx::NativeParticles::F
 {
     return SceneNativeParticleOperation(frame,index,false).Status;
 }
+// Independent, opt-in queued overlay. No detached factory, native particle
+// renderer or particle isolation; only native queue-owned mesh allocations.
+advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const advancedfx::NativeParticles::Frame &frame)
+{
+    using namespace advancedfx::NativeParticles;
+    ReplayResult result;
+    auto fail=[&](const char *why){result.Status=why;return result;};
+#ifdef _WIN64
+    if(!frame.Complete||!frame.Appearance||!Mirv_Tf2_SceneStationaryReady()||
+       MaterialSystem_IsImmediate()||!MaterialSystem_CanExecuteOnRenderThread())
+        return fail("Queued billboard overlay requires complete appearance, stationary TF2 x64 and actual queued rendering.");
+    if(Mirv_Tf2_SceneRenderViewId()!=0)return result;
+    result.MainView=true;
+    SurfaceAddress client=0,ms=0,shader=0,materials=0,globalMaterials=0,vt=0,fn=0,api=0;
+    if(!SurfaceExactModule("client.dll",0x6ad26f17,0x133a000,client)||
+       !SurfaceExactModule("materialsystem.dll",0x6ac56a08,0x141000,ms)||
+       !SurfaceExactModule("shaderapidx9.dll",0x6ac412f6,0xdb000,shader)||
+       !SurfaceMatch(client,0x8e1510,{0xf6,0x81,0xfa,0x03,0,0,1,0x75,3,0x33,0xc0,0xc3,0x48,0x8b,0x81,0x48,1,0,0,0xc3})||
+       !SurfaceMatch(client,0x8f5950,{0x33,0xc0,0x49,0x89,0,0x8b,0x41,0x60,0xc1,0xe8,0x1f,0x34,1,0x41,0x88,0x40,0x14})||
+       !SurfaceMatch(client,0x8fab1e,{0xf3,0x44,0x0f,0x10,0x4b,0x10})||
+       !SurfaceMatch(client,0x8e4938,{0x41,0xff,0x52,0x48})||
+       !SurfaceMatch(client,0x8f5b23,{0xe8,0x98,0x4f,0,0})||
+       !SurfaceGet(client+0x1199678,materials)||!materials||
+       !SurfaceGet(ms+0x112068,globalMaterials)||globalMaterials!=materials||
+       !SurfaceGet(materials,vt)||vt!=ms+0xb7470||
+       !SurfaceGet(vt+0x310,fn)||fn!=ms+0x16c20||
+       !SurfaceMatch(ms,0x16c20,{0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xec,0x20})||
+       !SurfaceGet(ms+0x107248,api)||!SurfaceGet(api,vt)||vt!=shader+0x7cce8||
+       !SurfaceGet(vt+0x6d8,fn)||fn!=shader+0x17250||
+       !SurfaceGet(vt+0x820,fn)||fn!=shader+0x25dd0||
+       !SurfaceMatch(shader,0xa5a0,{0x48,0x89,0x53,0x58})||
+       !SurfaceMatch(shader,0xa6c0,{0x48,0x89,0x43,0x78})||
+       !SurfaceMatch(shader,0xa74e,{0x48,0x89,0x06})||
+       !SurfaceMatch(shader,0xa922,{0x44,0x89,0x4b,0x48})||
+       !SurfaceMatch(ms,0x7a30,{0xf0,0xff,0x41,0x24,0xc3})||
+       !SurfaceMatch(ms,0x6550,{0xf0,0xff,0x49,0x24,0xc3})||
+       !SurfaceMatch(ms,0x7710,{0x48,0x8d,0x81,0xd0,0,0,0,0xc3})||
+       !SurfaceMatch(ms,0xae60,{0xff,0x41,0x20,0x48,0x8b,0x49,0x08,0x48,0x8b,0x01,0x48,0xff,0x60,0x60})||
+       !SurfaceMatch(ms,0xaada,{0xff,0x49,0x20})||
+       !SurfaceMatch(ms,0xaaf6,{0xff,0x92,0x98,0x04,0,0})||
+       !SurfaceMatch(ms,0xab3f,{0x48,0x89,0x5a,0x28})||
+       !SurfaceMatch(ms,0xab69,{0x48,0xff,0x20}))
+        return fail("Queued billboard module/material lifetime ABI guard failed.");
+    const auto start=std::chrono::steady_clock::now();
+    bool complete=false;std::map<std::string,Address> witnesses;
+    AuditRegisteredSpriteFactories(client,SurfaceRead,complete,&witnesses);
+    if(!complete)return fail("Queued billboard registered witness unavailable.");
+    if(witnesses.empty())return fail("No current ordinary no-sheet sprite material witnesses; live effects retained.");
+    result.GateMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+
+    using NoArg=void(*)(void*);using Getter=void*(*)(void*);
+    using MatrixGet=void(*)(void*,int,float*);
+    using OriginGet=void(*)(void*,float*);
+    using BasisGet=void(*)(void*,float*,float*,float*);
+    using Bind=void(*)(void*,void*,void*);
+    using Dynamic=void*(*)(void*,bool,void*,void*,void*);
+    using Mode=void(*)(void*,int);
+    using Lock=void(*)(void*,int,int,void*);
+    using Draw=void(*)(void*,int,int);
+    using MaxVertices=int(*)(void*,void*);
+    auto *context=reinterpret_cast<Getter>(ms+0x16c20)(reinterpret_cast<void*>(materials));
+    if(!context)return fail("Queued billboard context unavailable.");
+    const Address ctx=reinterpret_cast<Address>(context);
+    struct ContextOwner {
+        void *Object;NoArg Release=nullptr,End=nullptr;bool Begun=false;
+        ~ContextOwner(){if(Begun)End(Object);if(Release)Release(Object);}
+    } owner{context};
+    // Release is independently validated even if a later context guard fails.
+    if(SurfaceGet(ctx,vt)&&vt==ms+0xb6c28&&SurfaceGet(vt+8,fn)&&fn==ms+0x1ac20)
+        owner.Release=reinterpret_cast<NoArg>(fn);
+    if(!owner.Release||!SurfaceQueuedContext(context)||!SurfaceQueuedMeshIdle(ms,context))
+        return fail("Queued billboard context/idle mesh guard failed.");
+    const std::pair<unsigned,Address> contextSlots[]={{0x10,0x2a940},{0x18,0x2ba90},{0x48,0x2a9d0},
+        {0xf0,0x32b40},{0x1c0,0x2c4c0},{0x410,0x2c750},{0x418,0x16a60},{0x4a0,0x33020},{0x4a8,0x33060},{0x660,0x77c0}};
+    for(const auto &s:contextSlots)if(!SurfaceGet(ms+0xb6c28+s.first,fn)||fn!=ms+s.second)
+        return fail("Queued billboard context slot changed.");
+    const std::pair<unsigned,Address> meshSlots[]={{0x58,0x2eac0},{0x68,0x2b510},{0x90,0x2cd30},{0xa8,0x2edf0},{0xc8,0x2ce20}};
+    for(const auto &s:meshSlots)if(!SurfaceGet(ms+0xbb7d0+s.first,fn)||fn!=ms+s.second)
+        return fail("Queued billboard mesh slot changed.");
+    if(!SurfaceMatch(ms,0x2c53a,{0x48,0x8b,0x8e,0x10,0x03,0,0})||
+       !SurfaceMatch(ms,0x2c557,{0xe8,0x44,0x11,0,0})||
+       !SurfaceMatch(ms,0x2cd6c,{0x44,0x0f,0xb7,0x41,0x68,0x48,0x8b,0x49,0x28,0xe8,0x56,0xd8,0xff,0xff})||
+       !SurfaceMatch(ms,0x2cdb7,{0x48,0x8b,0x4f,0x28,0x8b,0xd6,0xe8,0x5e,0xd6,0xff,0xff,0x48,0x89,0x47,0x58})||
+       !SurfaceMatch(ms,0x2cde2,{0x4d,0x89,0x1a})||
+       !SurfaceMatch(ms,0x2df5a,{0x48,0x89,0x5f,0x30,0x48,0x8b,0x43,0x50,0x48,0x89,0x47,0x38,0x8b,0x43,0x60,0x89,0x47,0x40,0x44,0x89,0x77,0x44,0x48,0x8b,0x43,0x58})||
+       !SurfaceMatch(ms,0x2df78,{0x8b,0x43,0x64,0x89,0x47,0x50,0xe8,0x3d,0xba,0xfd,0xff})||
+       !SurfaceMatch(ms,0x2df88,{0x48,0xc7,0x43,0x50,0,0,0,0,0x48,0xc7,0x43,0x58,0,0,0,0})||
+       !SurfaceMatch(ms,0x2b648,{0xe9,0x73,0xe3,0xfd,0xff})||
+       !SurfaceMatch(ms,0x2ce4f,{0x48,0x89,0x79,0x58})||
+       !SurfaceMatch(ms,0x2ce59,{0x48,0x89,0x79,0x50})||
+       !SurfaceMatch(ms,0x2aaae,{0x48,0x89,0x7b,0x30,0x48,0x89,0x43,0x20,0x4c,0x89,0x73,0x38,0xe8,0x01,0xef,0xfd,0xff}))
+        return fail("Queued billboard mesh ownership instruction guard failed.");
+
+    const auto getMatrix=reinterpret_cast<MatrixGet>(ms+0x32b40);
+    Billboard::Camera camera;Point right{},up{};std::array<float,16> model{};
+    getMatrix(context,0,camera.View.data());getMatrix(context,10,model.data());
+    reinterpret_cast<OriginGet>(ms+0x33020)(context,camera.Origin.data());
+    reinterpret_cast<BasisGet>(ms+0x33060)(context,camera.Forward.data(),right.data(),up.data());
+    if(!Billboard::CameraValid(camera))return fail("Queued billboard camera transform unavailable.");
+    for(unsigned i=0;i<16;++i)if(model[i]!=(i%5==0?1.f:0.f))
+        return fail("Queued billboard requires an existing identity model matrix.");
+
+    // The wrapper embedded at real+0xd0 keeps a producer-side reference
+    // count and increments the real material atomically. Its own decrement
+    // queues an ordered native real-material decrement after our mesh draw.
+    struct Material {Address Real=0,Wrapper=0;std::uint64_t Format=0;};
+    auto resolve=[&](Address ptr,Material &out,bool sprite){
+        Address table=0,real=ptr,wrapper=0,back=0,func=0;
+        if(!SurfaceQueuedMaterialReady(ptr)||!SurfaceGet(ptr,table))return false;
+        if(table==ms+0xb4ba0){if(!SurfaceGet(ptr+8,real))return false;}
+        if(real<0x10000||!SurfaceGet(real,table)||table!=ms+0xb4ec0||
+           !SurfaceGet(table+0x2f0,func)||func!=ms+0x7710)return false;
+        wrapper=real+0xd0;
+        int realRefs=0,wrapperRefs=0;unsigned char flags=0;
+        if(!SurfaceGet(wrapper,table)||table!=ms+0xb4ba0||!SurfaceGet(wrapper+8,back)||back!=real||
+           !SurfaceGet(table+0x60,func)||func!=ms+0xae60||!SurfaceGet(table+0x68,func)||func!=ms+0xaad0||
+           !SurfaceGet(real+0x24,realRefs)||realRefs<=0||realRefs>1000000||
+           !SurfaceGet(wrapper+0x20,wrapperRefs)||wrapperRefs<=0||wrapperRefs>1000000||
+           !SurfaceGet(real+0x28,flags)||!(flags&8))return false;
+        std::uint64_t format=0;if(!SurfaceGet(real+0x68,format))return false;
+        if(sprite){
+            // The native ordinary CPU branch tests shader flags2 bit 16.
+            // Also exclude materials with orientation parameters entirely;
+            // this experiment never invokes a shared material-variable setter.
+            if(!Billboard::PackedStride(format))return false;
+            Address vars=0,flagVar=0;unsigned char count=0;std::uint32_t flags2=0;
+            if(!SurfaceGet(real+0x2a,count)||count<3||!SurfaceGet(real+0x50,vars)||!vars||
+               !SurfaceGet(vars+0x10,flagVar)||!SurfaceGet(flagVar,table)||table!=ms+0xba4b8||
+               !SurfaceGet(flagVar+0x10,flags2)||(flags2&0x10000u))return false;
+            using Name=const char*(*)(void*);
+            for(unsigned i=0;i<count;++i){
+                Address var=0;std::uint16_t symbol=0;
+                if(!SurfaceGet(vars+8*i,var)||!SurfaceGet(var,table)||table!=ms+0xba4b8||
+                   !SurfaceGet(table+8,func)||func!=ms+0x21020||!SurfaceGet(var+0x26,symbol)||symbol==0xffff)return false;
+                const auto name=reinterpret_cast<Name>(func)(reinterpret_cast<void*>(var));
+                if(!name)return false;
+                std::string value;bool terminated=false;
+                for(unsigned j=0;j<128;++j){
+                    char ch=0;if(!SurfaceGet(reinterpret_cast<Address>(name)+j,ch))return false;
+                    if(!ch){terminated=true;break;}value+=ch;
+                }
+                if(!terminated||!_stricmp(value.c_str(),"$orientation")||!_stricmp(value.c_str(),"$orientationMatrix"))return false;
+            }
+        }
+        out={real,wrapper,format};return true;
+    };
+    Address previous=0;
+    Material original;
+    if(!SurfaceGet(ctx+0x18,previous)||!resolve(previous,original,false))
+        return fail("Queued billboard prior material is not safe to restore.");
+    auto inc=reinterpret_cast<NoArg>(ms+0xae60),dec=reinterpret_cast<NoArg>(ms+0xaad0);
+    auto bind=reinterpret_cast<Bind>(ms+0x2a9d0);
+    auto dynamic=reinterpret_cast<Dynamic>(ms+0x2c4c0);
+    auto lockMesh=reinterpret_cast<Lock>(ms+0x2cd30),unlockMesh=reinterpret_cast<Lock>(ms+0x2edf0);
+    auto discard=reinterpret_cast<NoArg>(ms+0x2ce20);
+    auto drawMesh=reinterpret_cast<Draw>(ms+0x2b510);
+    auto primitive=reinterpret_cast<Mode>(ms+0x2eac0);
+    // Prepare only owned data before binding or locking. No native pointer
+    // survives beyond this producer callback except via native queue calls.
+    std::map<Address,Material> validated;
+    std::set<Address> rejectedMaterials;
+    std::vector<Billboard::Particle> particles;Billboard::Mesh mesh;
+    Billboard::PackedMesh packed;
+    const auto begin=reinterpret_cast<NoArg>(ms+0x2a940);
+    owner.End=reinterpret_cast<NoArg>(ms+0x2ba90);
+    begin(context);owner.Begun=true;
+    inc(reinterpret_cast<void*>(original.Wrapper));
+    struct MaterialScope {
+        void *Context;Address Original;NoArg Release;Bind Restore;bool Changed=false;
+        ~MaterialScope(){if(Changed)Restore(Context,reinterpret_cast<void*>(Original),nullptr);Release(reinterpret_cast<void*>(Original+0xd0));}
+    } restore{context,original.Real,dec,bind};
+    bool stopped=false;
+    std::size_t unsupported=0,materialRejected=0,geometryRejected=0,meshRejected=0,culled=0;
+    for(std::size_t i=0;i<frame.Collections.size();++i){
+        const auto &c=frame.Collections[i];if(!c.Active)continue;
+        ++result.Attempts;
+        if(stopped||result.Trees>=128||result.Particles+c.Active>8192){++result.Rejected;continue;}
+        const auto end=std::find(c.Name.begin(),c.Name.end(),'\0');
+        const auto found=end==c.Name.end()?witnesses.end():witnesses.find(std::string(c.Name.begin(),end));
+        if(found==witnesses.end()){++unsupported;++result.Rejected;continue;}
+        const auto ptr=found->second;
+        auto mat=validated.find(ptr);
+        if(mat==validated.end()&&!rejectedMaterials.count(ptr)){
+            Material v;
+            if(resolve(ptr,v,true))mat=validated.emplace(ptr,v).first;
+            else rejectedMaterials.insert(ptr);
+        }
+        if(mat==validated.end()){++materialRejected;++result.Rejected;continue;}
+        const auto &material=mat->second;
+        const auto geometryStart=std::chrono::steady_clock::now();
+        const bool built=Billboard::Prepare(frame,i,particles)&&Billboard::Build(particles,camera,true,mesh)&&
+            Billboard::PackWorld(mesh,camera,material.Format,packed);
+        result.PlanMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-geometryStart).count();
+        if(!built){++geometryRejected;++result.Rejected;continue;}
+        culled+=mesh.Culled;
+        if(!mesh.Visible)continue;
+        const int nv=static_cast<int>(mesh.Vertices.size()),ni=static_cast<int>(mesh.Indices.size());
+        if(!SurfaceQueuedMeshIdle(ms,context)||MaterialSystem_IsImmediate()){
+            ++meshRejected;++result.Rejected;stopped=true;continue;
+        }
+        const int maxVertices=reinterpret_cast<MaxVertices>(ms+0x2c750)(context,reinterpret_cast<void*>(material.Real));
+        if(nv>maxVertices||ni>32768||maxVertices<=0){++meshRejected;++result.Rejected;continue;}
+        const auto submitStart=std::chrono::steady_clock::now();
+        // Keep a native reference through bind, mesh submission and queued
+        // decrement. The original material is separately pinned until restore.
+        inc(reinterpret_cast<void*>(material.Wrapper));
+        struct Pin {void *Ptr;NoArg Release;~Pin(){Release(Ptr);}} pin{reinterpret_cast<void*>(material.Wrapper),dec};
+        restore.Changed=true;
+        bind(context,reinterpret_cast<void*>(material.Real),nullptr);
+        Address bound=0,expectedMesh=0;
+        if(!SurfaceGet(ctx+0x18,bound)||bound!=material.Real||!SurfaceGet(ctx+0x310,expectedMesh)){
+            ++meshRejected;++result.Rejected;stopped=true;continue;
+        }
+        auto *nativeMesh=dynamic(context,true,nullptr,nullptr,nullptr);
+        Address actual=reinterpret_cast<Address>(nativeMesh),fmt=0;std::uint16_t stride=0;
+        if(!actual||actual!=expectedMesh||!SurfaceQueuedMeshIdle(ms,context)){
+            ++meshRejected;++result.Rejected;stopped=true;continue;
+        }
+        if(!SurfaceGet(actual+0x40,fmt)||fmt!=material.Format||!SurfaceGet(actual+0x68,stride)||stride!=packed.Stride){
+            discard(nativeMesh);++meshRejected;++result.Rejected;stopped=true;continue;
+        }
+        primitive(nativeMesh,2);
+        alignas(16) Billboard::LockDescriptor desc{};
+        lockMesh(nativeMesh,nv,ni,desc.data());
+        Address vertexBase=0,indexBase=0;int lockedVertices=0,lockedIndices=0;
+        bool ok=SurfaceGet(actual+0x50,vertexBase)&&SurfaceGet(actual+0x58,indexBase)&&
+            SurfaceGet(actual+0x60,lockedVertices)&&lockedVertices==nv&&
+            SurfaceGet(actual+0x64,lockedIndices)&&lockedIndices==ni&&
+            Billboard::ValidLockDescriptor(desc,vertexBase,indexBase,nv,ni,stride);
+        if(ok){
+            const auto writeStart=std::chrono::steady_clock::now();
+            SIZE_T wrote=0;
+            ok=WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(vertexBase),packed.Vertices.data(),packed.Vertices.size(),&wrote)&&
+                wrote==packed.Vertices.size();
+            if(ok){const auto bytes=packed.Indices.size()*sizeof(std::uint16_t);wrote=0;
+                ok=WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(indexBase),packed.Indices.data(),bytes,&wrote)&&wrote==bytes;}
+            result.CopyMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-writeStart).count();
+        }
+        if(!ok){
+            // Native discard clears staging pointers and queues no draw.
+            // Do not call the native renderer on a malformed descriptor.
+            unlockMesh(nativeMesh,0,0,desc.data());discard(nativeMesh);
+            ++meshRejected;++result.Rejected;stopped=true;continue;
+        }
+        unlockMesh(nativeMesh,nv,ni,desc.data());drawMesh(nativeMesh,-1,0);
+        ++result.Trees;++result.Nodes;result.Particles+=mesh.Visible;
+        result.RenderMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-submitStart).count();
+        if(!SurfaceQueuedMeshIdle(ms,context)){++result.CleanupFailures;stopped=true;}
+        // Restore the previous material before releasing this target pin;
+        // otherwise a later bind could use a material after its decrement.
+        bind(context,reinterpret_cast<void*>(original.Real),nullptr);restore.Changed=false;
+    }
+    result.Status="Experimental queued CPU billboard overlay: "+std::to_string(result.Particles)+" submitted / "+
+        std::to_string(frame.Active)+" historical particles; "+std::to_string(result.Trees)+" batches, "+
+        std::to_string(culled)+" invisible, excluded collections (shape/material/geometry/mesh) "+
+        std::to_string(unsupported)+"/"+std::to_string(materialRejected)+"/"+std::to_string(geometryRejected)+"/"+
+        std::to_string(meshRejected)+". Live effects retained; native queue submission is not pixel validation.";
+#else
+    (void)frame;result.Status="Queued billboard overlay requires TF2 x64.";
+#endif
+    return result;
+}
+
 advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderNativeParticles(const advancedfx::NativeParticles::Frame &frame,bool fastMemory,bool fastReads,bool auditRenderers,const advancedfx::NativeParticles::ReplayPreparation *prepared)
 {
     return SceneNativeParticleOperation(frame,0,true,fastMemory,fastReads,auditRenderers,prepared);
