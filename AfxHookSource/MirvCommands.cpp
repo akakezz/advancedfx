@@ -1230,6 +1230,9 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
        !guardedMatch(ms,0x7a30,{0xf0,0xff,0x41,0x24,0xc3})||
        !guardedMatch(ms,0x6550,{0xf0,0xff,0x49,0x24,0xc3})||
        !guardedMatch(ms,0x7710,{0x48,0x8d,0x81,0xd0,0,0,0,0xc3})||
+       !guardedMatch(ms,0x7720,{0x48,0x8b,0xc1,0xc3})||
+       !guardedMatch(ms,0x78f0,{0x48,0x8b,0x41,0x68,0xc3})||
+       !guardedMatch(ms,0x2c4b0,{0x8b,0x81,0x2c,0x03,0,0,0xc3})||
        !guardedMatch(ms,0xae60,{0xff,0x41,0x20,0x48,0x8b,0x49,0x08,0x48,0x8b,0x01,0x48,0xff,0x60,0x60})||
        !guardedMatch(ms,0xaada,{0xff,0x49,0x20})||
        !guardedMatch(ms,0xaaf6,{0xff,0x92,0x98,0x04,0,0})||
@@ -1272,7 +1275,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
     if(!owner.Release||!SurfaceQueuedContext(context)||!SurfaceQueuedMeshIdle(ms,context))
         return fail("Queued billboard context/idle mesh guard failed.");
     const std::pair<unsigned,Address> contextSlots[]={{0x10,0x2a940},{0x18,0x2ba90},{0x48,0x2a9d0},
-        {0xf0,0x32b40},{0x1c0,0x2c4c0},{0x410,0x2c750},{0x418,0x16a60},{0x4a0,0x33020},{0x4a8,0x33060},{0x660,0x77c0}};
+        {0xf0,0x32b40},{0x1c0,0x2c4c0},{0x410,0x2c750},{0x418,0x16a60},{0x4a0,0x33020},{0x4a8,0x33060},{0x548,0x2c4b0},{0x660,0x77c0}};
     for(const auto &s:contextSlots)if(!SurfaceGet(ms+0xb6c28+s.first,fn)||fn!=ms+s.second)
         return fail("Queued billboard context slot changed.");
     const std::pair<unsigned,Address> meshSlots[]={{0x58,0x2eac0},{0x68,0x2b510},{0x90,0x2cd30},{0xa8,0x2edf0},{0xc8,0x2ce20}};
@@ -1292,6 +1295,9 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
        !guardedMatch(ms,0x2aaae,{0x48,0x89,0x7b,0x30,0x48,0x89,0x43,0x20,0x4c,0x89,0x73,0x38,0xe8,0x01,0xef,0xfd,0xff}))
         return guardFail("Queued billboard mesh ownership instruction guard failed.");
 
+    int boneWeights=-1;
+    if(!SurfaceGet(ctx+0x32c,boneWeights)||boneWeights!=0)
+        return fail("Queued billboard requires zero active bone weights.");
     const auto getMatrix=reinterpret_cast<MatrixGet>(ms+0x32b40);
     Billboard::Camera camera;Point right{},up{};std::array<float,16> model{};
     getMatrix(context,0,camera.View.data());getMatrix(context,10,model.data());
@@ -1313,14 +1319,21 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         materialReason="real material identity";
         if(table==ms+0xb4ba0){if(!SurfaceGet(ptr+8,real))return false;}
         if(real<0x10000||!SurfaceGet(real,table)||table!=ms+0xb4ec0||
-           !SurfaceGet(table+0x2f0,func)||func!=ms+0x7710)return false;
+           !SurfaceGet(table+0x2e8,func)||func!=ms+0x7720||
+           !SurfaceGet(table+0x2f0,func)||func!=ms+0x7710||
+           !SurfaceGet(table+0xa0,func)||func!=ms+0x78f0||
+           !SurfaceGet(table+0x60,func)||func!=ms+0x7a30||
+           !SurfaceGet(table+0x68,func)||func!=ms+0x6550)return false;
         materialReason="native reference wrapper or precache state";
         wrapper=real+0xd0;
+        // Zero wrapper references is valid if the real material is already
+        // positively referenced. Increment is native and the embedded
+        // wrapper cannot disappear independently of the real object.
         int realRefs=0,wrapperRefs=0;unsigned char flags=0;
         if(!SurfaceGet(wrapper,table)||table!=ms+0xb4ba0||!SurfaceGet(wrapper+8,back)||back!=real||
            !SurfaceGet(table+0x60,func)||func!=ms+0xae60||!SurfaceGet(table+0x68,func)||func!=ms+0xaad0||
            !SurfaceGet(real+0x24,realRefs)||realRefs<=0||realRefs>1000000||
-           !SurfaceGet(wrapper+0x20,wrapperRefs)||wrapperRefs<=0||wrapperRefs>1000000||
+           !SurfaceGet(wrapper+0x20,wrapperRefs)||wrapperRefs<0||wrapperRefs>=1000000||
            !SurfaceGet(real+0x28,flags)||!(flags&8))return false;
         materialReason="vertex format";
         std::uint64_t format=0;if(!SurfaceGet(real+0x68,format))return false;

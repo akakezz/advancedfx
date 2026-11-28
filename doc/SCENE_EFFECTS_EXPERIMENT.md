@@ -1212,3 +1212,19 @@ Reverified mesh lock/unlock/discard paths, material reference wrapper slots,
 shader descriptor offsets, and camera getters against the supplied modules.
 Instruction failures now include the failing module and RVA rather than
 only the broad guard name. No native call is made on instruction mismatch.
+
+Phase 31G follow-up: native wrapper increment at 0xae60 increments
+the embedded wrapper count regardless of its previous zero value, then
+tailcalls real atomic increment. A zero wrapper count is therefore
+accepted only with verified embedded identity and positive real refs.
+Negative/overflow counts still reject. Verify real +0x2e8 -> 0x7720
+(return self), +0xa0 -> 0x78f0 (format +0x68), reference slots +0x60/+0x68.
+Queued +0x548 -> 0x2c4b0 reads bone-weight state at context+0x32c;
+require zero before requesting our minimal-format dynamic mesh, rather
+than discovering extra bone streams after GetDynamicMesh. No additional
+native material kinds or shader orientations are enabled.
+
+Run `python tests/cinematic/check_queued_billboard_abi.py PATH_TO_X64_DLLS`
+to compare the actual C++ instruction guards to exact SHA-256-verified
+PE sections without executing game code. This is a static ABI check,
+not runtime validation.
