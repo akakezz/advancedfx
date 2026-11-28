@@ -727,9 +727,13 @@ struct SpriteFactoryShape {
     bool Narrow()const{return SingleSprite&&OrientationZero&&Leaf&&KnownInitializers&&ScratchBounded&&NoSheet&&NoPost;}
 };
 template<class Reader>
-std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address module,Reader read,bool &complete){
+std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address module,Reader read,bool &complete,
+        std::map<std::string,Address> *drawMaterials=nullptr){
     using namespace Layout;
     complete=false;
+    if(drawMaterials)drawMaterials->clear();
+    std::map<std::string,Address> candidates;
+    std::set<std::string> rejectedCandidates;
     std::map<std::string,SpriteFactoryShape> result;
     std::map<std::string,Address> definitions;
     std::set<std::string> ambiguous;
@@ -745,14 +749,17 @@ std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address 
         if(depth>32||visited.size()>=MaxCollections||!visited.insert(c).second)return false;
         Address def=0,name=0,child=0;
         if(!get(c,Definition,def)||!get(def,DefinitionName,name)||!get(c,ChildHead,child))return false;
-        std::string key;
-        for(unsigned i=0;i<128;++i){
-            char ch=0;
-            if(!get(name,i,ch))return false;
-            if(!ch)break;
-            key+=ch;
+        std::array<char,128> nameBytes{};
+        if(name<0x10000||name>(std::numeric_limits<Address>::max)()-nameBytes.size())return false;
+        if(!read(name,nameBytes.data(),nameBytes.size())){
+            for(unsigned i=0;i<nameBytes.size();++i){
+                if(!get(name,i,nameBytes[i]))return false;
+                if(!nameBytes[i])break;
+            }
         }
-        if(key.empty()||key.size()==128)return false;
+        const auto nameEnd=std::find(nameBytes.begin(),nameBytes.end(),'\0');
+        if(nameEnd==nameBytes.begin()||nameEnd==nameBytes.end())return false;
+        const std::string key(nameBytes.begin(),nameEnd);
         SpriteFactoryShape shape;
         int childCount=-1;Address scratchSize=0,sheet=1,post=1;
         shape.Leaf=get(def,0x318,childCount)&&childCount==0&&!child;
@@ -785,6 +792,23 @@ std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address 
         auto inserted=result.emplace(key,shape);
         auto d=definitions.emplace(key,def);
         if(!inserted.second&&(!(inserted.first->second==shape)||d.first->second!=def))ambiguous.insert(key);
+        if(drawMaterials){
+            // Factory initializers are not invoked by the independent path.
+            // Require the actual registered scratch to exclude auxiliary
+            // control-point work and nonzero camera-facing z offsets.
+            Address offsets=0,offset=0,scratch=0,material=0;
+            unsigned char aux=1,flags=0;float z=1;
+            const bool good=shape.SingleSprite&&shape.OrientationZero&&shape.Leaf&&
+                shape.ScratchBounded&&shape.NoSheet&&shape.NoPost&&
+                get(def,0x348,offsets)&&get(offsets,0,offset)&&offset<=scratchSize&&scratchSize-offset>=0x15&&
+                get(c,0x2278,scratch)&&scratch<=(std::numeric_limits<Address>::max)()-offset&&
+                get(scratch+offset,0x14,aux)&&aux==0&&get(scratch+offset,0x10,z)&&z==0&&
+                get(def,0x3fa,flags)&&(flags&1)&&get(def,0x148,material)&&material>=0x10000;
+            if(good){
+                auto candidate=candidates.emplace(key,material);
+                if(!candidate.second&&candidate.first->second!=material)rejectedCandidates.insert(key);
+            }else rejectedCandidates.insert(key);
+        }
         while(child){
             Address next=0;
             if(!get(child,ChildNext,next)||!self(self,child,depth+1))return false;
@@ -800,7 +824,9 @@ std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address 
             root>(std::numeric_limits<Address>::max)()-RootCollection||!walk(walk,root+RootCollection,0))return {};
         prev=root;root=next;
     }
-    for(const auto &name:ambiguous)result.erase(name);
+    for(const auto &name:ambiguous){result.erase(name);candidates.erase(name);}
+    for(const auto &name:rejectedCandidates)candidates.erase(name);
+    if(drawMaterials)*drawMaterials=std::move(candidates);
     complete=true;
     return result;
 }

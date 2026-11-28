@@ -1,5 +1,6 @@
 #include "shared/NativeParticleSnapshot.h"
 #include "shared/NativeParticleBillboard.h"
+#include "shared/NativeParticleMesh.h"
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
@@ -303,8 +304,17 @@ int main(){
     put(def+0x218,Address(32));put(base+0xe0a2b8+0x10,base+0x12345);
     shapes=AuditRegisteredSpriteFactories(base,read,witnessComplete);
     check(witnessComplete&&!shapes.begin()->second.KnownInitializers,"unknown initializer rejected");
-    put(root+RootNext,root);
-    check(AuditRegisteredSpriteFactories(base,read,witnessComplete).empty()&&!witnessComplete,"cycle invalidates whole witness");
+    put(base+0xe0a2b8+0x10,base+0x8f5950);
+    constexpr Address scratch=0x63000000,material=0x64000000;
+    put(coll+0x2278,scratch);put(scratch+0x14,static_cast<unsigned char>(0));put(scratch+0x10,0.f);
+    put(def+0x3fa,static_cast<unsigned char>(1));put(def+0x148,material);
+    std::map<std::string,Address> drawMaterials;
+    AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials);
+    check(witnessComplete&&drawMaterials.size()==1&&drawMaterials.begin()->second==material,"callback-local material witness");
+    put(scratch+0x10,1.f);AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials);
+    check(witnessComplete&&drawMaterials.empty(),"nonzero z offset excluded");
+    put(scratch+0x10,0.f);put(root+RootNext,root);
+    check(AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials).empty()&&!witnessComplete&&drawMaterials.empty(),"cycle invalidates whole witness");
     // Factory-independent geometry: mixed constant/varying attributes,
     // exact ownership, alpha product, sort, full UVs and bounded indices.
     Frame bill;bill.Complete=bill.Appearance=true;bill.Collections.resize(1);
@@ -332,6 +342,24 @@ int main(){
     check(Billboard::Build(particles,cam,false,mesh)&&std::abs(mesh.Vertices[0].Position[0]-1)<1e-5f,"rotation affects owned geometry");
     auto badCamera=cam;badCamera.View[12]=1;
     check(!Billboard::Build(particles,badCamera,true,mesh)&&mesh.Vertices.empty()&&mesh.Indices.empty(),"invalid camera clears geometry");
+    // Exact queued staging descriptor and world-space packed vertex payload.
+    Billboard::PackedMesh packedMesh;
+    check(Billboard::Build(particles,cam,true,mesh)&&Billboard::PackWorld(mesh,cam,0x40205,packedMesh)&&
+        packedMesh.Stride==24&&packedMesh.Vertices.size()==192&&packedMesh.Indices==mesh.Indices,"exact owned queued payload");
+    check(packedMesh.Vertices[12]==0&&packedMesh.Vertices[13]==128&&packedMesh.Vertices[14]==255&&packedMesh.Vertices[15]==128,"native BGRA byte order");
+    check(Billboard::PackWorld(mesh,cam,0x40005,packedMesh)&&packedMesh.Stride==32&&packedMesh.Vertices.size()==256&&
+        std::all_of(packedMesh.Vertices.begin()+24,packedMesh.Vertices.begin()+32,[](auto b){return b==0;}),"native aligned stride and zero padding");
+    check(!Billboard::PackWorld(mesh,cam,0x40007,packedMesh)&&packedMesh.Vertices.empty(),"unsupported extra stream rejected");
+    Billboard::LockDescriptor descriptor{};
+    auto field=[&](std::size_t off,const auto &v){std::memcpy(descriptor.data()+off,&v,sizeof(v));};
+    constexpr Address vb=0x40000000,ib=0x41000000;
+    for(unsigned off:{0u,0x10u,0x18u,0x48u})field(off,24u);
+    field(0x58,vb);field(0x78,vb+12);field(0x88,vb+16);field(0xf0,ib);field(0x100,static_cast<unsigned char>(1));
+    check(Billboard::ValidLockDescriptor(descriptor,vb,ib,8,12,24),"exact queued descriptor accepted");
+    field(0x78,vb+16);check(!Billboard::ValidLockDescriptor(descriptor,vb,ib,8,12,24),"wrong color pointer rejected");
+    field(0x78,vb+12);field(0x1c,24u);check(!Billboard::ValidLockDescriptor(descriptor,vb,ib,8,12,24),"extra texture stream rejected");
+    field(0x1c,0u);field(0xf8,1u);check(!Billboard::ValidLockDescriptor(descriptor,vb,ib,8,12,24),"nonzero index offset rejected");
+    field(0xf8,0u);check(!Billboard::ValidLockDescriptor(descriptor,vb,vb+16,8,12,24),"overlapping staging buffers rejected");
     bc.Attributes[Alpha2].Start=0xffffffffu;
     check(!Billboard::Prepare(bill,0,particles)&&particles.empty(),"malformed attribute rejects entire collection");
     std::cout<<"Native particle snapshot tests passed\n";
