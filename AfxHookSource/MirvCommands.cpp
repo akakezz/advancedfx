@@ -1252,7 +1252,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         ~ContextOwner(){if(Begun)End(Object);if(Release)Release(Object);}
     } owner{context};
     // Release is independently validated even if a later context guard fails.
-    if(SurfaceGet(ctx,vt)&&vt==ms+0xb6c28&&SurfaceGet(vt+8,fn)&&fn==ms+0x1ac20)
+    if(SurfaceGet(ctx,vt)&&(vt==ms+0xb6c28||vt==ms+0xbcab0)&&SurfaceGet(vt+8,fn)&&fn==ms+0x1ac20)
         owner.Release=reinterpret_cast<NoArg>(fn);
     if(!owner.Release||!SurfaceQueuedContext(context)||!SurfaceQueuedMeshIdle(ms,context))
         return fail("Queued billboard context/idle mesh guard failed.");
@@ -1351,10 +1351,26 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
     owner.End=reinterpret_cast<NoArg>(ms+0x2ba90);
     begin(context);owner.Begun=true;
     inc(reinterpret_cast<void*>(original.Wrapper));
-    struct MaterialScope {
-        void *Context;Address Original;NoArg Release;Bind Restore;bool Changed=false;
-        ~MaterialScope(){if(Changed)Restore(Context,reinterpret_cast<void*>(Original),nullptr);Release(reinterpret_cast<void*>(Original+0xd0));}
-    } restore{context,original.Real,dec,bind};
+    struct MaterialPin {
+        Address Wrapper;NoArg Release;
+        ~MaterialPin(){Release(reinterpret_cast<void*>(Wrapper));}
+    } originalPin{original.Wrapper,dec};
+    auto writable=[](Address address,std::size_t size){
+        if(!size||address>UINT64_MAX-size)return false;
+        const Address end=address+size;
+        while(address<end){
+            MEMORY_BASIC_INFORMATION info{};
+            if(!VirtualQuery(reinterpret_cast<void*>(address),&info,sizeof(info))||info.State!=MEM_COMMIT||
+               (info.Protect&PAGE_GUARD))return false;
+            const DWORD protection=info.Protect&0xff;
+            if(protection!=PAGE_READWRITE&&protection!=PAGE_WRITECOPY&&
+               protection!=PAGE_EXECUTE_READWRITE&&protection!=PAGE_EXECUTE_WRITECOPY)return false;
+            const Address base=reinterpret_cast<Address>(info.BaseAddress);
+            if(base>UINT64_MAX-info.RegionSize||base+info.RegionSize<=address)return false;
+            address=base+info.RegionSize;
+        }
+        return true;
+    };
     bool stopped=false;
     std::size_t unsupported=0,materialRejected=0,geometryRejected=0,meshRejected=0,culled=0;
     for(std::size_t i=0;i<frame.Collections.size();++i){
@@ -1390,8 +1406,13 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         // Keep a native reference through bind, mesh submission and queued
         // decrement. The original material is separately pinned until restore.
         inc(reinterpret_cast<void*>(material.Wrapper));
-        struct Pin {void *Ptr;NoArg Release;~Pin(){Release(Ptr);}} pin{reinterpret_cast<void*>(material.Wrapper),dec};
-        restore.Changed=true;
+        MaterialPin pin{material.Wrapper,dec};
+        // Destruction order matters on rejected meshes as well as draws:
+        // restore the producer's binding before the target pin is released.
+        struct RestoreBinding {
+            void *Context;Address Original;Bind Restore;
+            ~RestoreBinding(){Restore(Context,reinterpret_cast<void*>(Original),nullptr);}
+        } restore{context,original.Real,bind};
         bind(context,reinterpret_cast<void*>(material.Real),nullptr);
         Address bound=0,expectedMesh=0;
         if(!SurfaceGet(ctx+0x18,bound)||bound!=material.Real||!SurfaceGet(ctx+0x310,expectedMesh)){
@@ -1412,7 +1433,8 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         bool ok=SurfaceGet(actual+0x50,vertexBase)&&SurfaceGet(actual+0x58,indexBase)&&
             SurfaceGet(actual+0x60,lockedVertices)&&lockedVertices==nv&&
             SurfaceGet(actual+0x64,lockedIndices)&&lockedIndices==ni&&
-            Billboard::ValidLockDescriptor(desc,vertexBase,indexBase,nv,ni,stride);
+            Billboard::ValidLockDescriptor(desc,vertexBase,indexBase,nv,ni,stride)&&
+            writable(vertexBase,packed.Vertices.size())&&writable(indexBase,packed.Indices.size()*sizeof(std::uint16_t));
         if(ok){
             const auto writeStart=std::chrono::steady_clock::now();
             SIZE_T wrote=0;
@@ -1432,9 +1454,8 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         ++result.Trees;++result.Nodes;result.Particles+=mesh.Visible;
         result.RenderMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-submitStart).count();
         if(!SurfaceQueuedMeshIdle(ms,context)){++result.CleanupFailures;stopped=true;}
-        // Restore the previous material before releasing this target pin;
-        // otherwise a later bind could use a material after its decrement.
-        bind(context,reinterpret_cast<void*>(original.Real),nullptr);restore.Changed=false;
+        // RestoreBinding runs before the per-batch MaterialPin, including
+        // every early continue above.
     }
     result.Status="Experimental queued CPU billboard overlay: "+std::to_string(result.Particles)+" submitted / "+
         std::to_string(frame.Active)+" historical particles; "+std::to_string(result.Trees)+" batches, "+
