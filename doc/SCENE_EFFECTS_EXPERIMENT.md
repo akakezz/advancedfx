@@ -1204,3 +1204,11 @@ requiring existing identity model and validated camera. First
 experiment supports only ordinary no-sheet, zero-offset, proxy-free
 sprite materials with exact minimal vertex format, no orientation vars;
 no live suppression or pixel-equivalence promise. Disabled by default.
+
+### Phase 31G — exact binary recheck and lookup cost
+Rechecked the 0x8e1510 definition getter bytes against the supplied client:
+f6 81 fa 03 00 00 01 75 03 33 c0 c3 48 8b 81 48 01 00 00 c3.
+Reverified mesh lock/unlock/discard paths, material reference wrapper slots,
+shader descriptor offsets, and camera getters against the supplied modules.
+Instruction failures now include the failing module and RVA rather than
+only the broad guard name. No native call is made on instruction mismatch.

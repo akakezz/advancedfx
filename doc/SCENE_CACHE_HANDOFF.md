@@ -621,3 +621,13 @@ Independent geometry uses world positions to avoid overriding the view;
 approximate visibility/rotation/sorting, no native pixel guarantee.
 Full automatic benchmark adds a separate queued billboard phase only when
 explicitly enabled; no setup default change. Requires in-game validation.
+
+### Phase 31G — guard and witness diagnostics
+Latest preceding checkpoint 6dbe2f9 passed both portable regression jobs.
+Queued billboard instruction failures now name the DLL and RVA; material
+failures distinguish ordinary material/identity, reference wrapper,
+format, shader flags and variable name/orientation blockers. Target live
+definition lookup to recorded active names, cache definition names within
+the stationary callback and still walk every root/child link. Variable
+names use one bounded read with narrow fallback. No eligibility expansion
+or change to the queue opt-in. Runtime and Windows validation remain pending.

@@ -728,7 +728,7 @@ struct SpriteFactoryShape {
 };
 template<class Reader>
 std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address module,Reader read,bool &complete,
-        std::map<std::string,Address> *drawMaterials=nullptr){
+        std::map<std::string,Address> *drawMaterials=nullptr,const std::set<std::string> *wanted=nullptr){
     using namespace Layout;
     complete=false;
     if(drawMaterials)drawMaterials->clear();
@@ -736,6 +736,9 @@ std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address 
     std::set<std::string> rejectedCandidates;
     std::map<std::string,SpriteFactoryShape> result;
     std::map<std::string,Address> definitions;
+    // Definition names are immutable within the stationary producer callback.
+    // Cache only during this traversal; never retain a native address in history.
+    std::map<Address,std::string> names;
     std::set<std::string> ambiguous;
     std::set<Address> visited,roots;
     auto get=[&](Address a,Address off,auto &v){
@@ -747,19 +750,24 @@ std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address 
     if(!get(module,ManagerReady,ready)||!(ready&1)||!get(module,Manager+RootHead,root))return {};
     auto walk=[&](auto &&self,Address c,unsigned depth)->bool{
         if(depth>32||visited.size()>=MaxCollections||!visited.insert(c).second)return false;
-        Address def=0,name=0,child=0;
-        if(!get(c,Definition,def)||!get(def,DefinitionName,name)||!get(c,ChildHead,child))return false;
-        std::array<char,128> nameBytes{};
-        if(name<0x10000||name>(std::numeric_limits<Address>::max)()-nameBytes.size())return false;
-        if(!read(name,nameBytes.data(),nameBytes.size())){
-            for(unsigned i=0;i<nameBytes.size();++i){
-                if(!get(name,i,nameBytes[i]))return false;
-                if(!nameBytes[i])break;
+        Address def=0,child=0;
+        if(!get(c,Definition,def)||def<0x10000||!get(c,ChildHead,child))return false;
+        auto named=names.find(def);
+        if(named==names.end()){
+            Address name=0;std::array<char,128> nameBytes{};
+            if(!get(def,DefinitionName,name)||name<0x10000||name>(std::numeric_limits<Address>::max)()-nameBytes.size())return false;
+            if(!read(name,nameBytes.data(),nameBytes.size())){
+                for(unsigned i=0;i<nameBytes.size();++i){
+                    if(!get(name,i,nameBytes[i]))return false;
+                    if(!nameBytes[i])break;
+                }
             }
+            const auto nameEnd=std::find(nameBytes.begin(),nameBytes.end(),'\0');
+            if(nameEnd==nameBytes.begin()||nameEnd==nameBytes.end())return false;
+            named=names.emplace(def,std::string(nameBytes.begin(),nameEnd)).first;
         }
-        const auto nameEnd=std::find(nameBytes.begin(),nameBytes.end(),'\0');
-        if(nameEnd==nameBytes.begin()||nameEnd==nameBytes.end())return false;
-        const std::string key(nameBytes.begin(),nameEnd);
+        const auto &key=named->second;
+        if(!wanted||wanted->count(key)){
         SpriteFactoryShape shape;
         int childCount=-1;Address scratchSize=0,sheet=1,post=1;
         shape.Leaf=get(def,0x318,childCount)&&childCount==0&&!child;
@@ -809,6 +817,9 @@ std::map<std::string,SpriteFactoryShape> AuditRegisteredSpriteFactories(Address 
                 if(!candidate.second&&candidate.first->second!=material)rejectedCandidates.insert(key);
             }else rejectedCandidates.insert(key);
         }
+        }
+        // Even unrelated names must be traversed to detect cycles and
+        // potentially relevant descendants, rather than pruning the tree.
         while(child){
             Address next=0;
             if(!get(child,ChildNext,next)||!self(self,child,depth+1))return false;

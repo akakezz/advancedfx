@@ -311,10 +311,16 @@ int main(){
     std::map<std::string,Address> drawMaterials;
     AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials);
     check(witnessComplete&&drawMaterials.size()==1&&drawMaterials.begin()->second==material,"callback-local material witness");
+    const std::set<std::string> unrelated{"not_this_effect"};
+    const auto filtered=AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials,&unrelated);
+    check(witnessComplete&&filtered.empty()&&drawMaterials.empty(),"unrelated definitions excluded without pruning traversal");
+    const std::set<std::string> wanted{"test_effect"};
+    AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials,&wanted);
+    check(witnessComplete&&drawMaterials.size()==1,"wanted witness retained");
     put(witnessScratch+0x10,1.f);AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials);
     check(witnessComplete&&drawMaterials.empty(),"nonzero z offset excluded");
     put(witnessScratch+0x10,0.f);put(root+RootNext,root);
-    check(AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials).empty()&&!witnessComplete&&drawMaterials.empty(),"cycle invalidates whole witness");
+    check(AuditRegisteredSpriteFactories(base,read,witnessComplete,&drawMaterials,&unrelated).empty()&&!witnessComplete&&drawMaterials.empty(),"cycle invalidates even a filtered witness");
     // Factory-independent geometry: mixed constant/varying attributes,
     // exact ownership, alpha product, sort, full UVs and bounded indices.
     Frame bill;bill.Complete=bill.Appearance=true;bill.Collections.resize(1);

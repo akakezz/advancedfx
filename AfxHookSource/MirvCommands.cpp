@@ -1198,38 +1198,53 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
     if(Mirv_Tf2_SceneRenderViewId()!=0)return result;
     result.MainView=true;
     SurfaceAddress client=0,ms=0,shader=0,materials=0,globalMaterials=0,vt=0,fn=0,api=0;
+    std::string instructionFailure;
+    auto guardedMatch=[&](SurfaceAddress base,SurfaceAddress rva,std::initializer_list<unsigned char> bytes){
+        if(SurfaceMatch(base,rva,bytes))return true;
+        char message[96]{};
+        const char *module=base==client?"client.dll":base==ms?"materialsystem.dll":"shaderapidx9.dll";
+        std::snprintf(message,sizeof(message)," [%s+0x%llx]",module,static_cast<unsigned long long>(rva));
+        instructionFailure=message;return false;
+    };
+    auto guardFail=[&](const char *why){result.Status=std::string(why)+instructionFailure;return result;};
     if(!SurfaceExactModule("client.dll",0x6ad26f17,0x133a000,client)||
        !SurfaceExactModule("materialsystem.dll",0x6ac56a08,0x141000,ms)||
        !SurfaceExactModule("shaderapidx9.dll",0x6ac412f6,0xdb000,shader)||
-       !SurfaceMatch(client,0x8e1510,{0xf6,0x81,0xfa,0x03,0,0,1,0x75,3,0x33,0xc0,0xc3,0x48,0x8b,0x81,0x48,1,0,0,0xc3})||
-       !SurfaceMatch(client,0x8f5950,{0x33,0xc0,0x49,0x89,0,0x8b,0x41,0x60,0xc1,0xe8,0x1f,0x34,1,0x41,0x88,0x40,0x14})||
-       !SurfaceMatch(client,0x8fab1e,{0xf3,0x44,0x0f,0x10,0x4b,0x10})||
-       !SurfaceMatch(client,0x8e4938,{0x41,0xff,0x52,0x48})||
-       !SurfaceMatch(client,0x8f5b23,{0xe8,0x98,0x4f,0,0})||
+       !guardedMatch(client,0x8e1510,{0xf6,0x81,0xfa,0x03,0,0,0x01,0x75,0x03,0x33,0xc0,0xc3,0x48,0x8b,0x81,0x48,0x01,0,0,0xc3})||
+       !guardedMatch(client,0x8f5950,{0x33,0xc0,0x49,0x89,0,0x8b,0x41,0x60,0xc1,0xe8,0x1f,0x34,1,0x41,0x88,0x40,0x14})||
+       !guardedMatch(client,0x8fab1e,{0xf3,0x44,0x0f,0x10,0x4b,0x10})||
+       !guardedMatch(client,0x8e4938,{0x41,0xff,0x52,0x48})||
+       !guardedMatch(client,0x8f5b23,{0xe8,0x98,0x4f,0,0})||
        !SurfaceGet(client+0x1199678,materials)||!materials||
        !SurfaceGet(ms+0x112068,globalMaterials)||globalMaterials!=materials||
        !SurfaceGet(materials,vt)||vt!=ms+0xb7470||
        !SurfaceGet(vt+0x310,fn)||fn!=ms+0x16c20||
-       !SurfaceMatch(ms,0x16c20,{0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xec,0x20})||
+       !guardedMatch(ms,0x16c20,{0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xec,0x20})||
        !SurfaceGet(ms+0x107248,api)||!SurfaceGet(api,vt)||vt!=shader+0x7cce8||
        !SurfaceGet(vt+0x6d8,fn)||fn!=shader+0x17250||
        !SurfaceGet(vt+0x820,fn)||fn!=shader+0x25dd0||
-       !SurfaceMatch(shader,0xa5a0,{0x48,0x89,0x53,0x58})||
-       !SurfaceMatch(shader,0xa6c0,{0x48,0x89,0x43,0x78})||
-       !SurfaceMatch(shader,0xa74e,{0x48,0x89,0x06})||
-       !SurfaceMatch(shader,0xa922,{0x44,0x89,0x4b,0x48})||
-       !SurfaceMatch(ms,0x7a30,{0xf0,0xff,0x41,0x24,0xc3})||
-       !SurfaceMatch(ms,0x6550,{0xf0,0xff,0x49,0x24,0xc3})||
-       !SurfaceMatch(ms,0x7710,{0x48,0x8d,0x81,0xd0,0,0,0,0xc3})||
-       !SurfaceMatch(ms,0xae60,{0xff,0x41,0x20,0x48,0x8b,0x49,0x08,0x48,0x8b,0x01,0x48,0xff,0x60,0x60})||
-       !SurfaceMatch(ms,0xaada,{0xff,0x49,0x20})||
-       !SurfaceMatch(ms,0xaaf6,{0xff,0x92,0x98,0x04,0,0})||
-       !SurfaceMatch(ms,0xab3f,{0x48,0x89,0x5a,0x28})||
-       !SurfaceMatch(ms,0xab69,{0x48,0xff,0x20}))
-        return fail("Queued billboard module/material lifetime ABI guard failed.");
+       !guardedMatch(shader,0xa5a0,{0x48,0x89,0x53,0x58})||
+       !guardedMatch(shader,0xa6c0,{0x48,0x89,0x43,0x78})||
+       !guardedMatch(shader,0xa74e,{0x48,0x89,0x06})||
+       !guardedMatch(shader,0xa922,{0x44,0x89,0x4b,0x48})||
+       !guardedMatch(ms,0x7a30,{0xf0,0xff,0x41,0x24,0xc3})||
+       !guardedMatch(ms,0x6550,{0xf0,0xff,0x49,0x24,0xc3})||
+       !guardedMatch(ms,0x7710,{0x48,0x8d,0x81,0xd0,0,0,0,0xc3})||
+       !guardedMatch(ms,0xae60,{0xff,0x41,0x20,0x48,0x8b,0x49,0x08,0x48,0x8b,0x01,0x48,0xff,0x60,0x60})||
+       !guardedMatch(ms,0xaada,{0xff,0x49,0x20})||
+       !guardedMatch(ms,0xaaf6,{0xff,0x92,0x98,0x04,0,0})||
+       !guardedMatch(ms,0xab3f,{0x48,0x89,0x5a,0x28})||
+       !guardedMatch(ms,0xab69,{0x48,0xff,0x20}))
+        return guardFail("Queued billboard module/material lifetime ABI guard failed.");
     const auto start=std::chrono::steady_clock::now();
     bool complete=false;std::map<std::string,Address> witnesses;
-    AuditRegisteredSpriteFactories(client,SurfaceRead,complete,&witnesses);
+    std::set<std::string> wanted;
+    for(const auto &c:frame.Collections)if(c.Active){
+        const auto end=std::find(c.Name.begin(),c.Name.end(),'\0');
+        if(end!=c.Name.begin()&&end!=c.Name.end())wanted.emplace(c.Name.begin(),end);
+    }
+    if(wanted.empty())return fail("No named active historical billboard candidates.");
+    AuditRegisteredSpriteFactories(client,SurfaceRead,complete,&witnesses,&wanted);
     if(!complete)return fail("Queued billboard registered witness unavailable.");
     if(witnesses.empty())return fail("No current ordinary no-sheet sprite material witnesses; live effects retained.");
     result.GateMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
@@ -1263,19 +1278,19 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
     const std::pair<unsigned,Address> meshSlots[]={{0x58,0x2eac0},{0x68,0x2b510},{0x90,0x2cd30},{0xa8,0x2edf0},{0xc8,0x2ce20}};
     for(const auto &s:meshSlots)if(!SurfaceGet(ms+0xbb7d0+s.first,fn)||fn!=ms+s.second)
         return fail("Queued billboard mesh slot changed.");
-    if(!SurfaceMatch(ms,0x2c53a,{0x48,0x8b,0x8e,0x10,0x03,0,0})||
-       !SurfaceMatch(ms,0x2c557,{0xe8,0x44,0x11,0,0})||
-       !SurfaceMatch(ms,0x2cd6c,{0x44,0x0f,0xb7,0x41,0x68,0x48,0x8b,0x49,0x28,0xe8,0x56,0xd8,0xff,0xff})||
-       !SurfaceMatch(ms,0x2cdb7,{0x48,0x8b,0x4f,0x28,0x8b,0xd6,0xe8,0x5e,0xd6,0xff,0xff,0x48,0x89,0x47,0x58})||
-       !SurfaceMatch(ms,0x2cde2,{0x4d,0x89,0x1a})||
-       !SurfaceMatch(ms,0x2df5a,{0x48,0x89,0x5f,0x30,0x48,0x8b,0x43,0x50,0x48,0x89,0x47,0x38,0x8b,0x43,0x60,0x89,0x47,0x40,0x44,0x89,0x77,0x44,0x48,0x8b,0x43,0x58})||
-       !SurfaceMatch(ms,0x2df78,{0x8b,0x43,0x64,0x89,0x47,0x50,0xe8,0x3d,0xba,0xfd,0xff})||
-       !SurfaceMatch(ms,0x2df88,{0x48,0xc7,0x43,0x50,0,0,0,0,0x48,0xc7,0x43,0x58,0,0,0,0})||
-       !SurfaceMatch(ms,0x2b648,{0xe9,0x73,0xe3,0xfd,0xff})||
-       !SurfaceMatch(ms,0x2ce4f,{0x48,0x89,0x79,0x58})||
-       !SurfaceMatch(ms,0x2ce59,{0x48,0x89,0x79,0x50})||
-       !SurfaceMatch(ms,0x2aaae,{0x48,0x89,0x7b,0x30,0x48,0x89,0x43,0x20,0x4c,0x89,0x73,0x38,0xe8,0x01,0xef,0xfd,0xff}))
-        return fail("Queued billboard mesh ownership instruction guard failed.");
+    if(!guardedMatch(ms,0x2c53a,{0x48,0x8b,0x8e,0x10,0x03,0,0})||
+       !guardedMatch(ms,0x2c557,{0xe8,0x44,0x11,0,0})||
+       !guardedMatch(ms,0x2cd6c,{0x44,0x0f,0xb7,0x41,0x68,0x48,0x8b,0x49,0x28,0xe8,0x56,0xd8,0xff,0xff})||
+       !guardedMatch(ms,0x2cdb7,{0x48,0x8b,0x4f,0x28,0x8b,0xd6,0xe8,0x5e,0xd6,0xff,0xff,0x48,0x89,0x47,0x58})||
+       !guardedMatch(ms,0x2cde2,{0x4d,0x89,0x1a})||
+       !guardedMatch(ms,0x2df5a,{0x48,0x89,0x5f,0x30,0x48,0x8b,0x43,0x50,0x48,0x89,0x47,0x38,0x8b,0x43,0x60,0x89,0x47,0x40,0x44,0x89,0x77,0x44,0x48,0x8b,0x43,0x58})||
+       !guardedMatch(ms,0x2df78,{0x8b,0x43,0x64,0x89,0x47,0x50,0xe8,0x3d,0xba,0xfd,0xff})||
+       !guardedMatch(ms,0x2df88,{0x48,0xc7,0x43,0x50,0,0,0,0,0x48,0xc7,0x43,0x58,0,0,0,0})||
+       !guardedMatch(ms,0x2b648,{0xe9,0x73,0xe3,0xfd,0xff})||
+       !guardedMatch(ms,0x2ce4f,{0x48,0x89,0x79,0x58})||
+       !guardedMatch(ms,0x2ce59,{0x48,0x89,0x79,0x50})||
+       !guardedMatch(ms,0x2aaae,{0x48,0x89,0x7b,0x30,0x48,0x89,0x43,0x20,0x4c,0x89,0x73,0x38,0xe8,0x01,0xef,0xfd,0xff}))
+        return guardFail("Queued billboard mesh ownership instruction guard failed.");
 
     const auto getMatrix=reinterpret_cast<MatrixGet>(ms+0x32b40);
     Billboard::Camera camera;Point right{},up{};std::array<float,16> model{};
@@ -1290,12 +1305,16 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
     // count and increments the real material atomically. Its own decrement
     // queues an ordered native real-material decrement after our mesh draw.
     struct Material {Address Real=0,Wrapper=0;std::uint64_t Format=0;};
+    const char *materialReason="unknown";
     auto resolve=[&](Address ptr,Material &out,bool sprite){
+        materialReason="ordinary precached proxy-free material";
         Address table=0,real=ptr,wrapper=0,back=0,func=0;
         if(!SurfaceQueuedMaterialReady(ptr)||!SurfaceGet(ptr,table))return false;
+        materialReason="real material identity";
         if(table==ms+0xb4ba0){if(!SurfaceGet(ptr+8,real))return false;}
         if(real<0x10000||!SurfaceGet(real,table)||table!=ms+0xb4ec0||
            !SurfaceGet(table+0x2f0,func)||func!=ms+0x7710)return false;
+        materialReason="native reference wrapper or precache state";
         wrapper=real+0xd0;
         int realRefs=0,wrapperRefs=0;unsigned char flags=0;
         if(!SurfaceGet(wrapper,table)||table!=ms+0xb4ba0||!SurfaceGet(wrapper+8,back)||back!=real||
@@ -1303,16 +1322,19 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
            !SurfaceGet(real+0x24,realRefs)||realRefs<=0||realRefs>1000000||
            !SurfaceGet(wrapper+0x20,wrapperRefs)||wrapperRefs<=0||wrapperRefs>1000000||
            !SurfaceGet(real+0x28,flags)||!(flags&8))return false;
+        materialReason="vertex format";
         std::uint64_t format=0;if(!SurfaceGet(real+0x68,format))return false;
         if(sprite){
             // The native ordinary CPU branch tests shader flags2 bit 16.
             // Also exclude materials with orientation parameters entirely;
             // this experiment never invokes a shared material-variable setter.
             if(!Billboard::PackedStride(format))return false;
+            materialReason="shader flags / variable layout";
             Address vars=0,flagVar=0;unsigned char count=0;std::uint32_t flags2=0;
             if(!SurfaceGet(real+0x2a,count)||count<3||!SurfaceGet(real+0x50,vars)||!vars||
                !SurfaceGet(vars+0x10,flagVar)||!SurfaceGet(flagVar,table)||table!=ms+0xba4b8||
                !SurfaceGet(flagVar+0x10,flags2)||(flags2&0x10000u))return false;
+            materialReason="orientation variable or unknown variable name";
             using Name=const char*(*)(void*);
             for(unsigned i=0;i<count;++i){
                 Address var=0;std::uint16_t symbol=0;
@@ -1320,12 +1342,17 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
                    !SurfaceGet(table+8,func)||func!=ms+0x21020||!SurfaceGet(var+0x26,symbol)||symbol==0xffff)return false;
                 const auto name=reinterpret_cast<Name>(func)(reinterpret_cast<void*>(var));
                 if(!name)return false;
-                std::string value;bool terminated=false;
-                for(unsigned j=0;j<128;++j){
-                    char ch=0;if(!SurfaceGet(reinterpret_cast<Address>(name)+j,ch))return false;
-                    if(!ch){terminated=true;break;}value+=ch;
+                std::array<char,128> value{};
+                const auto address=reinterpret_cast<Address>(name);
+                if(address>UINT64_MAX-value.size())return false;
+                if(!SurfaceRead(address,value.data(),value.size())){
+                    for(unsigned j=0;j<value.size();++j){
+                        if(!SurfaceGet(address+j,value[j]))return false;
+                        if(!value[j])break;
+                    }
                 }
-                if(!terminated||!_stricmp(value.c_str(),"$orientation")||!_stricmp(value.c_str(),"$orientationMatrix"))return false;
+                if(std::find(value.begin(),value.end(),'\0')==value.end()||
+                    !_stricmp(value.data(),"$orientation")||!_stricmp(value.data(),"$orientationMatrix"))return false;
             }
         }
         out={real,wrapper,format};return true;
@@ -1333,7 +1360,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
     Address previous=0;
     Material original;
     if(!SurfaceGet(ctx+0x18,previous)||!resolve(previous,original,false))
-        return fail("Queued billboard prior material is not safe to restore.");
+        return fail((std::string("Queued billboard prior material is not safe to restore: ")+materialReason+".").c_str());
     auto inc=reinterpret_cast<NoArg>(ms+0xae60),dec=reinterpret_cast<NoArg>(ms+0xaad0);
     auto bind=reinterpret_cast<Bind>(ms+0x2a9d0);
     auto dynamic=reinterpret_cast<Dynamic>(ms+0x2c4c0);
@@ -1344,7 +1371,8 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
     // Prepare only owned data before binding or locking. No native pointer
     // survives beyond this producer callback except via native queue calls.
     std::map<Address,Material> validated;
-    std::set<Address> rejectedMaterials;
+    std::map<Address,std::string> rejectedMaterials;
+    std::map<std::string,std::size_t> materialReasons;
     std::vector<Billboard::Particle> particles;Billboard::Mesh mesh;
     Billboard::PackedMesh packed;
     const auto begin=reinterpret_cast<NoArg>(ms+0x2a940);
@@ -1385,9 +1413,9 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         if(mat==validated.end()&&!rejectedMaterials.count(ptr)){
             Material v;
             if(resolve(ptr,v,true))mat=validated.emplace(ptr,v).first;
-            else rejectedMaterials.insert(ptr);
+            else rejectedMaterials.emplace(ptr,materialReason);
         }
-        if(mat==validated.end()){++materialRejected;++result.Rejected;continue;}
+        if(mat==validated.end()){++materialReasons[rejectedMaterials.at(ptr)];++materialRejected;++result.Rejected;continue;}
         const auto &material=mat->second;
         const auto geometryStart=std::chrono::steady_clock::now();
         const bool built=Billboard::Prepare(frame,i,particles)&&Billboard::Build(particles,camera,true,mesh)&&
@@ -1462,6 +1490,7 @@ advancedfx::NativeParticles::ReplayResult Mirv_Tf2_RenderQueuedBillboards(const 
         std::to_string(culled)+" invisible, excluded collections (shape/material/geometry/mesh) "+
         std::to_string(unsupported)+"/"+std::to_string(materialRejected)+"/"+std::to_string(geometryRejected)+"/"+
         std::to_string(meshRejected)+". Live effects retained; native queue submission is not pixel validation.";
+    for(const auto &entry:materialReasons)result.Status+=" Material rejection ["+entry.first+"]: "+std::to_string(entry.second)+".";
 #else
     (void)frame;result.Status="Queued billboard overlay requires TF2 x64.";
 #endif
